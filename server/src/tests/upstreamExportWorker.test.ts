@@ -190,6 +190,65 @@ describe("the upstream export worker", () => {
         },
     );
 
+    it("exports the live chat under a 32 MiB heap without reading 40 MiB of checkpoint history", SLOW, async () => {
+        vi.stubEnv("RISU_UPSTREAM_EXPORT_HEAP_MB", "32");
+        const s = await server();
+        await s.create("characters", "c", { chaId: "c", name: "Tiny live character", type: "character" });
+        const liveChat = {
+            id: "k",
+            name: "Live",
+            note: "",
+            localLore: [],
+            fmIndex: -1,
+            message: [{ role: "user", data: "tiny live text", chatId: "m" }],
+        };
+        const created = await s.json("/api/resources/batch", {
+            chats: [{ characterId: "c", chatId: "k", baseRevision: null, ops: [{ op: "create", chat: liveChat }] }],
+        });
+        expect(created.status).toBe(200);
+        let { chats } = (await created.json()) as { chats: { revision: string }[] };
+        const setText = async (text: string) => {
+            const res = await s.json("/api/resources/batch", {
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: chats[0].revision,
+                        ops: [{ op: "setText", id: "m", text }],
+                    },
+                ],
+            });
+            expect(res.status).toBe(200);
+            ({ chats } = (await res.json()) as { chats: { revision: string }[] });
+        };
+        for (let i = 0; i < 40; i++) {
+            // Distinct text keeps the one-MiB pages from deduplicating across checkpoints.
+            await setText(`${i}:` + "x".repeat(1024 * 1024));
+            expect(
+                (await s.json("/api/chat-checkpoints/save", { characterId: "c", chatId: "k", name: `History ${i}` }))
+                    .status,
+            ).toBe(200);
+        }
+        await setText(liveChat.message[0].data);
+        const history = await s.request("/api/chat-checkpoints?characterId=c&chatId=k");
+        expect(history.status).toBe(200);
+        expect(((await history.json()) as { checkpoints: unknown[] }).checkpoints).toHaveLength(40);
+
+        const result = await prepared(await prepareRequest(s));
+        expect(result.report.counts).toMatchObject({ characters: 1, chats: 1, messages: 1 });
+        const res = await s.request(`${UPSTREAM_EXPORT_DOWNLOAD_PATH}?token=${result.token}`);
+        expect(res.status).toBe(200);
+        const records = parseArchive(new Uint8Array(await res.arrayBuffer()));
+        expect(records.map(({ name }) => name)).toEqual(["database.risudat"]);
+        const db = decodeUpstreamDatabase(records[0].data, { maxDecodedBytes: 64 * 1024 * 1024 }) as Record<
+            string,
+            any
+        >;
+        expect(db.characters).toHaveLength(1);
+        expect(db.characters[0].chaId).toBe("c");
+        expect(db.characters[0].chats).toEqual([liveChat]);
+    });
+
     it("serves a resource read while the worker is held and finishes prepare after release", SLOW, async () => {
         const s = await server();
         const hold = holdWorker();

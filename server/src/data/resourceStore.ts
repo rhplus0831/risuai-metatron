@@ -331,9 +331,14 @@ export function isValidResourceId(id: unknown): id is string {
  * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
  * chats, one exact order per character). The optional checkpoint tables must be all present or all
  * absent; their rows, references, content hashes, messages, fields, and policies are checked without
- * changing stored text. Throws `ResourceValidationError` for anything else.
+ * changing stored text. With `checkpoints: false`, checkpoint tables are neither read nor validated
+ * and the result omits `checkpoints`. Throws `ResourceValidationError` for anything else.
  */
-export function readSnapshotFile(file: string, kinds: ResourceKindRegistry): ValidatedSnapshot {
+export function readSnapshotFile(
+    file: string,
+    kinds: ResourceKindRegistry,
+    options?: { checkpoints?: boolean },
+): ValidatedSnapshot {
     let source: DatabaseSync;
     try {
         source = new DatabaseSync(file, { readOnly: true });
@@ -417,7 +422,8 @@ export function readSnapshotFile(file: string, kinds: ResourceKindRegistry): Val
         });
         const characterIds = new Set(rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id));
         const chats = readChatSnapshotRows(source, characterIds);
-        const checkpoints = readCheckpointSnapshotRows(source, chats.chats);
+        const checkpoints =
+            options?.checkpoints === false ? undefined : readCheckpointSnapshotRows(source, chats.chats);
         return { rows, ...chats, ...(checkpoints ? { checkpoints } : {}) };
     } finally {
         source.close();

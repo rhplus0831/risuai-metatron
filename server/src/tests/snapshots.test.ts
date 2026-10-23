@@ -10,6 +10,7 @@ import type { Chat } from "../../../shared/database.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import {
     createResourceStore,
+    readSnapshotFile,
     ResourceBatchConflictError,
     ResourceValidationError,
     type ResourceStore,
@@ -320,6 +321,33 @@ describe("checkpoint snapshots", () => {
             expect(store.checkpoints.readPolicy(characterId, "k")).toBeNull();
         }
         expect(pages(file)).toEqual([]);
+    });
+
+    it("reads resources and live chats without checkpoints even when checkpoint tables are malformed", async () => {
+        const { dir, store } = fixture();
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        for (const sql of ["DROP TABLE chatCheckpointPolicy", "UPDATE checkpointPages SET text = text || ' '"]) {
+            const invalid = tamper(snapshot, sql);
+            expect(() => readSnapshotFile(invalid, defaults)).toThrow(ResourceValidationError);
+            expect(() => store.readSnapshot(invalid)).toThrow(ResourceValidationError);
+
+            const live = readSnapshotFile(invalid, defaults, { checkpoints: false });
+            expect(
+                live.rows.filter((row) => row.kind === "characters").map((row) => JSON.parse(row.text).chaId),
+            ).toEqual(["c", "d"]);
+            expect(
+                live.chats.map(({ characterId, id, meta }) => ({ characterId, id, meta: JSON.parse(meta) })),
+            ).toMatchObject([
+                { characterId: "c", id: "k", meta: { name: "Chat c", note: "Current note" } },
+                { characterId: "d", id: "k", meta: { name: "Chat d", note: "Current note" } },
+            ]);
+            for (const chat of live.chats) {
+                const message = live.messages.find((row) => row.chatSeq === chat.seq && row.id === "message-0")!;
+                expect(JSON.parse(message.data)).toMatchObject({ chatId: "message-0", data: "Current message" });
+            }
+            expect(live).not.toHaveProperty("checkpoints");
+        }
     });
 
     it.each([
