@@ -1,12 +1,13 @@
-// Checks metatron's upstream RisuAI `.bin` output against upstream's own code at a pinned commit
+// Checks metatron's legacy-format RisuAI `.bin` output against upstream's legacy (669b12ce, default)
+// or current (f50b5942) target; current also verifies upstream's plugin storage migration
 // (`docs/structure/backup-sync-hub.md` Tests). Not part of `pnpm test`: it needs an upstream checkout
 // and upstream's library versions, and it never installs or starts the upstream app.
 //
 //   RISU_UPSTREAM_DIR=<upstream RisuAI checkout holding the pinned commit> \
 //   RISU_UPSTREAM_MSGPACKR=<msgpackr 1.10.1 package dir> RISU_UPSTREAM_FFLATE=<fflate 0.8.2 package dir> \
-//   node util/upstream/checkBinCompat.mjs [--bin <file.bin>]...
+//   node util/upstream/checkBinCompat.mjs [--target legacy|current] [--bin <file.bin>]...
 //
-// Without `--bin` it runs three checks on synthetic data:
+// Without `--bin` both targets run these checks on synthetic data:
 // 1. encoder: `encodeUpstreamDatabase` output decoded by upstream's `decodeRisuSave` equals the
 //    input
 //    (the frozen codec fixture and an edge-case object).
@@ -14,19 +15,24 @@
 //    exported through the RisuAI-compatible export routes (without and with API keys); upstream's
 //    decoder and this server's must read the same `database.risudat`, and the result is compared with
 //    the input library under the export's documented conversions.
-// 3. boot: upstream's `setDatabase`, `checkNewFormat` (with `checkCharOrder`) and `assignIds` run on each
+// 3. migration (current only): upstream's migratePluginStorage, pluginStorage.load and flush run on
+//    each decoded export with in-memory cold storage. A fresh store must reload the original inline
+//    values from a valid persisted index listing their keys, and their inline copies must be removed.
+// 4. boot: upstream's `setDatabase`, `checkNewFormat` (with `checkCharOrder`) and `assignIds` run on each
 //    decoded export without a throw, a console warning or error, or an unapproved stub use, and keep
 //    every character, chat, and message.
-// `--bin <file>` runs the decoder comparison and the boot pass on an existing `.bin` (meant for this
-// server's exports; for an upstream backup the counts include cold-storage stubs). It prints counts and
-// fixed failure categories only, never a name, text, or a caught error, so it is safe on private files.
+// `--bin <file>` runs the decoder comparison, current's migration and the boot pass on an existing
+// `.bin` (meant for this server's exports; for an upstream backup the counts include cold-storage stubs).
+// It prints counts and fixed failure categories only, never a name, text, or a caught error, so it is
+// safe on private files.
 // Use trusted local files only: this manual check runs upstream's decoder in this process.
 // The synthetic scenario uses one flat openAIKey; named-key placement, auxiliary-secret clearing and
 // native-field stripping are covered by upstreamExport.test.ts / upstreamExportRoute.test.ts instead.
 // The exporter branch for a character with no stored chats is covered by upstreamExport.test.ts;
 // the boot rule here allows its id-less empty chat to receive an id and checks all resulting ids.
 // Not covered (upstream code not run): `LoadLocalBackup`'s record reader and asset writes,
-// `makeColdData`, `cleanChunks`, plugin loading, and the upstream UI.
+// `makeColdData`'s character/chat cold storage, `cleanChunks`, plugin loading, and the upstream UI
+// (both targets). Only current runs the pluginStorage.load call made by makeColdData.
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
@@ -40,19 +46,9 @@ import { buildArchive, createResourceTestClient } from "../../server/src/tests/t
 import { PROMPT_PRESET_FIELDS } from "../../shared/presets.ts";
 import { UPSTREAM_IMPORT_COMMIT_PATH, UPSTREAM_IMPORT_PREPARE_PATH } from "../../shared/upstreamBackup.ts";
 import { UPSTREAM_EXPORT_DOWNLOAD_PATH, UPSTREAM_EXPORT_PREPARE_PATH } from "../../shared/upstreamExportReport.ts";
-import { loadUpstream, runPhase, UPSTREAM_COMMIT } from "./upstreamHarness.mjs";
+import { loadUpstream, runPhase } from "./upstreamHarness.mjs";
 
 const MAX_DECODED_BYTES = 1024 * 1024 * 1024;
-
-/** Stub uses upstream's modules make while loading: store and storage-instance construction. */
-const LOAD_APPROVED = new Set([
-    "pkg:svelte/store#writable()",
-    "src/ts/process/memory/hypamemory.ts#HypaProcesser.prototype",
-    "pkg:localforage#default.createInstance",
-    "pkg:localforage#default.createInstance()",
-]);
-/** The boot pass's only stub use: `setDatabase` applying the UI language. */
-const BOOT_APPROVED = new Set(["src/lang/index.ts#changeLanguage()"]);
 
 let failures = 0;
 const pass = (name, detail = "") => console.log(`PASS ${name}${detail ? `: ${detail}` : ""}`);
@@ -139,6 +135,27 @@ function describeDifferences(diffs, detailed) {
     return [...counts].map(([kind, count]) => `${kind}: ${count} difference(s) (first 50 differences)`);
 }
 
+/** The current decoder must return its database/KV envelope, with no KV data for legacy saves. */
+function decodedDatabase(upstream, value, problems, { legacyFormat = true } = {}) {
+    if (upstream.config.decoderShape === "database") return value;
+    if (
+        !isPlain(value) ||
+        !Object.hasOwn(value, "database") ||
+        !Object.hasOwn(value, "kv") ||
+        !isPlain(value.database) ||
+        !isPlain(value.kv)
+    ) {
+        problems.push("upstream decode did not return { database, kv }");
+        return undefined;
+    }
+    if (legacyFormat && Object.keys(value.kv).length > 0)
+        problems.push("upstream decode returned non-empty kv for a legacy-format save");
+    return value.database;
+}
+
+const unapprovedUses = (upstream, phase, run) =>
+    run.uses.filter((use) => !upstream.config.approved[phase].has(use.label));
+
 // ---------------------------------------------------------------------------------------------------
 // Reading a `.bin`
 
@@ -181,20 +198,93 @@ async function readBin(upstream, file, { keepAssets = false, detailed = false } 
             problems.push(
                 `upstream decode wrote to the console (${logged.map(([m, n]) => `${m} ${n}`).join(", ")}): a fallback path ran`,
             );
-        if (decoded.uses.length > 0)
+        const unapproved = unapprovedUses(upstream, "decode", decoded);
+        if (unapproved.length > 0)
             problems.push(
                 detailed
-                    ? `upstream decode used stubs: ${decoded.uses.map((u) => u.label).join(", ")}`
-                    : `upstream decode used stubs: ${decoded.uses.length}`,
+                    ? `upstream decode used stubs: ${unapproved.map((u) => u.label).join(", ")}`
+                    : `upstream decode used stubs: ${unapproved.length}`,
             );
-        if (!decoded.threw) {
-            for (const diff of describeDifferences(differences(decoded.value, ours), detailed))
+        const db = decoded.threw
+            ? undefined
+            : decodedDatabase(upstream, decoded.value, problems, {
+                  legacyFormat: !bytes.subarray(0, 9).equals(Buffer.from("RISUSAVE\0")),
+              });
+        if (!decoded.threw && (db !== undefined || upstream.config.decoderShape === "database")) {
+            for (const diff of describeDifferences(differences(db, ours), detailed))
                 problems.push(`upstream vs this server's decoder: ${diff}`);
         }
-        return { problems, records: records.length, cold: cold.length, assets, db: decoded.value, ours };
+        return { problems, records: records.length, cold: cold.length, assets, db, ours };
     } finally {
         await handle.close();
     }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Upstream plugin storage migration (current only)
+
+/**
+ * Separate from the boot report so failures identify plugin migration. setDatabase precedes migration,
+ * then bootPass continues with checkNewFormat/assignIds. Await the background pluginStorage.load from
+ * makeColdData here as well, including when no plugins are installed, before checking its cold writes.
+ */
+async function migrationPass(upstream, decoded, { detailed = false } = {}) {
+    const db = structuredClone(decoded);
+    const inline = Object.entries(decoded.pluginCustomStorage ?? {}).filter(
+        ([key]) => key !== "_coldpluginIndex" && key !== "_coldplugin",
+    );
+    const problems = [];
+    const run = await runPhase(upstream.harness, "migration", async () => {
+        upstream.harness.coldStorage.clear();
+        upstream.harness.DBState.db = db;
+        upstream.setDatabase(db);
+        const { migratePluginStorage, pluginStorage } = await upstream.createMigration();
+        await migratePluginStorage(() => {});
+        await pluginStorage.load();
+        await pluginStorage.flush();
+        const storage = upstream.harness.DBState.db.pluginCustomStorage;
+        const pointer = storage?._coldpluginIndex;
+        const index = typeof pointer === "string" ? upstream.harness.coldStorage.get(pointer) : undefined;
+        if (inline.length > 0 || pointer !== undefined) {
+            if (!upstream.isPluginStorageIndex(index)) problems.push("plugin storage index missing or invalid");
+            else {
+                const keys = new Set(index.entries.map((entry) => entry.k));
+                const missing = inline.filter(([key]) => !keys.has(key)).length;
+                if (missing > 0) problems.push(`plugin storage index missing ${missing} inline key(s)`);
+            }
+        }
+        const remaining = inline.filter(([key]) => Object.hasOwn(storage ?? {}, key)).length;
+        if (remaining > 0) problems.push(`${remaining} migrated plugin key(s) still inline`);
+        // Read the committed index through a new upstream store, as the next boot would. The store
+        // that migrated still has entries in memory, which could hide corrupted cold-storage writes.
+        const { pluginStorage: reloadedPluginStorage } = await upstream.createMigration();
+        await reloadedPluginStorage.load();
+        for (const [key, value] of inline) {
+            for (const diff of describeDifferences(
+                differences(value, await reloadedPluginStorage.getItem(key)),
+                detailed,
+            ))
+                problems.push(`migrated plugin value differs${detailed ? ` (${key})` : ""}: ${diff}`);
+        }
+        return upstream.harness.DBState.db;
+    });
+    if (run.threw) problems.push("the plugin storage migration threw");
+    if (run.consoleCounts.error > 0 || run.consoleCounts.warn > 0)
+        problems.push(
+            `plugin storage migration logged ${run.consoleCounts.error} errors and ${run.consoleCounts.warn} warnings`,
+        );
+    const unapproved = unapprovedUses(upstream, "migration", run);
+    if (unapproved.length > 0)
+        problems.push(
+            detailed
+                ? `stub uses in plugin storage migration: ${[...new Set(unapproved.map((u) => u.label))].join(", ")}`
+                : `stub uses in plugin storage migration: ${unapproved.length}`,
+        );
+    return {
+        problems,
+        db: run.value,
+        detail: `inline keys ${inline.length}, cold records ${upstream.harness.coldStorage.size}`,
+    };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -216,16 +306,16 @@ const contentOf = (db) =>
 
 /**
  * Upstream's boot after a restore, in its order: `setDatabase(decoded)`, `checkNewFormat()` (which calls
- * `setDatabase` and `checkCharOrder` again), then `assignIds()`. `makeColdData` and `cleanChunks` are
- * not run (upstream storage I/O). Returns problems as fixed categories.
+ * `setDatabase` and `checkCharOrder` again), then `assignIds()`. Current continues from migration's
+ * setDatabase instead. makeColdData's character/chat storage and cleanChunks are not run.
  */
-async function bootPass(upstream, decoded, { detailed = false } = {}) {
-    const db = structuredClone(decoded);
-    const before = contentOf(db);
-    const beforeIds = (db.characters ?? []).map((c) => chatsOf(c).map((chat) => chat?.id));
+async function bootPass(upstream, decoded, { detailed = false, migrated } = {}) {
+    const db = structuredClone(migrated ?? decoded);
+    const before = contentOf(decoded);
+    const beforeIds = (decoded.characters ?? []).map((c) => chatsOf(c).map((chat) => chat?.id));
     const run = await runPhase(upstream.harness, "boot", async () => {
         upstream.harness.DBState.db = db;
-        upstream.setDatabase(db);
+        if (!migrated) upstream.setDatabase(db);
         await upstream.checkNewFormat();
         upstream.assignIds();
         return upstream.harness.DBState.db;
@@ -235,7 +325,7 @@ async function bootPass(upstream, decoded, { detailed = false } = {}) {
     if (run.consoleCounts.error > 0 || run.consoleCounts.warn > 0) {
         problems.push(`the boot pass logged ${run.consoleCounts.error} errors and ${run.consoleCounts.warn} warnings`);
     }
-    const unapproved = run.uses.filter((u) => !BOOT_APPROVED.has(u.label));
+    const unapproved = unapprovedUses(upstream, "boot", run);
     if (unapproved.length > 0)
         problems.push(
             detailed
@@ -330,8 +420,11 @@ async function checkEncoder(upstream) {
         const logged = Object.entries(run.consoleCounts).filter(([, n]) => n > 0);
         if (logged.length > 0)
             problems.push(`console output during decode (${logged.map(([m]) => m).join(", ")}): a fallback path ran`);
-        if (run.uses.length > 0) problems.push(`stub uses: ${run.uses.map((u) => u.label).join(", ")}`);
-        if (!run.threw) problems.push(...describeDifferences(differences(input, run.value), true));
+        const unapproved = unapprovedUses(upstream, "decode", run);
+        if (unapproved.length > 0) problems.push(`stub uses: ${unapproved.map((u) => u.label).join(", ")}`);
+        const db = run.threw ? undefined : decodedDatabase(upstream, run.value, problems);
+        if (!run.threw && (db !== undefined || upstream.config.decoderShape === "database"))
+            problems.push(...describeDifferences(differences(input, db), true));
         report(`encoder → upstream decoder (${name})`, problems, `${bytes.length} bytes`);
     }
 }
@@ -355,7 +448,7 @@ const message = (role, data, time, extra = {}) => ({ role, data, saying: "", tim
  * The input library: upstream-shaped, made up for this check (no user data, a sentinel key). The codec
  * fixture plus a character with lore, two chats (one with chat toggles), a folder, a character trashed
  * 10 days ago (upstream's boot deletes trash older than 3 days), a module with lore, a second preset and
- * a second persona.
+ * a second persona, and an installed v3 plugin with inline object/string storage values.
  */
 function syntheticLibrary(now) {
     const db = structuredClone(UPSTREAM_FIXTURE_DATABASE);
@@ -474,6 +567,11 @@ function syntheticLibrary(now) {
     db.selectedPersona = 1;
     db.username = "Traveler";
     db.personaPrompt = "A traveler persona.";
+    db.plugins = [{ name: "Synthetic plugin", version: "3.0", script: "// Made-up compatibility-check plugin." }];
+    db.pluginCustomStorage = {
+        syntheticObject: { enabled: true, values: [1, "two", null] },
+        syntheticString: "Synthetic plugin value.",
+    };
     db.openAIKey = SENTINEL_KEY;
     return db;
 }
@@ -665,6 +763,12 @@ function compareWithLibrary(library, exported, { includeSecrets, rawBytes }) {
     }
     expect(same(exported.enabledModules, library.enabledModules), "enabledModules differ");
 
+    expect(same(exported.plugins, library.plugins), "installed plugins differ");
+    for (const [key, value] of Object.entries(library.pluginCustomStorage)) {
+        expect(Object.hasOwn(exported.pluginCustomStorage ?? {}, key), `inline plugin key ${key} missing`);
+        expect(same(exported.pluginCustomStorage?.[key], value), `inline plugin value ${key} differs`);
+    }
+
     const sentinelInBytes = rawBytes.includes(Buffer.from(SENTINEL_KEY));
     const sentinelInDb = JSON.stringify(exported).includes(SENTINEL_KEY);
     if (includeSecrets) expect(exported.openAIKey === SENTINEL_KEY, "the API key is missing with includeSecrets");
@@ -697,7 +801,17 @@ async function checkExport(upstream) {
                 bin.db ? formatCounts(countsOf(bin.db)) : "",
             );
             if (bin.db) {
-                const boot = await bootPass(upstream, bin.db, { detailed: true });
+                let migrated;
+                if (upstream.createMigration) {
+                    const migration = await migrationPass(upstream, bin.db, { detailed: true });
+                    report(
+                        `upstream plugin storage migration on the export (${includeSecrets ? "with" : "without"} API keys)`,
+                        migration.problems,
+                        migration.detail,
+                    );
+                    migrated = migration.db;
+                }
+                const boot = await bootPass(upstream, bin.db, { detailed: true, migrated });
                 report(
                     `upstream boot pass on the export (${includeSecrets ? "with" : "without"} API keys)`,
                     boot.problems,
@@ -724,9 +838,20 @@ async function checkFile(upstream, file, ordinal) {
     const counts = `records ${bin.records}, cold records ${bin.cold}${bin.db ? `, ${formatCounts(countsOf(bin.db))}` : ""}`;
     report(`--bin #${ordinal}: upstream decoder`, bin.problems, counts);
     if (bin.db) {
+        let migrated;
+        if (upstream.createMigration) {
+            let migration;
+            try {
+                migration = await migrationPass(upstream, bin.db);
+            } catch {
+                migration = { problems: ["the plugin storage migration check could not be completed"] };
+            }
+            report(`--bin #${ordinal}: upstream plugin storage migration`, migration.problems, migration.detail);
+            migrated = migration.db;
+        }
         let boot;
         try {
-            boot = await bootPass(upstream, bin.db);
+            boot = await bootPass(upstream, bin.db, { migrated });
         } catch {
             boot = { problems: ["the boot check could not be completed"] };
         }
@@ -740,24 +865,27 @@ async function main() {
     const argv = process.argv.slice(2);
     if (argv.includes("--help") || argv.includes("-h")) {
         console.log(
-            "usage: RISU_UPSTREAM_DIR=... RISU_UPSTREAM_MSGPACKR=... RISU_UPSTREAM_FFLATE=... node util/upstream/checkBinCompat.mjs [--bin <file.bin>]...",
+            "usage: RISU_UPSTREAM_DIR=... RISU_UPSTREAM_MSGPACKR=... RISU_UPSTREAM_FFLATE=... node util/upstream/checkBinCompat.mjs [--target legacy|current] [--bin <file.bin>]...",
         );
         return;
     }
     const bins = [];
+    let target = "legacy";
     for (let i = 0; i < argv.length; i++) {
-        if (argv[i] === "--bin" && argv[i + 1]) bins.push(path.resolve(argv[++i]));
+        if (argv[i] === "--target" && argv[i + 1]) target = argv[++i];
+        else if (argv[i] === "--bin" && argv[i + 1]) bins.push(path.resolve(argv[++i]));
         else throw new Error(`unknown argument ${argv[i]}`);
     }
     const upstream = await loadUpstream({
+        target,
         upstreamDir: process.env.RISU_UPSTREAM_DIR,
         msgpackrDir: process.env.RISU_UPSTREAM_MSGPACKR,
         fflateDir: process.env.RISU_UPSTREAM_FFLATE,
     });
     console.log(
-        `upstream ${UPSTREAM_COMMIT.slice(0, 8)}: ${upstream.realModules.length} modules loaded as written, extracted ${upstream.extracted.join("; ")}, ${upstream.stubbedModules.length} modules stubbed`,
+        `upstream ${upstream.target} ${upstream.config.sha}: ${upstream.realModules.length} modules loaded as written, extracted ${upstream.extracted.join("; ")}, ${upstream.stubbedModules.length} modules stubbed`,
     );
-    const unapprovedLoad = upstream.load.uses.filter((u) => !LOAD_APPROVED.has(u.label));
+    const unapprovedLoad = unapprovedUses(upstream, "load", upstream.load);
     const loadProblems = unapprovedLoad.map((u) => `unapproved stub use while loading: ${u.label}`);
     if (upstream.load.consoleCounts.error > 0 || upstream.load.consoleCounts.warn > 0)
         loadProblems.push(
@@ -771,7 +899,7 @@ async function main() {
     for (const [i, file] of bins.entries()) await checkFile(upstream, file, i + 1);
     console.log(failures === 0 ? "OK" : `${failures} check(s) failed`);
     console.log(
-        "Not run (upstream code outside the check): LoadLocalBackup's reader and asset writes, makeColdData, cleanChunks, plugins, the UI.",
+        "Not run (both targets): LoadLocalBackup's reader and asset writes, makeColdData's character/chat cold storage, cleanChunks, plugin loading, the UI. Plugin storage migration runs only for current.",
     );
     process.exitCode = failures === 0 ? 0 : 1;
 }

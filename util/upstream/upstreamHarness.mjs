@@ -1,12 +1,14 @@
-// Loads a bounded part of upstream RisuAI's client code into plain Node, read from a pinned commit of an
-// upstream checkout, so `checkBinCompat.mjs` can run upstream's own `.bin` database decoder and boot
-// defaults on metatron's output without installing or starting the upstream app.
+// Loads upstream RisuAI's legacy (669b12ce, default) or current (f50b5942) target into plain Node,
+// so `checkBinCompat.mjs` can run its own `.bin` decoder and boot defaults on metatron's output.
+// The current target also runs upstream's plugin storage migration against in-memory cold storage.
+// Neither target runs LoadLocalBackup's reader and asset writes, makeColdData's character/chat cold
+// storage, cleanChunks, plugin loading, or the UI. Nothing installs or starts the upstream app.
 //
-// - Sources come from `git show <UPSTREAM_COMMIT>:<path>`, so the checkout's HEAD and working tree do
+// - Sources come from `git show <target sha>:<path>`, so the checkout's HEAD and working tree do
 //   not matter; only the pinned commit must exist in it.
 // - `REAL` modules run as upstream wrote them (TypeScript transpiled with `typescript`, no Svelte
 //   compiler: a rune evaluated at load or a `$state` read fails loudly).
-// - `EXTRACT` modules are built from named upstream functions cut out of a browser-heavy module.
+// - `EXTRACT` modules cut named functions and variable statements out of browser-heavy modules.
 // - `OVERRIDES` give fixed values where a value matters (the web build's platform flags, the store
 //   object, `uuid`).
 // - Every other import is a recording stub: a callable Proxy whose property reads, writes, calls,
@@ -19,17 +21,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
-/** Upstream RisuAI commit the check reads (`git rev-parse HEAD` of the checkout it was written against). */
-export const UPSTREAM_COMMIT = "669b12ceabe1c5066d3dadbe0973f2188d10cc97";
-/**
- * Exact versions of the two libraries upstream's decoder uses, as upstream's `pnpm-lock.yaml` resolves
- * them for its root importer at `UPSTREAM_COMMIT` (the manifest says `msgpackr: 1.10.1`,
- * `fflate: ^0.8.2`). Re-check both when moving the pin.
- */
-export const UPSTREAM_PACKAGES = { msgpackr: "1.10.1", fflate: "0.8.2" };
-
 /** Upstream modules loaded as written: the decoder, `setDatabase`, `checkNewFormat`, and what they call. */
-const REAL = new Set([
+const LEGACY_REAL = new Set([
     "src/ts/storage/risuSave.ts",
     "src/ts/storage/database.svelte.ts",
     "src/ts/storage/defaultPrompts.ts",
@@ -53,18 +46,18 @@ const REAL = new Set([
 const EXTRA_EXPORTS = { "src/ts/bootstrap.ts": ["checkNewFormat", "assignIds"] };
 
 /**
- * Named functions cut out of a module that cannot load outside the browser, with what they need.
+ * Named declarations cut out of a module that cannot load outside the browser, with what they need.
  * The rest of such a module is stubbed.
  */
-const EXTRACT = {
+const LEGACY_EXTRACT = {
     "src/ts/globalApi.svelte.ts": {
         prelude: 'import { DBState } from "src/ts/stores.svelte";',
-        functions: ["checkCharOrder"],
+        declarations: ["checkCharOrder"],
     },
     "src/ts/polyfill.ts": {
         // structuredClone handles every value a database holds; the rfdc fallback must never run.
         prelude: 'const rfdcClone = () => { throw new Error("harness: the rfdc fallback is not loaded"); };',
-        functions: ["safeStructuredClone"],
+        declarations: ["safeStructuredClone"],
     },
 };
 
@@ -72,7 +65,7 @@ const EXTRACT = {
  * Fixed values for some exports of a non-REAL module (a JavaScript expression each). `complete`: an
  * import of any other name is a harness error, not a stub. The platform flags are the web build's.
  */
-const OVERRIDES = {
+const LEGACY_OVERRIDES = {
     "src/ts/platform.ts": {
         complete: true,
         values: {
@@ -91,6 +84,78 @@ const OVERRIDES = {
     },
 };
 
+/**
+ * Each target owns its source pin, package versions, module rules and exact stub approvals. The package
+ * versions are what upstream's pnpm-lock.yaml resolves for its root importer at that target's sha
+ * (manifest: msgpackr 1.10.1, fflate ^0.8.2). Re-check them when moving a pin.
+ */
+export const UPSTREAM_TARGETS = {
+    legacy: {
+        sha: "669b12ceabe1c5066d3dadbe0973f2188d10cc97",
+        packages: { msgpackr: "1.10.1", fflate: "0.8.2" },
+        decoderShape: "database",
+        REAL: LEGACY_REAL,
+        EXTRACT: LEGACY_EXTRACT,
+        OVERRIDES: LEGACY_OVERRIDES,
+        approved: {
+            load: new Set([
+                "pkg:svelte/store#writable()", // Constructs stores whose UI subscribers are not run.
+                "src/ts/process/memory/hypamemory.ts#HypaProcesser.prototype", // Defines a subclass; no memory processing runs.
+                "pkg:localforage#default.createInstance", // Looks up the storage factory; no storage I/O runs.
+                "pkg:localforage#default.createInstance()", // Constructs the unused legacy storage instance.
+            ]),
+            decode: new Set(),
+            boot: new Set([
+                "src/lang/index.ts#changeLanguage()", // Applies the UI language during setDatabase.
+            ]),
+            migration: new Set(),
+        },
+    },
+    current: {
+        sha: "f50b5942ec6aa59aa3c56049ac687ca09667fec7",
+        packages: { msgpackr: "1.10.1", fflate: "0.8.2" },
+        decoderShape: "database+kv",
+        REAL: new Set([...LEGACY_REAL, "src/ts/process/pluginStorageStore.ts"]),
+        EXTRACT: {
+            ...LEGACY_EXTRACT,
+            "src/ts/process/coldstorage.svelte.ts": {
+                prelude: `
+                    import { DBState } from "../stores.svelte";
+                    import { PluginStorageStore } from "./pluginStorageStore";
+                    import { requiresFullEncoderReload } from "../globalApi.svelte";
+                    export const getColdStorageItem = async (id) => structuredClone(globalThis.__upstreamHarness.coldStorage.get(id) ?? null);
+                    export const setColdStorageItem = async (id, value) => {
+                        globalThis.__upstreamHarness.coldStorage.set(id, structuredClone(value));
+                        return true;
+                    };
+                    export const removeColdStorageItems = async (ids) => {
+                        for (const id of ids) globalThis.__upstreamHarness.coldStorage.delete(id);
+                    };
+                `,
+                declarations: ["migratePluginStorage", "pluginStorage"],
+                provided: ["getColdStorageItem", "setColdStorageItem", "removeColdStorageItems"],
+            },
+        },
+        OVERRIDES: { ...LEGACY_OVERRIDES },
+        approved: {
+            load: new Set([
+                "pkg:svelte/store#writable()", // Constructs addingEmotion and ColorSchemeTypeStore; their UI subscribers never run.
+                "src/ts/process/memory/hypamemory.ts#HypaProcesser.prototype", // Defines HypaProcesserEx; no embedding processor is constructed.
+                "pkg:localforage#default.createInstance", // Reads the encoder cache factory; the decoder never accesses this cache.
+                "pkg:localforage#default.createInstance()", // Constructs risuSaveCacheForage, unused by decoding and migration.
+            ]),
+            decode: new Set(),
+            boot: new Set([
+                "src/lang/index.ts#changeLanguage()", // setDatabase applies the UI language; no persisted content depends on it.
+            ]),
+            migration: new Set([
+                "src/lang/index.ts#changeLanguage()", // setDatabase applies the UI language before migration, as on boot.
+                "src/ts/globalApi.svelte.ts#requiresFullEncoderReload.state=", // Marks the save encoder for reload after migration; no save loop runs here.
+            ]),
+        },
+    },
+};
+
 const STUB_ROOT = "upstream:/";
 const MSGPACKR_URL = "upstream:/lib/msgpackr";
 
@@ -101,6 +166,7 @@ const MSGPACKR_URL = "upstream:/lib/msgpackr";
 function createHarnessState() {
     const state = {
         DBState: { db: undefined },
+        coldStorage: new Map(),
         phase: "load",
         uses: [],
         stub(label) {
@@ -160,12 +226,12 @@ function git(upstreamDir, args) {
 }
 
 /** The supplied package directory must hold exactly the pinned package and version. */
-function checkPackage(dir, name) {
+function checkPackage(dir, name, { sha, packages }) {
     if (!dir) throw new Error(`no ${name} package directory given`);
     const manifest = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
-    if (manifest.name !== name || manifest.version !== UPSTREAM_PACKAGES[name]) {
+    if (manifest.name !== name || manifest.version !== packages[name]) {
         throw new Error(
-            `${dir} holds ${manifest.name}@${manifest.version}, upstream ${UPSTREAM_COMMIT.slice(0, 8)} uses ${name}@${UPSTREAM_PACKAGES[name]}`,
+            `${dir} holds ${manifest.name}@${manifest.version}, upstream ${sha.slice(0, 8)} uses ${name}@${packages[name]}`,
         );
     }
     return path.resolve(dir);
@@ -236,39 +302,52 @@ function importsOf(js, fileName) {
     return found;
 }
 
-/** `functions` cut out of `source` (TypeScript), each with its `export`. */
-function extractFunctions(source, fileName, functions) {
+/** Named functions or single-declaration variable statements cut from pinned TypeScript, with exports. */
+function extractDeclarations(source, fileName, declarations, sha) {
     const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
     const parts = [];
-    for (const name of functions) {
-        const node = sf.statements.find((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
-        if (!node) throw new Error(`${fileName}: function ${name} not found at ${UPSTREAM_COMMIT.slice(0, 8)}`);
+    for (const name of declarations) {
+        const node = sf.statements.find(
+            (s) =>
+                (ts.isFunctionDeclaration(s) && s.name?.text === name) ||
+                (ts.isVariableStatement(s) &&
+                    s.declarationList.declarations.length === 1 &&
+                    ts.isIdentifier(s.declarationList.declarations[0].name) &&
+                    s.declarationList.declarations[0].name.text === name),
+        );
+        if (!node) throw new Error(`${fileName}: declaration ${name} not found at ${sha.slice(0, 8)}`);
         const text = source.slice(node.getStart(sf), node.end);
         parts.push(text.startsWith("export ") ? text : `export ${text}`);
     }
     return parts.join("\n\n");
 }
 
+let hooksRegistered = false;
+
 /**
  * Registers the loader and imports upstream's decoder and boot functions. One call per process: the
  * hooks stay registered, and they act only on upstream modules and the harness's own.
  *
- * @param {{ upstreamDir: string, msgpackrDir: string, fflateDir: string }} options
+ * @param {{ target?: "legacy" | "current", upstreamDir: string, msgpackrDir: string, fflateDir: string }} options
  */
-export async function loadUpstream({ upstreamDir, msgpackrDir, fflateDir }) {
+export async function loadUpstream({ target = "legacy", upstreamDir, msgpackrDir, fflateDir }) {
+    if (!Object.hasOwn(UPSTREAM_TARGETS, target)) throw new Error(`unknown upstream target ${target}`);
+    if (hooksRegistered) throw new Error("loadUpstream supports only one target per process");
+    const config = UPSTREAM_TARGETS[target];
+    const { sha, REAL, EXTRACT, OVERRIDES } = config;
     if (!upstreamDir) throw new Error("no upstream checkout given");
     try {
-        git(upstreamDir, ["cat-file", "-e", `${UPSTREAM_COMMIT}^{commit}`]);
+        git(upstreamDir, ["cat-file", "-e", `${sha}^{commit}`]);
     } catch {
-        throw new Error(`${upstreamDir} does not contain upstream commit ${UPSTREAM_COMMIT}`);
+        throw new Error(`${upstreamDir} does not contain upstream commit ${sha}`);
     }
-    const msgpackr = checkPackage(msgpackrDir, "msgpackr");
-    const fflate = checkPackage(fflateDir, "fflate");
+    const msgpackr = checkPackage(msgpackrDir, "msgpackr", config);
+    const fflate = checkPackage(fflateDir, "fflate", config);
     const fflateUrl = pathToFileURL(path.join(fflate, "esm/index.mjs")).href;
-    const tree = new Set(git(upstreamDir, ["ls-tree", "-r", "--name-only", UPSTREAM_COMMIT, "--", "src"]).split("\n"));
+    const tree = new Set(git(upstreamDir, ["ls-tree", "-r", "--name-only", sha, "--", "src"]).split("\n"));
     const sources = new Map();
     const readSource = (id) => {
-        if (!sources.has(id)) sources.set(id, git(upstreamDir, ["show", `${UPSTREAM_COMMIT}:${id}`]));
+        if (!sources.has(id)) sources.set(id, git(upstreamDir, ["show", `${sha}:${id}`]));
         return sources.get(id);
     };
 
@@ -299,7 +378,10 @@ export async function loadUpstream({ upstreamDir, msgpackrDir, fflateDir }) {
             return js;
         }
         const extract = EXTRACT[id];
-        return transpile(`${extract.prelude}\n${extractFunctions(readSource(id), id, extract.functions)}\n`, id);
+        return transpile(
+            `${extract.prelude}\n${extractDeclarations(readSource(id), id, extract.declarations, sha)}\n`,
+            id,
+        );
     };
     const queue = [...REAL, ...Object.keys(EXTRACT)];
     for (let i = 0; i < queue.length; i++) {
@@ -321,7 +403,7 @@ export async function loadUpstream({ upstreamDir, msgpackrDir, fflateDir }) {
     const stubModule = (id, names) => {
         const override = OVERRIDES[id] ?? { values: {} };
         const extract = EXTRACT[id];
-        const own = new Set(extract ? extract.functions : []);
+        const own = new Set([...(extract?.declarations ?? []), ...(extract?.provided ?? [])]);
         const lines = ["const H = globalThis.__upstreamHarness;"];
         if (override.prelude) lines.push(override.prelude);
         if (extract) lines.push(emitted.get(id));
@@ -342,11 +424,12 @@ export async function loadUpstream({ upstreamDir, msgpackrDir, fflateDir }) {
         return `${STUB_ROOT}${id}`;
     };
 
+    hooksRegistered = true;
     registerHooks({
         resolve(specifier, context, nextResolve) {
             const parent = context.parentURL;
             if (parent?.startsWith(STUB_ROOT) && !specifier.startsWith("node:")) {
-                const parentId = parent.slice(STUB_ROOT.length);
+                const parentId = parent.slice(STUB_ROOT.length).split("?")[0];
                 const id = resolveId(specifier, parentId);
                 const url = toUrl(id);
                 if (url === `${STUB_ROOT}${id}` && !emitted.has(id) && !wanted.has(id)) {
@@ -370,7 +453,7 @@ export async function loadUpstream({ upstreamDir, msgpackrDir, fflateDir }) {
                 return { format: "module", source: lines.join("\n"), shortCircuit: true };
             }
             if (url.startsWith(STUB_ROOT)) {
-                const id = url.slice(STUB_ROOT.length);
+                const id = url.slice(STUB_ROOT.length).split("?")[0];
                 const source = REAL.has(id) ? emitted.get(id) : stubModule(id, [...(wanted.get(id) ?? ["default"])]);
                 return { format: "module", source, shortCircuit: true };
             }
@@ -382,18 +465,30 @@ export async function loadUpstream({ upstreamDir, msgpackrDir, fflateDir }) {
         risuSave: await import(`${STUB_ROOT}src/ts/storage/risuSave.ts`),
         database: await import(`${STUB_ROOT}src/ts/storage/database.svelte.ts`),
         bootstrap: await import(`${STUB_ROOT}src/ts/bootstrap.ts`),
+        pluginStorageStore:
+            target === "current" ? await import(`${STUB_ROOT}src/ts/process/pluginStorageStore.ts`) : undefined,
     }));
     if (load.threw) throw load.error;
     const { risuSave, database, bootstrap } = load.value;
+    let migrationInstance = 0;
     return {
+        target,
+        config,
         harness,
+        // A fresh extracted module gives each restored database its own upstream singleton, avoiding
+        // stale entries and upstream's restore/sync warning when checking multiple exports in one run.
+        createMigration:
+            target === "current"
+                ? () => import(`${STUB_ROOT}src/ts/process/coldstorage.svelte.ts?migration=${++migrationInstance}`)
+                : undefined,
+        isPluginStorageIndex: load.value.pluginStorageStore?.isPluginStorageIndex,
         load: { consoleCounts: load.consoleCounts, uses: load.uses },
         decodeRisuSave: risuSave.decodeRisuSave,
         setDatabase: database.setDatabase,
         checkNewFormat: bootstrap.checkNewFormat,
         assignIds: bootstrap.assignIds,
         realModules: [...REAL],
-        extracted: Object.entries(EXTRACT).map(([id, { functions }]) => `${id}: ${functions.join(", ")}`),
+        extracted: Object.entries(EXTRACT).map(([id, { declarations }]) => `${id}: ${declarations.join(", ")}`),
         overridden: Object.keys(OVERRIDES),
         stubbedModules: [...wanted.keys()].filter((id) => !REAL.has(id) && !EXTRACT[id]).sort(),
     };
