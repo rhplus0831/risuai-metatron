@@ -18,6 +18,16 @@
 // runs again alone, one at a time, after the full run: a file that passes alone counts as passed, its
 // full-run failures are listed in a FLAKY warning and appended to FLAKY_LOG, and a file that fails again
 // shows the failures of its run alone. `--no-rerun` (which `test:overload` passes) turns this off.
+//
+// `pnpm test:agent --e2e [<spec>...] [--all] [--e2e-since=<rev>] [--force] [--verbose] [playwright args]`
+// runs the Playwright specs in `e2e/` instead (`pnpm test:e2e` for agents), with the dot reporter and
+// the same cache. Named specs (`e2e/openChat.spec.ts` or `openChat.spec.ts`) run as named and `--all`
+// runs every spec; otherwise the specs are the ones the change reaches (`util/agentE2e.mjs`): the
+// files changed since HEAD (uncommitted and untracked), or since `--e2e-since=<rev>` for committed
+// work too. When the change reaches no spec, nothing runs and the specs are listed so the agent can
+// name the ones that cover the behavior it changed. One e2e run at a time per machine: the stack's
+// ports are fixed, so a run waits for E2E_LOCK_PORT and then for the stack's ports to be free. There
+// is no rerun of failed specs alone: the specs share one stack's store in file order.
 // See `docs/structure/build-test-platforms.md`.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -31,15 +41,27 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { changedFiles, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
 import { MAX_RERUN_FILES, RESULTS_FILE_ENV, mergeRerun, planRerun, withoutFilters } from "./agentTestResults.mjs";
+import { E2E_SERVER_PORT, E2E_VITE_PORT } from "./playwright/globalSetup.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = join(root, "node_modules", ".cache", "agent-test");
 const vitestBin = join(root, "node_modules", "vitest", "vitest.mjs");
+const playwrightCli = join(root, "node_modules", "@playwright", "test", "cli.js");
 const reporter = "./util/agentTestReporter.ts";
+/**
+ * Held (listened on) by the e2e run in progress: a machine-wide lock that every checkout and worktree
+ * sees, released by the kernel when the process ends.
+ */
+const E2E_LOCK_PORT = 6199;
+/** How long an e2e run waits for the lock, and then for a leftover stack to free its ports. */
+const E2E_LOCK_WAIT_MS = 30 * 60_000;
+const E2E_PORTS_WAIT_MS = 2 * 60_000;
 /** How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). */
 const SLOW_TESTS_ENV = "RISU_REPORT_SLOW_TESTS_MS";
 const STDERR_TAIL = 60;
@@ -52,33 +74,192 @@ const args = process.argv.slice(2);
 const force = args.includes("--force");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
+const e2e = args.includes("--e2e");
 const rerun = !args.includes("--no-rerun");
 const isSlowTests = (arg) => arg === "--slow-tests" || arg.startsWith("--slow-tests=");
+
+const log = (line) => process.stdout.write(`[agent-test] ${line}\n`);
+const usage = (message) => {
+    process.stderr.write(`[agent-test] ${message}\n`);
+    process.exit(2);
+};
+
 // `--slow-tests[=<ms>]`: the reporter also lists the passed tests slower than this (it gets the
 // threshold through SLOW_TESTS_ENV); never forwarded to Vitest.
 let slowTestsMs;
 for (const arg of args.filter(isSlowTests)) {
     const value = arg === "--slow-tests" ? String(SLOW_TESTS_DEFAULT_MS) : arg.slice("--slow-tests=".length);
-    if (!/^\d+$/.test(value)) {
-        process.stderr.write(`[agent-test] --slow-tests=<ms> takes a whole number of milliseconds, got "${value}"\n`);
-        process.exit(2);
-    }
+    if (!/^\d+$/.test(value)) usage(`--slow-tests=<ms> takes a whole number of milliseconds, got "${value}"`);
     slowTestsMs = Number(value);
 }
-const vitestArgs = args.filter(
-    (arg) => arg !== "--force" && arg !== "--verbose" && arg !== "--all" && arg !== "--no-rerun" && !isSlowTests(arg),
-);
-if (!all && !vitestArgs.some((arg) => arg === "--tags-filter" || arg.startsWith("--tags-filter="))) {
-    vitestArgs.unshift("--tags-filter=!slow");
+
+// The child's command line and the cache key's arguments: the tool's arguments plus the wrapper
+// options that change the output.
+let command;
+let keyArgs;
+let toolVersion;
+const vitestArgs = [];
+if (e2e) {
+    if (slowTestsMs !== undefined || !rerun) usage("--slow-tests and --no-rerun are for Vitest runs, not --e2e");
+    const specArgs = e2eSpecArgs();
+    const playwrightArgs = args.filter(
+        (arg) =>
+            !["--e2e", "--force", "--verbose", "--all"].includes(arg) &&
+            !arg.startsWith("--e2e-since=") &&
+            !isSpecArg(arg),
+    );
+    command = [playwrightCli, "test", ...specArgs, "--reporter=dot", ...playwrightArgs];
+    keyArgs = ["--e2e", ...specArgs, ...playwrightArgs];
+    toolVersion = `playwright ${packageVersion("@playwright/test")}`;
+} else {
+    vitestArgs.push(
+        ...args.filter(
+            (arg) =>
+                arg !== "--force" &&
+                arg !== "--verbose" &&
+                arg !== "--all" &&
+                arg !== "--no-rerun" &&
+                !isSlowTests(arg),
+        ),
+    );
+    if (!all && !vitestArgs.some((arg) => arg === "--tags-filter" || arg.startsWith("--tags-filter="))) {
+        vitestArgs.unshift("--tags-filter=!slow");
+    }
+    command = [vitestBin, "run", ...vitestArgs, `--reporter=${reporter}`];
+    keyArgs = [
+        ...vitestArgs,
+        ...(slowTestsMs === undefined ? [] : [`--slow-tests=${slowTestsMs}`]),
+        rerun ? `--rerun-alone=${MAX_RERUN_FILES}` : "--no-rerun",
+    ];
+    toolVersion = packageVersion("vitest");
 }
 
-const log = (line) => process.stdout.write(`[agent-test] ${line}\n`);
-// The cache key's arguments: the Vitest arguments plus the wrapper options that change the output.
-const keyArgs = [
-    ...vitestArgs,
-    ...(slowTestsMs === undefined ? [] : [`--slow-tests=${slowTestsMs}`]),
-    rerun ? `--rerun-alone=${MAX_RERUN_FILES}` : "--no-rerun",
-];
+function isSpecArg(arg) {
+    return !arg.startsWith("-") && arg.endsWith(".spec.ts");
+}
+
+// The spec files of an `--e2e` run, as Playwright's file filters (none: every spec). Prints what was
+// selected and why; exits with 2 when nothing can be selected.
+function e2eSpecArgs() {
+    const specs = loadSpecs(root);
+    const known = new Set(specs.map((spec) => spec.file));
+    const named = args.filter(isSpecArg).map((arg) => {
+        const file = arg.replace(/^\.\//, "").includes("/") ? arg.replace(/^\.\//, "") : `e2e/${arg}`;
+        if (!known.has(file)) usage(`no spec ${arg} in e2e/ (the specs: ${[...known].join(", ")})`);
+        return file;
+    });
+    if (all) {
+        if (named.length > 0) usage("--all runs every spec; name specs or pass --all, not both");
+        log(`e2e: every spec (${specs.length})`);
+        return [];
+    }
+    if (named.length > 0) {
+        log(`e2e: the named ${named.length === 1 ? "spec" : "specs"}`);
+        return [...new Set(named)];
+    }
+    if (args.includes("--e2e-since")) usage("--e2e-since takes a revision: --e2e-since=<rev>");
+    const sinceArg = args.find((arg) => arg.startsWith("--e2e-since="));
+    const since = sinceArg ? sinceArg.slice("--e2e-since=".length) : "HEAD";
+    let changed;
+    try {
+        changed = changedFiles(root, since);
+    } catch (error) {
+        usage(`e2e: cannot list the files changed since ${since}: ${error.message}`);
+    }
+    const { selected, unnamed, ignored } = selectSpecs({ specs, changed, tracked: repositoryFiles(root) });
+    const files = (count) => `${count} ${since === "HEAD" ? "uncommitted " : ""}${count === 1 ? "file" : "files"}`;
+    const sinceText = since === "HEAD" ? "" : ` changed since ${since}`;
+    const listSpecs = () => {
+        for (const spec of specs) log(`  ${spec.file}  ${specSummary(spec.text)}`);
+    };
+    const guidance =
+        "name the specs whose behavior your change touches (`--e2e e2e/<name>.spec.ts ...`), or pass --all " +
+        "to run every spec" +
+        (sinceArg ? "" : " (`--e2e-since=<rev>` also counts the files you committed after <rev>)");
+    if (changed.length === 0) {
+        log(
+            `e2e: no ${since === "HEAD" ? "uncommitted files" : `files changed since ${since}`}, so no spec is selected; ${guidance}. The specs:`,
+        );
+        listSpecs();
+        process.exit(2);
+    }
+    log(
+        `e2e: ${files(changed.length)}${sinceText}` +
+            (ignored.length > 0 ? ` (${ignored.length} guides, notes, or unit tests no spec can see)` : ""),
+    );
+    if (unnamed.length > 0) {
+        log(`e2e: no spec names ${unnamed.length === 1 ? "this changed file" : "these changed files"}:`);
+        for (const file of unnamed) log(`  ${file}`);
+    }
+    if (selected.length === 0) {
+        log(`e2e: no spec is selected; ${guidance}. The specs:`);
+        listSpecs();
+        process.exit(2);
+    }
+    log(`e2e: ${selected.length} of ${specs.length} specs selected by the change:`);
+    const SHOWN = 3;
+    for (const { file, because } of selected) {
+        const more = because.length > SHOWN ? `, +${because.length - SHOWN} more` : "";
+        log(`  ${file}  (${because.slice(0, SHOWN).join(", ")}${more})`);
+    }
+    if (unnamed.length > 0) log("e2e: add the specs that cover the unnamed files by name if the selection misses them");
+    return selected.map(({ file }) => file);
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+// Listens on E2E_LOCK_PORT for the rest of the process, waiting while another e2e run holds it.
+async function acquireE2eLock() {
+    const deadline = Date.now() + E2E_LOCK_WAIT_MS;
+    for (let waiting = false; ; waiting = true) {
+        const server = createServer();
+        const error = await new Promise((done) => {
+            server.once("error", done);
+            server.listen(E2E_LOCK_PORT, "127.0.0.1", () => done(null));
+        });
+        if (error === null) {
+            server.unref();
+            return;
+        }
+        if (error.code !== "EADDRINUSE") throw error;
+        if (Date.now() > deadline) {
+            log(`e2e: another e2e run still holds port ${E2E_LOCK_PORT} after ${E2E_LOCK_WAIT_MS / 60_000} min`);
+            process.exit(1);
+        }
+        if (!waiting) log(`e2e: another e2e run is in progress (port ${E2E_LOCK_PORT} held); waiting for it`);
+        await sleep(2000);
+    }
+}
+
+function portAnswers(port) {
+    return new Promise((done) => {
+        const socket = createConnection({ port, host: "localhost" });
+        socket.once("connect", () => {
+            socket.destroy();
+            done(true);
+        });
+        socket.once("error", () => done(false));
+    });
+}
+
+// Waits for the stack's ports to be free: a stack an interrupted run left behind holds them.
+async function waitForE2ePorts() {
+    const deadline = Date.now() + E2E_PORTS_WAIT_MS;
+    for (let waiting = false; ; waiting = true) {
+        const busy = [];
+        for (const port of [E2E_SERVER_PORT, E2E_VITE_PORT]) if (await portAnswers(port)) busy.push(port);
+        if (busy.length === 0) return;
+        if (Date.now() > deadline) {
+            log(
+                `e2e: port ${busy.join(" and ")} still in use after ${E2E_PORTS_WAIT_MS / 1000} s: a leftover stack ` +
+                    `(\`ss -ltnp 'sport = :${busy[0]}'\` shows its process); stop it and run again`,
+            );
+            process.exit(1);
+        }
+        if (!waiting) log(`e2e: port ${busy.join(" and ")} in use; waiting for it to be free`);
+        await sleep(2000);
+    }
+}
 
 function git(gitArgs, env = {}) {
     return spawnSync("git", gitArgs, { cwd: root, env: { ...process.env, ...env }, encoding: "utf8" });
@@ -103,9 +284,9 @@ function workingTreeId() {
     }
 }
 
-function vitestVersion() {
+function packageVersion(name) {
     try {
-        return JSON.parse(readFileSync(join(root, "node_modules", "vitest", "package.json"), "utf8")).version;
+        return JSON.parse(readFileSync(join(root, "node_modules", name, "package.json"), "utf8")).version;
     } catch {
         return "unknown";
     }
@@ -127,10 +308,10 @@ function readEntry(file) {
     }
 }
 
-// Runs Vitest with `runArgs`, holding its stdout and stderr; the reporter prints nothing until the end.
-// Returns the exit code (null when killed by a signal), the output, and the parsed results file (null
-// when the reporter wrote none).
-function run(runArgs, slowTests) {
+// Runs `argv` (a Node script and its arguments) with AGENT_TEST set, holding its stdout and stderr; the
+// Vitest reporter prints nothing until the end. Returns the exit code (null when killed by a signal),
+// the output, and the parsed results file (null when the reporter wrote none).
+function run(argv, slowTests) {
     const tmp = mkdtempSync(join(tmpdir(), "agent-test-results-"));
     const resultsFile = join(tmp, "results.json");
     return new Promise((done) => {
@@ -146,7 +327,7 @@ function run(runArgs, slowTests) {
                 report,
             };
         };
-        const child = spawn(process.execPath, [vitestBin, "run", ...runArgs, `--reporter=${reporter}`], {
+        const child = spawn(process.execPath, argv, {
             cwd: root,
             env: {
                 ...process.env,
@@ -199,7 +380,7 @@ const key =
     tree === null
         ? null
         : createHash("sha256")
-              .update(JSON.stringify([tree, process.version, vitestVersion(), keyArgs]))
+              .update(JSON.stringify([tree, process.version, toolVersion, keyArgs]))
               .digest("hex");
 
 const cached = key === null || force ? null : readEntry(entryFile);
@@ -237,7 +418,7 @@ async function rerunFailedFiles(full) {
     const reruns = [];
     let stderr = full.stderr;
     for (const file of plan.files) {
-        const alone = await run([...options, file], "");
+        const alone = await run([vitestBin, "run", ...options, file, `--reporter=${reporter}`], "");
         stderr += alone.stderr === "" ? "" : `[agent-test] stderr of ${file} run alone:\n${alone.stderr}`;
         if (alone.code === null) interrupted(full.stdout + alone.stdout, stderr);
         reruns.push({ file, ...alone });
@@ -256,10 +437,14 @@ async function rerunFailedFiles(full) {
     return { code: merged.code, stdout: merged.stdout, stderr };
 }
 
+if (e2e) {
+    await acquireE2eLock();
+    await waitForE2ePorts();
+}
 const startedAt = Date.now();
-const full = await run(vitestArgs, slowTestsMs === undefined ? "" : String(slowTestsMs));
+const full = await run(command, slowTestsMs === undefined ? "" : String(slowTestsMs));
 if (full.code === null) interrupted(full.stdout, full.stderr);
-const { code, stdout, stderr } = full.code !== 0 && rerun ? await rerunFailedFiles(full) : full;
+const { code, stdout, stderr } = full.code !== 0 && rerun && !e2e ? await rerunFailedFiles(full) : full;
 process.stdout.write(stdout);
 printStderr(stderr, code);
 if (key !== null) {
@@ -270,7 +455,7 @@ if (key !== null) {
             {
                 key,
                 tree,
-                args: vitestArgs,
+                args: keyArgs,
                 exitCode: code,
                 finishedAt: new Date().toISOString(),
                 durationMs: Date.now() - startedAt,

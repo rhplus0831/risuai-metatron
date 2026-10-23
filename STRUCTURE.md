@@ -45,6 +45,10 @@ Verification:
   The agent wrapper caches by working tree and arguments; `--force` reruns.
   It reruns failed files alone after the run; a `FLAKY` block (failed in the
   full run, passed alone) is a warning, not a failure to fix in this change.
+  For a change a browser spec in `e2e/` covers, also run `pnpm --silent test:agent --e2e`:
+  it runs the specs the changed files reach, lists the changed files no spec names, and
+  takes spec names when its selection misses or finds nothing. Keep `--all` for a
+  change every spec runs on.
   Plain `test`, `test:slow`, `test:all`, direct Vitest, and `test:e2e` are human/CI
   commands; agents do not set `HUMAN` to bypass their gate. Build changes also need
   `pnpm build`. Commands, harness details, slow-test selection, and browser tooling:
