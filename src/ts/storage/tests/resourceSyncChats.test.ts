@@ -293,6 +293,91 @@ describe("the flush barrier", () => {
     });
 });
 
+describe("a new character whose create answer was lost", () => {
+    const ref = { chaId: "d", chatId: "d1" };
+
+    async function loseCharacterCreate() {
+        // `boot` has no change feed: only the retry's conflict read can acknowledge the create.
+        const h = await boot();
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter({
+            chaId: "d",
+            name: "D",
+            chats: [{ id: "d1", name: "First", message: [m("x", "Original")] }],
+        });
+        h.fake.dropNextBatchResponse = true;
+        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        expect(h.fake.batchBodies()).toHaveLength(1);
+        const [batch] = h.fake.batchBodies();
+        const create = batch.ops.find((op: any) => op.kind === "characters" && op.id === "d");
+        expect(create).toMatchObject({ baseRevision: null });
+        expect(batch.chats).toEqual([
+            expect.objectContaining({
+                characterId: "d",
+                chatId: "d1",
+                ops: [expect.objectContaining({ op: "create" })],
+            }),
+        ]);
+        expect(h.fake.record("characters", "d")!.data).toEqual(create.data);
+        expect(h.fake.texts("d", "d1")).toEqual(["Original"]);
+        h.fake.requests.length = 0;
+        return { ...h, characterStore, create };
+    }
+
+    it("saves later chat edits after adopting a lost character create without a reload", async () => {
+        const { fake, sync, chat, create } = await loseCharacterCreate();
+        chat.setMessageText(ref, "x", "Edited after the lost answer");
+        chat.setChatMeta(ref, { note: "Keep this note too" });
+
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        // Recreating the landed character on a null base conflicts; the summary read must keep
+        // both the lost chat create's resend and the newer edits until this flush saves them.
+        expect(fake.batchBodies()[0].ops).toContainEqual(create);
+        expect(fake.texts("d", "d1")).toEqual(["Edited after the lost answer"]);
+        expect(fake.chat("d", "d1")!.data.note).toBe("Keep this note too");
+        expect(chat.hasUnsavedChatWork()).toBe(false);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+    });
+
+    it("saves replacement chats after a removed character's lost create is adopted and its deletion fails", async () => {
+        const { fake, sync, chat, characterStore, create } = await loseCharacterCreate();
+        expect(characterStore.removeCharacter("d")).toBe(true);
+        // Let the lost create's retry conflict first; fail only the delete that follows adoption.
+        fake.failNext = {
+            status: 500,
+            times: 1,
+            match: (path) =>
+                path === "/api/resources/batch" &&
+                fake
+                    .batchBodies()
+                    .at(-1)
+                    .ops.some((op: any) => op.kind === "characters" && op.id === "d" && op.delete),
+        };
+        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        expect(fake.batchBodies()[0].ops).toContainEqual(create);
+        expect(fake.record("characters", "d")!.data.name).toBe("D");
+        expect(fake.texts("d", "d1")).toEqual(["Original"]);
+
+        characterStore.addCharacter({
+            chaId: "d",
+            name: "Replacement",
+            chats: [{ id: "replacement", name: "Replacement chat", message: [m("r", "Replacement transcript")] }],
+        });
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        const collection = fake.store.readRefs([], { chatCollections: ["d"] }).chatCollections[0];
+        expect(collection.order?.ids).toEqual(["replacement"]);
+        expect(
+            collection.chats.map((entry) => ({
+                id: entry.id,
+                texts: entry.data.message.map((message) => message.data),
+            })),
+        ).toEqual([{ id: "replacement", texts: ["Replacement transcript"] }]);
+        expect(fake.record("characters", "d")!.data.name).toBe("Replacement");
+        expect(chat.hasUnsavedChatWork()).toBe(false);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+    });
+});
+
 // Each case needs more than the 5,000 operations one batch may carry (the server's cap), queued one
 // call at a time and applied by the store: about a quarter second of CPU.
 describe("request caps", () => {

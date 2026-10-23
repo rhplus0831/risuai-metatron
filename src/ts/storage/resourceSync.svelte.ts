@@ -290,13 +290,15 @@ let backoffUntil = 0;
 /** Characters whose chat list must be read from the server (a recovery inserted or emptied them). */
 const hydrate = new Set<string>();
 /**
- * Characters whose chat list an acknowledgement of this client's own write showed another writer
- * changed (`ackChatWork`): read and applied as a live update that keeps a queued reorder
+ * Characters whose chat list an acknowledgement showed another writer changed (`ackChatWork`), or
+ * whose create a conflict read adopted without its order: read as a live update that keeps a queued reorder
  * (`applyRemoteCollection` with `keepPendingOrder`), unless a kept chat with a held revision is
  * missing from the server's list: then the reorder is discarded with the notice and report. Their
  * reorders wait until then.
  */
 const listRefresh = new Set<string>();
+/** List refreshes parked while the character is absent locally; a same-id re-add resumes them. */
+const parkedListRefresh = new Set<string>();
 let inFlight: Promise<void> | null = null;
 let failures = 0;
 /** The last cycle's failure that a retry may fix (network, 5xx, 429); retried with backoff. */
@@ -358,6 +360,7 @@ export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
     inDoubt.clear();
+    parkedListRefresh.clear();
     characterTexts.clear();
     moduleTexts = null;
     for (const [kind, records] of Object.entries(result.kinds)) {
@@ -1574,6 +1577,8 @@ async function cycle() {
                         // The character's chats went with it: their state is forgotten now (a
                         // character added again under the id meanwhile creates its chats anew).
                         ackCharacterDelete(op.id);
+                        listRefresh.delete(op.id);
+                        parkedListRefresh.delete(op.id);
                     }
                 } else {
                     persisted.set(op.key, { revision, text: op.text, parts: op.parts });
@@ -2649,6 +2654,9 @@ async function recoverConflictedWork(
             // the server's key order, so the text may differ in order only).
             inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
+            if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
+                listRefresh.add(item.id);
+            }
             continue;
         }
         if (text !== null && adoptInDoubt(key, item.revision!, text)) {
@@ -2679,13 +2687,26 @@ async function recoverConflictedWork(
  * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
  * generation runs on it, and one the read finds gone is removed with its chats unless its held
  * revision or its chats' lifetime moved during the read (then it stays listed for the next read);
- * an acknowledgement's (`listRefresh`) is applied as a live update that keeps
+ * an acknowledgement's or adopted create's (`listRefresh`) is applied as a live update that keeps
  * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
  * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
- * and stays listed while the list cannot be applied yet. Returns whether anything was discarded
+ * and stays listed while the list cannot be applied yet. A locally absent character's refresh is
+ * parked until it is re-added, without scheduling reads. Returns whether anything was discarded
  * (the caller shows the reload notice), not whether anything was read.
  */
 async function hydrateCharacters(): Promise<boolean> {
+    for (const id of parkedListRefresh) {
+        if (findMirrorCharacter(id)) {
+            parkedListRefresh.delete(id);
+            listRefresh.add(id);
+        }
+    }
+    for (const id of listRefresh) {
+        if (!findMirrorCharacter(id)) {
+            listRefresh.delete(id);
+            parkedListRefresh.add(id);
+        }
+    }
     // A recovery's character with a running generation waits until it ends.
     const ids = [
         ...[...hydrate].filter((id) => !isCharacterGenerating(id)),
@@ -2721,8 +2742,15 @@ async function hydrateCharacters(): Promise<boolean> {
             // Without an order (gone on the server) nothing is applied here: the live update or this
             // client's next save removes the character, with the notice when that discards anything.
             const discardsBefore = chatDiscardSequence();
-            if (!collection.order || applyRemoteCollection(collection, issued.get(id), { keepPendingOrder: true })) {
+            if (collection.order && !findMirrorCharacter(id)) {
+                parkedListRefresh.add(id);
                 listRefresh.delete(id);
+            } else if (
+                !collection.order ||
+                applyRemoteCollection(collection, issued.get(id), { keepPendingOrder: true })
+            ) {
+                listRefresh.delete(id);
+                parkedListRefresh.delete(id);
             }
             if (chatDiscardSequence() > discardsBefore) {
                 discardedWork = true;
@@ -2747,6 +2775,7 @@ async function hydrateCharacters(): Promise<boolean> {
         }
         hydrate.delete(id);
         listRefresh.delete(id);
+        parkedListRefresh.delete(id);
     }
     return discardedWork;
 }
@@ -2912,6 +2941,10 @@ function applyToMirror(kind: string, id: string, data: unknown): boolean {
         case RESOURCE_KIND.characters: {
             const existed = findMirrorCharacter(id) !== undefined;
             noteMirrorReplaced();
+            if (data === null) {
+                listRefresh.delete(id);
+                parkedListRefresh.delete(id);
+            }
             if (data === null && !existed) {
                 // Removed here too (its deletion collected, its chats' work settled): what this
                 // client held of its chats is forgotten.
