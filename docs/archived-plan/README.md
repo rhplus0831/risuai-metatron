@@ -40,6 +40,7 @@ git show 2e359afde:docs/plan/server-tokenizer.md
 git show 2e359afde:docs/plan/generation-stage-spinner.md
 git show 2e359afde:docs/plan/upstream-integration.md
 git show 2e359afde:docs/plan/combined-run.md
+git show 12fd77196:docs/plan/combine-audit-fixes.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -81,6 +82,7 @@ it is not a current architecture guide.
 | Generation Stage Spinner                 | `2e359afde`: `docs/plan/generation-stage-spinner.md`                      | [chat pipeline](../structure/chat-pipeline.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md)                                                                                                                                                                                                                                                                                                                                                         |
 | Upstream Integration                     | `2e359afde`: `docs/plan/upstream-integration.md`                          | [persistence](../structure/persistence.md), [plugins/MCP](../structure/plugins-mcp.md), [LLM requests](../structure/llm-requests.md), [chat pipeline](../structure/chat-pipeline.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md), and the other guides its slices name                                                                                                                                                                     |
 | Combined Run index                       | `2e359afde`: `docs/plan/combined-run.md`                                  | the eight plans above (one `plan-runner` run); [build/test platforms](../structure/build-test-platforms.md) for the run's checks                                                                                                                                                                                                                                                                                                                                                             |
+| Combine Audit Fixes                      | `12fd77196`: `docs/plan/combine-audit-fixes.md`                           | [scripts/triggers](../structure/scripts-triggers.md), [UI/theming](../structure/ui-theming.md), [LLM requests](../structure/llm-requests.md), [global API](../structure/global-api.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                           |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -444,6 +446,28 @@ browser, where opening the Trigger tab counts as content and asset bytes uploade
 stay stored (UP19); whether the live Realm always sends `creator` (UP20); the alert details view
 (UP21); Chrome's tab audio indicator and Android's media notification for the keep-alive audio
 (UP22, whose upstream help text was not ported, project memory).
+
+Combine Audit Fixes (drafted 2026-10-24 at `26d806d9e` from the Combined Run audit of
+`d66b050dd..531759887`, the six defects an ordinary action reaches) landed all 6 slices on
+`metatron` on 2026-10-24 in one `plan-runner` wave (`delegate-implementation`, Codex implementers):
+1 Form controls stay usable with click-to-edit (`f1d753045`); 2 Delayed token counts follow the
+tokenizer and CBS context (`081a58ba2`); 3 Screenshots keep thumbnail and original apart
+(`27cf4d231`); 4 Thumbnail cleanup touches one key's entries (`58c459959`); 5 A disconnected token
+count stops the server's work (`df4d8017e`); 6 The upstream export skips checkpoint history
+(`8fa1b5ec3`). The final checks on `12fd77196` passed: `pnpm check`, `pnpm format:check`, 6815 unit
+tests, and 56 slow tests. Measured (4, the audit's scan reproduction): filling 400 portraits visits
+400 cache entries instead of 80,200. Decisions: only `risu-form` forms skip click-to-edit as a whole,
+a plain form's text still edits (D1); an aborted count answers 400 (5); `THUMBNAIL_VERSION` 2 makes
+every thumbnail regenerate once after the upgrade (4). Accepted from the slices: the lore entry's CBS
+expansion now runs on every edit, and the plugin tokenizer map and a prompt template's CBS values are
+not tracked (2). Still open: every Manual Check of the archived plan (a Lua form with click-to-edit,
+a model switch with a lore entry open, a screenshot with a full-size `{{source::char}}` image, a
+few hundred portraits after the upgrade, abandoned Google counts, an upstream backup from a library
+with checkpoints restored in upstream RisuAI). Left for their own plans (the plan's Not In This
+Plan): lost-create recovery past a checkpoint restore (audit F01, with the checkpoint policy test
+harness and a summary-boot mode for `chatCheckpoints.test.ts`), a refused deletion becoming a
+whole-chat replace after Retry (F02), completed `once` plugin listeners retaining detached DOM (F09);
+the audit's evidence stays in `/home/codex/metatron-stage/combine-audit/evidence/`.
 
 ## Server-Owned Data Chronology
 
