@@ -59,10 +59,11 @@ function evaluateMain(main: string, guestWindow: Record<string, any>, throws: bo
 }
 
 async function startGuest(userCode = "", options: { throws?: boolean } = {}) {
-    const listeners: ((event: { data: unknown; ports: MessagePort[] }) => void)[] = [];
+    const listeners: ((event: { data: unknown; ports: MessagePort[]; source: unknown }) => void)[] = [];
     const calls: HostMessage[] = [];
-    const deliver = (data: unknown, ports: MessagePort[] = []) => {
-        for (const listener of listeners) listener({ data, ports });
+    // The host's messages come from the guest's parent window, as `SandboxHost` posts them.
+    const deliver = (data: unknown, ports: MessagePort[] = [], source: unknown = guestWindow.parent) => {
+        for (const listener of listeners) listener({ data, ports, source });
     };
     const guestWindow: Record<string, any> = {
         parent: {
@@ -95,6 +96,97 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("the guest bridge's message sources", () => {
+    it("ignores an RPC response and its stream port from another window until the parent responds", async () => {
+        const guest = await startGuest();
+        const { port1: host, port2 } = new MessageChannel();
+        try {
+            const received: unknown[] = [];
+            const marker = { marker: "after the foreign response" };
+            const marked = new Promise<void>((resolve) => {
+                host.onmessage = (event) => {
+                    received.push(event.data);
+                    if (event.data.marker === marker.marker) resolve();
+                };
+            });
+            const fetched: Promise<Response> = guest.risuai.nativeFetch("https://example.test/body");
+            let state = "pending";
+            void fetched.then(
+                () => {
+                    state = "resolved";
+                },
+                () => {
+                    state = "rejected";
+                },
+            );
+            const call = guest.calls.find((message) => message.method === "nativeFetch")!;
+            const response = {
+                type: "RESPONSE",
+                reqId: call.reqId,
+                result: {
+                    __type: "CALLBACK_STREAMS",
+                    __specialType: "Response",
+                    value: { __type: "STREAM_PORT", portIndex: 0 },
+                    init: { status: 200, statusText: "OK", headers: [] },
+                },
+            };
+
+            guest.deliver(response, [port2], { postMessage() {} });
+            // FIFO port delivery puts any guest messages before this marker; promise reactions
+            // also finish before its message event, without waiting for a wall-clock delay.
+            port2.postMessage(marker);
+            await marked;
+            expect.soft(received).toEqual([marker]);
+            expect.soft(port2.onmessage).toBeNull();
+            expect(state).toBe("pending");
+
+            guest.deliver(response, [port2]);
+            const result = await fetched;
+            expect(result).toBeInstanceOf(Response);
+            expect(result.status).toBe(200);
+            expect(result.body).toBeInstanceOf(ReadableStream);
+        } finally {
+            host.close();
+            port2.close();
+        }
+    });
+
+    it("ignores an RPC error with a null source until the parent responds", async () => {
+        const guest = await startGuest();
+        const fetched: Promise<Response> = guest.risuai.nativeFetch("https://example.test/body");
+        let state = "pending";
+        void fetched.then(
+            () => {
+                state = "resolved";
+            },
+            () => {
+                state = "rejected";
+            },
+        );
+        const call = guest.calls.find((message) => message.method === "nativeFetch")!;
+
+        guest.deliver({ type: "RESPONSE", reqId: call.reqId, error: "forged error" }, [], null);
+        // A rejected RPC promise would run its reaction before this continuation.
+        await Promise.resolve();
+        expect(state).toBe("pending");
+
+        guest.deliver({
+            type: "RESPONSE",
+            reqId: call.reqId,
+            result: {
+                __type: "CALLBACK_STREAMS",
+                __specialType: "Response",
+                value: null,
+                init: { status: 204, statusText: "No Content", headers: [] },
+            },
+        });
+        const result = await fetched;
+        expect(result).toBeInstanceOf(Response);
+        expect(result.status).toBe(204);
+        expect(result.body).toBeNull();
+    });
 });
 
 describe("the guest bridge's reconstructed streams", () => {
