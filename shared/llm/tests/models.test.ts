@@ -1,6 +1,68 @@
 import { describe, expect, it } from "vitest";
-import { dynamicModelOf, resolveModelInfo } from "../models.ts";
+import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../models.ts";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types.ts";
+
+describe("static model catalogue", () => {
+    it("has unique ids including generated Responses API and Vertex variants", () => {
+        const seen = new Set<string>();
+        const duplicates = new Set<string>();
+        for (const { id } of BASE_LLM_MODELS) {
+            if (seen.has(id)) duplicates.add(id);
+            seen.add(id);
+        }
+        expect([...duplicates].sort()).toEqual([]);
+    });
+
+    it.each([
+        ["gemini-flash-latest", "Gemini Flash Latest"],
+        ["gemini-4-argon", "Gemini 4 Argon"],
+    ])("resolves %s with its Gemini API capabilities", (id, name) => {
+        const model = resolveModelInfo(id);
+        expect(model).toMatchObject({
+            id,
+            name,
+            internalID: id,
+            provider: LLMProvider.GoogleCloud,
+            format: LLMFormat.GoogleCloud,
+            tokenizer: LLMTokenizer.GoogleCloud,
+            parameters: ["reasoning_effort"],
+            recommended: true,
+        });
+        expect(model.flags.toSorted()).toEqual(
+            [
+                LLMFlags.hasImageInput,
+                LLMFlags.poolSupported,
+                LLMFlags.hasAudioInput,
+                LLMFlags.hasVideoInput,
+                LLMFlags.hasStreaming,
+                LLMFlags.requiresAlternateRole,
+                LLMFlags.geminiThinking,
+                LLMFlags.geminiThinkingNoMinimal,
+                LLMFlags.hasFirstSystemPrompt,
+            ].sort(),
+        );
+    });
+
+    it("recommends Flash Latest and Argon instead of the Gemini 3 series", () => {
+        const recommended = BASE_LLM_MODELS.filter(
+            (model) =>
+                model.provider === LLMProvider.GoogleCloud &&
+                (model.id.startsWith("gemini-3") ||
+                    model.id === "gemini-flash-latest" ||
+                    model.id === "gemini-4-argon") &&
+                model.recommended,
+        ).map((model) => model.id);
+        expect(recommended.sort()).toEqual(["gemini-4-argon", "gemini-flash-latest"]);
+    });
+
+    it("resolves dated and undated GPT 5 ids to their own names and wire ids", () => {
+        expect(resolveModelInfo("gpt-5-2025-08-07")).toMatchObject({
+            internalID: "gpt-5-2025-08-07",
+            name: "GPT 5 (2025-08-07)",
+        });
+        expect(resolveModelInfo("gpt-5")).toMatchObject({ internalID: "gpt-5", name: "GPT 5" });
+    });
+});
 
 describe("discovered model ids", () => {
     it.each([

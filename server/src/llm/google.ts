@@ -429,7 +429,14 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
     const isVertexGlobalOnlyModel = (modelId: string) => {
         // Gemini 3 preview models and the 3.5/3.6/3.7/3.8 Flash family are not served from the regions
         // selectable in settings (us-central1, us-west1); route them through the global endpoint.
-        return /^gemini-3-.*-preview$/.test(modelId) || /^gemini-3\.[5678]-flash/.test(modelId);
+        // Vertex serves Gemini 4 Argon from global and the multi-regions (us, eu), not those regions.
+        // Flash Latest follows its global-only Flash target.
+        return (
+            /^gemini-3-.*-preview$/.test(modelId) ||
+            /^gemini-3\.[5678]-flash/.test(modelId) ||
+            /^gemini-4-argon/.test(modelId) ||
+            modelId === "gemini-flash-latest"
+        );
     };
 
     if (arg.modelInfo.format === LLMFormat.VertexAIGemini) {

@@ -204,7 +204,7 @@ export const OpenAIModels: LLMModel[] = [
         tokenizer: LLMTokenizer.tiktokenO200Base,
     },
     {
-        id: "gpt-5",
+        id: "gpt-5-2025-08-07",
         internalID: "gpt-5-2025-08-07",
         name: "GPT 5 (2025-08-07)",
         provider: LLMProvider.OpenAI,
