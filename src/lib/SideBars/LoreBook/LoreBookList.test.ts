@@ -57,6 +57,8 @@ vi.mock("src/ts/alert", async () =>
 );
 
 import LoreBookList from "./LoreBookList.svelte";
+import { language } from "src/lang";
+import { tokenizeAccurate } from "src/ts/tokenizer";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { findChat, selectChat } from "src/ts/storage/chatStore.svelte";
@@ -162,6 +164,46 @@ afterEach(async () => {
     if (instance) await unmount(instance);
     instance = null;
     target.remove();
+});
+
+describe("LoreBookList token counts", () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.mocked(tokenizeAccurate).mockReset().mockResolvedValue(29);
+    });
+    afterEach(() => {
+        vi.mocked(tokenizeAccurate).mockReset().mockResolvedValue(0);
+        vi.useRealTimers();
+    });
+
+    it("counts an entry immediately on opening and cancels a pending count on closing", async () => {
+        install({ alpha: [entry("Lore")] });
+        selectCharacter("alpha");
+        render({ submenu: 0 });
+        const row = rows()[0];
+        expect(detail(row)).toBeNull();
+        await vi.advanceTimersByTimeAsync(400);
+        expect(tokenizeAccurate).not.toHaveBeenCalled();
+
+        const fields = open(row);
+        expect(tokenizeAccurate).toHaveBeenCalledExactlyOnceWith("Lore content", undefined, expect.any(AbortSignal));
+        await tick();
+        flushSync();
+        expect(fields.textContent).toContain(`29 ${language.tokens}`);
+        vi.mocked(tokenizeAccurate).mockClear();
+
+        type(fields.querySelector("textarea")!, "edited lore content");
+        flushSync();
+        expect(globalLore("alpha")[0].content).toBe("edited lore content");
+        await vi.advanceTimersByTimeAsync(399);
+        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        row.querySelector("button")!.click();
+        flushSync();
+        expect(detail(row)).toBeNull();
+        await vi.advanceTimersByTimeAsync(400);
+
+        expect(tokenizeAccurate).not.toHaveBeenCalled();
+    });
 });
 
 describe("LoreBookList rows keyed by entry", () => {

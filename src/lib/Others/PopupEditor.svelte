@@ -1,12 +1,13 @@
 <script lang="ts">
     import { currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
-    import { onMount } from "svelte";
+    import { onDestroy, onMount } from "svelte";
     import { popUpEditorStore } from "../../ts/stores.svelte";
     import type MonacoEditorType from "./MonacoEditor.svelte";
     import { language } from "src/lang";
     import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
-    import { tokenize } from "src/ts/tokenizer";
+    import { countTokens } from "src/ts/tokenizer";
+    import { createTokenCountField } from "src/ts/tokenCountField";
     import Toggles from "../SideBars/Toggles.svelte";
 
     let languageMode = $state(popUpEditorStore.language || "markdown");
@@ -28,18 +29,20 @@
         return risuChatParserForDisplay(popUpEditorStore.value);
     });
 
+    const tokenField = createTokenCountField<string>({
+        count: (text, signal) => countTokens(text, undefined, signal),
+        apply: (count) => (tokens = count),
+    });
+
     $effect(() => {
         if (!previewing) {
+            tokenField.reset();
             return;
         }
-        tokenize(chatParserValue)
-            .then((toks) => {
-                tokens = toks;
-            })
-            .catch(() => {
-                tokens = 0;
-            });
+        tokenField.update(chatParserValue);
     });
+
+    onDestroy(() => tokenField.dispose());
 
     onMount(() => {
         import("./MonacoEditor.svelte").then((module) => {

@@ -22,6 +22,8 @@
     import NumberInput from "../../UI/GUI/NumberInput.svelte";
     import TextAreaInput from "../../UI/GUI/TextAreaInput.svelte";
     import { tokenizeAccurate } from "src/ts/tokenizer";
+    import { createTokenCountField } from "src/ts/tokenCountField";
+    import { onDestroy } from "svelte";
     import LoreBookList from "./LoreBookList.svelte";
 
     interface Props {
@@ -63,11 +65,21 @@
     let open = $derived(isOpen);
     const shownOpen = $derived(open || forceOpen);
 
-    async function getTokens(data: string) {
-        tokens = await tokenizeAccurate(data);
-        return tokens;
-    }
     let tokens = $state(0);
+    const tokenField = createTokenCountField<string>({
+        count: (text, signal) => tokenizeAccurate(text, undefined, signal),
+        apply: (count) => (tokens = count),
+    });
+
+    $effect(() => {
+        if (shownOpen && value.mode !== "folder") {
+            tokenField.update(value.content);
+        } else {
+            tokenField.reset();
+        }
+    });
+
+    onDestroy(() => tokenField.dispose());
 
     function isLocallyActivated(book: loreBook) {
         return book.id ? selectedChat()?.localLore.some((e) => e.id === book.id) : false;
@@ -309,11 +321,7 @@
                 {/if}
                 <span class="text-textcolor mt-4 mb-2">{language.prompt}</span>
                 <TextAreaInput highlight autocomplete="off" bind:value={value.content} />
-                {#await getTokens(value.content)}
-                    <span class="text-textcolor2 mt-2 mb-2 text-sm">{tokens} {language.tokens}</span>
-                {:then e}
-                    <span class="text-textcolor2 mt-2 mb-2 text-sm">{e} {language.tokens}</span>
-                {/await}
+                <span class="text-textcolor2 mt-2 mb-2 text-sm">{tokens} {language.tokens}</span>
                 <div class="flex items-center mt-4">
                     <Check bind:check={value.alwaysActive} name={language.alwaysActive} />
                 </div>

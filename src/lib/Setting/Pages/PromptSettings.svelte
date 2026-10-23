@@ -4,6 +4,7 @@
     import { language } from "src/lang";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
     import { tokenizePreset, type PromptItem } from "src/ts/process/prompt";
+    import { createTokenCountField } from "src/ts/tokenCountField";
     import { templateCheck } from "src/ts/process/templates/templateCheck";
 
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
@@ -27,7 +28,6 @@
     function templateItems(): PromptItem[] {
         return activePreset.promptTemplate ?? [];
     }
-    executeTokenize(templateItems());
     interface Props {
         onGoBack?: () => void;
         mode?: "independent" | "inline";
@@ -36,16 +36,24 @@
 
     let { onGoBack = () => {}, mode = "independent", subMenu = $bindable(0) }: Props = $props();
 
-    async function executeTokenize(prest: PromptItem[]) {
-        tokens = await tokenizePreset(prest, true);
-        extokens = await tokenizePreset(prest, false);
-    }
+    const consistentTokens = createTokenCountField<PromptItem[]>({
+        count: (items) => tokenizePreset(items, true),
+        apply: (count) => (tokens = count),
+        same: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+    });
+    const expandedTokens = createTokenCountField<PromptItem[]>({
+        count: (items) => tokenizePreset(items, false),
+        apply: (count) => (extokens = count),
+        same: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+    });
 
     $effect.pre(() => {
         warns = templateCheck({ promptTemplate: activePreset.promptTemplate });
     });
     $effect.pre(() => {
-        executeTokenize(templateItems());
+        const items = $state.snapshot(templateItems());
+        consistentTokens.update(items);
+        expandedTokens.update(items);
     });
 
     function getDisplayTemplate() {
@@ -124,6 +132,8 @@
     });
 
     onDestroy(() => {
+        consistentTokens.dispose();
+        expandedTokens.dispose();
         document.removeEventListener("keydown", handleKeyDown);
     });
 </script>

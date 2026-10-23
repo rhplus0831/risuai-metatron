@@ -145,7 +145,7 @@ describe("ChatNoteEditor token counting", () => {
 
         idle.fire();
         await settle();
-        expect(tokenize).toHaveBeenCalledExactlyOnceWith(note);
+        expect(tokenize).toHaveBeenCalledExactlyOnceWith(note, undefined, expect.any(AbortSignal));
         expect(editor.tokens()).toBe(`37 ${language.tokens}`);
     });
 
@@ -157,11 +157,11 @@ describe("ChatNoteEditor token counting", () => {
         await advance(999);
         expect(tokenize).not.toHaveBeenCalled();
         await advance(1);
-        expect(tokenize).toHaveBeenCalledExactlyOnceWith(note);
+        expect(tokenize).toHaveBeenCalledExactlyOnceWith(note, undefined, expect.any(AbortSignal));
         expect(editor.tokens()).toBe(`37 ${language.tokens}`);
     });
 
-    it("debounces later edits for 300 ms from the latest edit and counts only that text", async () => {
+    it("debounces later edits for 400 ms from the latest edit and counts only that text", async () => {
         const idle = installIdleCallbacks();
         tokenize.mockResolvedValueOnce(13).mockResolvedValueOnce(73);
         const editor = renderEditor("Original");
@@ -170,15 +170,15 @@ describe("ChatNoteEditor token counting", () => {
         expect(editor.tokens()).toBe(`13 ${language.tokens}`);
 
         editor.edit("Intermediate");
-        await advance(299);
+        await advance(399);
         expect(tokenize).toHaveBeenCalledTimes(1);
         editor.edit("Latest text");
         await advance(1);
         expect(tokenize).toHaveBeenCalledTimes(1);
-        await advance(298);
+        await advance(398);
         expect(tokenize).toHaveBeenCalledTimes(1);
         await advance(1);
-        expect(tokenize.mock.calls).toEqual([["Original"], ["Latest text"]]);
+        expect(tokenize.mock.calls.map(([text]) => text)).toEqual(["Original", "Latest text"]);
         expect(editor.tokens()).toBe(`73 ${language.tokens}`);
     });
 
@@ -187,30 +187,32 @@ describe("ChatNoteEditor token counting", () => {
         const editor = renderEditor("Before editing");
         await advance(100);
         editor.edit("After editing");
-        await advance(299);
+        await advance(399);
         expect(tokenize).not.toHaveBeenCalled();
         await advance(1);
-        expect(tokenize).toHaveBeenCalledExactlyOnceWith("After editing");
+        expect(tokenize).toHaveBeenCalledExactlyOnceWith("After editing", undefined, expect.any(AbortSignal));
         expect(editor.tokens()).toBe(`37 ${language.tokens}`);
 
         idle.fire();
         await advance(2000);
-        expect(tokenize).toHaveBeenCalledExactlyOnceWith("After editing");
+        expect(tokenize).toHaveBeenCalledOnce();
     });
 
-    it("discards a superseded result while the replacement count is still debouncing", async () => {
+    it("aborts and discards a superseded count while the replacement count is still debouncing", async () => {
         const idle = installIdleCallbacks();
         const older = deferredCount();
         tokenize.mockReturnValueOnce(older.promise).mockResolvedValueOnce(29);
         const editor = renderEditor("Older note");
         idle.fire();
         editor.edit("Current note");
+        expect(tokenize).toHaveBeenCalledExactlyOnceWith("Older note", undefined, expect.any(AbortSignal));
+        expect(tokenize.mock.calls[0][2]?.aborted).toBe(true);
         older.resolve(999);
-        await advance(299);
+        await advance(399);
         expect(editor.tokens()).toBe(`0 ${language.tokens}`);
-        expect(tokenize).toHaveBeenCalledExactlyOnceWith("Older note");
+        expect(tokenize).toHaveBeenCalledOnce();
         await advance(1);
-        expect(tokenize.mock.calls).toEqual([["Older note"], ["Current note"]]);
+        expect(tokenize.mock.calls.map(([text]) => text)).toEqual(["Older note", "Current note"]);
         expect(editor.tokens()).toBe(`29 ${language.tokens}`);
     });
 

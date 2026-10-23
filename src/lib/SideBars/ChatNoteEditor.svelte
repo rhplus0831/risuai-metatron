@@ -2,6 +2,8 @@
     import { language } from "src/lang";
     import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { tokenizeAccurate } from "src/ts/tokenizer";
+    import { createTokenCountField } from "src/ts/tokenCountField";
+    import { onDestroy, untrack } from "svelte";
     import { getAuthorNoteDefaultText } from "src/ts/util";
     import Help from "../Others/Help.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
@@ -19,42 +21,31 @@
     const owner: ChatRef = { chaId: chat.chaId, chatId: chat.chatId };
     const note = $derived(findChat(owner)?.note ?? "");
     let noteTokens = $state(0);
-    let tokenRun = 0;
+    const tokenField = createTokenCountField<string>({
+        count: (text, signal) => (text === "" ? Promise.resolve(0) : tokenizeAccurate(text, undefined, signal)),
+        apply: (count) => (noteTokens = count),
+        scheduleFirst: (run) => {
+            if (untrack(() => note === "")) {
+                run();
+                return () => {};
+            }
+            // Let the chat's message bodies render before starting the first count.
+            if (typeof window.requestIdleCallback === "function") {
+                const idleCallback = window.requestIdleCallback(run, { timeout: 2000 });
+                return () => window.cancelIdleCallback(idleCallback);
+            }
+            const timer = setTimeout(run, 1000);
+            return () => clearTimeout(timer);
+        },
+    });
 
     $effect(() => {
         const text = note;
-        const run = ++tokenRun;
-        let idleCallback: number | undefined;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-
-        const countTokens = () => {
-            if (run !== tokenRun) return;
-            tokenizeAccurate(text).then((count) => {
-                if (run === tokenRun) {
-                    noteTokens = count;
-                }
-            });
-        };
-
-        if (text === "") {
-            noteTokens = 0;
-        } else if (run === 1) {
-            // Let the chat's message bodies render before starting the first tokenizer load.
-            if (typeof window.requestIdleCallback === "function") {
-                idleCallback = window.requestIdleCallback(countTokens, { timeout: 2000 });
-            } else {
-                timer = setTimeout(countTokens, 1000);
-            }
-        } else {
-            timer = setTimeout(countTokens, 300);
-        }
-
-        return () => {
-            ++tokenRun;
-            if (idleCallback !== undefined) window.cancelIdleCallback(idleCallback);
-            if (timer !== undefined) clearTimeout(timer);
-        };
+        tokenField.update(text);
+        if (text === "") noteTokens = 0;
     });
+
+    onDestroy(() => tokenField.dispose());
 </script>
 
 <span class="text-textcolor">{language.authorNote} <Help key="chatNote" /></span>

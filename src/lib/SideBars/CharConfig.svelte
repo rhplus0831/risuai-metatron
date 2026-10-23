@@ -4,9 +4,10 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
     import { tokenizeAccurate } from "../../ts/tokenizer";
+    import { createTokenCountField } from "src/ts/tokenCountField";
     import { saveImage as saveAsset, type character, type groupChat } from "../../ts/storage/database.svelte";
     import { setCurrentChatMeta } from "../../ts/storage/chatEdits";
-    import { untrack } from "svelte";
+    import { onDestroy, untrack } from "svelte";
     import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
     import { CharConfigSubMenu, hypaV3ModalOpen } from "../../ts/stores.svelte";
     import {
@@ -92,27 +93,21 @@
         charaNote: 0,
     });
 
-    let lasttokens = {
-        desc: "",
-        firstMsg: "",
-        localNote: "",
-        charaNote: "",
-    };
-
-    async function loadTokenize(desc: string | null, firstMsg: string | null, localNote: string) {
-        if (desc !== null && lasttokens.desc !== desc) {
-            lasttokens.desc = desc;
-            tokens.desc = await tokenizeAccurate(desc);
-        }
-        if (firstMsg !== null && lasttokens.firstMsg !== firstMsg) {
-            lasttokens.firstMsg = firstMsg;
-            tokens.firstMsg = await tokenizeAccurate(firstMsg);
-        }
-        if (lasttokens.localNote !== localNote) {
-            lasttokens.localNote = localNote;
-            tokens.localNote = await tokenizeAccurate(localNote);
-        }
+    function tokenField(key: "desc" | "firstMsg" | "localNote") {
+        return createTokenCountField<string>({
+            count: (text, signal) => tokenizeAccurate(text, undefined, signal),
+            apply: (count) => (tokens[key] = count),
+        });
     }
+    const descriptionTokens = tokenField("desc");
+    const firstMessageTokens = tokenField("firstMsg");
+    const localNoteTokens = tokenField("localNote");
+
+    onDestroy(() => {
+        descriptionTokens.dispose();
+        firstMessageTokens.dispose();
+        localNoteTokens.dispose();
+    });
 
     // Search and paging reset per character; each query starts at the first page of matches.
     const assetsOwnerId = $derived(currentCharacter.chaId);
@@ -204,9 +199,11 @@
         const firstMsg = chara.type !== "group" ? chara.firstMessage : null;
         const localNote = currentChat?.note ?? "";
 
-        untrack(() => {
-            loadTokenize(desc, firstMsg, localNote);
-        });
+        if (desc !== null) descriptionTokens.update(desc);
+        else descriptionTokens.reset();
+        if (firstMsg !== null) firstMessageTokens.update(firstMsg);
+        else firstMessageTokens.reset();
+        localNoteTokens.update(localNote);
     });
 
     $effect.pre(() => {

@@ -93,6 +93,7 @@ function installCharacters(first: Emotion[], second: Emotion[], additionalAssets
 
 function record(chaId: string) {
     return characterList().find((entry) => entry?.chaId === chaId)! as unknown as {
+        desc: string;
         emotionImages: Emotion[];
         additionalAssets: Asset[];
     };
@@ -158,6 +159,79 @@ afterEach(async () => {
     target.remove();
     CharConfigSubMenu.set(0);
     globalThis.IntersectionObserver = originalObserver;
+});
+
+describe("CharConfig description token count", () => {
+    const shownCount = () =>
+        [...target.querySelectorAll("span")]
+            .find((span) => span.textContent.trim().endsWith(` ${language.tokens}`))!
+            .textContent.trim();
+    const edit = (text: string) => {
+        record("c1").desc = text;
+        flushSync();
+    };
+
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        vi.mocked(tokenizeAccurate)
+            .mockReset()
+            .mockImplementation(async (text) => (text === "initial description" ? 17 : 0));
+        installCharacters([], []);
+        record("c1").desc = "initial description";
+        selectCharacter("c1");
+        CharConfigSubMenu.set(0);
+        instance = mount(CharConfig, { target });
+        flushSync();
+        await settle();
+        vi.mocked(tokenizeAccurate).mockClear();
+        vi.mocked(alertError).mockClear();
+    });
+    afterEach(() => {
+        vi.mocked(tokenizeAccurate).mockReset().mockResolvedValue(0);
+        vi.useRealTimers();
+    });
+
+    it("counts ten description edits once, 400 ms after the last edit, and displays the result", async () => {
+        vi.mocked(tokenizeAccurate).mockResolvedValue(42);
+        for (let i = 1; i <= 10; i++) {
+            edit(`description ${i}`);
+            if (i < 10) await vi.advanceTimersByTimeAsync(20);
+        }
+        await vi.advanceTimersByTimeAsync(399);
+        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await settle();
+
+        expect(tokenizeAccurate).toHaveBeenCalledExactlyOnceWith("description 10", undefined, expect.any(AbortSignal));
+        expect(shownCount()).toBe(`42 ${language.tokens}`);
+    });
+
+    it("silently keeps the previously displayed count when counting fails", async () => {
+        expect(shownCount()).toBe(`17 ${language.tokens}`);
+        vi.mocked(tokenizeAccurate).mockRejectedValueOnce(new Error("count failed"));
+        edit("failing description");
+        await vi.advanceTimersByTimeAsync(400);
+        await settle();
+
+        expect(tokenizeAccurate).toHaveBeenCalledExactlyOnceWith(
+            "failing description",
+            undefined,
+            expect.any(AbortSignal),
+        );
+        expect(shownCount()).toBe(`17 ${language.tokens}`);
+        expect(alertError).not.toHaveBeenCalled();
+    });
+
+    it("sends no pending description count after unmount", async () => {
+        edit("pending description");
+        await vi.advanceTimersByTimeAsync(399);
+        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        await unmount(instance!);
+        instance = null;
+        await vi.advanceTimersByTimeAsync(400);
+
+        expect(tokenizeAccurate).not.toHaveBeenCalled();
+    });
 });
 
 it("mounts without an error when the selected character's chat is not loaded", async () => {
