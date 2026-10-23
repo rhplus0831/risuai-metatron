@@ -37,6 +37,7 @@ import {
 import type { ChatStreaming } from "../../../shared/events.ts";
 import type { MessageSearchHit } from "../../../shared/messageSearch.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
+import { createCheckpointTables } from "./checkpointStore.ts";
 import { diffRecordText } from "./recordPatchText.ts";
 import {
     CHAT_TABLE_COLUMNS,
@@ -760,6 +761,10 @@ export function createResourceStore(options: {
     }
 
     const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
+    const checkpointTables = createCheckpointTables(db, { token, parse: parseToken });
+    if (checkpointTables.sweep() > 0) {
+        countWrite();
+    }
     const isCharacterKind = (kind: ResourceKind) => kind.name === RESOURCE_KIND.characters;
 
     function assertOpen() {
@@ -1152,6 +1157,88 @@ export function createResourceStore(options: {
         /** Committed writes since the store opened. */
         writeCount(): number {
             return writeCount;
+        },
+
+        /** Cold checkpoint data: writes count toward snapshots without publishing chat changes. */
+        checkpoints: {
+            save(...args: Parameters<typeof checkpointTables.save>) {
+                assertWritable();
+                return transactionInScope(() => {
+                    const result = checkpointTables.save(...args);
+                    if (result) {
+                        countWrite();
+                    }
+                    return result;
+                });
+            },
+            prune(...args: Parameters<typeof checkpointTables.prune>) {
+                assertWritable();
+                return transactionInScope(() => {
+                    const result = checkpointTables.prune(...args);
+                    if (result.deleted > 0) {
+                        countWrite();
+                    }
+                    if (result.pagesRemoved > 0) {
+                        countWrite();
+                    }
+                    return result;
+                });
+            },
+            list(...args: Parameters<typeof checkpointTables.list>) {
+                assertOpen();
+                return checkpointTables.list(...args);
+            },
+            rename(...args: Parameters<typeof checkpointTables.rename>) {
+                assertWritable();
+                return transactionInScope(() => {
+                    const result = checkpointTables.rename(...args);
+                    if (result) {
+                        countWrite();
+                    }
+                    return result;
+                });
+            },
+            delete(...args: Parameters<typeof checkpointTables.delete>) {
+                assertWritable();
+                return transactionInScope(() => {
+                    const result = checkpointTables.delete(...args);
+                    if (result) {
+                        countWrite();
+                        if (result.pagesRemoved > 0) {
+                            countWrite();
+                        }
+                    }
+                    return result;
+                });
+            },
+            compose(...args: Parameters<typeof checkpointTables.compose>) {
+                assertOpen();
+                return checkpointTables.compose(...args);
+            },
+            readPolicy(...args: Parameters<typeof checkpointTables.readPolicy>) {
+                assertOpen();
+                return checkpointTables.readPolicy(...args);
+            },
+            writePolicy(...args: Parameters<typeof checkpointTables.writePolicy>) {
+                assertWritable();
+                return transactionInScope(() => {
+                    const changed = checkpointTables.writePolicy(...args);
+                    if (changed) {
+                        countWrite();
+                    }
+                    return changed;
+                });
+            },
+            sweep() {
+                assertWritable();
+                return transactionInScope(() => {
+                    const removed = checkpointTables.sweep();
+                    if (removed > 0) {
+                        countWrite();
+                    }
+                    return removed;
+                });
+            },
         },
 
         /**
@@ -1690,6 +1777,8 @@ export function createResourceStore(options: {
                     insertRestored.run(row.kind, row.id, row.revision, row.schemaVersion, row.text);
                 }
                 chatTables.replaceAll(snapshot);
+                // Deleting the chats cascades to their checkpoint refs, orphaning their pages.
+                checkpointTables.sweep();
                 // The rows are normalized already (`readSnapshot`); this materializes the kinds the
                 // snapshot predates. A failure rolls the whole restore back.
                 normalizeStoredRecords();
