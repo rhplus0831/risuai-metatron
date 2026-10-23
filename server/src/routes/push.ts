@@ -1,11 +1,11 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { PUSH_KEY_PATH, PUSH_SUBSCRIPTION_PATH } from "../../../shared/notifications.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { PushService } from "../push/pushService.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 export { PUSH_KEY_PATH, PUSH_SUBSCRIPTION_PATH };
 
@@ -28,10 +28,7 @@ export function registerPushRoutes(
     arg: { push: PushService; auth: AuthStore; limiter: MiddlewareHandler<AppEnv> },
 ) {
     const { push, auth, limiter } = arg;
-    const limitBody = bodyLimit({
-        maxSize: MAX_PUSH_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBody = limitedBody(MAX_PUSH_BODY_BYTES);
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

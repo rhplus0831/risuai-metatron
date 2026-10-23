@@ -1935,6 +1935,24 @@ async function wiring(options: { limits?: Partial<MemoryTaskLimits> } = {}) {
 }
 
 describe("the server wiring", () => {
+    it("answers 400, not 500, when the task body stream fails without a declared length", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const res = await s.request("/api/memory/tasks", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"characterId":'));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            duplex: "half",
+        } as RequestInit);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+    });
+
     it("frames reach a socket in publication order (a summary's `change` before the status counting it) and `hello` reports a running task and a recent failure, one status per chat", async () => {
         const w = await wiring();
         const a = await w.socket();

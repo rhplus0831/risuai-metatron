@@ -1,5 +1,4 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import {
     REQUEST_HISTORY_PATH,
     REQUEST_HISTORY_SHARE_PATH,
@@ -13,6 +12,7 @@ import type { RequestHistory, RequestHistoryShareQuery } from "../data/requestHi
 import type { RequestShares } from "../diagnostics/share.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 export { REQUEST_HISTORY_PATH, REQUEST_HISTORY_SHARE_PATH, REQUEST_HISTORY_SHARES_PATH };
 
@@ -104,10 +104,7 @@ export function registerRequestHistoryRoutes(
         c.header("Retry-After", "5");
         return c.json({ error: "The server is shutting down" }, 503);
     };
-    const limitShareBody = bodyLimit({
-        maxSize: SHARE_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitShareBody = limitedBody(SHARE_BODY_BYTES, "Could not read the request body");
     /** A query parameter, with an empty value as absent. */
     const param = (c: Context<AppEnv>, name: string): string | undefined => c.req.query(name) || undefined;
 

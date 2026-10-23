@@ -1,5 +1,4 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { isTabTokenScope, playgroundFamily } from "../../../shared/tokenizerChoice.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
@@ -8,6 +7,7 @@ import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { isTokenizerTextRefusal, tokenScopeFromTab, type TokenCounter } from "../prompt/tokens.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 export const TOKEN_COUNT_PATH = "/api/tokens/count";
 export const TOKEN_ENCODE_PATH = "/api/tokens/encode";
@@ -72,26 +72,9 @@ export function registerTokenRoutes(
         assertOpen();
         await next();
     };
-    const limitBody = bodyLimit({
-        maxSize: MAX_TOKEN_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
-    const limitedBody: MiddlewareHandler<AppEnv> = async (c, next) => {
-        let downstream = false;
-        try {
-            return await limitBody(c, async () => {
-                downstream = true;
-                await next();
-            });
-        } catch (error) {
-            if (downstream) {
-                throw error;
-            }
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-    };
+    const limitBody = limitedBody(MAX_TOKEN_BODY_BYTES);
 
-    app.post(TOKEN_COUNT_PATH, noStore, limiter, authenticated, limitedBody, async (c) => {
+    app.post(TOKEN_COUNT_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
         const read = await readTokenBody(c);
         if (!read.ok) {
             return read.response;
@@ -129,7 +112,7 @@ export function registerTokenRoutes(
         }
     });
 
-    app.post(TOKEN_ENCODE_PATH, noStore, limiter, authenticated, limitedBody, async (c) => {
+    app.post(TOKEN_ENCODE_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
         const read = await readTokenBody(c);
         if (!read.ok) {
             return read.response;

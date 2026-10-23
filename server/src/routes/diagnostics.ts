@@ -1,10 +1,10 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH } from "../../../shared/diagnostics.ts";
 import { canonicalDiagnosticReport, MAX_DIAGNOSTIC_REPORT_BYTES } from "../../../shared/diagnosticsReport.ts";
 import type { DiagnosticsJournal } from "../diagnostics/journal.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 export { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH };
 
@@ -40,10 +40,7 @@ export function registerDiagnosticsRoutes(
         }
         await next();
     };
-    const limitBody = bodyLimit({
-        maxSize: MAX_DIAGNOSTIC_REPORT_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBody = limitedBody(MAX_DIAGNOSTIC_REPORT_BYTES, "Could not read the report");
 
     app.get(DIAGNOSTICS_PATH, limiter, authenticated, (c) =>
         c.json({ events: journal.recent(), state: journal.state() }),

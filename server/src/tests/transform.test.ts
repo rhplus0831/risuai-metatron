@@ -729,6 +729,29 @@ describe("the two-call protocol", () => {
 });
 
 describe("the transform's admission", () => {
+    it.each(["/api/transform", "/api/transform/continue"])(
+        "%s answers 400, not 500, when the body stream fails without a declared length",
+        async (route) => {
+            const res = await server.app.request(route, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    "risu-auth": await signer.jwt(),
+                    "x-resource-epoch": epoch,
+                },
+                body: new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.enqueue(new TextEncoder().encode('{"clientId":'));
+                        controller.error(new DOMException("The client went away", "AbortError"));
+                    },
+                }),
+                duplex: "half",
+            } as RequestInit);
+            expect(res.status).toBe(400);
+            expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+        },
+    );
+
     it(
         "a stale epoch is 412, a missing chat or preset 404, a malformed request 400",
         async () => {

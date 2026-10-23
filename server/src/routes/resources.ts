@@ -1,5 +1,4 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { MAX_BOOT_BODY_BYTES, RESOURCE_BOOT_PATH, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import {
@@ -17,6 +16,7 @@ import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 import { parseBootRequest, readBoot } from "./resourceBoot.ts";
 
 /** Most operations one batch or one read may name. */
@@ -178,10 +178,7 @@ export function registerResourceRoutes(
         }
         await next();
     };
-    const limitBootBody = bodyLimit({
-        maxSize: MAX_BOOT_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBootBody = limitedBody(MAX_BOOT_BODY_BYTES);
     app.post(RESOURCE_BOOT_PATH, limiter, authenticated, limitBootBody, async (c) => {
         let text: string;
         try {

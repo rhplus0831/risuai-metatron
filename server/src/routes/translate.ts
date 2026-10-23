@@ -1,5 +1,4 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { TRANSLATE_MESSAGE_PATH } from "../../../shared/translation/route.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -8,6 +7,7 @@ import { readJsonBody } from "../http/body.ts";
 import type { TranslateMessageRequest, TranslationRunner } from "../translation/runner.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 export { TRANSLATE_MESSAGE_PATH };
 
@@ -53,10 +53,7 @@ export function registerTranslateRoutes(
     arg: { runner: TranslationRunner; store: ResourceStore; auth: AuthStore; limiter: MiddlewareHandler<AppEnv> },
 ) {
     const { runner, store, auth, limiter } = arg;
-    const limitBody = bodyLimit({
-        maxSize: MAX_TRANSLATE_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBody = limitedBody(MAX_TRANSLATE_BODY_BYTES);
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

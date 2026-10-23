@@ -1555,6 +1555,23 @@ describe("the report route", () => {
         expect(existsSync(reportsDir(s))).toBe(false);
     });
 
+    it("answers 400, not 500, when the report stream fails without a declared length", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const res = await post(
+            s,
+            new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode("Metatron diagnostic"));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            { duplex: "half" } as RequestInit,
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Could not read the report" });
+    });
+
     it("refuses a body over 1 MiB with a 413 (`no-store`): by its declared length, by its streamed bytes, and by its actual bytes under a wrong declared length; one of 1 MiB passes", async () => {
         const s = await createResourceTestClient();
         cleanups.push(() => s.close());

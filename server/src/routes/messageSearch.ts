@@ -1,5 +1,4 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import {
     MESSAGE_SEARCH_DEFAULT_LIMIT,
     MESSAGE_SEARCH_MAX_LIMIT,
@@ -21,6 +20,7 @@ import type { MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 import { storeErrorResponse } from "./resources.ts";
 
 export { MESSAGE_SEARCH_PATH };
@@ -201,26 +201,9 @@ export function registerMessageSearchRoutes(
         }
         await next();
     };
-    const limitBody = bodyLimit({
-        maxSize: MAX_SEARCH_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
-    const limitedBody: MiddlewareHandler<AppEnv> = async (c, next) => {
-        let downstream = false;
-        try {
-            return await limitBody(c, async () => {
-                downstream = true;
-                await next();
-            });
-        } catch (error) {
-            if (downstream) {
-                throw error;
-            }
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-    };
+    const limitBody = limitedBody(MAX_SEARCH_BODY_BYTES);
 
-    app.post(MESSAGE_SEARCH_PATH, noStore, limiter, authenticated, limitedBody, async (c) => {
+    app.post(MESSAGE_SEARCH_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
         let size: number;
         try {
             size = (await c.req.arrayBuffer()).byteLength;

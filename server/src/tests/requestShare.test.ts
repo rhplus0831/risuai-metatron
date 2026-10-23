@@ -914,6 +914,22 @@ describe("the routes", () => {
         expect(text).toContain(`{\\"k\\":\\"${REDACTED}\\"}`);
     });
 
+    it("answers 400, not 500, when the share body stream fails without a declared length", async () => {
+        const s = await server();
+        const res = await put(
+            s,
+            new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"requestId":'));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            { duplex: "half" } as RequestInit,
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Could not read the request body" });
+    });
+
     it("refuses with a 400 anything but `{ jobId | requestId, shared }` with ids of the server's shapes, with a 404 a request that is not there, and with a 413 a body over 4 KiB (declared, streamed, or actual); nothing is written", async () => {
         const s = await server();
         seed(s.context.requestHistory);

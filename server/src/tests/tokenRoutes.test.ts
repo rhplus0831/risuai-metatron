@@ -287,3 +287,22 @@ describe("token routes", () => {
         expect(await response.json()).toEqual({ ids: browserIds(family, "mixed") });
     });
 });
+
+it.each(routes)(
+    "$name answers 400, not 500, when the body stream fails without a declared length",
+    async ({ route }) => {
+        const response = await context.app.request(route, {
+            method: "POST",
+            headers: { ...headers, "content-type": "application/json" },
+            body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"text":'));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            duplex: "half",
+        } as RequestInit);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "Invalid JSON body" });
+    },
+);

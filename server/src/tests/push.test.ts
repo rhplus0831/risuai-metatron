@@ -927,6 +927,23 @@ describe("the push routes", () => {
         }
     });
 
+    it("answers 400, not 500, when the PUT body stream fails without a declared length", async () => {
+        const s = await authed({ pushTransport: fakeTransport().transport });
+        const res = await s.app.request(SUB, {
+            method: "PUT",
+            headers: await s.headers({ "content-type": "application/json" }),
+            body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"subscription":'));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            duplex: "half",
+        } as RequestInit);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+    });
+
     it("caps the subscription bodies at 16 KiB on the route itself", async () => {
         const s = await authed({ pushTransport: fakeTransport().transport });
         const big = { subscription: subscription(), pad: "x".repeat(20 * 1024) };

@@ -380,6 +380,23 @@ describe("POST /api/translate/message with the Echo model", () => {
         await jobEnded(secondJob);
     });
 
+    it("answers 400, not 500, when the body stream fails without a declared length", async () => {
+        client = await createResourceTestClient();
+        const res = await client.request(TRANSLATE, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"characterId":'));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            duplex: "half",
+        } as RequestInit);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+    });
+
     it("the route: authentication before the body, the body rules, the epoch, the 16 KiB cap, missing records, and the binding mismatch", async () => {
         await seed();
         const oversized = JSON.stringify({ ...req("r"), pad: "x".repeat(17 * 1024) });

@@ -638,6 +638,23 @@ describe("POST /api/resources/boot inventory semantics", () => {
 });
 
 describe("POST /api/resources/boot body cap and authentication", () => {
+    it("answers 400, not 500, when the body stream fails without a declared length", async () => {
+        const s = await defaultServer();
+        const res = await s.request(RESOURCE_BOOT_PATH, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"kinds":'));
+                    controller.error(new DOMException("The client went away", "AbortError"));
+                },
+            }),
+            duplex: "half",
+        } as RequestInit);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+    });
+
     /** A valid boot body of exactly `bytes` UTF-8 bytes (ASCII padding). */
     const bodyOf = (bytes: number) => {
         const frame = JSON.stringify({ kinds: ["ui"], pad: "" });

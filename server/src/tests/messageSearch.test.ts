@@ -754,6 +754,7 @@ describe("POST /api/chats/search with malformed stored text", () => {
         });
         expect(res.status).toBe(400);
         expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(await res.json()).toEqual({ error: "Invalid JSON body" });
     });
 });
 

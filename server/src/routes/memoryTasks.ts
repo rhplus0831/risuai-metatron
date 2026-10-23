@@ -1,5 +1,4 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import {
     MEMORY_TASKS_PATH,
     type MemoryTaskCancelAnswer,
@@ -13,6 +12,7 @@ import { readJsonBody } from "../http/body.ts";
 import type { MemoryTasks } from "../prompt/memory/memoryTasks.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 export { MEMORY_TASKS_PATH };
 
@@ -50,10 +50,7 @@ export function registerMemoryTaskRoutes(
     },
 ) {
     const { tasks, enabled, store, auth, limiter } = arg;
-    const limitBody = bodyLimit({
-        maxSize: MAX_START_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBody = limitedBody(MAX_START_BODY_BYTES);
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

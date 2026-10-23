@@ -1,5 +1,4 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import type { CbsConditions } from "../../../shared/cbs/types.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
@@ -25,6 +24,7 @@ import {
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { parseClientEnv } from "./generations.ts";
+import { limitedBody } from "./limitedBody.ts";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -221,10 +221,7 @@ export function registerTransformRoutes(
     arg: { transforms: TransformService; store: ResourceStore; auth: AuthStore; limiter: MiddlewareHandler<AppEnv> },
 ) {
     const { transforms, store, auth, limiter } = arg;
-    const limitBody = bodyLimit({
-        maxSize: MAX_TRANSFORM_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBody = limitedBody(MAX_TRANSFORM_BODY_BYTES);
 
     /** Authentication before the body is read. */
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
