@@ -517,7 +517,8 @@ export async function getInlayAsset(id: string): Promise<(InlayAsset & { data: s
 
 /**
  * An inlay's media type and asset key (metadata only, no bytes; null: missing, or a signature). Images
- * render through the asset URL path (`getFileSrc`), audio and video through `getInlayObjectUrl`.
+ * render through `getFileSrc`; audio and video use direct asset URLs with a capable controlling
+ * worker, otherwise `getInlayObjectUrl`.
  */
 export async function getInlayMedia(id: string): Promise<{ type: "image" | "video" | "audio"; asset: string } | null> {
     const meta = await getMeta(id);
@@ -528,13 +529,14 @@ export async function getInlayMedia(id: string): Promise<{ type: "image" | "vide
 }
 
 /**
- * Typed object URLs for audio and video inlays, by asset key (content-addressed: a same-id rewrite gets
- * a new URL). Kept for the page and never revoked, since rendered and cached HTML holds them; images
- * use the asset URL path instead, which labels every file `image/png` and serves no byte ranges.
+ * Fallback typed object URLs for audio and video inlays without a capable controlling worker, by
+ * asset key (content-addressed: a same-id rewrite gets a new URL). Kept for the page and never revoked,
+ * since rendered and cached HTML holds them. With a capable controlling worker, audio and video use
+ * direct asset URLs; images use `getFileSrc` in either mode.
  */
 const mediaObjectUrls = new Map<string, string>();
 
-/** A typed object URL for an audio or video inlay (null: missing, a signature, or no bytes). */
+/** Fallback typed object URL without a capable controlling worker (null: missing, a signature, or no bytes). */
 export async function getInlayObjectUrl(id: string): Promise<string | null> {
     const meta = await getMeta(id);
     if (!meta || meta.data.type === "signature" || !meta.data.asset) {

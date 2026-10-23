@@ -158,6 +158,11 @@ export function holdFileSrc(loc: string): { src: Promise<string>; release(): voi
     };
 }
 
+/** Returns a direct asset URL when a capable worker controls this page, otherwise null. */
+export function getDirectAssetSrc(loc: string): string | null {
+    return canUseDirectAssets() ? directAssetSrc(loc) : null;
+}
+
 function canUseDirectAssets(): boolean {
     return usingSw && directAssets && !!navigator.serviceWorker?.controller;
 }

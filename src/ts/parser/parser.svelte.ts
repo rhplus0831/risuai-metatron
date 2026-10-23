@@ -22,7 +22,7 @@ import {
     type triggerscript,
 } from "../storage/database.svelte";
 import { CurrentTriggerIdStore } from "../stores.svelte";
-import { aiWatermarkingLawApplies, getFileSrc } from "../globalApi.svelte";
+import { aiWatermarkingLawApplies, getDirectAssetSrc, getFileSrc } from "../globalApi.svelte";
 import {
     getChatVar,
     getChatVarOf,
@@ -57,6 +57,7 @@ import {
 import { CbsLimitError, DEFAULT_CBS_MAX_WORK, type CbsLimits } from "../../../shared/cbs/limits.ts";
 import type { CbsConditions, CbsDatabase } from "../../../shared/cbs/types.ts";
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
+import { assetExtension, assetMimeType } from "../../../shared/assetMime.ts";
 import cssSelectorParser from "postcss-selector-parser";
 
 const markdownItOptions = {
@@ -856,18 +857,20 @@ async function parseInlayAssets(data: string) {
             let prefix = inlayType !== "inlay" ? `<div class="risu-inlay-image">` : "";
             let postfix = inlayType !== "inlay" ? `</div>\n\n` : "";
 
-            // URLs that stay the same on every render and are never revoked, so a cached render or
-            // translation never holds a dead one: images through the asset URL path (service worker),
-            // audio and video as typed object URLs per asset key.
+            // Images use getFileSrc; audio and video use direct asset URLs with a capable controlling
+            // worker, otherwise typed object URLs per asset key. These URLs are never revoked, so
+            // cached renders and translations never hold dead ones.
             const media = await getInlayMedia(id);
             const url = !media
                 ? ""
                 : media.type === "image"
                   ? await getFileSrc(media.asset)
-                  : ((await getInlayObjectUrl(id)) ?? "");
+                  : (getDirectAssetSrc(media.asset) ?? (await getInlayObjectUrl(id)) ?? "");
             if (!url) {
                 continue;
             }
+            const mime = assetMimeType(assetExtension(media.asset));
+            const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
             switch (media.type) {
                 case "image":
                     // Hide inlay images when hideAllImages is enabled
@@ -880,13 +883,13 @@ async function parseInlayAssets(data: string) {
                 case "video":
                     data = data.replace(
                         inlay,
-                        `${prefix}<video controls><source src="${url}" type="video/mp4"></video>${postfix}`,
+                        `${prefix}<video controls><source src="${url}"${sourceType}></video>${postfix}`,
                     );
                     break;
                 case "audio":
                     data = data.replace(
                         inlay,
-                        `${prefix}<audio controls><source src="${url}" type="audio/mpeg"></audio>${postfix}`,
+                        `${prefix}<audio controls><source src="${url}"${sourceType}></audio>${postfix}`,
                     );
                     break;
             }
