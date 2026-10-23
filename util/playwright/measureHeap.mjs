@@ -135,6 +135,8 @@ if (unknownSteps.length > 0) {
 
 const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-measure-"));
 await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
+await mkdir(path.join(workDir, "server"));
+await symlink(path.join(repoRoot, "server/assets"), path.join(workDir, "server/assets"), "dir");
 await symlink(dist, path.join(workDir, "dist"), "dir");
 await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
 // The store stays in `workDir` whatever the shell exports (as `startStack` in `stack.mjs` does).

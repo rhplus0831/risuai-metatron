@@ -70,10 +70,6 @@ export default defineConfig(({ command, mode }) => {
             chunkSizeWarningLimit: 2000,
         },
 
-        optimizeDeps: {
-            needsInterop: ["@mlc-ai/web-tokenizers"],
-        },
-
         resolve: {
             alias: {
                 src: "/src",

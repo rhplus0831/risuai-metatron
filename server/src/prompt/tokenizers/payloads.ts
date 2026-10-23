@@ -2,11 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 /**
- * The tokenizer payloads are the client's `public/token/` files. `pnpm runserver` reads them there;
- * the image has no `public/`, only the copy Vite makes in `dist/token/`. Both are relative to the
- * server's `rootDir` (the `cwd` rule of `main.ts`).
+ * The tokenizer payloads are the server's `server/assets/token/` files, relative to the server's
+ * `rootDir` (the `cwd` rule of `main.ts`). `pnpm runserver` and the image, which copies `server/`,
+ * both read them there.
  */
-export const TOKEN_PAYLOAD_DIRS = ["public/token", "dist/token"] as const;
+export const TOKEN_PAYLOAD_DIRS = ["server/assets/token"] as const;
 
 export async function resolveTokenizerPayload(rootDir: string, relPath: string): Promise<string> {
     const candidates = TOKEN_PAYLOAD_DIRS.map((dir) => path.join(rootDir, dir, relPath));

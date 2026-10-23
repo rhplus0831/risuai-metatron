@@ -18,17 +18,17 @@ import {
 } from "./tokenFixtures.ts";
 
 /**
- * The server tokenizers in a fresh plain `node` process: cold, concurrent loads from a dist-only
+ * The server tokenizers in a fresh plain `node` process: cold, concurrent loads from an image-layout
  * root, and the `loadAll` entry's report and exit code. Each test spawns its own process, so they
  * run concurrently (and take the test context's `expect`).
  */
 afterAll(removeTempRoots);
 
-/** A root that holds only `dist/token/` (the image shape), as a link to the repository payloads. */
-function makeDistOnlyRoot(): string {
+/** A root that holds only `server/assets/token/` (the image shape), as a link to the repository payloads. */
+function makeImageLayoutRoot(): string {
     const root = makeTempRoot();
-    mkdirSync(path.join(root, "dist"));
-    symlinkSync(path.join(REPO_ROOT, "public/token"), path.join(root, "dist/token"), "dir");
+    mkdirSync(path.join(root, "server/assets"), { recursive: true });
+    symlinkSync(path.join(REPO_ROOT, "server/assets/token"), path.join(root, "server/assets/token"), "dir");
     return root;
 }
 
@@ -45,12 +45,12 @@ async function runNode(args: string[], cwd: string): Promise<{ code: number | nu
     return { code, stdout, stderr };
 }
 describe.concurrent("plain Node", () => {
-    it("loads every family cold and concurrently on two sets from a dist-only root, then encodes as the browser", async ({
+    it("loads every family cold and concurrently on two sets from an image-layout root, then encodes as the browser", async ({
         expect,
     }) => {
         // A fresh process: nothing warmed the module or the wasm binding, and Vitest's module
         // resolution (its `browser` condition) is not in the way.
-        const root = makeDistOnlyRoot();
+        const root = makeImageLayoutRoot();
         const script = path.join(root, "race.mjs");
         writeFileSync(
             script,
@@ -150,7 +150,7 @@ console.log(JSON.stringify(out));
             }
             expect(byFamily.get(family), family).toHaveProperty("error");
             expect((byFamily.get(family) as { error: string }).error).toMatch(
-                /Tokenizer payload .* not found in .*public\/token.* or .*dist\/token/,
+                /Tokenizer payload .* not found in .*server\/assets\/token/,
             );
         }
     }, 60_000);

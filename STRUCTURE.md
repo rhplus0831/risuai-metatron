@@ -213,8 +213,7 @@ refer to **Choose By Task**; each guide's `Files` section has identifiers.
   `src/ts/horde/`, `src/ts/tokenizer.ts`, `shared/tokenizerChoice.ts`,
   `shared/prompt/chatTokens.ts`, `src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte`,
   `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`,
-  `src/lib/Setting/Pages/ApiKeysSettings.svelte`, `src/lib/UI/GUI/CredentialSelect.svelte`,
-  `public/token/`, `src/etc/o200k_base.json`.
+  `src/lib/Setting/Pages/ApiKeysSettings.svelte`, `src/lib/UI/GUI/CredentialSelect.svelte`.
 - **plugins-mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`,
   `src/ts/plugins/`, `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`,
   `src/lib/Others/Plugin*.svelte`, `src/lib/Playground/PlaygroundMCP.svelte`,
@@ -261,9 +260,9 @@ refer to **Choose By Task**; each guide's `Files` section has identifiers.
   `public/manifest.json`, `version.json`, root dotfiles.
 - Tests follow the code they exercise; browser harness ownership stays with build-test-platforms.
 
-Search-excluded payloads (`.ignore`): `public/token/`, `public/plugin_start.7z`,
-`src/etc/docs/`, `src/etc/o200k_base.json`, `src/ts/rpack/`. Use a targeted path
-for those payloads; follow [AGENTS.md](AGENTS.md) for search flags.
+Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`,
+`src/etc/docs/`, `src/ts/rpack/`. Use a targeted path for those payloads; follow
+[AGENTS.md](AGENTS.md) for search flags.
 
 ## Glossary
 

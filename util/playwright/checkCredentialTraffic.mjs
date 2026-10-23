@@ -798,7 +798,7 @@ try {
                 applyModelFixtureSettings({ aiModel: "gemini-1.5-pro-latest" });
                 writeSettingsRoot("googleClaudeTokenizing", true);
                 try {
-                    return (await tokenizer.encode("hello world, counted remotely")).length;
+                    return await tokenizer.tokenize("hello world, counted remotely");
                 } finally {
                     setMainModelSlot(activeModelPreset.id, previous);
                     writeSettingsRoot("googleClaudeTokenizing", false);

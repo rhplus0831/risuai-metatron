@@ -46,11 +46,13 @@ const median = (values) => {
 };
 const round = (n) => +n.toFixed(2);
 
-// The server's root: a stub client build, the public folder, the version, and a set password.
+// The server's root: a stub client build, public Lua files, tokenizer assets, the version, and a set password.
 const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-measure-lua-"));
 mkdirSync(path.join(rootDir, "dist"));
 writeFileSync(path.join(rootDir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
 symlinkSync(path.join(repoRoot, "public"), path.join(rootDir, "public"), "dir");
+mkdirSync(path.join(rootDir, "server"));
+symlinkSync(path.join(repoRoot, "server/assets"), path.join(rootDir, "server/assets"), "dir");
 cpSync(path.join(repoRoot, "version.json"), path.join(rootDir, "version.json"));
 mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
 writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");

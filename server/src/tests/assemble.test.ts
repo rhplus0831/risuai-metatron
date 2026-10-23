@@ -79,6 +79,9 @@ async function startServer(): Promise<Server> {
     mkdirSync(path.join(rootDir, "dist"));
     writeFileSync(path.join(rootDir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
     symlinkSync(path.join(REPO_ROOT, "public"), path.join(rootDir, "public"), "dir");
+    // The tokenizer payloads (the fixtures' Llama and Llama 3 families).
+    mkdirSync(path.join(rootDir, "server"));
+    symlinkSync(path.join(REPO_ROOT, "server/assets"), path.join(rootDir, "server/assets"), "dir");
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");

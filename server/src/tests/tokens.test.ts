@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Tiktoken } from "@dqbd/tiktoken";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,8 +105,8 @@ describe("the dispose contract", () => {
         await expect(tokenizers.load("claude")).rejects.toThrow(/not found/);
         // Another family and the module-wide factory queue are unaffected.
         expect(await tokenizers.count("cl100k_base", "hello world")).toBe(2);
-        mkdirSync(path.join(root, "public"));
-        symlinkSync(path.join(REPO_ROOT, "public/token"), path.join(root, "public/token"), "dir");
+        mkdirSync(path.join(root, "server/assets"), { recursive: true });
+        symlinkSync(path.join(REPO_ROOT, "server/assets/token"), path.join(root, "server/assets/token"), "dir");
         const claude = fixture.families.claude.ascii as { ids: number[] };
         expect(Array.from(await tokenizers.encode("claude", "hello world"))).toEqual(claude.ids);
         expect(await tokenizers.count("llama", "hello world")).toBe(2);
@@ -123,42 +123,40 @@ describe("the dispose contract", () => {
 });
 
 describe("payload resolution", () => {
+    const PAYLOAD_DIR = "server/assets/token";
+
     function makePayloadRoot(): string {
         const root = makeTempRoot();
-        mkdirSync(path.join(root, "public/token/x"), { recursive: true });
-        mkdirSync(path.join(root, "dist/token/x"), { recursive: true });
-        writeFileSync(path.join(root, "public/token/x/y.bin"), Buffer.from([0, 1, 2, 255, 254, 3, 7]));
-        writeFileSync(path.join(root, "dist/token/x/y.bin"), Buffer.from([9, 9, 9]));
+        mkdirSync(path.join(root, PAYLOAD_DIR, "x"), { recursive: true });
+        writeFileSync(path.join(root, PAYLOAD_DIR, "x/y.bin"), Buffer.from([0, 1, 2, 255, 254, 3, 7]));
         return root;
     }
 
-    it("prefers public/token and falls through to dist/token only when the file is missing", async () => {
+    it("resolves a payload under server/assets/token of the root", async () => {
         const root = makePayloadRoot();
-        expect(await resolveTokenizerPayload(root, "x/y.bin")).toBe(path.join(root, "public/token/x/y.bin"));
-        rmSync(path.join(root, "public"), { recursive: true });
-        expect(await resolveTokenizerPayload(root, "x/y.bin")).toBe(path.join(root, "dist/token/x/y.bin"));
+        expect(await resolveTokenizerPayload(root, "x/y.bin")).toBe(path.join(root, PAYLOAD_DIR, "x/y.bin"));
     });
 
     it("reads the exact bytes into an ArrayBuffer of their own", async () => {
         const root = makePayloadRoot();
-        const fromPublic = await readTokenizerPayload(root, "x/y.bin");
-        expect(fromPublic).toBeInstanceOf(ArrayBuffer);
-        expect(fromPublic.byteLength).toBe(7);
-        expect(Array.from(new Uint8Array(fromPublic))).toEqual([0, 1, 2, 255, 254, 3, 7]);
-        new Uint8Array(fromPublic).fill(42);
+        const payload = await readTokenizerPayload(root, "x/y.bin");
+        expect(payload).toBeInstanceOf(ArrayBuffer);
+        expect(payload.byteLength).toBe(7);
+        expect(Array.from(new Uint8Array(payload))).toEqual([0, 1, 2, 255, 254, 3, 7]);
+        new Uint8Array(payload).fill(42);
         expect(Array.from(new Uint8Array(await readTokenizerPayload(root, "x/y.bin")))).toEqual([
             0, 1, 2, 255, 254, 3, 7,
         ]);
-        rmSync(path.join(root, "public"), { recursive: true });
-        const fromDist = await readTokenizerPayload(root, "x/y.bin");
-        expect(fromDist.byteLength).toBe(3);
-        expect(Array.from(new Uint8Array(fromDist))).toEqual([9, 9, 9]);
     });
 
-    it("names both candidates when the payload is missing everywhere", async () => {
+    it("does not read the client's former public/token or dist/token copies and names the one candidate", async () => {
         const root = makeTempRoot();
+        for (const dir of ["public/token", "dist/token"]) {
+            mkdirSync(path.join(root, dir, "x"), { recursive: true });
+            writeFileSync(path.join(root, dir, "x/y.bin"), Buffer.from([9, 9, 9]));
+        }
         await expect(resolveTokenizerPayload(root, "x/y.bin")).rejects.toThrow(
-            `Tokenizer payload x/y.bin not found in ${path.join(root, "public/token/x/y.bin")} or ${path.join(root, "dist/token/x/y.bin")}`,
+            `Tokenizer payload x/y.bin not found in ${path.join(root, PAYLOAD_DIR, "x/y.bin")}`,
         );
         await expect(readTokenizerPayload(root, "x/y.bin")).rejects.toThrow("not found");
     });
@@ -167,7 +165,7 @@ describe("payload resolution", () => {
         "an access error other than a missing file is reported, not read as missing",
         async () => {
             const root = makePayloadRoot();
-            const locked = path.join(root, "public/token/x");
+            const locked = path.join(root, PAYLOAD_DIR, "x");
             chmodSync(locked, 0o000);
             try {
                 await expect(resolveTokenizerPayload(root, "x/y.bin")).rejects.toMatchObject({ code: "EACCES" });

@@ -1,9 +1,9 @@
 // Starts an isolated app stack for browser checks: the self-host server in a fresh temporary
 // working directory (so it gets an empty `save/`, see `server/src/main.ts` `rootDir`; `public/` and
-// `version.json` are linked and copied in) and the Vite
+// `server/assets/` are linked in and `version.json` is copied in) and the Vite
 // dev server proxying to it. Used by `playwright.config.ts` and the `util/playwright/` scripts.
 import { spawn } from "node:child_process";
-import { copyFile, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -127,9 +127,11 @@ function stop(child) {
  */
 export async function startStack({ serverPort = 6101, vitePort = 5201, log, serverEnv = {} } = {}) {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-playwright-"));
-    // What the server reads from its root besides `save/` (the script workers' `public/lua/json.lua`,
-    // the tokenizer payloads, the app version), as in the repository; `rm` removes the link only.
+    // Link `public/` for the script workers' `public/lua/json.lua` and `server/assets/` for tokenizer
+    // payloads; copy the app version. `rm` removes the links without touching the repository files.
     await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
+    await mkdir(path.join(workDir, "server"));
+    await symlink(path.join(repoRoot, "server/assets"), path.join(workDir, "server/assets"), "dir");
     await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
     const deniedFile = path.join(workDir, "denied-egress.log");
     if (!serverEnv.NODE_OPTIONS) {

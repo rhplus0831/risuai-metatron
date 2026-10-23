@@ -1,7 +1,7 @@
 # Tracked static/vendor payloads (mirrors .ignore)
 public/
+server/assets/token/
 src/etc/docs/
-src/etc/o200k_base.json
 src/ts/rpack/
 
 # Lockfiles and generated output

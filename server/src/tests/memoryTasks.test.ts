@@ -1743,8 +1743,10 @@ async function wiring(options: { limits?: Partial<MemoryTaskLimits> } = {}) {
     const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-wiring-"));
     mkdirSync(path.join(rootDir, "dist"));
     writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
-    // The tokenizers load their vocabularies from `public/token`.
     symlinkSync(path.join(REPO_ROOT, "public"), path.join(rootDir, "public"), "dir");
+    // The tokenizers load their vocabularies from `server/assets/token`.
+    mkdirSync(path.join(rootDir, "server"));
+    symlinkSync(path.join(REPO_ROOT, "server/assets"), path.join(rootDir, "server/assets"), "dir");
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
     const clock = { now: 1_000_000 };

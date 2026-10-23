@@ -23,7 +23,7 @@
 // Usage: pnpm build && node util/playwright/measureRecords.mjs
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -61,6 +61,8 @@ const stats = (values) => {
 
 const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-measure-"));
 await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
+await mkdir(path.join(workDir, "server"));
+await symlink(path.join(repoRoot, "server/assets"), path.join(workDir, "server/assets"), "dir");
 await symlink(dist, path.join(workDir, "dist"), "dir");
 await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
 const server = spawn(process.execPath, [path.join(repoRoot, "server/src/main.ts")], {

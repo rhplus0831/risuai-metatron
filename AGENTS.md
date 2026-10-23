@@ -19,7 +19,7 @@
   vendored `src/ts/rpack/` code).
 - To search the ignored payloads, use `--no-ignore-dot` and always exclude the
   tokenizers, which otherwise flood the results:
-  `rg --no-ignore-dot -g '!public/token/' -g '!src/etc/o200k_base.json' <pattern>`.
+  `rg --no-ignore-dot -g '!server/assets/token/' <pattern>`.
   `--no-ignore-dot` drops `.ignore` but keeps `.gitignore`, so `node_modules/`
   and `dist/` stay out. Do not use plain `--no-ignore` for this.
 - Avoid broad `rg --files -g "*<name>*"` searches because explicit include globs

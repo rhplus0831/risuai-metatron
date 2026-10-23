@@ -32,7 +32,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { crc32, deflateSync } from "node:zlib";
@@ -111,6 +111,8 @@ const mb = (bytes) => (bytes / MiB).toFixed(1);
 
 const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-filesrc-"));
 await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
+await mkdir(path.join(workDir, "server"));
+await symlink(path.join(repoRoot, "server/assets"), path.join(workDir, "server/assets"), "dir");
 await symlink(dist, path.join(workDir, "dist"), "dir");
 await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
 // The store stays in `workDir` whatever the shell exports (as `startStack` in `stack.mjs` does).

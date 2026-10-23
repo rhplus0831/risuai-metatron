@@ -39,7 +39,7 @@ import { CHAT_ROW_CAP } from "../../shared/chatLoadPages.ts";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -103,6 +103,8 @@ const providerBase = `http://127.0.0.1:${provider.address().port}`;
 
 const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-measure-chats-"));
 await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
+await mkdir(path.join(workDir, "server"));
+await symlink(path.join(repoRoot, "server/assets"), path.join(workDir, "server/assets"), "dir");
 await symlink(dist, path.join(workDir, "dist"), "dir");
 await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
 const server = spawn(process.execPath, [path.join(repoRoot, "server/src/main.ts")], {

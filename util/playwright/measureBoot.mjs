@@ -32,7 +32,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
@@ -137,6 +137,8 @@ if (
 }
 const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-measure-boot-"));
 await symlink(path.join(repoRoot, "public"), path.join(workDir, "public"), "dir");
+await mkdir(path.join(workDir, "server"));
+await symlink(path.join(repoRoot, "server/assets"), path.join(workDir, "server/assets"), "dir");
 await symlink(dist, path.join(workDir, "dist"), "dir");
 await copyFile(path.join(repoRoot, "version.json"), path.join(workDir, "version.json"));
 const server = spawn(process.execPath, [path.join(repoRoot, "server/src/main.ts")], {
