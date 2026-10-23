@@ -45,4 +45,4 @@ looks at a metatron regression instead of a fork.
 
 ### Chat generation spinner ([recommended fix](chat-generation-stage-colors-analysis.md#recommended-fix-server-reported-stages))
 
-1. Whether to restore the stage colors with server-reported job stages (recommended) or the limited client-side approximation; not planned yet.
+1. ~~Whether to restore the stage colors with server-reported job stages (recommended) or the limited client-side approximation; not planned yet.~~ Planned 2026-10-23 with server-reported stages: [Generation Stage Spinner](../plan/generation-stage-spinner.md).

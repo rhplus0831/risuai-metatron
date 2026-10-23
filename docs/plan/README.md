@@ -24,6 +24,9 @@ Active planning and implementation:
   (owner decision 2026-10-23) and moves onto its asset route first.
 - [Server Tokenizer](server-tokenizer.md): the tab counts tokens through a server route and
   drops its own tokenizer copy and `public/token/` payloads; planned, 4 slices.
+- [Generation Stage Spinner](generation-stage-spinner.md): the server reports each job's
+  stage (preparing, memory, generating, finishing) and the send/stop spinner shows the
+  selected chat's stage again; planned, 4 slices.
 - [Upstream Integration](upstream-integration.md): an intake ledger for upstream Risuai
   changes and a seeded backlog (current `.bin` block saves, plugin boundaries, lore flags,
   HypaV3 vectors, Gemini roles); planned, not in the slice format.
