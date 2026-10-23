@@ -2,7 +2,7 @@
 import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Tiktoken } from "@dqbd/tiktoken";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createTokenizers,
     TOKENIZER_FAMILIES,
@@ -11,7 +11,12 @@ import {
 } from "../prompt/tokenizers/index.ts";
 import { SMOKE_TEXTS } from "../prompt/tokenizers/loadAll.ts";
 import { readTokenizerPayload, resolveTokenizerPayload } from "../prompt/tokenizers/payloads.ts";
-import { createTokenCounter, TOKEN_CACHE_SIZE, type TokenCountScope } from "../prompt/tokens.ts";
+import {
+    createTokenCounter,
+    GOOGLE_COUNT_TIMEOUT_MS,
+    TOKEN_CACHE_SIZE,
+    type TokenCountScope,
+} from "../prompt/tokens.ts";
 import { LLMTokenizer } from "../../../shared/llm.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { selectTokenizer, type TokenizerChoice } from "../../../shared/tokenizerChoice.ts";
@@ -420,6 +425,7 @@ describe("createTokenCounter", () => {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ contents: [{ parts: [{ text: "count me" }] }] }),
+                signal: expect.any(AbortSignal),
             });
         });
 
@@ -445,6 +451,78 @@ describe("createTokenCounter", () => {
                 }) as unknown as typeof fetch,
             });
             await expect(counter.count("x", google())).rejects.toThrow("fetch failed");
+        });
+
+        describe("the request deadline", () => {
+            beforeEach(() => {
+                vi.useFakeTimers();
+            });
+            afterEach(() => {
+                vi.useRealTimers();
+            });
+
+            it.each(["headers", "body"] as const)(
+                "rejects count at 30 seconds without a local fallback while waiting for response %s",
+                async (phase) => {
+                    const { tokenizers, calls } = stubTokenizers();
+                    const fetchImpl = vi.fn<typeof fetch>((_url, init) => {
+                        const signal = init?.signal;
+                        if (phase === "headers") {
+                            return new Promise<Response>((_resolve, reject) => {
+                                signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                            });
+                        }
+                        // Headers arrive immediately; the body stays open until the request is aborted.
+                        return Promise.resolve(
+                            new Response(
+                                new ReadableStream({
+                                    start(controller) {
+                                        signal?.addEventListener("abort", () => controller.error(signal.reason), {
+                                            once: true,
+                                        });
+                                    },
+                                }),
+                            ),
+                        );
+                    });
+                    const counter = createTokenCounter({ tokenizers, fetchImpl });
+                    const resolved = vi.fn();
+                    const rejected = vi.fn();
+                    void counter.count("count me", google()).then(resolved, rejected);
+                    const signal = fetchImpl.mock.calls[0][1]?.signal;
+                    expect(signal).toBeInstanceOf(AbortSignal);
+                    expect(GOOGLE_COUNT_TIMEOUT_MS).toBe(30_000);
+
+                    await vi.advanceTimersByTimeAsync(GOOGLE_COUNT_TIMEOUT_MS - 1);
+                    expect(resolved).not.toHaveBeenCalled();
+                    expect(rejected).not.toHaveBeenCalled();
+                    expect(signal?.aborted).toBe(false);
+
+                    await vi.advanceTimersByTimeAsync(1);
+                    expect(resolved).not.toHaveBeenCalled();
+                    expect(rejected).toHaveBeenCalledTimes(1);
+                    const [error] = rejected.mock.calls[0];
+                    expect(error).toBeInstanceOf(Error);
+                    expect(error).not.toBeInstanceOf(DOMException);
+                    expect(error.message).toMatch(/Google token count timed out/i);
+                    expect(error.message).not.toMatch(/timeout/i);
+                    expect(signal?.aborted).toBe(true);
+                    expect(calls).toEqual([]);
+                },
+            );
+
+            it("does not abort a successful count after its deadline", async () => {
+                const { tokenizers, calls } = stubTokenizers();
+                const fetchImpl = vi.fn<typeof fetch>(async () => ok(7));
+                const counter = createTokenCounter({ tokenizers, fetchImpl });
+                expect(await counter.count("count me", google())).toBe(7);
+                const signal = fetchImpl.mock.calls[0][1]?.signal;
+                expect(signal).toBeInstanceOf(AbortSignal);
+
+                await vi.advanceTimersByTimeAsync(GOOGLE_COUNT_TIMEOUT_MS);
+                expect(signal?.aborted).toBe(false);
+                expect(calls).toEqual([]);
+            });
         });
 
         it("does not count remotely without googleClaudeTokenizing (the gemma family counts)", async () => {

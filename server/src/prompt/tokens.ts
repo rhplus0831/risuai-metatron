@@ -13,9 +13,10 @@ import type { Tokenizers } from "./tokenizers/index.ts";
  * - a legacy plugin provider's `custom` tokenizer (`tokenizerFunc`) is never called; the text is
  *   counted with `cl100k_base` (the Safety Contract: plugin tokenizers are not used server-side);
  * - Google's `countTokens` uses the server's `llmSecrets.google.accessToken`, and its cache is an
- *   LRU of 1,500 instead of an unbounded map.
+ *   LRU of 1,500 instead of an unbounded map; a count rejects after 30 s.
  */
 export const TOKEN_CACHE_SIZE = 1500;
+export const GOOGLE_COUNT_TIMEOUT_MS = 30_000;
 
 export type TokenCountScope = {
     /** The main slot's derived `aiModel` and its profile's `currentPluginProvider`. */
@@ -76,20 +77,30 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         if (cached !== undefined) {
             return new Uint32Array(cached);
         }
-        const res = await fetchImpl(
-            `https://generativelanguage.googleapis.com/v1beta/models/${scope.model.internalID}:countTokens?key=${scope.googleAccessToken}`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ contents: [{ parts: [{ text }] }] }),
-            },
+        const controller = new AbortController();
+        const timer = setTimeout(
+            () => controller.abort(new Error("The Google token count timed out after 30 seconds")),
+            GOOGLE_COUNT_TIMEOUT_MS,
         );
-        if (res.status !== 200) {
-            return await tokenizers.encode("gemmaSentencePiece", text);
+        try {
+            const res = await fetchImpl(
+                `https://generativelanguage.googleapis.com/v1beta/models/${scope.model.internalID}:countTokens?key=${scope.googleAccessToken}`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ contents: [{ parts: [{ text }] }] }),
+                    signal: controller.signal,
+                },
+            );
+            if (res.status === 200) {
+                const json = (await res.json()) as { totalTokens: number };
+                googleCache.set(cacheKey, json.totalTokens);
+                return new Uint32Array(json.totalTokens);
+            }
+        } finally {
+            clearTimeout(timer);
         }
-        const json = (await res.json()) as { totalTokens: number };
-        googleCache.set(cacheKey, json.totalTokens);
-        return new Uint32Array(json.totalTokens);
+        return await tokenizers.encode("gemmaSentencePiece", text);
     }
 
     async function encode(text: string, scope: TokenCountScope): Promise<Encoded> {
