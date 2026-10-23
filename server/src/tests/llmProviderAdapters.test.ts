@@ -1356,6 +1356,39 @@ describe("the server provider adapters", () => {
         });
     });
 
+    it("Google: reconstructs a remembered function call with no role on the response", async () => {
+        const earlier: ToolCallRecord = {
+            call: { id: "earlier", name: "rollDice", arg: { sides: 6 } },
+            response: [{ type: "text", text: "4" }],
+        };
+        const recorded = await run({
+            settings: { preset: { aiModel: "gemini-2.5-flash" } },
+            arg: {
+                ...prompt(),
+                useStreaming: false,
+                formated: [
+                    { role: "user", content: "roll" },
+                    { role: "assistant", content: "<tool_call>earlierrollDice</tool_call>" },
+                    { role: "user", content: "continue" },
+                ],
+            },
+            tools: [ROLL_DICE],
+            known: { earlierrollDice: earlier },
+            upstream: () => json({ candidates: [{ content: { parts: [{ text: "done" }] } }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        const { contents } = recorded.calls[0].body as { contents: unknown[] };
+        expect(contents.slice(1, -1)).toStrictEqual([
+            {
+                role: "model",
+                parts: [{ functionCall: { name: "rollDice", args: { sides: 6 } } }],
+            },
+            {
+                parts: [{ functionResponse: { name: "rollDice", response: { data: ["4"] } } }],
+            },
+        ]);
+    });
+
     it("Google: a tool round trip with a remembered record", async () => {
         const recorded = await run({
             settings: { preset: { aiModel: "gemini-2.5-flash" } },
@@ -1395,7 +1428,8 @@ describe("the server provider adapters", () => {
                     body: {
                         ...GOOGLE_BODY,
                         // The continuation: the model's call as it came, and the tool's answer as
-                        // a function part (the text parsed as JSON: a number).
+                        // a function part (the text parsed as JSON: a number) in a content entry
+                        // without a role.
                         contents: [
                             ...GOOGLE_CONTENTS,
                             {
@@ -1403,7 +1437,6 @@ describe("the server provider adapters", () => {
                                 parts: [{ functionCall: { id: "fc-1", name: "rollDice", args: { sides: 6 } } }],
                             },
                             {
-                                role: "function",
                                 parts: [{ functionResponse: { name: "rollDice", response: { data: 4 } } }],
                             },
                         ],

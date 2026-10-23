@@ -411,6 +411,9 @@ describe("Gemini final state", () => {
                 { functionCall: { name: "echo", args: { value: "kept" } }, thoughtSignature: "function-sign" },
             ],
         });
+        expect(run.requests[1].contents.at(-1)).toStrictEqual({
+            parts: [{ functionResponse: { name: "echo", response: { data: "tool-result" } } }],
+        });
         expect(run.call.mock.calls).toEqual([["echo", { value: "kept" }]]);
         expect(chunks.at(-1)?.["0"]).toMatch(/done$/);
         expect(chunks.at(-1)?.["0"].startsWith(marker)).toBe(true);
