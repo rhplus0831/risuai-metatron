@@ -102,6 +102,7 @@
             if (text !== syncedHypaV3Text) {
                 syncedHypaV3Text = text;
                 hypaV3Data = text === undefined ? emptyHypaV3Data() : JSON.parse(text);
+                bulkEditState.selectedSummaries = new Set();
             }
         });
     });
@@ -278,6 +279,7 @@
     let searchState = $state<SearchState>(null);
     let filterSelected = $state(false);
     let bulkResummaryState = $state<BulkResummaryState | null>(null);
+    let bulkResummaryGeneration = 0;
 
     let categoryManagerState = $state<CategoryManagerState>({
         isOpen: false,
@@ -467,6 +469,7 @@
         const summarizeRef = currentChatRef();
         const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
         const chatKey = summarizeRef ? chatStatusKey(summarizeRef) : null;
+        const generation = ++bulkResummaryGeneration;
 
         try {
             bulkResummaryState = {
@@ -495,6 +498,7 @@
             const uniqueChatMemos = [...new Set(mergedChatMemos)];
 
             const resummary = await summarize(oaiMessages, true, summarizeContext);
+            if (generation !== bulkResummaryGeneration) return;
 
             bulkResummaryState = {
                 isProcessing: false,
@@ -506,6 +510,7 @@
                 translation: null,
             };
         } catch (error) {
+            if (generation !== bulkResummaryGeneration) return;
             console.error("Re-summarize Failed:", error);
             bulkResummaryState = null;
             await alertNormalWait(`Re-summarize Failed: ${error.message || error}`);
@@ -536,6 +541,7 @@
 
         uiState.collapsedSummaries = new Set(hypaV3Data.summaries.map((_, index) => index));
 
+        bulkResummaryGeneration++;
         bulkResummaryState = null;
         bulkEditState.selectedSummaries = new Set();
     }
@@ -550,6 +556,7 @@
         }
         const summarizeRef = currentChatRef();
         const summarizeContext = { chatRef: summarizeRef, pluginContext: capturePluginContext(summarizeRef) };
+        const generation = ++bulkResummaryGeneration;
 
         try {
             bulkResummaryState = {
@@ -569,6 +576,7 @@
             }));
 
             const resummary = await summarize(oaiMessages, true, summarizeContext);
+            if (generation !== bulkResummaryGeneration) return;
 
             bulkResummaryState = {
                 ...bulkResummaryState,
@@ -578,6 +586,7 @@
                 translation: null,
             };
         } catch (error) {
+            if (generation !== bulkResummaryGeneration) return;
             console.error("Re-summarize Retry Failed:", error);
             bulkResummaryState = null;
             await alertNormalWait(`Re-summarize Retry Failed: ${error.message || error}`);
@@ -585,6 +594,7 @@
     }
 
     function cancelBulkResummary() {
+        bulkResummaryGeneration++;
         bulkResummaryState = null;
         bulkEditState.selectedSummaries = new Set();
     }
@@ -599,17 +609,24 @@
             return;
         }
 
+        const generation = bulkResummaryGeneration;
         bulkResummaryState.isTranslating = true;
         bulkResummaryState.translation = "Loading...";
 
         try {
             const result = await translateHTML(bulkResummaryState.result, false, "", -1, regenerate);
 
-            bulkResummaryState.translation = result;
+            if (generation === bulkResummaryGeneration && bulkResummaryState) {
+                bulkResummaryState.translation = result;
+            }
         } catch (error) {
-            bulkResummaryState.translation = `Translation failed: ${error}`;
+            if (generation === bulkResummaryGeneration && bulkResummaryState) {
+                bulkResummaryState.translation = `Translation failed: ${error}`;
+            }
         } finally {
-            bulkResummaryState.isTranslating = false;
+            if (generation === bulkResummaryGeneration && bulkResummaryState) {
+                bulkResummaryState.isTranslating = false;
+            }
         }
     }
 

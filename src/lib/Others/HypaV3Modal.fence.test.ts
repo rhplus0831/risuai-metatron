@@ -331,6 +331,51 @@ describe("HypaV3Modal's bulk resummary", () => {
         };
     }
 
+    it("keeps a cancelled bulk resummary hidden when its pending request resolves", async () => {
+        const run = await resummarizeFirstAndLast();
+        const target = run.modal.target;
+        expect(target.textContent).toContain(language.hypaV3Modal.reSummarizeResult);
+
+        [...target.querySelectorAll("button")].find((button) => button.title === language.cancel)!.click();
+        flushSync();
+        expect(target.textContent).not.toContain(language.hypaV3Modal.reSummarizeResult);
+
+        await run.finish("late summary");
+
+        expect(target.textContent).not.toContain(language.hypaV3Modal.reSummarizeResult);
+        expect([...target.querySelectorAll("textarea")].map((textarea) => textarea.value)).not.toContain(
+            "late summary",
+        );
+    });
+
+    it("clears the bulk-edit selection when another writer replaces the memory data", () => {
+        const modal = open(withData);
+        [...modal.target.querySelectorAll("button")]
+            .find((button) => button.querySelector(".lucide-square-pen") !== null)!
+            .click();
+        flushSync();
+        const boxes = () => [...modal.target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+        expect(boxes()).toHaveLength(2);
+        boxes()[0].click();
+        flushSync();
+        expect(boxes().map((box) => box.checked)).toEqual([true, false]);
+
+        setChatMeta(withData, {
+            hypaV3Data: {
+                summaries: [{ text: "zero", chatMemos: ["m9"], isImportant: false }, ...summaries()],
+                categories: [],
+            },
+        });
+        flushSync();
+
+        expect([...modal.target.querySelectorAll("textarea")].map((textarea) => textarea.value)).toEqual([
+            "zero",
+            "one",
+            "two",
+        ]);
+        expect(boxes().map((box) => box.checked)).toEqual([false, false, false]);
+    });
+
     it("merges the selected summaries after a write shifted them during the summarization", async () => {
         const run = await resummarizeFirstAndLast();
         // A memory write lands meanwhile: a summary placed before the selected ones replaces the copy.
