@@ -31,6 +31,15 @@ git show e1aa33150:docs/plan/audit-findings-perf.md
 git show 2508dfd0c:docs/plan/timing-tests.md
 git show f98be8d41:docs/plan/hypav3-background-memory.md
 git show b9525d08d:docs/plan/per-chat-send.md
+git show 2e359afde:docs/plan/static-audit-fixes.md
+git show 2e359afde:docs/plan/chat-checkpoints.md
+git show 2e359afde:docs/plan/small-fixes.md
+git show 2e359afde:docs/plan/direct-asset-urls.md
+git show 2e359afde:docs/plan/server-thumbnails.md
+git show 2e359afde:docs/plan/server-tokenizer.md
+git show 2e359afde:docs/plan/generation-stage-spinner.md
+git show 2e359afde:docs/plan/upstream-integration.md
+git show 2e359afde:docs/plan/combined-run.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -63,6 +72,15 @@ it is not a current architecture guide.
 | Timing-Dependent Tests                   | `2508dfd0c`: `docs/plan/timing-tests.md`                                  | [build/test](../structure/build-test-platforms.md) `Tests`, `STRUCTURE.md` V3, [server](../structure/self-host-server.md) (test-only timing options)                                                                                                                                                                                                                                                                                                                                         |
 | HypaV3 Background Memory                 | `f98be8d41`: `docs/plan/hypav3-background-memory.md`                      | [memory](../structure/memory.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md)                                                                                                                                                                                                                                |
 | Per-Chat Send                            | `b9525d08d`: `docs/plan/per-chat-send.md`                                 | [chat pipeline](../structure/chat-pipeline.md), [plugins/MCP](../structure/plugins-mcp.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [persistence](../structure/persistence.md), [global API](../structure/global-api.md)                                                                                                                                                                                                                       |
+| Static Audit Fixes                       | `2e359afde`: `docs/plan/static-audit-fixes.md`                            | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [plugins/MCP](../structure/plugins-mcp.md), [media/translation](../structure/media-aux.md), [UI/theming](../structure/ui-theming.md)                                                                                                                                                                                                                                                                 |
+| Chat Checkpoints                         | `2e359afde`: `docs/plan/chat-checkpoints.md`                              | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md)                                                                                                                                                                                                                                                                                                                                                             |
+| Small Fixes                              | `2e359afde`: `docs/plan/small-fixes.md`                                   | [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md), [LLM requests](../structure/llm-requests.md), [memory](../structure/memory.md), and the other guides its slices name                                                                                                                                                                                                                                        |
+| Direct Asset URLs                        | `2e359afde`: `docs/plan/direct-asset-urls.md`                             | [build/test platforms](../structure/build-test-platforms.md), [CBS/rendering](../structure/cbs-rendering.md), [global API](../structure/global-api.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                                                           |
+| Server Thumbnails                        | `2e359afde`: `docs/plan/server-thumbnails.md`                             | [build/test platforms](../structure/build-test-platforms.md), [global API](../structure/global-api.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md)                                                                                                                                                                                                                                                                                                 |
+| Server Tokenizer                         | `2e359afde`: `docs/plan/server-tokenizer.md`                              | [build/test platforms](../structure/build-test-platforms.md), [LLM requests](../structure/llm-requests.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md)                                                                                                                                                                                                                                                                                             |
+| Generation Stage Spinner                 | `2e359afde`: `docs/plan/generation-stage-spinner.md`                      | [chat pipeline](../structure/chat-pipeline.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md)                                                                                                                                                                                                                                                                                                                                                         |
+| Upstream Integration                     | `2e359afde`: `docs/plan/upstream-integration.md`                          | [persistence](../structure/persistence.md), [plugins/MCP](../structure/plugins-mcp.md), [LLM requests](../structure/llm-requests.md), [chat pipeline](../structure/chat-pipeline.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md), and the other guides its slices name                                                                                                                                                                     |
+| Combined Run index                       | `2e359afde`: `docs/plan/combined-run.md`                                  | the eight plans above (one `plan-runner` run); [build/test platforms](../structure/build-test-platforms.md) for the run's checks                                                                                                                                                                                                                                                                                                                                                             |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -332,6 +350,101 @@ Still open:
   body interceptors, provider streams, and `internal:aiaccess` requests are no longer callback
   children (7); with no owner attached, queued requests expire one after another (2, D2 (a)).
 
+Combined Run (planned 2026-10-23 at `7bcdb8030` as one `plan-runner` index over the eight plans
+below, 77 slices with ids prefixed per plan and one added re-planning slice ST0) landed every slice
+on `metatron` between 2026-10-23 and 2026-10-24, one cherry-picked commit per slice followed by a
+`docs(plan)` Status commit, up to eight slice sessions at once (`delegate-implementation`, Codex
+implementers and challengers), with the owner starting each session from a card. The final checks
+on `b60d8fff5` passed: `pnpm check`, `pnpm format:check`, `pnpm check:tests`, 6801 unit tests, every
+e2e spec (17 specs, 35 tests), `pnpm build`, `docker build`, and a container smoke on a fresh volume
+(password setup, login, ES256 JWT, `/api/tokens/count` for the o200k fallback, `llama3`, and
+`cl100k_base`, `/api/asset/<hex>?w=256` as `image/webp`, a small PNG's 307, `?w=999` 400, no JWT
+401). The eight source plans keep their design and slice text; their Status lines name each slice's
+`metatron` hash. The index's Status line is the per-slice record in landing order.
+
+Static Audit Fixes (the 2026-10-23 static audit's data-loss, network, and resource findings,
+`docs/audit/static-audit-2026-10-23.md`) landed all 14 slices: SA1 Toggle preset additions merge across tabs (`84ff35294`); SA2 An adopted character create learns its chat order (`ada2e3139`); SA3 Refused data stays protected and can be released (`4f545bc02`); SA4 Refused data is shown with export, retry, and discard (`072e0f68d`); SA5 The live feed backs off until reconciliation succeeds (`8a3a6d00b`); SA6 The restore watcher aborts its timed-out read (`8c6a67465`); SA7 Image generation takes a signal; ComfyUI polls its prompt only (`5bcc152a7`); SA8 Stop aborts TTS requests and retries (`fda8d2b35`); SA9 The upstream export prepares in a worker (`f3c4b942a`); SA10 The local model queue admits by count and bytes (`c317b2bd4`); SA11 Job callbacks abort image work (`99ad3aada`); SA12 Durable writes for assets, snapshots, push, and diagnostics (`9c460b847`); SA13 Auth files are durable, damage-safe, and rate limited (`aaa118e9e`); SA14 Queued callbacks fail together when nobody is attached (`3811ebfd9`). Still open:
+no two-tab browser check of the toggle preset merge (SA1); the refused-data banner's placement on
+mobile, Firefox, and Safari (SA4, checked in Chromium at 1280×800 and 390×844); Stop and cancel
+against real providers (ComfyUI, Wavespeed, a live provider request; SA7, SA8); the export worker's
+effect on a large store was not re-measured (SA9); durable writes on Windows, macOS, and network
+mounts and under real power loss (SA12); first-run setup and the damaged-password state in a browser
+(SA13). Accepted: a Retry or edit on a stale revision is a normal 409 recovery that drops the draft
+with a reload notice (SA3); manual trigger commands still answer 500 and WebLLM translation 502 for
+a local-model refusal (SA10, project memory); SA14 settles ownerless queued roots `disconnected`
+together only for jobs opened at or before the expired root's dispatch (the orchestrator accepted
+the narrowing on code grounds; `self-host-server.md` Known Hazards). SA2 closed the open-bug-fixes
+A3 leftover, removed from this file.
+
+Chat Checkpoints (RisuBard save slots, `docs/research/risubard-survey.md` §2.3.1) landed all 6
+slices: CC1 Checkpoint tables and store (`b8b75f2e6`); CC2 Snapshots, restore, and archives carry checkpoints (`8f16dd41e`); CC3 Routes, load, restore floor, and the busy check (`30dfc52cf`); CC4 Auto-checkpoint after a finished job (`a5398dd28`); CC5 Client checkpoint module and dialog (`f3635120b`); CC6 Persistence guide update (`56a21a914`). Measured (CC4, a 2000-message chat of about 10 MB): an auto checkpoint
+takes about 110–170 ms synchronously when it saves and about 30 ms when nothing needs saving.
+Still open: one browser check of the Checkpoints dialog's auto-policy row against the real policy
+routes (CC5 was checked with an adapter stand-in before CC4 landed); Firefox, Safari, and mobile
+layouts (CC5). Client checkpoint rules are in `persistence.md` (CC6); the restore floor's
+`fmIndex` edge and the unreported order-conflict discard stay as project memories.
+
+Small Fixes (independent small defects left by finished plans and the fork research) landed all
+12 slices: SF1 Keep TLS keys and plugin request logs private (`8541758af`); SF2 A failed request stream answers 400 on every route (`b34906a7d`); SF3 Google token counts have a timeout (`5b015c118`); SF4 Static files get cache headers and 304 (`d73df7c0a`); SF5 A reverse proxy's WebLLM format runs the configured model (`8a756cfd3`); SF6 Sidebar, list, and theme fixes (`c64dfe7c6`); SF7 Lorebook editor fixes (`b06d449af`); SF8 Alert keys over the composer and a rejected Escape (`3bf30c779`); SF9 HypaV3 bulk resummary Cancel and selection (`08c12e1db`); SF10 Streamed auto-translation translates once (`fd26e2dd9`); SF11 Locale text and stale docs (`921913f98`); SF12 Stale slow test and test platform notes (`583505ebf`). Still open, all browser checks: static-file cache behavior (SF4); a real
+Transformers.js inference for the WebLLM model fix (SF5, harness stub only); the light-theme prose
+color and dragging a chat into a new folder (SF6); a chat switch during a lorebook delete and a drag
+after switching characters with details open (SF7); alert key handling, the mobile virtual keyboard,
+Firefox and Safari (SF8); the HypaV3 bulk resummarize button (SF9, mount tests only); streaming with
+auto-translation in Off, Balanced, and Strong modes (SF10); the 57 added Korean strings on screen
+(SF11).
+
+Direct Asset URLs (the 2026-10-20 research pick, PocketRisu/RisuBard decision 2) landed all 8 slices:
+DA0 Probe the browser mechanics (`81015f89d`); DA1 The authenticated asset route (`22f1da897`); DA2 Verified content names become immutable (`2a7d338f8`); DA3 The service worker authenticates asset requests (`92c6d4b91`); DA4 getFileSrc returns direct URLs (`560a3d86c`); DA5 Inlay media and parser types (`52192c078`); DA6 Retire asset entries in risuCache (`c05c2bf88`); DA7 Docs, browser checks, measurement (`dd19f530b`). Measured (DA7, `util/playwright/measureFileSources.mjs`): direct mode keeps 0 object
+URLs, 0 Blobs, and 0 `/api/read` reads at every step; without the worker the gallery keeps 51 object
+URLs (40.5 MB), unchanged from D2b. Decisions: the worker passes requests outside its destination
+allow list to the server unsigned (owner 2026-10-23); an immutable `/api/asset` copy in the HTTP
+cache can answer an unsigned same-origin fetch such as a plugin's `nativeFetch` (accepted hazard,
+`self-host-server.md`). Still open: Firefox (whether the Playwright control loss after an unanswered
+navigation happens in real Firefox), Safari, iOS, and real devices (DA0, DA7); after a worker
+update, a row whose fallback `/sw/img` URL is fetched by `fetchFileSrc` is refused, so copy-to-HTML
+and screenshots omit that image until the row re-renders (DA7, Known Hazard in `global-api.md`).
+
+Server Thumbnails (Haejeok survey candidate B1, re-planned by ST0 over the direct asset route) landed
+all 6 slices: ST0 Re-plan Server Thumbnails over the asset route (`27b067220`); ST1 Thumbnail route and cache (`4a91a3af8`); ST2 Client thumbnail source (`a1c9d6b6d`); ST3 Lists and settings previews (`fdf16fd31`); ST4 Chat avatars (`e3f91c5c0`); ST5 Measurement, browser check, docs close (`e905d68dd`). Decisions: thumbnails are `GET /api/asset/<hex>?w=256|512` (short
+side, `fit: "outside"`, WebP quality 80, `sharp` 0.34.5 loaded lazily); a small, animated,
+non-raster, or over-cap source and a busy, unavailable, or failed encoder answer a 307 to the
+query-free original (D10 (a), confirmed by the owner 2026-10-23); no user setting (D6); one request
+per image (D7); the variant inherits the immutable-cache hazard and nothing more. Measured (ST5,
+121 catalog images, production build): decoded pixel bytes 612.8 MiB → 42.8 MiB, server transfer
+47.1 MiB of originals → 1.0 MiB of variants, 0 redirects; the no-worker fallback stays at 612.8 MiB.
+Still open: a redirected image load through the worker on a phone and in Safari; the bookmark-list
+avatars in a browser (ST4's rule, documented only); blur at device scale 3 or more with
+`iconsize` 200 (ST5). Accepted: a forged strong variant tag on a small PNG gets a 304 instead of
+the 307 (ST1); SVG and every non-raster source are never decoded on the server (ST1).
+
+Server Tokenizer landed all 4 slices: TK1 Token count route (`7a7ca32e7`); TK2 Client tokenizer over the route (`940c7f8c3`); TK3 Editor counts on a delay (`a719cec11`); TK4 Payload move, removal, docs (`4227427ca`). Still open: typing in `CharConfig` shows a count
+after the pause (TK4 skipped it because TK3 landed later); the capture scripts can no longer
+re-capture token ids in the browser, so the frozen `browser-ids.json` is the reference (TK2, TK4;
+project memory on the capture guard).
+
+Generation Stage Spinner (`docs/research/chat-generation-stage-colors-analysis.md`) landed all 4 slices:
+GS1 Stage contract and its retention in the job registry (`e1b49f057`); GS2 The runner reports its stages (`df489ec91`); GS3 The tab keeps each job's stage (`54e553623`); GS4 The spinner shows the selected chat's stage (`34c7fe355`). Still open: a visual check with a real provider (GS4; `.loadmove` has a 0.5 s color
+transition, so a stage as short as a mock's blends); an attach replays only the current stage, so a
+quick memory step can hide the first `preparing` (project memory).
+
+Upstream Integration (ports of upstream RisuAI up to `f50b5942`, inventory of all 79 upstream commits)
+landed all 23 slices: UP1 Current upstream block saves import (`ffc4d03aa`); UP2 Upstream plugin storage index imports (`3c80346dc`); UP3 The save harness gains the current upstream target (`43bb3c63d`); UP4 The guest bridge accepts only its parent's messages (`128e6949c`); UP5 The lite setter cannot change the plugin list (`052b6cad9`); UP6 SafeElement listeners attach to their element (`717a371f5`); UP7 Lore keep and don't-activate flags are per entry (`e555f2f0c`); UP8 HypaV3 contextual vectors keep their identity (`15ea7614f`); UP9 Gemini tool responses carry no role (`4b9d23ada`); UP10 CBS prefillsupported reads the model's flag (`5909b8dfc`); UP11 Claude 5 Opus and adaptive-only thinking (`9bd9501b6`); UP12 Gemini catalog entries and a unique id check (`e4ea7c5a3`); UP13 Wasmoon stops proxying JS objects (`385cc8da0`); UP14 Lua axLLM picks its model slot (`39f94aaff`); UP15 Lua image generation takes a NovelAI orientation (`3a9404635`); UP16 Lua form submission (`2285021da`); UP17 Select text does not clip in Safari (`9d85d9b8f`); UP18 Card export survives a missing portrait (`1bb7c82a3`); UP19 Creating a module adds it once (`0d0927d7c`); UP20 Realm creator blocking (`eb44b166c`); UP21 A chat parse error shows its stack (`695a13dc0`); UP22 Keep-alive audio counts as audible (`15503de1f`); UP23 Upstream ledger (`513808713`). The lasting ledger is `docs/research/upstream-ledger.md` (79
+rows: integrated 32, equivalent 20, excluded 22, deferred 5 with revisit triggers; the intake
+procedure for the next scan). Decisions: D2 reversed the Stop B lore flag choice (UP7); the
+`--bin` harness gained the `current` target and the migration pass (UP3). Still open: importing a
+`.bin` made by the real upstream app in a browser (UP1); the `current` harness target's migration
+step fails on a backup with a `_coldpluginIndex` pointer because memory cold storage starts empty
+(UP3, documented); real v3 plugins in a browser, including `getRootDocument()` scroll and key
+listeners (UP4–UP6); real Gemini and Vertex requests for the tool round trip and the 3.6/3.5 Flash
+entries, and the flags when an alias moves (UP9, UP12); a real NovelAI request and whether the
+plan's `square` meant a specific side (UP15); submitting a `risu-form` card in a real browser
+(UP16); macOS Safari and iOS for the select-text fix (UP17); exporting a portrait-less character
+as PNG to see `reencodeImage` turn WebP into PNG (UP18); module create, cancel, and edit in a
+browser, where opening the Trigger tab counts as content and asset bytes uploaded before a cancel
+stay stored (UP19); whether the live Realm always sends `creator` (UP20); the alert details view
+(UP21); Chrome's tab audio indicator and Android's media notification for the keep-alive audio
+(UP22, whose upstream help text was not ported, project memory).
+
 ## Server-Owned Data Chronology
 
 These boundaries matter to old saves, archives, and fixtures. This chronology was
@@ -427,9 +540,6 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     alert, a notification click from an uncontrolled window), M1 (Stop during VITS playback),
     C8 (a preset switch, a tab return, the credential link's focus, the Thanks page offline),
     S2 (a real `@hono/node-server` socket abort mid-download), C5 (the `.risum` drop).
-  - A3: with the parent character's create answer also lost, a same-id re-add now fails loudly
-    (the flush rejects) instead of silently, but the replacement's chats still do not reach
-    the server; the cause is `recoverFromConflict`'s `sameJson` branch in `resourceSync.svelte.ts`.
   - C5: a `#share_module` whose save a conflict discarded still has its pending share cleared
     (a retry would add the module twice).
   - C1: the fixed `exportLoreBook("sglobal")` has no caller in the current UI
