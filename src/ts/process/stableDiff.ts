@@ -4,7 +4,8 @@ import { requestChatData } from "./request/request";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import type { ChatRef } from "../storage/chatStore.svelte";
 import { alertError } from "../alert";
-import { fetchNative, globalFetch, readImage } from "../globalApi.svelte";
+import { fetchNative, globalFetch } from "../globalApi.svelte";
+import { readAsset } from "../storage/assetClient";
 import { auxFetchJson } from "../network/auxFetch";
 import { CharEmotion } from "../stores.svelte";
 import type { OpenAIChat } from "./index.svelte";
@@ -15,67 +16,89 @@ import random from "lodash/random";
  * `chatRef` and `pluginContext` are the send's: the prompt request runs for that chat and that
  * frozen preset and persona, not the tab's selection when it starts. `check` (a server job's image
  * callback) throws once the job no longer wants the image: no image request is started after that.
- * An image request already running is not cancelled.
+ * When supplied, `signal` cancels the prompt and image requests, polling, and delivery.
  */
 export async function stableDiff(
     currentChar: character,
     prompt: string,
-    target: { chatRef?: ChatRef | null; pluginContext?: PluginCallContext; check?: () => void } = {},
+    target: {
+        chatRef?: ChatRef | null;
+        pluginContext?: PluginCallContext;
+        check?: () => void;
+        signal?: AbortSignal;
+    } = {},
 ) {
-    if (settings.memoryTranslateMedia.sdProvider === "") {
-        alertError("Stable diffusion is not set in settings.");
-        return false;
+    const { signal } = target;
+    signal?.throwIfAborted();
+    try {
+        if (settings.memoryTranslateMedia.sdProvider === "") {
+            alertError("Stable diffusion is not set in settings.");
+            return false;
+        }
+
+        const promptItem = `Chat:\n${prompt}`;
+
+        const promptbody: OpenAIChat[] = [
+            {
+                role: "system",
+                content: currentChar.newGenData.instructions,
+            },
+            {
+                role: "user",
+                content: promptItem,
+            },
+        ];
+
+        const rq = await requestChatData(
+            {
+                formated: promptbody,
+                currentChar: currentChar,
+                temperature: 0.2,
+                maxTokens: 300,
+                bias: {},
+                useStreaming: false,
+                noMultiGen: true,
+                chatRef: target.chatRef ?? null,
+                pluginContext: target.pluginContext,
+            },
+            "submodel",
+            signal,
+        );
+        signal?.throwIfAborted();
+
+        // A cancelled job callback stops here: no alert for a request its cancellation ended, no image.
+        target.check?.();
+
+        if (rq.type === "fail") {
+            alertError(rq.result);
+            return false;
+        }
+        if (rq.type === "streaming" || rq.type === "multiline") {
+            alertError("Unexpected response type");
+            return false;
+        }
+
+        const r = rq.result.replace(/<Thoughts>[\s\S]*?<\/Thoughts>/g, "").trim();
+
+        const genPrompt = currentChar.newGenData.prompt.replaceAll("{{slot}}", r);
+        const neg = currentChar.newGenData.negative;
+
+        const result = await generateAIImage(genPrompt, currentChar, neg, "", { signal });
+        signal?.throwIfAborted();
+        return result;
+    } catch (error) {
+        signal?.throwIfAborted();
+        throw error;
     }
-
-    const promptItem = `Chat:\n${prompt}`;
-
-    const promptbody: OpenAIChat[] = [
-        {
-            role: "system",
-            content: currentChar.newGenData.instructions,
-        },
-        {
-            role: "user",
-            content: promptItem,
-        },
-    ];
-
-    const rq = await requestChatData(
-        {
-            formated: promptbody,
-            currentChar: currentChar,
-            temperature: 0.2,
-            maxTokens: 300,
-            bias: {},
-            useStreaming: false,
-            noMultiGen: true,
-            chatRef: target.chatRef ?? null,
-            pluginContext: target.pluginContext,
-        },
-        "submodel",
-    );
-
-    // A cancelled job callback stops here: no alert for a request its cancellation ended, no image.
-    target.check?.();
-
-    if (rq.type === "fail") {
-        alertError(rq.result);
-        return false;
-    }
-    if (rq.type === "streaming" || rq.type === "multiline") {
-        alertError("Unexpected response type");
-        return false;
-    }
-
-    const r = rq.result.replace(/<Thoughts>[\s\S]*?<\/Thoughts>/g, "").trim();
-
-    const genPrompt = currentChar.newGenData.prompt.replaceAll("{{slot}}", r);
-    const neg = currentChar.newGenData.negative;
-
-    return await generateAIImage(genPrompt, currentChar, neg, "");
 }
 
-function deliverGeneratedImage(img: string, currentChar: character, returnSdData: string): string {
+function deliverGeneratedImage(
+    img: string,
+    currentChar: character,
+    returnSdData: string,
+    signal?: AbortSignal,
+): string {
+    signal?.throwIfAborted();
     if (returnSdData === "inlay") return img;
     CharEmotion.update((emotions) => ({
         ...emotions,
@@ -84,17 +107,58 @@ function deliverGeneratedImage(img: string, currentChar: character, returnSdData
     return returnSdData;
 }
 
+/** Waits between polls, releasing the timer and listener on completion or cancellation. */
+function pollingDelay(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        signal?.throwIfAborted();
+        const cleanup = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => {
+            cleanup();
+            reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+            cleanup();
+            resolve();
+        }, ms);
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
 export async function generateAIImage(
     genPrompt: string,
     currentChar: character,
     neg: string,
     returnSdData: string,
+    options: { signal?: AbortSignal } = {},
+): Promise<string | false> {
+    const { signal } = options;
+    signal?.throwIfAborted();
+    try {
+        const result = await generateAIImageForProvider(genPrompt, currentChar, neg, returnSdData, signal);
+        signal?.throwIfAborted();
+        return result;
+    } catch (error) {
+        signal?.throwIfAborted();
+        throw error;
+    }
+}
+
+async function generateAIImageForProvider(
+    genPrompt: string,
+    currentChar: character,
+    neg: string,
+    returnSdData: string,
+    signal?: AbortSignal,
 ): Promise<string | false> {
     if (settings.memoryTranslateMedia.sdProvider === "webui") {
         const uri = new URL(settings.memoryTranslateMedia.webUiUrl);
         uri.pathname = "/sdapi/v1/txt2img";
         try {
             const da = await globalFetch(uri.toString(), {
+                abortSignal: signal,
                 body: {
                     width: settings.memoryTranslateMedia.sdConfig.width,
                     height: settings.memoryTranslateMedia.sdConfig.height,
@@ -113,13 +177,20 @@ export async function generateAIImage(
                     "Content-Type": "application/json",
                 },
             });
+            signal?.throwIfAborted();
 
             if (!da.ok) {
                 alertError(JSON.stringify(da.data));
                 return returnSdData === "inlay" ? "" : false;
             }
-            return deliverGeneratedImage(`data:image/png;base64,${da.data.images[0]}`, currentChar, returnSdData);
+            return deliverGeneratedImage(
+                `data:image/png;base64,${da.data.images[0]}`,
+                currentChar,
+                returnSdData,
+                signal,
+            );
         } catch (error) {
+            signal?.throwIfAborted();
             alertError(error);
             return false;
         }
@@ -309,7 +380,8 @@ export async function generateAIImage(
                 settings.memoryTranslateMedia.NAIImgConfig.character_image === ""
             ) {
                 const charimg = currentChar.image;
-                const img = await readImage(charimg);
+                const img = await readAsset(charimg, { signal });
+                signal?.throwIfAborted();
                 if (img) {
                     base64img = Buffer.from(img).toString("base64");
                 }
@@ -326,6 +398,7 @@ export async function generateAIImage(
                     imageObj.onload = () => resolve();
                     imageObj.src = `data:image/png;base64,${base64img}`;
                 });
+                signal?.throwIfAborted();
 
                 canvas.width = 1472;
                 canvas.height = 1472;
@@ -345,12 +418,15 @@ export async function generateAIImage(
                 const blob = await new Promise<Blob>((resolve) => {
                     canvas.toBlob(resolve, "image/png");
                 });
+                signal?.throwIfAborted();
 
                 if (blob) {
                     const arrayBuffer = await blob.arrayBuffer();
+                    signal?.throwIfAborted();
                     base64img = Buffer.from(arrayBuffer).toString("base64");
                 }
             } catch (error) {
+                signal?.throwIfAborted();
                 console.warn("Image resize failed, using original:", error);
             }
 
@@ -381,7 +457,8 @@ export async function generateAIImage(
             ) {
                 const charimg = currentChar.image;
 
-                const img = await readImage(charimg);
+                const img = await readAsset(charimg, { signal });
+                signal?.throwIfAborted();
                 if (img) {
                     base64img = Buffer.from(img).toString("base64");
                 }
@@ -405,14 +482,21 @@ export async function generateAIImage(
             console.log({ nothing: reqlist });
         }
         try {
-            const da = await globalFetch(settings.memoryTranslateMedia.NAIImgUrl, reqlist);
+            const da = await globalFetch(settings.memoryTranslateMedia.NAIImgUrl, {
+                ...reqlist,
+                abortSignal: signal,
+            });
+            signal?.throwIfAborted();
 
             if (!da.ok) {
                 alertError(Buffer.from(da.data).toString());
                 return returnSdData === "inlay" ? "" : false;
             }
-            return deliverGeneratedImage(await processZip(da.data), currentChar, returnSdData);
+            const img = await processZip(da.data);
+            signal?.throwIfAborted();
+            return deliverGeneratedImage(img, currentChar, returnSdData, signal);
         } catch (error) {
+            signal?.throwIfAborted();
             alertError(error);
             return false;
         }
@@ -420,6 +504,7 @@ export async function generateAIImage(
     if (settings.memoryTranslateMedia.sdProvider === "dalle") {
         // With the stored OpenAI key, on the server (`auxFetch`).
         const da = await auxFetchJson("openai-dalle", "https://api.openai.com/v1/images/generations", {
+            signal,
             method: "POST",
             body: {
                 prompt: genPrompt,
@@ -429,6 +514,7 @@ export async function generateAIImage(
                 quality: settings.memoryTranslateMedia.dallEQuality || "standard",
             },
         });
+        signal?.throwIfAborted();
 
         console.log(da);
 
@@ -438,7 +524,7 @@ export async function generateAIImage(
                 alertError(JSON.stringify(da.data));
                 return "";
             }
-            return deliverGeneratedImage(`data:image/png;base64,${res}`, currentChar, returnSdData);
+            return deliverGeneratedImage(`data:image/png;base64,${res}`, currentChar, returnSdData, signal);
         } else if (da.ok) {
             let img = da?.data?.data?.[0]?.b64_json;
             if (!img) {
@@ -446,7 +532,7 @@ export async function generateAIImage(
                 return false;
             }
             img = `data:image/png;base64,${img}`;
-            return deliverGeneratedImage(img, currentChar, returnSdData);
+            return deliverGeneratedImage(img, currentChar, returnSdData, signal);
         } else {
             alertError(Buffer.from(da.data).toString());
             return false;
@@ -471,6 +557,7 @@ export async function generateAIImage(
 
         const uri = model === "core" ? "core" : model === "ultra" ? "ultra" : "sd3";
         const da = await fetch("https://api.stability.ai/v2beta/stable-image/generate/" + uri, {
+            signal,
             body: formData,
             headers: {
                 authorization: "Bearer " + settings.secrets.stabilityKey,
@@ -478,8 +565,10 @@ export async function generateAIImage(
             },
             method: "POST",
         });
+        signal?.throwIfAborted();
 
         const res = await da.arrayBuffer();
+        signal?.throwIfAborted();
         if (!da.ok) {
             alertError(Buffer.from(res).toString());
             return false;
@@ -491,7 +580,7 @@ export async function generateAIImage(
         }
 
         const img = `data:image/png;base64,${Buffer.from(res).toString("base64")}`;
-        return deliverGeneratedImage(img, currentChar, returnSdData);
+        return deliverGeneratedImage(img, currentChar, returnSdData, signal);
     }
 
     if (
@@ -513,7 +602,8 @@ export async function generateAIImage(
 
         const fetchWrapper = async (url: string, options = {}) => {
             console.log(url);
-            const response = await globalFetch(url, options);
+            const response = await globalFetch(url, { ...options, abortSignal: signal });
+            signal?.throwIfAborted();
             if (!response.ok) {
                 console.log(JSON.stringify(response.data));
                 throw new Error(JSON.stringify(response.data));
@@ -548,33 +638,51 @@ export async function generateAIImage(
                 }
             }
 
-            const { prompt_id: id } = await fetchWrapper(createUrl("/prompt"), {
+            const submitted = await fetchWrapper(createUrl("/prompt"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: { prompt: prompt },
             });
+            signal?.throwIfAborted();
+            const id = submitted.prompt_id;
             console.log(`prompt id: ${id}`);
 
             let item;
+            let scopedHistory = true;
 
             const startTime = Date.now();
             const timeout = settings.memoryTranslateMedia.comfyConfig.timeout * 1000;
-            while (
-                !(item = (
-                    await (
-                        await fetchNative(createUrl("/history"), {
-                            headers: { "Content-Type": "application/json" },
-                            method: "GET",
-                        })
-                    ).json()
-                )[id])
-            ) {
-                console.log("Checking /history...");
+            while (true) {
+                signal?.throwIfAborted();
                 if (Date.now() - startTime >= timeout) {
                     alertError("Error: Image generation took longer than expected.");
                     return false;
                 }
-                await new Promise((r) => setTimeout(r, 1000));
+                const historyResponse = await fetchNative(
+                    createUrl(scopedHistory ? `/history/${encodeURIComponent(id)}` : "/history"),
+                    {
+                        headers: { "Content-Type": "application/json" },
+                        method: "GET",
+                        signal,
+                    },
+                );
+                signal?.throwIfAborted();
+                if (scopedHistory && (historyResponse.status === 404 || historyResponse.status === 405)) {
+                    scopedHistory = false;
+                    continue;
+                }
+                if (!historyResponse.ok) {
+                    throw new Error(`ComfyUI history request failed with status ${historyResponse.status}`);
+                }
+                const history = await historyResponse.json();
+                signal?.throwIfAborted();
+                item = history[id];
+                if (item) {
+                    break;
+                }
+                console.log("Checking /history...");
+                await pollingDelay(1000, signal);
+                signal?.throwIfAborted();
             } // Check history until the generation is complete.
             const genImgInfo = Object.values(item.outputs).flatMap((output: any) => output.images)[0];
 
@@ -587,12 +695,17 @@ export async function generateAIImage(
                 {
                     headers: { "Content-Type": "application/json" },
                     method: "GET",
+                    signal,
                 },
             );
-            const img64 = Buffer.from(await imgResponse.arrayBuffer()).toString("base64");
+            signal?.throwIfAborted();
+            const imageBytes = await imgResponse.arrayBuffer();
+            signal?.throwIfAborted();
+            const img64 = Buffer.from(imageBytes).toString("base64");
 
-            return deliverGeneratedImage(`data:image/png;base64,${img64}`, currentChar, returnSdData);
+            return deliverGeneratedImage(`data:image/png;base64,${img64}`, currentChar, returnSdData, signal);
         } catch (error) {
+            signal?.throwIfAborted();
             alertError(error);
             return false;
         }
@@ -630,6 +743,7 @@ export async function generateAIImage(
         }
 
         const res = await globalFetch("https://fal.run/" + model, {
+            abortSignal: signal,
             headers: {
                 Authorization: "Key " + token,
                 "Content-Type": "application/json",
@@ -637,6 +751,7 @@ export async function generateAIImage(
             method: "POST",
             body: body,
         });
+        signal?.throwIfAborted();
 
         if (!res.ok) {
             alertError(JSON.stringify(res.data));
@@ -649,7 +764,7 @@ export async function generateAIImage(
             return false;
         }
 
-        return deliverGeneratedImage(image, currentChar, returnSdData);
+        return deliverGeneratedImage(image, currentChar, returnSdData, signal);
     }
     if (settings.memoryTranslateMedia.sdProvider === "Imagen") {
         const model = settings.memoryTranslateMedia.ImagenModel;
@@ -681,12 +796,14 @@ export async function generateAIImage(
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
 
         const res = await auxFetchJson("google-imagen", url, {
+            signal,
             headers: {
                 "Content-Type": "application/json",
             },
             method: "POST",
             body: body,
         });
+        signal?.throwIfAborted();
 
         if (!res.ok) {
             alertError(JSON.stringify(res.data));
@@ -701,7 +818,7 @@ export async function generateAIImage(
         }
 
         const mimeType = res.data?.predictions?.[0]?.mimeType || "image/png";
-        return deliverGeneratedImage(`data:${mimeType};base64,${img64}`, currentChar, returnSdData);
+        return deliverGeneratedImage(`data:${mimeType};base64,${img64}`, currentChar, returnSdData, signal);
     }
     if (settings.memoryTranslateMedia.sdProvider === "openai-compat") {
         const config = settings.secrets.openaiCompatImage;
@@ -730,9 +847,11 @@ export async function generateAIImage(
         }
 
         const da = await globalFetch(config.url, {
+            abortSignal: signal,
             body: body,
             headers: headers,
         });
+        signal?.throwIfAborted();
 
         if (returnSdData === "inlay") {
             let res = da?.data?.data?.[0]?.b64_json;
@@ -740,7 +859,7 @@ export async function generateAIImage(
                 alertError(JSON.stringify(da.data));
                 return "";
             }
-            return deliverGeneratedImage(`data:image/png;base64,${res}`, currentChar, returnSdData);
+            return deliverGeneratedImage(`data:image/png;base64,${res}`, currentChar, returnSdData, signal);
         }
 
         if (da.ok) {
@@ -750,7 +869,7 @@ export async function generateAIImage(
                 return false;
             }
             img = `data:image/png;base64,${img}`;
-            return deliverGeneratedImage(img, currentChar, returnSdData);
+            return deliverGeneratedImage(img, currentChar, returnSdData, signal);
         } else {
             alertError(JSON.stringify(da.data));
             return false;
@@ -775,7 +894,8 @@ export async function generateAIImage(
         } else if (config.reference_mode === "character") {
             // reference: auto use the character's default image
             const charimg = currentChar.image;
-            const img = await readImage(charimg);
+            const img = await readAsset(charimg, { signal });
+            signal?.throwIfAborted();
             if (img) {
                 base64img = Buffer.from(img).toString("base64");
             }
@@ -802,12 +922,14 @@ export async function generateAIImage(
             // First: submit task
             const requestEndpoint = `https://api.wavespeed.ai/api/v3/${config.model}`;
             const requestResponse = await globalFetch(requestEndpoint, {
+                abortSignal: signal,
                 body: body,
                 headers: {
                     "Content-Type": "application/json",
                     Authorization: "Bearer " + config.key,
                 },
             });
+            signal?.throwIfAborted();
             let requestId: string;
             if (requestResponse.ok) {
                 /*
@@ -839,11 +961,13 @@ export async function generateAIImage(
                     break;
                 }
                 const taskResponse = await globalFetch(taskEndpoint, {
+                    abortSignal: signal,
                     method: "GET",
                     headers: {
                         Authorization: "Bearer " + config.key,
                     },
                 });
+                signal?.throwIfAborted();
                 if (taskResponse.ok) {
                     /*
                      * monitor response:
@@ -864,7 +988,8 @@ export async function generateAIImage(
                         break;
                     }
                     // else keep loop
-                    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+                    await pollingDelay(POLL_INTERVAL, signal);
+                    signal?.throwIfAborted();
                 } else {
                     alertError(JSON.stringify(taskResponse.data));
                     break;
@@ -877,12 +1002,14 @@ export async function generateAIImage(
 
             // Third: get result
             const resultResponse = await globalFetch(resultEndpoint, {
+                abortSignal: signal,
                 method: "GET",
                 headers: {
                     Authorization: "Bearer " + config.key,
                 },
                 rawResponse: true,
             });
+            signal?.throwIfAborted();
             if (resultResponse.ok) {
                 // mime-type: jpeg (default), png, webp
                 const contentType = resultResponse.headers?.["content-type"] || "image/jpeg";
@@ -893,12 +1020,13 @@ export async function generateAIImage(
                 const res = Buffer.from(binary).toString("base64");
                 const img = `data:${mimeType};base64,${res}`;
 
-                return deliverGeneratedImage(img, currentChar, returnSdData);
+                return deliverGeneratedImage(img, currentChar, returnSdData, signal);
             } else {
                 alertError(JSON.stringify(resultResponse.data));
                 return false;
             }
         } catch (error) {
+            signal?.throwIfAborted();
             alertError(error);
             return false;
         }

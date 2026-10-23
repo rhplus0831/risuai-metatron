@@ -138,6 +138,7 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
 /**
  * `auxFetch` answered as `globalFetch` answers (`{ ok, data, status }`): a JSON body parsed, any
  * other text as it is; a failed key save or a network error is `ok: false` with its message.
+ * An abort rejects with `init.signal`'s reason, including while the response body is read.
  */
 export async function auxFetchJson(
     op: string,
@@ -147,10 +148,19 @@ export async function auxFetchJson(
     let response: Response;
     try {
         response = await auxFetch(op, url, init);
+        init.signal?.throwIfAborted();
     } catch (error) {
+        init.signal?.throwIfAborted();
         return { ok: false, data: `${error}`, status: 400 };
     }
-    const text = await response.text();
+    let text: string;
+    try {
+        text = await response.text();
+        init.signal?.throwIfAborted();
+    } catch (error) {
+        init.signal?.throwIfAborted();
+        throw error;
+    }
     try {
         return { ok: response.ok, data: JSON.parse(text), status: response.status };
     } catch {
