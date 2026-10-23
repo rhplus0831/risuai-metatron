@@ -29,6 +29,7 @@ git show f4c26f27d:docs/plan/risunest-small-wins.md
 git show 74f770e19:docs/plan/upstream-bin-compat.md
 git show e1aa33150:docs/plan/audit-findings-perf.md
 git show 2508dfd0c:docs/plan/timing-tests.md
+git show f98be8d41:docs/plan/hypav3-background-memory.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -59,6 +60,7 @@ it is not a current architecture guide.
 | Upstream `.bin` Compatibility            | `74f770e19`: `docs/plan/upstream-bin-compat.md`                           | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [backups](../structure/backup-sync-hub.md), [build/test](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                       |
 | Audit Findings and Performance Leftovers | `e1aa33150`: `docs/plan/audit-findings-perf.md`                           | [server](../structure/self-host-server.md), [memory](../structure/memory.md), [LLM requests](../structure/llm-requests.md), [CBS/rendering](../structure/cbs-rendering.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [plugins/MCP](../structure/plugins-mcp.md), [media](../structure/media-aux.md), [app shell](../structure/app-shell.md), [build/test](../structure/build-test-platforms.md) |
 | Timing-Dependent Tests                   | `2508dfd0c`: `docs/plan/timing-tests.md`                                  | [build/test](../structure/build-test-platforms.md) `Tests`, `STRUCTURE.md` V3, [server](../structure/self-host-server.md) (test-only timing options)                                                                                                                                                                                                                                                                                                                                         |
+| HypaV3 Background Memory                 | `f98be8d41`: `docs/plan/hypav3-background-memory.md`                      | [memory](../structure/memory.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md)                                                                                                                                                                                                                                |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -258,6 +260,36 @@ record: a new real-time dependency is a V3 violation, not a new row. Still open:
     registry across `resetModules`.
 - Production: `chatStore.svelte.ts` `isMember` scans a character's chat list through a proxy, so
   per-character work grows quadratically with the chat count.
+
+HypaV3 Background Memory (written and verified in three Astra rounds on 2026-10-22, `96f145515`)
+landed all 13 slices on metatron between 2026-10-22 and 2026-10-23:
+
+- The parts, planner, and hooks (1a, 1b), the preset's `gapConfirmTokens` and the settings
+  warnings (2), the preflight contracts and stop control (3a), and the prompt assembly with
+  per-summary saves, select-only sends, the gap question, and hand-offs (3b).
+- The tab's question and progress (4), the chat source generation (5a), the detached memory host
+  (5b), the task service (5c), its server wiring, `memoryTask` frame, and routes (5d), and the
+  tab's status, badges, and modal fence (6).
+- Activation (7, `7314d2cc0`): production sends select stored summaries and the server's task
+  writes new ones after `done`; blocking stays for a Plugin-format `memory` slot and applicable
+  request triggers. The guides (8, `efb0c8a67`) describe the result.
+- The final checks on `f98be8d41` passed except the known `importPngCaps` slow failure and one
+  load flake in `characterCardsRoundTrip.test.ts` (CharX asset admission) that passed alone and
+  in a full rerun.
+
+Its D14 (the checkpoint load's memory fence) moved into `docs/plan/chat-checkpoints.md` as D12 and
+slice 3's load and tests. Still open:
+
+- No browser check: the progress overlay and "Stop here and continue", the sidebar `memory`
+  badge, the modal fence (including after a reconnect), "Summarize now" and "Cancel".
+- `server/src/prompt/tokens.ts` `countWithGoogle` has no signal or timeout: a stalled count holds
+  a job or a memory task until the deadline.
+- Stale wording since activation: the `MEMORY_TASKS_PATH` comment in `shared/events.ts`, the
+  `memoryTasks.notEnabled` locale text ("yet"), and a `chat-pipeline.md` Known Hazard that says
+  production passes no service.
+- Accepted from the slices: the planner tokenizes every window before the first request (1a);
+  an abort during the rate limiter's wait is untested (1b); a task's abort callback may emit a
+  duplicate `queued` event for the same task id (5c).
 
 ## Server-Owned Data Chronology
 

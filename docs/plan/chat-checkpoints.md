@@ -295,7 +295,8 @@ Depends: 1.
 Depends: 1, 2.
 
 - `server/src/data/checkpointService.ts` (new) `createCheckpointService(...)` over the
-  store and a `busy` check: the route logic as plain functions (`list`, `save`, `rename`,
+  store, a `busy` check, and the context's HypaV3 memory task service (`memoryTasks` from
+  `createServerContext`, `null` without a `characters` kind; D12): the route logic as plain functions (`list`, `save`, `rename`,
   `remove`, `load`), so slice 5's client test can call it without Hono.
   `busy(characterId, chatId)` is the job's chat slot (`jobs.chatBusy`) or a non-empty
   `guard.chatHolders(...)` (`generationLock.ts`).
@@ -329,14 +330,22 @@ Depends: 1, 2.
   Confirm where `applyChangesInScope` opens and commits (~732, ~808) and that
   `writeCount` counts these writes.
 - Load (`service.load`), one call with no await: epoch and maintenance check, busy
-  check, `compose`, the chat revision equals `chatBaseRevision` (409 otherwise), then
-  `store.applyChanges` with the one-op `replace` group on `chatBaseRevision` (a fresh
+  check, `compose`, the chat revision equals `chatBaseRevision` (409 otherwise), then the
+  memory fence (D12): `memoryTasks.acquireSummaryWriter({ chaId, chatId },
+"checkpoint-load")`, called without awaiting its promise (the lease is held from the call
+  and it ends the chat's running task `cancelled`/`writerLease` at once; hand-offs and
+  manual starts for the chat only queue while it is held), released in a `finally` after
+  the transaction whether it committed or not. Then `store.applyChanges` with the one-op `replace` group on `chatBaseRevision` (a fresh
   `groupId`) and the transaction option: `before` saves the `safety` checkpoint (named
   "Before loading" plus the checkpoint's name, truncated); `after` sets the chat's floor
   to the group's new revision, sets the policy's `lastAutoTurns` to the loaded state's
   `userTurns` when a policy row exists (slice 4 reads it), and prunes safety checkpoints
   beyond `SAFETY_KEEP`. A conflict or any throw leaves nothing written. The replace
-  publishes the chat's change feed ref after the commit. A lost answer is not retried by
+  publishes the chat's change feed ref after the commit, and advances the chat's source
+  generation once through `chatStore.ts`'s commit path (no extra call): its
+  `onChatInvalidated` notice makes the memory task service drop the chat's queued input,
+  retained input, and `pendingManual` from the older generation. The fence itself advances
+  nothing and publishes no notice. A lost answer is not retried by
   the tab (Decisions D5).
 - Update the route table and Flows of `self-host-server.md` (the floor rule beside the
   chat group rules).
@@ -355,6 +364,14 @@ Depends: 1, 2.
   leaves the chat, its floor, and the three older safety checkpoints as they were; save
   and load while a job holds the chat slot (a runner held on a latch) are 409
   `generating`; a wrong epoch is 412; maintenance is 503; another character's chat id is 404.
+  Memory fence (D12, in `chatCheckpointRoutes.test.ts` or `memoryTasks.test.ts` with the
+  context's real service): a load while the chat's memory task runs (its provider held on a
+  latch) ends the task `cancelled` with reason `writerLease`, and the late provider result
+  writes nothing; a successful load advances `chatSourceGeneration` once and delivers one
+  `onChatInvalidated` notice, after which a manual start answers `pendingManual` instead of
+  reusing the pre-load input; a stale-revision conflict and an `after` callback throw
+  advance the generation by nothing, deliver no notice, and release the lease (a hand-off
+  afterwards runs).
 
 ## Slice 4. Auto-checkpoint after a finished job (_small_, `self-host-server.md`)
 
@@ -502,6 +519,14 @@ The runner takes each default unless the user overrides it.
 - D11. Writes based on the pre-load chat. Options: (a) a per-chat restore floor refuses
   every group below it (slice 3); (b) no floor, documented: another tab's stale by-id
   edits land on the restored chat. Default (a).
+- D12. HypaV3 background memory (fixed by D14 of the archived HypaV3 Background Memory plan, landed
+  2026-10-23; not an option). The auto checkpoint captures the memory committed at that
+  moment and does not wait for a memory task. A load takes the memory task service's
+  summary writer lease for the chat before its transaction (cancelling the chat's running
+  task) and releases it in a `finally`; its `replace` advances the chat's source generation
+  once in the commit, which discards the task's retained input and `pendingManual`; a
+  rolled-back load advances and notifies nothing. A later task write never edits a
+  checkpoint (tasks write only `hypaV3Data` through the chat's `meta` group).
 
 ## Open Questions
 
@@ -514,7 +539,8 @@ The runner takes each default unless the user overrides it.
 - Detached writers after a load: a server translation (`server/src/translation/runner.ts`)
   writing on a pre-load base is refused by the floor and loses that translation; one on
   the new base applies only where the message text still matches its `sourceHash`.
-  Acceptable, or should the load end running translations of the chat?
+  Acceptable, or should the load end running translations of the chat? (The HypaV3 memory
+  task is ended by the load's fence, D12.)
 - Character-scoped state is not rolled back: a Lua or trigger write to the character
   record, `globalChatVariables`, or a module is outside the chat. RisuBard's slots have
   the same scope.
