@@ -20,8 +20,8 @@ Active planning and implementation:
   service worker so the browser HTTP cache holds asset bytes instead of the tab's memory;
   planned, slices 0–7, slice 0 is a browser probe.
 - [Server Thumbnails](server-thumbnails.md): server-resized character, group, and persona
-  icons for lists and chat avatars; planned, 5 slices. Overlaps Direct Asset URLs on
-  `risuCache` and the asset route: choose which runs first before either's client slice.
+  icons for lists and chat avatars; planned, 5 slices. Runs after Direct Asset URLs
+  (owner decision 2026-10-23) and moves onto its asset route first.
 - [Server Tokenizer](server-tokenizer.md): the tab counts tokens through a server route and
   drops its own tokenizer copy and `public/token/` payloads; planned, 4 slices.
 - [Upstream Integration](upstream-integration.md): an intake ledger for upstream Risuai

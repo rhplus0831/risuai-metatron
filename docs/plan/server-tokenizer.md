@@ -1,7 +1,8 @@
 # Server Tokenizer Plan
 
-Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at `832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Locations were read by the
-session against `28e7fda88`. Line numbers are approximate; the identifiers are the anchors.
+Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
+`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Locations were read by
+the session against `28e7fda88`. Line numbers are approximate; the identifiers are the anchors.
 Re-verify each cited location before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from

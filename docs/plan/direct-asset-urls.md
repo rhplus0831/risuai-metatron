@@ -1,11 +1,14 @@
 # Direct Asset URLs Plan
 
-Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at `832caccf0`, after the Per-Chat Send plan was archived. No slice landed. It overlaps the Server Thumbnails plan (see Not In This Plan). A Luna fan-out (7 workers) mapped the code at
-`28e7fda88`, and the session re-read the signing code, the key store, `/api/read`, and the
-limiters. The source is the 2026-10-20 research pick
-(`docs/research/pocketrisu-risubard-picks.md` §2.1, `docs/research/README.md` PocketRisu/RisuBard
-decision 2). PocketRisu (`/home/codex/PocketRisu`) is a read-only reference. Line numbers are
-approximate; the identifiers are the anchors. Re-verify each cited location before editing.
+Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
+`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. The Server Thumbnails
+plan runs after this one (owner decision 2026-10-23, see Not In This Plan). A Luna fan-out (7
+workers) mapped the code at `28e7fda88`, and the session re-read the signing code, the key
+store, `/api/read`, and the limiters. The source is the 2026-10-20 research pick
+(`docs/research/pocketrisu-risubard-picks.md` §2.1, `docs/research/README.md`
+PocketRisu/RisuBard decision 2). PocketRisu (`/home/codex/PocketRisu`) is a read-only
+reference. Line numbers are approximate; the identifiers are the anchors. Re-verify each cited
+location before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from
 `STRUCTURE.md` Choose By Task; that guide's `Invariants` apply. Workflow per slice:
@@ -402,9 +405,8 @@ The runner takes each default unless the user overrides it.
 ## Not In This Plan
 
 - Server thumbnails (Haejeok B1, PocketRisu `inlay_thumb`): a later `?w=` variant of this
-  route, in its own plan. The Server Thumbnails plan (`server-thumbnails.md`) was drafted
-  against `/sw/img/` and `risuCache` instead; decide which runs first before either's
-  client slice (its slice 2, slice 4 here).
+  route, in its own plan. The Server Thumbnails plan (`server-thumbnails.md`) runs after this
+  one (owner decision 2026-10-23) and re-plans its route and client slices onto this route.
 - Asset garbage collection and an orphan sweep (RisuNest item 7). Deleting is already allowed
   and does not break immutability (slice 2).
 - A logout or device revocation (none exists).

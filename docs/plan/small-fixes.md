@@ -1,9 +1,12 @@
 # Small Fixes Plan
 
-Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at `832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Per-Chat Send slice 7 (`c9e6cde40`) landed after drafting and changed `server/src/jobs/channel.ts`, `src/ts/network/jobChannel.ts`, and `src/ts/process/request/request.ts`, so line numbers cited there are stale. Every location was checked against `28e7fda88` by a
-Luna fan-out (8 workers), with the TLS, sandbox log, WebLLM, and body-limit claims re-read
-by the session. Line numbers are approximate; the identifiers are the anchors. Re-verify each
-cited location before editing.
+Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
+`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Per-Chat Send slice 7
+(`c9e6cde40`) landed after drafting and changed `server/src/jobs/channel.ts`,
+`src/ts/network/jobChannel.ts`, and `src/ts/process/request/request.ts`, so line numbers cited
+there are stale. Every location was checked against `28e7fda88` by a Luna fan-out (8 workers),
+with the TLS, sandbox log, WebLLM, and body-limit claims re-read by the session. Line numbers
+are approximate; the identifiers are the anchors. Re-verify each cited location before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from
 `STRUCTURE.md` Choose By Task; that guide's `Invariants` apply. Workflow per slice:
@@ -148,7 +151,8 @@ max-age=31536000, immutable`.
 
 ## Slice 5. A reverse proxy's WebLLM format runs the configured model (_small_, `llm-requests.md`)
 
-Depends: 3 (same guide). Per-Chat Send slice 7 (`c9e6cde40`) changed the client `request.ts`: re-read it first.
+Depends: 3 (same guide). Per-Chat Send slice 7 (`c9e6cde40`) changed the client `request.ts`:
+re-read it first.
 
 - `server/src/llm/request.ts` `requestWebLLM` (~681): use `arg.modelInfo.internalID`, and
   fall back to the split only when it is missing. Make the same change in the client copy

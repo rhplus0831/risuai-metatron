@@ -1,11 +1,15 @@
 # Static Audit Fixes Plan
 
-Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at `832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Per-Chat Send slice 7 (`c9e6cde40`) landed after drafting and changed `server/src/jobs/channel.ts`, `src/ts/network/jobChannel.ts`, and `src/ts/process/request/request.ts`, so line numbers cited there are stale. Source:
-`/home/codex/metatron-stage/audit-report/metatron-static-audit-2026-10-23.md`, outside the repository (audited at `79ae26cc4`;
-IDs D1–F4 below are that report's). A Luna fan-out (8 workers) re-verified every finding
-against `28e7fda88` and mapped the fix points, and the session re-read the toggle preset
-readers. Line numbers are approximate; the identifiers are the anchors. Re-verify each cited
-location before editing.
+Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
+`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. Per-Chat Send slice 7
+(`c9e6cde40`) landed after drafting and changed `server/src/jobs/channel.ts`,
+`src/ts/network/jobChannel.ts`, and `src/ts/process/request/request.ts`, so line numbers cited
+there are stale. Source:
+[`docs/audit/static-audit-2026-10-23.md`](../audit/static-audit-2026-10-23.md) (audited at
+`79ae26cc4`; IDs D1–F4 below are that report's). A Luna fan-out (8 workers) re-verified every
+finding against `28e7fda88` and mapped the fix points, and the session re-read the toggle
+preset readers. Line numbers are approximate; the identifiers are the anchors. Re-verify each
+cited location before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from
 `STRUCTURE.md` Choose By Task; that guide's `Invariants` apply. Workflow per slice:
@@ -438,7 +442,9 @@ Depends: 12. Q6 decided: (a), with the rate limits added (2026-10-23).
 
 ## Slice 14. Queued callbacks fail together when nobody is attached (_small_, `self-host-server.md`)
 
-Depends: 13 (same guide). Per-Chat Send slice 7 (`c9e6cde40`) changed `server/src/jobs/channel.ts`: a cancelled callback now holds the lane until the tab reports it drained or `CANCELLED_CALLBACK_DRAIN_MS` passes. Re-read it first.
+Depends: 13 (same guide). Per-Chat Send slice 7 (`c9e6cde40`) changed
+`server/src/jobs/channel.ts`: a cancelled callback now holds the lane until the tab reports it
+drained or `CANCELLED_CALLBACK_DRAIN_MS` passes. Re-read it first.
 
 - When a dispatched root expires `disconnected` because no owner is attached (~314-361),
   settle every queued root of that client as `disconnected` at once (Q7). Today they
@@ -462,8 +468,8 @@ contract: both were decided by the owner on 2026-10-23.
     server.
   - (b) Keep today's rule (no warning) and rely on the banner (slice 4).
 
-  Decided (a) by the owner on 2026-10-23, the audit's recommendation. The warning ends when the user exports and
-  discards, or the edit is accepted.
+  Decided (a) by the owner on 2026-10-23, the audit's recommendation. The warning ends when the
+  user exports and discards, or the edit is accepted.
 
 - Q2. ComfyUI history endpoint (slice 7). Options:
   - (a) `/history/{prompt_id}` only.

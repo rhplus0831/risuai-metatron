@@ -1,11 +1,13 @@
 # Server Thumbnails Plan
 
-Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at `832caccf0`, after the Per-Chat Send plan was archived. No slice landed. It overlaps the Direct Asset URLs plan (see Order). Source: Haejeok survey candidate B1
-(`docs/research/haejeok-feature-survey.md` §2 (b) and §3 item 3; HaejeokRisuai code at
-`/home/codex/HaejeokRisuai`, read-only reference). Locations were mapped by a Luna fan-out
-(8 workers) against `28e7fda88`; the `getCharImage`, `sw.js` registration, chat avatar, and
-sharp claims were re-read by the session. Line numbers are approximate; the identifiers are
-the anchors. Re-verify each cited location before editing.
+Status: drafted 2026-10-23 at `28e7fda88` and imported into `docs/plan/` on 2026-10-23 at
+`832caccf0`, after the Per-Chat Send plan was archived. No slice landed. It runs after the
+Direct Asset URLs plan (owner decision 2026-10-23, see Order). Source: Haejeok survey candidate
+B1 (`docs/research/haejeok-feature-survey.md` §2 (b) and §3 item 3; HaejeokRisuai code at
+`/home/codex/HaejeokRisuai`, read-only reference). Locations were mapped by a Luna fan-out (8
+workers) against `28e7fda88`; the `getCharImage`, `sw.js` registration, chat avatar, and sharp
+claims were re-read by the session. Line numbers are approximate; the identifiers are the
+anchors. Re-verify each cited location before editing.
 
 One slice is one session, one commit, one file cluster. Each slice names its guide from
 `STRUCTURE.md` Choose By Task; that guide's `Invariants` apply. Workflow per slice:
@@ -133,7 +135,12 @@ table, asset previews, exports, inlays, and the parser's `{{asset}}` output.
 - Slices 3 and 4 move surfaces to thumbnails and share no file: 3 is the lists and the two
   settings previews, 4 is the chat avatar path. They run in parallel.
 - Slice 5 is measurement, the browser check, and the docs close.
-- Coordination: the Direct Asset URLs plan (`direct-asset-urls.md`) retires asset entries in `risuCache` (its slice 6) and lists thumbnails as a later `?w=` variant of its asset route. Slice 2 here builds on `/sw/img/t<size>-<hex>` and `risuCache`. Decide which plan runs first before slice 2; if Direct Asset URLs lands first, rebase slices 1–2 onto its route.
+- Order with Direct Asset URLs (`direct-asset-urls.md`): the owner decided on 2026-10-23 that
+  it runs first. It retires asset entries in `risuCache` (its slice 6) and serves assets from
+  its own route, while slices 1–2 here were drafted against `/sw/img/t<size>-<hex>` and
+  `risuCache`. Before slice 1, re-plan slices 1–2 as a `?w=` variant of that route. If its
+  slice 0 probe fails and it changes shape (its D1 (b)), confirm the order with the owner
+  again.
 
 ## Slice 1. Thumbnail route and cache (_hard_, `self-host-server.md`)
 
