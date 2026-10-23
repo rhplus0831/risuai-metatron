@@ -128,7 +128,10 @@ function harness() {
     const hydrations: string[] = [];
     const attached = { value: true };
     const delivering = { value: true };
-    const open = (jobId: string, options: { clientId?: string; hooks?: Partial<GenerationHooks> } = {}): Link =>
+    const open = (
+        jobId: string,
+        options: { clientId?: string; hooks?: Partial<GenerationHooks>; attached?: { value: boolean } } = {},
+    ): Link =>
         hub.open({
             jobId,
             clientId: options.clientId ?? "tab",
@@ -143,7 +146,7 @@ function harness() {
                 hydrations.push(jobId);
                 return [receipt];
             },
-            ownerAttached: () => attached.value,
+            ownerAttached: () => (options.attached ?? attached).value,
         });
     const ofType = <T extends Sent["type"]>(type: T) =>
         sent.filter((event) => event.type === type) as (Sent & {
@@ -359,44 +362,160 @@ describe("the hub: deadlines", () => {
         expect(h.last("cancel").id).toBe(h.last("question").id);
     });
 
-    it("expires requests without an owner one after another, each its allowance from its own dispatch, while a queued one past its allowance still ends only with its job or its signal, without a cancel", async () => {
+    it("sweeps queued roots of already-open ownerless jobs on a disconnected expiry, leaves nothing to attach, and gives a fresh root its full allowance", async () => {
+        const h = harness();
+        h.attached.value = false;
+        h.delivering.value = false;
+        const b = h.open("b");
+        const c = h.open("c");
+        await h.tick(1);
+        // This job opened at the dispatch time is eligible too; b and c opened earlier.
+        const a = h.open("a");
+        const first = a.channel.callback("editoutput", { text: "first" });
+        const firstEvent = h.last("callback");
+        expect(firstEvent).toMatchObject({ job: "a", deadline: h.clock.value + CALLBACK_TIMEOUT_MS });
+        const queued: Promise<QuestionResult | CallbackResult>[] = [
+            a.channel.callback("editoutput", { text: "same job" }),
+            b.channel.ask({ kind: "alertConfirm", payload: { message: "other job" } }),
+            c.channel.callback("editoutput", { text: "third job" }),
+        ];
+        await h.tick(CALLBACK_TIMEOUT_MS - 1);
+        for (const request of [first, ...queued]) {
+            expect(await h.state(request)).toBe("pending");
+        }
+        expect(h.sent).toEqual([firstEvent]);
+        expect(h.hydrations).toEqual(["a"]);
+
+        await h.tick(1);
+        for (const request of [first, ...queued]) {
+            expect(await h.state(request)).toMatchObject({ outcome: "disconnected" });
+        }
+        // Only the dispatched root was hydrated or sent, and only it receives a cancel.
+        const expiredEvents = [firstEvent, { type: "cancel", epoch: "e", id: firstEvent.id, job: "a" }];
+        expect(h.sent).toEqual(expiredEvents);
+        expect(h.hydrations).toEqual(["a"]);
+        h.attached.value = true;
+        h.delivering.value = true;
+        for (const link of [a, b, c]) {
+            link.handleAttach();
+        }
+        expect(h.sent).toEqual(expiredEvents);
+        expect(h.hydrations).toEqual(["a"]);
+
+        const fresh = c.channel.callback("editoutput", { text: "fresh" });
+        const freshEvent = h.last("callback");
+        expect(freshEvent).toMatchObject({
+            job: "c",
+            payload: { text: "fresh" },
+            deadline: h.clock.value + CALLBACK_TIMEOUT_MS,
+        });
+        expect(h.sent).toEqual([...expiredEvents, freshEvent]);
+        expect(h.hydrations).toEqual(["a", "c"]);
+        c.close("end");
+        await fresh;
+    });
+
+    it("keeps attached and newer jobs' queued roots through another job's disconnected expiry and drain hold, then dispatches them FIFO with full allowances", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const b = h.open("b", { attached: { value: true } });
+        const firstTimeout = QUESTION_TIMEOUT_MS + CALLBACK_TIMEOUT_MS;
+        const first = a.channel.callback("editoutput", { text: "first" }, { timeoutMs: firstTimeout });
+        const firstEvent = h.last("callback");
+        const question = b.channel.ask({ kind: "alertConfirm", payload: { message: "attached job" } });
+        // The first callback was taken by an owner before it disconnected. Only b still has one.
+        h.attached.value = false;
+        h.delivering.value = false;
+        await h.tick(1);
+        const c = h.open("c");
+        const newer = c.channel.callback("editoutput", { text: "newer job" });
+        await h.tick(firstTimeout - 1);
+        expect(await h.state(first)).toMatchObject({ outcome: "disconnected" });
+        expect(await h.state(question)).toBe("pending");
+        expect(await h.state(newer)).toBe("pending");
+        const expiredEvents = [firstEvent, { type: "cancel", epoch: "e", id: firstEvent.id, job: "a" }];
+        expect(h.sent).toEqual(expiredEvents);
+        expect(h.hydrations).toEqual(["a"]);
+
+        // Surviving roots still wait for the delivered callback to drain, past their own allowances.
+        await h.tick(CANCELLED_CALLBACK_DRAIN_MS - 1);
+        expect(await h.state(question)).toBe("pending");
+        expect(await h.state(newer)).toBe("pending");
+        expect(h.sent).toEqual(expiredEvents);
+        expect(h.hydrations).toEqual(["a"]);
+        h.delivering.value = true;
+        expect(a.drained(firstEvent.id)).toBe(true);
+        const questionEvent = h.last("question");
+        expect(questionEvent).toMatchObject({ job: "b", deadline: h.clock.value + QUESTION_TIMEOUT_MS });
+        expect(h.sent).toEqual([...expiredEvents, questionEvent]);
+        expect(await h.state(newer)).toBe("pending");
+        expect(h.hydrations).toEqual(["a"]);
+        await h.tick(QUESTION_TIMEOUT_MS - 1);
+        expect(await h.state(question)).toBe("pending");
+        expect(await h.state(newer)).toBe("pending");
+
+        h.delivering.value = false;
+        await h.tick(1);
+        expect(await h.state(question)).toMatchObject({ outcome: "timedOut" });
+        const newerEvent = h.last("callback");
+        expect(newerEvent).toMatchObject({
+            job: "c",
+            payload: { text: "newer job" },
+            deadline: h.clock.value + CALLBACK_TIMEOUT_MS,
+        });
+        expect(h.hydrations).toEqual(["a", "c"]);
+        expect(h.sent).toEqual([
+            ...expiredEvents,
+            questionEvent,
+            { type: "cancel", epoch: "e", id: questionEvent.id, job: "b" },
+            newerEvent,
+        ]);
+        c.close("end");
+        await newer;
+    });
+
+    it("gives an ownerless root of a job opened after the expired one's dispatch its own allowance from its dispatch, sweeps what queued behind it at its expiry, and ends a queued one meanwhile only with its job or its signal, without a cancel", async () => {
         const h = harness();
         h.attached.value = false;
         h.delivering.value = false;
         const a = h.open("a");
-        const b = h.open("b");
-        const c = h.open("c");
         const controller = new AbortController();
         const first = a.channel.callback("editoutput", { text: "1" }, { timeoutMs: 100 });
+        expect(h.last("callback")).toMatchObject({ job: "a", deadline: 1_100 });
+        await h.tick(10);
+        // Opened after the first root's dispatch: their owners may not have attached yet.
+        const b = h.open("b");
+        const c = h.open("c");
+        const d = h.open("d");
         const second = b.channel.callback("editoutput", { text: "2" }, { timeoutMs: 100 });
-        const third = a.channel.callback("editoutput", { text: "3" }, { timeoutMs: 100 });
-        const closing = b.channel.ask({ kind: "alertConfirm", payload: { message: "closing" } }, { timeoutMs: 100 });
+        const closing = d.channel.ask({ kind: "alertConfirm", payload: { message: "closing" } }, { timeoutMs: 100 });
         const signalled = c.channel.ask(
             { kind: "alertConfirm", payload: { message: "signalled" } },
             { timeoutMs: 100, signal: controller.signal },
         );
-        expect(h.last("callback")).toMatchObject({ job: "a", deadline: 1_100 });
-        await h.tick(100);
+        await h.tick(90);
         expect(await first).toMatchObject({ outcome: "disconnected" });
         expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "2" }, deadline: 1_200 });
-        await h.tick(99);
-        expect(await h.state(second)).toBe("pending");
-        await h.tick(1);
-        expect(await second).toMatchObject({ outcome: "disconnected" });
-        expect(h.last("callback")).toMatchObject({ job: "a", payload: { text: "3" }, deadline: 1_300 });
         // Long past their own allowances, the two questions are still queued.
         await h.tick(50);
+        expect(await h.state(second)).toBe("pending");
         expect(await h.state(closing)).toBe("pending");
         expect(await h.state(signalled)).toBe("pending");
-        b.close("The job has ended");
+        d.close("The job has ended");
         expect(await closing).toEqual({ outcome: "aborted", error: "The job has ended" });
         controller.abort();
         expect(await signalled).toEqual({ outcome: "aborted", error: "The request ended" });
-        await h.tick(50);
+        // The first job was opened before the second root's dispatch: its new root ends with that root.
+        const third = a.channel.callback("editoutput", { text: "3" }, { timeoutMs: 100 });
+        await h.tick(49);
+        expect(await h.state(second)).toBe("pending");
+        expect(await h.state(third)).toBe("pending");
+        await h.tick(1);
+        expect(await second).toMatchObject({ outcome: "disconnected" });
         expect(await third).toMatchObject({ outcome: "disconnected" });
         expect(h.ofType("question")).toHaveLength(0);
-        expect(h.hydrations).toEqual(["a", "b", "a"]);
-        expect(h.ofType("cancel").map((event) => event.job)).toEqual(["a", "b", "a"]);
+        expect(h.hydrations).toEqual(["a", "b"]);
+        expect(h.ofType("cancel").map((event) => event.job)).toEqual(["a", "b"]);
         // Nothing is left on the lane.
         void c.channel.callback("editoutput", { text: "later" });
         expect(h.last("callback")).toMatchObject({ job: "c", deadline: h.clock.value + CALLBACK_TIMEOUT_MS });

@@ -91,6 +91,8 @@ type Request = {
     children: Set<Request>;
     /** It holds the client's slot (it is the outstanding request, or a child of it). */
     dispatched: boolean;
+    /** When it took the client's slot; `Infinity` while queued. */
+    dispatchedAt: number;
     /** An open owner socket took it at least once: a later send is a replay. */
     delivered: boolean;
     settled: boolean;
@@ -109,6 +111,7 @@ let earlyOrder = 0;
 
 type ChannelState = {
     transport: ChannelTransport;
+    openedAt: number;
     requests: Set<Request>;
     closed: boolean;
     /**
@@ -262,8 +265,10 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
  * queued. Every request has one deadline from the moment it is dispatched (it takes the client's
  * slot, with or without an owner socket attached), capped by its parent's; at the deadline it is
  * `timedOut` with an owner socket attached, else `disconnected`. A queued root has no deadline: it
- * waits until it is dispatched, its job ends, or the signal it was given aborts. A job's end
- * (`close`) settles its requests `aborted` and cancels their children.
+ * waits until it is dispatched, its job ends, or the signal it was given aborts. When a dispatched
+ * root expires `disconnected`, queued roots of that client whose own jobs have no owner and were
+ * opened no later than that root's dispatch settle `disconnected` first. A job's end (`close`)
+ * settles its requests `aborted` and cancels their children.
  *
  * A callback settled without its answer after an owner socket took it (a timeout, its caller's
  * signal, its parent's or its job's end) is cancelled on the tab, but its hook may still be running
@@ -385,9 +390,28 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         if (request.settled || now() < request.deadline) {
             return request.settled;
         }
+        const attached = request.channel.transport.ownerAttached();
+        if (!attached && request.parent === null && request.dispatched) {
+            const lane = laneOf(request.channel.transport.clientId);
+            const queued = lane.queue.filter(
+                (entry) =>
+                    !entry.settled &&
+                    !entry.channel.closed &&
+                    entry.channel.openedAt <= request.dispatchedAt &&
+                    !entry.channel.transport.ownerAttached(),
+            );
+            // The expired root keeps the slot while these queued roots settle.
+            for (const entry of queued) {
+                settle(
+                    entry,
+                    { outcome: "disconnected", error: "No owner was connected when the request ahead of it expired" },
+                    true,
+                );
+            }
+        }
         settle(
             request,
-            request.channel.transport.ownerAttached()
+            attached
                 ? { outcome: "timedOut", error: "No answer before the deadline" }
                 : { outcome: "disconnected", error: "No owner was connected before the deadline" },
             true,
@@ -397,7 +421,8 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
     function dispatch(request: Request, lane: ClientLane) {
         // The deadline starts now: time spent behind other requests in the queue is not counted.
-        const deadline = Math.min(now() + request.timeoutMs, request.parent?.deadline ?? Infinity);
+        request.dispatchedAt = now();
+        const deadline = Math.min(request.dispatchedAt + request.timeoutMs, request.parent?.deadline ?? Infinity);
         request.deadline = deadline;
         const build = request.makeBuild(request.id, deadline);
         request.build = build;
@@ -494,6 +519,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 parent,
                 children: new Set(),
                 dispatched: false,
+                dispatchedAt: Infinity,
                 delivered: false,
                 settled: false,
                 timer: null,
@@ -527,7 +553,14 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     return {
         /** Opens the channel of one job. The registry passes answers, attaches, and the job's end to it. */
         open(transport: ChannelTransport) {
-            const state: ChannelState = { transport, requests: new Set(), closed: false, early: [], earlyBytes: 0 };
+            const state: ChannelState = {
+                transport,
+                openedAt: now(),
+                requests: new Set(),
+                closed: false,
+                early: [],
+                earlyBytes: 0,
+            };
 
             const channel: JobChannel = {
                 notice(notice) {
