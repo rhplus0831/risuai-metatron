@@ -46,7 +46,9 @@ __pycache__/
 dist.zip
 /scripts/
 .env
-/server/node/ssl/certificate
+# Local TLS certificates and keys (server/ssl/Generate Certificate.*); server/node/ssl is the location before the Hono port.
+/server/ssl/certificate/
+/server/node/ssl/certificate/
 
 
 # Local agent files

@@ -1022,8 +1022,6 @@ export class SandboxHost {
                 }
 
                 if (this.terminated) return;
-                console.log("Original request:", data);
-                console.log("Original response:", response, transferables);
                 try {
                     this.iframe.contentWindow?.postMessage(response, "*", transferables);
                 } catch (error) {

@@ -1,9 +1,13 @@
 # The builder stage runs `COPY . .`, and the runtime stage copies all of `server/` and `shared/`.
-# Keep out what neither `pnpm build` nor the server reads.
+# Keep out local secrets and files neither `pnpm build` nor the server reads.
 
 # Dependencies and build output, rebuilt in the image.
 **/node_modules
 dist
+
+# Local TLS certificates and private keys, including the legacy server/node/ssl location, never belong in the image.
+server/ssl/certificate
+server/node/ssl/certificate
 
 # Local data and tool output: the server's storage (`save/`, the `pnpm dev:agent` copies), test
 # reports, handovers.
