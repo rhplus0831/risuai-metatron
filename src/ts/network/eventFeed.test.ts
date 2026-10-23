@@ -145,6 +145,8 @@ describe("the live-update socket client", () => {
     });
 
     it("reconnects with backoff, and a connection after more than five minutes signs a fresh JWT and reconciles again", async () => {
+        // The longest jitter: every wait is (just under) its full delay.
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
         const start = Date.now();
         const first = await started();
         first.frame({ type: "hello", epoch: "E1" });
@@ -174,10 +176,95 @@ describe("the live-update socket client", () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
         expect(mocks.reconcileRemote).toHaveBeenCalledTimes(2);
-        // A `hello` reset the backoff: the next reconnect is 1 s later.
+        // The reconciled `hello` reset the backoff: the next reconnect is 1 s later.
         latest.close();
         await vi.advanceTimersByTimeAsync(1000);
         expect(FakeSocket.instances.at(-1)).not.toBe(latest);
+    });
+
+    it("doubles the reconnect delay when consecutive hellos fail to reconcile", async () => {
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        mocks.listRevisions.mockRejectedValue(new Error("offline"));
+        let ws = await started();
+        for (const base of [1000, 2000]) {
+            ws.frame({ type: "hello", epoch: "E1" });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ws.closed).toBe(true);
+            expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+            const count = FakeSocket.instances.length;
+            await vi.advanceTimersByTimeAsync(base - 2);
+            expect(FakeSocket.instances).toHaveLength(count);
+            await vi.advanceTimersByTimeAsync(2);
+            expect(FakeSocket.instances).toHaveLength(count + 1);
+            ws = FakeSocket.instances.at(-1)!;
+        }
+    });
+
+    it("resets the backoff only after the current socket's reconcile succeeds", async () => {
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        let ws = await started();
+        for (const base of [1000, 2000, 4000]) {
+            mocks.listRevisions.mockRejectedValueOnce(new Error("offline"));
+            ws.frame({ type: "hello", epoch: "E1" });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ws.closed).toBe(true);
+            await vi.advanceTimersByTimeAsync(base);
+            ws = FakeSocket.instances.at(-1)!;
+        }
+
+        let staleAnswer!: (value: unknown) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise((resolve) => (staleAnswer = resolve)));
+        ws.frame({ type: "hello", epoch: "E1" });
+        // A hello whose listing is still pending does not reset the backoff.
+        ws.close();
+        await vi.advanceTimersByTimeAsync(7998);
+        expect(FakeSocket.instances).toHaveLength(4);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(5);
+        staleAnswer(listing);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+
+        // The replaced socket's late listing does not reset the next wait either.
+        FakeSocket.instances.at(-1)!.close();
+        await vi.advanceTimersByTimeAsync(15998);
+        expect(FakeSocket.instances).toHaveLength(5);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(6);
+
+        let answer!: (value: unknown) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        ws = FakeSocket.instances.at(-1)!;
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+        answer(listing);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).toHaveBeenCalledTimes(1);
+        expect(mocks.reconcileRemote).toHaveBeenCalledWith(listing);
+        ws.close();
+        await vi.advanceTimersByTimeAsync(998);
+        expect(FakeSocket.instances).toHaveLength(6);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(7);
+    });
+
+    it("jitters reconnects between half and all of the delay", async () => {
+        const random = vi.spyOn(Math, "random").mockReturnValue(0);
+        const ws = await started();
+        ws.close();
+        await vi.advanceTimersByTimeAsync(499);
+        expect(FakeSocket.instances).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(FakeSocket.instances).toHaveLength(2);
+
+        // The second reconnect's 2 s delay, at the longest jitter.
+        random.mockReturnValue(1 - Number.EPSILON);
+        FakeSocket.instances[1].close();
+        await vi.advanceTimersByTimeAsync(1998);
+        expect(FakeSocket.instances).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(3);
     });
 
     it("closes the socket when the reconcile fails, so the reconnect reconciles again; a stale socket's answer is dropped", async () => {

@@ -48,7 +48,8 @@ function scheduleReconnect() {
     if (stopped || retryTimer) {
         return;
     }
-    const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(attempt, 5));
+    const baseDelay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(attempt, 5));
+    const delay = baseDelay / 2 + Math.random() * (baseDelay / 2);
     attempt += 1;
     retryTimer = setTimeout(() => {
         retryTimer = null;
@@ -62,6 +63,8 @@ async function reconcile(ws: WebSocket, hello: number) {
         if (socket === ws) {
             noteMemoryTaskListing(hello, listing);
             reconcileRemote(listing);
+            // Only a reconciled connection resets the backoff: a server that accepts the socket but fails the reconcile keeps backing off.
+            attempt = 0;
         }
     } catch (error) {
         if (error instanceof ResourceEpochMismatchError) {
@@ -90,7 +93,6 @@ function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
                 connectedSocket = ws;
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
-            attempt = 0;
             void reconcile(ws, hello);
             return;
         case "change":
@@ -121,7 +123,7 @@ async function connect() {
     if (stopped) {
         return;
     }
-    // The attempt this connection is (0 for the first after a `hello`), for its events.
+    // The attempt this connection is (0 for the first after a reconciled `hello`), for its events.
     const connectAttempt = attempt;
     let token: string;
     try {
