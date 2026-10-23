@@ -142,17 +142,25 @@ import {
 */
 
 const pluginChannel = new Map<string, Function>();
-const documentEventListeners: Array<{ type: string; listener: EventListenerOrEventListenerObject; options: any }> = [];
+type TrackedEventListener = {
+    eventTarget: EventTarget;
+    type: string;
+    listener: EventListenerOrEventListenerObject;
+    options: AddEventListenerOptions;
+};
+const pluginEventListeners: TrackedEventListener[] = [];
 
 class SafeElement {
     #element: HTMLElement;
+    #eventTarget: EventTarget;
     __classType = "REMOTE_REQUIRED" as const;
 
-    constructor(element: HTMLElement) {
+    constructor(element: HTMLElement, eventTarget: EventTarget = element) {
         if (element.getAttribute("freezed")) {
             throw new Error("This element cannot be accessed by SafeELement");
         }
         this.#element = element;
+        this.#eventTarget = eventTarget;
     }
 
     public appendChild(child: SafeElement) {
@@ -329,7 +337,7 @@ class SafeElement {
     public scrollIntoView(options?: boolean | ScrollIntoViewOptions) {
         this.#element.scrollIntoView(options);
     }
-    #eventIdMap = new Map<string, Function>();
+    #eventIdMap = new Map<string, TrackedEventListener>();
 
     public async addEventListener(
         type: string,
@@ -397,22 +405,15 @@ class SafeElement {
             }
         };
 
+        let modifiedListener: EventListener;
         if (allowedDocumentEventListeners.includes(type)) {
-            const modifiedListener = (event: any) => {
+            modifiedListener = (event: any) => {
                 listener(trimEvent(event));
             };
-            this.#eventIdMap.set(id, modifiedListener);
-            documentEventListeners.push({
-                type,
-                listener: modifiedListener as EventListenerOrEventListenerObject,
-                options: realOptions,
-            });
-            document.addEventListener(type, modifiedListener, realOptions);
-            return id;
         } else if (allowedDelayedEventListeners.includes(type)) {
-            const modifiedListener = (event: any) => {
+            modifiedListener = (event: any) => {
                 // No key typed while the terminal notice is up reaches a plugin: the notice stops
-                // only bubbling, and a capture-phase listener on `document` runs before it.
+                // only bubbling, and capture listeners on the document or the notice's ancestors run first.
                 if (terminalNoticeShown()) {
                     return;
                 }
@@ -424,26 +425,30 @@ class SafeElement {
                     listener(trimEvent(event));
                 }, delay);
             };
-            this.#eventIdMap.set(id, modifiedListener);
-            documentEventListeners.push({
-                type,
-                listener: modifiedListener as EventListenerOrEventListenerObject,
-                options: realOptions,
-            });
-            document.addEventListener(type, modifiedListener, realOptions);
-            return id;
         } else {
             throw new Error(`Event listener of type '${type}' is not allowed for security reasons.`);
         }
+
+        const tracked: TrackedEventListener = {
+            eventTarget: this.#eventTarget,
+            type,
+            listener: modifiedListener,
+            options: realOptions,
+        };
+        this.#eventIdMap.set(id, tracked);
+        pluginEventListeners.push(tracked);
+        tracked.eventTarget.addEventListener(tracked.type, tracked.listener, tracked.options);
+        return id;
     }
 
     public removeEventListener(type: string, id: string, options?: boolean | EventListenerOptions) {
-        const listener = this.#eventIdMap.get(id);
-        if (listener) {
-            const realOptions = typeof options === "boolean" ? { capture: options } : options || {};
-            document.removeEventListener(type, listener as EventListenerOrEventListenerObject, realOptions);
-            const idx = documentEventListeners.findIndex((e) => e.listener === listener);
-            if (idx !== -1) documentEventListeners.splice(idx, 1);
+        // Keep type/options for API compatibility, but replay the stored registration:
+        // DOM removal silently does nothing when type/capture differ from the registration.
+        const tracked = this.#eventIdMap.get(id);
+        if (tracked) {
+            tracked.eventTarget.removeEventListener(tracked.type, tracked.listener, tracked.options);
+            const idx = pluginEventListeners.indexOf(tracked);
+            if (idx !== -1) pluginEventListeners.splice(idx, 1);
             this.#eventIdMap.delete(id);
         }
     }
@@ -456,7 +461,7 @@ class SafeElement {
 class SafeDocument extends SafeElement {
     __classType = "REMOTE_REQUIRED" as const;
     constructor(document: Document) {
-        super(document.documentElement);
+        super(document.documentElement, document);
     }
     createElement(tagName: string): SafeElement {
         if (!tagWhitelist.includes(tagName.toLowerCase())) {
@@ -2365,10 +2370,10 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
     clearPluginProviders();
     customV3ProviderMetaStore.length = 0;
 
-    for (const entry of documentEventListeners) {
-        document.removeEventListener(entry.type, entry.listener, entry.options);
+    for (const entry of pluginEventListeners) {
+        entry.eventTarget.removeEventListener(entry.type, entry.listener, entry.options);
     }
-    documentEventListeners.length = 0;
+    pluginEventListeners.length = 0;
 
     const loadPromises = plugins.map((plugin) => executePluginV3(plugin));
     await Promise.all(loadPromises);

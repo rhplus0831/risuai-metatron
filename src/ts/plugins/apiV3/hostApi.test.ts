@@ -23,10 +23,16 @@ const { captured } = vi.hoisted(() => ({
 
 vi.mock("./factory", () => ({
     SandboxHost: class {
+        iframe?: HTMLIFrameElement;
         constructor(apiFactory: CapturedApi) {
             captured.api = apiFactory;
         }
-        run() {}
+        run(iframe: HTMLIFrameElement) {
+            this.iframe = iframe;
+        }
+        terminate() {
+            this.iframe?.remove();
+        }
         executeInIframe() {
             return Promise.resolve();
         }
@@ -80,7 +86,7 @@ import { selection, selectPersona, selectPreset } from "src/ts/storage/selection
 import { activePreset, selectedPersonaIndex, settings } from "src/ts/storage/settingsViews.svelte";
 import { rootSnapshot } from "src/ts/storage/snapshots.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
-import { executePluginV3 } from "./v3.svelte";
+import { executePluginV3, loadV3Plugins } from "./v3.svelte";
 
 /**
  * The records installed as the app installs them (there is no whole-database aggregate): one
@@ -686,6 +692,122 @@ describe("v3 character setters and the memory turn-on count", () => {
         await api.setDatabaseLite({ characters: [{ ...copy, supaMemory: true, supaMemoryOnCount: 2 }] });
         expect(stored().supaMemory).toBe(true);
         expect(stored().supaMemoryOnCount).toBe(3);
+    });
+});
+
+describe("v3 DOM listener targets and cleanup", () => {
+    let element: HTMLDivElement;
+    let sibling: HTMLDivElement;
+
+    beforeEach(async () => {
+        // Unload callbacks can schedule a timeout; keep reloads on a controlled clock too.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await loadV3Plugins([]);
+        installDatabase({ characters: [], pluginCustomStorage: undefined });
+        element = document.createElement("div");
+        element.id = "plugin-event-target";
+        sibling = document.createElement("div");
+        document.body.append(element, sibling);
+    });
+
+    afterEach(async () => {
+        try {
+            await loadV3Plugins([]);
+        } finally {
+            element.remove();
+            sibling.remove();
+            vi.restoreAllMocks();
+            vi.useRealTimers();
+        }
+    });
+
+    it("delivers an element's own event without delivering a sibling's event", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.querySelector("#plugin-event-target");
+        const listener = vi.fn();
+        await target.addEventListener("click", listener);
+
+        sibling.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "click" }));
+    });
+
+    it("delivers a non-bubbling scroll to an element listener with default options", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.createElement("div");
+        target.setAttribute("x-scroll-target", "true");
+        root.querySelector("#plugin-event-target").appendChild(target);
+        const listener = vi.fn();
+        await target.addEventListener("scroll", listener);
+
+        element.querySelector("[x-scroll-target]")!.dispatchEvent(new Event("scroll", { bubbles: false }));
+        expect(listener).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "scroll" }));
+    });
+
+    it.each(["element", "document"])(
+        "removes the recorded %s listener even when the caller supplies different type and options",
+        async (kind) => {
+            const api = await makeApi();
+            const root = await api.getRootDocument();
+            const target = kind === "element" ? element : document;
+            const wrapper = kind === "element" ? root.querySelector("#plugin-event-target") : root;
+            const added = vi.spyOn(target, "addEventListener");
+            const removed = vi.spyOn(target, "removeEventListener");
+            const listener = vi.fn();
+            const options = { capture: true, passive: true };
+            const id = await wrapper.addEventListener("click", listener, options);
+            expect(added).toHaveBeenCalledExactlyOnceWith("click", expect.any(Function), options);
+            const registeredListener = added.mock.calls[0][1];
+
+            try {
+                element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+                expect(listener).toHaveBeenCalledTimes(1);
+
+                wrapper.removeEventListener("mouseup", id, { capture: false });
+                // happy-dom ignores capture on removal, so dispatch alone cannot prove this contract.
+                expect(removed).toHaveBeenCalledExactlyOnceWith("click", registeredListener, options);
+                element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+                expect(listener).toHaveBeenCalledTimes(1);
+            } finally {
+                target.removeEventListener("click", registeredListener, options);
+            }
+        },
+    );
+
+    it("removes element and document-wide listeners from their registered targets on reload", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.querySelector("#plugin-event-target");
+        const elementAdded = vi.spyOn(element, "addEventListener");
+        const elementRemoved = vi.spyOn(element, "removeEventListener");
+        const documentAdded = vi.spyOn(document, "addEventListener");
+        const documentRemoved = vi.spyOn(document, "removeEventListener");
+        const elementListener = vi.fn();
+        const documentListener = vi.fn();
+        const options = { capture: true, passive: true };
+        await target.addEventListener("click", elementListener, options);
+        await root.addEventListener("click", documentListener, options);
+        expect(elementAdded).toHaveBeenCalledExactlyOnceWith("click", expect.any(Function), options);
+        expect(documentAdded).toHaveBeenCalledExactlyOnceWith("click", expect.any(Function), options);
+
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(elementListener).toHaveBeenCalledTimes(1);
+        expect(documentListener).toHaveBeenCalledTimes(2);
+        elementListener.mockClear();
+        documentListener.mockClear();
+
+        await loadV3Plugins([]);
+        expect(elementRemoved).toHaveBeenCalledExactlyOnceWith("click", elementAdded.mock.calls[0][1], options);
+        expect(documentRemoved).toHaveBeenCalledExactlyOnceWith("click", documentAdded.mock.calls[0][1], options);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(elementListener).not.toHaveBeenCalled();
+        expect(documentListener).not.toHaveBeenCalled();
     });
 });
 
