@@ -47,6 +47,12 @@ export function initHotkey() {
         if (get(terminalNotice) !== null) {
             return;
         }
+        const hasDialogs = alertStore.hasDialogs();
+        if (ev.key === "Escape" && hasDialogs) {
+            // Panels underneath also listen on window; even a rejected Escape stays with the dialog.
+            ev.preventDefault();
+            ev.stopPropagation();
+        }
         // Escape closes the topmost picker list or binding dialog also from a text field (a preset's
         // rename, or the composer that kept the focus); an alert above it closes first (below).
         const bindingLayer = ev.key === "Escape" && !doingAlert() ? topBindingLayer() : null;
@@ -55,11 +61,24 @@ export function initHotkey() {
             ev.preventDefault();
             return;
         }
-        if (!ev.ctrlKey && !ev.altKey && !ev.shiftKey && isTextEntry(document.activeElement)) {
+        const alertInput =
+            alertStore.dialogVisible() &&
+            get(alertStore).type === "input" &&
+            ev.target instanceof HTMLInputElement &&
+            ev.target.id === "alert-input" &&
+            ev.target.closest("[data-alert-dialog]")
+                ? ev.target
+                : null;
+        const plainKey = !ev.ctrlKey && !ev.altKey && !ev.shiftKey;
+        if (
+            plainKey &&
+            isTextEntry(document.activeElement) &&
+            !(alertInput && (ev.key === "Enter" || ev.key === "Escape"))
+        ) {
             return;
         }
 
-        const hotKeys = enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
+        const hotKeys = hasDialogs && plainKey ? [] : enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
 
         let hotkeyRan = false;
         for (const hotkey of hotKeys) {
@@ -298,7 +317,7 @@ export function initHotkey() {
             }
             // Only the topmost layer closes: the settings and the grid stay under a picker list or the
             // binding dialog (one without an alert above it closed at the top of this handler).
-            if (topBindingLayer() === null) {
+            if (!alertStore.hasDialogs() && topBindingLayer() === null) {
                 if (get(settingsOpen)) {
                     settingsOpen.set(false);
                 } else if (get(gridOpenStore) && !hadAlert) {
@@ -310,18 +329,15 @@ export function initHotkey() {
         }
         if (ev.key === "Enter" && alertStore.dialogVisible()) {
             const alertType = get(alertStore).type;
-            if (alertType === "ask" || alertType === "normal" || alertType === "error") {
-                // Never a held or repeated Enter, nor the stroke the dialog appeared during; the
-                // default action (a focused button's click) is kept from answering it either.
-                if (dialogKeys.accepts(ev)) {
-                    alertStore.answer("yes");
+            if (ev.target instanceof Element && ev.target.closest("[data-alert-dialog] button")) {
+                // A new stroke activates the chosen button; a rejected one cannot click it natively.
+                if (!dialogKeys.accepts(ev)) {
+                    ev.preventDefault();
                 }
-                ev.preventDefault();
-            } else if (
-                !dialogKeys.accepts(ev) &&
-                ev.target instanceof Element &&
-                ev.target.closest("[data-alert-dialog] button")
-            ) {
+            } else if (alertInput || alertType === "ask" || alertType === "normal" || alertType === "error") {
+                if (dialogKeys.accepts(ev)) {
+                    alertStore.answer(alertInput ? alertInput.value : "yes");
+                }
                 ev.preventDefault();
             }
         }

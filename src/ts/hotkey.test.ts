@@ -31,7 +31,8 @@ import { alertMd, alertNormal, alertToast, alertWait, doingAlert, terminalNotice
 import { previewChat } from "./process/index.svelte";
 import { beginLocalSend } from "./process/localSends";
 import { activeHotkeys, hotkeyMatches, initHotkey } from "./hotkey";
-import { NEXT_DIALOG_GAP_MS } from "./alertQueue";
+import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "./alertQueue";
+import type { alertData } from "./alert";
 import { defaultHotkeys } from "./defaulthotkeys";
 import { language } from "src/lang";
 import { characterList } from "./storage/characterStore.svelte";
@@ -378,11 +379,13 @@ describe("the preset hotkeys and Escape with the binding layers", () => {
     const pressPlain = (key: string) =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     /** A whole stroke: the key goes down (`repeat` for an auto-repeat) and, unless held, up again. */
-    const stroke = (key: string, { repeat = false, hold = false } = {}) => {
-        document.dispatchEvent(new KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true }));
+    const stroke = (key: string, { repeat = false, hold = false, target = document as EventTarget } = {}) => {
+        const event = new KeyboardEvent("keydown", { key, repeat, bubbles: true, cancelable: true });
+        target.dispatchEvent(event);
         if (!hold) {
-            document.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
+            target.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
         }
+        return event;
     };
     const layers = () => ({
         persona: get(openPersonaList),
@@ -553,6 +556,128 @@ describe("the preset hotkeys and Escape with the binding layers", () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    describe("dialog keyboard ownership", () => {
+        const dialogs: AlertDialog[] = [];
+        const open = (data: alertData) => {
+            const dialog = alertStore.open(data);
+            dialogs.push(dialog);
+            return dialog;
+        };
+
+        beforeEach(() => {
+            vi.useFakeTimers();
+            window.dispatchEvent(new Event("blur"));
+            vi.mocked(doingAlert).mockImplementation(() => alertStore.hasDialogs());
+        });
+
+        afterEach(async () => {
+            for (const dialog of dialogs.splice(0)) dialog.cancel();
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            window.dispatchEvent(new Event("blur"));
+            vi.useRealTimers();
+        });
+
+        it("keeps Settings and the dialog open for an opening Escape stroke and its repeats", async () => {
+            settingsOpen.set(true);
+            const opener = document.createElement("button");
+            document.body.append(opener);
+            // The window capture gate sees this stroke before the target opens the dialog.
+            opener.addEventListener("keydown", () => open({ type: "ask", msg: "Continue?" }), { once: true });
+            expect(stroke("Escape", { target: opener, hold: true }).defaultPrevented).toBe(true);
+            expect(alertStore.dialogVisible()).toBe(true);
+            expect(get(settingsOpen)).toBe(true);
+
+            expect(stroke("Escape", { repeat: true }).defaultPrevented).toBe(true);
+            expect(alertStore.dialogVisible()).toBe(true);
+            expect(get(settingsOpen)).toBe(true);
+            expect(alertToast).not.toHaveBeenCalled();
+
+            stroke("Escape");
+            expect(alertStore.hasDialogs()).toBe(false);
+            await expect(dialogs[0].closed).resolves.toBe("");
+            expect(get(settingsOpen)).toBe(false);
+        });
+
+        it("stops Escape before underlying window panels while a dialog is shown or queued", async () => {
+            settingsOpen.set(true);
+            const underlyingPanel = vi.fn();
+            window.addEventListener("keydown", underlyingPanel);
+            try {
+                const first = open({ type: "ask", msg: "First?" });
+                const second = open({ type: "ask", msg: "Second?" });
+                stroke("Escape", { repeat: true });
+                expect(alertStore.dialogVisible()).toBe(true);
+                expect(underlyingPanel).not.toHaveBeenCalled();
+
+                stroke("Escape");
+                await expect(first.closed).resolves.toBe("");
+                expect(alertStore.dialogVisible()).toBe(false);
+                expect(alertStore.hasDialogs()).toBe(true);
+                expect(get(settingsOpen)).toBe(true);
+                stroke("Escape");
+                expect(alertStore.hasDialogs()).toBe(true);
+                expect(get(settingsOpen)).toBe(true);
+                expect(underlyingPanel).not.toHaveBeenCalled();
+
+                await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+                stroke("Escape");
+                await expect(second.closed).resolves.toBe("");
+                expect(get(settingsOpen)).toBe(false);
+                expect(underlyingPanel).not.toHaveBeenCalled();
+
+                stroke("Escape");
+                expect(underlyingPanel).toHaveBeenCalledTimes(1);
+            } finally {
+                window.removeEventListener("keydown", underlyingPanel);
+            }
+        });
+
+        it("keeps Space from focusing the composer while a dialog is shown or queued", async () => {
+            const composer = document.createElement("textarea");
+            composer.className = "text-input-area";
+            const panel = document.createElement("div");
+            panel.tabIndex = -1;
+            document.body.append(composer, panel);
+            panel.focus();
+            const first = open({ type: "ask", msg: "First?" });
+            const second = open({ type: "ask", msg: "Second?" });
+
+            stroke(" ", { target: panel });
+            expect(document.activeElement).toBe(panel);
+            first.cancel();
+            expect(alertStore.dialogVisible()).toBe(false);
+            expect(alertStore.hasDialogs()).toBe(true);
+            stroke(" ", { target: panel });
+            expect(document.activeElement).toBe(panel);
+
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            second.cancel();
+            stroke(" ", { target: panel });
+            expect(document.activeElement).toBe(composer);
+        });
+
+        it("leaves a fresh Enter on an ask dialog's NO button to native activation, but prevents a rejected Enter", async () => {
+            const panel = document.createElement("div");
+            panel.setAttribute("data-alert-dialog", "");
+            const no = document.createElement("button");
+            no.textContent = "NO";
+            no.addEventListener("click", () => alertStore.answer("no"));
+            panel.append(no);
+            document.body.append(panel);
+            no.focus();
+            stroke("Enter", { target: no, hold: true });
+            const dialog = open({ type: "ask", msg: "Continue?" });
+
+            expect(stroke("Enter", { target: no, repeat: true }).defaultPrevented).toBe(true);
+            expect(alertStore.dialogVisible()).toBe(true);
+            expect(stroke("Enter", { target: no }).defaultPrevented).toBe(false);
+            expect(alertStore.dialogVisible()).toBe(true);
+            // Synthetic keys do not perform browser activation in happy-dom; dispatch its click separately.
+            no.click();
+            await expect(dialog.closed).resolves.toBe("no");
+        });
     });
 
     // The dialog key gate (`createDialogKeyGate` wired in `initHotkey`): a dialog takes Enter only from a

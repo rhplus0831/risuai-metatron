@@ -1,9 +1,31 @@
+<script module lang="ts">
+    import { tick } from "svelte";
+    import { alertStore } from "src/ts/stores.svelte";
+
+    // AlertComp unmounts between queued dialogs, so their original focus survives at module scope.
+    let dialogFocus: { previous: HTMLElement; panel: HTMLDivElement } | null = null;
+
+    async function restoreDialogFocus() {
+        do {
+            await alertStore.idle();
+            await tick();
+        } while (alertStore.hasDialogs());
+
+        const saved = dialogFocus;
+        dialogFocus = null;
+        const active = document.activeElement;
+        if (saved?.previous.isConnected && (!active || active === document.body || saved.panel.contains(active))) {
+            saved.previous.focus();
+        }
+    }
+</script>
+
 <script lang="ts">
     import { findChat, loadChats, pinChats, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
-    import { alertRequestLogs } from "../../ts/alert";
+    import { alertRequestLogs, type alertData } from "../../ts/alert";
     import { jobDebugInfo } from "../../ts/diagnostics/jobDebugInfo";
 
     import { getCharImage } from "../../ts/characters";
@@ -21,7 +43,6 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { language } from "src/lang";
     import { getFetchData } from "src/ts/globalApi.svelte";
-    import { alertStore } from "src/ts/stores.svelte";
     import { tokenize } from "src/ts/tokenizer";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
@@ -69,7 +90,8 @@
         return lines.join("\n");
     });
 
-    let btn;
+    let dialogPanel = $state<HTMLDivElement | null>(null);
+    let focusedAlert: alertData | null = null;
     let input = $state("");
     let cardExportType = $state("");
     let cardExportType2 = $state("charxJpeg");
@@ -117,9 +139,6 @@
         translatedStackTrace = "";
         stackTraceTranslationFailed = false;
         isTranslating = false;
-        if (btn) {
-            btn.focus();
-        }
         if ($alertStore.type !== "input") {
             input = "";
         }
@@ -131,6 +150,36 @@
             cardExportType2 = "charxJpeg";
             cardLicense = "";
         }
+    });
+
+    $effect(() => {
+        const alert = shown;
+        const panel = dialogPanel;
+        if (
+            !panel ||
+            !alertStore.dialogVisible() ||
+            alert.type === "wait" ||
+            alert.type === "wait2" ||
+            alert.type === "progress" ||
+            alert === focusedAlert
+        ) {
+            return;
+        }
+        focusedAlert = alert;
+
+        if (dialogFocus) {
+            dialogFocus.panel = panel;
+        }
+        const active = document.activeElement;
+        if (panel.contains(active)) {
+            return;
+        }
+        if (!dialogFocus && active instanceof HTMLElement && !active.closest("[data-alert-dialog]")) {
+            dialogFocus = { previous: active, panel };
+            void restoreDialogFocus();
+        }
+        const target = alert.type === "input" ? panel.querySelector<HTMLInputElement>("#alert-input") : panel;
+        target?.focus();
     });
 
     $effect(() => {
@@ -227,7 +276,11 @@
         class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center"
         class:vis={$alertStore.type === "wait2"}
     >
-        <div class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-full overflow-y-auto">
+        <div
+            bind:this={dialogPanel}
+            tabindex="-1"
+            class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-full overflow-y-auto focus:outline-none"
+        >
             {#if $alertStore.type === "error"}
                 <h2 class="text-red-700 mt-0 mb-2 w-40 max-w-full">Error</h2>
             {:else if $alertStore.type === "ask"}
