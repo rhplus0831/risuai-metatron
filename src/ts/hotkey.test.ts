@@ -25,7 +25,6 @@ vi.mock("./parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) 
 vi.mock("./process/index.svelte", () => ({
     sendChat: vi.fn(),
     previewChat: vi.fn(),
-    doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 
 import { alertMd, alertNormal, alertToast, alertWait, doingAlert, terminalNotice } from "./alert";

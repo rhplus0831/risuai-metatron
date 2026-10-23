@@ -22,9 +22,9 @@ import { runServerManualTrigger } from "./serverCommands";
  * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
  * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
  * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
- * this check only considers that chat, while `sendChat` still refuses any send while this tab sends.
- * Stops at the first part refused by either check; false then. A server command job's `/multisend`
- * runs it too, after the job (`serverCommands.ts`).
+ * other chats' work does not refuse it. Stops when a part's chat is gone or busy, or its send returns
+ * false (refused, failed, lost, or stopped); false then. A server command job's `/multisend` runs it
+ * too, after the job (`serverCommands.ts`).
  */
 export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
     for (const e of parts) {

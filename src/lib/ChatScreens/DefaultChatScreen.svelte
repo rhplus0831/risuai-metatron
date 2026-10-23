@@ -51,7 +51,6 @@
         type ChatRef,
         currentChatRef,
         findChat,
-        isChatGenerating,
         restoreUnsentRemoval,
         retrySelectedChatLoad,
         setChatMeta,
@@ -61,7 +60,9 @@
     } from "../../ts/storage/chatStore.svelte";
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { getCharImage } from "../../ts/characters";
-    import { doingChat, sendChat } from "../../ts/process/index.svelte";
+    import { sendChat } from "../../ts/process/index.svelte";
+    import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { followedJobs, followedJobsOf } from "src/ts/process/serverCommands";
     import { abortGenerationJob } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
@@ -111,11 +112,9 @@
     let messageInput: string = $state("");
     let messageInputTranslate: string = $state("");
     let openMenu = $state(false);
-    let autoMode = $state(false);
     const rerollHistory = createRerollHistory();
     const sendDrafts = createSendDrafts();
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
-    let doingChatInputTranslate = false;
     let toggleStickers: boolean = $state(false);
     let fileInput: string[] = $state([]);
     let showNewMessageButton = $state(false);
@@ -395,18 +394,17 @@
     }
 
     async function sendMain(continueResponse: boolean) {
-        if ($doingChat) {
-            alertChatBusy();
-            return;
-        }
-        if (ownedJobIds.length > 0) {
-            alertError(language.chatGenerating);
-            return;
-        }
         // The chat this send writes to, captured before any await; everything after an await
         // resolves it again by id (and stops when it is gone).
         const ref = currentChatRef();
         if (!ref) {
+            return;
+        }
+        // Only this chat's own work refuses the send (a send of this tab, a followed job, or a lock),
+        // before the text, translation draft, attachments, or reroll history are consumed; other chats
+        // send at the same time.
+        if (isChatBusy(ref)) {
+            alertError(language.chatGenerating);
             return;
         }
         const characterOf = () => characterList().find((character) => character?.chaId === ref.chaId);
@@ -415,6 +413,11 @@
             const commandProcessed = await processMultiCommand(messageInput);
             if (commandProcessed !== false) {
                 messageInput = "";
+                return;
+            }
+            // Not a command: the chat may have started work meanwhile.
+            if (isChatBusy(ref)) {
+                alertError(language.chatGenerating);
                 return;
             }
         }
@@ -454,23 +457,20 @@
         messageInput = "";
         messageInputTranslate = "";
         rerollHistory.clear(ref);
-        await sleep(10);
-        updateInputSizeAll();
+        // The send is admitted without another await after the input is consumed.
+        void sleep(10).then(updateInputSizeAll);
         await sendChatMain(continueResponse, ref, serverInput);
     }
 
     async function reroll() {
-        if ($doingChat) {
-            alertChatBusy();
-            return;
-        }
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
         if (!ref || !currentChat) {
             return;
         }
-        // The last reply stays locked until its server job releases it.
-        if (isChatGenerating(ref)) {
+        // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
+        // the last reply stays locked until its server job releases it).
+        if (isChatBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
@@ -517,7 +517,7 @@
         editChatSync(ref, (chat) => {
             chat.message = chat.message.filter((message) => kept.has(message.chatId));
         });
-        if (!(await sendChatMain(false, ref))) {
+        if (!(await sendChatMain(false, ref)).ran) {
             // The send did not run (a flush refused for another tab's generation, which
             // `runServerJob` already alerted as `chatGenerating`, or another refusal before the
             // save): the replies come back while their removal is still unsent.
@@ -526,17 +526,14 @@
     }
 
     async function unReroll() {
-        if ($doingChat) {
-            alertChatBusy();
-            return;
-        }
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
         if (!ref || !currentChat) {
             return;
         }
-        // The last reply stays locked until its server job releases it.
-        if (isChatGenerating(ref)) {
+        // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
+        // the last reply stays locked until its server job releases it).
+        if (isChatBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
@@ -552,40 +549,41 @@
         rerollHistory.back(ref);
     }
 
-    let abortController: null | AbortController = null;
-    let abortTarget: ChatRef | null = $state(null);
-    const localSendRunning = $derived($doingChat && abortTarget !== null && chatKey === chatKeyOf(abortTarget));
-
-    function alertChatBusy() {
-        alertError(localSendRunning ? language.chatGenerating : language.chatGeneratingElsewhere);
-    }
+    // This screen's sends by chat: Stop aborts the selected chat's.
+    const sendAborts = createSendAborts();
+    // Stop shows for this screen's send in the selected chat or any followed job of it.
+    const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
 
     /**
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
      * `serverInput`: the input a server job appends (its user message is not part of the reroll).
+     * `ran`: false for a refusal or an ambiguous create (the job may exist); it does not prove no job ran.
+     * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
      */
     async function sendChatMain(
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
         serverInput: SendDraft | null = null,
-    ): Promise<boolean> {
+    ): Promise<{ ran: boolean; ok: boolean }> {
         if (!target) {
-            return false;
+            return { ran: false, ok: false };
         }
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
         let ran = true;
-        const controller = new AbortController();
+        let releaseAbort: (() => void) | null = null;
         try {
-            if ($doingChat) {
-                alertChatBusy();
-                return false;
+            // Only this chat's own work refuses it; `sendChat` takes the chat's entry synchronously
+            // right after this check.
+            if (isChatBusy(target)) {
+                alertError(language.chatGenerating);
+                return { ran: false, ok: false };
             }
-            abortController = controller;
-            abortTarget = target;
+            const { signal, release } = sendAborts.begin(target);
+            releaseAbort = release;
             ok = await sendChat(-1, {
                 target,
-                signal: controller.signal,
+                signal,
                 continue: continued,
                 ...serverInput,
                 onServerRefused: () => {
@@ -593,7 +591,7 @@
                 },
             });
             if (!ran) {
-                return false;
+                return { ran, ok };
             }
             const messages = findChat(target)?.message ?? [];
             const anchorIndex = anchor === null ? -1 : messages.findIndex((message) => message.chatId === anchor);
@@ -605,10 +603,7 @@
             console.error(error);
             alertError(error);
         } finally {
-            if (abortController === controller) {
-                abortController = null;
-                abortTarget = null;
-            }
+            releaseAbort?.();
             if (serverInput) {
                 const landed =
                     findChat(target)?.message.some(
@@ -630,39 +625,65 @@
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
         }
-        return ran;
+        return { ran, ok };
     }
 
     function abortChat() {
         const selected = currentChatRef();
-        if (abortController && abortTarget && selected && chatKeyOf(abortTarget) === chatKeyOf(selected)) {
-            abortController.abort();
+        if (!selected) {
+            return;
         }
+        if (autoRun?.key === chatKeyOf(selected)) {
+            autoRun = null;
+        }
+        sendAborts.abort(selected);
         for (const id of ownedJobIds) {
             void abortGenerationJob(id).catch((error) => console.error("[Generation]", error));
         }
     }
 
+    // The auto mode loop, bound to the chat it started in (compared by key: `currentChatRef()`
+    // returns a new object each call). Raw state: the loop compares the run by identity.
+    let autoRun: { key: string } | null = $state.raw(null);
+    const autoMode = $derived(autoRun !== null && autoRun.key === chatKey);
+    // Switching to another chat or closing the chat (Go Back, the browser's back) ends the run at
+    // once, so a switch back during the round does not resume it; the round itself finishes.
+    $effect(() => {
+        const key = chatKey;
+        const open = selection.chatOpen;
+        untrack(() => {
+            if (autoRun && (autoRun.key !== key || !open)) {
+                autoRun = null;
+            }
+        });
+    });
+    onDestroy(() => {
+        autoRun = null;
+    });
+
     async function runAutoMode() {
-        if (autoMode) {
-            autoMode = false;
+        const ref = currentChatRef();
+        if (!ref) {
             return;
         }
-        const selectedChar = currentCharacter?.chaId;
-        autoMode = true;
-        while (autoMode) {
-            if (ownedJobIds.length > 0) {
-                alertError(language.chatGenerating);
-                autoMode = false;
-                break;
+        const key = chatKeyOf(ref);
+        if (autoRun?.key === key) {
+            autoRun = null;
+            return;
+        }
+        const run = { key };
+        autoRun = run;
+        try {
+            // Each round needs the last one to have run to a reply: a refusal, a failed job, or Stop
+            // ends the loop.
+            while (autoRun === run) {
+                if (!(await sendChatMain(false, ref)).ok) {
+                    break;
+                }
             }
-            if (!(await sendChatMain())) {
-                autoMode = false;
-                break;
-            }
-            // A switched character or a closed chat (Go Back, the browser's back) ends the loop.
-            if (selectedChar !== selectedCharacter()?.chaId || !selection.chatOpen) {
-                autoMode = false;
+        } finally {
+            if (autoRun === run) {
+                autoRun = null;
             }
         }
     }
@@ -1016,7 +1037,7 @@
                     }}
                     style:height={inputHeight}></textarea>
 
-                {#if localSendRunning || doingChatInputTranslate || ownedJobIds.length > 0}
+                {#if stoppable}
                     <button
                         aria-labelledby="cancel"
                         class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-blue-500 hover:text-white transition-colors"

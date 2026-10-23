@@ -1,19 +1,14 @@
-import { get } from "svelte/store";
 import { type ChatRef, chatEntry, currentChatRef } from "../storage/chatStore.svelte";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { sendChatOnServer, type ServerSendArg } from "./serverGeneration";
-import { anyLocalSend, beginLocalSend, localSends } from "./localSends";
+import { beginLocalSend } from "./localSends";
 
 export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
-/**
- * The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
- * `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
- * local send registry (`localSends.ts`); a preview returns its result to its caller (`previewChat`).
- * `doingChat` is whether this tab runs any send (`anyLocalSend`), for the callers that still refuse
- * tab-wide.
- */
-export const doingChat = anyLocalSend;
+// The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
+// `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
+// local send registry (`localSends.ts`), so different chats send at the same time and one chat runs
+// one send; a preview returns its result to its caller (`previewChat`).
 
 type SendChatArg = ServerSendArg & {
     /**
@@ -24,9 +19,10 @@ type SendChatArg = ServerSendArg & {
 };
 
 /**
- * Sends in `arg.target` (default: the selected chat) as a server job: refused while this tab runs any
- * send or when the target chat is gone (it may be unloaded: the job loads it); holds the target's
- * local send entry (the tab entry without a chat) from before its first await until the send ends.
+ * Sends in `arg.target` (default: the selected chat) as a server job: refused while the target chat
+ * already has a send of this tab (without a chat: while the tab entry is held) or when the target chat
+ * is gone (it may be unloaded: the job loads it); holds the target's local send entry (the tab entry
+ * without a chat) from before its first await until the send ends. Sends in other chats run beside it.
  * `chatProcessIndex` is kept for the plugin API's and the slash commands' signature and is not read
  * (a group's speakers are chosen by the server).
  */
@@ -60,12 +56,12 @@ export async function previewChat(
 }
 
 async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknown }> {
-    // The registry itself, not the derived `anyLocalSend`, which a registry subscriber may see late.
-    if (get(localSends).size > 0 || (arg.target && !chatEntry(arg.target))) {
+    if (arg.target && !chatEntry(arg.target)) {
         arg.onServerRefused?.(false);
         return { ok: false };
     }
     const target = arg.target ?? currentChatRef();
+    // The registry itself refuses a second send of the chat (read synchronously, never a derived view).
     const release = beginLocalSend(target);
     if (!release) {
         arg.onServerRefused?.(false);

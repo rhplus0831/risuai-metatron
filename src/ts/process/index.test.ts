@@ -25,6 +25,8 @@ let process: typeof import("./index.svelte");
 let registry: typeof import("./localSends");
 
 const entries = (): Entries => [...get(registry.localSends)];
+const started: ServerResult = { ok: true, outcome: "started" };
+const refused: ServerResult = { ok: false, outcome: "refused", refusal: "definite" };
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -47,14 +49,14 @@ beforeEach(async () => {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("sendChat owns the tab's send state", () => {
+describe("sendChat owns its chat's send entry", () => {
     it.each([
         { end: "success", target: "explicit" },
         { end: "success", target: "selected" },
         { end: "refusal", target: "explicit" },
         { end: "throw", target: "explicit" },
     ] as const)("holds the $target target's entry from before the first await until $end", async ({ end, target }) => {
-        const { sendChat, doingChat } = process;
+        const { sendChat } = process;
         const { localSends, isLocalSend } = registry;
         const expectedTarget = target === "explicit" ? chatA : chatB;
         const held: Entries = [[keyOf(expectedTarget), expectedTarget]];
@@ -72,7 +74,6 @@ describe("sendChat owns the tab's send state", () => {
 
         try {
             expect(entries()).toEqual([]);
-            expect(get(doingChat)).toBe(false);
             sending = sendChat(-1, {
                 ...(target === "explicit" ? { target: chatA } : {}),
                 onServerRefused,
@@ -84,7 +85,6 @@ describe("sendChat owns the tab's send state", () => {
             expect(serverObservations).toEqual([held]);
             expect(entries()).toEqual(held);
             expect(isLocalSend(expectedTarget)).toBe(true);
-            expect(get(doingChat)).toBe(true);
 
             // Switching the selection cannot retarget the send that is already in flight.
             stubs.currentChatRef.mockReturnValue(target === "explicit" ? chatB : chatA);
@@ -94,16 +94,11 @@ describe("sendChat owns the tab's send state", () => {
                 server.reject(error);
                 await rejected;
             } else {
-                server.resolve(
-                    end === "success"
-                        ? { ok: true, outcome: "started" }
-                        : { ok: false, outcome: "refused", refusal: "definite" },
-                );
+                server.resolve(end === "success" ? started : refused);
                 expect(await sending).toBe(end === "success");
             }
 
             expect(entries()).toEqual([]);
-            expect(get(doingChat)).toBe(false);
             expect(transitions).toEqual([[], held, []]);
             if (end === "refusal") {
                 expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
@@ -111,67 +106,120 @@ describe("sendChat owns the tab's send state", () => {
                 expect(onServerRefused).not.toHaveBeenCalled();
             }
         } finally {
-            server.resolve({ ok: true, outcome: "started" });
+            server.resolve(started);
             await sending?.catch(() => {});
             unsubscribe();
         }
     });
 
-    it("holds the tab entry for a send without a selected chat", async () => {
-        const { sendChat, doingChat } = process;
+    it("holds the tab entry for a send without a selected chat, beside which a chat's send runs", async () => {
+        const { sendChat } = process;
         const { isLocalSend } = registry;
         stubs.currentChatRef.mockReturnValue(null);
-        const server = deferred<ServerResult>();
+        const tabServer = deferred<ServerResult>();
+        const chatServer = deferred<ServerResult>();
         stubs.serverSend.mockImplementationOnce(() => {
             expect(entries()).toEqual([["", null]]);
-            return server.promise;
+            return tabServer.promise;
         });
         const sending = sendChat(-1, {});
+        let sendingA: Promise<boolean> | undefined;
         try {
             expect(stubs.serverSend).toHaveBeenCalledExactlyOnceWith(
                 expect.not.objectContaining({ target: expect.anything() }),
             );
             expect(entries()).toEqual([["", null]]);
-            expect(get(doingChat)).toBe(true);
             expect(isLocalSend(chatA)).toBe(false);
-            // Still one send per tab: a chat's send is refused meanwhile.
-            expect(await sendChat(-1, { target: chatA })).toBe(false);
-            expect(stubs.serverSend).toHaveBeenCalledTimes(1);
+            // The tab entry fences no chat: a chat's send is admitted beside it.
+            stubs.serverSend.mockReturnValueOnce(chatServer.promise);
+            sendingA = sendChat(-1, { target: chatA });
+            expect(stubs.serverSend).toHaveBeenCalledTimes(2);
+            expect(entries()).toEqual([
+                ["", null],
+                [keyOf(chatA), chatA],
+            ]);
+            // A second send without a chat is the one the tab entry refuses.
+            expect(await sendChat(-1, {})).toBe(false);
+            expect(stubs.serverSend).toHaveBeenCalledTimes(2);
         } finally {
-            server.resolve({ ok: true, outcome: "started" });
+            tabServer.resolve(started);
+            chatServer.resolve(started);
             expect(await sending).toBe(true);
+            expect(await sendingA).toBe(true);
         }
         expect(entries()).toEqual([]);
-        expect(get(doingChat)).toBe(false);
     });
 
-    it("refuses chat B while chat A runs without touching A's entry", async () => {
-        const { sendChat, doingChat } = process;
-        const { localSends } = registry;
-        const server = deferred<ServerResult>();
-        stubs.serverSend.mockReturnValueOnce(server.promise);
-        const sendingA = sendChat(-1, { target: chatA });
-        const notifications = vi.fn();
-        const unsubscribe = localSends.subscribe(notifications);
-        const onServerRefused = vi.fn();
+    it.each([
+        { first: "A", end: "success" },
+        { first: "B", end: "success" },
+        { first: "A", end: "refusal" },
+        { first: "B", end: "throw" },
+    ] as const)(
+        "runs chats A and B together, refuses a second send and a preview of A while A runs, and when $first ends with $end releases only its own chat",
+        async ({ first, end }) => {
+            const { sendChat, previewChat } = process;
+            const { localSends, isLocalSend } = registry;
+            const servers = { A: deferred<ServerResult>(), B: deferred<ServerResult>() };
+            const both: Entries = [
+                [keyOf(chatA), chatA],
+                [keyOf(chatB), chatB],
+            ];
+            stubs.serverSend.mockImplementation((arg) =>
+                keyOf(arg.target!) === keyOf(chatA) ? servers.A.promise : servers.B.promise,
+            );
+            const sendingA = sendChat(-1, { target: chatA });
+            const sendingB = sendChat(-1, { target: chatB });
+            const settle = async () => {
+                servers.A.resolve(started);
+                servers.B.resolve(started);
+                await Promise.allSettled([sendingA, sendingB]);
+            };
 
-        try {
-            expect(entries()).toEqual([[keyOf(chatA), chatA]]);
-            expect(await sendChat(-1, { target: chatB, onServerRefused })).toBe(false);
-            expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
-            expect(stubs.serverSend).toHaveBeenCalledTimes(1);
-            // Only the subscription's own first call: the refusal published nothing.
-            expect(notifications).toHaveBeenCalledTimes(1);
-            expect(entries()).toEqual([[keyOf(chatA), chatA]]);
-            expect(get(doingChat)).toBe(true);
-        } finally {
-            server.resolve({ ok: true, outcome: "started" });
-            await sendingA;
-            unsubscribe();
-        }
-        expect(entries()).toEqual([]);
-        expect(get(doingChat)).toBe(false);
-    });
+            try {
+                // Both admitted, each holding its own entry.
+                expect(stubs.serverSend).toHaveBeenCalledTimes(2);
+                expect(stubs.serverSend.mock.calls.map(([arg]) => arg.target)).toEqual([chatA, chatB]);
+                expect(entries()).toEqual(both);
+
+                // A second send of A, and a preview of A, are refused without touching A's entry.
+                const notifications = vi.fn();
+                const unsubscribe = localSends.subscribe(notifications);
+                const onServerRefused = vi.fn();
+                expect(await sendChat(-1, { target: chatA, onServerRefused })).toBe(false);
+                expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
+                expect(await previewChat("preview", chatA)).toBeNull();
+                expect(stubs.serverSend).toHaveBeenCalledTimes(2);
+                // Only the subscription's own first call: the refusals published nothing.
+                expect(notifications).toHaveBeenCalledTimes(1);
+                unsubscribe();
+                expect(entries()).toEqual(both);
+
+                // The first send to end releases its own chat; the other stays held.
+                const [ending, other] = first === "A" ? [chatA, chatB] : [chatB, chatA];
+                const server = servers[first];
+                const sending = first === "A" ? sendingA : sendingB;
+                if (end === "throw") {
+                    const error = new Error("server send failed");
+                    const rejected = expect(sending).rejects.toBe(error);
+                    server.reject(error);
+                    await rejected;
+                } else {
+                    server.resolve(end === "success" ? started : refused);
+                    expect(await sending).toBe(end === "success");
+                }
+                expect(isLocalSend(ending)).toBe(false);
+                expect(entries()).toEqual([[keyOf(other), other]]);
+
+                // The other ends in turn, releasing the last entry.
+                servers[first === "A" ? "B" : "A"].resolve(started);
+                expect(await (first === "A" ? sendingB : sendingA)).toBe(true);
+                expect(entries()).toEqual([]);
+            } finally {
+                await settle();
+            }
+        },
+    );
 
     it("refuses a gone explicit target before taking any entry", async () => {
         const { sendChat } = process;
@@ -189,34 +237,41 @@ describe("sendChat owns the tab's send state", () => {
         unsubscribe();
     });
 
-    it("refuses a send started from a registry notification of another send's start (the guard reads the registry, not its derived view)", async () => {
-        const { sendChat, doingChat } = process;
+    it("from a registry notification of A's start, refuses a send of A and admits one of B (the guard reads the registry itself)", async () => {
+        const { sendChat } = process;
         const { localSends } = registry;
         const onServerRefused = vi.fn();
-        let reentrant: Promise<boolean> | undefined;
-        // Subscribed before any reader of `doingChat`, so this listener runs before the derived
-        // view's own update: `doingChat` is still false while A's entry is already held.
+        const servers = { A: deferred<ServerResult>(), B: deferred<ServerResult>() };
+        let reentrantA: Promise<boolean> | undefined;
+        let reentrantB: Promise<boolean> | undefined;
+        // Runs while A's entry is being published: the admission sees it already.
         const unsubscribe = localSends.subscribe((sends) => {
-            if (sends.size === 1 && reentrant === undefined) {
-                expect(get(doingChat)).toBe(false);
-                reentrant = sendChat(-1, { target: chatB, onServerRefused });
+            if (sends.has(keyOf(chatA)) && reentrantA === undefined) {
+                reentrantA = sendChat(-1, { target: chatA, onServerRefused });
+                reentrantB = sendChat(-1, { target: chatB });
             }
         });
-        const unsubscribeBusy = doingChat.subscribe(() => {});
-        const server = deferred<ServerResult>();
-        stubs.serverSend.mockReturnValueOnce(server.promise);
+        stubs.serverSend.mockImplementation((arg) =>
+            keyOf(arg.target!) === keyOf(chatA) ? servers.A.promise : servers.B.promise,
+        );
         const sendingA = sendChat(-1, { target: chatA });
 
         try {
-            expect(await reentrant).toBe(false);
+            expect(await reentrantA).toBe(false);
             expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
-            expect(stubs.serverSend).toHaveBeenCalledTimes(1);
-            expect(entries()).toEqual([[keyOf(chatA), chatA]]);
+            // B's server call runs inside A's publication, before A's own.
+            expect(stubs.serverSend).toHaveBeenCalledTimes(2);
+            expect(stubs.serverSend.mock.calls.map(([arg]) => arg.target)).toEqual([chatB, chatA]);
+            expect(entries()).toEqual([
+                [keyOf(chatA), chatA],
+                [keyOf(chatB), chatB],
+            ]);
         } finally {
-            server.resolve({ ok: true, outcome: "started" });
+            servers.A.resolve(started);
+            servers.B.resolve(started);
             await sendingA;
+            await reentrantB;
             unsubscribe();
-            unsubscribeBusy();
         }
         expect(entries()).toEqual([]);
     });

@@ -130,7 +130,7 @@ Theme and GUI helpers:
 
 ## Coupling
 
-- The chat tree depends on `process/index.svelte.ts` (`sendChat`, `doingChat`), the parser, `scripts`, the translator, `globalApi` (`changeChatTo`, assets, folding), `characters.ts`, and `database.svelte.ts`.
+- The chat tree depends on `process/index.svelte.ts` (`sendChat`), the local send registry (`localSends.ts`), the chat status (`chatStatus.svelte.ts` `isChatBusy`), the parser, `scripts`, the translator, `globalApi` (`changeChatTo`, assets, folding), `characters.ts`, and `database.svelte.ts`.
 - The sidebar depends on `characters.ts`, `dragTypes.ts`, SortableJS, and the GUI primitives.
 - The GUI primitives are imported by the settings, playground, sidebar, and prompt editors.
 

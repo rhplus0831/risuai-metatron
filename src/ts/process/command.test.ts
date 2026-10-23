@@ -362,7 +362,7 @@ describe("/multisend", () => {
         expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
     });
 
-    it("runs in its chat while another chat has a followed job or a lock; another chat's local send does not refuse its own check", async () => {
+    it("runs in its chat while another chat has a followed job, a lock, or a local send: every part is sent", async () => {
         const other = freshChat();
         const ref = freshChat();
         followedJobs.set(new Map([["job", keyOf(other)]]));
@@ -375,16 +375,22 @@ describe("/multisend", () => {
         expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
         expect(texts(other)).toEqual(["A", "B", "C", "D"]);
 
-        // A local send in the other chat: the part is appended and handed to `sendChat` for this
-        // chat (whether `sendChat` admits it beside the other send is its own rule, `index.test.ts`).
+        // A local send in the other chat: `sendChat` admits this chat's parts beside it (the real
+        // `sendChat`, only the server work stubbed), so the run goes on to its last part.
         hooks.sends.length = 0;
         followedJobs.set(new Map());
         chat.releaseFeedLocks();
         const release = beginLocalSend(other)!;
         try {
             expect(await processMultiCommand('/multisend "three|||four"')).toBe("");
-            expect(hooks.sends[0]).toEqual({ index: -1, arg: { target: ref } });
-            expect(texts(ref)[6]).toBe('"three');
+            expect(hooks.sends).toEqual([
+                { index: -1, arg: { target: ref } },
+                { index: -1, arg: { target: ref } },
+            ]);
+            expect(texts(ref).slice(6)).toEqual(['"three', 'four"']);
+            // The other chat's entry is still held, and nothing of this chat's remains.
+            expect([...get(localSends).keys()]).toEqual([keyOf(other)]);
+            expect(texts(other)).toEqual(["A", "B", "C", "D"]);
         } finally {
             release();
         }

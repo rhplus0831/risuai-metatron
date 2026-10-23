@@ -234,7 +234,7 @@ try {
             requests
                 .filter((r) => r.method === "POST" && new URL(r.url).pathname === "/api/generations")
                 .map((r) => JSON.parse(r.body));
-        // The tab's send has ended: the cancel button (shown while `doingChat`) is gone.
+        // The tab's send has ended: the cancel button (shown while the selected chat's send runs) is gone.
         const waitIdle = async (ms = 30000) => {
             for (const until = Date.now() + ms; Date.now() < until;) {
                 if ((await page.locator('button[aria-labelledby="cancel"]').count()) === 0) return true;

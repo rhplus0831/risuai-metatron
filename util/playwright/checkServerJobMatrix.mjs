@@ -222,7 +222,7 @@ try {
         }
         throw new Error("the app did not load");
     };
-    // Whether `p`'s send is running (`doingChat`): the chat input shows the cancel button meanwhile.
+    // Whether `p`'s send in the selected chat is running: the chat input shows the cancel button meanwhile.
     const busy = async (p = page) => (await p.locator('button[aria-labelledby="cancel"]').count()) > 0;
 
     await openApp(page);

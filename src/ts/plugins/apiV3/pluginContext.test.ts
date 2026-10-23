@@ -1,4 +1,3 @@
-import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // A plugin hook runs with a captured call context (the chat, the preset, and the persona id), and
@@ -112,19 +111,14 @@ vi.mock("./permissionStore", () => ({
     recordPermissionGrants: vi.fn(async () => undefined),
 }));
 
-// The send pipeline is a stand-in: `sendChat` records what the plugin's `sendChat` passes it; its
-// busy view is the real registry's, as the product wires it.
-vi.mock("src/ts/process/index.svelte", async () => {
-    const { anyLocalSend } =
-        await vi.importActual<typeof import("src/ts/process/localSends")>("src/ts/process/localSends");
-    return {
-        doingChat: anyLocalSend,
-        sendChat: vi.fn(async (index: number, arg: any) => {
-            sends.push({ index, arg });
-            return sendResults.shift() ?? true;
-        }),
-    };
-});
+// The send pipeline is a stand-in: `sendChat` records what the plugin's `sendChat` passes it; the
+// busy check reads the real registry (`localSends.ts`), as the product wires it.
+vi.mock("src/ts/process/index.svelte", () => ({
+    sendChat: vi.fn(async (index: number, arg: any) => {
+        sends.push({ index, arg });
+        return sendResults.shift() ?? true;
+    }),
+}));
 
 // The tools of `requestChatData` are stand-ins; the plugin provider is real.
 vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: vi.fn(async () => []) }));
@@ -211,8 +205,7 @@ import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
-import { doingChat } from "src/ts/process/index.svelte";
-import { beginLocalSend } from "src/ts/process/localSends";
+import { beginLocalSend, isLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
@@ -1118,7 +1111,7 @@ describe("sendChat inside a hook", () => {
         expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0"]);
         expect(sends).toEqual([{ index: -1, arg: { target: refB1, pluginContext: context } }]);
         expect(sends[0].arg.pluginContext).toMatchObject({ presetId: "a", modelPresetId: "a" });
-        expect(get(doingChat)).toBe(false);
+        expect(isLocalSend(refB1)).toBe(false);
 
         expect(await api.sendChat("from outside")).toBe(true);
         expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0", "from outside"]);
@@ -1133,16 +1126,16 @@ describe("sendChat inside a hook", () => {
         });
         const release = beginLocalSend(refB1)!;
         try {
-            expect(get(doingChat)).toBe(true);
+            expect(isLocalSend(refB1)).toBe(true);
             await invokeHook(listener, capturePluginContext(refB1), listenerArg);
             expect(texts(refB1)).toEqual(["hello from b1"]);
             expect(sends).toEqual([]);
             // The refusal does not release the entry of the send in progress.
-            expect(get(doingChat)).toBe(true);
+            expect(isLocalSend(refB1)).toBe(true);
         } finally {
             release();
         }
-        expect(get(doingChat)).toBe(false);
+        expect(isLocalSend(refB1)).toBe(false);
     });
 });
 

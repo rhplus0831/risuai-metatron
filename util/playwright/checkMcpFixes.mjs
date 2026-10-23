@@ -279,9 +279,9 @@ try {
         // A send ends after its reply is stored (the job's tail); the next one waits for it.
         for (let until = Date.now() + 30000; Date.now() < until;) {
             const busy = await page.evaluate(async () => {
-                const { doingChat } = await import("/src/ts/process/index.svelte.ts");
+                const { anyLocalSend } = await import("/src/ts/process/localSends.ts");
                 let value = true;
-                doingChat.subscribe((current) => (value = current))();
+                anyLocalSend.subscribe((current) => (value = current))();
                 return value;
             });
             if (!busy) break;

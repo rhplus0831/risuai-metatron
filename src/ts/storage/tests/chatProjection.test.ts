@@ -42,7 +42,7 @@ vi.mock("../../parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
     parseMarkdownSafe: vi.fn((text: string) => text),
 }));
-vi.mock("../../process/index.svelte", async () => ({ doingChat: (await import("svelte/store")).writable(false) }));
+vi.mock("../../process/index.svelte", () => ({}));
 vi.mock("../../translator/translator", () => ({ translateHTML: vi.fn() }));
 vi.mock("../../process/inlayScreen", () => ({ updateInlayScreen: vi.fn() }));
 vi.mock("../../tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));

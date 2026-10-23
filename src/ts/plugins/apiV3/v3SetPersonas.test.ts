@@ -55,7 +55,6 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text), hasher: vi.fn() }));
 vi.mock("src/ts/process/index.svelte", () => ({
     sendChat: vi.fn(),
-    doingChat: { set: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }));
 vi.mock("src/ts/process/files/inlays", () => ({ reencodeImage: vi.fn(async (data: Uint8Array) => data) }));
 vi.mock("src/ts/pngChunk", () => ({

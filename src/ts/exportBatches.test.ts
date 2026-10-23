@@ -43,7 +43,7 @@ vi.mock("./parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
     parseMarkdownSafe: vi.fn(),
 }));
-vi.mock("./process/index.svelte", () => ({ doingChat: { set: vi.fn(), subscribe: vi.fn() } }));
+vi.mock("./process/index.svelte", () => ({}));
 vi.mock("./translator/translator", () => ({ translateHTML: vi.fn() }));
 vi.mock("./process/inlayScreen", () => ({ updateInlayScreen: vi.fn() }));
 // The PNG branch of the real reencoder returns the bytes unchanged; the identity here matches it.
