@@ -1,5 +1,7 @@
 // @vitest-environment node
+import { serve } from "@hono/node-server";
 import { mkdtempSync, rmSync } from "node:fs";
+import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
@@ -9,7 +11,7 @@ import { encodeSecretPath } from "../../../shared/llmSecrets.ts";
 import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 import { createServerContext } from "../app.ts";
 import { createTokenizers } from "../prompt/tokenizers/index.ts";
-import { createTokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
+import { createTokenCounter, GOOGLE_COUNT_TIMEOUT_MS, type TokenCountScope } from "../prompt/tokens.ts";
 import { createAuthStore } from "../routes/auth.ts";
 import {
     MAX_TOKEN_BODY_BYTES,
@@ -19,7 +21,7 @@ import {
     TOKEN_ENCODE_PATH,
 } from "../routes/tokens.ts";
 import type { AppEnv } from "../types.ts";
-import { createSigner, json } from "./testSupport.ts";
+import { allowListenerOrigin, createSigner, json } from "./testSupport.ts";
 import { fixture, materialize, REPO_ROOT } from "./tokenFixtures.ts";
 
 const tabScope: TabTokenScope = {
@@ -43,6 +45,7 @@ const mixed = materialize(fixture.texts.mixed);
 const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
 const counter = createTokenCounter({ tokenizers });
 const fetchImpl = vi.fn<typeof fetch>();
+const httpFetch = globalThis.fetch;
 let context: ReturnType<typeof createServerContext>;
 let savePath: string;
 let headers: Record<string, string>;
@@ -276,6 +279,85 @@ describe("token routes", () => {
                 signal: expect.any(AbortSignal),
             },
         );
+    });
+
+    it("count aborts the pending Google fetch and stops the batch when the HTTP client disconnects", async () => {
+        function deferred<T>() {
+            let resolve!: (value: T) => void;
+            const promise = new Promise<T>((done) => {
+                resolve = done;
+            });
+            return { promise, resolve };
+        }
+        const firstStarted = deferred<void>();
+        const releaseFirst = deferred<Response>();
+        const disconnected = deferred<void>();
+        const handled = deferred<void>();
+        let upstreamSignal: AbortSignal | undefined;
+        let upstreamCalls = 0;
+        const googleCounter = createTokenCounter({
+            tokenizers,
+            fetchImpl: async (_url, init) => {
+                upstreamCalls++;
+                if (upstreamCalls > 1) return Response.json({ totalTokens: 7 });
+                upstreamSignal = init?.signal as AbortSignal;
+                firstStarted.resolve();
+                return releaseFirst.promise;
+            },
+        });
+        const app = new Hono<AppEnv>();
+        app.use(async (c, next) => {
+            c.req.raw.signal.addEventListener("abort", () => disconnected.resolve(), { once: true });
+            try {
+                await next();
+            } finally {
+                handled.resolve();
+            }
+        });
+        registerTokenRoutes(app, {
+            counter: googleCounter,
+            tokenizers,
+            googleAccessToken: () => GOOGLE_KEY,
+            auth: createAuthStore(savePath),
+            limiter: async (_c, next) => next(),
+            maintenance: context.snapshots.gate,
+            shuttingDown: () => false,
+        });
+        const listening = deferred<void>();
+        const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 }, () => listening.resolve()) as Server;
+        await listening.promise;
+        const origin = allowListenerOrigin(server);
+        const client = new AbortController();
+        // Hold the provider deadline so only the disconnect can abort it; socket timers run normally.
+        const realSetTimeout = globalThis.setTimeout;
+        const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+            callback: (...args: unknown[]) => void,
+            ms?: number,
+            ...args: unknown[]
+        ) => {
+            if (ms === GOOGLE_COUNT_TIMEOUT_MS) return realSetTimeout(() => {}, 0);
+            return realSetTimeout(callback, ms, ...args);
+        }) as typeof setTimeout);
+        try {
+            const request = httpFetch(`${origin}${TOKEN_COUNT_PATH}`, {
+                ...json({ texts: ["first", "second"], scope: googleScope }, headers),
+                signal: client.signal,
+            }).catch(() => undefined);
+            await firstStarted.promise;
+            client.abort();
+            await request;
+            await disconnected.promise;
+            const providerWasAborted = upstreamSignal?.aborted;
+            releaseFirst.resolve(Response.json({ totalTokens: 5 }));
+            await handled.promise;
+            expect({ providerWasAborted, upstreamCalls }).toEqual({ providerWasAborted: true, upstreamCalls: 1 });
+        } finally {
+            timers.mockRestore();
+            client.abort();
+            releaseFirst.resolve(Response.json({ totalTokens: 5 }));
+            server.closeAllConnections();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
     });
 
     it.each([

@@ -71,7 +71,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
 
     // The client's `tokenizeGoogleCloud`: a count of `totalTokens` zeros, or the Gemma
     // SentencePiece ids when the endpoint answers anything but 200.
-    async function countWithGoogle(text: string, scope: TokenCountScope): Promise<Encoded> {
+    async function countWithGoogle(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
         const cacheKey = text + scope.model.internalID;
         const cached = googleCache.get(cacheKey);
         if (cached !== undefined) {
@@ -89,7 +89,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ contents: [{ parts: [{ text }] }] }),
-                    signal: controller.signal,
+                    signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
                 },
             );
             if (res.status === 200) {
@@ -100,10 +100,12 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         } finally {
             clearTimeout(timer);
         }
+        signal?.throwIfAborted();
         return await tokenizers.encode("gemmaSentencePiece", text);
     }
 
-    async function encode(text: string, scope: TokenCountScope): Promise<Encoded> {
+    async function encode(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
+        signal?.throwIfAborted();
         let cacheKey = "";
         if (scope.useTokenizerCaching) {
             // The client's key, plus the model's `internalID`: two scopes may resolve one `aiModel`
@@ -124,7 +126,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         let result: Encoded;
         switch (choice.kind) {
             case "googleCloud":
-                result = await countWithGoogle(text, scope);
+                result = await countWithGoogle(text, scope, signal);
                 break;
             case "pluginFunction":
                 result = await tokenizers.encode("cl100k_base", text);
@@ -141,6 +143,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
 
     return {
         encode,
-        count: async (text: string, scope: TokenCountScope): Promise<number> => (await encode(text, scope)).length,
+        count: async (text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<number> =>
+            (await encode(text, scope, signal)).length,
     };
 }

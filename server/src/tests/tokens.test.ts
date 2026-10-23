@@ -459,6 +459,59 @@ describe("createTokenCounter", () => {
                 vi.useRealTimers();
             });
 
+            it("rejects a pending count with the caller's exact abort reason without a local fallback", async () => {
+                const { tokenizers, calls } = stubTokenizers();
+                const fetchImpl = vi.fn<typeof fetch>(
+                    (_url, init) =>
+                        new Promise<Response>((_resolve, reject) => {
+                            const signal = init?.signal;
+                            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                        }),
+                );
+                const counter = createTokenCounter({ tokenizers, fetchImpl });
+                const caller = new AbortController();
+                const reason = new Error("The tab edited the text");
+                const count = counter.count("count me", google(), caller.signal);
+                const rejected = vi.fn();
+                void count.catch(rejected);
+                expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+                caller.abort(reason);
+                await vi.advanceTimersByTimeAsync(0);
+                expect(rejected).toHaveBeenCalledTimes(1);
+                await expect(count).rejects.toBe(reason);
+                expect(calls).toEqual([]);
+            });
+
+            it("keeps the 30 second deadline when the caller's signal never aborts", async () => {
+                const { tokenizers, calls } = stubTokenizers();
+                const fetchImpl = vi.fn<typeof fetch>(
+                    (_url, init) =>
+                        new Promise<Response>((_resolve, reject) => {
+                            const signal = init?.signal;
+                            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                        }),
+                );
+                const counter = createTokenCounter({ tokenizers, fetchImpl });
+                const caller = new AbortController();
+                const resolved = vi.fn();
+                const rejected = vi.fn();
+                void counter.count("count me", google(), caller.signal).then(resolved, rejected);
+
+                await vi.advanceTimersByTimeAsync(GOOGLE_COUNT_TIMEOUT_MS - 1);
+                expect(resolved).not.toHaveBeenCalled();
+                expect(rejected).not.toHaveBeenCalled();
+
+                await vi.advanceTimersByTimeAsync(1);
+                expect(resolved).not.toHaveBeenCalled();
+                expect(rejected).toHaveBeenCalledTimes(1);
+                const [error] = rejected.mock.calls[0];
+                expect(error).toBeInstanceOf(Error);
+                expect(error.message).toBe("The Google token count timed out after 30 seconds");
+                expect(caller.signal.aborted).toBe(false);
+                expect(calls).toEqual([]);
+            });
+
             it.each(["headers", "body"] as const)(
                 "rejects count at 30 seconds without a local fallback while waiting for response %s",
                 async (phase) => {

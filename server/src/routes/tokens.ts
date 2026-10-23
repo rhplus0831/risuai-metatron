@@ -39,6 +39,7 @@ async function readTokenBody(c: Context<AppEnv>): Promise<JsonBodyResult> {
  * or a refused encode text; 413 over the body cap or 512 count texts; 429 from the authenticated
  * limiter; 503 with `Retry-After` during maintenance or shutdown. Counts run sequentially and a
  * tokenizer's text refusal yields only that entry's `null`; other failures reach the app's 500.
+ * A disconnected client stops the batch and aborts its Google fetch.
  * Requests hold no maintenance lease, so shutdown does not wait for remote Google counts.
  */
 export function registerTokenRoutes(
@@ -89,24 +90,32 @@ export function registerTokenRoutes(
         if (texts.length > MAX_TOKEN_TEXTS) {
             return c.json({ error: "Too many texts" }, 413);
         }
+        const signal = c.req.raw.signal;
         try {
             assertOpen();
             const tokenScope = tokenScopeFromTab(scope, googleAccessToken());
             const counts: (number | null)[] = [];
             for (const text of texts) {
+                if (signal.aborted) {
+                    break;
+                }
                 try {
-                    counts.push(await counter.count(text, tokenScope));
+                    counts.push(await counter.count(text, tokenScope, signal));
                 } catch (error) {
-                    if (!isTokenizerTextRefusal(error) || shuttingDown()) {
+                    if (!isTokenizerTextRefusal(error) || shuttingDown() || signal.aborted) {
                         throw error;
                     }
                     counts.push(null);
                 }
             }
+            signal.throwIfAborted();
             return c.json({ counts });
         } catch (error) {
             if (shuttingDown()) {
                 throw new MaintenanceError("The server is shutting down");
+            }
+            if (signal.aborted) {
+                return c.json({ error: "The request was aborted" }, 400);
             }
             throw error;
         }
@@ -123,6 +132,9 @@ export function registerTokenRoutes(
         }
         try {
             assertOpen();
+            if (c.req.raw.signal.aborted) {
+                return c.json({ error: "The request was aborted" }, 400);
+            }
             const ids = await tokenizers.encode(playgroundFamily(tokenizer), text);
             return c.json({ ids: Array.from(ids) });
         } catch (error) {
