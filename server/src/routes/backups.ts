@@ -15,6 +15,7 @@ import {
     MAX_ARCHIVE_RECORDS,
     readRecord,
 } from "../data/archive.ts";
+import { mkdirDurable, syncDir, syncFile } from "../data/durableWrite.ts";
 import {
     ResourceEpochError,
     type ResourceStore,
@@ -391,8 +392,9 @@ export type RestoreAsset = { target: string; stage(): Promise<string> };
 /**
  * The steps every archive import runs inside `withMaintenance` once its snapshot is validated and
  * the epoch checked under the lock: the safety snapshot, each asset whose file does not exist yet
- * added by hard link (an existing file is never overwritten: a link fails instead of replacing), the
- * epoch checked again, then `replaceAll`. Shared by the version-2 import and the upstream commit.
+ * flushed and added by hard link (an existing file is never overwritten: a link fails instead of
+ * replacing), one assets directory sync, the epoch checked again, then `replaceAll`. Shared by the
+ * version-2 import and the upstream commit.
  */
 export async function restoreValidated(arg: {
     store: ResourceStore;
@@ -404,7 +406,7 @@ export async function restoreValidated(arg: {
 }): Promise<{ epoch: string; assetsWritten: number; assetsSkipped: number }> {
     const { store, expectedEpoch } = arg;
     await arg.snapshot();
-    await fs.mkdir(arg.assetsPath, { recursive: true });
+    await mkdirDurable(arg.assetsPath);
     let written = 0;
     let skipped = 0;
     for (const asset of arg.assets) {
@@ -417,8 +419,17 @@ export async function restoreValidated(arg: {
             const name = decodeFileName(path.basename(asset.target));
             const expectedHex = name === null ? null : contentNameHash(ASSET_PREFIX + name);
             const verification = expectedHex === null ? null : await hashAssetFile(staged);
+            await syncFile(staged);
             // A hard link never replaces an existing file, unlike a rename.
-            await fs.link(staged, asset.target);
+            try {
+                await fs.link(staged, asset.target);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+                    throw error;
+                }
+                skipped += 1;
+                continue;
+            }
             if (verification) {
                 assetVerification.recordVerification(
                     asset.target,
@@ -427,14 +438,12 @@ export async function restoreValidated(arg: {
                 );
             }
             written += 1;
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-                throw error;
-            }
-            skipped += 1;
         } finally {
             await fs.rm(staged, { force: true });
         }
+    }
+    if (written > 0) {
+        await syncDir(arg.assetsPath);
     }
     store.assertEpoch(expectedEpoch);
     const epoch = store.replaceAll(arg.validated);

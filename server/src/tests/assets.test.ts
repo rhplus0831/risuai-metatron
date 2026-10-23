@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
+import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -44,7 +45,81 @@ const writeBatch = (body: Uint8Array | ReadableStream<Uint8Array>, length?: numb
         duplex: "half",
     } as RequestInit);
 
+async function observePublication() {
+    // Pre-create the target: directory creation has its own durability cost.
+    const directory = path.join(s.savePath, "assets");
+    mkdirSync(directory, { recursive: true });
+    const probe = await fs.open(directory, "r");
+    const prototype = Object.getPrototypeOf(probe) as FileHandle;
+    await probe.close();
+    const events: string[] = [];
+    const temporaries: string[] = [];
+    const files: FileHandle[] = [];
+    const sync = prototype.sync;
+    vi.spyOn(prototype, "sync").mockImplementation(async function (this: FileHandle) {
+        const kind = (await this.stat()).isDirectory() ? "directory" : "file";
+        if (kind === "file") {
+            files.push(this);
+        } else {
+            const close = this.close.bind(this);
+            vi.spyOn(this, "close").mockImplementation(async () => {
+                await close();
+                events.push("directory close");
+            });
+        }
+        await sync.call(this);
+        events.push(`${kind} sync`);
+    });
+    const rename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        expect(path.dirname(String(from))).toBe(path.join(s.savePath, ".tmp"));
+        expect(path.dirname(String(to))).toBe(directory);
+        // Node's writeFile captures close before calling sync; the closed fd is observable in both writers.
+        expect(files.at(-1)?.fd, "staged file is synced and closed before rename").toBe(-1);
+        temporaries.push(String(from));
+        await rename(from, to);
+        events.push("rename");
+    });
+    return { events, temporaries };
+}
+
 describe("batch asset routes", () => {
+    it("flushes a single /api/write file before rename and its directory before answering", async () => {
+        const { events } = await observePublication();
+        const response = await write("assets/single.bin", "complete bytes");
+        events.push("response");
+        expect(response.status).toBe(200);
+        expect(events).toEqual(["file sync", "rename", "directory sync", "directory close", "response"]);
+        expect(readFileSync(file("single.bin"), "utf8")).toBe("complete bytes");
+    });
+
+    it("flushes every batch file and syncs the assets directory once after the last rename before answering", async () => {
+        const { events, temporaries } = await observePublication();
+        const records: [string, string][] = [
+            ["assets/one.bin", "one"],
+            ["assets/two.bin", "two"],
+            ["assets/empty.bin", ""],
+        ];
+        const response = await writeBatch(buildArchive(records));
+        events.push("response");
+        expect(response.status).toBe(200);
+        expect(events).toEqual([
+            "file sync",
+            "rename",
+            "file sync",
+            "rename",
+            "file sync",
+            "rename",
+            "directory sync",
+            "directory close",
+            "response",
+        ]);
+        expect(new Set(temporaries).size).toBe(3);
+        for (const [key, content] of records) {
+            expect(readFileSync(file(key.slice("assets/".length)), "utf8")).toBe(content);
+        }
+    });
+
     it("requires a JWT for both batch routes before accessing assets", async () => {
         for (const [url, body, contentType] of [
             ["/api/assets/write", buildArchive([["assets/private.bin", "secret"]]), "application/octet-stream"],

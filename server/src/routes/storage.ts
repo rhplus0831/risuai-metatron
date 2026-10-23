@@ -14,6 +14,7 @@ import {
     MAX_ASSET_BATCH_RECORDS,
 } from "../../../shared/assetBatch.ts";
 import { assetExtension, assetMimeType, isActiveAssetExtension } from "../../../shared/assetMime.ts";
+import { mkdirDurable, syncDir } from "../data/durableWrite.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { assetVerification, contentNameHash } from "../http/assetVerification.ts";
 import { readJsonBody } from "../http/body.ts";
@@ -182,7 +183,7 @@ export async function storageFileExists(savePath: string, key: string): Promise<
 
 /**
  * Writes a stored file by logical key in-process (a server job's asset write), staged under
- * `save/.tmp/` and renamed into place as the write route does. The caller holds the job's
+ * `save/.tmp/`, flushed, and renamed into place with its directory synced. The caller holds the job's
  * admission: a job ends before maintenance replaces the data. A caller that already hashed the
  * bytes can supply that digest; otherwise content names are hashed while streaming into staging.
  */
@@ -197,19 +198,20 @@ export async function writeStorageFile(
         throw new Error(`No storage location for ${key}`);
     }
     const tmpPath = path.join(savePath, TMP_DIR);
-    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await mkdirDurable(path.dirname(fullPath));
     await fs.mkdir(tmpPath, { recursive: true });
     const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
     const expectedHex = contentNameHash(key);
     const hash = expectedHex !== null && hashHex === undefined ? createHash("sha256") : null;
     try {
-        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx" });
+        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx", flush: true });
         const stat = expectedHex === null ? null : await fs.stat(stagedPath, { bigint: true });
         const digest = hash ? hash.digest("hex") : hashHex;
         await fs.rename(stagedPath, fullPath);
         if (stat) {
             assetVerification.recordVerification(fullPath, stat, digest === expectedHex);
         }
+        await syncDir(path.dirname(fullPath));
     } catch (error) {
         await fs.rm(stagedPath, { force: true }).catch(() => {});
         throw error;
@@ -593,8 +595,8 @@ export function registerStorageRoutes(
             return admitted.closed;
         }
         try {
-            // Stage then rename, so a reader or a crash sees the old or the new file, never a partial
-            // one. This is atomic replacement, not a durability guarantee (no fsync).
+            // Flush the staged file before renaming, then sync its directory before acknowledging
+            // the write. Directory-sync refusals (EINVAL/EPERM) are tolerated on unsupported mounts.
             await writeStorageFile(savePath, key, fileContent, hashHex);
         } finally {
             admitted.leave();
@@ -604,13 +606,14 @@ export function registerStorageRoutes(
 
     // Records named by their logical keys, written as `/api/write` writes (always overwriting; a
     // zero-length record is an empty file) but streamed: each record's bytes go into a staged file as
-    // they arrive, so memory holds a chunk, not a record. Only the rename into place holds the gate,
-    // one record at a time and never across the body read, because maintenance waits for every
-    // admitted mutation. At the first failure the writing stops and the staged file is removed, but
-    // the rest of the body is still read and dropped before the answer: `@hono/node-server` resets a
-    // connection whose body is left unread, which the client would see as a network failure and
-    // resend. Records renamed before the failure stay in place (the client resends the whole batch,
-    // overwriting them).
+    // they arrive, so memory holds a chunk, not a record. Each file is synced before close and rename.
+    // Only publication into the target directory holds the gate, one record at a time and never
+    // across the body read, because maintenance waits for every admitted mutation. At the first
+    // failure the writing stops and the staged file is removed, but the rest of the body is still read
+    // and dropped before the answer: `@hono/node-server` resets a connection whose body is left unread,
+    // which the client would see as a network failure and resend. Records renamed before the failure
+    // stay in place. A successful batch syncs each target directory once, outside the gate, before
+    // answering; a failed batch skips that sync because none of its writes are acknowledged.
     app.post(ASSET_BATCH_WRITE_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -618,6 +621,7 @@ export function registerStorageRoutes(
         }
         const parser = new AssetRecordParser({ maxRecords: maxBatchRecords });
         let written = 0;
+        const targetDirs = new Set<string>();
         /** The record whose bytes are being staged. */
         let staged: {
             target: string;
@@ -667,14 +671,17 @@ export function registerStorageRoutes(
             }
             const stat = current.hash ? await current.out.stat({ bigint: true }) : null;
             const ok = current.hash?.digest("hex") === current.expectedHex;
+            await current.out.sync();
             await current.out.close();
             const admitted = enterMaintenanceGate(c);
             if ("closed" in admitted) {
                 return admitted.closed;
             }
             try {
-                await fs.mkdir(path.dirname(current.target), { recursive: true });
+                const targetDir = path.dirname(current.target);
+                await mkdirDurable(targetDir);
                 await fs.rename(current.file, current.target);
+                targetDirs.add(targetDir);
                 if (stat) {
                     assetVerification.recordVerification(current.target, stat, ok);
                 }
@@ -732,6 +739,9 @@ export function registerStorageRoutes(
                 throw failure.error;
             }
             return failure.response;
+        }
+        for (const dir of targetDirs) {
+            await syncDir(dir);
         }
         return c.json({ success: true, written });
     });

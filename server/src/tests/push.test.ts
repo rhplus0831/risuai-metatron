@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import url from "node:url";
@@ -9,6 +10,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { CompletionNotification } from "../../../shared/notifications.ts";
 import { createPushService, MAX_PUSH_SUBSCRIPTIONS, type PushTransport } from "../push/pushService.ts";
 import { createSigner, createTestServer, json } from "./testSupport.ts";
+
+vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof import("node:fs")>()) }));
 
 // The push service (`server/src/push/pushService.ts`) over a temporary `save/` with an injected
 // transport, and its routes (`server/src/routes/push.ts`) on the real app. The VAPID pair (generated
@@ -219,6 +222,36 @@ describe("the VAPID keys", () => {
 });
 
 describe("the subscriptions", () => {
+    it("rewrites a removal after a failed commit whose rename already landed", () => {
+        const save = savePath();
+        const push = createPushService({ savePath: save, env: {}, transport: fakeTransport().transport });
+        const file = serverFile(save, "push_subscriptions.json");
+        const sub = subscription();
+        const fsyncSync = fs.fsyncSync;
+        const sync = vi.spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+            if (fs.fstatSync(fd).isDirectory()) {
+                throw Object.assign(new Error("directory flush failed"), { code: "EIO" });
+            }
+            fsyncSync(fd);
+        });
+        try {
+            expect(push.register(sub)).toBe("unsaved");
+            expect(readJson(file).subscriptions).toEqual([expect.objectContaining({ endpoint: sub.endpoint })]);
+        } finally {
+            sync.mockRestore();
+        }
+        // Memory never accepted the registration, but disk contains it. Removal must still write.
+        const rename = vi.spyOn(fs, "renameSync");
+        try {
+            expect(push.remove(sub.endpoint)).toBe(true);
+            expect(readJson(file).subscriptions).toEqual([]);
+            expect(rename).toHaveBeenCalledOnce();
+        } finally {
+            rename.mockRestore();
+            push.close();
+        }
+    });
+
     function service(env: NodeJS.ProcessEnv = {}, answer?: (call: Call) => unknown) {
         const save = savePath();
         const fake = fakeTransport(answer);

@@ -1,8 +1,9 @@
 import { createECDH, ECDH } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import webPush from "web-push";
 import type { CompletionNotification } from "../../../shared/notifications.ts";
+import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
 
 /** At most this many browsers are subscribed; registering one more drops the least recently registered. */
 export const MAX_PUSH_SUBSCRIPTIONS = 50;
@@ -163,11 +164,9 @@ function parseSubscription(
     };
 }
 
-/** Writes `data` as JSON through a temporary file and a rename, so a crash leaves the old file or the new one. */
+/** Writes `data` as JSON through a flushed temporary file, then renames it and syncs the directory. */
 function writeJsonAtomic(file: string, data: unknown) {
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, JSON.stringify(data), { encoding: "utf-8", mode: 0o600 });
-    renameSync(temp, file);
+    writeFileDurableSync(file, JSON.stringify(data), { mode: 0o600 });
 }
 
 type VapidKeys = { publicKey: string; privateKey: string };
@@ -258,7 +257,7 @@ export function createPushService(options: {
     const env = options.env ?? process.env;
     const transport = options.transport ?? webPush;
     const serverDir = path.join(options.savePath, "server");
-    mkdirSync(serverDir, { recursive: true });
+    mkdirDurableSync(serverDir);
     const subscriptionsFile = path.join(serverDir, SUBSCRIPTIONS_FILE);
     const hosts = allowedHosts(env);
     let keys: VapidKeys | null;
@@ -276,8 +275,9 @@ export function createPushService(options: {
 
     let subscriptions: StoredSubscription[] | null = null;
     /**
-     * The file may hold what memory does not: it could not be read, or a bookkeeping write failed. A
-     * removal then writes even when memory lacks the endpoint.
+     * The file may hold what memory does not: invalid JSON, a failed bookkeeping write, or a commit
+     * whose rename landed before its directory sync failed. A removal then writes even when memory
+     * lacks the endpoint.
      */
     let diskUncertain = false;
     /** The file exists but could not be read: its contents are unknown, so nothing replaces it. */
@@ -341,6 +341,7 @@ export function createPushService(options: {
         try {
             writeJsonAtomic(subscriptionsFile, { version: 1, subscriptions: next });
         } catch (error) {
+            diskUncertain = true;
             console.error("[Push] The subscriptions could not be saved", error);
             return false;
         }

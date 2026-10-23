@@ -5,6 +5,7 @@ import {
     constants,
     fchmodSync,
     fstatSync,
+    fsyncSync,
     ftruncateSync,
     lstatSync,
     mkdirSync,
@@ -32,6 +33,7 @@ import {
     SHARE_JOB_ID,
     SHARE_REQUEST_ID,
 } from "../../../shared/requestHistory.ts";
+import { syncDirSync } from "../data/durableWrite.ts";
 import type { DiagnosticsRecorder } from "./log.ts";
 
 /** `RISU_DIAGNOSTICS_MAX_BYTES`' default: the cap of `events/`. */
@@ -491,8 +493,9 @@ export function createDiagnosticsJournal(options: {
 
     /**
      * Writes `text` (or its chunks, in order) to `target` in `folder`: a temp file there
-     * (`O_EXCL | O_NOFOLLOW`, 0640), then a rename. Whether it landed; a failure (a chunk that throws
-     * included) is counted, and the temp file removed when this call made it.
+     * (`O_EXCL | O_NOFOLLOW`, 0640), flushed before close, then a rename and directory sync. Whether
+     * it landed; a failure (a chunk that throws included) is counted, and the temp file removed when
+     * this call made it. A directory sync failure is counted but still returns true: the file landed.
      */
     function writeAtomic(folder: string, target: string, text: string | Iterable<string>, tempPrefix: string): boolean {
         let temp: string | null = null;
@@ -505,11 +508,17 @@ export function createDiagnosticsJournal(options: {
             for (const chunk of typeof text === "string" ? [text] : text) {
                 writeAll(fd, Buffer.from(chunk, "utf8"));
             }
+            fsyncSync(fd);
             const opened = fd;
             fd = -1;
             closeSync(opened);
             renameSync(temp, target);
             temp = null;
+            try {
+                syncDirSync(folder);
+            } catch (error) {
+                fail(error);
+            }
             return true;
         } catch (error) {
             fail(error);

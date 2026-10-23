@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -56,6 +57,46 @@ describe("snapshot files", () => {
     });
     afterEach(() => {
         vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it("flushes and closes the snapshot temporary before rename and syncs its directory before resolving", async () => {
+        const { store, manager, backups } = setup();
+        store.put(docs, "durable", { value: "complete" }, null);
+        const events: string[] = [];
+        let temporary: string | undefined;
+        const open = fs.open;
+        vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+            const handle = await open(...args);
+            const kind = String(args[0]) === backups ? "directory" : "file";
+            if (kind === "file") temporary = String(args[0]);
+            const sync = handle.sync.bind(handle);
+            vi.spyOn(handle, "sync").mockImplementation(async () => {
+                await sync();
+                events.push(`${kind} sync`);
+            });
+            const close = handle.close.bind(handle);
+            vi.spyOn(handle, "close").mockImplementation(async () => {
+                await close();
+                events.push(`${kind} close`);
+            });
+            return handle;
+        });
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+            expect(String(from)).toBe(temporary);
+            expect(from).not.toBe(to);
+            expect(path.dirname(String(to))).toBe(backups);
+            await rename(from, to);
+            events.push("rename");
+        });
+        const snapshot = await manager.snapshotNow();
+        events.push("resolved");
+        expect(events).toEqual(["file sync", "file close", "rename", "directory sync", "directory close", "resolved"]);
+        const copy = store.readSnapshot(path.join(backups, `${snapshot.id}.sqlite`));
+        expect(copy.rows.map(({ id, text }) => ({ id, data: JSON.parse(text) }))).toEqual([
+            { id: "durable", data: { value: "complete" } },
+        ]);
     });
 
     it("publishes a complete single-file copy under a stamped name and lists only such files, newest first", async () => {

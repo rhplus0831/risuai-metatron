@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { BackupSnapshotInfo } from "../../../shared/resources.ts";
+import { mkdirDurableSync, syncDir, syncFile } from "./durableWrite.ts";
 import type { ResourceStore } from "./resourceStore.ts";
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000;
@@ -51,9 +52,9 @@ function parseStamp(value: string): string {
 /**
  * Periodic snapshots of the resource database under `dir` (`save/backups/`) and the lock that
  * serializes every operation touching the whole database: snapshots, export copies, restores, and
- * imports. A snapshot is written to a hidden temporary name and renamed into place when complete,
- * so the list only ever shows finished files; the newest `keep` are retained. While `withMaintenance`
- * runs, `gate.assertOpen` throws, so resource mutations answer 503.
+ * imports. A snapshot is written to a hidden temporary name, flushed, renamed into place, and its
+ * directory synced; the list only shows finished files and the newest `keep` are retained. While
+ * `withMaintenance` runs, `gate.assertOpen` throws, so resource mutations answer 503.
  */
 export function createSnapshotManager(options: {
     store: ResourceStore;
@@ -64,7 +65,7 @@ export function createSnapshotManager(options: {
     const { store, dir } = options;
     const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     const keep = options.keep ?? DEFAULT_KEEP;
-    mkdirSync(dir, { recursive: true });
+    mkdirDurableSync(dir);
 
     let tail: Promise<unknown> = Promise.resolve();
     let maintenance = false;
@@ -118,7 +119,9 @@ export function createSnapshotManager(options: {
         const temporary = path.join(dir, `.${name}.tmp`);
         try {
             await store.backupTo(temporary);
+            await syncFile(temporary);
             await fs.rename(temporary, path.join(dir, name));
+            await syncDir(dir);
         } catch (error) {
             await fs.rm(temporary, { force: true }).catch(() => {});
             throw error;

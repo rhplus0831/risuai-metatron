@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { mkdirDurable, syncDir, syncFile } from "../data/durableWrite.ts";
 import type { SnapshotManager } from "../data/snapshots.ts";
 import { resolveStorageKey, storageFileExists, writeStorageFile } from "../routes/storage.ts";
 import { assetVerification } from "./assetVerification.ts";
@@ -67,11 +68,13 @@ export async function publishStagedContentAsset(
         throw new Error(`No storage location for ${key}`);
     }
     const stat = await fs.stat(stagedPath, { bigint: true });
+    await syncFile(stagedPath);
     const leave = snapshots.gate.enter();
     try {
-        await fs.mkdir(path.dirname(fullPath), { recursive: true });
+        await mkdirDurable(path.dirname(fullPath));
         await fs.rename(stagedPath, fullPath);
         assetVerification.recordVerification(fullPath, stat, true);
+        await syncDir(path.dirname(fullPath));
     } finally {
         leave();
     }
