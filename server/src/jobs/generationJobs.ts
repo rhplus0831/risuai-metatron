@@ -1446,6 +1446,16 @@ export function createGenerationJobs(options: {
             return job ? status(job) : null;
         },
 
+        /**
+         * The owner reports the cancelled callback `callbackId` of its job drained (`ChannelDrainedBody`):
+         * the client's lane it kept is free (`createChannelHub`). Also for a job that ended and is still
+         * kept; false when the callback holds no lane. Null: no such job, or another client's.
+         */
+        callbackDrained(jobId: string, clientId: string | undefined, callbackId: string): boolean | null {
+            const job = ownJob(jobId, clientId);
+            return job ? job.channelLink.drained(callbackId) : null;
+        },
+
         /** Aborts the owner's job (the text so far is persisted by the runner). Null: no such job. */
         abort(jobId: string, clientId: string | undefined): boolean | null {
             const job = ownJob(jobId, clientId);

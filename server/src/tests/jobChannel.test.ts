@@ -11,7 +11,7 @@ import type {
     HydrationReceipt,
     QuestionResult,
 } from "../../../shared/jobs.ts";
-import { MAX_PROVIDER_TEXT_CHARS, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { CANCELLED_CALLBACK_DRAIN_MS, MAX_PROVIDER_TEXT_CHARS, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import {
     CALLBACK_TIMEOUT_MS,
     type ChannelHub,
@@ -27,7 +27,8 @@ import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } fr
 // a recording transport with an injected clock: the hook list validation, notices, the request
 // lifecycle (FIFO per client, nesting at most two deep, one absolute deadline from dispatch that the
 // clock decides and none while queued, the hydration receipts of a callback, answers bound to the outstanding request,
-// delivery and replay, close). Then the registry wired to it (`generationJobs.ts`) on a real
+// delivery and replay, close, the lane a cancelled delivered callback keeps until the tab reports it
+// drained or the bound passes). Then the registry wired to it (`generationJobs.ts`) on a real
 // listening server with a fake runner: the 400 for a malformed list, a callback requested before the
 // owner attaches, a reconnect with a pending question, answers only from the current socket, the
 // hydration before a callback, and the abort or end of a job with a request pending.
@@ -283,10 +284,14 @@ describe("the hub: deadlines", () => {
         expect(h.last("cancel")).toMatchObject({ type: "cancel", epoch: "e", id });
         h.attached.value = false;
         const detached = link.channel.callback("editoutput", { text: "x" }, { timeoutMs: 100 });
+        const detachedId = h.last("callback").id;
         await h.tick(100);
         expect(await detached).toMatchObject({ outcome: "disconnected" });
-        // A callback's default is 60 s; a question's 120 s.
+        // A callback's default is 60 s; a question's 120 s. The expired callback was delivered
+        // (an earlier socket took it), so the lane waits for the tab's drain report first.
         const slow = link.channel.callback("editoutput", { text: "y" });
+        expect(h.ofType("callback")).toHaveLength(1);
+        expect(link.drained(detachedId)).toBe(true);
         expect(h.last("callback").deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
         link.close("end");
         await slow;
@@ -343,7 +348,9 @@ describe("the hub: deadlines", () => {
         await h.tick(1);
         expect(await hook).toMatchObject({ outcome: "timedOut" });
         expect(h.last("cancel").id).toBe(hookId);
-        // The question likewise.
+        // The question likewise, once the tab reports the cancelled hook drained.
+        expect(h.ofType("question")).toHaveLength(0);
+        expect(b.drained(hookId)).toBe(true);
         expect(h.last("question")).toMatchObject({ job: "b", deadline: h.clock.value + QUESTION_TIMEOUT_MS });
         await h.tick(QUESTION_TIMEOUT_MS - 1);
         expect(await h.state(question)).toBe("pending");
@@ -552,7 +559,11 @@ describe("the hub: callbacks and nesting", () => {
         expect(await parent).toEqual({ outcome: "answered", value: "P" });
         expect(await orphan).toMatchObject({ outcome: "aborted" });
         expect(h.ofType("cancel").map((event) => event.id)).toEqual([orphanId]);
-        // Then the next root of the lane.
+        // Then the next root of the lane, once the tab reports the cancelled child drained (the
+        // child was b's request: its own job reports it).
+        expect(h.last("callback")).toMatchObject({ id: orphanId });
+        expect(a.drained(orphanId)).toBe(false);
+        expect(b.drained(orphanId)).toBe(true);
         expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "root of b" } });
         h.answer(b, h.last("callback").id);
         expect(await waiting).toMatchObject({ outcome: "answered" });
@@ -569,6 +580,9 @@ describe("the hub: callbacks and nesting", () => {
         const late = a.channel.callback("editoutput", { text: "late child" }, { parentId });
         expect(await parent).toMatchObject({ outcome: "timedOut" });
         expect(await late).toMatchObject({ outcome: "refused" });
+        // The overdue parent was delivered: the next root waits for its drain report.
+        expect(h.hydrations).toEqual(["a"]);
+        expect(a.drained(parentId)).toBe(true);
         expect(h.hydrations).toEqual(["a", "b"]);
         expect(h.ofType("callback").map((event) => event.job)).toEqual(["a", "b"]);
         const nextId = h.last("callback").id;
@@ -676,7 +690,8 @@ describe("the hub: delivery, replay, and close", () => {
         expect(await second).toMatchObject({ outcome: "answered" });
 
         // An attach at an outstanding request's deadline: it expires, and the root of the same job
-        // queued behind it is dispatched by that expiry, sent once as a first delivery.
+        // queued behind it is dispatched once the tab reports the expired one drained (the attach
+        // itself promotes nothing: the expired callback was delivered), sent once as a first delivery.
         const expiring = a.channel.callback("editoutput", { text: "expiring" }, { timeoutMs: 100 });
         const expiringId = h.last("callback").id;
         const promoted = a.channel.callback("editoutput", { text: "promoted" });
@@ -684,9 +699,11 @@ describe("the hub: delivery, replay, and close", () => {
         a.handleAttach();
         expect(await expiring).toMatchObject({ outcome: "timedOut" });
         expect(h.last("cancel").id).toBe(expiringId);
-        const promotedEvents = h
-            .ofType("callback")
-            .filter((event) => (event.payload as { text: string }).text === "promoted");
+        const promotedOf = () =>
+            h.ofType("callback").filter((event) => (event.payload as { text: string }).text === "promoted");
+        expect(promotedOf()).toHaveLength(0);
+        expect(a.drained(expiringId)).toBe(true);
+        const promotedEvents = promotedOf();
         expect(promotedEvents).toHaveLength(1);
         expect(promotedEvents[0].replay).toBeUndefined();
         expect(promotedEvents[0].deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
@@ -774,12 +791,192 @@ describe("the hub: delivery, replay, and close", () => {
             outcome: "aborted",
         });
         expect(await a.channel.callback("editoutput", { text: "late" })).toMatchObject({ outcome: "aborted" });
+        // The job's end releases neither delivered callback's hold on the lane: b's root waits for
+        // both drain reports (the child's through its own job, the ended job's through its link).
+        expect(h.last("callback")).toMatchObject({ id: childId });
+        expect(b.drained(childId)).toBe(true);
+        expect(h.last("callback")).toMatchObject({ id: childId });
+        expect(a.drained(outstandingId)).toBe(true);
         expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "b root" } });
         h.answer(b, h.last("callback").id);
         expect(await next).toMatchObject({ outcome: "answered" });
         // Timers are gone: nothing fires later.
         await h.tick(QUESTION_TIMEOUT_MS + 1);
         expect(h.ofType("cancel")).toHaveLength(2);
+    });
+});
+
+describe("the hub: the lane a cancelled callback keeps", () => {
+    it("holds the lane after cancelling a delivered callback until its job reports it drained, then dispatches the next root with its whole allowance; a report for a callback that holds nothing answers false", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const b = h.open("b");
+        const c = h.open("c");
+        const other = h.open("o", { clientId: "other" });
+        const held = a.channel.callback("editoutput", { text: "held" }, { timeoutMs: 1_000 });
+        const heldId = h.last("callback").id;
+        const next = b.channel.callback("editoutput", { text: "next" });
+        await h.tick(1_000);
+        expect(await held).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("cancel").id).toBe(heldId);
+        // The lane is free of requests, yet b's root is not sent: the tab may still run the hook.
+        expect(h.hydrations).toEqual(["a"]);
+        expect(h.ofType("callback")).toHaveLength(1);
+        const later = c.channel.callback("editoutput", { text: "later" });
+        expect(h.ofType("callback")).toHaveLength(1);
+        // Another client's lane is its own.
+        void other.channel.callback("editoutput", { text: "o" });
+        expect(h.last("callback")).toMatchObject({ job: "o" });
+        // Only the callback's own job releases it, once.
+        expect(b.drained(heldId)).toBe(false);
+        expect(a.drained("nope")).toBe(false);
+        expect(h.ofType("callback")).toHaveLength(2);
+        h.clock.value += 5_000;
+        expect(a.drained(heldId)).toBe(true);
+        expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "next" } });
+        expect(h.last("callback").deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
+        expect(h.hydrations).toEqual(["a", "o", "b"]);
+        expect(a.drained(heldId)).toBe(false);
+        // An answered root holds nothing: c's root follows at once.
+        h.answer(b, h.last("callback").id);
+        expect(await next).toMatchObject({ outcome: "answered" });
+        expect(h.last("callback")).toMatchObject({ job: "c", payload: { text: "later" } });
+        h.answer(c, h.last("callback").id);
+        expect(await later).toMatchObject({ outcome: "answered" });
+        expect(h.ofType("cancel").map((event) => event.id)).toEqual([heldId]);
+    });
+
+    it("releases a hold nobody reported once CANCELLED_CALLBACK_DRAIN_MS passed since the cancel, by the clock: the timer alone frees nothing", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const b = h.open("b");
+        const held = a.channel.callback("editoutput", { text: "held" }, { timeoutMs: 1_000 });
+        const heldId = h.last("callback").id;
+        const next = b.channel.callback("editoutput", { text: "next" });
+        await h.tick(1_000);
+        expect(await held).toMatchObject({ outcome: "timedOut" });
+        // The timer fires while the clock has not reached the bound: the hold stays.
+        await vi.advanceTimersByTimeAsync(CANCELLED_CALLBACK_DRAIN_MS);
+        expect(h.ofType("callback")).toHaveLength(1);
+        // The clock reaches the bound before the timer does: the next dispatch attempt frees it (a
+        // refused child is one: it pumps the lane and queues nothing).
+        const attempt = () => a.channel.callback("editoutput", { text: "x" }, { parentId: "nope" });
+        h.clock.value += CANCELLED_CALLBACK_DRAIN_MS - 1;
+        expect(await attempt()).toMatchObject({ outcome: "refused" });
+        expect(h.ofType("callback")).toHaveLength(1);
+        h.clock.value += 1;
+        expect(await attempt()).toMatchObject({ outcome: "refused" });
+        expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "next" } });
+        expect(h.last("callback").deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
+        expect(a.drained(heldId)).toBe(false);
+        h.answer(b, h.last("callback").id);
+        expect(await next).toMatchObject({ outcome: "answered" });
+
+        // The timer wakes the lane when the clock and the timer agree: the bound from the cancel.
+        const c = h.open("c");
+        const again = c.channel.callback("editoutput", { text: "again" }, { timeoutMs: 1_000 });
+        const following = a.channel.callback("editoutput", { text: "following" });
+        await h.tick(1_000);
+        expect(await again).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("callback")).toMatchObject({ job: "c" });
+        await h.tick(CANCELLED_CALLBACK_DRAIN_MS - 1);
+        expect(h.last("callback")).toMatchObject({ job: "c" });
+        await h.tick(1);
+        expect(h.last("callback")).toMatchObject({ job: "a", payload: { text: "following" } });
+        expect(h.last("callback").deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
+        h.answer(a, h.last("callback").id);
+        expect(await following).toMatchObject({ outcome: "answered" });
+    });
+
+    it("releases a hold on a late valid answer of the callback, one that itself causes the expiry included; a malformed answer or one of another id releases nothing", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const b = h.open("b");
+        const c = h.open("c");
+        const held = a.channel.callback("editoutput", { text: "held" }, { timeoutMs: 1_000 });
+        const heldId = h.last("callback").id;
+        const next = b.channel.callback("editoutput", { text: "next" });
+        await h.tick(1_000);
+        expect(await held).toMatchObject({ outcome: "timedOut" });
+        a.handleMessage({ type: "answer", id: heldId, outcome: "answered" });
+        a.handleMessage({ type: "answer", id: heldId, outcome: "failed", failure: "hook" });
+        a.handleMessage({ type: "answer", id: heldId, outcome: "cancelled" });
+        a.handleMessage({ type: "chunk", id: heldId, text: "x" });
+        a.handleMessage({ type: "answer", id: "nope", outcome: "answered", value: 1 });
+        b.handleMessage({ type: "answer", id: heldId, outcome: "answered", value: 1 });
+        expect(h.ofType("callback")).toHaveLength(1);
+        a.handleMessage({ type: "answer", id: heldId, outcome: "failed", failure: "hook", error: "late" });
+        expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "next" } });
+        const nextId = h.last("callback").id;
+        expect(a.drained(heldId)).toBe(false);
+
+        // The clock passed b's deadline when its answer arrives: the answer expires it (a cancel to
+        // the tab), and, being the tab's word that the hook is over, frees the lane at once.
+        const after = c.channel.callback("editoutput", { text: "after" });
+        h.clock.value += CALLBACK_TIMEOUT_MS;
+        h.answer(b, nextId, "too late");
+        expect(await next).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("cancel").id).toBe(nextId);
+        expect(h.last("callback")).toMatchObject({ job: "c", payload: { text: "after" } });
+        expect(h.last("callback").deadline).toBe(h.clock.value + CALLBACK_TIMEOUT_MS);
+        expect(b.drained(nextId)).toBe(false);
+        h.answer(c, h.last("callback").id);
+        expect(await after).toMatchObject({ outcome: "answered" });
+    });
+
+    it("holds for a cancelled child without blocking its parent's next child; a callback that was never delivered, a question, and a signal abort after the answer hold nothing", async () => {
+        const h = harness();
+        const a = h.open("a");
+        const b = h.open("b");
+        const parent = a.channel.callback("editoutput", { text: "parent" }, { timeoutMs: 10_000 });
+        const parentId = h.last("callback").id;
+        const root = b.channel.callback("editoutput", { text: "root" });
+        const controller = new AbortController();
+        const child = b.channel.callback("editoutput", { text: "child" }, { parentId, signal: controller.signal });
+        const childId = h.last("callback").id;
+        controller.abort();
+        expect(await child).toMatchObject({ outcome: "aborted" });
+        expect(h.last("cancel").id).toBe(childId);
+        // The parent goes on with another child at once: the hold blocks roots only.
+        const sibling = b.channel.callback("editoutput", { text: "sibling" }, { parentId });
+        expect(h.last("callback")).toMatchObject({ job: "b", parentId, payload: { text: "sibling" } });
+        h.answer(b, h.last("callback").id, "S");
+        expect(await sibling).toEqual({ outcome: "answered", value: "S" });
+        h.answer(a, parentId, "P");
+        expect(await parent).toEqual({ outcome: "answered", value: "P" });
+        // The parent answered, but the cancelled child may still run: b's root waits for it.
+        expect(h.last("callback")).toMatchObject({ payload: { text: "sibling" } });
+        expect(a.drained(childId)).toBe(false);
+        expect(b.drained(childId)).toBe(true);
+        expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "root" } });
+        h.answer(b, h.last("callback").id);
+        expect(await root).toMatchObject({ outcome: "answered" });
+
+        // A callback no socket took (the owner attached, the send refused) expires with a cancel
+        // but holds nothing: the next root follows at once. A question's expiry holds nothing either.
+        h.delivering.value = false;
+        const undelivered = a.channel.callback("editoutput", { text: "undelivered" }, { timeoutMs: 100 });
+        const undeliveredId = h.last("callback").id;
+        const question = b.channel.ask({ kind: "alertConfirm", payload: { message: "q" } }, { timeoutMs: 100 });
+        const following = a.channel.callback("editoutput", { text: "following" });
+        await h.tick(100);
+        expect(await undelivered).toMatchObject({ outcome: "timedOut" });
+        expect(h.ofType("cancel").map((event) => event.id)).toEqual([childId, undeliveredId]);
+        expect(h.last("question")).toMatchObject({ job: "b" });
+        await h.tick(100);
+        expect(await question).toMatchObject({ outcome: "timedOut" });
+        expect(h.last("callback")).toMatchObject({ job: "a", payload: { text: "following" } });
+        h.delivering.value = true;
+        h.answer(a, h.last("callback").id);
+        expect(await following).toMatchObject({ outcome: "answered" });
+        // A signal that aborts after the answer settles nothing, so nothing is held.
+        const later = new AbortController();
+        const answered = a.channel.callback("editoutput", { text: "answered" }, { signal: later.signal });
+        h.answer(a, h.last("callback").id);
+        expect(await answered).toMatchObject({ outcome: "answered" });
+        later.abort();
+        void b.channel.callback("editoutput", { text: "free" });
+        expect(h.last("callback")).toMatchObject({ job: "b", payload: { text: "free" } });
     });
 });
 
@@ -1245,8 +1442,10 @@ describe("the hub: provider chunks and the caller's signal", () => {
         expect(await big).toEqual({ outcome: "failed", failure: "protocol", error: "The provider's text is too long" });
         expect(h.last("cancel")).toMatchObject({ id: bigId });
         expect(chunks).toHaveLength(5);
-        // The lane is free again.
+        // The lane is free again once the tab reports the cancelled provider drained.
         void link.channel.callback("editoutput", { text: "t" });
+        expect(h.last("callback").id).toBe(bigId);
+        expect(link.drained(bigId)).toBe(true);
         expect(h.last("callback").name).toBe("editoutput");
         errors.mockRestore();
     });
@@ -1261,6 +1460,8 @@ describe("the hub: provider chunks and the caller's signal", () => {
         controller.abort();
         expect(await pending).toEqual({ outcome: "aborted", error: "The request ended" });
         expect(h.ofType("cancel").map((event) => event.id)).toEqual([id]);
+        // Delivered, then cancelled: the lane waits for the tab's drain report.
+        expect(link.drained(id)).toBe(true);
 
         const dispatched = h.ofType("callback").length;
         const aborted = new AbortController();

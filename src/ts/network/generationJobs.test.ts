@@ -236,6 +236,29 @@ describe("the requests", () => {
         stubs.fetch.mockResolvedValueOnce(json(500, { error: "boom" }));
         await expect(transport.abortGenerationJob("j1")).rejects.toMatchObject({ status: 500 });
     });
+
+    it("reports a cancelled callback drained to the job's route with the client id, and never fails: a 404 (the job is gone) is silent, any other failure is logged", async () => {
+        stubs.fetch.mockResolvedValueOnce(json(200, { drained: true }));
+        await expect(transport.reportCallbackDrained("j/1", "cb-1")).resolves.toBeUndefined();
+        expect(stubs.fetch.mock.calls[0]).toEqual([
+            `/api/generations/j%2F1/drained?clientId=${encodeURIComponent(transport.generationClientId())}`,
+            {
+                method: "POST",
+                cache: "no-store",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ callbackId: "cb-1" }),
+            },
+        ]);
+        const errors = vi.mocked(console.error);
+        stubs.fetch.mockResolvedValueOnce(json(404, { error: "Generation not found" }));
+        await expect(transport.reportCallbackDrained("j1", "cb-1")).resolves.toBeUndefined();
+        expect(errors).not.toHaveBeenCalled();
+        stubs.fetch.mockResolvedValueOnce(json(500, { error: "boom" }));
+        await expect(transport.reportCallbackDrained("j1", "cb-1")).resolves.toBeUndefined();
+        stubs.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        await expect(transport.reportCallbackDrained("j1", "cb-1")).resolves.toBeUndefined();
+        expect(errors).toHaveBeenCalledTimes(2);
+    });
 });
 
 describe("following a job", () => {

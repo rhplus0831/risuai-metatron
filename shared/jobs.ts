@@ -631,6 +631,22 @@ export type CallbackResult =
     | { outcome: "refused"; refusal?: CallbackRefusal; error?: string }
     | { outcome: "timedOut" | "disconnected" | "aborted"; error?: string };
 
+/**
+ * How long a callback the server cancelled after delivering it keeps its client's lane at most: the
+ * tab's hook may still run (a cancel only asks it to stop), and the client runs one root callback at
+ * a time, so the next root waits until the tab reports the cancelled one drained
+ * (`ChannelDrainedBody`) or this bound passes, measured from the cancel.
+ */
+export const CANCELLED_CALLBACK_DRAIN_MS = 60_000;
+
+/**
+ * `POST /api/generations/:id/drained?clientId=` (client to server): a callback of that job the server
+ * cancelled is no longer running in the tab (its hook settled, or it had answered before the cancel).
+ * Sent over HTTP, not the job's socket: the tab closes that socket at the job's end, which is when a
+ * Stop cancels the callback.
+ */
+export type ChannelDrainedBody = { callbackId: string };
+
 /** A streaming `provider` callback's text so far (client to server), before its answer. */
 export type ChannelChunk = { type: "chunk"; id: string; text: string };
 

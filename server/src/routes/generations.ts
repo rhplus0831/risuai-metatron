@@ -187,8 +187,10 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
  * server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
  * `DELETE /:id?clientId=` aborts it, and `POST /:id/memory-stop?clientId=` (`{ runId }`, the epoch
  * checked) stops the job's initial memory summarization run `runId` after its summary in progress
- * (`{ stopped: true }`; 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`; 412 for another epoch).
- * Another client's job is a 404. The socket is
+ * (`{ stopped: true }`; 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`; 412 for another epoch),
+ * and `POST /:id/drained?clientId=` (`ChannelDrainedBody`) reports a callback of the job the server
+ * cancelled as no longer running in the tab, freeing the client's channel lane (`{ drained }`, false
+ * when it held none; also for an ended job still kept). Another client's job is a 404. The socket is
  * `/api/generations/:id/ws` (`generationJobs.handleUpgrade`). Responses are never cached.
  */
 export function registerGenerationRoutes(
@@ -264,5 +266,22 @@ export function registerGenerationRoutes(
             c.req.header(RESOURCE_EPOCH_HEADER),
         );
         return result.ok ? c.json({ stopped: true }) : c.json(result.body, result.status);
+    });
+
+    app.post("/api/generations/:id/drained", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        const callbackId = isPlainObject(read.body) ? read.body.callbackId : undefined;
+        if (typeof callbackId !== "string" || !GENERATION_ID_PATTERN.test(callbackId)) {
+            return c.json({ error: "callbackId must be a callback id" }, 400);
+        }
+        const drained = jobs.callbackDrained(c.req.param("id"), c.req.query("clientId"), callbackId);
+        return drained === null ? c.json({ error: "Generation not found" }, 404) : c.json({ drained });
     });
 }

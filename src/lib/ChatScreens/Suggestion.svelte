@@ -151,6 +151,7 @@
                 formated: promptbody,
                 bias: {},
                 currentChar: currentChar as ClientCharacter,
+                chatRef: requestChatRef,
             },
             "submodel",
             requestController?.signal ?? null,

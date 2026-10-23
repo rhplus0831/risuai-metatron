@@ -365,8 +365,17 @@ describe("the send guard of a chat's request", () => {
     });
 
     describe("inside a job callback", () => {
+        const call = { jobId: "job", callbackId: "cb" };
+        /** The dispatcher runs the callback `call` on `targets`, uncancelled. */
         const callbackOf = (targets: ReturnType<typeof boundContext>) =>
-            setChannelCallSource(() => ({ jobId: "job", callbackId: "cb", targets }));
+            setChannelCallSource((named) =>
+                named.jobId === call.jobId && named.callbackId === call.callbackId ? targets : null,
+            );
+        /** The call context a hook of that callback got. */
+        const inside = (targets: { chatRef: typeof refBound } & Record<string, unknown>) => ({
+            ...targets,
+            channelCall: call,
+        });
 
         it("exempts only the callback's own chat: a request for another, unbound chat is still refused on its binding, and the tab-run model is not invoked", async () => {
             callbackOf(boundContext());
@@ -376,6 +385,9 @@ describe("the send guard of a chat's request", () => {
             const context = { chatRef: refLoose, presetId: "pp-2", modelPresetId: "mp-2", personaId: "p2" };
             expect(await requestChatData(argOf({ pluginContext: context }), "model")).toEqual(allUnset);
             expect(await requestChatDataMain(argOf({ pluginContext: context }), "model")).toEqual(allUnset);
+            // The hook's own context names the callback, but another chat: that chat's binding decides.
+            expect(await requestChatData(argOf({ pluginContext: inside(context) }), "model")).toEqual(allUnset);
+            expect(await requestChatDataMain(argOf({ pluginContext: inside(context) }), "model")).toEqual(allUnset);
             expect(await requestChatDataMain(argOf({ chatRef: refStale }), "model")).toEqual(
                 refusal([gone("modelPresetId"), gone("personaId")]),
             );
@@ -385,22 +397,23 @@ describe("the send guard of a chat's request", () => {
             nothingRan();
         });
 
-        it("runs a request for the callback's chat whose context names the job's targets (a `presetChain` pick included), on those targets, and refuses a context with other ids", async () => {
+        it("runs a request for the callback's chat whose hook context names the job's targets (a `presetChain` pick included) on those targets; a hook context with other ids is refused, a context without the callback is checked against the chat's binding, and a stale hook context falls back to it", async () => {
             // The job picked `pp-2` for its prompt preset and runs its callbacks on `mp-2` (`prov-2`).
             const targets = boundContext({ presetId: "pp-2", modelPresetId: "mp-2" });
             callbackOf(targets);
-            expect(await requestChatData(argOf({ chatRef: refBound, pluginContext: targets }), "model")).toEqual({
+            const hook = inside(targets);
+            expect(await requestChatData(argOf({ chatRef: refBound, pluginContext: hook }), "model")).toEqual({
                 type: "success",
                 result: "from prov-2",
                 model: "custom",
             });
-            expect(await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: targets }), "model")).toEqual({
+            expect(await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: hook }), "model")).toEqual({
                 type: "success",
                 result: "from prov-2",
                 model: "custom",
             });
             // The context's chat alone names the request's chat too.
-            expect(await requestChatDataMain(argOf({ pluginContext: targets }), "model")).toMatchObject({
+            expect(await requestChatDataMain(argOf({ pluginContext: hook }), "model")).toMatchObject({
                 type: "success",
                 result: "from prov-2",
             });
@@ -418,19 +431,22 @@ describe("the send guard of a chat's request", () => {
                 });
             }
 
-            // The chat's stored binding (`pp-1`/`mp-1`) is not the job's: refused, as is any other id.
+            // A hook context whose ids are not its callback's targets (the chat's stored binding
+            // `pp-1`/`mp-1`, any other id): refused.
             stubs.getModelInfo.mockClear();
-            expect(await requestChatData(argOf({ chatRef: refBound, pluginContext: boundContext() }), "model")).toEqual(
-                mismatch,
-            );
             expect(
-                await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: boundContext() }), "model"),
+                await requestChatData(argOf({ chatRef: refBound, pluginContext: inside(boundContext()) }), "model"),
+            ).toEqual(mismatch);
+            expect(
+                await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: inside(boundContext()) }), "model"),
             ).toEqual(mismatch);
             expect(
                 await requestChatDataMain(
                     argOf({
                         chatRef: refBound,
-                        pluginContext: boundContext({ presetId: "pp-2", modelPresetId: "mp-2", personaId: "p2" }),
+                        pluginContext: inside(
+                            boundContext({ presetId: "pp-2", modelPresetId: "mp-2", personaId: "p2" }),
+                        ),
                     }),
                     "model",
                 ),
@@ -439,17 +455,44 @@ describe("the send guard of a chat's request", () => {
             expect(stubs.getModelInfo).not.toHaveBeenCalled();
             expect(stubs.requestServer).not.toHaveBeenCalled();
 
-            // Outside the callback the same context is refused: the chat runs on its binding again.
-            setChannelCallSource(() => null);
-            expect(await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: targets }), "model")).toEqual(
-                mismatch,
-            );
-            expect(
-                await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: boundContext() }), "model"),
-            ).toMatchObject({
+            // A request without the callback while it runs (the UI's suggestion or translation, a
+            // plugin's own timer) is the chat's own: its stored binding decides, never the running
+            // callback's targets, so the job's ids without the callback are a mismatch.
+            expect(await requestChatDataMain(argOf({ chatRef: refBound }), "model")).toMatchObject({
                 type: "success",
                 result: "from prov-1",
             });
+            expect(
+                await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: boundContext() }), "model"),
+            ).toMatchObject({ type: "success", result: "from prov-1" });
+            expect(await requestChatData(argOf({ chatRef: refBound, pluginContext: targets }), "model")).toEqual(
+                mismatch,
+            );
+            expect(provider1).toHaveBeenCalledTimes(2);
+            expect(provider2).toHaveBeenCalledTimes(3);
+
+            // Once the callback is cancelled or over, its hook context is stale: the binding decides
+            // again (the job's ids are refused, the binding's accepted), as for a context naming a
+            // callback other than the one running.
+            setChannelCallSource(() => null);
+            expect(await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: hook }), "model")).toEqual(
+                mismatch,
+            );
+            expect(
+                await requestChatDataMain(argOf({ chatRef: refBound, pluginContext: inside(boundContext()) }), "model"),
+            ).toMatchObject({ type: "success", result: "from prov-1" });
+            callbackOf(targets);
+            expect(
+                await requestChatDataMain(
+                    argOf({
+                        chatRef: refBound,
+                        pluginContext: { ...targets, channelCall: { jobId: "job", callbackId: "older" } },
+                    }),
+                    "model",
+                ),
+            ).toEqual(mismatch);
+            expect(provider1).toHaveBeenCalledTimes(3);
+            expect(provider2).toHaveBeenCalledTimes(3);
         });
     });
 });

@@ -31,6 +31,15 @@ export interface PluginCallContext {
      * refuses the hook's chat once its character's chats were replaced, even under the same ids.
      */
     readonly owner?: string;
+    /**
+     * The job callback the hook runs as (`jobChannel.ts` sets it for every hook it runs; a context
+     * captured from a chat never has one): an aux request made with this context names it as its
+     * parent (`channelCall`), so the request ends with that callback. A request the tab's UI starts
+     * carries none, whatever callback runs meanwhile. The per-instance attribution above applies: a
+     * plugin's timer or UI callback during one of its hooks sees that hook's context, and with it
+     * this callback.
+     */
+    readonly channelCall?: { readonly jobId: string; readonly callbackId: string };
 }
 
 /** A hook's chat, character, or preset no longer exists; the host call is refused rather than redirected to the tab's selection. */

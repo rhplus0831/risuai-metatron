@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isModelDescriptor } from "../../../shared/llm/validate.ts";
 import {
+    CANCELLED_CALLBACK_DRAIN_MS,
     type CallbackName,
     type CallbackPayloads,
     type CallbackResult,
@@ -124,7 +125,13 @@ type ChannelState = {
 /** The serialized size of the notices kept for an owner that has not attached yet; later ones are dropped. */
 const MAX_EARLY_NOTICE_BYTES = 1024 * 1024;
 
-type ClientLane = { queue: Request[]; stack: Request[] };
+/**
+ * A callback the server cancelled after an owner socket took it: the tab's hook may still run, so it
+ * keeps the client's lane until the tab reports it drained or `until` (server clock) passes.
+ */
+type Draining = { channel: ChannelState; until: number; timer: ReturnType<typeof setTimeout> | null };
+
+type ClientLane = { queue: Request[]; stack: Request[]; draining: Map<string, Draining> };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -257,6 +264,14 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
  * `timedOut` with an owner socket attached, else `disconnected`. A queued root has no deadline: it
  * waits until it is dispatched, its job ends, or the signal it was given aborts. A job's end
  * (`close`) settles its requests `aborted` and cancels their children.
+ *
+ * A callback settled without its answer after an owner socket took it (a timeout, its caller's
+ * signal, its parent's or its job's end) is cancelled on the tab, but its hook may still be running
+ * there, and the tab runs one root callback at a time: it keeps the lane (no queued root is
+ * dispatched, children are not held) until the tab reports it drained (`drained`, the HTTP route; or
+ * a late valid answer of it on the job's socket) or `CANCELLED_CALLBACK_DRAIN_MS` after the cancel.
+ * A job's end does not release it: Stop in one chat must not let the tab's next root (another chat's
+ * job) arrive while the stopped hook still runs.
  */
 export function createChannelHub(options: { now?: () => number } = {}) {
     const now = options.now ?? Date.now;
@@ -265,7 +280,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     function laneOf(clientId: string): ClientLane {
         let lane = lanes.get(clientId);
         if (!lane) {
-            lane = { queue: [], stack: [] };
+            lane = { queue: [], stack: [], draining: new Map() };
             lanes.set(clientId, lane);
         }
         return lane;
@@ -288,6 +303,9 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         lane.stack = lane.stack.filter((entry) => entry !== request);
         request.parent?.children.delete(request);
         request.channel.requests.delete(request);
+        if (notifyClient && request.dispatched && request.delivered && request.kind === "callback") {
+            holdDraining(lane, request);
+        }
         if (notifyClient && request.dispatched) {
             try {
                 request.channel.transport.send({
@@ -309,6 +327,57 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         }
         request.onSettled.clear();
         pump(request.channel.transport.clientId);
+    }
+
+    /** Keeps the lane for a cancelled callback the tab may still run (see the hub's comment). */
+    function holdDraining(lane: ClientLane, request: Request) {
+        const clientId = request.channel.transport.clientId;
+        const entry: Draining = { channel: request.channel, until: now() + CANCELLED_CALLBACK_DRAIN_MS, timer: null };
+        lane.draining.set(request.id, entry);
+        // A wakeup only, as for a deadline: `releaseDue` compares the clock.
+        const wake = () => {
+            entry.timer = null;
+            if (lane.draining.get(request.id) !== entry) {
+                return;
+            }
+            if (now() >= entry.until) {
+                pump(clientId);
+                return;
+            }
+            entry.timer = setTimeout(wake, Math.max(1, entry.until - now()));
+            entry.timer.unref?.();
+        };
+        entry.timer = setTimeout(wake, CANCELLED_CALLBACK_DRAIN_MS);
+        entry.timer.unref?.();
+    }
+
+    /** Drops the draining holds whose bound passed; true while one still holds the lane. */
+    function releaseDue(lane: ClientLane): boolean {
+        for (const [id, entry] of lane.draining) {
+            if (now() >= entry.until) {
+                if (entry.timer) {
+                    clearTimeout(entry.timer);
+                }
+                lane.draining.delete(id);
+            }
+        }
+        return lane.draining.size > 0;
+    }
+
+    /** The tab reports the cancelled callback `id` of `channel` drained: it no longer holds the lane. */
+    function releaseDraining(channel: ChannelState, id: string): boolean {
+        const clientId = channel.transport.clientId;
+        const lane = lanes.get(clientId);
+        const entry = lane?.draining.get(id);
+        if (!lane || !entry || entry.channel !== channel) {
+            return false;
+        }
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+        }
+        lane.draining.delete(id);
+        pump(clientId);
+        return true;
     }
 
     /** The deadline decides, not the timer: an expired request settles as its timer would. */
@@ -362,13 +431,14 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
     function pump(clientId: string) {
         const lane = laneOf(clientId);
-        while (lane.stack.length === 0 && lane.queue.length > 0) {
+        const draining = releaseDue(lane);
+        while (!draining && lane.stack.length === 0 && lane.queue.length > 0) {
             const next = lane.queue.shift()!;
             if (!next.settled && !next.channel.closed) {
                 dispatch(next, lane);
             }
         }
-        if (lane.stack.length === 0 && lane.queue.length === 0) {
+        if (lane.stack.length === 0 && lane.queue.length === 0 && lane.draining.size === 0) {
             lanes.delete(clientId);
         }
     }
@@ -546,6 +616,11 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         (entry) => entry.id === message.id && entry.dispatched && !entry.settled,
                     );
                     if (!request || expireIfDue(request)) {
+                        // A valid answer of a callback the server stopped waiting for (now or before):
+                        // its hook is over, so its draining hold (if any) ends.
+                        if (message.type === "answer" && readAnswer("callback", message)) {
+                            releaseDraining(state, message.id);
+                        }
                         return;
                     }
                     if (message.type === "chunk") {
@@ -645,6 +720,15 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     }
                     request.onSettled.add(onSettled);
                     return () => request.onSettled.delete(onSettled);
+                },
+
+                /**
+                 * The tab reports the cancelled callback `id` of this job drained (`POST
+                 * /api/generations/:id/drained`): the lane it kept is free. False when it holds none
+                 * (answered, never delivered, released by its bound, or reported before).
+                 */
+                drained(id: string): boolean {
+                    return releaseDraining(state, id);
                 },
 
                 /** The job ends: every request of it is settled `aborted`. Idempotent. */

@@ -1,34 +1,31 @@
 import type { CallbackTargets } from "../../../shared/jobs.ts";
 
-// Which job callback is running in this tab, for an aux request made inside it
-// (`POST /api/llm/request` carries it as `channelCall`). The job channel's dispatcher is loaded on
-// first use (`generationJobs.ts`) and registers its `currentChannelCall` here when it loads; before
-// that no callback can be running.
-type ChannelCall = { jobId: string; callbackId: string; targets: CallbackTargets };
+// Whether a job callback a plugin call context names (`PluginCallContext.channelCall`) still runs in
+// this tab, and on which targets. The job channel's dispatcher is loaded on first use
+// (`generationJobs.ts`) and registers its `liveChannelCallTargets` here when it loads; before that no
+// callback can be running. Nothing here picks a callback for a request: only a context the
+// dispatcher handed to a hook names one.
+type ChannelCall = { jobId: string; callbackId: string };
 
-let source: (() => ChannelCall | null) | null = null;
+let source: ((call: ChannelCall) => CallbackTargets | null) | null = null;
 
-export function setChannelCallSource(next: () => ChannelCall | null) {
+export function setChannelCallSource(next: (call: ChannelCall) => CallbackTargets | null) {
     source = next;
 }
 
-export function activeChannelCall(): { jobId: string; callbackId: string } | null {
-    const call = source?.() ?? null;
-    return call ? { jobId: call.jobId, callbackId: call.callbackId } : null;
-}
-
 /**
- * What the running callback acts on (its job's chat and ids, a `presetChain` pick included), or
- * null: a request for that chat inside it runs on these ids.
+ * What the callback `call` acts on (its job's chat and ids, a `presetChain` pick included) while it
+ * runs here and the server has not cancelled it, or null: a request for that chat from inside it runs
+ * on these ids.
  */
-export function activeChannelCallTargets(): CallbackTargets | null {
-    const call = source?.() ?? null;
-    return call
+export function channelCallTargets(call: ChannelCall | undefined): CallbackTargets | null {
+    const targets = call ? (source?.(call) ?? null) : null;
+    return targets
         ? {
-              chatRef: { chaId: call.targets.chatRef.chaId, chatId: call.targets.chatRef.chatId },
-              presetId: call.targets.presetId,
-              modelPresetId: call.targets.modelPresetId,
-              personaId: call.targets.personaId,
+              chatRef: { chaId: targets.chatRef.chaId, chatId: targets.chatRef.chatId },
+              presetId: targets.presetId,
+              modelPresetId: targets.modelPresetId,
+              personaId: targets.personaId,
           }
         : null;
 }

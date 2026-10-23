@@ -169,7 +169,10 @@ export type LlmRequestBody = {
     toolRecords: Record<string, ToolCallRecord>;
     /** The descriptor of a model from the tab's dynamic registry (the server knows only the static list). */
     dynamicModel?: LLMModel;
-    /** The job callback this request runs inside (`currentChannelCall()`), if any. */
+    /**
+     * The job callback this request runs inside, if any: the plugin call context's `channelCall`, set
+     * only for a hook the job channel runs (never for a request the tab's UI starts).
+     */
     channelCall?: { jobId: string; callbackId: string };
 };
 

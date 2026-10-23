@@ -259,6 +259,7 @@ export const ROUTE_TEMPLATES = [
     "/api/generations",
     "/api/generations/:id",
     "/api/generations/:id/memory-stop",
+    "/api/generations/:id/drained",
     "/api/generations/*",
     "/api/transform",
     "/api/transform/continue",

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import {
+    type ChannelDrainedBody,
     type ChatResyncRequest,
     type ReplyResyncRequest,
     type GenerationCreateBody,
@@ -343,6 +344,26 @@ export async function abortGenerationJob(jobId: string): Promise<void> {
     } catch (error) {
         if (!(error instanceof ResourceRequestError && error.status === 404)) {
             throw error;
+        }
+    }
+}
+
+/**
+ * Tells the server that the callback `callbackId` of this tab's job `jobId`, which the server
+ * cancelled, no longer runs here: the channel lane it kept for this tab is free (`ChannelDrainedBody`).
+ * Over HTTP, since the job's socket closes at its end. A failure is only logged: the server's bound
+ * (`CANCELLED_CALLBACK_DRAIN_MS`) frees the lane without it.
+ */
+export async function reportCallbackDrained(jobId: string, callbackId: string): Promise<void> {
+    const body: ChannelDrainedBody = { callbackId };
+    try {
+        await request(
+            `/api/generations/${encodeURIComponent(jobId)}/drained?clientId=${encodeURIComponent(generationClientId())}`,
+            { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+        );
+    } catch (error) {
+        if (!(error instanceof ResourceRequestError && error.status === 404)) {
+            console.error("[Channel]", error);
         }
     }
 }

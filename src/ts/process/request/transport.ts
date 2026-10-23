@@ -37,7 +37,6 @@ import { language } from "src/lang";
 import { alertError } from "src/ts/alert";
 import { appendFetchLog } from "src/ts/globalApi.svelte";
 import { getModelInfoForMode, isDynamicModel, LLMFlags, type LLMModel } from "src/ts/model/modellist";
-import { activeChannelCall } from "src/ts/network/channelCallSource";
 import { generationClientId } from "src/ts/network/generationJobs";
 import { risuChatParserScoped } from "src/ts/parser/parser.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
@@ -236,9 +235,11 @@ export async function requestServer(
         ),
         ...(isDynamicModel(modelInfo.id) ? { dynamicModel: JSON.parse(JSON.stringify(modelInfo)) } : {}),
     };
-    const channelCall = activeChannelCall();
+    // Only a request made from a job callback's hook (its call context names the callback) runs inside
+    // it; the server refuses one whose callback has settled.
+    const channelCall = arg.pluginContext?.channelCall;
     if (channelCall) {
-        body.channelCall = channelCall;
+        body.channelCall = { jobId: channelCall.jobId, callbackId: channelCall.callbackId };
     }
 
     // The caller's abort is watched from here on: through the flush, the tool-record reads, the

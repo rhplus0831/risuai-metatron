@@ -1,7 +1,7 @@
 import { characterList } from "../storage/characterStore.svelte";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
-import { generationClientId, noteChannelCallbacks } from "./generationJobs";
+import { generationClientId, noteChannelCallbacks, reportCallbackDrained } from "./generationJobs";
 import { get } from "svelte/store";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
@@ -98,6 +98,14 @@ import {
  * - Each request's state is kept in memory: a duplicate delivery never runs a callback twice (the
  *   cached answer is sent again), and a `replay` this page has no state for is refused
  *   (`failed`/`protocol`), since it may already have run on the page before a reload.
+ * - One root callback runs at a time in this tab (the server's lane per client). A `cancel` only asks
+ *   a running hook to stop: the callback stays outstanding until its hook settles, and a root that
+ *   arrives meanwhile is refused. The server keeps the lane for a callback it cancelled until this tab
+ *   reports it drained (`reportCallbackDrained`, once the hook settled, or at once for one that had
+ *   already answered) or its bound passes, so another job's root is not sent into a running hook.
+ * - A hook run as a callback gets the job's targets as its call context with `channelCall` (the job
+ *   and callback ids): an aux request made from it names that callback as its parent. Nothing else
+ *   the tab requests does.
  */
 
 /** Where the dispatcher sends its answers for one job (the job's current follow). */
@@ -136,9 +144,12 @@ type UiItem =
 
 const MAX_REMEMBERED = 500;
 
+/** A request's state; `callback` marks a callback delivery, run or refused (a cancel may then hold the server's lane). */
+type RequestState = { jobId: string; answer: ChannelAnswer | null; retired?: true; callback?: true };
+
 const transports = new Map<string, ChannelTransport>();
 /** Request id → its state; a finished one keeps its answer for a duplicate delivery. */
-const requests = new Map<string, { jobId: string; answer: ChannelAnswer | null; retired?: true }>();
+const requests = new Map<string, RequestState>();
 const outstanding: Outstanding[] = [];
 const uiQueue: UiItem[] = [];
 let uiBusy = false;
@@ -156,7 +167,7 @@ const hydrations = new Map<string, Map<string, HydrationRecord>>();
 const recordKey = (kind: string, id: string, characterId?: string) =>
     kind === "chats" ? `chats\u0000${characterId ?? ""}\u0000${id}` : `${kind}\u0000${id}`;
 
-function remember(id: string, entry: { jobId: string; answer: ChannelAnswer | null; retired?: true }) {
+function remember(id: string, entry: RequestState) {
     requests.delete(id);
     requests.set(id, entry);
     // Only finished requests are forgotten: a running one must still be recognized on a replay.
@@ -184,13 +195,16 @@ export function rememberHydration(jobId: string, record: HydrationRecord) {
     }
 }
 
-/** The innermost callback being run (for an aux request made inside it), or null. */
-export function currentChannelCall(): { jobId: string; callbackId: string; targets: CallbackTargets } | null {
-    const top = outstanding[outstanding.length - 1];
-    return top ? { jobId: top.jobId, callbackId: top.id, targets: top.targets } : null;
+/**
+ * The targets of the callback `call` names while it runs here and the server has not cancelled it,
+ * else null: a request a captured context attributes to it runs on these ids only while it lives.
+ */
+export function liveChannelCallTargets(call: { jobId: string; callbackId: string }): CallbackTargets | null {
+    const entry = outstanding.find((item) => item.id === call.callbackId && item.jobId === call.jobId);
+    return entry && !entry.cancelled ? entry.targets : null;
 }
 
-setChannelCallSource(currentChannelCall);
+setChannelCallSource(liveChannelCallTargets);
 
 function answer(jobId: string, message: ChannelAnswer) {
     const entry = requests.get(message.id);
@@ -546,7 +560,8 @@ function errorText(error: unknown): string {
 
 /** Runs the hook set a callback names, in order, under the job's targets. */
 async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Promise<unknown> {
-    const context: PluginCallContext = event.targets;
+    // The job's targets, and this callback as the parent of any aux request the hook makes.
+    const context: PluginCallContext = { ...event.targets, channelCall: { jobId: entry.jobId, callbackId: event.id } };
     const payload = event.payload as Record<string, unknown>;
     const stillWanted = () => {
         if (entry.cancelled) {
@@ -963,7 +978,7 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
         return;
     }
     const refuse = (error: string) => {
-        remember(event.id, { jobId, answer: null });
+        remember(event.id, { jobId, answer: null, callback: true });
         answer(jobId, { type: "answer", id: event.id, outcome: "failed", failure: "protocol", error });
     };
     if (event.replay) {
@@ -989,8 +1004,12 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
             outstanding.splice(index, 1);
         }
         noteChannelCallbacks(outstanding.length);
+        // The server kept the lane for a callback it cancelled until its hook is over (this point).
+        if (entry.cancelled) {
+            void reportCallbackDrained(jobId, event.id);
+        }
     };
-    remember(event.id, { jobId, answer: null });
+    remember(event.id, { jobId, answer: null, callback: true });
     void runCallback(event, entry)
         .then((message) => {
             settle();
@@ -1112,8 +1131,14 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
             }
             // A cancelled request is finished: it can be forgotten, and a late duplicate stays dropped.
             const state = requests.get(event.id);
-            if (state && !state.answer && !outstanding.some((entry) => entry.id === event.id)) {
+            const running = outstanding.some((entry) => entry.id === event.id);
+            if (state && !state.answer && !running) {
                 state.retired = true;
+            }
+            // A callback that runs no more when the cancel comes (its answer or refusal crossed it, or could
+            // not leave a socket that was closing): the lane the server kept for it is free now.
+            if (state?.callback && !running) {
+                void reportCallbackDrained(state.jobId, event.id);
             }
             for (const entry of outstanding) {
                 if (entry.id === event.id) {

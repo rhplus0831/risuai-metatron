@@ -4,7 +4,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
-import type { GenerationEvent } from "../../../shared/jobs.ts";
+import { type CallbackResult, type GenerationEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { MemoryControl, RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
@@ -716,6 +716,116 @@ describe("generation jobs over HTTP and WebSocket", () => {
                     .state === "ended",
         );
         expect(await status(await stop({ runId: "run-3" }))).toEqual([409, { error: "jobEnded" }]);
+    });
+
+    it("POST drained frees the lane a callback the job's abort cancelled kept, so the owner's next job gets its callback: auth before the body, 400 for a malformed body, 404 for another client or job, `{ drained: false }` for a callback that holds none, `{ drained: true }` once, also after the job ended", async () => {
+        await listen();
+        const hooks = { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] };
+        const command = { type: "button", data: "" };
+        const first = await create({ kind: "command", command, context: await context(), clientId: "tab", hooks });
+        expect(first.status).toBe(200);
+        const jobId = first.body.jobId as string;
+        const owner = await follow(jobId, { keepOpen: true });
+        const outcome: { first?: CallbackResult; second?: CallbackResult } = {};
+        step(async (job) => {
+            outcome.first = await job.channel.callback("editoutput", { text: "t" });
+        });
+        await waitFor(() => owner.events.some((event) => event.type === "callback"));
+        const callbackId = (owner.events.find((event) => event.type === "callback") as { id: string }).id;
+        const drained = (
+            body: unknown,
+            options: { epoch?: string | null; jwt?: string } = {},
+            id = jobId,
+            clientId = "tab",
+        ) => request(`/api/generations/${id}/drained?clientId=${clientId}`, json(body), options);
+        const status = async (res: Response) => [res.status, await res.json()] as const;
+        // A callback the server still waits for holds no lane.
+        expect(await status(await drained({ callbackId }))).toEqual([200, { drained: false }]);
+
+        // Stop: the job ends, the owner is told to cancel the callback, and the lane stays held for
+        // it (its hook may still run in the tab), although the job ended.
+        expect((await request(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" })).status).toBe(200);
+        await waitFor(() => owner.events.some((event) => event.type === "error"));
+        expect(outcome.first).toMatchObject({ outcome: "aborted" });
+        expect(types(owner.events)).toContain("cancel");
+        // The owner's next job, in another chat: its root callback waits behind the held lane.
+        const seeded = await request(
+            "/api/resources/batch",
+            json({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k2",
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    name: "K2",
+                                    modelPresetId: bound.modelPresetId,
+                                    promptPresetId: bound.presetId,
+                                    bindedPersona: bound.personaId,
+                                    message: [m("u2", "hi")],
+                                },
+                            },
+                        ],
+                    },
+                ],
+            }),
+        );
+        expect(seeded.status).toBe(200);
+        const read = await request("/api/resources/read", json({ chats: [{ characterId: "c", id: "k2" }] }));
+        const chatRevision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+        const second = await create({
+            kind: "command",
+            command,
+            context: { ...(await context()), chatId: "k2", chatRevision },
+            clientId: "tab",
+            hooks,
+        });
+        expect(second.status).toBe(200);
+        const nextJob = second.body.jobId as string;
+        const next = await follow(nextJob, { keepOpen: true });
+        step(async (job) => {
+            outcome.second = await job.channel.callback("editoutput", { text: "u" });
+            job.emit({ type: "accepted", jobId: job.id, revision: job.context.chatRevision, text: "" });
+            job.emit({ type: "done", revision: job.context.chatRevision });
+            return "end" as never;
+        });
+
+        // The password is not a JWT: refused before the body, on this route as on the others.
+        const denied = await drained({ callbackId }, { jwt: "pw" });
+        expect(denied.status).toBeGreaterThanOrEqual(400);
+        expect(denied.status).not.toBe(404);
+        for (const bad of [
+            "cb",
+            { callbackId: 5 },
+            {},
+            { callbackId: "not a callback id!" },
+            { callbackId: "x".repeat(65) },
+        ]) {
+            const res = await drained(bad);
+            expect(res.status, JSON.stringify(bad)).toBe(400);
+        }
+        expect((await drained({ callbackId }, {}, jobId, "other")).status).toBe(404);
+        expect((await drained({ callbackId }, {}, "nope")).status).toBe(404);
+        expect(await status(await drained({ callbackId }, {}, nextJob))).toEqual([200, { drained: false }]);
+        expect(await status(await drained({ callbackId: "unknown" }))).toEqual([200, { drained: false }]);
+        // Nothing above released the lane: the next job's callback has not been sent.
+        await next.fence();
+        expect(types(next.events)).not.toContain("callback");
+
+        const freed = await drained({ callbackId });
+        expect(freed.headers.get("cache-control")).toBe("no-store");
+        expect(await status(freed)).toEqual([200, { drained: true }]);
+        await waitFor(() => next.events.some((event) => event.type === "callback"));
+        expect(await status(await drained({ callbackId }))).toEqual([200, { drained: false }]);
+        const nextCallback = next.events.find((event) => event.type === "callback") as { id: string };
+        next.ws.send(JSON.stringify({ type: "answer", id: nextCallback.id, outcome: "answered", value: "v" }));
+        await waitFor(() => next.events.some((event) => event.type === "done"));
+        expect(outcome.second).toEqual({ outcome: "answered", value: "v" });
+        owner.ws.close();
+        next.ws.close();
     });
 
     it("runs a command job without a message, in the chat's slot", async () => {

@@ -242,6 +242,16 @@ function transport() {
 let tx: ReturnType<typeof transport>;
 const send = (event: GenerationChannelEvent, jobId = "J", through = tx) =>
     channel.handleChannelEvent(jobId, event, through);
+/** The drain reports posted so far (`POST /api/generations/:id/drained`), as `[jobId, callbackId]`. */
+const drainReports = () =>
+    deps.authFetch.mock.calls.flatMap(([path, init]) => {
+        const match = /^\/api\/generations\/([^/?]+)\/drained\?clientId=/.exec(path);
+        return match ? [[decodeURIComponent(match[1]), JSON.parse(String(init?.body)).callbackId as string]] : [];
+    });
+const jsonResponse = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+/** The call context a hook run as the callback `id` of job `jobId` gets: the targets and the callback. */
+const hookContext = (id: string, jobId = "J") => ({ ...targets, channelCall: { jobId, callbackId: id } });
 /** Lets the alert queue's gap (0 ms here) and the callback chain run. */
 const pump = (ms = 30) => vi.advanceTimersByTimeAsync(ms);
 const alert = () => get(stores.alertStore);
@@ -280,7 +290,8 @@ beforeEach(async () => {
     deps.showCompletion.mockReset();
     deps.stableDiff.mockReset();
     deps.followTranslations.mockReset();
-    deps.authFetch.mockReset();
+    // The server behind the drain reports of cancelled callbacks (the memory-stop tests set their own).
+    deps.authFetch.mockReset().mockImplementation(async () => jsonResponse(200, { drained: true }));
     deps.epochMismatch.mockReset();
     deps.alertQueue = createAlertQueue({ type: "none", msg: "" }, { gapMs: 0 });
     stores = await import("../stores.svelte");
@@ -680,11 +691,13 @@ describe("notices and questions", () => {
 });
 
 describe("callbacks", () => {
-    it("runs the hook set in order under the job's targets behind the barrier, flushes its writes in a scope, and answers the JSON result", async () => {
+    it("runs the hook set in order under the job's targets and the callback as the call context, behind the barrier, flushes its writes in a scope, and answers the JSON result", async () => {
         const seen: string[] = [];
         hooks.editoutput.add(async (text) => {
             seen.push(`a:${text}`);
-            expect(channel.currentChannelCall()).toEqual({ jobId: "J", callbackId: "cb", targets });
+            // The callback runs uncancelled: a request its context names runs on the job's targets.
+            expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "cb" })).toEqual(targets);
+            expect(channel.liveChannelCallTargets({ jobId: "other", callbackId: "cb" })).toBeNull();
             return null;
         });
         hooks.editoutput.add((text) => {
@@ -702,11 +715,13 @@ describe("callbacks", () => {
         );
         await pump();
         expect(seen).toEqual(["a:hi", "b:hi"]);
-        expect(deps.contexts).toEqual([targets, targets]);
+        expect(deps.contexts).toEqual([hookContext("cb"), hookContext("cb")]);
         expect(deps.flush.mock.calls).toEqual([[undefined], [{ scope: { resource: 7, chat: 3 } }]]);
         expect(tx.answers).toEqual([{ type: "answer", id: "cb", outcome: "answered", value: "HI" }]);
-        expect(channel.currentChannelCall()).toBeNull();
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "cb" })).toBeNull();
         expect(deps.applyHydration).not.toHaveBeenCalled();
+        // An uncancelled callback that completed holds no lane on the server: nothing to report.
+        expect(drainReports()).toEqual([]);
     });
 
     it("fails the barrier before any hook runs: a rejected or discarding pre-flush, a record not held at the receipt's revision, another epoch; a remembered hydration is applied again first", async () => {
@@ -993,18 +1008,126 @@ describe("callbacks", () => {
         // An aux request's callback arrives on the aux job's own socket.
         send(callback("c", "editoutput", { text: "t" }, { parentId: "p", jobId: "aux" }), "aux");
         await pump();
-        expect(channel.currentChannelCall()).toMatchObject({ jobId: "aux", callbackId: "c" });
+        // Each runs under its own job and callback: a context names one, not "the innermost".
+        expect(channel.liveChannelCallTargets({ jobId: "aux", callbackId: "c" })).toEqual(targets);
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "c" })).toBeNull();
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "p" })).toEqual(targets);
+        expect(deps.contexts).toEqual([hookContext("p"), hookContext("c", "aux")]);
         send(callback("g", "editoutput", { text: "t" }, { parentId: "c" }));
         await pump();
         expect(tx.answers[2]).toEqual(failed("protocol", /one level deep/));
         child.resolve("C");
         await pump();
         expect(tx.answers[3]).toMatchObject({ id: "c", outcome: "answered", value: "C" });
-        expect(channel.currentChannelCall()).toMatchObject({ callbackId: "p" });
+        expect(channel.liveChannelCallTargets({ jobId: "aux", callbackId: "c" })).toBeNull();
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "p" })).toEqual(targets);
         parent.resolve("P");
         await pump();
         expect(tx.answers[4]).toMatchObject({ id: "p", outcome: "answered", value: "P" });
-        expect(channel.currentChannelCall()).toBeNull();
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "p" })).toBeNull();
+    });
+
+    it("keeps a cancelled callback outstanding until its hook settles (Stop in one chat while its hook runs): no root of another job runs meanwhile, and once the hook settles the tab reports the callback drained, after which that job's next root runs", async () => {
+        const { channelCallbacksRunning, generationClientId } = await import("./generationJobs");
+        const running = deferred<string>();
+        const hook = vi.fn((text: string) => (text === "slow" ? running.promise : text));
+        hooks.editoutput.add(hook);
+        const a = transport();
+        const b = transport();
+        send(callback("a1", "editoutput", { text: "slow" }, { jobId: "A" }), "A", a);
+        await pump();
+        expect(hook).toHaveBeenCalledTimes(1);
+        expect(channel.liveChannelCallTargets({ jobId: "A", callbackId: "a1" })).toEqual(targets);
+        // Stop in A: the server cancels the callback and the job ends, while A's hook still runs.
+        send(cancel("a1"), "A", a);
+        channel.endJobChannel("A");
+        await pump();
+        expect(channelCallbacksRunning()).toBe(true);
+        // A request a stale context names is no longer the job's: the chat's binding decides.
+        expect(channel.liveChannelCallTargets({ jobId: "A", callbackId: "a1" })).toBeNull();
+        expect(drainReports()).toEqual([]);
+        // B's root while A's cancelled hook still runs: refused, never run beside it.
+        send(callback("b0", "editoutput", { text: "early" }, { jobId: "B" }), "B", b);
+        await pump();
+        expect(b.answers).toEqual([failed("protocol", /only inside the outstanding one/)]);
+        expect(hook).toHaveBeenCalledTimes(1);
+        running.resolve("done");
+        await pump();
+        // The answer stays here (the job ended); the drain report goes out once, over HTTP.
+        expect(a.answers).toEqual([]);
+        expect(channelCallbacksRunning()).toBe(false);
+        expect(drainReports()).toEqual([["A", "a1"]]);
+        expect(deps.authFetch.mock.calls[0]).toEqual([
+            `/api/generations/A/drained?clientId=${encodeURIComponent(generationClientId())}`,
+            {
+                method: "POST",
+                cache: "no-store",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ callbackId: "a1" }),
+            },
+        ]);
+        // B's next root (the one the server held back) runs now.
+        send(callback("b1", "editoutput", { text: "next" }, { jobId: "B" }), "B", b);
+        await pump();
+        expect(b.answers[1]).toMatchObject({ id: "b1", outcome: "answered", value: "next" });
+        expect(hook).toHaveBeenCalledTimes(2);
+        expect(drainReports()).toEqual([["A", "a1"]]);
+    });
+
+    it("reports a cancelled callback drained at once when it runs no more (answered before the cancel, a refused replay), never for one that completes uncancelled, a question, or an unknown id; a failed report is logged, a 404 is not", async () => {
+        hooks.editoutput.add((text) => text);
+        send(callback("d1"));
+        await pump();
+        expect(tx.answers[0]).toMatchObject({ id: "d1", outcome: "answered" });
+        expect(drainReports()).toEqual([]);
+        // The cancel crossed the answer, or the answer could not leave a closing socket: the server
+        // holds the lane for it and waits for this report.
+        send(cancel("d1"));
+        await pump();
+        expect(drainReports()).toEqual([["J", "d1"]]);
+        send(callback("r1", "editoutput", { text: "t" }, { replay: true }));
+        await pump();
+        expect(tx.answers[1]).toEqual(failed("protocol", /may already have run/));
+        send(cancel("r1"));
+        await pump();
+        expect(drainReports()).toEqual([
+            ["J", "d1"],
+            ["J", "r1"],
+        ]);
+        send(question("q1"));
+        await pump();
+        send(cancel("q1"));
+        send(cancel("never"));
+        send(cancel("d1"));
+        await pump();
+        // A repeated cancel reports again (the server answers false); a question or an unknown id never.
+        expect(drainReports()).toEqual([
+            ["J", "d1"],
+            ["J", "r1"],
+            ["J", "d1"],
+        ]);
+        const errors = vi.mocked(console.error);
+        errors.mockClear();
+        deps.authFetch.mockResolvedValueOnce(jsonResponse(404, { error: "Generation not found" }));
+        send(callback("d2"));
+        await pump();
+        send(cancel("d2"));
+        await pump();
+        expect(drainReports()).toHaveLength(4);
+        expect(errors).not.toHaveBeenCalled();
+        deps.authFetch.mockResolvedValueOnce(jsonResponse(500, { error: "boom" }));
+        send(callback("d3"));
+        await pump();
+        send(cancel("d3"));
+        await pump();
+        expect(errors).toHaveBeenCalledTimes(1);
+        deps.authFetch.mockRejectedValueOnce(new Error("offline"));
+        send(callback("d4"));
+        await pump();
+        send(cancel("d4"));
+        await pump();
+        expect(errors).toHaveBeenCalledTimes(2);
+        expect(drainReports()).toHaveLength(6);
     });
 
     it("protects a running parent from cache pressure: after 505 completed children a replay of it is neither refused nor run again", async () => {
@@ -1113,7 +1236,7 @@ describe("the reply tail's callbacks", () => {
                 { name: "third", messages: 3, messageIndex: 2, chatIndex: 0 },
             ]);
             expect(tx.answers).toEqual([{ type: "answer", id: "out", outcome: "answered", value: true }]);
-            expect(deps.contexts).toEqual([targets, targets, targets]);
+            expect(deps.contexts).toEqual([hookContext("out"), hookContext("out"), hookContext("out")]);
             // The copies are plain (not the live records): a listener's edit of its copy changes nothing.
             expect(chat.message.map((message) => message.chatId)).toEqual(["m0", "m1", "m2"]);
             // A speaker the tab no longer has fails the callback as a hook failure.
@@ -1563,7 +1686,7 @@ describe("the provider callback", () => {
         send(provider("t1"));
         await pump(1);
         expect(seen).toEqual([{ arg: argument, signal: expect.any(AbortSignal) }]);
-        expect(deps.contexts.at(-1)).toEqual(targets);
+        expect(deps.contexts.at(-1)).toEqual(hookContext("t1"));
         expect(sent()).toEqual([
             { type: "answer", id: "t1", outcome: "answered", value: { success: true, content: "hello" } },
         ]);
@@ -1716,6 +1839,9 @@ describe("the provider callback", () => {
         expect(slow.cancelled).toHaveLength(1);
         expect(slow.stream.locked).toBe(false);
         expect(answers()).toEqual([]);
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "c1" })).toBeNull();
+        // The cancelled provider is over: the server's lane is told so.
+        expect(drainReports()).toEqual([["J", "c1"]]);
         // A late chunk timer never fires a send after the cancel.
         await pump(60);
         expect(sent()).toEqual([chunk("c1", "")]);
@@ -1767,6 +1893,12 @@ describe("the provider callback", () => {
         expect(answers()).toEqual([
             { type: "answer", id: "c5", outcome: "answered", value: { success: true, content: "fresh" } },
         ]);
-        expect(channel.currentChannelCall()).toBeNull();
+        expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "c5" })).toBeNull();
+        expect(drainReports()).toEqual([
+            ["J", "c1"],
+            ["J", "c2"],
+            ["J", "c3"],
+            ["J", "c4"],
+        ]);
     });
 });

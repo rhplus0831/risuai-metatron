@@ -30,7 +30,6 @@ const stubs = vi.hoisted(() => ({
     epochMismatch: vi.fn((epoch: string) =>
         Object.assign(new Error(`replaced ${epoch}`), { name: "ResourceEpochMismatchError" }),
     ),
-    channelCall: null as { jobId: string; callbackId: string } | null,
     dynamicIds: new Set<string>(),
     /** Each `getModelInfoForMode` call's arguments: the mode and the request's preset scope. */
     modelInfoCalls: [] as unknown[][],
@@ -72,7 +71,6 @@ vi.mock("src/ts/model/modellist", async () => {
         isDynamicModel: (id: string) => stubs.dynamicIds.has(id),
     };
 });
-vi.mock("src/ts/network/channelCallSource", () => ({ activeChannelCall: () => stubs.channelCall }));
 vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab-1" }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
 vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
@@ -288,7 +286,6 @@ beforeEach(() => {
             ({ characterId, id }) => ({ characterId, id, revision: "r1", data: { id, name: id, message: [] } }),
         ),
     }));
-    stubs.channelCall = null;
     stubs.dynamicIds.clear();
     stubs.modelInfoCalls.length = 0;
     installSettings();
@@ -470,9 +467,8 @@ describe("the request body", () => {
         expect(stubs.modelInfoCalls).toEqual([]);
     });
 
-    it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor, the active job callback, and the prompt's tool records", async () => {
+    it("falls back to the selection for a request without a chat, sends a dynamic model's descriptor and the prompt's tool records, and names no job callback", async () => {
         stubs.dynamicIds.add("dynamic_google_x");
-        stubs.channelCall = { jobId: "job-1", callbackId: "cb-1" };
         activeMainProfile.modelId = "with-images";
         activeMainProfile.currentPluginProvider = "legacy";
         stubs.decodeToolCall.mockImplementation(async (inner) =>
@@ -511,12 +507,30 @@ describe("the request body", () => {
         });
         expect(body.arg.chatRef).toBeUndefined();
         expect(body.dynamicModel).toEqual(dynamic);
-        expect(body.channelCall).toEqual({ jobId: "job-1", callbackId: "cb-1" });
+        expect(body).not.toHaveProperty("channelCall");
         expect(stubs.decodeToolCall).toHaveBeenCalledTimes(2);
         expect(body.toolRecords).toEqual({
             "id-1name": { call: { id: "id-1", name: "name", arg: {} }, response: [] },
         });
         activeMainProfile.currentPluginProvider = "";
+    });
+
+    it("names a job callback (`channelCall`) only from a plugin context a callback's hook got, a copy of its ids; a captured context or a request with none names no callback", async () => {
+        const chatRef = { chaId: "char-9", chatId: "chat-9" };
+        const context = { chatRef, presetId: "preset-ctx", modelPresetId: "model-ctx", personaId: "persona-ctx" };
+        const channelCall = { jobId: "job-1", callbackId: "cb-1" };
+        const send = (pluginContext: unknown) =>
+            requestServer({ ...baseArg(), chatRef, pluginContext } as never, "model", null, modelInfo);
+        expect(await send({ ...context, channelCall })).toEqual({ type: "success", result: "ok" });
+        expect(postedBody().channelCall).toEqual(channelCall);
+        expect(postedBody().context).toMatchObject({ presetId: "preset-ctx", modelPresetId: "model-ctx" });
+        // The same chat's request from a captured context (the UI's), or from none: not the callback's child.
+        stubs.fetch.mockClear();
+        expect(await send(context)).toEqual({ type: "success", result: "ok" });
+        expect(postedBody()).not.toHaveProperty("channelCall");
+        stubs.fetch.mockClear();
+        expect(await send(undefined)).toEqual({ type: "success", result: "ok" });
+        expect(postedBody()).not.toHaveProperty("channelCall");
     });
 
     it("runs a request without a chat on the views: the selected chat's bound ids where they exist, else the tab's; no chatRef, never refused", async () => {

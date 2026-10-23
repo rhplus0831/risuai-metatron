@@ -25,7 +25,7 @@ import {
     chatContextIds,
     type ChatContextIds,
 } from "../../storage/chatBinding.svelte";
-import { activeChannelCallTargets } from "../../network/channelCallSource";
+import { channelCallTargets } from "../../network/channelCallSource";
 import { getUserName, sleep } from "../../util";
 import type { OpenAIChat } from "../index.svelte";
 import { getTools } from "../mcp/mcp";
@@ -179,8 +179,8 @@ const sameIds = (a: ChatContextIds, b: ChatContextIds) =>
  * The send guard of a chat's request: a request for a chat (its `chatRef`, else its plugin
  * context's) runs on that chat's ids, never on the tab's selection.
  *
- * - Inside a callback of that chat's job, the ids are the job's (its `presetChain` pick included):
- *   a captured context must name them.
+ * - A context a job callback's hook got (its `channelCall`, while that callback still runs here)
+ *   for that chat names the job's ids (its `presetChain` pick included): they must match.
  * - Otherwise the chat's binding must be complete, and a captured context must name the binding as
  *   it is now (a chat rebound since the capture is refused, not run on the old ids).
  * - A `chatRef` and a plugin context naming two chats are refused.
@@ -202,7 +202,7 @@ function chatRequestRefusal(arg: requestDataArgument): requestDataResponse | und
         context && !sameIds(context, ids)
             ? { type: "fail", noRetry: true, result: language.chatBinding.mismatch }
             : undefined;
-    const call = activeChannelCallTargets();
+    const call = channelCallTargets(context?.channelCall);
     if (call && sameChat(call.chatRef, target)) {
         return mismatch(call);
     }
