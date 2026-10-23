@@ -1373,6 +1373,14 @@ export const languageEnglish = {
     realmImportExpired: "The Realm import waited too long and was discarded. Nothing was added; import it again.",
     realmImportTooManyWaiting:
         "Other Realm imports are still waiting for an answer. Finish them, or try again in a few minutes.",
+    blockRealmCreator: "Block Creator",
+    blockRealmCreatorConfirm: "Block all RisuRealm content from {{creator}}?",
+    realmCreatorBlocked: "Content from this blocked RisuRealm creator is unavailable.",
+    realmCreatorBlockedSuccess: "Creator blocked.",
+    manageBlockedRealmCreators: "Manage Blocked Creators",
+    blockedRealmCreators: "Blocked RisuRealm Creators",
+    noBlockedRealmCreators: "No RisuRealm creators are blocked.",
+    unblockRealmCreator: "Unblock",
     upstreamImport: {
         title: "Restore a RisuAI backup",
         intro: "This is a backup from RisuAI (or from this app before its server storage). It was read and converted; nothing has been replaced yet.",

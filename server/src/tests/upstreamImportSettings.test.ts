@@ -230,6 +230,48 @@ const EMITTED_KINDS: ResourceKindName[] = [
 const CREATED_KINDS: ResourceKindName[] = [RESOURCE_KIND.modules, RESOURCE_KIND.plugins, RESOURCE_KIND.pluginStorage];
 
 describe("convertUpstreamDatabase: records", () => {
+    it("maps blocked Realm creators to ui and reports each invalid entry at its original index", () => {
+        const out = convertUpstreamDatabase({
+            blockedRealmCreators: [
+                { id: "creator-a", name: "Creator A", extra: "discard" },
+                null,
+                { id: "creator-b" },
+                { id: "", name: "Missing id" },
+                { id: "creator-c", name: 42 },
+                { id: 7, name: "Invalid id" },
+                { id: "creator-a", name: "Duplicate" },
+                "creator-d",
+                {},
+            ],
+        });
+        expect(record<Record<string, unknown>>(out, SECTION_KIND.ui).blockedRealmCreators).toEqual([
+            { id: "creator-a", name: "Creator A" },
+            { id: "creator-b", name: "creator-b" },
+            { id: "creator-c", name: "creator-c" },
+        ]);
+        expect(out.report.excluded).toEqual([
+            {
+                code: "invalid-setting",
+                count: 5,
+                examples: [
+                    "blockedRealmCreators[1]",
+                    "blockedRealmCreators[3]",
+                    "blockedRealmCreators[5]",
+                    "blockedRealmCreators[7]",
+                    "blockedRealmCreators[8]",
+                ],
+            },
+        ]);
+    });
+
+    it("reports a non-array blocked Realm creators setting and imports an empty list", () => {
+        const out = convertUpstreamDatabase({ blockedRealmCreators: { id: "creator-a", name: "Creator A" } });
+        expect(record<Record<string, unknown>>(out, SECTION_KIND.ui).blockedRealmCreators).toEqual([]);
+        expect(out.report.excluded).toEqual([
+            { code: "invalid-setting", count: 1, examples: ["blockedRealmCreators"] },
+        ]);
+    });
+
     it("emits every expected kind once as a serialized fixed point of its normalizer, and nothing else", () => {
         const out = convertUpstreamDatabase(fixture());
         expect(out.resources.map((resource) => resource.kind).sort()).toEqual([...EMITTED_KINDS].sort());

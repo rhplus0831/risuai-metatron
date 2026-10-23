@@ -226,6 +226,7 @@ export const SECTION_FIELDS = {
         "animationSpeed",
         "botSettingAtStart",
         "hideRealm",
+        "blockedRealmCreators",
         "colorScheme",
         "colorSchemeName",
         "customColorScheme",

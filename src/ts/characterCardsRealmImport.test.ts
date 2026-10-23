@@ -219,6 +219,133 @@ afterEach(() => {
     server.current?.close();
 });
 
+describe("Realm creator blocking", () => {
+    const blocked = { id: "creator-a", name: "Creator A" };
+
+    it.each(["array", "envelope"])(
+        "filters blocked creators from an %s listing, keeps cards without creators, and restores unblocked cards",
+        async (shape) => {
+            const b = await boot();
+            const otherBlocked = { id: "creator-b", name: "Creator B" };
+            b.settings.ui.blockedRealmCreators = [blocked, otherBlocked];
+            const cards = [
+                { id: "blocked-1", creator: blocked.id },
+                { id: "allowed", creator: "creator-c", creatorName: blocked.name },
+                { id: "legacy" },
+                { id: "blocked-2", creator: blocked.id },
+                { id: "other-blocked", creator: otherBlocked.id },
+            ];
+            b.globalFetch.mockImplementation(async () =>
+                Response.json(shape === "array" ? cards : { cards, additionalHTML: "" }),
+            );
+            const listing = () => b.cards.getRisuHub({ search: "", page: 0, nsfw: false, sort: "download" });
+
+            expect(await listing()).toEqual([cards[1], cards[2]]);
+
+            b.settings.ui.blockedRealmCreators = [otherBlocked];
+            expect(await listing()).toEqual([cards[0], cards[1], cards[2], cards[3]]);
+        },
+    );
+
+    it("refuses an id download after looking up its blocked creator, then imports it without a lookup after unblocking", async () => {
+        const b = await boot();
+        b.settings.ui.blockedRealmCreators = [blocked];
+        await b.sync.flushResources();
+        expect(b.record("ui").blockedRealmCreators).toEqual([blocked]);
+        b.globalFetch.mockResolvedValue(Response.json({ id: "blocked-card", creator: blocked.id }));
+        b.answer(line(charxPrepared(cardV3("Unblocked card"))), line(charxCommitted()));
+        const before = b.ids();
+        const imports = b.imports();
+
+        await b.cards.downloadRisuHub("blocked-card");
+
+        expect(b.globalFetch).toHaveBeenCalledExactlyOnceWith("/hub-proxy/hub/info/blocked-card");
+        expect(b.downloads()).toEqual([]);
+        expect(b.commits()).toEqual([]);
+        expect(b.ids()).toEqual(before);
+        expect(b.imports()).toBe(imports);
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.realmCreatorBlocked);
+        expect(alerts.error).not.toHaveBeenCalled();
+
+        b.settings.ui.blockedRealmCreators = [];
+        await b.sync.flushResources();
+        expect(b.record("ui").blockedRealmCreators).toEqual([]);
+        b.globalFetch.mockClear();
+        await b.cards.downloadRisuHub("blocked-card");
+
+        expect(b.globalFetch).not.toHaveBeenCalled();
+        expect(b.downloads()).toHaveLength(1);
+        expect(b.commits()).toHaveLength(1);
+        expect(b.ids()).toHaveLength(before.length + 1);
+        expect(b.character(b.ids().at(-1)!)).toMatchObject({ name: "Unblocked card" });
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("refuses a download with a supplied blocked creator without looking it up or staging it", async () => {
+        const b = await boot();
+        b.settings.ui.blockedRealmCreators = [blocked];
+        b.answer(line(charxPrepared(cardV3("Blocked card"))), line(charxCommitted()));
+        const before = b.ids();
+        const imports = b.imports();
+
+        await b.cards.downloadRisuHub("blocked-card", { creator: blocked.id });
+
+        expect(b.globalFetch).not.toHaveBeenCalled();
+        expect(b.downloads()).toEqual([]);
+        expect(b.commits()).toEqual([]);
+        expect(b.ids()).toEqual(before);
+        expect(b.imports()).toBe(imports);
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.realmCreatorBlocked);
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each(["HTTP error", "network rejection"])(
+        "alerts and imports nothing when the creator lookup fails with a %s",
+        async (failure) => {
+            const b = await boot();
+            b.settings.ui.blockedRealmCreators = [blocked];
+            if (failure === "HTTP error") {
+                b.globalFetch.mockResolvedValue(new Response("Info unavailable", { status: 503 }));
+            } else {
+                b.globalFetch.mockRejectedValue(new Error("Info unavailable"));
+            }
+            b.answer(line(charxPrepared(cardV3("Unknown creator"))), line(charxCommitted()));
+            const before = b.ids();
+            const imports = b.imports();
+
+            await b.cards.downloadRisuHub("unknown-card");
+
+            expect(b.globalFetch).toHaveBeenCalledExactlyOnceWith("/hub-proxy/hub/info/unknown-card");
+            expect(b.downloads()).toEqual([]);
+            expect(b.commits()).toEqual([]);
+            expect(b.ids()).toEqual(before);
+            expect(b.imports()).toBe(imports);
+            expect(alerts.error).toHaveBeenCalledOnce();
+            expect(alerts.normal).not.toHaveBeenCalled();
+        },
+    );
+
+    it("refuses a blocked creator's deep link with a notice and never opens the popup", async () => {
+        const b = await boot();
+        b.settings.ui.blockedRealmCreators = [blocked];
+        vi.stubGlobal("location", new URL("http://localhost/?realm=blocked-card"));
+        b.globalFetch.mockResolvedValue(Response.json({ id: "blocked-card", creator: blocked.id }));
+        const opened: unknown[] = [];
+        const unsubscribe = b.cards.showRealmInfoStore.subscribe((value) => opened.push(value));
+        try {
+            await b.cards.getRealmInfo("blocked-card");
+
+            expect(opened).toEqual([null]);
+            expect(b.globalFetch).toHaveBeenCalledExactlyOnceWith("/hub-proxy/hub/info/blocked-card");
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.realmCreatorBlocked);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(b.downloads()).toEqual([]);
+        } finally {
+            unsubscribe();
+        }
+    });
+});
+
 describe("the Realm import through the server (downloadRisuHub)", () => {
     it("sends the id, then the token, and builds a CharX card from the stored keys: module fields merged", async () => {
         const b = await boot();

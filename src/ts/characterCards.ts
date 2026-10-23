@@ -1,4 +1,5 @@
 import { settings } from "./storage/settingsViews.svelte";
+import { filterBlockedRealmCards, isRealmCreatorBlocked } from "./realmBlocking";
 import { writable, type Writable } from "svelte/store";
 import {
     alertCardExport,
@@ -504,18 +505,37 @@ function realmImportErrorMessage(error: unknown): string {
     });
 }
 
+async function fetchRealmInfo(realmPath: string): Promise<hubType> {
+    const res = await fetch(`${hubURL}/hub/info/${realmPath}`);
+    if (res.status !== 200) {
+        throw new Error(await res.text());
+    }
+    return await res.json();
+}
+
+function canAccessRealmCreator(creator?: string): boolean {
+    if (isRealmCreatorBlocked(settings.ui.blockedRealmCreators ?? [], creator)) {
+        alertNormal(language.realmCreatorBlocked);
+        return false;
+    }
+    return true;
+}
+
 export const getRealmInfo = async (realmPath: string) => {
     const url = new URL(location.href);
     url.searchParams.delete("realm");
     // Replaced, not pushed: a consumed link parameter is no history entry.
     window.history.replaceState(window.history.state, "", url.toString());
 
-    const res = await fetch(`${hubURL}/hub/info/${realmPath}`);
-    if (res.status !== 200) {
-        alertError(await res.text());
-        return;
+    try {
+        const info = await fetchRealmInfo(realmPath);
+        if (!canAccessRealmCreator(info.creator)) {
+            return;
+        }
+        showRealmInfoStore.set(info);
+    } catch (error) {
+        alertError(error);
     }
-    showRealmInfoStore.set(await res.json());
 };
 
 export const showRealmInfoStore: Writable<null | hubType> = writable(null);
@@ -1958,11 +1978,11 @@ export async function getRisuHub(arg: {
             return [];
         }
         const jso = await da.json();
-        if (Array.isArray(jso)) {
-            return jso;
+        const cards: hubType[] = Array.isArray(jso) ? jso : jso.cards;
+        if (!Array.isArray(jso)) {
+            hubAdditionalHTML = jso.additionalHTML || hubAdditionalHTML;
         }
-        hubAdditionalHTML = jso.additionalHTML || hubAdditionalHTML;
-        return jso.cards;
+        return filterBlockedRealmCards(cards, settings.ui.blockedRealmCreators ?? []);
     } catch (error) {
         return [];
     }
@@ -1972,9 +1992,24 @@ export async function downloadRisuHub(
     id: string,
     arg: {
         forceRedirect?: boolean;
+        creator?: string;
     } = {},
 ) {
     try {
+        if ((settings.ui.blockedRealmCreators ?? []).length > 0) {
+            let creator = arg.creator;
+            if (!creator) {
+                try {
+                    creator = (await fetchRealmInfo(id)).creator;
+                } catch (error) {
+                    alertError(error);
+                    return;
+                }
+            }
+            if (!canAccessRealmCreator(creator)) {
+                return;
+            }
+        }
         if (!arg.forceRedirect) {
             alertStore.set({
                 type: "wait",

@@ -184,6 +184,8 @@ function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): 
     }
     if (section === "ui") {
         out.customTextTheme = { marker: "customTextTheme", FontColorQuote1: "#8BE9FD", FontColorQuote2: "#FFB86C" };
+        // An entry without an id is not a blocked creator.
+        out.blockedRealmCreators = [];
     }
     return out;
 }
@@ -321,6 +323,27 @@ describe("llmSecrets", () => {
 });
 
 describe("ui", () => {
+    it("repairs blocked Realm creators and keeps only the first entry for each id", () => {
+        const out = normalizeUi({
+            blockedRealmCreators: [
+                { id: "creator-a", name: "Creator A", extra: "discard" },
+                null,
+                "creator-b",
+                {},
+                { id: 7, name: "Invalid id" },
+                { id: "", name: "Missing id" },
+                { id: "creator-b" },
+                { id: "creator-c", name: 42 },
+                { id: "creator-a", name: "Duplicate" },
+            ],
+        });
+        expect(out.blockedRealmCreators).toEqual([
+            { id: "creator-a", name: "Creator A" },
+            { id: "creator-b", name: "creator-b" },
+            { id: "creator-c", name: "creator-c" },
+        ]);
+    });
+
     it("takes a custom color scheme saved before customColorScheme existed from colorScheme", () => {
         const custom = { ...defaultColorScheme, bgcolor: "#123456" };
         const migrated = normalizeUi({ colorSchemeName: "custom", colorScheme: custom });

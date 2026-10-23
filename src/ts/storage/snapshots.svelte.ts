@@ -76,6 +76,7 @@ export function buildDatabaseSubset(keys: readonly string[], scope: PresetScope 
 /** The keys the settings report leaves out, besides the `llmSecrets` fields and the credential-like names. */
 const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "characters",
+    "blockedRealmCreators",
     "irisDialogue",
     "googleSearchCredentials",
     "pluginCustomStorage",

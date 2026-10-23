@@ -1,13 +1,14 @@
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
-    import { BookIcon, ImageIcon, PaperclipIcon, SmileIcon } from "@lucide/svelte";
+    import { BanIcon, BookIcon, ImageIcon, PaperclipIcon, SmileIcon } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { alertNormal } from "src/ts/alert";
+    import { alertConfirm, alertNormal } from "src/ts/alert";
     import { hubURL, type hubType, downloadRisuHub, getRealmInfo } from "src/ts/characterCards";
 
     import RealmLicense from "./RealmLicense.svelte";
     import MultiLangDisplay from "../GUI/MultiLangDisplay.svelte";
     import { tooltip } from "src/ts/gui/tooltip";
+    import { addBlockedRealmCreator } from "src/ts/realmBlocking";
 
     interface Props {
         openedData: hubType;
@@ -98,6 +99,29 @@
         </div>
 
         <div class="flex flex-row-reverse gap-2">
+            {#if openedData.creator}
+                <button
+                    class="text-textcolor2 hover:text-draculared"
+                    aria-label={language.blockRealmCreator}
+                    use:tooltip={language.blockRealmCreator}
+                    onclick={async (e) => {
+                        e.stopPropagation();
+                        const creator = openedData.creator;
+                        const name = openedData.authorname ?? openedData.creatorName ?? creator;
+                        if (!(await alertConfirm(language.blockRealmCreatorConfirm.replace("{{creator}}", name)))) {
+                            return;
+                        }
+                        settings.ui.blockedRealmCreators = addBlockedRealmCreator(
+                            settings.ui.blockedRealmCreators ?? [],
+                            { id: creator, name },
+                        );
+                        openedData = null;
+                        alertNormal(language.realmCreatorBlockedSuccess);
+                    }}
+                >
+                    <BanIcon />
+                </button>
+            {/if}
             <button
                 class="text-textcolor2 hover:text-green-500"
                 onclick={async (e) => {
@@ -111,7 +135,7 @@
             <button
                 class="bg-selected hover:ring-3 grow p-2 font-bold rounded-md mr-2"
                 onclick={() => {
-                    downloadRisuHub(openedData.id);
+                    downloadRisuHub(openedData.id, { creator: openedData.creator });
                     openedData = null;
                 }}
             >

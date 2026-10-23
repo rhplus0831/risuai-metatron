@@ -1322,6 +1322,14 @@ export const languageKorean = {
         "Realm 임포트가 너무 오래 대기해서 폐기되었습니다. 아무것도 추가되지 않았습니다. 다시 임포트하세요.",
     realmImportTooManyWaiting:
         "다른 Realm 임포트가 아직 응답을 기다리고 있습니다. 그 임포트를 마치거나 몇 분 후 다시 시도하세요.",
+    blockRealmCreator: "제작자 차단",
+    blockRealmCreatorConfirm: "{{creator}} 제작자의 모든 RisuRealm 콘텐츠를 차단할까요?",
+    realmCreatorBlocked: "차단한 RisuRealm 제작자의 콘텐츠이므로 이용할 수 없습니다.",
+    realmCreatorBlockedSuccess: "제작자를 차단했습니다.",
+    manageBlockedRealmCreators: "차단한 제작자 관리",
+    blockedRealmCreators: "차단한 RisuRealm 제작자",
+    noBlockedRealmCreators: "차단한 RisuRealm 제작자가 없습니다.",
+    unblockRealmCreator: "차단 해제",
     upstreamImport: {
         title: "RisuAI 백업 복원",
         intro: "RisuAI(또는 서버 저장소 이전의 이 앱)에서 만든 백업입니다. 읽고 변환했으며, 아직 아무것도 바꾸지 않았습니다.",

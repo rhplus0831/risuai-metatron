@@ -5,16 +5,21 @@
     import { language } from "src/lang";
     import RisuHubIcon from "./RealmHubIcon.svelte";
     import RealmPopUp from "./RealmPopUp.svelte";
+    import RealmBlockedCreators from "./RealmBlockedCreators.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
+    import { filterBlockedRealmCards } from "src/ts/realmBlocking";
 
     let openedData: null | hubType = $state(null);
 
     let charas: hubType[] = $state([]);
+    let visibleCharas = $derived(filterBlockedRealmCards(charas, settings.ui.blockedRealmCreators ?? []));
 
     let page = $state(0);
     let sort = $state("recommended");
 
     let search = $state("");
     let menuOpen = $state(false);
+    let blockedCreatorsOpen = $state(false);
     let nsfw = $state(false);
 
     async function getHub() {
@@ -118,8 +123,8 @@
 </div>
 {@html hubAdditionalHTML}
 <div class="w-full flex gap-4 p-2 flex-wrap justify-center">
-    {#key charas}
-        {#each charas as chara}
+    {#key visibleCharas}
+        {#each visibleCharas as chara}
             <RisuHubIcon
                 onClick={() => {
                     openedData = chara;
@@ -165,6 +170,15 @@
     <RealmPopUp bind:openedData />
 {/if}
 
+{#if blockedCreatorsOpen}
+    <RealmBlockedCreators
+        onClose={() => {
+            blockedCreatorsOpen = false;
+        }}
+        onUnblock={getHub}
+    />
+{/if}
+
 {#if menuOpen}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
@@ -188,6 +202,14 @@
                 </button>
             </h1>
             <div class=" mt-2 w-full border-t-2 border-t-bgcolor"></div>
+            <button
+                class="w-full hover:bg-selected p-4"
+                onclick={(e) => {
+                    e.stopPropagation();
+                    menuOpen = false;
+                    blockedCreatorsOpen = true;
+                }}>{language.manageBlockedRealmCreators}</button
+            >
             <button
                 class="w-full hover:bg-selected p-4"
                 onclick={async (e) => {

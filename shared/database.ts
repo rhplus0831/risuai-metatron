@@ -30,6 +30,8 @@ import type { TogglePreset } from "./togglePresets.ts";
 
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
 
+export type BlockedRealmCreator = { id: string; name: string };
+
 /** The named LLM credential types, shared with the server's collection normalizer. */
 export const CREDENTIAL_TYPES = [
     "openai",
@@ -249,6 +251,7 @@ export interface Database {
     botSettingAtStart: false;
     NAIsettings: NAISettings;
     hideRealm: boolean;
+    blockedRealmCreators: BlockedRealmCreator[];
     colorScheme: ColorScheme;
     colorSchemeName: string;
     customColorScheme: ColorScheme;

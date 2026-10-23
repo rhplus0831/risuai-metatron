@@ -134,9 +134,9 @@ const COMPONENT_REMOVED_KEYS = [
 
 /**
  * Removed later: the saved toggle presets hold free user text like `globalChatVariables` and
- * `customPromptTemplateToggle`.
+ * `customPromptTemplateToggle`, and the blocked Realm creators are third-party ids and names.
  */
-const LATER_REMOVED_KEYS = ["togglePresets"];
+const LATER_REMOVED_KEYS = ["togglePresets", "blockedRealmCreators"];
 
 /** The report's filter: the component's removal list, the later removals, and whether `key` is dropped. */
 function componentDropped(key: string): boolean {

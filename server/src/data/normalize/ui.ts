@@ -61,6 +61,7 @@ const spec: SectionSpec<"ui"> = {
     animationSpeed: ["number", 0.4],
     botSettingAtStart: ["boolean"],
     hideRealm: ["boolean"],
+    blockedRealmCreators: ["array", []],
     colorScheme: ["object", defaultColorScheme],
     colorSchemeName: ["string", "default"],
     customColorScheme: ["object", defaultColorScheme],
@@ -129,6 +130,14 @@ const spec: SectionSpec<"ui"> = {
 
 export function normalizeUi(input: unknown): SectionResource<"ui"> {
     const record = normalizeSection("ui", spec, input);
+    const creatorIds = new Set<string>();
+    record.blockedRealmCreators = (record.blockedRealmCreators as unknown[]).flatMap((creator) => {
+        if (!isPlainObject(creator) || typeof creator.id !== "string" || !creator.id || creatorIds.has(creator.id)) {
+            return [];
+        }
+        creatorIds.add(creator.id);
+        return [{ id: creator.id, name: typeof creator.name === "string" ? creator.name : creator.id }];
+    });
     // A custom scheme saved before `customColorScheme` existed lived in `colorScheme`.
     const source = isPlainObject(input) ? input : {};
     if (!isPlainObject(source.customColorScheme) && record.colorSchemeName === "custom") {

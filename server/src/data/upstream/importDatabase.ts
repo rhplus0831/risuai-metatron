@@ -1,5 +1,5 @@
 import type { ChatGroup } from "../../../../shared/chats.ts";
-import type { Credential, CredentialType, ModelPreset } from "../../../../shared/database.ts";
+import type { BlockedRealmCreator, Credential, CredentialType, ModelPreset } from "../../../../shared/database.ts";
 import { newId } from "../../../../shared/ids.ts";
 import { LLMFormat } from "../../../../shared/llm.ts";
 import {
@@ -188,6 +188,14 @@ export function convertUpstreamDatabase(db: unknown, options: UpstreamConversion
 
     const root = settingsRoot(db);
     migrateRoot(root, invalid);
+    if (root.blockedRealmCreators !== undefined) {
+        const creators = convertBlockedRealmCreators(root.blockedRealmCreators, invalid);
+        if (creators === undefined) {
+            delete root.blockedRealmCreators;
+        } else {
+            root.blockedRealmCreators = creators;
+        }
+    }
 
     const credentials = createCredentialRegistry();
     const customModelBindings = new Map<string, string>();
@@ -364,6 +372,29 @@ function settingsRoot(db: Record<string, unknown>): Root {
         }
     }
     return root;
+}
+
+function convertBlockedRealmCreators(
+    value: unknown,
+    invalid: (path: string) => void,
+): BlockedRealmCreator[] | undefined {
+    if (!Array.isArray(value)) {
+        invalid("blockedRealmCreators");
+        return undefined;
+    }
+    const creators: BlockedRealmCreator[] = [];
+    const ids = new Set<string>();
+    value.forEach((creator, index) => {
+        if (!isPlainObject(creator) || typeof creator.id !== "string" || !creator.id) {
+            invalid(`blockedRealmCreators[${index}]`);
+            return;
+        }
+        if (!ids.has(creator.id)) {
+            ids.add(creator.id);
+            creators.push({ id: creator.id, name: typeof creator.name === "string" ? creator.name : creator.id });
+        }
+    });
+    return creators;
 }
 
 function pick(root: Root, fields: readonly string[]): Record<string, unknown> {
