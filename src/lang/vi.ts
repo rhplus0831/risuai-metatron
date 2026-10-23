@@ -111,7 +111,11 @@ export const languageVietnamese = {
         showUnrecommended:
             "Nếu được bật, nó sẽ hiển thị các cài đặt không được khuyến nghị, không còn được dùng nữa. KHÔNG KHUYẾN NGHỊ sử dụng các cài đặt này.",
         streamingDisplayOptimizationMode:
-            "Giảm giật lag khi stream phản hồi dài trong các trường hợp có nhiều hậu xử lý, chẳng hạn script dùng regex. Tùy chọn này có thể hữu ích trên thiết bị di động hoặc máy cấu hình thấp.\n\nTắt giữ hành vi bình thường, nhưng hậu xử lý chạy sau mỗi token và có thể tạo chi phí đáng kể.\n\nCân bằng giảm tải bằng cách chỉ thử hậu xử lý theo khoảng ngắn, khoảng 0,125 giây một lần.\n\nMạnh tương tự Cân bằng, nhưng bỏ qua hậu xử lý trong lúc stream và chỉ thử hậu xử lý một lần sau khi stream hoàn tất.\n\nĐây là tính năng thử nghiệm, nên một số tính năng có thể hoạt động ngoài ý muốn.",
+            "Thay đổi cách hiển thị phản hồi trong khi stream. Ở mọi chế độ, tin nhắn đang stream được vẽ lại tối đa một lần mỗi khung hình, thay vì mỗi token, và các script hiển thị (regex và Lua) chỉ chạy trên tin nhắn một lần sau khi stream hoàn tất.\n\n" +
+            "Chế độ Tắt kết xuất văn bản đang stream trong mỗi lần vẽ lại như mọi tin nhắn khác (Markdown và các định dạng khác).\n\n" +
+            "Chế độ Cân bằng kết xuất giống như Tắt và ẩn các nút chỉnh sửa và dịch của tin nhắn cho đến khi stream hoàn tất.\n\n" +
+            "Chế độ Mạnh hiển thị văn bản đang stream ở dạng thô, không kết xuất, rồi kết xuất tin nhắn bình thường sau khi stream hoàn tất. Chế độ này giảm tải nhiều nhất và có thể hữu ích trên thiết bị di động hoặc thiết bị cấu hình thấp.\n\n" +
+            "Đây là tính năng thử nghiệm, nên một số tính năng có thể hoạt động ngoài ý muốn.",
         imageCompression:
             "Nếu được bật, nó sẽ nén hình ảnh khi xuất nhân vật. Nếu hình ảnh động không hoạt động, hãy thử tắt tùy chọn này.",
         useExperimental: "Nếu được bật, nó sẽ hiển thị một số tính năng thử nghiệm.",

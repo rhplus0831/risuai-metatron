@@ -144,7 +144,7 @@ Security:
 
 - S1. Untrusted user/model/card/module/plugin HTML passes through `ParseMarkdown`
   and `trimMarkdown` (DOMPurify) before `{@html}`. Keep CSS scoped to `.chattext`
-  and `x-risu-`; safe mode suppresses custom CSS.
+  and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML.
 - S2. Server Lua network/LLM calls and low-level trigger effects require the
   relevant character/module/trigger `lowLevelAccess` gates. Do not widen them.
 

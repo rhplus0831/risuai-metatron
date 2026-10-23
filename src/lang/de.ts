@@ -119,7 +119,11 @@ export const languageGerman = {
         showUnrecommended:
             "Wenn aktiviert, werden nicht empfohlene, veraltete Einstellungen angezeigt. Es wird NICHT EMPFOHLEN, diese Einstellungen zu verwenden.",
         streamingDisplayOptimizationMode:
-            "Verringert Anzeigeruckeln, wenn lange Antworten mit viel Nachbearbeitung gestreamt werden, zum Beispiel durch regex-basierte Skripte. Das kann auf Mobilgeraeten oder leistungsschwaecherer Hardware hilfreich sein.\n\nAus behaelt das normale Verhalten bei, fuehrt die Nachbearbeitung aber bei jedem Token aus und kann dadurch deutlichen Overhead verursachen.\n\nAusgewogen senkt die Last, indem Nachbearbeitung nur in kurzen Abstaenden von etwa 0,125 Sekunden versucht wird.\n\nStark ist aehnlich wie Ausgewogen, ueberspringt die Nachbearbeitung waehrend des Streamings aber und versucht sie nur einmal nach Abschluss des Streams.\n\nDies ist eine experimentelle Funktion. Dadurch koennen einige Funktionen unbeabsichtigt anders funktionieren.",
+            "Ändert, wie eine Antwort während des Streamings angezeigt wird. In jedem Modus wird die gestreamte Nachricht höchstens einmal pro Frame neu gezeichnet, nicht einmal pro Token. Anzeigeskripte (Regex und Lua) werden einmal auf sie angewendet, nachdem der Stream beendet ist.\n\n" +
+            "Aus rendert den gestreamten Text bei jedem Neuzeichnen wie jede andere Nachricht (Markdown usw.).\n\n" +
+            "Ausgewogen rendert ihn genauso wie Aus und blendet seine Bearbeitungs- und Übersetzungsschaltflächen aus, bis der Stream beendet ist.\n\n" +
+            "Stark zeigt den gestreamten Text unverarbeitet an, ohne ihn zu rendern, und rendert die Nachricht normal, sobald der Stream beendet ist. Dieser Modus verringert die Last am stärksten und kann auf Mobilgeräten oder leistungsschwachen Geräten helfen.\n\n" +
+            "Dies ist eine experimentelle Funktion. Dadurch können sich einige Funktionen unerwartet verhalten.",
         imageCompression:
             "Wenn aktiviert, werden Bilder beim Exportieren des Charakters komprimiert. Wenn animierte Bilder nicht funktionieren, versuchen Sie, diese Option zu deaktivieren.",
         useExperimental: "Wenn aktiviert, werden einige experimentelle Funktionen angezeigt.",

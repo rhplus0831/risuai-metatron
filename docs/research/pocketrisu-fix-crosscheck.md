@@ -38,6 +38,6 @@ still waits for the heap-memory-reduction merge.
 
 ## Side findings (not in the §5 rows)
 
-- **Preview hotkey shows a stale body.** `src/ts/hotkey.ts:155-172` ignores `sendChat`'s result, so a refused or failed preview after an earlier successful one shows the old `previewBody` as current. Repro: Ctrl+U in a chat, close it, go home, Ctrl+U again.
+- **Preview hotkey shows a stale body.** Fixed: the `previewRequest` hotkey (`src/ts/hotkey.ts` ~193-216) now shows only the body `previewChat` returns, and nothing for a refused or failed preview. Before, it ignored `sendChat`'s result, so a refused or failed preview after an earlier successful one showed the old `previewBody` as current.
 - **No backoff in the OpenAI tool-call retry loops** either (`server/src/llm/openAI/requests.ts:858`, `:1280`); same class as row 3.
 - **`fallBackGemini` unbounded retry** (`server/src/llm/google.ts:512-536`) with `antiServerOverloads` on: immediate, unlimited re-requests on `RESOURCE_EXHAUSTED` until Stop.

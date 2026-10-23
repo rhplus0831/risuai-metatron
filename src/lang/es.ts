@@ -113,7 +113,11 @@ export const languageSpanish = {
         showUnrecommended:
             "Si está habilitado, mostrará configuraciones no recomendadas y obsoletas. NO SE RECOMIENDA usar estas configuraciones.",
         streamingDisplayOptimizationMode:
-            "Reduce el lag de visualización al recibir respuestas largas por streaming con mucho posprocesamiento, como scripts basados en regex. Puede ser útil en dispositivos móviles o equipos de gama baja.\n\nDesactivado mantiene el comportamiento normal, pero ejecuta el posprocesamiento en cada token y puede generar una sobrecarga importante.\n\nEquilibrado reduce la carga intentando el posprocesamiento solo en intervalos cortos, aproximadamente cada 0,125 segundos.\n\nFuerte es similar a Equilibrado, pero omite el posprocesamiento durante el streaming y lo intenta solo una vez cuando el stream termina.\n\nEsta es una función experimental, por lo que algunas funciones pueden comportarse de forma inesperada.",
+            "Cambia cómo se muestra una respuesta mientras se recibe por streaming. En todos los modos, el mensaje en streaming se redibuja como máximo una vez por fotograma, en lugar de una vez por token, y los scripts de visualización (regex y Lua) se ejecutan sobre él una sola vez, cuando termina el stream.\n\n" +
+            "Desactivado renderiza el texto en streaming en cada redibujado como cualquier otro mensaje (Markdown y demás).\n\n" +
+            "Equilibrado lo renderiza igual que Desactivado y oculta sus botones de edición y traducción hasta que termina el stream.\n\n" +
+            "Fuerte muestra el texto en streaming sin procesar, sin renderizarlo, y renderiza el mensaje normalmente cuando termina el stream. Es el modo que más reduce la carga y puede ayudar en dispositivos móviles o de gama baja.\n\n" +
+            "Esta es una función experimental, por lo que algunas funciones pueden comportarse de forma inesperada.",
         imageCompression:
             "Si está habilitado, comprimirá las imágenes al exportar el personaje. Si las imágenes animadas no funcionan, intenta desactivar esta opción.",
         useExperimental: "Si está habilitado, mostrará algunas características experimentales.",

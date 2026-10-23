@@ -19,6 +19,7 @@ export const languageKorean = {
         unknownModel: "에러: 알수없는 모델 선택됨",
         httpError: "요청 에러:",
         noData: "올바른 파일이 아니거나 데이터가 손상됐습니다.",
+        importTargetGone: "채팅을 가져오기 전에 캐릭터가 삭제되었습니다.",
         onlyOneChat: "채팅이 하나 이상 필요합니다",
         alreadyCharInGroup: "이미 같은 캐릭터가 그룹에 존재합니다.",
         noUserIcon: "유저 아이콘이 없습니다.",
@@ -115,6 +116,8 @@ export const languageKorean = {
         forcePlainFetch:
             "활성화되면 네이티브 HTTP 요청 대신 브라우저 Fetch API를 사용합니다. 이로 인해 CORS 오류가 발생할 수 있습니다.",
         autoFillRequestURL: "활성화되면 요청 URL을 현재 모델과 일치하도록 자동으로 채웁니다.",
+        localNetworkModeDesc:
+            "사설/LAN 모델 URL에 대한 요청을 브라우저에서 직접 보내는 대신 로컬 런타임 경로로 보냅니다.\n\n**목적**\n- `192.168.x.x`, `10.x.x.x`, `localhost`, `.local` 등 로컬 호스트에 대한 브라우저의 사설 네트워크/CORS 제한을 피합니다.\n- 첫 토큰 생성이 느린 로컬 추론의 타임아웃 위험을 줄입니다.\n\n**작동 방식**\n- 로컬 네트워크 모드가 켜져 있고 대상 URL이 로컬/사설 주소로 감지될 때만 적용됩니다.\n- 스트리밍은 실험적인 Job+WebSocket 중계를 먼저 사용하고 실패하면 `/proxy2`로 전환합니다. 비스트리밍은 `/proxy2`를 사용합니다.\n\n**제약 사항**\n- OpenAI 호환 요청 경로에만 적용됩니다.\n- 두 공개 도메인 사이의 Cloudflare 원본 서버 제한을 우회하지는 않습니다.",
         chainOfThought: "활성화되면 생각의 사슬 프롬프트를 프롬프트에 추가합니다.",
         gptVisionQuality:
             "이 옵션은 이미지 감지 모델의 품질을 설정하는 데 사용됩니다. 품질이 높을수록 감지가 더 정확하지만 토큰이 더 많이 사용됩니다.",
@@ -243,6 +246,8 @@ export const languageKorean = {
         hideAllImagesDesc: "봇 아이콘, 봇 이미지 에셋, RisuRealm 표지 사진을 가립니다.",
         embedding:
             "임베딩 모델은 여러 기능에서 유사도 검색에 사용됩니다:\n\n- **장기 기억**: HypaV2, HypaV3, Hanurai Memory, SupaMemory (HypaMemory 활성화 시)\n- **추가 텍스트**: 컨텍스트 기반 캐릭터 추가 정보 매칭\n- **동적 에셋**: 정확한 에셋 이름을 찾지 못했을 때 유사한 이름 검색\n- **트리거 스크립트**: 트리거 스크립트의 유사도 조건\n- **파일 첨부**: PDF/TXT/XML 첨부 파일 내 검색",
+        keepSessionAlive:
+            "브라우저에서 탭을 활성 상태로 유지하고 비활성 상태로 인한 세션 만료를 방지합니다. 적용하려면 새로고침이 필요할 수 있습니다.\n\n- **소리 사용**: 일정 간격으로 무음 오디오를 재생하여 세션을 유지합니다. 대부분의 브라우저에서 호환성이 가장 높고 효과적인 방법으로 알려져 있습니다.\n",
         reSummarizationPrompt:
             "벌크 수정에서 선택한 여러 요약을 하나로 합칠 때 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다.",
         hypaV3MemoryTokensRatio: "프롬프트의 최대 컨텍스트 크기에서 장기기억 블록 {{slot}}에 할당되는 비율입니다.",
@@ -740,8 +745,13 @@ export const languageKorean = {
     },
     chatCreateRefused:
         "서버에 이 채팅을 만들 수 없습니다. 로컬 메시지는 보관되어 있습니다. 채팅을 수정하거나 삭제하거나 재시도를 눌러 다시 시도하세요. 거부 알림 배너에서 로컬 데이터를 내보내거나 버릴 수 있습니다.",
+    resourceRecordRefused:
+        "이 레코드를 저장하지 못했습니다. 다른 레코드는 계속 저장됩니다. 거부된 레코드를 수정하면 다시 시도합니다.",
     chatSaveRefused:
         "서버가 이 채팅의 변경을 거부했습니다. 채팅을 수정하거나 삭제하거나 재시도를 눌러 다시 시도하세요. 거부 알림 배너에서 남아 있는 로컬 데이터를 내보내거나 거부된 변경을 버릴 수 있습니다.",
+    chatOrderRefused: "이 채팅 순서를 저장하지 못했습니다. 순서를 변경하면 다시 시도합니다.",
+    resourceRestored: "서버 데이터가 백업에서 복원되었습니다. 앱을 새로고침합니다.",
+    characterGenerating: "이 캐릭터가 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
     homePinnedChatsEmpty: "채팅을 고정하면 여기에서 빠르게 열 수 있습니다.",
     homeShowAllPinnedChats: (count: number) => `고정된 채팅 ${count}개 모두 보기`,
     homeShowFewerPinnedChats: "고정된 채팅 접기",
@@ -830,6 +840,11 @@ export const languageKorean = {
     credentialEditIn: (place: string) => `${place}에서 편집`,
     supaMemoryKeyShared: "OpenAI API 키 (요약과 임베딩이 함께 씀)",
     supaMemoryKeyBelow: "임베딩 모델 아래의 OpenAI API 키를 씁니다.",
+    secretSaving: "저장 중",
+    secretReplace: "교체",
+    secretClear: "지우기",
+    ttsCustomUrlNeedsKey:
+        "커스텀 OpenAI TTS 기본 URL을 사용하려면 TTS 설정에 별도의 API 키를 입력해야 합니다. 저장된 OpenAI 키는 api.openai.com으로만 전송됩니다.",
     longPressToPopupEditor: "길게 눌러 팝업 편집기 열기",
     UiLanguage: "UI 언어",
     createfromScratch: "새 캐릭터 생성",
@@ -853,6 +868,7 @@ export const languageKorean = {
     selectChar: "캐릭터 선택",
     askLoadFirstMsg: "첫 메세지를 불러올까요?",
     theme: "테마",
+    metatronTheme: "Metatron",
     editOrder: "캐릭터 순서 변경",
     autoMode: "오토 모드",
     submodel: "보조 모델",
@@ -1181,6 +1197,8 @@ export const languageKorean = {
                 "이 모델은 공유 키를 지원하지 않아 요청을 보낼 수 없습니다. 키 연결을 해제하고 기본 키를 사용해 주세요.",
         },
     },
+    secretSet: "설정됨",
+    secretNotSet: "설정되지 않음",
     proxyRequestModel: "요청 모델",
     officialWiki: "공식 위키",
     officialWikiDesc: "리스AI의 공식 위키. 자유롭게 보세요.",
@@ -1339,6 +1357,7 @@ export const languageKorean = {
     personaModuleLinkActive: "페르소나에서 활성화됨",
     noLinkableModules: "연결할 수 있는 모듈이 없습니다.",
     noMatchingModules: "검색과 일치하는 모듈이 없습니다.",
+    noMatchingAssets: "검색과 일치하는 에셋이 없습니다.",
     createModule: "모듈 생성",
     basicInfo: "기본 정보",
     moduleContent: "모듈 내용",
@@ -1547,6 +1566,9 @@ export const languageKorean = {
     useAdvancedEditor: "고급 에디터 사용",
     noWaitForTranslate: "번역 기다리지 않기",
     antiClaudeOverload: "Claude 오버로드 방지",
+    resourceReloaded: "다른 탭이나 기기에서 이 데이터를 변경했습니다. 최신 버전을 불러왔습니다.",
+    chatLoadFailed: "이 채팅을 불러오지 못했습니다: {0}",
+    chatLoadRetry: "다시 시도",
     maxSupaChunkSize: "최대 수파메모리 청크 크기",
     addCharacter: "캐릭터 추가",
     importFromRealm: "RisuRealm에서 고르기",
@@ -1669,6 +1691,7 @@ export const languageKorean = {
     selectChatToOpen: "대화를 시작하려면 목록에서 채팅을 선택하세요.",
     openMostRecentChat: "가장 최근 채팅 열기",
     unnamedCharacter: "이름 없음",
+    chatUnavailable: "서버에서 이 채팅을 사용할 수 없습니다",
     predictedOutput: "출력 예측",
     systemContentReplacement: "시스템 포맷 교체",
     systemRoleReplacement: "시스템 역할 교체",
@@ -1875,6 +1898,8 @@ export const languageKorean = {
         reSummarize: "재요약",
         reSummarizing: "재요약 중...",
         reSummarizeResult: "재요약 결과",
+        bulkResummaryTargetsGone:
+            "재요약 중에 선택한 요약이 변경되었거나 다른 채팅이 열렸습니다. 아무것도 병합하지 않았습니다. 결과를 닫고 다시 선택해 주세요.",
         retry: "재시도",
         translate: "번역",
         tag: "태그",
@@ -1920,7 +1945,7 @@ export const languageKorean = {
         summarizeNow: "지금 요약하기",
         cancel: "취소",
         editFenced: "백그라운드에서 요약을 만들고 있어요. 요약이 도착한 뒤에 편집해 주세요.",
-        notEnabled: "이 서버는 아직 백그라운드에서 요약을 만들지 않아요.",
+        notEnabled: "이 서버에서는 백그라운드 요약을 사용할 수 없어요.",
         chatGone: "이 채팅이 더 이상 없어요.",
         queueFull: "요약을 기다리는 채팅이 너무 많아요. 잠시 뒤에 다시 시도해 주세요.",
         unavailable: "서버가 바빠요(점검 또는 종료 중). 잠시 뒤에 다시 시도해 주세요.",
@@ -2005,6 +2030,7 @@ export const languageKorean = {
         webcam: "웹캠 토글",
         focusInput: "입력창 포커스",
         scrollToActiveChar: "활성 캐릭터로 스크롤",
+        popupEditor: "팝업 편집기",
     },
     quickSettingsRemoved:
         '빠른 설정 패널은 제거되었습니다. 채팅의 모델 프리셋과 프롬프트 프리셋은 사이드바 위쪽의 채팅 바인딩 패널에서, 모듈은 입력창 옆 햄버거 메뉴의 "모듈"에서 바꿀 수 있습니다.',
@@ -2079,8 +2105,39 @@ export const languageKorean = {
     newMessageButtonFloatingCircle: "아이콘 원 (우측 하단)",
     newMessageButtonRightCenter: "우측 중앙",
     newMessageButtonTopBar: "상단 바",
+    trimStartNewChat: "'새 채팅 시작' 메시지 잘라내기",
+    fetchLogConsent: "플러그인 {}이 로그를 가져오려고 합니다. 민감한 정보가 노출될 수 있습니다. 허용하시겠습니까?",
+    getFullDatabaseConsent:
+        "플러그인 {}이 전체 데이터베이스에 접근하려고 합니다. 민감한 정보가 노출될 수 있습니다. 허용하시겠습니까?",
+    mainDomAccessConsent:
+        "플러그인 {}이 메인 Document에 접근하려고 합니다. 민감한 정보가 노출될 수 있습니다. 허용하시겠습니까?",
+    replacerPermissionConsent:
+        "플러그인 {}이 채팅 내용을 대체할 권한을 요청합니다. 대화를 조작하는 데 사용될 수 있습니다. 허용하시겠습니까?",
+    providerPermissionConsent:
+        "플러그인 {}이 제공자에 접근할 권한을 요청합니다. 승인되지 않은 API 호출을 할 수 있습니다. 허용하시겠습니까?",
+    inlayPermissionConsent:
+        "플러그인 {}이 인레이에 접근할 권한을 요청합니다. 인레이 내용을 읽거나 쓰거나 편집할 수 있습니다. 허용하시겠습니까?",
+    sendChatConsent:
+        "플러그인 {}이 사용자를 대신해 채팅 메시지를 보내려고 합니다. AI 응답이 생성됩니다. 허용하시겠습니까?",
+    createFolderOnBranch: "분기 시 폴더 생성",
     goToChat: "채팅으로 이동",
     duplicatePluginFoundUpdateIt: "중복된 플러그인이 발견되었습니다. 기존 플러그인을 업데이트하시겠습니까?",
+    pluginApiVersionUnsupported:
+        "이 플러그인에는 API 버전 3.0이 선언되어 있지 않습니다. 플러그인 API 2.0과 2.1은 더 이상 지원되지 않습니다. `//@api 3.0`을 추가하고 플러그인을 API 3.0에 맞게 업데이트해 주세요.",
+    pluginApiVersionUnsupportedLoad:
+        "다음 플러그인은 지원되지 않는 플러그인 API 버전을 사용하여 실행되지 않았습니다. API 3.0에 맞게 업데이트된 버전을 설치해 주세요.\n\n{plugins}",
+    pluginApiVersionUnsupportedBadge: "지원되지 않는 API",
+    safeBootNotice: "안전 부팅: 이번 페이지 로드에서는 {off} 기능이 꺼져 있습니다. 데이터는 변경되지 않았습니다.",
+    safeBootAutoReason:
+        "최근 {count}번의 시작에서 로드를 완료하지 못해 이번 시작에서는 자동으로 해당 기능을 껐습니다. 플러그인, 커스텀 CSS 또는 GUI HTML 때문에 앱에 문제가 생겼다면 지금 설정에서 끄거나 수정해 주세요.",
+    safeBootLeave:
+        "앱 로드가 끝나면 10초 더 열어 둔 뒤, 주소에서 ?safe를 빼고 새로고침하여 정상 시작을 시도해 보세요. 이번 시작이 실패하면 자동 안전 부팅이 계속 켜져 있을 수 있습니다.",
+    safeBootPlugins: "플러그인",
+    safeBootCss: "커스텀 CSS와 GUI HTML",
+    safeBootErrorHint:
+        "앱이 계속 시작되지 않으면 플러그인, 커스텀 CSS, GUI HTML을 끈 상태(안전 부팅)로 열어 보세요: {url}",
+    safeBootPluginsOff:
+        "이번 페이지 로드에서는 플러그인이 꺼져 있습니다(안전 부팅). 여기서 변경한 내용은 저장되며 정상적으로 새로고침한 뒤 적용됩니다.",
     loadMore: "더 보기",
     pluginUpdateFoundInstallIt: "플러그인 업데이트가 발견되었습니다. 업데이트를 설치하시겠습니까?",
     noRequestLogs: "요청 로그가 없습니다.",
@@ -2178,13 +2235,22 @@ export const languageKorean = {
     },
     branchedText: "이 채팅은 {}에서 분기되었습니다.",
     disableMessage: "메시지 비활성화",
+    disableAbove: "AI에 보낼 메시지 자르기",
     bookmark: "북마크",
+    rerender: "다시 렌더링",
+    serverTransformFailed: "서버에서 메시지를 렌더링하지 못했습니다",
     branch: "분기점",
     partialBackupFirstConfirm:
         "⚠️ 경고: 부분 로컬 백업 ⚠️\n\n이 백업은 최소한의 필수 정보만 빠르게 저장하는 기능입니다.\n\n포함되는 것:\n- 데이터베이스 (채팅 기록, 캐릭터, 모듈, 플러그인, 프롬프트, 설정 등)\n- 캐릭터 프로필 아이콘 (메인 이미지)\n- 사용자 아이콘 및 커스텀 배경\n- 페르소나 아이콘\n- 폴더 이미지\n- 봇 프리셋 이미지\n\n⚠️ 포함되지 않는 것:\n- 감정 이미지\n- 추가 캐릭터 에셋\n- VITS 음성 파일\n- 기타 모든 추가 미디어 파일\n\n이 백업 파일에는 모든 캐릭터 에셋이 포함되지 않습니다!\n완전한 백업이 필요하다면 일반 로컬 백업을 사용하세요.\n\n그래도 계속하시겠습니까?",
     partialBackupSecondConfirm:
         "⚠️⚠️ 최종 경고 ⚠️⚠️\n\n이 백업은 캐릭터의 프로필 이미지만 저장하며, 나머지 대부분의 에셋은 저장하지 않습니다!\n\n저장되는 것:\n- 데이터베이스 (채팅 기록, 캐릭터, 모듈, 플러그인, 프롬프트, 설정 등)\n- 캐릭터 프로필 아이콘 (메인 이미지)\n- 사용자 아이콘 및 커스텀 배경\n- 페르소나 아이콘\n- 폴더 이미지\n- 봇 프리셋 이미지\n\n저장되지 않는 것:\n- 감정 이미지\n- 추가 캐릭터 에셋\n- VITS 음성 파일\n- 기타 모든 미디어 파일\n\n⚠️ 백업 파일에 캐릭터 에셋이 필요하지 않은 경우에만 진행하세요! ⚠️\n\n정말로 부분 백업을 진행하시겠습니까?",
+    backupDiscardedChanges:
+        "이 백업을 위해 최신 변경 사항을 저장하는 동안 다른 탭이나 기기에서 같은 데이터 일부를 변경했습니다. 그쪽 버전이 유지되어 백업에 포함되었으며, 사용자의 해당 변경 사항은 덮어써져 백업에 포함되지 않았습니다.",
     savePartialLocalBackup: "부분 로컬 백업 저장 (캐릭터 에셋 제외)",
+    pluginProviderNotFound: "알 수 없는 플러그인이 감지되었습니다. 모델을 변경하거나 해당 플러그인을 활성화해 주세요.",
+    pluginProviderPermissionDenied:
+        "플러그인 {}에 제공자 역할을 수행할 권한이 없습니다. 제공자 권한을 허용하거나 다른 모델을 선택해 주세요.",
+    pluginProviderRequestAborted: "제공자 요청이 중단되었습니다.",
     bootstrap: {
         dataCorruptionDetected: (name: string, type: string) =>
             `데이터 손상 감지\n\n모듈 "${name}"의 로어북 형식이 손상되었습니다.\n\n손상된 데이터 타입: ${type}`,
@@ -2216,6 +2282,14 @@ export const languageKorean = {
         save: "저장",
         cancel: "취소",
     },
+    blockquoteStyling: "인용문 스타일",
+    dynamicModelRegistry: "동적 모델 레지스트리",
+    confirmInstallPluginViaPlugin:
+        "다른 플러그인을 통해 플러그인을 설치하려고 합니다. 설치를 요청한 플러그인을 신뢰할 수 없다면 위험할 수 있습니다. 계속하시겠습니까?",
+    disableSeperateParameterChangeOnPresetChange: "프리셋 변경 시 분리된 파라미터 변경 비활성화",
+    keepSessionAlive: "세션 유지",
+    keepSessionAlivePip: "PIP 사용",
+    keepSessionAliveSound: "소리 사용",
     hamburgerButtonBottom: "메뉴 버튼을 사이드바 하단으로 이동",
     nanoGPTLoadingAccountInfo: "계정 정보 불러오는 중…",
     nanoGPTCreditBalance: "크레딧 잔액:",
@@ -2258,5 +2332,8 @@ export const languageKorean = {
     nanoGPTSelectFromList: "목록에서 선택",
     nanoGPTManualInput: "수동 입력",
     nanoGPTManualModelSelect: "수동 모델 선택",
+    successfullyConverted: "성공적으로 변환되었습니다.",
+    convertToModule: "모듈로 변환",
+    applyAdditionalParamsToAll: "모든 모델에 추가 파라미터 적용",
     noMatchingLorebooks: "검색 조건에 맞는 로어북 항목이 없습니다.",
 } satisfies DeepPartial<typeof import("./en").languageEnglish>;

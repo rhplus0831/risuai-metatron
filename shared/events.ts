@@ -40,8 +40,8 @@ export type EventFeedFrame =
 
 /**
  * The memory task routes: `POST` starts a chat's task (`MemoryTaskStartBody`), `DELETE
- * <path>/:characterId/:chatId` cancels it. Both are refused with 503 `notEnabled` until the server
- * hands chats to its memory task service.
+ * <path>/:characterId/:chatId` cancels it. Both are refused with 503 `notEnabled` only on a server
+ * without a memory task service (`memoryTasks: "disabled"`).
  */
 export const MEMORY_TASKS_PATH = "/api/memory/tasks";
 
