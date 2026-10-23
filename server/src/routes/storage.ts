@@ -13,6 +13,7 @@ import {
     MAX_ASSET_BATCH_NAME_BYTES,
     MAX_ASSET_BATCH_RECORDS,
 } from "../../../shared/assetBatch.ts";
+import { assetExtension, assetMimeType, isActiveAssetExtension } from "../../../shared/assetMime.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
@@ -231,9 +232,69 @@ async function* storedRecords(savePath: string, keys: string[]): AsyncGenerator<
     }
 }
 
+/** Ignores malformed or multiple ranges; a valid range that cannot select any bytes is unsatisfiable. */
+function assetByteRange(header: string, size: bigint): { start: number; end: number } | "unsatisfiable" | null {
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
+    if (!match || (!match[1] && !match[2])) {
+        return null;
+    }
+    let start: bigint;
+    let end: bigint;
+    if (!match[1]) {
+        const suffix = BigInt(match[2]);
+        if (suffix === 0n) {
+            return "unsatisfiable";
+        }
+        start = suffix >= size ? 0n : size - suffix;
+        end = size - 1n;
+    } else {
+        start = BigInt(match[1]);
+        end = match[2] ? BigInt(match[2]) : size - 1n;
+        if (match[2] && end < start) {
+            return null;
+        }
+        if (start >= size) {
+            return "unsatisfiable";
+        }
+        if (end >= size) {
+            end = size - 1n;
+        }
+    }
+    // Node's stream offsets must be safe integers; decimal range bounds are compared before conversion.
+    if (start > BigInt(Number.MAX_SAFE_INTEGER) || end > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return null;
+    }
+    return { start: Number(start), end: Number(end) };
+}
+
+/** GET and HEAD use weak comparison for If-None-Match; a wildcard is accepted only as the whole field. */
+function matchesAssetEtag(header: string | undefined, etag: string): boolean {
+    if (!header) {
+        return false;
+    }
+    return header.trim() === "*" || header.split(",").some((tag) => tag.trim().replace(/^W\//, "") === etag.slice(2));
+}
+
+const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
+    await next();
+    c.header(
+        "Content-Security-Policy",
+        "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
+    );
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Cross-Origin-Resource-Policy", "same-origin");
+    c.header("Accept-Ranges", "bytes");
+    if (!c.res.headers.has("Content-Disposition")) {
+        c.header("Content-Disposition", "inline");
+    }
+    if (c.res.status >= 400 || !c.res.headers.has("Cache-Control")) {
+        c.header("Cache-Control", "no-store");
+    }
+};
+
 /**
- * `/api/*` storage routes over `save/`. The client sends each logical key hex-encoded in the
- * `file-path` header; the server maps it with `resolveStorageKey`. One server process owns `save/`.
+ * `/api/*` storage routes over `save/`. Individual keys are hex-encoded in the `file-path` header
+ * or `/api/asset/<hex>` path; the server maps them with `resolveStorageKey`. One server process owns `save/`.
  * Writes and removals answer 503 while a restore or an import holds `maintenance`; one admitted
  * before maintenance began finishes first (`MaintenanceGate.enter`). The batch routes
  * (`/api/assets/write`, `/api/assets/read`) carry many assets per request in the backup archive's
@@ -312,6 +373,84 @@ export function registerStorageRoutes(
                 return c.body(null, 200);
             }
             return c.body(createStreamBody(handle.createReadStream()), 200);
+        } catch (error) {
+            await handle.close().catch(() => {});
+            throw error;
+        }
+    });
+
+    app.get("/api/asset/*", assetHeaders, limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) {
+            // The asset URL answers 401 for every failed JWT check.
+            return new Response(denied.body, {
+                status: 401,
+                headers: denied.headers,
+            });
+        }
+        const hex = c.req.path.slice("/api/asset/".length);
+        if (!hex) {
+            return c.json({ error: "Not found" }, 404);
+        }
+        const key = decodeKeyHeader(hex);
+        if (key === null) {
+            return c.json({ error: "Invaild Path" }, 400);
+        }
+        const fullPath = resolveStorageKey(savePath, key);
+        if (fullPath === null) {
+            return c.json({ error: "Not found" }, 404);
+        }
+        let handle: FileHandle;
+        try {
+            handle = await fs.open(fullPath, STORAGE_READ_FLAGS);
+        } catch (error) {
+            if (isMissingFileError(error)) {
+                return c.json({ error: "Not found" }, 404);
+            }
+            throw error;
+        }
+        // The validator, length, and bytes describe the same open file even after an atomic replace.
+        try {
+            const stat = await handle.stat({ bigint: true });
+            if (!stat.isFile()) {
+                await handle.close();
+                return c.json({ error: "Not found" }, 404);
+            }
+            const etag = `W/"${stat.size}-${stat.mtimeNs}-${stat.ino}"`;
+            const unchanged = matchesAssetEtag(c.req.header("If-None-Match"), etag);
+            const rangeHeader = c.req.header("Range");
+            const range =
+                !unchanged &&
+                c.req.method !== "HEAD" &&
+                stat.size > 0n &&
+                c.req.header("If-Range") === undefined &&
+                rangeHeader !== undefined
+                    ? assetByteRange(rangeHeader, stat.size)
+                    : null;
+            if (range === "unsatisfiable") {
+                await handle.close();
+                c.header("Content-Range", `bytes */${stat.size}`);
+                return c.json({ error: "Range not satisfiable" }, 416);
+            }
+            const noBody = unchanged || c.req.method === "HEAD" || stat.size === 0n;
+            if (noBody) {
+                await handle.close();
+            }
+            const body = noBody ? null : createStreamBody(handle.createReadStream(range ?? {}));
+            const extension = assetExtension(key);
+            const active = isActiveAssetExtension(extension);
+            c.header("Content-Type", active ? "application/octet-stream" : assetMimeType(extension));
+            c.header("Content-Disposition", active ? "attachment" : "inline");
+            c.header("ETag", etag);
+            c.header("Cache-Control", "private, no-cache");
+            if (unchanged) {
+                return c.body(null, 304);
+            }
+            c.header("Content-Length", range ? String(range.end - range.start + 1) : String(stat.size));
+            if (range) {
+                c.header("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+            }
+            return body === null ? c.body(null, 200) : c.body(body, range ? 206 : 200);
         } catch (error) {
             await handle.close().catch(() => {});
             throw error;

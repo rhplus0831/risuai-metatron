@@ -288,6 +288,7 @@ export const ROUTE_TEMPLATES = [
     "/api/write",
     "/api/assets/write",
     "/api/assets/read",
+    "/api/asset/*",
     "/api/chats/search",
     "/api/resources",
     "/api/resources/read",
