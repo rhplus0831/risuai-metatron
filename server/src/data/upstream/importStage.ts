@@ -13,7 +13,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../kinds.ts";
 import { createResourceStore, type ResourceStore } from "../resourceStore.ts";
 import { type ColdRecordResult, readColdEntry, type UpstreamArchivePlan } from "./archive.ts";
 import { convertUpstreamDatabase } from "./importDatabase.ts";
-import { decodeUpstreamDatabase } from "./risuSave.ts";
+import { decodeUpstreamSave, type UpstreamSave } from "./risuSave.ts";
 
 /**
  * The upstream import's prepare work, the body of the import worker (`importWorker.ts`) and free of
@@ -40,7 +40,7 @@ export type UpstreamStageInput = {
     /** The import's own staging folder under `save/.tmp`. */
     staging: string;
     plan: UpstreamArchivePlan;
-    /** Cap of the decoded MessagePack (`RISU_MAX_UPSTREAM_DB_BYTES`). */
+    /** Cap of the decoded database, including block framing and storage (`RISU_MAX_UPSTREAM_DB_BYTES`). */
     maxDecodedBytes: number;
     /** Cap of one cold-storage payload (`MAX_COLD_RECORD_BYTES` by default). */
     maxColdRecordBytes?: number;
@@ -58,8 +58,9 @@ export type UpstreamStageProgress = (phase: UpstreamImportPhase, done: number, t
 /**
  * The largest `database.risudat` record read for a decoded cap: gzip adds a header, a trailer, and
  * 5 bytes per stored block of 64 KiB, so a valid record can be a little larger than its decoded
- * MessagePack. The codec enforces the decoded cap itself; this bound only keeps a crafted record
- * from being read into one huge buffer.
+ * MessagePack. Block saves charge framing and the larger of stored and decoded content against
+ * the cap, so they fit within the cap plus their 9-byte header. The codec enforces the cap itself;
+ * this bound only keeps a crafted record from being read into one huge buffer.
  */
 export function maxEncodedDatabaseBytes(maxDecodedBytes: number): number {
     return maxDecodedBytes + Math.ceil(maxDecodedBytes / 1024) + 64 * 1024;
@@ -83,7 +84,7 @@ export async function stageUpstreamImport(
                 `The backup's database (database.risudat) is ${plan.database.length} bytes, over this server's limit`,
             );
         }
-        let db: unknown = decodeUpstreamDatabase(await readRecord(handle, plan.database), {
+        let decoded: UpstreamSave | null = decodeUpstreamSave(await readRecord(handle, plan.database), {
             maxDecodedBytes: input.maxDecodedBytes,
         });
         onProgress("decode", 1, 1);
@@ -100,14 +101,17 @@ export async function stageUpstreamImport(
         for (const ignored of plan.ignored) {
             addUpstreamReportEntry(report.excluded, "asset-name-invalid", ignored.name);
         }
-        const converted = convertUpstreamDatabase(db, {
+        for (const namespace of Object.keys(decoded.kv)) {
+            addUpstreamReportEntry(report.excluded, "unknown-setting", `kv:${namespace}`);
+        }
+        const converted = convertUpstreamDatabase(decoded.database, {
             report,
             cold,
             assetKeys: new Set(plan.assets.map((asset) => asset.key)),
             now: input.now,
         });
-        // The decoded database and the payloads are not needed past the conversion.
-        db = null;
+        // The decoded database, KV namespaces, and payloads are not needed past the conversion.
+        decoded = null;
         cold.clear();
         onProgress("convert", 1, 1);
 

@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { UPSTREAM_IMPORT_COMMIT_PATH, UPSTREAM_IMPORT_PREPARE_PATH } from "../../../shared/upstreamBackup.ts";
 import { runUpstreamImportWorker, type UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import { encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
+import { encodeBlockSave } from "./fixtures/upstream/blockSave.ts";
 import { UPSTREAM_FIXTURE_DATABASE } from "./fixtures/upstream/database.ts";
 import { buildArchive, createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
@@ -83,6 +84,25 @@ function deferred() {
 }
 
 describe("the upstream import worker", () => {
+    it("decodes a block backup in the real worker under its heap cap and commits the staged store", SLOW, async () => {
+        const s = await server({ upstreamImport: { runner: workerRunner(256) } });
+        const answer = await lines(await prepareRequest(s, archive(encodeBlockSave(UPSTREAM_FIXTURE_DATABASE))));
+        const result = answer.at(-1);
+        expect(result.token).toEqual(expect.any(String));
+        expect(result.report.counts).toMatchObject({ characters: 1, groups: 1, chats: 2, messages: 3 });
+        const res = await s.json(UPSTREAM_IMPORT_COMMIT_PATH, { token: result.token });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ assetsWritten: 2, assetsSkipped: 0, selection: result.selection });
+        await s.readEpoch();
+        for (const character of UPSTREAM_FIXTURE_DATABASE.characters) {
+            const read = await s.get("characters", character.chaId);
+            expect(read.status).toBe(200);
+            expect(await read.json()).toMatchObject({ data: { chaId: character.chaId, name: character.name } });
+        }
+        expect(assetFiles(s)).toEqual(["3f2a9c.png", "joy.png"]);
+        expect(staged(s)).toEqual([]);
+    });
+
     it("converts in a worker through the default runner and the commit installs its staged store", SLOW, async () => {
         const s = await server();
         const answer = await lines(await prepareRequest(s, archive()));

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { ResourceReadKindsResult } from "../../../shared/resources.ts";
 import {
     MAX_UPSTREAM_STAGED,
     UPSTREAM_CHANGED_SINCE_REVIEW,
@@ -22,6 +23,7 @@ import { stageUpstreamImport } from "../data/upstream/importStage.ts";
 import { encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
 import { spool } from "../http/spool.ts";
 import { createUpstreamImportStaging } from "../routes/backupsUpstream.ts";
+import { encodeBlockSave, encodeRawBlock } from "./fixtures/upstream/blockSave.ts";
 import { UPSTREAM_FIXTURE_DATABASE } from "./fixtures/upstream/database.ts";
 import { buildArchive, createResourceTestClient, hex, type ResourceTestClient } from "./testSupport.ts";
 
@@ -58,6 +60,7 @@ afterEach(async () => {
     vi.restoreAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
     await Promise.all(servers.splice(0).map((s) => s.close()));
+    vi.useRealTimers();
 });
 
 /** A well-formed upstream backup: the two assets, then the database, as upstream writes it. */
@@ -191,6 +194,94 @@ async function readLine(reader: ReadableStreamDefaultReader<Uint8Array>): Promis
 }
 
 describe("POST /api/backups/import-upstream/prepare and /commit", () => {
+    it("imports a block backup with characters, chats, message ids and assets intact, reporting each SaveKV namespace as excluded", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const s = await server();
+        const kv = { "plugin:notes": { text: "not imported" }, preferences: { enabled: true } };
+        const bytes = buildArchive([
+            ["3f2a9c.png", PROFILE],
+            ["joy.png", JOY],
+            ["database.risudat", encodeBlockSave(UPSTREAM_FIXTURE_DATABASE, { compression: true, kv })],
+        ]);
+        const prepared = await prepare(s, bytes);
+        const excluded = prepared.report.excluded.find((entry: { code: string }) => entry.code === "unknown-setting");
+        expect(excluded.examples).toEqual(
+            expect.arrayContaining(Object.keys(kv).map((namespace) => `kv:${namespace}`)),
+        );
+
+        const res = await commitRequest(s, { token: prepared.token });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ assetsWritten: 2, assetsSkipped: 0 });
+        await s.readEpoch();
+        const state = (await (
+            await s.request("/api/resources?kinds=characters,pluginStorage&chats=1")
+        ).json()) as ResourceReadKindsResult;
+        expect(state.kinds.characters.map((record) => record.id)).toEqual([FIXTURE_CHARACTER, FIXTURE_GROUP]);
+        for (const source of UPSTREAM_FIXTURE_DATABASE.characters) {
+            expect(state.kinds.characters.find((record) => record.id === source.chaId)?.data).toMatchObject({
+                chaId: source.chaId,
+                name: source.name,
+                type: source.type,
+            });
+            expect(state.chats!.filter((chat) => chat.characterId === source.chaId).map((chat) => chat.id)).toEqual(
+                source.chats.map((chat) => chat.id),
+            );
+            for (const sourceChat of source.chats) {
+                const chat = state.chats!.find(
+                    (chat) => chat.characterId === source.chaId && chat.id === sourceChat.id,
+                )!;
+                expect(chat.data.name).toBe(sourceChat.name);
+                expect(chat.data.message).toMatchObject(JSON.parse(JSON.stringify(sourceChat.message)));
+            }
+        }
+        expect(state.kinds.characters[0].data).toMatchObject({
+            image: "assets/3f2a9c.png",
+            emotionImages: [["joy", "assets/joy.png"]],
+        });
+        expect(state.kinds.pluginStorage[0].data).toEqual(UPSTREAM_FIXTURE_DATABASE.pluginCustomStorage);
+        expect(assetFiles(s)).toEqual(["3f2a9c.png", "joy.png"]);
+        expect(readFileSync(path.join(assetDir(s), "3f2a9c.png"))).toEqual(PROFILE);
+        expect(readFileSync(path.join(assetDir(s), "joy.png"))).toEqual(JOY);
+        expect(staged(s)).toEqual([]);
+        expect(s.context.upstreamStaging.size).toBe(0);
+    });
+
+    it("ends a REMOTE block prepare with an error and leaves the live epoch, resources and assets untouched with no staging", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const s = await server();
+        await s.create("characters", "existing", character("existing"));
+        expect((await writeAsset(s, "assets/joy.png", "existing asset")).status).toBe(200);
+        const resourceUrl = `/api/resources?kinds=${DEFAULT_RESOURCE_KINDS.map((kind) => kind.name).join(",")}&chats=1`;
+        const initial = await s.request(resourceUrl);
+        expect(initial.status).toBe(200);
+        const before = await initial.json();
+        const epoch = s.epoch;
+        const remote = encodeRawBlock({
+            type: 6,
+            name: "external-character",
+            compression: true,
+            data: Buffer.from('"remotes/external-character.local.bin"'),
+        });
+        const bytes = buildArchive([
+            ["3f2a9c.png", PROFILE],
+            ["joy.png", JOY],
+            ["database.risudat", Buffer.concat([encodeBlockSave(UPSTREAM_FIXTURE_DATABASE), remote])],
+        ]);
+        const answer = await lines(await prepareRequest(s, bytes));
+        expect(answer.at(-1)).toEqual({ error: expect.any(String) });
+        expect(answer.at(-1).error).toMatch(/live save/i);
+        expect(answer.at(-1).error).toMatch(/outside/i);
+        expect(answer.at(-1).error).toContain("external-character");
+        expect(await s.readEpoch()).toBe(epoch);
+        const after = await s.request(resourceUrl);
+        expect(after.status).toBe(200);
+        expect(await after.json()).toEqual(before);
+        expect(assetFiles(s)).toEqual(["joy.png"]);
+        expect(await readAsset(s, "assets/joy.png")).toBe("existing asset");
+        expect(staged(s)).toEqual([]);
+        expect(s.context.upstreamStaging.size).toBe(0);
+    });
+
     it("stages the conversion without touching the store, then the commit replaces every resource, links the missing assets, keeps existing files, and takes a safety snapshot", async () => {
         const s = await server();
         await s.create("characters", "z", character("z"));

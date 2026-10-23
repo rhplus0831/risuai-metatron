@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { Packr } from "msgpackr";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decodeUpstreamDatabase, encodeUpstreamDatabase, UpstreamFormatError } from "../data/upstream/risuSave.ts";
+import {
+    decodeUpstreamDatabase,
+    decodeUpstreamSave,
+    encodeUpstreamDatabase,
+    UpstreamFormatError,
+} from "../data/upstream/risuSave.ts";
+import { blockSave, encodeBlockSave, encodeRawBlock } from "./fixtures/upstream/blockSave.ts";
 import { UPSTREAM_FIXTURE_DATABASE } from "./fixtures/upstream/database.ts";
 
 // See fixtures/upstream/README.md: upstream's encoder with upstream's library versions, at this mtime.
@@ -93,14 +99,8 @@ describe("encodeUpstreamDatabase and decodeUpstreamDatabase", () => {
 });
 
 describe("decodeUpstreamDatabase refusals", () => {
-    it("refuses the block format, headerless data, and an unknown version, naming the format", () => {
+    it("refuses headerless data and an unknown version, naming the format", () => {
         const packed = packr.pack({ characters: [] });
-        const block = new Uint8Array([...new TextEncoder().encode("RISUSAVE\0"), 0, 0, 0, 0, ...packed]);
-
-        expect(formatError(() => decodeUpstreamDatabase(block, LIMIT))).toMatchObject({
-            format: "block",
-            message: expect.stringContaining("RisuAI block save"),
-        });
         expect(formatError(() => decodeUpstreamDatabase(packed, LIMIT)).format).toBe("headerless");
         expect(formatError(() => decodeUpstreamDatabase(new Uint8Array(0), LIMIT)).format).toBe("headerless");
         expect(formatError(() => decodeUpstreamDatabase(save(10, packed), LIMIT)).format).toBe("unknownVersion");
@@ -153,5 +153,171 @@ describe("decodeUpstreamDatabase refusals", () => {
                 "not a RisuAI database",
             );
         }
+    });
+});
+
+describe("self-contained block saves", () => {
+    it("refuses directory entries outside the file and accepts entries present after the root", () => {
+        const presets = [{ name: "Preset" }];
+        const root = encodeRawBlock({
+            type: 1,
+            name: "root",
+            compression: true,
+            data: Buffer.from(JSON.stringify({ characters: [], botPresetsId: 0, __directory: ["root", "preset"] })),
+        });
+        const preset = encodeRawBlock({
+            type: 4,
+            name: "preset",
+            compression: true,
+            data: Buffer.from(JSON.stringify(presets)),
+        });
+        const error = formatError(() => decodeUpstreamSave(blockSave(root), LIMIT));
+        expect(error.format).toBe("block");
+        expect(error.message).toMatch(/live save/i);
+        expect(error.message).toMatch(/outside/i);
+        expect(decodeUpstreamSave(blockSave(root, preset), LIMIT)).toStrictEqual({
+            database: { characters: [], botPresetsId: 0, botPresets: presets },
+            kv: {},
+        });
+    });
+
+    it("keeps dynamic __proto__ keys as own data properties or refuses them without prototype pollution", () => {
+        const value = { polluted: true };
+        const blocks = [
+            {
+                target: "database",
+                type: 8,
+                name: "component",
+                data: Buffer.from(JSON.stringify({ key: "__proto__", data: value })),
+            },
+            { target: "kv", type: 12, name: "kv:__proto__", data: Buffer.from(JSON.stringify(value)) },
+        ] as const;
+        // Exercise each destination separately: refusing one must not hide pollution in the other.
+        for (const { target, ...block } of blocks) {
+            const bytes = Buffer.concat([
+                encodeBlockSave({ characters: [], botPresets: [{ name: "Preset" }] }),
+                encodeRawBlock({ ...block, compression: true }),
+            ]);
+            let decoded: ReturnType<typeof decodeUpstreamSave> | undefined;
+            try {
+                decoded = decodeUpstreamSave(bytes, LIMIT);
+            } catch (error) {
+                expect(error).toBeInstanceOf(UpstreamFormatError);
+                expect(error).toMatchObject({ format: "block" });
+            }
+            const clean: Record<string, unknown> = {};
+            expect(clean.polluted).toBeUndefined();
+            if (decoded) {
+                for (const object of [decoded.database, decoded.kv]) {
+                    expect([Object.prototype, null]).toContain(Object.getPrototypeOf(object));
+                    expect(object.polluted).toBeUndefined();
+                }
+                expect(Object.getOwnPropertyDescriptor(decoded[target], "__proto__")).toMatchObject({ value });
+            }
+        }
+    });
+
+    it("decodes mixed raw and gzip blocks like legacy JSON-representable data, leaving empty optional fields absent", () => {
+        const db = {
+            characters: [
+                {
+                    chaId: "캐릭터🌸",
+                    name: "Character",
+                    chats: [{ id: "chat", message: [{ role: "user", data: "안녕", chatId: "message" }] }],
+                },
+            ],
+            botPresets: [{ name: "Preset", mainPrompt: "You are {{char}}." }],
+            botPresetsId: 0,
+            modules: [{ id: "module", name: "Lore", lorebook: [{ key: "dragon", content: "날 수 있다" }] }],
+            plugins: [{ name: "Plugin", script: "// fixture" }],
+            pluginCustomStorage: { plugin: { enabled: true, values: [1, null, "text"] } },
+            username: "User",
+        };
+        const legacy = decodeUpstreamDatabase(encodeUpstreamDatabase(db), LIMIT);
+        expect(legacy).toStrictEqual(db);
+        const decoded = decodeUpstreamDatabase(encodeBlockSave(db, { compression: (name) => name !== "root" }), LIMIT);
+        expect(decoded).toStrictEqual(legacy);
+        expect(decoded).not.toHaveProperty("loadouts");
+    });
+
+    it("returns SaveKV namespaces separately, leaves legacy kv empty, and exposes only the database through decodeUpstreamDatabase", async () => {
+        const db = { characters: [], botPresets: [{ name: "Preset" }], botPresetsId: 0 };
+        const kv = { "plugin:notes": { greeting: "안녕" }, 설정: { enabled: true, values: [1, 2] } };
+        const bytes = encodeBlockSave(db, { kv });
+        expect(decodeUpstreamSave(bytes, LIMIT)).toStrictEqual({ database: db, kv });
+        expect(decodeUpstreamDatabase(bytes, LIMIT)).toStrictEqual(db);
+        const packed = packr.pack(db);
+        for (const legacy of [save(7, packed), encodeUpstreamDatabase(db), save(9, await streamGzip(packed))]) {
+            expect(decodeUpstreamSave(legacy, LIMIT)).toStrictEqual({ database: db, kv: {} });
+        }
+    });
+
+    it("refuses truncated block headers, names, lengths, and data", () => {
+        const block = encodeRawBlock({ type: 1, name: "root", data: Buffer.from('{"characters":[]}') });
+        // Cuts within type/flag/name-length, the name, the u32 length, and the data.
+        for (const end of [1, 2, 5, 9, block.length - 1]) {
+            expect(formatError(() => decodeUpstreamSave(blockSave(block.subarray(0, end)), LIMIT))).toMatchObject({
+                format: "block",
+                message: expect.stringMatching(/truncated/i),
+            });
+        }
+    });
+
+    it("refuses a declared block length past the end even when the remaining bytes are valid JSON", () => {
+        const block = encodeRawBlock({ type: 1, name: "root", data: Buffer.from('{"characters":[]}') });
+        const view = new DataView(block.buffer, block.byteOffset, block.byteLength);
+        view.setUint32(3 + 4, view.getUint32(3 + 4, true) + 1, true);
+        expect(formatError(() => decodeUpstreamSave(blockSave(block), LIMIT))).toMatchObject({
+            format: "block",
+            message: expect.stringMatching(/truncated|past the end/i),
+        });
+    });
+
+    it("caps each gzip block and charges the whole save for framing and the larger stored or decoded data", () => {
+        const db = { characters: [], botPresets: [{ name: "Preset" }], botPresetsId: 0, text: "x".repeat(4096) };
+        const rootData = Buffer.from(JSON.stringify(db));
+        const root = encodeRawBlock({ type: 1, name: "root", data: rootData, compression: true });
+        expect(formatError(() => decodeUpstreamSave(blockSave(root), { maxDecodedBytes: 1024 }))).toMatchObject({
+            format: "block",
+            message: expect.stringMatching(/over the limit/i),
+        });
+        const configName = "설정";
+        const configData = Buffer.from('{"version":1}');
+        const config = encodeRawBlock({ type: 0, name: configName, data: configData, compression: true });
+        const empty = encodeRawBlock({ type: 10, name: "loadouts", data: new Uint8Array(), compression: true });
+        // Root costs its larger decoded content; small/empty blocks cost their larger gzip members.
+        // Keeping an empty block before config makes its stored bytes count toward later blocks too.
+        const charge = 7 + Buffer.byteLength("root") + rootData.length + empty.length + config.length;
+        const bytes = blockSave(root, empty, config);
+        expect(decodeUpstreamDatabase(bytes, { maxDecodedBytes: charge })).toStrictEqual(db);
+        expect(formatError(() => decodeUpstreamSave(bytes, { maxDecodedBytes: charge - 1 }))).toMatchObject({
+            format: "block",
+            message: expect.stringMatching(/over the limit/i),
+        });
+    });
+
+    it("refuses a REMOTE block as a live save with data outside the file, naming the block", () => {
+        const name = "remote-character";
+        const remote = encodeRawBlock({
+            type: 6,
+            name,
+            compression: true,
+            data: Buffer.from('"remotes/character.local.bin"'),
+        });
+        const bytes = Buffer.concat([encodeBlockSave({ characters: [], botPresets: [{ name: "Preset" }] }), remote]);
+        const error = formatError(() => decodeUpstreamSave(bytes, LIMIT));
+        expect(error.format).toBe("block");
+        expect(error.message).toMatch(/live save/i);
+        expect(error.message).toMatch(/outside/i);
+        expect(error.message).toContain(name);
+    });
+
+    it.each([3, 13])("refuses block type %i because upstream has no reader for it", (type) => {
+        const unknown = encodeRawBlock({ type, name: "unsupported", compression: true, data: Buffer.from("{}") });
+        const bytes = Buffer.concat([encodeBlockSave({ characters: [], botPresets: [{ name: "Preset" }] }), unknown]);
+        expect(formatError(() => decodeUpstreamSave(bytes, LIMIT))).toMatchObject({
+            format: "block",
+            message: expect.stringMatching(/unknown block type/i),
+        });
     });
 });

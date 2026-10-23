@@ -1,6 +1,7 @@
 # Upstream RisuAI save fixtures
 
-Used by `server/src/tests/upstreamRisuSave.test.ts`.
+Used by `server/src/tests/upstreamRisuSave.test.ts` (and `blockSave.ts` by the upstream import route and
+worker tests).
 
 ## `database.ts`
 
@@ -30,3 +31,14 @@ Captured 2026-10-20 (SHA-256 `3a2afdfdbaedda101e34ba025a32c2d63b55b1133c0f9ff521
 
 The file is upstream's behavior, not metatron's. Do not regenerate it with metatron's encoder. A
 change to `database.ts` needs a new capture with the script above, in the same commit.
+
+## `blockSave.ts`
+
+A test encoder for the block save current upstream backups write (`encodeRisuSave` in upstream's
+`src/ts/storage/risuSave.ts` at upstream commit `f50b5942`): `RISUSAVE\0`, then blocks of a type byte,
+a gzip flag byte, a name length byte, the name, a little-endian 32-bit length, and JSON text.
+`encodeBlockSave` lays a database out as upstream's `RisuSaveEncoder.init` does (the root without
+characters, presets, and modules; the preset, module, loadout, plugin, and plugin storage blocks,
+empty for an undefined field; one block per character; `kv:<namespace>` blocks; the config block);
+`encodeRawBlock` and `blockSave` build arbitrary, malformed, or unknown blocks for the refusals. It
+writes no file; nothing here was captured from upstream's own encoder.
