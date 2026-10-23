@@ -30,6 +30,7 @@ git show 74f770e19:docs/plan/upstream-bin-compat.md
 git show e1aa33150:docs/plan/audit-findings-perf.md
 git show 2508dfd0c:docs/plan/timing-tests.md
 git show f98be8d41:docs/plan/hypav3-background-memory.md
+git show b9525d08d:docs/plan/per-chat-send.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -61,6 +62,7 @@ it is not a current architecture guide.
 | Audit Findings and Performance Leftovers | `e1aa33150`: `docs/plan/audit-findings-perf.md`                           | [server](../structure/self-host-server.md), [memory](../structure/memory.md), [LLM requests](../structure/llm-requests.md), [CBS/rendering](../structure/cbs-rendering.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [UI/theming](../structure/ui-theming.md), [plugins/MCP](../structure/plugins-mcp.md), [media](../structure/media-aux.md), [app shell](../structure/app-shell.md), [build/test](../structure/build-test-platforms.md) |
 | Timing-Dependent Tests                   | `2508dfd0c`: `docs/plan/timing-tests.md`                                  | [build/test](../structure/build-test-platforms.md) `Tests`, `STRUCTURE.md` V3, [server](../structure/self-host-server.md) (test-only timing options)                                                                                                                                                                                                                                                                                                                                         |
 | HypaV3 Background Memory                 | `f98be8d41`: `docs/plan/hypav3-background-memory.md`                      | [memory](../structure/memory.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings](../structure/settings-i18n.md)                                                                                                                                                                                                                                |
+| Per-Chat Send                            | `b9525d08d`: `docs/plan/per-chat-send.md`                                 | [chat pipeline](../structure/chat-pipeline.md), [plugins/MCP](../structure/plugins-mcp.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [persistence](../structure/persistence.md), [global API](../structure/global-api.md)                                                                                                                                                                                                                       |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -290,6 +292,40 @@ slice 3's load and tests. Still open:
 - Accepted from the slices: the planner tokenizes every window before the first request (1a);
   an abort during the rate limiter's wait is untested (1b); a task's abort callback may emit a
   duplicate `queued` event for the same task id (5c).
+
+Per-Chat Send (written 2026-10-23 at `fc4d52c5e` after a Luna survey of every `doingChat` reader)
+landed all 7 slices on metatron on 2026-10-23. The tab-wide `doingChat` send flag is gone: different
+chats of one tab send at the same time, and a chat refuses a second local send of its own as the
+server refuses a second job.
+
+- The local send registry `src/ts/process/localSends.ts` with the fences, suggestions, translator,
+  and plugin reload deferral reading it (1, `2d9d63b41`), channel deadlines that start at dispatch
+  (2, `bf6146918`), and the streaming display per chat (3, `aa99e20ca`).
+- The other send callers check their own chat (`isChatBusy`) and previews return their result
+  (`previewChat`) (4, `bd0cddb4c`); the flip: `sendChat` refuses per chat, Stop per chat
+  (`sendAborts.svelte.ts`), auto mode bound to its chat (5, `371c01767`).
+- A completion notification tag per chat, the accepted limits in `chat-pipeline.md`, and
+  `e2e/perChatSends.spec.ts` (6, `23ca77680`).
+- Slice 7 (`c9e6cde40`) was added mid-run (D8) for two hazards slice 5's review found: a cancelled
+  callback now keeps the tab's channel lane until the tab reports it drained
+  (`POST /api/generations/:id/drained`) or `CANCELLED_CALLBACK_DRAIN_MS` passes, and an aux request
+  names a callback as its parent only from that hook's `PluginCallContext.channelCall`.
+- The final checks on `b9525d08d` passed: `pnpm check`, `pnpm format:check`, 6413 unit tests, and
+  the 11 e2e specs the run reached (25 tests).
+
+Decisions: the per-tab callback lane stays (D1); same-character field last-writer-wins,
+`CharEmotion` sharing, global `stopTTS`, and the single `alertWait`/`progress` slot are accepted and
+documented (D6). The shared composer (text, attachments, input translation) was left out of scope.
+Still open:
+
+- No browser check: Web Push per-chat tags and their dismissal, auto mode ending on Go Back, a
+  resumed job's Stop overlapping another chat's send, a slow v3 plugin hook stopped in one chat
+  while another chat runs; `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`,
+  `checkMcpFixes.mjs`, and `checkStreamingModes.mjs` were not run.
+- Accepted from the slices: plugin `sendChat` is refused while any channel callback runs in the tab
+  (4); a cancelled hook that never settles keeps refusing the tab's later roots until a reload (7);
+  body interceptors, provider streams, and `internal:aiaccess` requests are no longer callback
+  children (7); with no owner attached, queued requests expire one after another (2, D2 (a)).
 
 ## Server-Owned Data Chronology
 
