@@ -1479,47 +1479,53 @@
 
             {#if currentChat.message.length <= loadPages}
                 {#if currentCharacter.type !== "group"}
-                    <Chat
-                        bind:this={greetingInstance}
-                        pendingReveal={revealing}
-                        character={createSimpleCharacter(currentCharacter)}
-                        name={currentCharacter.name}
-                        message={greetingText(currentCharacter, currentChat?.fmIndex)}
-                        role="char"
-                        img={getCharImage(
-                            currentCharacter.image,
-                            "css",
-                            settings.ui.theme === "cardboard" ? undefined : 512,
-                        )}
-                        idx={-1}
-                        altGreeting={currentCharacter.alternateGreetings.length > 0}
-                        largePortrait={currentCharacter.largePortrait}
-                        firstMessage={true}
-                        onReroll={() => {
-                            const cha = selectedCharacter();
-                            const ref = currentChatRef();
-                            const chat = ref ? findChat(ref) : undefined;
-                            if (cha.type !== "group" && ref && chat) {
-                                setChatMeta(ref, {
-                                    fmIndex: nextGreetingIndex(chat.fmIndex, cha.alternateGreetings.length),
-                                });
-                            }
-                        }}
-                        unReroll={() => {
-                            const cha = selectedCharacter();
-                            const ref = currentChatRef();
-                            const chat = ref ? findChat(ref) : undefined;
-                            if (cha.type !== "group" && ref && chat) {
-                                setChatMeta(ref, {
-                                    fmIndex: previousGreetingIndex(chat.fmIndex, cha.alternateGreetings.length),
-                                });
-                            }
-                        }}
-                        isLastMemory={false}
-                        currentPage={greetingIndex(currentChat?.fmIndex, currentCharacter.alternateGreetings.length) +
-                            2}
-                        totalPages={currentCharacter.alternateGreetings.length + 1}
-                    />
+                    {#key chatKey}
+                        {@const greetingChatRef = untrack(currentChatRef)}
+                        <Chat
+                            bind:this={greetingInstance}
+                            chatRef={greetingChatRef}
+                            pendingReveal={revealing}
+                            character={createSimpleCharacter(currentCharacter)}
+                            name={currentCharacter.name}
+                            message={greetingText(currentCharacter, currentChat?.fmIndex)}
+                            role="char"
+                            img={getCharImage(
+                                currentCharacter.image,
+                                "css",
+                                settings.ui.theme === "cardboard" ? undefined : 512,
+                            )}
+                            idx={-1}
+                            altGreeting={currentCharacter.alternateGreetings.length > 0}
+                            largePortrait={currentCharacter.largePortrait}
+                            firstMessage={true}
+                            onReroll={() => {
+                                const ref = greetingChatRef;
+                                const cha = characterList().find((entry) => entry.chaId === ref?.chaId);
+                                const chat = ref ? findChat(ref) : undefined;
+                                if (cha && cha.type !== "group" && ref && chat) {
+                                    setChatMeta(ref, {
+                                        fmIndex: nextGreetingIndex(chat.fmIndex, cha.alternateGreetings.length),
+                                    });
+                                }
+                            }}
+                            unReroll={() => {
+                                const ref = greetingChatRef;
+                                const cha = characterList().find((entry) => entry.chaId === ref?.chaId);
+                                const chat = ref ? findChat(ref) : undefined;
+                                if (cha && cha.type !== "group" && ref && chat) {
+                                    setChatMeta(ref, {
+                                        fmIndex: previousGreetingIndex(chat.fmIndex, cha.alternateGreetings.length),
+                                    });
+                                }
+                            }}
+                            isLastMemory={false}
+                            currentPage={greetingIndex(
+                                currentChat?.fmIndex,
+                                currentCharacter.alternateGreetings.length,
+                            ) + 2}
+                            totalPages={currentCharacter.alternateGreetings.length + 1}
+                        />
+                    {/key}
                     {#if aiLawApplies() && currentChat.message.length === 0}
                         <div
                             class="chat-screen-content-width ml-auto mr-auto mt-4 text-textcolor2 italic max-w-2/3 wrap-break-word text-center"

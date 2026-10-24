@@ -10,10 +10,8 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (13)
 - [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (10)
-- [Lua scripting](#lua-scripting) (2)
-- [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (5)
 - [Lorebooks and modules](#lorebooks-and-modules) (1)
-- [Chat screen](#chat-screen) (7)
+- [Chat screen](#chat-screen) (1)
 - [Alerts, dialogs, keys, and settings controls](#alerts-dialogs-keys-and-settings-controls) (4)
 - [Notifications](#notifications) (2)
 - [Assets, MIME types, and the service worker](#assets-mime-types-and-the-service-worker) (1)
@@ -245,77 +243,6 @@ only with that flag, google.ts ~393); 3.5 Flash-Lite does support minimal.
 **Why it matters:** found while porting upstream b32610c6 (Combined Run UP12); outside that slice's scope.
 **Suggested handling:** fix in a small llm catalog slice; re-check the Gemini docs first.
 
-## Lua scripting
-
-### Lua touchesGenerating misses patchMessage
-
-Found 2026-10-18 while doing slice 1a of docs/plan/data-loss-concurrency.md (Sol plan review).
-`server/src/lua/bindings.ts:432` `touchesGenerating` (still so on 2026-10-21) collects target ids from `setText`,
-`setTranslation`, `setMessage`, `remove`, `replace`/`delete`, but not the new `patchMessage`
-(`{ op, id, set?, unset? }`). The store lets the owning job's token through the generation lock, so
-this Lua-side guard is what stops a job's own non-generation write from closing its running
-generation's fence; a `patchMessage` from a Lua writer would skip it.
-
-**Why it matters:** latent today (no Lua/server producer emits `patchMessage`); becomes a real fence-closing bug
-the moment one does.
-**Suggested handling:** when any server writer starts emitting `patchMessage`, add `op.id` to
-`touchesGenerating`. Related: [Lua note fast path ignores mergeUnset](#lua-note-fast-path-ignores-mergeunset).
-
-Rechecked 2026-10-21 against the code: still present.
-
-### Lua note fast path ignores mergeUnset
-
-Found 2026-10-18 during slice 1a of docs/plan/data-loss-concurrency.md (Sol plan review).
-`server/src/lua/bindings.ts` `writeChat` (~387-396 on 2026-10-21) routes a lone `meta` op to the job metadata coalescer
-as a note-only setter when it has no `unset`, no `merge`, and only `set.note`. It does not check the
-new `mergeUnset` field (slice 1a), so `{ op: "meta", set: { note }, mergeUnset: { scriptstate: ["$x"] } }`
-would queue only the note and silently lose the removal.
-
-**Why it matters:** latent (no Lua producer builds such an op today), but a silent data-loss path once one does.
-**Suggested handling:** add `!only.mergeUnset` to that condition whenever Lua code starts emitting
-`mergeUnset`. Related: [Lua touchesGenerating misses patchMessage](#lua-touchesgenerating-misses-patchmessage).
-
-Rechecked 2026-10-21 against the code: still present.
-
-## Memory, embeddings, and token counts
-
-### HypaProcessorV2 contextual bypasses limiter
-
-`server/src/prompt/embeddings.ts` `HypaProcessorV2.getEmbeds` (~808): the contextual branch calls
-`ctxProvider.embedDocumentGroups(groups)` directly, not through `options.rateLimiter`, so
-experimental HypaV3's `embeddingRequestsPerMinute`/`embeddingMaxConcurrent` do not apply to Voyage
-context models (selection and `warmHypaV3Vectors` alike). Pre-existing; noticed in the slice 1b
-challenge 2026-10-22. Matters once background tasks warm vectors for many chats.
-
-### HypaProcessorV2 in-memory hit bypasses key
-
-`server/src/prompt/embeddings.ts` `HypaProcessorV2.getEmbeds` (contextual branch, ~760–770 after UP8): an item whose `id` is already in `this.vectors` is taken as is, without building its positional contextual key. If one processor instance is reused and a group is reordered or changed under the same ids, and every id hits in memory, it returns the old vectors with no miss.
-
-**Why it matters:** latent only: production HypaV3 (selection ~1688, warming ~1936 in `server/src/prompt/memory/hypav3.ts`) builds a fresh processor per call. Found by the UP8 challenger on 2026-10-23.
-
-**Suggested handling:** raise it if a caller ever keeps a `HypaProcessorV2` across calls with changing groups; the fix would key in-memory hits by the cache key, not the id.
-
-### Server lore parallel Google counts
-
-Since TK2 (2026-10-23) the lore engine starts each activated entry's `host.tokenize` in the loop and awaits them together. The server's lore host (`server/src/lua/bindings.ts` ~1156/~1717) calls `deps.tokens.count` directly, and `server/src/prompt/tokens.ts` `countWithGoogle` has a cache and a 30 s timeout but no concurrency limit or in-flight dedupe, so a Google-tokenized model with many actives fires that many `countTokens` requests at once.
-
-**Why it matters:** a burst could hit Google rate limits (then the Gemma fallback counts). Local families are unaffected (CPU-bound, serial anyway). **Suggested handling:** if Google count failures show up in sends with large lorebooks, add an in-flight map or a small limiter in `createTokenCounter`.
-
-### Other token count fields stale scope
-
-Found 2026-10-24 while fixing LoreBookData/PromptSettings (combine-audit-fixes slice 2, which added `tokenCountInput`/`tokenScopeKey` in `src/ts/tokenizer.ts`).
-Still stale: `src/lib/SideBars/CharConfig.svelte` ~97 (description, greeting, note fields), `src/lib/SideBars/ChatNoteEditor.svelte` ~24 (keep its idle-first scheduling; eager CBS parse would move work ahead of the idle callback), `src/lib/Others/PopupEditor.svelte` ~32 (already CBS-expands its preview; add only the scope key). `PlaygroundTokenizer` is fine (explicit tokenizer in its input).
-
-**Why it matters:** same defect the audit reproduced for lore entries: `createTokenCountField` keeps `untrack` and `same` sees unchanged text as unchanged, so switching the main model leaves the old model's number on screen.
-**Suggested handling:** pass `tokenCountInput(text)` (or `{text, scope: tokenScopeKey()}`) as the field input, compare `expanded`+`scope`; keep prep failures as rejected counts. Also update `ui-theming.md:86` (the delayed count field contract) — slice 2 could not edit it (owned by a parallel slice).
-
-### PromptPresetSettings loadTokenize uncalled
-
-`src/lib/Setting/Pages/PromptPresetSettings.svelte` ~36-48: the legacy prompt token counts start at zero and `loadTokenize()` is never called anywhere in `src` (seen 2026-10-24, challenger on combine-audit-fixes slice 2).
-
-**Why it matters:** the page shows "0 tokens" for the legacy prompt fields regardless of content.
-**Suggested handling:** either wire it through `createTokenCountField` with `tokenCountInput`, or remove the dead counts and display if the fields are no longer shown.
-
 ## Lorebooks and modules
 
 ### Lorebook folder delete child links
@@ -328,55 +255,9 @@ Still stale: `src/lib/SideBars/CharConfig.svelte` ~97 (description, greeting, no
 
 ## Chat screen
 
-### Chat row has no owning ChatRef
+### Translate buttons while streaming
 
-`src/lib/ChatScreens/Chat.svelte` receives no ChatRef prop: `messageTarget()`, `handleButtonTriggerWithin` (~708) and `handleFormTriggerWithin` (~773) take `currentChatRef()` (the selection) synchronously at the event. An old row clicked/submitted after the selection changed but before Chats.svelte re-keys the rows would target the new chat. The form handler guards rows with a `messageId` (the chat must hold it); the button and manual-trigger paths do not. Code-derived edge case (2026-10-23 UP16 challenger), not reproduced.
-
-**Why it matters:** D1 says chat writes are addressed by chat id, never inferred after the fact; a row-owned ref would make it unconditional.
-**Suggested handling:** if touching Chat.svelte/Chats.svelte, consider passing the row's ChatRef as a prop and using it for buttons, triggers, and forms. Related: [Button refusal remounts row](#button-refusal-remounts-row).
-
-### Button refusal remounts row
-
-`src/lib/ChatScreens/Chat.svelte` `handleButtonTriggerWithin` (~758-763) bumps `ReloadChatPointer` after `runServerButton` whatever happened (`runServerButton` returns void, `serverCommands.ts` ~501). A refused button (flush refused, binding incomplete, busy chat) still remounts the row, so typed values in inputs beside the button are lost. The form path (UP16) bumps only on outcome `started`; the manual-trigger path also checks `started`.
-
-**Why it matters:** cards mixing `risu-btn` with inputs lose the user's typing on a refusal.
-**Suggested handling:** return the outcome from `runServerButton` (and update `serverCommandsMock.ts`), bump only on `started`. Related: [Chat row has no owning ChatRef](#chat-row-has-no-owning-chatref).
-
-### clickToEdit risu-btn div
-
-`src/lib/ChatScreens/Chat.svelte` body span `onclick` (~1046) skips click-to-edit only for `form[risu-form]` and interactive controls (`isInteractiveBodyTarget`, ~399, added 2026-10-24 for Lua forms). A `risu-btn` or `risu-trigger` on a `<div>`/`<span>` (cards often style buttons that way) is handled by the row's `onclickcapture` (`handleButtonTriggerWithin`, ~708) and then still bubbles to the body handler, so with `clickToEdit` on the row also remounts as the editor. Not verified in the browser; unit tests only cover real `<button>` elements.
-
-**Why it matters:** the same class of bug as the Lua form click (the card UI disappears into the editor), left out of the form fix's scope.
-**Suggested handling:** add `[risu-btn], [risu-trigger]` to the selector in `isInteractiveBodyTarget` with a Chat.test.ts case clicking a `<div risu-btn>` under `clickToEdit`.
-
-### Chats auto-scroll overrides jump
-
-`src/lib/ChatScreens/Chats.svelte` (the structural effect's auto-scroll branch, around the `scrollTimer` set after `updateChatBody`, ~line 677) schedules a 700 ms scroll to the newest row on a same-chat character append regardless of `suspendTrim`. `DefaultChatScreen.svelte` passes `suspendTrim={takingScreenshot || isScrollingToMessage}`, which protects only the trim/reveal paths. A character message appended while a jump prepares (search slice 4b `scrollToMessageId`, or the bookmark `scrollToMessage`) can move the view back to the bottom after the jump rang its row. Sol reproduced the scheduling with `suspendTrim === true` and `alwaysScrollToNewMessage` off (search 4b challenge, 2026-10-20).
-
-**Why it matters:** the search slice could not edit `Chats.svelte` (not in its file cluster), and the bookmark jump had the same exposure before.
-**Suggested handling:** a `Chats.svelte` follow-up: cancel the pending `scrollTimer` when a jump starts and skip scheduling while a jump owns scrolling (a check at fire time is not enough: the jump may have finished). See the Search plan.
-
-Rechecked 2026-10-21 against the code: still present.
-
-### DevTool instruct preview names late
-
-`src/lib/SideBars/DevTool.svelte` `showPreviewMessages` (~109) calls `applyChatTemplate(formated, template)` after `previewChat` resolves; `src/ts/process/templates/chatTemplate.ts` ~25–38 reads `currentChar.name` and `getUserName()` at that point. Switching chats during the preview mixes chat A's messages with B's names; switching to home can throw on `currentChar.name`.
-
-**Why it matters:** pre-existing (old code also read after the await); seen in the per-chat send plan's slice 4 challenge (2026-10-23), left out of scope.
-**Suggested handling:** capture `characterName` and `getUserName(ref)` before the await and pass them through `applyChatTemplate`'s existing args.
-
-### BookmarkList Escape ignores layers
-
-`src/lib/Others/BookmarkList.svelte` ~65 adds an unconditional `window` keydown listener that calls `close()` on every Escape. It does not check `doingAlert()`, the picker lists, `chatBindingDialog`, or `chatCheckpointsDialog` the way `MessageSearch.svelte` `closeOnEscape` does, and `hotkey.ts`'s binding-layer Escape branch only `preventDefault`s (no `stopPropagation`). So an Escape meant for a dialog or alert above the bookmark list also closes the list. Found 2026-10-23 while adding the Checkpoints dialog (Combined Run CC5); pre-existing.
-
-**Why it matters:** two layers react to one Escape; the user loses the bookmark list when dismissing a dialog over it.
-**Suggested handling:** give the listener the same layer checks as MessageSearch (or route it through `topBindingLayer`). Related: [Modifier hotkeys behind alerts](#modifier-hotkeys-behind-alerts).
-
-### Bookmark preview streaming translation
-
-`src/lib/Others/BookmarkList.svelte` (~222 and the group branch) mounts `Chat` for expanded bookmarks with live `msg.data` but no `messageId`. Since 2026-10-23 (small-fixes slice 10) `Chat.svelte` passes `streaming={isStreamingMessage(displayedChat, messageId)}` to `ChatBody`, which skips auto-translate/`translateHTML` while streaming — but without `messageId` a bookmark preview never counts as streaming, so continuing a bookmarked message with auto-translate on still runs the rendered translation per chunk in an open preview. Adding `messageId` there would switch previews to the stored-translation path (`Chat.svelte` ~222), so a fix needs a separate streaming flag/prop. Rare (panel open during Continue); unplanned.
-
-Also noted: in "off" mode the translate/retranslate buttons stay visible while streaming (`Chat.svelte` ~1388 checks `isOptimizedStreamingMessage`, false in off); a click flips `translated` but shows nothing until the stream ends, and the end-of-stream row remount (`Chats.svelte` mount key text null → data) drops it. Pre-existing reset, see shared composer across chats style row-state issues.
+In "off" streaming display mode the translate/retranslate buttons stay visible while a reply streams (`src/lib/ChatScreens/Chat.svelte` ~1388 checks `isOptimizedStreamingMessage`, false in off); a click flips `translated` but shows nothing until the stream ends, and the end-of-stream row remount (`Chats.svelte` mount key text null → data) drops it. Pre-existing reset, see shared composer across chats style row-state issues. (The bookmark preview's per-chunk translation, noted with this, was fixed on 2026-10-24.)
 
 ## Alerts, dialogs, keys, and settings controls
 

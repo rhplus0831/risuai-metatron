@@ -265,6 +265,32 @@ const VOYAGE_API_URL = "https://api.voyageai.com/v1/contextualizedembeddings";
 const MAX_CHUNKS_PER_REQUEST = 16000;
 const MAX_INPUTS_PER_REQUEST = 1000;
 
+function batchContextualGroups<T>(groups: T[][]): T[][][] {
+    const batches: T[][][] = [];
+    let currentBatch: T[][] = [];
+    let currentChunkCount = 0;
+
+    for (const group of groups) {
+        if (
+            currentBatch.length > 0 &&
+            (currentBatch.length + 1 > MAX_INPUTS_PER_REQUEST ||
+                currentChunkCount + group.length > MAX_CHUNKS_PER_REQUEST)
+        ) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentChunkCount = 0;
+        }
+        currentBatch.push(group);
+        currentChunkCount += group.length;
+    }
+
+    if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+    }
+
+    return batches;
+}
+
 class VoyageContextProvider implements ContextualEmbeddingProvider {
     readonly modelId: string;
     /** The `hypaModel` value, which names the vectors in the cache keys. */
@@ -287,7 +313,7 @@ class VoyageContextProvider implements ContextualEmbeddingProvider {
 
     async embedDocumentGroups(groups: string[][]): Promise<VectorArray[][]> {
         const apiKey = this.getApiKey();
-        const batches = this.batchGroups(groups);
+        const batches = batchContextualGroups(groups);
         const allResults: VectorArray[][] = new Array(groups.length);
 
         let groupOffset = 0;
@@ -355,32 +381,6 @@ class VoyageContextProvider implements ContextualEmbeddingProvider {
     getCacheKeySuffix(contextTexts?: string[]): string {
         const ctxPart = contextTexts && contextTexts.length > 1 ? `|ctx:${contextHash(contextTexts)}` : "";
         return `|${this.model}${ctxPart}`;
-    }
-
-    private batchGroups(groups: string[][]): string[][][] {
-        const batches: string[][][] = [];
-        let currentBatch: string[][] = [];
-        let currentChunkCount = 0;
-
-        for (const group of groups) {
-            if (
-                currentBatch.length > 0 &&
-                (currentBatch.length + 1 > MAX_INPUTS_PER_REQUEST ||
-                    currentChunkCount + group.length > MAX_CHUNKS_PER_REQUEST)
-            ) {
-                batches.push(currentBatch);
-                currentBatch = [];
-                currentChunkCount = 0;
-            }
-            currentBatch.push(group);
-            currentChunkCount += group.length;
-        }
-
-        if (currentBatch.length > 0) {
-            batches.push(currentBatch);
-        }
-
-        return batches;
     }
 }
 
@@ -669,6 +669,7 @@ export class HypaProcessorV2<TMetadata> {
     public readonly options: Required<HypaProcessorV2Options>;
     public progressCallback: ((queuedCount: number) => void) | null = null;
     public vectors: Map<string, EmbeddingResult<TMetadata>> = new Map();
+    private contextualVectors = new Map<string, EmbeddingVector>();
     private env: EmbeddingEnv;
 
     public constructor(env: EmbeddingEnv, options?: HypaProcessorV2Options) {
@@ -761,16 +762,12 @@ export class HypaProcessorV2<TMetadata> {
                 let allCached = true;
                 for (let index = 0; index < group.length; index++) {
                     const item = group[index];
-                    if (this.vectors.has(item.id)) {
-                        resultMap.set(item.id, this.vectors.get(item.id)!);
-                        continue;
-                    }
-
                     const key = this.getCacheKey(item.content, texts, "document", index);
                     cacheKeys.set(item.id, key);
-                    const cached = loadVector(this.env, key, item.content);
+                    const cached =
+                        this.contextualVectors.get(key) ?? loadVector(this.env, key, item.content)?.embedding;
                     if (cached) {
-                        resultMap.set(item.id, { ...item, embedding: cached.embedding });
+                        resultMap.set(item.id, { ...item, embedding: cached });
                     } else {
                         allCached = false;
                     }
@@ -778,44 +775,59 @@ export class HypaProcessorV2<TMetadata> {
 
                 if (!allCached) {
                     // Re-embed every member in its original position, including in-memory hits.
-                    for (let index = 0; index < group.length; index++) {
-                        const item = group[index];
-                        if (!cacheKeys.has(item.id)) {
-                            cacheKeys.set(item.id, this.getCacheKey(item.content, texts, "document", index));
-                        }
-                    }
                     groupsToEmbed.push(group);
                 }
             }
 
             if (groupsToEmbed.length > 0) {
-                const groups = groupsToEmbed.map((group) => group.map((item) => item.content));
-                const results = await ctxProvider.embedDocumentGroups(groups);
+                const batches = batchContextualGroups(groupsToEmbed);
+                const embeddingTasks = batches.map((batch) => async () => {
+                    const groups = batch.map((group) => group.map((item) => item.content));
+                    const results = await ctxProvider.embedDocumentGroups(groups);
 
-                // Validate the entire call before saving any of its vectors.
-                if (results.length !== groups.length) {
-                    throw new ContextualEmbeddingCountError(groups.length, results.length);
-                }
-                for (let i = 0; i < groups.length; i++) {
-                    const received = results[i]?.length ?? 0;
-                    if (received !== groups[i].length) {
-                        throw new ContextualEmbeddingCountError(groups[i].length, received);
+                    // Validate the entire call before saving any of its vectors.
+                    if (results.length !== groups.length) {
+                        throw new ContextualEmbeddingCountError(groups.length, results.length);
                     }
-                }
+                    for (let i = 0; i < groups.length; i++) {
+                        const received = results[i]?.length ?? 0;
+                        if (received !== groups[i].length) {
+                            throw new ContextualEmbeddingCountError(groups[i].length, received);
+                        }
+                    }
+                    return results;
+                });
+                const batchResult = await this.executeEmbeddingTasks(embeddingTasks);
+                const errors: Error[] = [];
 
-                for (let i = 0; i < groupsToEmbed.length; i++) {
-                    const group = groupsToEmbed[i];
-                    for (let j = 0; j < group.length; j++) {
-                        const item = group[j];
-                        const embedding = results[i][j];
-                        saveVector(this.env, cacheKeys.get(item.id)!, embedding);
-                        resultMap.set(item.id, { ...item, embedding });
+                batchResult.results.forEach((result, batchIndex) => {
+                    if (!result.success) {
+                        errors.push(result.error!);
+                        return;
                     }
+                    if (!result.data) {
+                        errors.push(new Error("No embeddings found in the response."));
+                        return;
+                    }
+
+                    batches[batchIndex].forEach((group, i) => {
+                        group.forEach((item, j) => {
+                            const embedding = result.data![i][j];
+                            saveVector(this.env, cacheKeys.get(item.id)!, embedding);
+                            resultMap.set(item.id, { ...item, embedding });
+                        });
+                    });
+                });
+
+                if (errors.length > 0) {
+                    throw errors.find((error) => !(error instanceof TaskCanceledError)) || errors[0];
                 }
             }
 
             for (const item of ebdTexts) {
-                this.vectors.set(item.id, resultMap.get(item.id)!);
+                const result = resultMap.get(item.id)!;
+                this.contextualVectors.set(cacheKeys.get(item.id)!, result.embedding);
+                this.vectors.set(item.id, result);
             }
             return ebdTexts.map((item) => resultMap.get(item.id)!);
         }
@@ -896,21 +908,7 @@ export class HypaProcessorV2<TMetadata> {
                 return () => this.getAPIEmbeds(contents, inputType);
             });
 
-            // Progress callback
-            const rateLimiter = this.options.rateLimiter;
-            rateLimiter.taskQueueChangeCallback = this.progressCallback;
-
-            // An abort of the job ends the tasks still waiting (one may wait a minute for the rate window).
-            const onAbort = () => rateLimiter.cancelPendingTasks("request aborted");
-            this.env.signal.addEventListener("abort", onAbort, { once: true });
-            let batchResult: BatchResult<EmbeddingVector[]>;
-            try {
-                checkAborted(this.env);
-                batchResult = await rateLimiter.executeBatch<EmbeddingVector[]>(embeddingTasks);
-            } finally {
-                this.env.signal.removeEventListener("abort", onAbort);
-            }
-            checkAborted(this.env);
+            const batchResult = await this.executeEmbeddingTasks(embeddingTasks);
             const errors: Error[] = [];
 
             batchResult.results.forEach((result, i) => {
@@ -956,6 +954,23 @@ export class HypaProcessorV2<TMetadata> {
         }
 
         return ebdTexts.map((item) => resultMap.get(item.id)!);
+    }
+
+    private async executeEmbeddingTasks<T>(tasks: Array<() => Promise<T>>): Promise<BatchResult<T>> {
+        const rateLimiter = this.options.rateLimiter;
+        rateLimiter.taskQueueChangeCallback = this.progressCallback;
+
+        // An abort of the job ends the tasks still waiting (one may wait a minute for the rate window).
+        const onAbort = () => rateLimiter.cancelPendingTasks("request aborted");
+        this.env.signal.addEventListener("abort", onAbort, { once: true });
+        try {
+            checkAborted(this.env);
+            const result = await rateLimiter.executeBatch(tasks);
+            checkAborted(this.env);
+            return result;
+        } finally {
+            this.env.signal.removeEventListener("abort", onAbort);
+        }
     }
 
     private similarity(a: EmbeddingVector, b: EmbeddingVector): number {

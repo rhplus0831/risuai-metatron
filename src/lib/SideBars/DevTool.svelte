@@ -18,7 +18,7 @@
     } from "src/ts/storage/chatStore.svelte";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
     import { HardDriveUploadIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
-    import { selectSingleFile } from "src/ts/util";
+    import { getUserName, selectSingleFile } from "src/ts/util";
     import { previewChat, sendChat, type OpenAIChat } from "src/ts/process/index.svelte";
     import { isChatBusy } from "src/ts/process/chatStatus.svelte";
     import { alertStore } from "src/ts/stores.svelte";
@@ -43,7 +43,12 @@
         }
         const join = previewJoin;
         const mode = previewMode;
-        const template = { type: instructType, custom: instructCustom };
+        const template = {
+            type: instructType,
+            custom: instructCustom,
+            characterName: currentCharacter?.name ?? "",
+            userName: getUserName(ref),
+        };
         alertWait("Loading...");
         const wait = alertStore.status();
         try {
@@ -77,7 +82,7 @@
         result: OpenAIChat[],
         join: string,
         mode: string,
-        template: { type: string; custom: string },
+        template: { type: string; custom: string; characterName: string; userName: string },
     ) {
         let md = "";
         const styledRole = {

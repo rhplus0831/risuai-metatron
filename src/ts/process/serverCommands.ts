@@ -498,8 +498,12 @@ function commandLabel(command: GenerationCommand): ServerJobLabel {
 }
 
 /** A Lua button (`risu-btn`) run by the server. */
-export async function runServerButton(char: AnyClientCharacter, data: string, ref: ChatRef | null): Promise<void> {
-    await runServerCommand(char, { type: "button", data }, ref);
+export async function runServerButton(
+    char: AnyClientCharacter,
+    data: string,
+    ref: ChatRef | null,
+): Promise<ServerCommandOutcome> {
+    return await runServerCommand(char, { type: "button", data }, ref);
 }
 
 /**

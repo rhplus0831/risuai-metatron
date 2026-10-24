@@ -27,7 +27,7 @@ export function createServerCommandsMock(overrides: Partial<ServerCommandsModule
         followJobToEnd: vi.fn<ServerCommandsModule["followJobToEnd"]>(async () => "lost"),
         resumeServerJobs: vi.fn<ServerCommandsModule["resumeServerJobs"]>(async () => {}),
         runServerJob: vi.fn<ServerCommandsModule["runServerJob"]>(async () => ({ outcome: "refused", terminal: null })),
-        runServerButton: vi.fn<ServerCommandsModule["runServerButton"]>(async () => {}),
+        runServerButton: vi.fn<ServerCommandsModule["runServerButton"]>(async () => "refused"),
         runServerManualTrigger: vi.fn<ServerCommandsModule["runServerManualTrigger"]>(async () => "refused"),
     } satisfies ServerCommandsModule;
     return { ...defaults, ...overrides };

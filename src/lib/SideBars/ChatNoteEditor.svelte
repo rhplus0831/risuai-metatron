@@ -1,7 +1,7 @@
 <script lang="ts">
     import { language } from "src/lang";
     import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
-    import { tokenizeAccurate } from "src/ts/tokenizer";
+    import { tokenScopeKey, tokenizeAccurate } from "src/ts/tokenizer";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { onDestroy, untrack } from "svelte";
     import { getAuthorNoteDefaultText } from "src/ts/util";
@@ -21,15 +21,20 @@
     const owner: ChatRef = { chaId: chat.chaId, chatId: chat.chatId };
     const note = $derived(findChat(owner)?.note ?? "");
     let noteTokens = $state(0);
-    const tokenField = createTokenCountField<string>({
-        count: (text, signal) => (text === "" ? Promise.resolve(0) : tokenizeAccurate(text, undefined, signal)),
+    type NoteTokenCountInput = { text: string; scope: string } | { error: unknown };
+    const tokenField = createTokenCountField<NoteTokenCountInput>({
+        count: async (input, signal) => {
+            if ("error" in input) throw input.error;
+            return input.text === "" ? 0 : tokenizeAccurate(input.text, undefined, signal);
+        },
         apply: (count) => (noteTokens = count),
+        same: (a, b) => !("error" in a) && !("error" in b) && a.text === b.text && a.scope === b.scope,
         scheduleFirst: (run) => {
             if (untrack(() => note === "")) {
                 run();
                 return () => {};
             }
-            // Let the chat's message bodies render before starting the first count.
+            // Let the chat's message bodies render before CBS expansion and the first count.
             if (typeof window.requestIdleCallback === "function") {
                 const idleCallback = window.requestIdleCallback(run, { timeout: 2000 });
                 return () => window.cancelIdleCallback(idleCallback);
@@ -41,7 +46,13 @@
 
     $effect(() => {
         const text = note;
-        tokenField.update(text);
+        let input: NoteTokenCountInput;
+        try {
+            input = { text, scope: tokenScopeKey() };
+        } catch (error) {
+            input = { error };
+        }
+        tokenField.update(input);
         if (text === "") noteTokens = 0;
     });
 

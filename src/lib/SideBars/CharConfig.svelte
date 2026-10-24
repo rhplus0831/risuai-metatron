@@ -3,7 +3,7 @@
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
-    import { tokenizeAccurate } from "../../ts/tokenizer";
+    import { countTokens, tokenCountInput, type TokenCountInput } from "../../ts/tokenizer";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { saveImage as saveAsset, type character, type groupChat } from "../../ts/storage/database.svelte";
     import { setCurrentChatMeta } from "../../ts/storage/chatEdits";
@@ -94,9 +94,13 @@
     });
 
     function tokenField(key: "desc" | "firstMsg" | "localNote") {
-        return createTokenCountField<string>({
-            count: (text, signal) => tokenizeAccurate(text, undefined, signal),
+        return createTokenCountField<TokenCountInput>({
+            count: async (input, signal) => {
+                if ("error" in input) throw input.error;
+                return countTokens(input.expanded, undefined, signal);
+            },
             apply: (count) => (tokens[key] = count),
+            same: (a, b) => !("error" in a) && !("error" in b) && a.expanded === b.expanded && a.scope === b.scope,
         });
     }
     const descriptionTokens = tokenField("desc");
@@ -199,11 +203,11 @@
         const firstMsg = chara.type !== "group" ? chara.firstMessage : null;
         const localNote = currentChat?.note ?? "";
 
-        if (desc !== null) descriptionTokens.update(desc);
+        if (desc !== null) descriptionTokens.update(tokenCountInput(desc));
         else descriptionTokens.reset();
-        if (firstMsg !== null) firstMessageTokens.update(firstMsg);
+        if (firstMsg !== null) firstMessageTokens.update(tokenCountInput(firstMsg));
         else firstMessageTokens.reset();
-        localNoteTokens.update(localNote);
+        localNoteTokens.update(tokenCountInput(localNote));
     });
 
     $effect.pre(() => {

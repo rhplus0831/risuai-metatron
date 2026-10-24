@@ -459,6 +459,105 @@ describe("createTokenCounter", () => {
                 vi.useRealTimers();
             });
 
+            function heldCounts() {
+                const requests: { text: string; signal: AbortSignal; resolve: (response: Response) => void }[] = [];
+                const fetchImpl = vi.fn<typeof fetch>(
+                    (_url, init) =>
+                        new Promise<Response>((resolve, reject) => {
+                            const signal = init!.signal!;
+                            const body = JSON.parse(String(init!.body));
+                            requests.push({ text: body.contents[0].parts[0].text, signal, resolve });
+                            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+                        }),
+                );
+                return { requests, fetchImpl };
+            }
+
+            it("shares in-flight counts by text and model and aborts the request only when its last caller aborts", async () => {
+                const { tokenizers } = stubTokenizers();
+                const { requests, fetchImpl } = heldCounts();
+                const counter = createTokenCounter({ tokenizers, fetchImpl });
+                const first = new AbortController();
+                const survivor = new AbortController();
+                const withdrawn = counter.count("shared", google(), first.signal);
+                const surviving = counter.count("shared", google(), survivor.signal);
+                const otherModel = counter.count(
+                    "shared",
+                    google({
+                        model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "model-B" },
+                    }),
+                );
+                const settled = Promise.allSettled([withdrawn, surviving, otherModel]);
+                try {
+                    expect(fetchImpl).toHaveBeenCalledTimes(2);
+                    const reason = new Error("one caller left");
+                    first.abort(reason);
+                    await expect(withdrawn).rejects.toBe(reason);
+                    expect(requests[0].signal.aborted).toBe(false);
+                    requests[0].resolve(ok(7));
+                    requests[1].resolve(ok(19));
+                    await expect(surviving).resolves.toBe(7);
+                    await expect(otherModel).resolves.toBe(19);
+                } finally {
+                    first.abort();
+                    survivor.abort();
+                    for (const request of requests) request.resolve(ok(1));
+                    await settled;
+                }
+
+                const left = new AbortController();
+                const right = new AbortController();
+                const a = counter.count("cancel shared", google(), left.signal);
+                const b = counter.count("cancel shared", google(), right.signal);
+                const canceled = Promise.allSettled([a, b]);
+                try {
+                    expect(fetchImpl).toHaveBeenCalledTimes(3);
+                    const reasonA = new Error("first left");
+                    left.abort(reasonA);
+                    await expect(a).rejects.toBe(reasonA);
+                    expect(requests[2].signal.aborted).toBe(false);
+
+                    const reasonB = new Error("last left");
+                    right.abort(reasonB);
+                    await expect(b).rejects.toBe(reasonB);
+                    expect(requests[2].signal.aborted).toBe(true);
+                    expect(requests[2].signal.reason).toBe(reasonB);
+                } finally {
+                    left.abort();
+                    right.abort();
+                    for (const request of requests) request.resolve(ok(1));
+                    await canceled;
+                }
+            });
+
+            it("keeps at most eight Google count requests outstanding and runs waiting counts as slots open", async () => {
+                const { tokenizers } = stubTokenizers();
+                const { requests, fetchImpl } = heldCounts();
+                const counter = createTokenCounter({ tokenizers, fetchImpl });
+                const caller = new AbortController();
+                const counts = Array.from({ length: 10 }, (_, i) =>
+                    counter.count(`item ${i}`, google(), caller.signal),
+                );
+                const settled = Promise.allSettled(counts);
+                const answer = (request: (typeof requests)[number]) =>
+                    request.resolve(ok(Number(request.text.slice(5)) + 1));
+                try {
+                    expect(fetchImpl).toHaveBeenCalledTimes(8);
+                    answer(requests[0]);
+                    await vi.advanceTimersByTimeAsync(0);
+                    expect(fetchImpl).toHaveBeenCalledTimes(9);
+                    answer(requests[1]);
+                    await vi.advanceTimersByTimeAsync(0);
+                    expect(fetchImpl).toHaveBeenCalledTimes(10);
+                    for (const request of requests.slice(2)) answer(request);
+                    await expect(Promise.all(counts)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                } finally {
+                    caller.abort();
+                    for (const request of requests) answer(request);
+                    await settled;
+                }
+            });
+
             it("rejects a pending count with the caller's exact abort reason without a local fallback", async () => {
                 const { tokenizers, calls } = stubTokenizers();
                 const fetchImpl = vi.fn<typeof fetch>(

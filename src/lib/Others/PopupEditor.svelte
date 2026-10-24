@@ -6,7 +6,7 @@
     import type MonacoEditorType from "./MonacoEditor.svelte";
     import { language } from "src/lang";
     import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
-    import { countTokens } from "src/ts/tokenizer";
+    import { countTokens, tokenScopeKey } from "src/ts/tokenizer";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import Toggles from "../SideBars/Toggles.svelte";
 
@@ -29,9 +29,14 @@
         return risuChatParserForDisplay(popUpEditorStore.value);
     });
 
-    const tokenField = createTokenCountField<string>({
-        count: (text, signal) => countTokens(text, undefined, signal),
+    type PreviewTokenCountInput = { text: string; scope: string } | { error: unknown };
+    const tokenField = createTokenCountField<PreviewTokenCountInput>({
+        count: async (input, signal) => {
+            if ("error" in input) throw input.error;
+            return countTokens(input.text, undefined, signal);
+        },
         apply: (count) => (tokens = count),
+        same: (a, b) => !("error" in a) && !("error" in b) && a.text === b.text && a.scope === b.scope,
     });
 
     $effect(() => {
@@ -39,7 +44,13 @@
             tokenField.reset();
             return;
         }
-        tokenField.update(chatParserValue);
+        let input: PreviewTokenCountInput;
+        try {
+            input = { text: chatParserValue, scope: tokenScopeKey() };
+        } catch (error) {
+            input = { error };
+        }
+        tokenField.update(input);
     });
 
     onDestroy(() => tokenField.dispose());

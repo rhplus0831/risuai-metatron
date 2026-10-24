@@ -605,6 +605,118 @@ describe("HypaProcessorV2", () => {
         expect(shared.stats().rows).toBe(2);
     });
 
+    it("refreshes contextual vectors when the same ids change order or content and reuses identical groups in memory", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const processor = new HypaProcessorV2<Meta>(
+            env({
+                cache: shared,
+                db: { hypaModel: "voyageContext3" },
+                fetch: fakeFetch({
+                    calls,
+                    answer: (call) => ({
+                        body: {
+                            data: call.body.inputs.map((group: string[]) => ({
+                                data: group.map((_text, index) => ({ embedding: [calls.length, index + 1] })),
+                            })),
+                        },
+                    }),
+                }),
+            }),
+        );
+        const metadata = { group: "summary" };
+        const a = { id: "a", content: "A", metadata };
+        const b = { id: "b", content: "B", metadata };
+        await processor.addTexts([a, b]);
+        expect(processor.vectors.get("a")?.embedding).toEqual([1, 1]);
+        expect(processor.vectors.get("b")?.embedding).toEqual([1, 2]);
+        // Remove the persistent cache so the repeated group must hit in memory.
+        shared.clear();
+        await processor.addTexts([a, b]);
+        expect(calls).toHaveLength(1);
+
+        await processor.addTexts([b, a]);
+        expect(calls).toHaveLength(2);
+        expect(calls[1].body.inputs).toEqual([["B", "A"]]);
+        expect(processor.vectors.get("b")?.embedding).toEqual([2, 1]);
+        expect(processor.vectors.get("a")?.embedding).toEqual([2, 2]);
+
+        const revised = { ...b, content: "B revised" };
+        await processor.addTexts([revised, a]);
+        expect(calls).toHaveLength(3);
+        expect(calls[2].body.inputs).toEqual([["B revised", "A"]]);
+        expect(processor.vectors.get("b")).toMatchObject({ content: "B revised", embedding: [3, 1] });
+        expect(processor.vectors.get("a")?.embedding).toEqual([3, 2]);
+        await processor.addTexts([revised, a]);
+        expect(calls).toHaveLength(3);
+    });
+
+    it("limits contextual document requests by concurrency and rate and cancels queued requests on abort", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const controller = new AbortController();
+        const reason = new Error("the contextual job ended");
+        const calls: Call[] = [];
+        let releaseFirst!: () => void;
+        let releaseSecond!: () => void;
+        const first = new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+        });
+        const second = new Promise<void>((resolve) => {
+            releaseSecond = resolve;
+        });
+        const rateLimiter = new TaskRateLimiter({ tasksPerMinute: 2, maxConcurrentTasks: 1 });
+        const processor = new HypaProcessorV2<Meta>(
+            env({
+                signal: controller.signal,
+                db: { hypaModel: "voyageContext3" },
+                fetch: fakeFetch({
+                    calls,
+                    answer: async (call) => {
+                        await (calls.length === 1 ? first : second);
+                        return defaultAnswer(call);
+                    },
+                }),
+            }),
+            { rateLimiter },
+        );
+        // Voyage accepts 1,000 groups per request: these require three requests.
+        const items = Array.from({ length: 2001 }, (_, i) => ({
+            id: `d${i}`,
+            content: `document ${i}`,
+            metadata: { group: `g${i}` },
+        }));
+        const pending = processor.addTexts(items);
+        void pending.catch(() => {});
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(calls).toHaveLength(1);
+            expect(rateLimiter.queuedTaskCount).toBe(2);
+            releaseFirst();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(calls).toHaveLength(2);
+            expect(rateLimiter.queuedTaskCount).toBe(1);
+            releaseSecond();
+            await vi.advanceTimersByTimeAsync(0);
+            // Both requests have finished, but the minute's quota is spent.
+            expect(calls).toHaveLength(2);
+            expect(rateLimiter.queuedTaskCount).toBe(1);
+
+            controller.abort(reason);
+            expect(rateLimiter.queuedTaskCount).toBe(0);
+            await expect(pending).rejects.toBe(reason);
+            await vi.advanceTimersByTimeAsync(61_000);
+            expect(calls).toHaveLength(2);
+        } finally {
+            controller.abort(reason);
+            releaseFirst();
+            releaseSecond();
+            await vi.advanceTimersByTimeAsync(61_000);
+            await pending.catch(() => {});
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
+
     it("rejects a contextual group missing one vector with ContextualEmbeddingCountError and caches none of the call", async () => {
         const calls: Call[] = [];
         const shared = cache();

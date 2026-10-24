@@ -19,7 +19,10 @@ vi.mock("src/ts/characters", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/characters")>()),
     getCharImage: vi.fn(async () => ""),
 }));
-vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn(async () => 0) }));
+vi.mock("src/ts/tokenizer", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/tokenizer")>()),
+    countTokens: vi.fn(async () => 0),
+}));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/lib/SideBars/LoreBook/LoreBookSetting.svelte", () => ({ default: () => {} }));
 vi.mock("src/lib/SideBars/Scripts/RegexList.svelte", () => ({ default: () => {} }));
@@ -41,11 +44,11 @@ vi.mock("src/ts/storage/assetQueue", () => ({
 import CharConfig from "./CharConfig.svelte";
 import { language } from "src/lang";
 import { alertError } from "src/ts/alert";
-import { tokenizeAccurate } from "src/ts/tokenizer";
+import { countTokens } from "src/ts/tokenizer";
 import { assembleChats, currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
 import { ASSET_LIST_PAGE } from "src/ts/util";
 import { CharConfigSubMenu } from "src/ts/stores.svelte";
-import { settings } from "src/ts/storage/settingsViews.svelte";
+import { activeMainProfile, settings } from "src/ts/storage/settingsViews.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { isRecordWrapper, setCharacterWriteListener, setRecordWriteListener } from "src/ts/storage/records.svelte";
@@ -173,51 +176,63 @@ describe("CharConfig description token count", () => {
 
     beforeEach(async () => {
         vi.useFakeTimers();
-        vi.mocked(tokenizeAccurate)
+        vi.mocked(countTokens)
             .mockReset()
             .mockImplementation(async (text) => (text === "initial description" ? 17 : 0));
         installCharacters([], []);
+        activeMainProfile.modelId = "gpt-3.5-turbo";
         record("c1").desc = "initial description";
         selectCharacter("c1");
         CharConfigSubMenu.set(0);
         instance = mount(CharConfig, { target });
         flushSync();
         await settle();
-        vi.mocked(tokenizeAccurate).mockClear();
+        vi.mocked(countTokens).mockClear();
         vi.mocked(alertError).mockClear();
     });
     afterEach(() => {
-        vi.mocked(tokenizeAccurate).mockReset().mockResolvedValue(0);
+        vi.mocked(countTokens).mockReset().mockResolvedValue(0);
         vi.useRealTimers();
     });
 
+    it("recounts the displayed description after a main model change without editing the text", async () => {
+        expect(shownCount()).toBe(`17 ${language.tokens}`);
+        vi.mocked(countTokens).mockImplementation(async (text) =>
+            text === "initial description" ? (activeMainProfile.modelId === "gpt4om" ? 29 : 17) : 0,
+        );
+
+        activeMainProfile.modelId = "gpt4om";
+        flushSync();
+        await vi.advanceTimersByTimeAsync(400);
+        flushSync();
+
+        expect(shownCount()).toBe(`29 ${language.tokens}`);
+        expect(record("c1").desc).toBe("initial description");
+    });
+
     it("counts ten description edits once, 400 ms after the last edit, and displays the result", async () => {
-        vi.mocked(tokenizeAccurate).mockResolvedValue(42);
+        vi.mocked(countTokens).mockResolvedValue(42);
         for (let i = 1; i <= 10; i++) {
             edit(`description ${i}`);
             if (i < 10) await vi.advanceTimersByTimeAsync(20);
         }
         await vi.advanceTimersByTimeAsync(399);
-        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        expect(countTokens).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(1);
         await settle();
 
-        expect(tokenizeAccurate).toHaveBeenCalledExactlyOnceWith("description 10", undefined, expect.any(AbortSignal));
+        expect(countTokens).toHaveBeenCalledExactlyOnceWith("description 10", undefined, expect.any(AbortSignal));
         expect(shownCount()).toBe(`42 ${language.tokens}`);
     });
 
     it("silently keeps the previously displayed count when counting fails", async () => {
         expect(shownCount()).toBe(`17 ${language.tokens}`);
-        vi.mocked(tokenizeAccurate).mockRejectedValueOnce(new Error("count failed"));
+        vi.mocked(countTokens).mockRejectedValueOnce(new Error("count failed"));
         edit("failing description");
         await vi.advanceTimersByTimeAsync(400);
         await settle();
 
-        expect(tokenizeAccurate).toHaveBeenCalledExactlyOnceWith(
-            "failing description",
-            undefined,
-            expect.any(AbortSignal),
-        );
+        expect(countTokens).toHaveBeenCalledExactlyOnceWith("failing description", undefined, expect.any(AbortSignal));
         expect(shownCount()).toBe(`17 ${language.tokens}`);
         expect(alertError).not.toHaveBeenCalled();
     });
@@ -225,12 +240,12 @@ describe("CharConfig description token count", () => {
     it("sends no pending description count after unmount", async () => {
         edit("pending description");
         await vi.advanceTimersByTimeAsync(399);
-        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        expect(countTokens).not.toHaveBeenCalled();
         await unmount(instance!);
         instance = null;
         await vi.advanceTimersByTimeAsync(400);
 
-        expect(tokenizeAccurate).not.toHaveBeenCalled();
+        expect(countTokens).not.toHaveBeenCalled();
     });
 });
 
@@ -256,7 +271,7 @@ it("mounts without an error when the selected character's chat is not loaded", a
     expect(currentChatRef()).toEqual({ chaId: "waiting", chatId: "waiting-chat" });
     expect(selectedChat()).toBeNull();
     vi.mocked(alertError).mockClear();
-    vi.mocked(tokenizeAccurate).mockClear();
+    vi.mocked(countTokens).mockClear();
 
     instance = mount(CharConfig, { target });
     flushSync();
@@ -265,7 +280,7 @@ it("mounts without an error when the selected character's chat is not loaded", a
     expect([...target.querySelectorAll("input")].some((input) => input.value === "Waiting character")).toBe(true);
     expect(alertError).not.toHaveBeenCalled();
     // The real tokenizer rejects non-strings before it can load a tokenizer or count tokens.
-    for (const [text] of vi.mocked(tokenizeAccurate).mock.calls) {
+    for (const [text] of vi.mocked(countTokens).mock.calls) {
         expect(text).toEqual(expect.any(String));
     }
 });

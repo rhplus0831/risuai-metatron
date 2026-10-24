@@ -5,7 +5,9 @@
     import Help from "src/lib/Others/Help.svelte";
 
     import { downloadFile } from "src/ts/globalApi.svelte";
-    import { tokenizeAccurate } from "src/ts/tokenizer";
+    import { countTokens, tokenCountInput, type TokenCountInput } from "src/ts/tokenizer";
+    import { createTokenCountField } from "src/ts/tokenCountField";
+    import { onDestroy } from "svelte";
     import DropList from "src/lib/SideBars/DropList.svelte";
     import { PlusIcon, TrashIcon, HardDriveUploadIcon, DownloadIcon, UploadIcon, ListIcon } from "@lucide/svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
@@ -33,11 +35,9 @@
      * model preset's model.
      */
 
-    let tokens = $state({
-        mainPrompt: 0,
-        jailbreak: 0,
-        globalNote: 0,
-    });
+    let mainPromptTokens = $state(0);
+    let jailbreakTokens = $state(0);
+    let globalNoteTokens = $state(0);
 
     interface Props {
         goPromptTemplate?: any;
@@ -45,11 +45,19 @@
 
     let { goPromptTemplate = () => {} }: Props = $props();
 
-    async function loadTokenize() {
-        tokens.mainPrompt = await tokenizeAccurate(activePreset.mainPrompt, true);
-        tokens.jailbreak = await tokenizeAccurate(activePreset.jailbreak, true);
-        tokens.globalNote = await tokenizeAccurate(activePreset.globalNote, true);
+    function tokenField(apply: (count: number) => void) {
+        return createTokenCountField<TokenCountInput>({
+            count: async (input, signal) => {
+                if ("error" in input) throw input.error;
+                return countTokens(input.expanded, undefined, signal);
+            },
+            apply,
+            same: (a, b) => !("error" in a) && !("error" in b) && a.expanded === b.expanded && a.scope === b.scope,
+        });
     }
+    const mainPromptField = tokenField((count) => (mainPromptTokens = count));
+    const jailbreakField = tokenField((count) => (jailbreakTokens = count));
+    const globalNoteField = tokenField((count) => (globalNoteTokens = count));
 
     // A search jump opens its tab (1 parameters, 3 others), also for a hidden item; the legacy GUI shows
     // every tab.
@@ -57,6 +65,24 @@
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : typeof jumpTab === "number" ? jumpTab : 1);
     let modelInfo = $derived(getModelInfoForMode("model"));
     let subModelInfo = $derived(getModelInfoForMode("submodel"));
+
+    $effect(() => {
+        if ((submenu === 2 || submenu === -1) && !activePreset.promptTemplate) {
+            mainPromptField.update(tokenCountInput(activePreset.mainPrompt));
+            jailbreakField.update(tokenCountInput(activePreset.jailbreak));
+            globalNoteField.update(tokenCountInput(activePreset.globalNote));
+        } else {
+            mainPromptField.reset();
+            jailbreakField.reset();
+            globalNoteField.reset();
+        }
+    });
+
+    onDestroy(() => {
+        mainPromptField.dispose();
+        jailbreakField.dispose();
+        globalNoteField.dispose();
+    });
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.prompt}</h2>
@@ -500,13 +526,13 @@
     {#if !activePreset.promptTemplate}
         <span class="text-textcolor">{language.mainPrompt} <Help key="mainprompt" /></span>
         <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.mainPrompt}></TextAreaInput>
-        <span class="text-textcolor2 mb-6 text-sm mt-2">{tokens.mainPrompt} {language.tokens}</span>
+        <span class="text-textcolor2 mb-6 text-sm mt-2">{mainPromptTokens} {language.tokens}</span>
         <span class="text-textcolor">{language.jailbreakPrompt} <Help key="jailbreak" /></span>
         <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.jailbreak}></TextAreaInput>
-        <span class="text-textcolor2 mb-6 text-sm mt-2">{tokens.jailbreak} {language.tokens}</span>
+        <span class="text-textcolor2 mb-6 text-sm mt-2">{jailbreakTokens} {language.tokens}</span>
         <span class="text-textcolor">{language.globalNote} <Help key="globalNote" /></span>
         <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.globalNote}></TextAreaInput>
-        <span class="text-textcolor2 mb-6 text-sm mt-2">{tokens.globalNote} {language.tokens}</span>
+        <span class="text-textcolor2 mb-6 text-sm mt-2">{globalNoteTokens} {language.tokens}</span>
         <span class="text-textcolor mb-2 mt-4">{language.formatingOrder} <Help key="formatOrder" /></span>
         <DropList bind:list={activePreset.formatingOrder} />
         <div class="flex items-center mt-4">

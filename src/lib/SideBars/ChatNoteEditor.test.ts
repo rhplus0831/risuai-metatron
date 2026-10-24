@@ -3,10 +3,17 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("src/ts/tokenizer", () => ({ tokenizeAccurate: vi.fn() }));
+vi.mock("src/ts/tokenizer", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/tokenizer")>()),
+    tokenizeAccurate: vi.fn(),
+}));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 // Keep the real input, but exclude highlighting, hotkeys and unrelated application effects.
-vi.mock("src/ts/util", () => ({ getAuthorNoteDefaultText: () => "", sleep: () => Promise.resolve() }));
+vi.mock("src/ts/util", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/util")>()),
+    getAuthorNoteDefaultText: () => "",
+    sleep: () => Promise.resolve(),
+}));
 vi.mock("src/ts/hotkey", () => ({ hotkeyMatches: vi.fn(() => false) }));
 vi.mock("src/ts/gui/highlight", () => ({
     highlighter: vi.fn(),
@@ -25,6 +32,7 @@ vi.mock("src/ts/stores.svelte", async () => {
 import { language } from "src/lang";
 import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { tokenizeAccurate } from "src/ts/tokenizer";
 import ChatNoteEditor from "./ChatNoteEditor.svelte";
 
@@ -44,6 +52,7 @@ function renderEditor(note: string) {
             },
         ],
     });
+    activeMainProfile.modelId = "gpt-3.5-turbo";
     const target = document.createElement("div");
     document.body.appendChild(target);
     const instance = mount(ChatNoteEditor, { target, props: { chat } });
@@ -91,7 +100,8 @@ function installIdleCallbacks() {
 }
 
 async function settle() {
-    await Promise.resolve();
+    // A few microtasks: the count resolves through the field's async scope check.
+    for (let i = 0; i < 3; i++) await Promise.resolve();
     flushSync();
 }
 
@@ -125,6 +135,26 @@ afterEach(async () => {
 });
 
 describe("ChatNoteEditor token counting", () => {
+    it("keeps the first count idle and recounts an unchanged note after a main model change", async () => {
+        const idle = installIdleCallbacks();
+        tokenize.mockImplementation(async () => (activeMainProfile.modelId === "gpt4om" ? 29 : 11));
+        const note = "Remember the moon.";
+        const editor = renderEditor(note);
+        await advance(1000);
+        expect(tokenize).not.toHaveBeenCalled();
+        expect(editor.tokens()).toBe(`0 ${language.tokens}`);
+
+        idle.fire();
+        await settle();
+        expect(editor.tokens()).toBe(`11 ${language.tokens}`);
+
+        activeMainProfile.modelId = "gpt4om";
+        flushSync();
+        await advance(400);
+        expect(editor.tokens()).toBe(`29 ${language.tokens}`);
+        expect(findChat(chat)?.note).toBe(note);
+    });
+
     it("shows zero for an empty note without ever tokenizing it", async () => {
         const idle = installIdleCallbacks();
         const editor = renderEditor("");

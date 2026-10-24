@@ -1,19 +1,22 @@
 <script lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { onMount, onDestroy } from "svelte";
+    import { get } from "svelte/store";
     import { XIcon, TrashIcon, PencilIcon, BookOpenCheckIcon, BookLockIcon, ArrowRightIcon } from "@lucide/svelte";
     import Chat from "../ChatScreens/Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { findCharacterbyId, getUserName, getUserIcon } from "src/ts/util";
     import { createSimpleCharacter, bookmarkListOpen, ScrollToMessageStore } from "src/ts/stores.svelte";
     import { language } from "src/lang";
-    import { alertInput } from "src/ts/alert";
+    import { alertInput, doingAlert, terminalNotice } from "src/ts/alert";
+    import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import { setChatOpen } from "src/ts/storage/selection.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         currentChatRef,
+        chatRef,
         ensureChatLoaded,
         findChat,
+        isStreamingMessage,
         selectedChat,
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
@@ -29,10 +32,11 @@
         if (!chara || !currentChat) return new Map();
 
         const allMessages = currentChat.message;
+        const ref = chatRef(chara, currentChat);
         const map = new Map();
 
         allMessages.forEach((m, index) => {
-            map.set(m.chatId, { ...m, originalIndex: index, saying: m.saying ?? "" });
+            map.set(m.chatId, { ...m, chatRef: ref, originalIndex: index, saying: m.saying ?? "" });
         });
 
         return map;
@@ -64,17 +68,13 @@
     let expandedBookmarks = $state(new Set<string>());
     let expandAll = $state(false);
 
-    onMount(() => {
-        const handleKeydown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                close();
-            }
-        };
-        window.addEventListener("keydown", handleKeydown);
-        return () => {
-            window.removeEventListener("keydown", handleKeydown);
-        };
-    });
+    function closeOnEscape(event: KeyboardEvent) {
+        if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+        if (doingAlert() || get(terminalNotice) !== null || topBindingLayer() !== null) return;
+        event.stopPropagation();
+        event.preventDefault();
+        close();
+    }
 
     function toggleExpand(chatId: string) {
         if (expandAll) {
@@ -134,6 +134,8 @@
         close();
     }
 </script>
+
+<svelte:document onkeydowncapture={closeOnEscape} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
@@ -222,6 +224,8 @@
                             <div class="p-1 border-t border-darkborderc">
                                 {#if chara.type === "group"}
                                     <Chat
+                                        chatRef={msg.chatRef}
+                                        streamingOverride={isStreamingMessage(msg.chatRef, msg.chatId)}
                                         idx={msg.originalIndex}
                                         message={msg.data}
                                         name={msg.speaker?.name}
@@ -235,6 +239,8 @@
                                     />
                                 {:else}
                                     <Chat
+                                        chatRef={msg.chatRef}
+                                        streamingOverride={isStreamingMessage(msg.chatRef, msg.chatId)}
                                         idx={msg.originalIndex}
                                         message={msg.data}
                                         name={msg.role === "user" ? getUserName() : chara.name}

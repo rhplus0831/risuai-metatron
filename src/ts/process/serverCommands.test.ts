@@ -418,7 +418,7 @@ describe("runServerButton", () => {
         expect(stubs.flush).toHaveBeenCalledTimes(1);
         expect(follows()[0]?.jobId).toBe("j");
         endWith(follows()[0], done);
-        await run;
+        expect(await run).toBe("started");
         expect(stubs.alertError).not.toHaveBeenCalled();
     });
 
@@ -665,7 +665,7 @@ describe("runServerJob", () => {
                 { identity: { presetId: "preset", modelPresetId: "preset", personaId: "selected" } },
             ),
         ).toEqual({ outcome: "refused", terminal: null });
-        expect(await commands.runServerButton(char, "go", ref)).toBeUndefined();
+        expect(await commands.runServerButton(char, "go", ref)).toBe("refused");
         expect(await commands.runServerManualTrigger(char, "greet", ref, { triggerId: "t" })).toBe("refused");
         expect(stubs.flush).not.toHaveBeenCalled();
         expect(stubs.create).not.toHaveBeenCalled();

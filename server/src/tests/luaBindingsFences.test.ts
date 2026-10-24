@@ -9,6 +9,7 @@ import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
+import { createGenerationLock, type MessageGuard } from "../jobs/generationLock.ts";
 import { loadJobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings, LuaJobFatalError, type OptionalQuestionResult } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
@@ -60,7 +61,9 @@ afterEach(() => {
     }
 });
 
-function setup(options: { lore?: Record<string, unknown>[]; image?: string; inlay?: boolean } = {}) {
+function setup(
+    options: { lore?: Record<string, unknown>[]; image?: string; inlay?: boolean; lock?: MessageGuard } = {},
+) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-lua-fences-"));
     const store: ResourceStore = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds });
     cleanups.push(() => {
@@ -178,6 +181,7 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
         tokens: { count: () => tokens.wait(), encode: async () => [] } as never,
         runCharacterId: "c",
         engineCharacterId: "c",
+        lock: options.lock,
     });
     const host = new AbortController();
     const ctx: HostContext = {
@@ -191,6 +195,40 @@ function setup(options: { lore?: Record<string, unknown>[]; image?: string; inla
 }
 
 describe("the bindings' fences", () => {
+    it("skips patchMessage on a message owned by a generation and permits it after release", () => {
+        const lock = createGenerationLock();
+        const ref = { characterId: "c", chatId: "k", messageId: "m1" };
+        lock.addToken("owner");
+        lock.acquire(ref, { jobId: "generation", generationId: "g", token: "owner" });
+        // The store has no guard here, so only the binding can refuse these writes.
+        const { bindings, ctx, chat } = setup({ lock });
+        bindings.services.writeChat(() => [{ op: "setText", id: "m1", text: "replaced" }], ctx);
+        expect(chat().message[0].data).toBe("hi");
+        bindings.services.writeChat(() => [{ op: "patchMessage", id: "m1", set: { data: "patched" } }], ctx);
+        expect(chat().message[0].data).toBe("hi");
+        expect(bindings.fatal()).toBeNull();
+
+        lock.release(ref, "owner", "g");
+        bindings.services.writeChat(() => [{ op: "patchMessage", id: "m1", set: { data: "patched" } }], ctx);
+        expect(chat().message[0].data).toBe("patched");
+    });
+
+    it("applies mergeUnset alongside a lone note setter", async () => {
+        const { bindings, ctx, chat } = setup();
+        bindings.services.writeChat(
+            () => [{ op: "meta", set: { scriptstate: { $remove: "old", $keep: "retained" } } }],
+            ctx,
+        );
+        bindings.services.writeChat(
+            () => [{ op: "meta", set: { note: "updated note" }, mergeUnset: { scriptstate: ["$remove"] } }],
+            ctx,
+        );
+        // Let a queued note setter flush too: the removal must survive either write path.
+        await Promise.resolve();
+        expect(chat().note).toBe("updated note");
+        expect(chat().scriptstate).toEqual({ $keep: "retained" });
+    });
+
     it("writes no lore activation flag after its host call was aborted while tokenization was suspended, and latches the abort as fatal", async () => {
         const { bindings, ctx, host, tokens, chat } = setup({
             lore: [

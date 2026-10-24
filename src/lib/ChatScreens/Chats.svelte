@@ -6,7 +6,7 @@
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { createSimpleCharacter, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
-    import { currentChatRef, selectedChatId, streamingEntry } from "src/ts/storage/chatStore.svelte";
+    import { type ChatRef, currentChatRef, selectedChatId, streamingEntry } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
 
@@ -220,6 +220,7 @@
 
     $effect(() => {
         if (capturing || suspendTrim) {
+            clearTimeout(scrollTimer);
             armDeferredRows();
             finishReveal();
         }
@@ -329,7 +330,7 @@
         };
     });
 
-    function createRow(input: RowInput, initiallyArmed: boolean): Row {
+    function createRow(input: RowInput, initiallyArmed: boolean, ref: ChatRef | null): Row {
         const element = document.createElement("div");
         element.classList.add("chat-message-container");
         let currentInput = $state.raw(input);
@@ -413,6 +414,7 @@
                                 ...next,
                                 isLastMemory: false,
                                 messageId: message.chatId,
+                                chatRef: ref,
                                 onReroll,
                                 unReroll,
                                 rerollIcon: "dynamic",
@@ -490,7 +492,7 @@
 
     function updateChatBody(
         structure: readonly DeepReadonly<Message>[],
-        chatKey: string,
+        ref: ChatRef | null,
         streamingId: string | null,
         mode: StreamingDisplayOptimizationMode,
         streamingIndex: number,
@@ -498,6 +500,7 @@
         folded: number,
         deferRemoval: boolean,
     ) {
+        const chatKey = ref ? `${ref.chaId}\u0000${ref.chatId}` : "";
         let loadStart = structure.length - 1;
         let loadEnd = structure.length - window;
         if (folded !== -1) {
@@ -541,7 +544,7 @@
         for (const { key, input } of inputs) {
             let row = rows.get(key);
             if (!row) {
-                row = createRow(input, shown.length < firstStage);
+                row = createRow(input, shown.length < firstStage, ref);
                 rows.set(key, row);
             } else if (Object.keys(input).some((field) => input[field] !== row.input[field])) {
                 row.input = input;
@@ -649,8 +652,8 @@
         });
         const ctx = context;
         const currentChatId = selectedChatId(ctx.character.chaId);
-        const streaming =
-            currentChatId === null ? null : streamingEntry({ chaId: ctx.character.chaId, chatId: currentChatId });
+        const ref = currentChatId === null ? null : { chaId: ctx.character.chaId, chatId: currentChatId };
+        const streaming = ref === null ? null : streamingEntry(ref);
         const streamingId = streaming?.messageId ?? null;
         const mode = streaming !== null ? streaming.mode : (settings.ui.streamingDisplayOptimizationMode ?? "off");
         const streamingIndex = activeStreamingIndex;
@@ -667,7 +670,7 @@
             const keep = append ? trimWindow(structure.length) : undefined;
             updateChatBody(
                 structure,
-                `${ctx.character.chaId}\u0000${currentChatId}`,
+                ref,
                 streamingId,
                 mode,
                 streamingIndex,
@@ -676,7 +679,7 @@
                 keep !== undefined,
             );
             if (autoScroll) {
-                if (wasAtBottom || settings.ui.alwaysScrollToNewMessage) {
+                if (!suspendTrim && (wasAtBottom || settings.ui.alwaysScrollToNewMessage)) {
                     clearTimeout(scrollTimer);
                     const element = chatBody.firstElementChild;
                     scrollTimer = setTimeout(() => {

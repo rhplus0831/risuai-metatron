@@ -42,6 +42,8 @@ vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi
 vi.mock("src/ts/process/index.svelte", () => ({}));
 vi.mock("src/ts/tokenizer", () => ({
     tokenizeAccurate: vi.fn(async () => 0),
+    countTokens: vi.fn(async () => 0),
+    tokenCountInput: (text: string) => ({ text, expanded: text, scope: "scope" }),
     tokenizerList: [["tik", "Tiktoken"]],
 }));
 vi.mock("src/ts/process/prompt", () => ({ tokenizePreset: vi.fn(async () => 0) }));

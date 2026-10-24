@@ -35,6 +35,7 @@ import { currentChatRef } from "./storage/chatStore.svelte";
 import { RISU_SIDEBAR_DRAG_TYPE } from "./dragTypes";
 import { createDialogKeyGate } from "./alertQueue";
 import { chatCheckpointsDialog, checkpointLoadBusy } from "./checkpoints/chatCheckpoints.svelte";
+import { topBindingLayer, type BindingLayer } from "./gui/dialogLayers";
 
 export function initHotkey() {
     // Every stroke of Enter and Escape, seen before any element can stop it: a dialog takes a key only
@@ -499,28 +500,6 @@ function focusQuery(query: string) {
     if (ele) {
         ele.focus();
     }
-}
-
-type BindingLayer = "personaList" | "modelPresetList" | "presetList" | "checkpointsDialog" | "bindingDialog";
-
-/** The topmost open chat dialog or picker list, following their mount order in `App.svelte`. */
-function topBindingLayer(): BindingLayer | null {
-    if (get(openPersonaList)) {
-        return "personaList";
-    }
-    if (get(openModelPresetList)) {
-        return "modelPresetList";
-    }
-    if (get(openPresetList)) {
-        return "presetList";
-    }
-    if (get(chatCheckpointsDialog)) {
-        return "checkpointsDialog";
-    }
-    if (get(chatBindingDialog)) {
-        return "bindingDialog";
-    }
-    return null;
 }
 
 function closeBindingLayer(layer: BindingLayer) {

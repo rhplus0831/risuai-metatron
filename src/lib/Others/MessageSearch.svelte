@@ -5,15 +5,9 @@
     import { language } from "src/lang";
     import { alertNormal, doingAlert, terminalNotice } from "src/ts/alert";
     import { openPinnedChat } from "src/ts/globalApi.svelte";
-    import {
-        chatBindingDialog,
-        gridOpenStore,
-        openModelPresetList,
-        openPersonaList,
-        openPresetList,
-    } from "src/ts/stores.svelte";
+    import { gridOpenStore } from "src/ts/stores.svelte";
     import { currentChatRef } from "src/ts/storage/chatStore.svelte";
-    import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
+    import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import { selection } from "src/ts/storage/selection.svelte";
     import {
         closeMessageSearch,
@@ -247,14 +241,7 @@
     function closeOnEscape(event: KeyboardEvent) {
         if (!messageSearchPanel.open || event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
         if (doingAlert() || get(terminalNotice) !== null) return;
-        if (
-            get(openPresetList) ||
-            get(openModelPresetList) ||
-            get(openPersonaList) ||
-            get(chatCheckpointsDialog) ||
-            get(chatBindingDialog)
-        )
-            return;
+        if (topBindingLayer() !== null) return;
         event.stopPropagation();
         event.preventDefault();
         close();

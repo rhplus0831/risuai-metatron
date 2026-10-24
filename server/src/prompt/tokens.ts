@@ -17,6 +17,7 @@ import type { Tokenizers } from "./tokenizers/index.ts";
  */
 export const TOKEN_CACHE_SIZE = 1500;
 export const GOOGLE_COUNT_TIMEOUT_MS = 30_000;
+export const GOOGLE_COUNT_MAX_CONCURRENT = 8;
 
 export type TokenCountScope = {
     /** The main slot's derived `aiModel` and its profile's `currentPluginProvider`. */
@@ -61,6 +62,12 @@ export function isTokenizerTextRefusal(error: unknown): error is Error {
 
 type Encoded = ArrayLike<number>;
 
+type PendingGoogleCount = {
+    controller: AbortController;
+    promise: Promise<Encoded>;
+    callers: number;
+};
+
 export type TokenCounter = ReturnType<typeof createTokenCounter>;
 
 export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?: typeof fetch }) {
@@ -68,16 +75,18 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
     const fetchImpl = options.fetchImpl ?? fetch;
     const encodeCache = new LRUMap<string, Encoded>(TOKEN_CACHE_SIZE);
     const googleCache = new LRUMap<string, number>(TOKEN_CACHE_SIZE);
+    const googleInFlight = new Map<string, PendingGoogleCount>();
+    const googleQueue = new Set<() => void>();
+    let googleActive = 0;
 
     // Google counts are represented as `totalTokens` zeros, or the Gemma
     // SentencePiece ids when the endpoint answers anything but 200.
-    async function countWithGoogle(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
-        const cacheKey = text + scope.model.internalID;
-        const cached = googleCache.get(cacheKey);
-        if (cached !== undefined) {
-            return new Uint32Array(cached);
-        }
-        const controller = new AbortController();
+    async function requestGoogleCount(
+        text: string,
+        scope: TokenCountScope,
+        cacheKey: string,
+        controller: AbortController,
+    ): Promise<Encoded> {
         const timer = setTimeout(
             () => controller.abort(new Error("The Google token count timed out after 30 seconds")),
             GOOGLE_COUNT_TIMEOUT_MS,
@@ -89,19 +98,120 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ contents: [{ parts: [{ text }] }] }),
-                    signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+                    signal: controller.signal,
                 },
             );
             if (res.status === 200) {
                 const json = (await res.json()) as { totalTokens: number };
+                controller.signal.throwIfAborted();
                 googleCache.set(cacheKey, json.totalTokens);
                 return new Uint32Array(json.totalTokens);
             }
         } finally {
             clearTimeout(timer);
         }
-        signal?.throwIfAborted();
+        controller.signal.throwIfAborted();
         return await tokenizers.encode("gemmaSentencePiece", text);
+    }
+
+    function pumpGoogleQueue(): void {
+        for (const start of googleQueue) {
+            if (googleActive >= GOOGLE_COUNT_MAX_CONCURRENT) {
+                break;
+            }
+            googleQueue.delete(start);
+            start();
+        }
+    }
+
+    function scheduleGoogleCount(
+        text: string,
+        scope: TokenCountScope,
+        cacheKey: string,
+        controller: AbortController,
+    ): Promise<Encoded> {
+        return new Promise((resolve, reject) => {
+            const onAbort = () => {
+                if (googleQueue.delete(start)) {
+                    reject(controller.signal.reason);
+                }
+            };
+            const start = () => {
+                controller.signal.removeEventListener("abort", onAbort);
+                googleActive++;
+                void requestGoogleCount(text, scope, cacheKey, controller)
+                    .then(resolve, reject)
+                    .finally(() => {
+                        googleActive--;
+                        pumpGoogleQueue();
+                    });
+            };
+            controller.signal.addEventListener("abort", onAbort, { once: true });
+            googleQueue.add(start);
+            pumpGoogleQueue();
+        });
+    }
+
+    async function countWithGoogle(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
+        signal?.throwIfAborted();
+        const cacheKey = text + scope.model.internalID;
+        const cached = googleCache.get(cacheKey);
+        if (cached !== undefined) {
+            return new Uint32Array(cached);
+        }
+        let pending = googleInFlight.get(cacheKey);
+        if (!pending) {
+            const controller = new AbortController();
+            const request: PendingGoogleCount = {
+                controller,
+                callers: 0,
+                promise: scheduleGoogleCount(text, scope, cacheKey, controller).finally(() => {
+                    if (googleInFlight.get(cacheKey) === request) {
+                        googleInFlight.delete(cacheKey);
+                    }
+                }),
+            };
+            googleInFlight.set(cacheKey, request);
+            pending = request;
+        }
+        const request = pending;
+        request.callers++;
+        let attached = true;
+        const detach = () => {
+            if (attached) {
+                attached = false;
+                request.callers--;
+            }
+        };
+        let onAbort: (() => void) | undefined;
+        try {
+            if (!signal) {
+                return await request.promise;
+            }
+            return await new Promise<Encoded>((resolve, reject) => {
+                onAbort = () => {
+                    detach();
+                    // The shared request lives until its last caller leaves.
+                    if (request.callers === 0) {
+                        if (googleInFlight.get(cacheKey) === request) {
+                            googleInFlight.delete(cacheKey);
+                        }
+                        request.controller.abort(signal.reason);
+                    }
+                    reject(signal.reason);
+                };
+                signal.addEventListener("abort", onAbort, { once: true });
+                if (signal.aborted) {
+                    onAbort();
+                }
+                void request.promise.then(resolve, reject);
+            });
+        } finally {
+            if (onAbort) {
+                signal!.removeEventListener("abort", onAbort);
+            }
+            detach();
+        }
     }
 
     async function encode(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {

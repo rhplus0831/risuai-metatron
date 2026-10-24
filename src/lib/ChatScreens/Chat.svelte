@@ -92,7 +92,6 @@
         setChatMeta,
         setMessageText,
         selectedChat,
-        selectedChatId,
     } from "../../ts/storage/chatStore.svelte";
     import { HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
@@ -155,6 +154,7 @@
         idx?: number;
         /** The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. */
         messageId?: string;
+        chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
         rerollIcon?: boolean | "dynamic";
         role?: string;
@@ -168,6 +168,7 @@
         isComment?: boolean;
         disabled?: boolean | "allBefore";
         isOptimizedStreamingMessage?: boolean;
+        streamingOverride?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
         rawStreamingText?: string;
         pendingReveal?: boolean;
@@ -181,6 +182,7 @@
         img = "",
         idx = -1,
         messageId = undefined,
+        chatRef = untrack(currentChatRef),
         rerollIcon = false,
         messageGenerationInfo = null,
         role = null,
@@ -194,6 +196,7 @@
         isComment = false,
         disabled = false,
         isOptimizedStreamingMessage = false,
+        streamingOverride = undefined,
         streamingOptimizationMode = "off",
         rawStreamingText = message,
         pendingReveal = false,
@@ -204,11 +207,7 @@
     let partialEditEnabled = $state(true);
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
-    let displayedChat = $derived.by((): ChatRef | null => {
-        const character = currentCharacter;
-        const chatId = character ? selectedChatId(character.chaId) : null;
-        return character && chatId !== null ? { chaId: character.chaId, chatId } : null;
-    });
+    let displayedChat = $derived(chatRef);
     /**
      * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
      * off): while it streams and until the job releases it, and also a previous group speaker's reply.
@@ -322,7 +321,7 @@
 
     /** The chat this message belongs to, captured before any await (a later chat switch cannot redirect a write). */
     function messageTarget(): { ref: ChatRef; id: string } | null {
-        const ref = currentChatRef();
+        const ref = displayedChat;
         return ref && messageId ? { ref, id: messageId } : null;
     }
 
@@ -399,7 +398,7 @@
     function isInteractiveBodyTarget(target: EventTarget | null) {
         const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
         const interactive = element?.closest(
-            'form[risu-form], input, textarea, select, button, label, a, [contenteditable]:not([contenteditable="false" i])',
+            'form[risu-form], [risu-btn], [risu-trigger], input, textarea, select, button, label, a, [contenteditable]:not([contenteditable="false" i])',
         );
         return !!interactive && !!bodyRoot?.contains(interactive);
     }
@@ -715,7 +714,8 @@
     }
 
     async function handleButtonTriggerWithin(event: UIEvent) {
-        const currentChar = selectedCharacter();
+        const ref = displayedChat;
+        const currentChar = ref ? characterList().find((entry) => entry.chaId === ref.chaId) : undefined;
         if (!currentChar || currentChar.type === "group") {
             return;
         }
@@ -732,7 +732,6 @@
 
         // The server runs manual triggers and Lua buttons; their changes arrive as the server's
         // records.
-        const ref = currentChatRef();
         if (triggerName) {
             // `{{trigger_id}}` reads the id as the browser path left it: set once the job exists,
             // cleared 100 ms after it ends.
@@ -764,11 +763,13 @@
             return;
         }
         if (btnEvent) {
-            await runServerButton(currentChar, btnEvent, ref);
-            ReloadChatPointer.update((v) => {
-                v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
-                return v;
-            });
+            const outcome = await runServerButton(currentChar, btnEvent, ref);
+            if (outcome === "started") {
+                ReloadChatPointer.update((v) => {
+                    v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
+                    return v;
+                });
+            }
         }
     }
 
@@ -789,11 +790,11 @@
         if (!key) {
             return;
         }
-        const currentChar = selectedCharacter();
+        const ref = displayedChat;
+        const currentChar = ref ? characterList().find((entry) => entry.chaId === ref.chaId) : undefined;
         if (!currentChar || currentChar.type === "group") {
             return;
         }
-        const ref = currentChatRef();
         if (!ref || (messageId !== undefined && !findChat(ref)?.message.some((entry) => entry.chatId === messageId))) {
             return;
         }
@@ -1071,7 +1072,7 @@
                     bind:translated
                     bind:translating
                     bind:retranslate
-                    streaming={isStreamingMessage(displayedChat, messageId)}
+                    streaming={streamingOverride ?? isStreamingMessage(displayedChat, messageId)}
                     {renderRawStreaming}
                     {rawStreamingText}
                     {storedPath}

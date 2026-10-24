@@ -409,6 +409,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             only?.op === "meta" &&
             !only.unset?.length &&
             !only.merge &&
+            !only.mergeUnset &&
             only.set &&
             Object.keys(only.set).length === 1 &&
             typeof only.set.note === "string"
@@ -453,7 +454,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const touchesGenerating = (ops: ChatOp[], chat: Chat): boolean => {
         const ids: string[] = [];
         for (const op of ops) {
-            if (op.op === "setText" || op.op === "setTranslation") {
+            if (op.op === "setText" || op.op === "setTranslation" || op.op === "patchMessage") {
                 ids.push(op.id);
             } else if (op.op === "setMessage") {
                 ids.push(op.message.chatId!);

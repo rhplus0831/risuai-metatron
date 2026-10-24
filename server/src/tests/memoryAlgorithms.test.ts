@@ -214,6 +214,18 @@ describe("the server ports against the browser fixture", () => {
         ],
     };
 
+    // The server's contextual document requests go through the embedding rate limiter, so they report
+    // their queue as progress before the tab's (which bypassed it) recorded progress begins.
+    const queued = (count: number) => ({
+        open: true,
+        miniMsg: String(count),
+        msg: "[HypaV3] Similarity searching...",
+        subMsg: `${count} queued`,
+    });
+    const serverLeadingProgress: Record<string, unknown[]> = {
+        "v3exp-existing-voyage-groups": [queued(1), queued(0)],
+    };
+
     for (const scenario of scenarios) {
         it(`${scenario.name}: the port's outcome is the browser's`, async () => {
             const browser = fixture.cases[scenario.name];
@@ -222,7 +234,12 @@ describe("the server ports against the browser fixture", () => {
                 // Without the version and position, the keys are the tab's.
                 expect(keys.map((key) => key.replace(/\|chunk-cache-v2\|index:\d+$/, ""))).toEqual(browser.cacheKeys);
             }
-            expect(await runServer(scenario)).toEqual(keys ? { ...browser, cacheKeys: keys } : browser);
+            const leading = serverLeadingProgress[scenario.name];
+            expect(await runServer(scenario)).toEqual({
+                ...browser,
+                ...(keys ? { cacheKeys: keys } : {}),
+                ...(leading ? { progress: [...leading, ...browser.progress] } : {}),
+            });
         });
     }
 
