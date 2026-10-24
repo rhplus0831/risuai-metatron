@@ -68,6 +68,8 @@ export function reloadChatKey(messageId: string | undefined, idx: number): strin
     return messageId !== undefined ? `m:${messageId}` : `i:${idx}`;
 }
 export const ScrollToMessageStore = $state({ value: -1 });
+/** Set when a notification opens a chat (`openRoute`): the chat screen shows its newest message from the start. */
+export const ShowLatestMessageStore = $state({ value: false });
 export const OpenRealmStore = writable(false);
 export { PlaygroundStore } from "./storage/selection.svelte";
 export const HideIconStore = writable(false);

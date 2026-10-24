@@ -25,7 +25,14 @@ vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string)
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
-import { gridOpenStore, OpenRealmStore, PlaygroundStore, SettingsMenuIndex, settingsOpen } from "../stores.svelte";
+import {
+    gridOpenStore,
+    OpenRealmStore,
+    PlaygroundStore,
+    SettingsMenuIndex,
+    settingsOpen,
+    ShowLatestMessageStore,
+} from "../stores.svelte";
 import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { characterList, removeCharacters } from "../storage/characterStore.svelte";
 import * as chat from "../storage/chatStore.svelte";
@@ -1438,6 +1445,10 @@ describe("the root insertion", () => {
 });
 
 describe("openRoute (a notification's chat)", () => {
+    beforeEach(() => {
+        ShowLatestMessageStore.value = false;
+    });
+
     it("applies a chat route to the stores and the effect pushes its URL", () => {
         const history = start(new FakeHistory([{ path: "/" }]));
         expect(openRoute("/chat/b/b1")).toBe(true);
@@ -1445,6 +1456,15 @@ describe("openRoute (a notification's chat)", () => {
         expect(screen()).toBe(CHAT_B);
         expect(history.path).toBe("/chat/b/b1");
         expect(history.log).toEqual(["replace /", "push /chat/b/b1"]);
+        expect(ShowLatestMessageStore.value).toBe(true);
+    });
+
+    it("asks for the newest message of a chat that is already open", () => {
+        start(new FakeHistory([{ path: "/chat/b/b1" }]));
+        flushSync();
+        expect(screen()).toBe(CHAT_B);
+        expect(openRoute("/chat/b/b1")).toBe(true);
+        expect(ShowLatestMessageStore.value).toBe(true);
     });
 
     it("closes an open layer before showing the chat", () => {
@@ -1466,6 +1486,7 @@ describe("openRoute (a notification's chat)", () => {
         expect(openRoute("https://evil.test/chat/a/a1")).toBe(false);
         flushSync();
         expect(screen()).toBe(HOME);
+        expect(ShowLatestMessageStore.value).toBe(false);
         expect(get(settingsOpen)).toBe(false);
         expect(history.paths()).toEqual(["[/]"]);
         stop!();

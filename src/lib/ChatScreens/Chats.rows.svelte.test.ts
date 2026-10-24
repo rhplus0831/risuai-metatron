@@ -83,6 +83,9 @@ vi.mock("src/ts/storage/chatStore.svelte", () => {
     const selection = $state({ chaId: "c", chatId: "chat" });
     // Chat key → the entry that chat shows as streaming.
     const streaming: Record<string, { messageId: string; mode: string }> = $state({});
+    // Chat key → its messages locked by a generation, and those of them that streamed.
+    const locks: Record<string, string[]> = $state({});
+    const streamed: Record<string, string[]> = $state({});
     return {
         currentChatRef: () => selection,
         selectedChatId: () => selection.chatId,
@@ -95,6 +98,18 @@ vi.mock("src/ts/storage/chatStore.svelte", () => {
             if (entry === null) delete streaming[`${ref.chaId}/${ref.chatId}`];
             else streaming[`${ref.chaId}/${ref.chatId}`] = entry;
         },
+        isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
+            ref !== null && messageId !== undefined && !!locks[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+        isMessageStreamed: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
+            ref !== null && messageId !== undefined && !!streamed[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+        setLockedMessages: (
+            ref: { chaId: string; chatId: string },
+            messageIds: string[],
+            streamedIds: string[] = [],
+        ) => {
+            locks[`${ref.chaId}/${ref.chatId}`] = messageIds;
+            streamed[`${ref.chaId}/${ref.chatId}`] = streamedIds;
+        },
     };
 });
 vi.mock("src/ts/globalApi.svelte", () => {
@@ -104,6 +119,7 @@ vi.mock("src/ts/globalApi.svelte", () => {
 
 import { chatFoldedStateMessageIndex as folded } from "src/ts/globalApi.svelte";
 import { getCharImage } from "src/ts/characters";
+import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { currentChatRef, setStreamingState } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { ReloadChatPointer } from "src/ts/stores.svelte";
@@ -139,6 +155,10 @@ class Observer {
         flushSync();
     }
 }
+// The mock's own setter: the real module has none.
+const { setLockedMessages } = chatStore as unknown as {
+    setLockedMessages: (ref: { chaId: string; chatId: string }, messageIds: string[], streamedIds?: string[]) => void;
+};
 const instances: ReturnType<typeof mount>[] = [];
 const messages = (count: number): Message[] =>
     Array.from({ length: count }, (_, i) => ({ chatId: `m${i}`, data: `text ${i}`, role: i % 2 ? "user" : "char" }));
@@ -206,8 +226,10 @@ beforeEach(() => {
         theme: "standard",
         autoScrollToNewMessage: false,
         alwaysScrollToNewMessage: false,
+        scrollToReplyStartAfterStreaming: true,
         chatLoadAdditionalPages: 15,
     });
+    setLockedMessages({ chaId: "c", chatId: "chat" }, []);
     folded.index = -1;
     ReloadChatPointer.set({});
     vi.mocked(getCharImage).mockClear();
@@ -544,6 +566,8 @@ describe("new reply notification", () => {
     it("reads the bottom before a same-chat character append and marks an unread reply", () => {
         settings.ui.autoScrollToNewMessage = true;
         const { props, scroller, append, ids } = render();
+        // The reader scrolls away from the newest message the opening showed.
+        scroller.dispatchEvent(new Event("wheel"));
         const oldIds = ids();
         const observedIds: (string | undefined)[][] = [];
         Object.defineProperty(scroller, "scrollTop", {
@@ -1120,5 +1144,209 @@ describe("opening staged mounting", () => {
         await flushWaits(3000);
         expect(state.rows).toHaveLength(6);
         expect(vi.getTimerCount()).toBe(0);
+    });
+});
+
+describe("latest message scroll anchor", () => {
+    const chat = { chaId: "c", chatId: "chat" };
+    let callbacks: (() => void)[] = [];
+    const resize = () => {
+        for (const callback of callbacks) callback();
+        flushSync();
+    };
+
+    beforeEach(() => {
+        callbacks = [];
+        vi.stubGlobal(
+            "ResizeObserver",
+            class {
+                callback: () => void;
+                constructor(callback: ResizeObserverCallback) {
+                    this.callback = () => callback([], this as never);
+                    callbacks.push(this.callback);
+                }
+                observe() {}
+                disconnect() {
+                    callbacks = callbacks.filter((item) => item !== this.callback);
+                }
+            },
+        );
+    });
+
+    // Rows are laid out in the 100..500 scroller by their top at scrollTop 0. The scroller is
+    // reversed, so a more negative scrollTop moves every row down by as much.
+    function anchored(input = messages(6)) {
+        const natural = new Map<string, { top: number; height: number }>();
+        const ui = render(input);
+        const measured = new WeakSet<Element>();
+        // Mounted rows only: a row is empty, so unmeasured, until its content mounts.
+        const measure = () => {
+            for (const row of ui.scroller.querySelectorAll<HTMLElement>(".chat-message-container")) {
+                if (measured.has(row)) continue;
+                measured.add(row);
+                vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => {
+                    const box = natural.get(row.dataset.messageId ?? "");
+                    if (!box) return new DOMRect(0, 0, 300, 0);
+                    return new DOMRect(0, box.top - ui.scroller.scrollTop, 300, box.height);
+                });
+            }
+        };
+        measure();
+        const push = (message: Message) => {
+            ui.props.messages.push(message);
+            flushSync();
+            measure();
+        };
+        return { ...ui, natural, push };
+    }
+
+    it("opens at the newest message's start, keeps it there as it renders, and lets the reader take over", () => {
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        // The message renders taller: in the reversed scroller its top moves up.
+        ui.natural.set("m5", { top: -400, height: 900 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-500);
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.natural.set("m5", { top: -600, height: 1100 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-500);
+    });
+
+    it("keeps the bottom for a newest message shorter than the view", () => {
+        const ui = anchored();
+        ui.natural.set("m5", { top: 300, height: 200 });
+        resize();
+        expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
+    });
+
+    it("does not release the anchor for a click in a row or keys typed in an input", () => {
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        const row = ui.scroller.querySelector(".chat-message-container")!;
+        row.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+        const input = document.createElement("textarea");
+        ui.scroller.append(input);
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+        ui.natural.set("m5", { top: -400, height: 900 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-500);
+        ui.scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }));
+        ui.natural.set("m5", { top: -600, height: 1100 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-500);
+    });
+
+    it("shows a reply that arrives whole from its start, locked or not", () => {
+        settings.ui.autoScrollToNewMessage = true;
+        const ui = anchored();
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.push({ chatId: "m6", data: "a whole reply", role: "char" });
+        ui.natural.set("m6", { top: -100, height: 600 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-200);
+
+        // The server locks a whole reply until its tail writes; the release keeps its start.
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.scroller.scrollTop = 0;
+        setLockedMessages(chat, ["m7"]);
+        ui.push({ chatId: "m7", data: "another whole reply", role: "char" });
+        ui.natural.set("m7", { top: -300, height: 800 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-400);
+        setLockedMessages(chat, []);
+        flushSync();
+        expect(ui.scroller.scrollTop).toBe(-400);
+    });
+
+    it("leaves a whole reply where the reader scrolled when its lock ends", () => {
+        settings.ui.autoScrollToNewMessage = true;
+        const ui = anchored();
+        setLockedMessages(chat, ["m6"]);
+        ui.push({ chatId: "m6", data: "a whole reply", role: "char" });
+        ui.natural.set("m6", { top: -300, height: 800 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-400);
+        // The reader reads on to the bottom before the job's tail work ends.
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.scroller.scrollTop = 0;
+        setLockedMessages(chat, []);
+        flushSync();
+        expect(ui.scroller.scrollTop).toBe(0);
+    });
+
+    it("keeps the start through a continue that never streams, the streaming setting off", () => {
+        settings.ui.autoScrollToNewMessage = true;
+        settings.ui.scrollToReplyStartAfterStreaming = false;
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        // The continue's `accepted` makes the message this tab's streaming entry before any text.
+        setLockedMessages(chat, ["m5"]);
+        setStreamingState(chat, { messageId: "m5", mode: "off" });
+        flushSync();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        ui.props.messages[5].data = "message 5, continued";
+        ui.natural.set("m5", { top: -400, height: 900 });
+        resize();
+        setStreamingState(chat, null);
+        setLockedMessages(chat, []);
+        flushSync();
+        expect(ui.scroller.scrollTop).toBe(-500);
+    });
+
+    it.each([
+        ["this tab's stream moves to its start", true, true, -400],
+        ["this tab's stream stays at the bottom with the setting off", true, false, 0],
+        ["another tab's stream stays at the bottom with the setting off", false, false, 0],
+    ])("follows a streamed reply at the bottom and, when it ends, %s", (_name, ownJob, enabled, expected) => {
+        settings.ui.autoScrollToNewMessage = true;
+        settings.ui.scrollToReplyStartAfterStreaming = enabled;
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        // The reader's send moves a followed transcript to the bottom.
+        ui.push({ chatId: "m6", data: "my turn", role: "user" });
+        expect(ui.scroller.scrollTop).toBe(0);
+        setLockedMessages(chat, ["m7"]);
+        ui.push({ chatId: "m7", data: "", role: "char" });
+        // Only this tab's job sets a streaming entry; another tab's shows through the feed lock.
+        if (ownJob) setStreamingState(chat, { messageId: "m7", mode: "off" });
+        setLockedMessages(chat, ["m7"], ["m7"]);
+        flushSync();
+        ui.props.messages[7].data = "a long streamed reply";
+        flushSync();
+        ui.natural.set("m7", { top: -300, height: 800 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(0);
+        setStreamingState(chat, null);
+        setLockedMessages(chat, []);
+        flushSync();
+        expect(ui.scroller.scrollTop).toBe(expected);
+    });
+
+    it("opens a chat whose newest message streams at the bottom", () => {
+        setLockedMessages(chat, ["m5"], ["m5"]);
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(0);
+    });
+
+    it("leaves a reader who scrolled up during the stream where they are", () => {
+        settings.ui.autoScrollToNewMessage = true;
+        const ui = anchored();
+        setLockedMessages(chat, ["m6"], ["m6"]);
+        ui.push({ chatId: "m6", data: "", role: "char" });
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.scroller.scrollTop = -120;
+        ui.natural.set("m6", { top: -300, height: 800 });
+        setLockedMessages(chat, []);
+        flushSync();
+        expect(ui.scroller.scrollTop).toBe(-120);
     });
 });

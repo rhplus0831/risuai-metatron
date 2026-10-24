@@ -29,6 +29,7 @@
         createSimpleCharacter,
         hypaV3ModalOpen,
         ScrollToMessageStore,
+        ShowLatestMessageStore,
         additionalChatMenu,
         additionalFloatingActionButtons,
         chatPanelStore,
@@ -187,6 +188,14 @@
     function scrollToBottom() {
         chatsInstance?.scrollToLatestMessage();
     }
+    // A notification's chat, open already or not: its newest message from the start, wherever the
+    // reader left it. A chat that opens anew is aligned by its opening too.
+    $effect(() => {
+        if (ShowLatestMessageStore.value) {
+            ShowLatestMessageStore.value = false;
+            void tick().then(() => chatsInstance?.scrollToLatestMessage());
+        }
+    });
     $effect(() => {
         if (ScrollToMessageStore.value !== -1) {
             const index = ScrollToMessageStore.value;
@@ -478,6 +487,23 @@
         await sendChatMain(continueResponse, ref, serverInput);
     }
 
+    // A swiped reply reads from its start, like a new one, while the reader follows the newest
+    // message. Read before the swap; the transcript shows it after the next flush.
+    function followsSwap() {
+        return (
+            !!settings.ui.autoScrollToNewMessage &&
+            !takingScreenshot &&
+            !isScrollingToMessage &&
+            (!!settings.ui.alwaysScrollToNewMessage || !!chatsInstance?.followsLatest())
+        );
+    }
+    async function showSwappedReply(ref: ChatRef, follow: boolean) {
+        if (!follow) return;
+        await tick();
+        const now = currentChatRef();
+        if (now?.chaId === ref.chaId && now.chatId === ref.chatId) chatsInstance?.scrollToLatestMessage();
+    }
+
     async function reroll() {
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -495,12 +521,16 @@
         if (genId) {
             const r = Prereroll(genId);
             if (r !== null) {
+                const follow = followsSwap();
                 setMessageText(ref, lastMessage.chatId, r);
+                void showSwappedReply(ref, follow);
                 return;
             }
         }
         if (rerollHistory.canForward(ref)) {
+            const follow = followsSwap();
             rerollHistory.forward(ref);
+            void showSwappedReply(ref, follow);
             return;
         }
         const orphans = chatOrphanedOverrideEntries(ref);
@@ -563,11 +593,14 @@
         if (genId) {
             const r = PreUnreroll(genId);
             if (r !== null) {
+                const follow = followsSwap();
                 setMessageText(ref, lastMessage.chatId, r);
+                void showSwappedReply(ref, follow);
                 return;
             }
         }
-        rerollHistory.back(ref);
+        const follow = followsSwap();
+        if (rerollHistory.back(ref)) void showSwappedReply(ref, follow);
     }
 
     // This screen's sends by chat: Stop aborts the selected chat's.

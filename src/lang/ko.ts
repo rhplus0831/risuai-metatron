@@ -2123,6 +2123,7 @@ export const languageKorean = {
     aiGenerationWarning: "콘텐츠는 AI로 생성되며 부정확하거나 편향된 정보가 포함될 수 있습니다.",
     autoScrollToNewMessage: "새 메시지로 자동 스크롤",
     alwaysScrollToNewMessage: "항상 새 메시지로 스크롤 (스크롤 위치 무시)",
+    scrollToReplyStartAfterStreaming: "스트리밍이 끝나면 응답의 시작으로 스크롤",
     newMessage: "새 메시지",
     newMessageButtonStyle: "새 메시지 버튼 스타일",
     newMessageButtonBottomCenter: "하단 중앙 (기본값)",

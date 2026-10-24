@@ -265,27 +265,31 @@ describe("chat message interactions", () => {
         expect(element.querySelector(".message-edit-area")).toBeNull();
     });
 
-    it("cancels pending auto-scroll and marks appended replies unread while a jump owns scrolling", async () => {
+    it("leaves the scroll position to a jump and marks appended replies unread while it owns scrolling", async () => {
         settings.ui.autoScrollToNewMessage = true;
         settings.ui.alwaysScrollToNewMessage = true;
         const { element, props, instance } = renderChats();
         await settle(10);
         await instance.whenRendered();
-        const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+        // happy-dom has no layout: every row sits 50px from the top of the page and is 400px tall,
+        // and the scroller starts at 100px.
+        vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+            return this === element ? new DOMRect(0, 100, 300, 400) : new DOMRect(0, 50, 300, 400);
+        });
         appendMessage(ref, { chatId: "before-jump", role: "char", data: "Before the jump" });
         flushSync();
+        // The reversed scroller moves up by the 50px the new reply's top sits above it.
+        expect(element.scrollTop).toBe(-50);
 
         props.suspendTrim = true;
         flushSync();
         element.scrollTop = -200;
         await settle(1000);
-        expect(scroll).not.toHaveBeenCalled();
         expect(element.scrollTop).toBe(-200);
 
         appendMessage(ref, { chatId: "during-jump", role: "char", data: "During the jump" });
         flushSync();
         await settle(1000);
-        expect(scroll).not.toHaveBeenCalled();
         expect(element.scrollTop).toBe(-200);
         expect(props.hasNewUnreadMessage).toBe(true);
 
@@ -293,8 +297,7 @@ describe("chat message interactions", () => {
         flushSync();
         appendMessage(ref, { chatId: "after-jump", role: "char", data: "After the jump" });
         flushSync();
-        await settle(1000);
-        expect(scroll).toHaveBeenCalledOnce();
+        expect(element.scrollTop).toBe(-250);
     });
 });
 

@@ -36,6 +36,14 @@ export const accessibilitySettingsItems: SettingItem[] = [
         keywords: ["always", "scroll", "new", "message"],
     },
     {
+        id: "acc.scrollToReplyStartAfterStreaming",
+        type: "check",
+        labelKey: "scrollToReplyStartAfterStreaming",
+        bindKey: "scrollToReplyStartAfterStreaming",
+        condition: (ctx) => ctx.settings.ui.autoScrollToNewMessage,
+        keywords: ["scroll", "stream", "streaming", "reply", "start"],
+    },
+    {
         id: "acc.newMessageButtonStyle",
         type: "select",
         labelKey: "newMessageButtonStyle",
@@ -78,6 +86,7 @@ export const accessibilitySettingsSections: SettingSection[] = [
         items: itemsById(accessibilitySettingsItems, [
             "acc.autoScrollToNewMessage",
             "acc.alwaysScrollToNewMessage",
+            "acc.scrollToReplyStartAfterStreaming",
             "acc.newMessageButtonStyle",
         ]),
     },

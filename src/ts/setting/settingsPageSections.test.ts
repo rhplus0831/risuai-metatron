@@ -109,6 +109,7 @@ const DEPENDENT_PAIRS: [string, string][] = [
     // Not a condition, but the minimum only means something with auto-continue on.
     ["adv.autoCont", "adv.autoContinueMin"],
     ["acc.autoScrollToNewMessage", "acc.alwaysScrollToNewMessage"],
+    ["acc.autoScrollToNewMessage", "acc.scrollToReplyStartAfterStreaming"],
     ["acc.autoScrollToNewMessage", "acc.newMessageButtonStyle"],
     ["acc.alwaysScrollToNewMessage", "acc.newMessageButtonStyle"],
     ["lang.translatorLang", "lang.translatorType"],

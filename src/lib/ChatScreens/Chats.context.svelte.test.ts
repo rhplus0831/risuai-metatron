@@ -34,6 +34,8 @@ vi.mock("src/ts/storage/chatStore.svelte", () => ({
     currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
     selectedChatId: () => "chat",
     streamingEntry: () => null,
+    isMessageLocked: () => false,
+    isMessageStreamed: () => false,
 }));
 vi.mock("src/ts/globalApi.svelte", () => ({ chatFoldedStateMessageIndex: { index: -1 } }));
 

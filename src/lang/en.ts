@@ -2339,6 +2339,7 @@ export const languageEnglish = {
     disableAbove: "Cut Messages for AI",
     autoScrollToNewMessage: "Auto scroll to new message",
     alwaysScrollToNewMessage: "Always scroll to new message (ignore scroll position)",
+    scrollToReplyStartAfterStreaming: "Scroll to the start of a reply when its streaming ends",
     newMessage: "New Message",
     newMessageButtonStyle: "New Message Button Style",
     newMessageButtonBottomCenter: "Bottom Center (Default)",

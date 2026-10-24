@@ -123,7 +123,7 @@ All of these live in `src/ts/stores.svelte.ts`.
 - The Checkpoints dialog and its busy state live in `src/ts/checkpoints/chatCheckpoints.svelte.ts`, not here; see [ui-theming](ui-theming.md). Its load blocks global hotkeys until the save, request, and refresh finish.
 - Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay), `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, the picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and `ChatPanelDef`.
-- Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore` (custom CSS and GUI HTML off: the `toggleCSS` hotkey, or a safe boot's `css` category), `CharEmotion`, `ScrollToMessageStore`, `hotReloading`, `disableHighlight`.
+- Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore` (custom CSS and GUI HTML off: the `toggleCSS` hotkey, or a safe boot's `css` category), `CharEmotion`, `ScrollToMessageStore`, `ShowLatestMessageStore` (set by `openRoute` for a notification's chat; the chat screen consumes it), `hotReloading`, `disableHighlight`.
 - Root `$effect`: reruns `moduleUpdate` when module, chat, or background dependencies change.
 
 ## Coupling

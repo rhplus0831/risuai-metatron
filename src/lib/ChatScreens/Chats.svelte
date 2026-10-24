@@ -6,7 +6,14 @@
     import Chat from "./Chat.svelte";
     import { getCharImage } from "src/ts/characters";
     import { createSimpleCharacter, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
-    import { type ChatRef, currentChatRef, selectedChatId, streamingEntry } from "src/ts/storage/chatStore.svelte";
+    import {
+        type ChatRef,
+        currentChatRef,
+        isMessageLocked,
+        isMessageStreamed,
+        selectedChatId,
+        streamingEntry,
+    } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
 
@@ -119,6 +126,81 @@
         };
     });
 
+    // Where the transcript stays while its content changes size. "start" keeps a row's top at the top
+    // of the scroller, so the newest message reads from its start; "end" keeps the bottom, so a reply
+    // being generated stays in view. Input that scrolls the transcript releases it to the reader.
+    type ScrollAnchor = { mode: "start"; element: Element } | { mode: "end" };
+    let anchor: ScrollAnchor | null = null;
+
+    function applyAnchor() {
+        const scroller = chatBody?.parentElement;
+        if (!anchor || !scroller) return;
+        // A removed row (a reroll's or a deletion's) hands following over to the bottom.
+        if (anchor.mode === "start" && !anchor.element.isConnected) anchor = { mode: "end" };
+        let target = 0;
+        if (anchor.mode === "start") {
+            const rect = anchor.element.getBoundingClientRect();
+            // A new row is empty until its content mounts on the next flush; the resize observer
+            // aligns it once it has a height.
+            if (rect.height === 0) return;
+            // Measured rather than scrollIntoView, which can also scroll the scroller's own ancestors
+            // (the document, on mobile). The scroller is reversed: 0 is the bottom, and a row shorter
+            // than the view leaves it there.
+            target = Math.min(0, scroller.scrollTop + rect.top - scroller.getBoundingClientRect().top);
+        }
+        if (Math.abs(scroller.scrollTop - target) >= 1) scroller.scrollTop = target;
+    }
+
+    function setAnchor(next: ScrollAnchor | null) {
+        anchor = next;
+        applyAnchor();
+    }
+
+    // The newest row, from its start, or the bottom while its message streams or waits empty for it.
+    function latestAnchor(): ScrollAnchor | null {
+        const element = chatBody?.firstElementChild;
+        if (!element) return null;
+        const tail = messages.at(-1);
+        const waiting = tailGenerating && tail?.role === "char" && !tail.data;
+        return tailStreamed || waiting ? { mode: "end" } : { mode: "start", element };
+    }
+
+    const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+    $effect(() => {
+        const body = chatBody;
+        const scroller = body?.parentElement;
+        if (!scroller) return;
+        const release = () => {
+            anchor = null;
+        };
+        // Only a press on the scroller itself (its scrollbar); a click in a row or the composer does not scroll.
+        const pointer = (event: PointerEvent) => {
+            if (event.target === scroller) release();
+        };
+        const key = (event: KeyboardEvent) => {
+            const target = event.target as HTMLElement | null;
+            if (scrollKeys.has(event.key) && !target?.closest?.("input, textarea, select, [contenteditable]")) {
+                release();
+            }
+        };
+        scroller.addEventListener("wheel", release, { passive: true });
+        scroller.addEventListener("touchmove", release, { passive: true });
+        scroller.addEventListener("pointerdown", pointer, { passive: true });
+        scroller.addEventListener("keydown", key);
+        // Rows render their markdown and images after mounting; the viewport can resize too. Both run
+        // before paint, so the anchored position never shows out of place.
+        const resize = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => applyAnchor());
+        resize?.observe(scroller);
+        resize?.observe(body);
+        return () => {
+            resize?.disconnect();
+            scroller.removeEventListener("wheel", release);
+            scroller.removeEventListener("touchmove", release);
+            scroller.removeEventListener("pointerdown", pointer);
+            scroller.removeEventListener("keydown", key);
+        };
+    });
+
     type RevealRow = { row: Row; settled: boolean; wait?: AbortController };
     type RevealBatch = { rows: RevealRow[]; next: number };
     let revealBatch: RevealBatch | undefined;
@@ -220,7 +302,7 @@
 
     $effect(() => {
         if (capturing || suspendTrim) {
-            clearTimeout(scrollTimer);
+            anchor = null;
             armDeferredRows();
             finishReveal();
         }
@@ -499,7 +581,7 @@
         window: number,
         folded: number,
         deferRemoval: boolean,
-    ) {
+    ): boolean {
         const chatKey = ref ? `${ref.chaId}\u0000${ref.chatId}` : "";
         let loadStart = structure.length - 1;
         let loadEnd = structure.length - window;
@@ -574,6 +656,7 @@
             }
             startReveal(shown);
         }
+        return opening;
     }
 
     // Called before changing the DOM, only on an append at the bottom of this same open chat.
@@ -604,11 +687,10 @@
         return onTrim(keep);
     }
 
-    let scrollTimer: ReturnType<typeof setTimeout>;
     onDestroy(() => {
+        anchor = null;
         armDeferredRows();
         finishReveal();
-        clearTimeout(scrollTimer);
         cancelAnimationFrame(retireFrame);
         for (const instance of retired) unmount(instance);
         retired.clear();
@@ -630,17 +712,33 @@
         await Promise.all([...rows.values()].map((row) => row.instance?.whenRendered?.()));
     }
 
+    /** Whether the reader follows the newest message: anchored to it, or at the bottom. */
+    export function followsLatest() {
+        return anchor !== null || checkIfAtBottom();
+    }
+
     export const scrollToLatestMessage = () => {
         if (!chatBody) return;
         hasNewUnreadMessage = false;
-        const element = chatBody.firstElementChild;
-        if (element) {
-            element.scrollIntoView({ behavior: "instant", block: "start" });
-        }
+        setAnchor(latestAnchor());
     };
 
     let previousLength = 0;
     let previousChatRoomId: string | null = null;
+    let previousTailId: string | undefined;
+    let previousTailGenerating = false;
+    let previousTailStreamed = false;
+    // The newest message of this chat that streamed: its generation's end is the streaming end.
+    let streamedTailId: string | undefined;
+
+    // Lock changes in another chat recompute these, but rerun the diff below only when they flip.
+    const tailRef = () => {
+        const chatId = selectedChatId(currentCharacter.chaId);
+        return chatId === null ? null : { chaId: currentCharacter.chaId, chatId };
+    };
+    const tailGenerating = $derived(isMessageLocked(tailRef(), messages.at(-1)?.chatId));
+    // Only chunks count: a whole reply is locked too, and a continue is announced before any text.
+    const tailStreamed = $derived(isMessageStreamed(tailRef(), messages.at(-1)?.chatId));
 
     $effect(() => {
         if (!chatBody) return;
@@ -660,15 +758,56 @@
         const window = loadPages;
         const folded = chatFoldedStateMessageIndex.index;
         void $ReloadChatPointer;
+        const generating = tailGenerating;
+        const streamed = tailStreamed;
         const room = getCurrentChatRoomId();
-        const append = room === previousChatRoomId && structure.length > previousLength;
-        const autoScroll = append && structure.at(-1)?.role === "char" && settings.ui.autoScrollToNewMessage;
+        const sameRoom = room === previousChatRoomId;
+        const append = sameRoom && structure.length > previousLength;
+        const tail = structure.at(-1);
+        const tailId = tail?.chatId;
         untrack(() => {
-            // Both geometry decisions precede the DOM update. The at-bottom read for auto-scroll
-            // is gated first; a text chunk reaches neither this effect nor the row diff.
-            const wasAtBottom = autoScroll && checkIfAtBottom();
+            // A new generation of the newest message (a continue) streams or not anew.
+            if (!sameRoom || (generating && !previousTailGenerating)) streamedTailId = undefined;
+            const streamStarted = streamed && !(sameRoom && previousTailStreamed);
+            if (streamed) streamedTailId = tailId;
+            // Geometry is read before the DOM update, and only when the decision needs it; a text
+            // chunk reaches neither this effect nor the row diff.
+            const following = () => anchor !== null || checkIfAtBottom();
+            const autoScroll = settings.ui.autoScrollToNewMessage;
+            const always = settings.ui.alwaysScrollToNewMessage;
+            let next: ScrollAnchor["mode"] | "release" | undefined;
+            if (append && tail && tailId !== previousTailId) {
+                // A streamed reply starts empty and is followed at the bottom; a reply that arrives
+                // whole (locked until the job's tail writes) is shown from its start.
+                const placeholder = streamed || (tail.role === "char" && !tail.data);
+                if (tail.role !== "char") {
+                    // The reader's own send keeps a followed transcript at its bottom.
+                    if (anchor) next = "end";
+                } else if (!autoScroll) {
+                    if (anchor) next = "release";
+                } else if (!suspendTrim && (always || following())) {
+                    next = placeholder ? "end" : "start";
+                } else {
+                    hasNewUnreadMessage = true;
+                }
+            } else if (sameRoom && tail && tailId === previousTailId) {
+                if (streamStarted) {
+                    // The newest message streams (a continue, or a placeholder appended unlocked).
+                    if (anchor) next = "end";
+                } else if (previousTailGenerating && !generating) {
+                    if (streamedTailId === tailId) {
+                        const enabled = autoScroll && (settings.ui.scrollToReplyStartAfterStreaming ?? true);
+                        if (enabled && !suspendTrim && (always || following())) next = "start";
+                    } else if (anchor) {
+                        // A generation that never streamed (a whole reply's tail work, a continue
+                        // without streaming, an empty placeholder that failed) ends at its start,
+                        // unless the reader has scrolled since.
+                        next = "start";
+                    }
+                }
+            }
             const keep = append ? trimWindow(structure.length) : undefined;
-            updateChatBody(
+            const opened = updateChatBody(
                 structure,
                 ref,
                 streamingId,
@@ -678,17 +817,20 @@
                 folded,
                 keep !== undefined,
             );
-            if (autoScroll) {
-                if (!suspendTrim && (wasAtBottom || settings.ui.alwaysScrollToNewMessage)) {
-                    clearTimeout(scrollTimer);
-                    const element = chatBody.firstElementChild;
-                    scrollTimer = setTimeout(() => {
-                        if (element?.isConnected) element.scrollIntoView({ behavior: "instant", block: "start" });
-                    }, 700);
-                } else {
-                    hasNewUnreadMessage = true;
-                }
+            if (opened && !capturing && !suspendTrim && folded === -1) {
+                // Entering a chat shows its newest message from the start, not its end.
+                setAnchor(latestAnchor());
+            } else if (next === "release") {
+                anchor = null;
+            } else if (next === "end") {
+                setAnchor({ mode: "end" });
+            } else if (next === "start") {
+                const element = chatBody.firstElementChild;
+                if (element) setAnchor({ mode: "start", element });
             }
+            previousTailId = tailId;
+            previousTailGenerating = generating;
+            previousTailStreamed = streamed;
             previousLength = structure.length;
             previousChatRoomId = room;
         });

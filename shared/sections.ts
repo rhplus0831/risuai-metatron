@@ -273,6 +273,7 @@ export const SECTION_FIELDS = {
         "hideAllImages",
         "autoScrollToNewMessage",
         "alwaysScrollToNewMessage",
+        "scrollToReplyStartAfterStreaming",
         "newMessageButtonStyle",
         "chatLoadInitialPages",
         "chatLoadAdditionalPages",

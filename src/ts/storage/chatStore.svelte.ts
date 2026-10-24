@@ -268,6 +268,8 @@ const noticedChats = new Map<string, { seq: number; revision: string | null }>()
 let noticeSeq = 0;
 /** Bumped when `serverGenerations` or `feedLocks` changes, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
+// Bumped by a generation's first chunk in this tab (`isMessageStreamed`), apart from the lock readers.
+const streamedState = $state({ version: 0 });
 /**
  * Messages a server generation job writes (`messageKeyOf`) → the job, its generation, the last
  * chunk's sequence, and the streamed text (put back after a chat hydration).
@@ -282,12 +284,13 @@ const serverWatermarks = new Map<string, { generationId: string; seq: number }>(
 const retiredGenerations = new Set<string>();
 /**
  * Messages (`messageKeyOf`) the change feed announced as locked by a generation job of any tab or
- * device (`noteRemoteStreaming`, `replaceFeedLocks`) → the generation and the chat revision of the
- * frame or snapshot that announced it (null: none). A lock only: no stream text, no watermark, no
+ * device (`noteRemoteStreaming`, `replaceFeedLocks`) → the generation, the chat revision of the
+ * frame or snapshot that announced it (null: none), and whether an announcement of that generation
+ * said its stored text holds a streamed chunk (`seq` above 0). A lock only: no stream text, no watermark, no
  * retirement, and it never holds the save loop's reads, patches, or reloads (`isChatStreamedHere`).
  * Independent of this tab's job events: losing a follow does not release the feed lock.
  */
-const feedLocks = new Map<string, { generationId: string; revision: string | null }>();
+const feedLocks = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
 /**
  * Per chat: the newest job chat event whose metadata (streaming, releases) was taken, applied or
  * not; an older event's metadata is ignored. The entry's identity fences reads that reuse metadata.
@@ -991,6 +994,21 @@ function lockedKeys(): string[] {
     return [...serverGenerations.keys(), ...feedLocks.keys()];
 }
 
+/**
+ * Whether a locked message streams (reactive): a chunk of this tab's job reached it, or the change
+ * feed announced a stored copy holding one. A reply that arrives whole, and a continue's `accepted`
+ * before any text, do not count. Released messages are false.
+ */
+export function isMessageStreamed(ref: ChatRef | null, messageId: string | undefined): boolean {
+    void lockState.version;
+    void streamedState.version;
+    if (ref === null || messageId === undefined) {
+        return false;
+    }
+    const messageKey = messageKeyOf(ref, messageId);
+    return (serverGenerations.get(messageKey)?.seq ?? 0) > 0 || !!feedLocks.get(messageKey)?.streamed;
+}
+
 /** The message `ref`'s chat shows as streaming, with its display optimization mode (reactive; null: none). */
 export function streamingEntry(ref: ChatRef | null): StreamingEntry | null {
     const entry = ref === null ? undefined : streamingChats[keyOf(ref.chaId, ref.chatId)];
@@ -1170,6 +1188,9 @@ export function applyServerGeneration(
     if (!existing) {
         lockState.version += 1;
     }
+    if (update.seq > 0 && !(existing?.generationId === update.generationId && existing.seq > 0)) {
+        streamedState.version += 1;
+    }
     if (firstUpdate) {
         streamingChats[keyOf(ref.chaId, ref.chatId)] = {
             messageId: update.messageId,
@@ -1280,17 +1301,22 @@ export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes
         const revision =
             changes?.chats.find((entry) => entry.characterId === chat.characterId && entry.id === chat.id)?.revision ??
             null;
-        const listed = new Map(chat.streaming.map((entry) => [entry.messageId, entry.generationId]));
+        const listed = new Map(chat.streaming.map((entry) => [entry.messageId, entry]));
         for (const [messageKey, lock] of [...feedLocks]) {
-            if (messageKey.startsWith(prefix) && listed.get(messageKey.slice(prefix.length)) !== lock.generationId) {
+            if (
+                messageKey.startsWith(prefix) &&
+                listed.get(messageKey.slice(prefix.length))?.generationId !== lock.generationId
+            ) {
                 feedLocks.delete(messageKey);
                 moved = true;
             }
         }
-        for (const [messageId, generationId] of listed) {
+        for (const [messageId, { generationId, seq }] of listed) {
             const messageKey = `${prefix}${messageId}`;
-            moved ||= !feedLocks.has(messageKey);
-            feedLocks.set(messageKey, { generationId, revision });
+            const current = feedLocks.get(messageKey);
+            const streamed = seq > 0 || (current?.generationId === generationId && current.streamed);
+            moved ||= !current || current.streamed !== streamed;
+            feedLocks.set(messageKey, { generationId, revision, streamed });
         }
     }
     if (moved) {
@@ -1304,12 +1330,15 @@ export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes
  * Only feed locks change; this tab's job events and stream state remain independent.
  */
 export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
-    const desired = new Map<string, { generationId: string; revision: string | null }>();
+    const desired = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
     for (const chat of snapshot) {
-        for (const { messageId, generationId } of chat.streaming) {
-            desired.set(messageKeyOf({ chaId: chat.characterId, chatId: chat.id }, messageId), {
+        for (const { messageId, generationId, seq } of chat.streaming) {
+            const messageKey = messageKeyOf({ chaId: chat.characterId, chatId: chat.id }, messageId);
+            const current = feedLocks.get(messageKey);
+            desired.set(messageKey, {
                 generationId,
                 revision: chat.revision,
+                streamed: seq > 0 || (current?.generationId === generationId && current.streamed),
             });
         }
     }
@@ -1322,7 +1351,11 @@ export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
     }
     for (const [messageKey, lock] of desired) {
         const current = feedLocks.get(messageKey);
-        if (current?.generationId !== lock.generationId || current?.revision !== lock.revision) {
+        if (
+            current?.generationId !== lock.generationId ||
+            current?.revision !== lock.revision ||
+            current?.streamed !== lock.streamed
+        ) {
             feedLocks.set(messageKey, lock);
             moved = true;
         }

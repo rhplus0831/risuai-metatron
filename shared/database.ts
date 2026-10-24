@@ -534,6 +534,7 @@ export interface Database {
     hideAllImages?: boolean;
     autoScrollToNewMessage?: boolean;
     alwaysScrollToNewMessage?: boolean;
+    scrollToReplyStartAfterStreaming?: boolean;
     newMessageButtonStyle?: string;
     chatLoadInitialPages?: number;
     chatLoadAdditionalPages?: number;

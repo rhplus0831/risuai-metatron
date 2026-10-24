@@ -622,6 +622,7 @@
   },
   "autoScrollToNewMessage": true,
   "alwaysScrollToNewMessage": false,
+  "scrollToReplyStartAfterStreaming": true,
   "newMessageButtonStyle": "bottom-center",
   "chatLoadInitialPages": 30,
   "chatLoadAdditionalPages": 15,

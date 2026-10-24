@@ -36,6 +36,7 @@ export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresM
         ReloadChatPointer: writable<Record<string, number>>({}),
         reloadChatKey: vi.fn<StoresModule["reloadChatKey"]>((id, idx) => (id !== undefined ? `m:${id}` : `i:${idx}`)),
         ScrollToMessageStore: { value: -1 },
+        ShowLatestMessageStore: { value: false },
         OpenRealmStore: writable(false),
         PlaygroundStore: writable(0),
         HideIconStore: writable(false),

@@ -108,6 +108,7 @@ const spec: SectionSpec<"ui"> = {
     hideAllImages: ["boolean", false],
     autoScrollToNewMessage: ["boolean", true],
     alwaysScrollToNewMessage: ["boolean", false],
+    scrollToReplyStartAfterStreaming: ["boolean", true],
     newMessageButtonStyle: ["string", "bottom-center"],
     chatLoadInitialPages: ["number", 30],
     chatLoadAdditionalPages: ["number", 15],

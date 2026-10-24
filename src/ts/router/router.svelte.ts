@@ -1,6 +1,13 @@
 import { untrack } from "svelte";
 import { fromStore } from "svelte/store";
-import { gridOpenStore, OpenRealmStore, PlaygroundStore, SettingsMenuIndex, settingsOpen } from "../stores.svelte";
+import {
+    gridOpenStore,
+    OpenRealmStore,
+    PlaygroundStore,
+    SettingsMenuIndex,
+    settingsOpen,
+    ShowLatestMessageStore,
+} from "../stores.svelte";
 import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { findCharacter } from "../storage/characterStore.svelte";
 import { ensureChat, selectChat, selectedChatId } from "../storage/chatStore.svelte";
@@ -603,8 +610,9 @@ function settleRootInsertion() {
 
 /**
  * Shows the base route at `path` (a notification's chat): closes the layers and applies it to the
- * stores; the router's effect then pushes the URL. A path that is not a base route, or a call before
- * the router started, does nothing and returns false.
+ * stores; the router's effect then pushes the URL. A chat route also asks the chat screen for its
+ * newest message (`ShowLatestMessageStore`), since an already open chat does not open again. A path
+ * that is not a base route, or a call before the router started, does nothing and returns false.
  */
 export function openRoute(path: string): boolean {
     const route = parseRoute(path);
@@ -614,6 +622,9 @@ export function openRoute(path: string): boolean {
     untrack(() => {
         applyLayer(null);
         applyBase(route);
+        if (route.kind === "chat") {
+            ShowLatestMessageStore.value = true;
+        }
     });
     return true;
 }

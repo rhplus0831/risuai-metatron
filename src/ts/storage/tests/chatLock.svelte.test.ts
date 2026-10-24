@@ -134,3 +134,58 @@ describe("reactive lock readers", () => {
         stop();
     });
 });
+
+describe("isMessageStreamed", () => {
+    it("is true only once a chunk of this tab's job arrives, re-evaluating once per generation", () => {
+        const seen: boolean[] = [];
+        const stop = $effect.root(() => {
+            $effect(() => {
+                seen.push(chat.isMessageStreamed(ref, "a"));
+            });
+        });
+        flushSync();
+        // A continue's `accepted` locks the message before any text: not streamed.
+        chat.applyServerGeneration(ref, { jobId: "J2", messageId: "a", generationId: "g2", text: "A", seq: 0 });
+        flushSync();
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+        expect(seen).toEqual([false, false]);
+        chat.applyServerGeneration(ref, { jobId: "J2", messageId: "a", generationId: "g2", text: "A b", seq: 1 });
+        flushSync();
+        chat.applyServerGeneration(ref, { jobId: "J2", messageId: "a", generationId: "g2", text: "A b c", seq: 2 });
+        flushSync();
+        expect(seen).toEqual([false, false, true]);
+        chat.endServerJob("J2");
+        flushSync();
+        expect(seen).toEqual([false, false, true, false]);
+        stop();
+    });
+
+    it("follows the change feed's announced chunk for another tab's generation", () => {
+        const announce = (generationId: string, seq: number) =>
+            chat.noteRemoteStreaming([
+                { characterId: "c", id: "k", streaming: [{ messageId: "b", generationId, seq }] },
+            ]);
+        announce("f1", 0);
+        expect(chat.isMessageLocked(ref, "b")).toBe(true);
+        expect(chat.isMessageStreamed(ref, "b")).toBe(false);
+        announce("f1", 3);
+        expect(chat.isMessageStreamed(ref, "b")).toBe(true);
+        // A later announcement of the same generation keeps it; a new generation starts over.
+        announce("f1", 0);
+        expect(chat.isMessageStreamed(ref, "b")).toBe(true);
+        announce("f2", 0);
+        expect(chat.isMessageStreamed(ref, "b")).toBe(false);
+        chat.replaceFeedLocks([
+            {
+                characterId: "c",
+                id: "k",
+                revision: null,
+                streaming: [{ messageId: "b", generationId: "f2", seq: 1 }],
+            },
+        ]);
+        expect(chat.isMessageStreamed(ref, "b")).toBe(true);
+        chat.noteRemoteStreaming([{ characterId: "c", id: "k", streaming: [] }]);
+        expect(chat.isMessageLocked(ref, "b")).toBe(false);
+        expect(chat.isMessageStreamed(ref, "b")).toBe(false);
+    });
+});

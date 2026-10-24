@@ -41,6 +41,8 @@ vi.mock("src/ts/storage/chatStore.svelte", () => ({
         const messageId = ref === null ? undefined : hoisted.streaming.get(`${ref.chaId}/${ref.chatId}`);
         return messageId === undefined ? null : { messageId, mode: undefined };
     },
+    isMessageLocked: () => false,
+    isMessageStreamed: () => false,
 }));
 vi.mock("src/ts/globalApi.svelte", () => ({ chatFoldedStateMessageIndex: { index: -1 } }));
 
