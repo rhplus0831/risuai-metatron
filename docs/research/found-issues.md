@@ -8,8 +8,8 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (14)
-- [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (14)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (13)
+- [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (13)
 - [Lua scripting](#lua-scripting) (2)
 - [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (7)
 - [Lorebooks and modules](#lorebooks-and-modules) (4)
@@ -21,7 +21,7 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 - [Assets, MIME types, and the service worker](#assets-mime-types-and-the-service-worker) (6)
 - [Backup import](#backup-import) (1)
 - [Stale docs and comments](#stale-docs-and-comments) (12)
-- [Tests and tooling](#tests-and-tooling) (11)
+- [Tests and tooling](#tests-and-tooling) (10)
 
 ## Chat store, sync, and change feeds
 
@@ -64,7 +64,8 @@ Rechecked 2026-10-21 against the code: still present.
 Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `releaseFeedLocks`, `dropFeedLocksOf` in `src/ts/storage/chatStore.svelte.ts`) are advisory. A tab shows a generating reply unlocked (2a's `dropLockedEdits` then catches an edit) before the job's first write frame, after every feed `hello` (all feed locks dropped, `src/ts/network/eventFeed.ts`), and after an adopted whole read at a newer revision than the lock's frame (another writer changed the chat), until the job's next write re-announces the lock: every 3 s while streaming (`CHECKPOINT_INTERVAL_MS`), but a job waiting on its provider or a callback can write nothing for its whole remaining life. The server sends no lock snapshot on connect or with a chat read.
 
 **Why it matters:** these are the remaining paths for A4 (edit over the generating reply) and D7-style surprises.
-**Suggested handling:** if it matters, add an ownership snapshot to `hello` (server lock table → `ChatStreaming[]`) or to chat reads. Related: [Feed lock character predicate](#feed-lock-character-predicate).
+**Decision (2026-10-24):** the owner approved the `hello` snapshot (the server's current `ChatStreaming[]` sent with `hello`, replacing the client's drop-all on `hello`); a snapshot with chat reads stays out unless needed.
+**Suggested handling:** add an ownership snapshot to `hello` (server lock table → `ChatStreaming[]`) or to chat reads. Related: [Feed lock character predicate](#feed-lock-character-predicate).
 
 Rechecked 2026-10-21 against the code: still present.
 
@@ -149,16 +150,6 @@ Found by the CC3 challenger (2026-10-23). `src/ts/storage/chatStore.svelte.ts` ~
 
 **Suggested handling:** a fix (client, `src/ts/storage/chatStore.svelte.ts`) should discard queued unloaded-chat meta edits, or keep their old base, when a read's revision jumps past a load; then drop the hazard from `persistence.md`.
 
-### Chats seq traversal
-
-The `chats` table (`server/src/data/chatStore.ts` `CHAT_TABLES_SQL`) has only `UNIQUE (characterId, id)`. A query `WHERE characterId = ? AND seq < ? ORDER BY seq DESC LIMIT 1` picks that index and builds a temp B-tree per call: walking one character's chats is quadratic (Fable measured 2026-10-20, Node 24.21 / SQLite 3.53.4: 2000 chats 393 ms, 5000 chats 2.96 s). Writing `+characterId` makes SQLite walk the rowid descending (0.4–9 ms). Search slice 4a uses the `+characterId` form in `searchNextCharacterChat`.
-
-**Why it matters:** any new per-character newest-first traversal of chats repeats the trap; a real `(characterId, seq)` index was rejected in 4a as out of scope (the snapshot layout check is `PRAGMA table_info` only, so an `IF NOT EXISTS` index would be possible, like `chatGroups`).
-
-**Suggested handling:** use the unary-plus form, or propose the index as its own change if several readers need it.
-
-Rechecked 2026-10-21 against the code: still present.
-
 ### Store subscriber throw queue
 
 `svelte/store` `writable.set` runs all subscribers through one module-level `subscriber_queue`; if one subscriber throws, the queue is left mid-run for the whole realm, so later store updates anywhere may not notify. `src/ts/process/localSends.ts` `beginLocalSend` (added 2026-10-23, per-chat send slice 1) rolls back its own entry on a throw, but cannot repair the shared queue. Same exposure existed with the old `doingChat.set(true)`. Pre-existing, latent (no known throwing subscriber). Found by the Fable review of per-chat send slice 1; see the Per-Chat Send plan.
@@ -214,20 +205,13 @@ Rechecked 2026-10-21 against the code: still present.
 
 **Suggested handling:** fix by collecting deliveries of requests promoted during attach into the same `order`-sorted batch (do not simply postpone every promotion past all notices: a later notice would then precede an earlier request). Related: [Feed lock windows](#feed-lock-windows).
 
-### Plugin sendChat callback guard stuck
-
-`src/ts/plugins/apiV3/v3.svelte.ts` plugin `sendChat` refuses while `channelCallbacksRunning()` (`src/ts/network/generationJobs.ts`). `jobChannel.ts` cancellation (~118) only marks the outstanding entry; the count drops (~986) only when the hook's promise settles. A hook that ignores cancellation keeps every plugin `sendChat` refused after its job ended. Since 80a73ce08 (per-chat send slice 7, 2026-10-23) this is deliberate: the tab refuses every root callback while a cancelled hook runs (D1, no give-up), and the server holds the lane until the tab's drain report or `CANCELLED_CALLBACK_DRAIN_MS` (60 s); after that bound a later job's roots are refused until the page reloads. Same root as plugin reload deferral leftovers D4 (never-settling guest blocks reload).
-
-**Why it matters:** accepted as minor in per-chat send slice 4 (2026-10-23): refusal throws, nothing written.
-**Suggested handling:** a real fix needs stopping the hung plugin's execution (terminate/reload its sandbox) before admitting another root; a timer alone would break D1.
-
 ### Cancelled child blocks next child
 
 `src/ts/network/jobChannel.ts` `handleCallback` (~990, the nesting check `!top || top.id !== event.parentId || outstanding.length >= 2`) refuses a child callback (`failed`/`protocol`) while a cancelled child of the same parent is still running on the tab (its hook has not settled). The server (`server/src/jobs/channel.ts` `enqueue`, child branch) removes a cancelled child from its stack at once and dispatches the parent's next child immediately; the per-chat send drain hold (2026-10-23) blocks only root dispatch, not children. So an aux request whose child callback was cancelled (its caller's signal) and then a second aux request from the same parent callback gets a protocol failure, which may end the job ("A child callback's barrier failure, timeout, or disconnect ends the job").
 
 **Why it matters:** pre-existing, not made reachable by per-chat sends; found in the per-chat send slice 7 plan review (Sol point 4) and left out of that slice.
 
-**Suggested handling:** fix by holding/queuing a replacement child behind a draining child (capped by the parent's deadline) or refusing it server-side with `nesting`. Related: [Interceptor callback signal not forwarded](#interceptor-callback-signal-not-forwarded), [Plugin sendChat callback guard stuck](#plugin-sendchat-callback-guard-stuck).
+**Suggested handling:** fix by holding/queuing a replacement child behind a draining child (capped by the parent's deadline) or refusing it server-side with `nesting`. Related: [Interceptor callback signal not forwarded](#interceptor-callback-signal-not-forwarded), the never-settling hook entry in `plugins-mcp.md` Known Hazards.
 
 ### Interceptor callback signal not forwarded
 
@@ -872,11 +856,3 @@ would then compare the server with itself. TK4 (2026-10-23) only documented the 
 Same family: `checkCredentialTraffic.mjs` header comment (~25 "the Google token count (`encode`)")
 and its scenario label "Google token count (encode with googleClaudeTokenizing)" still say `encode`
 after TK4 switched the call to `tokenizer.tokenize`. See [Tokenizer stale client encode comments](#tokenizer-stale-client-encode-comments).
-
-### Playwright Firefox SW navigation control
-
-Found by the DA0 probe (`util/playwright/probeDirectAssets.mjs`, fbe7ff504, 2026-10-23): in Playwright's bundled Firefox, a worker whose fetch handler falls through on navigations (no `respondWith`, exactly what `public/sw.js` does for every non-`/sw/` path) leaves the next document with `navigator.serviceWorker.controller === null`, with `page.goto` and `location.href`, same tab or new tab. Answering navigations with `event.respondWith(fetch(event.request))` keeps control. Chrome keeps control either way. Unverified whether real (non-Playwright) Firefox does this.
-
-**Why it matters:** Direct Asset URLs slice 4 enables direct mode only while `navigator.serviceWorker.controller` is set, so in that Firefox every page after a navigation would silently use the blob fallback; a Firefox browser check of DA4/DA7 would read as "direct mode broken".
-
-**Suggested handling:** before DA3/DA4 browser checks in Firefox, check a real Firefox build, or decide whether `public/sw.js` should answer navigations.
