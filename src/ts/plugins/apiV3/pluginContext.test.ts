@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { loreBook } from "../../../../shared/database";
 
 // A plugin hook runs with a captured call context (the chat, the preset, and the persona id), and
 // the selection-dependent host functions the plugin calls inside the hook act on the hook's chat
@@ -1055,21 +1056,47 @@ describe("the host functions that forward the hook's target", () => {
         expect(calls[2][0]).not.toHaveProperty("pluginContext");
     });
 
-    it("getCurrentLorebookEntries answers the hook's character, chat, and module lore, not the selection's", async () => {
+    it("getCurrentLorebookEntries snapshots the hook chat's merged owner lore, local lore, and module lore, not the selection's", async () => {
         const api = await makeApi();
+        const entry = (id: string, content: string): loreBook => ({
+            id,
+            key: id,
+            secondkey: "",
+            comment: id,
+            content,
+            insertorder: 100,
+            mode: "normal",
+            alwaysActive: false,
+            selective: false,
+        });
+        const original = entry("replaced", "b owner content");
+        const disabled = entry("disabled", "b hidden owner content");
+        const untouched = entry("untouched", "b unchanged content");
+        const replacement = { ...original, comment: "b chat comment", content: "b chat content", key: "b chat key" };
+        const local = entry("local", "b1 local content");
+        const module = entry("module", "module for b/b1");
         characterOf("a").globalLore = [{ comment: "a global" }];
-        characterOf("b").globalLore = [{ comment: "b global" }];
+        characterOf("b").globalLore = [original, disabled, untouched];
         chatStore.setChatMeta({ chaId: "a", chatId: "a0" }, { localLore: [{ comment: "a0 local" }] });
-        chatStore.setChatMeta(refB1, { localLore: [{ comment: "b1 local" }] });
+        chatStore.setChatMeta(refB1, {
+            localLore: [local],
+            loreOverrides: [
+                { entry: entry("orphan", "b orphan content"), off: false },
+                { entry: { ...disabled, content: "b hidden chat content" }, off: true },
+                { entry: replacement, off: false },
+            ],
+        });
         chatStore.setChatMeta({ chaId: "b", chatId: "b2" }, { localLore: [{ comment: "b2 local" }] });
         vi.mocked(getModuleLorebooks).mockImplementation(
             (ref?: { chaId: string; chatId: string }) =>
-                (ref
-                    ? [{ comment: `module for ${ref.chaId}/${ref.chatId}` }]
-                    : [{ comment: "module for the selection" }]) as any,
+                (ref?.chaId === "b" && ref.chatId === "b1"
+                    ? [module]
+                    : ref
+                      ? [{ comment: `module for ${ref.chaId}/${ref.chatId}` }]
+                      : [{ comment: "module for the selection" }]) as any,
         );
         try {
-            const seen: unknown[] = [];
+            const seen: loreBook[][] = [];
             const listener = await listenerOf(api, async () => {
                 seen.push(await api.getCurrentLorebookEntries());
             });
@@ -1079,8 +1106,10 @@ describe("the host functions that forward the hook's target", () => {
 
             await invokeHook(listener, context, listenerArg);
 
-            expect(seen).toEqual([[{ comment: "b global" }, { comment: "b1 local" }, { comment: "module for b/b1" }]]);
+            expect(seen).toEqual([[replacement, untouched, local, module]]);
             expect(getModuleLorebooks).toHaveBeenLastCalledWith(refB1);
+            seen[0][0].content = "edited snapshot";
+            expect(chatStore.findChat(refB1)!.loreOverrides![2].entry.content).toBe("b chat content");
 
             // Outside the hook: the selected character's lore, its selected chat, and that chat's
             // modules. The selected chat is captured as the call's target before its load, so the

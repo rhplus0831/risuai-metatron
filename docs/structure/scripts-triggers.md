@@ -92,6 +92,7 @@ v2 layout:
 - Lua `request` restrictions (`server/src/lua/egress.ts`): HTTPS only, URL at most 120 characters, the three banned Risu prefixes, no `localhost` and only public addresses, 30 requests per minute per server, a 10 s timeout and a 2 MB answer; it requires low-level access.
 - Lua character getters return `""` when the run has no resolvable character, and the stored value (possibly `undefined`) for a resolvable one; character setters return without writing when no character resolves.
 - Lua `setDescription` refuses a non-string value ("Invalid data type") and writes nothing.
+- Lua `getLoreBooksMain` searches the chat's `localLore`, the character's `globalLore` with the chat's `loreOverrides` applied (`mergeOwnerLore`, [chat pipeline](chat-pipeline.md)), and the chat's module lore; `upsertLocalLoreBookMain` writes `localLore` only. Trigger v2 lore effects read and write the raw character lore.
 - Trigger character effects warn and skip a gone character; a patch the store refuses is a fatal failure that ends the job (`LuaJobFatalError`, `server/src/lua/bindings.ts`); `v2SetLorebookActivation` warns and changes nothing for a non-integer, negative, or missing lore index.
 - Lua `request(id, url)` returns `nil` at once, without any egress, when `id` has no low-level access.
 - `logMain` passes its text through as is; the Lua `log` wrapper JSON-encodes its value before calling it.

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 import type { CbsParseArg } from "../../../shared/cbs/evaluator.ts";
-import type { Database, character, groupChat } from "../../../shared/database.ts";
+import type { Chat, Database, character, groupChat, loreBook } from "../../../shared/database.ts";
 import { runRegexScripts } from "../../../shared/scripts/regex.ts";
 import { createNodeCbsEvaluator, createNodeCbsHost } from "./cbsHost.ts";
 
@@ -182,6 +182,47 @@ describe("host parity (cbs-parity.json) from a Node host", () => {
 });
 
 describe("evaluators", () => {
+    it("lorebook and worldinfo merge the chat's owner overrides before local and module lore", () => {
+        const entry = (id: string, content: string): loreBook => ({
+            id,
+            key: id,
+            secondkey: "",
+            comment: id,
+            content,
+            insertorder: 100,
+            mode: "normal",
+            alwaysActive: false,
+            selective: false,
+        });
+        const original = entry("replaced", "owner content");
+        const disabled = entry("disabled", "hidden owner content");
+        const untouched = entry("untouched", "unchanged owner content");
+        const replacement = { ...original, comment: "chat comment", content: "chat content", key: "chat key" };
+        const local = entry("local", "local content");
+        const module = entry("module", "module content");
+        const db = clone(parity.database) as Database;
+        const owner = db.characters[0] as character;
+        owner.globalLore = [original, disabled, untouched];
+        const chat = owner.chats[0] as Chat;
+        chat.localLore = [local];
+        chat.loreOverrides = [
+            { entry: entry("orphan", "orphan content"), off: false },
+            { entry: { ...disabled, content: "hidden chat content" }, off: true },
+            { entry: replacement, off: false },
+        ];
+        const { risuChatParser } = createCbsEvaluator({
+            ...createNodeCbsHost(db, { selectedCharID: 0 }),
+            getModuleLorebooks: () => [module],
+        });
+        const chatRef = { chaId: owner.chaId, chatId: chat.id! };
+
+        for (const name of ["lorebook", "worldinfo"]) {
+            expect(JSON.parse(risuChatParser(`{{${name}}}`, { chara: owner, chatRef }))).toEqual(
+                [replacement, untouched, local, module].map((book) => JSON.stringify(book)),
+            );
+        }
+    });
+
     it("are independent: each evaluator answers its own host", () => {
         const db = clone(parity.database) as Database;
         const wide = createCbsEvaluator(

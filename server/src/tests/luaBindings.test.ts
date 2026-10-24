@@ -5,7 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { Chat, character, loreBook } from "../../../shared/database.ts";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import type { RunningJob } from "../jobs/generationJobs.ts";
+import type { JobScope } from "../jobs/jobScope.ts";
+import { createLuaBindings } from "../lua/bindings.ts";
+import type { HostContext } from "../scripts/workerPool.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -466,6 +472,91 @@ describe("the job's Lua budget", () => {
         },
         SLOW,
     );
+});
+
+describe("the lore reader binding", () => {
+    it("getLoreBooksMain searches local, merged owner, and module lore by comment and parses their content", () => {
+        const entry = (id: string, content: string, comment = "matching"): loreBook => ({
+            id,
+            key: id,
+            secondkey: "",
+            comment,
+            content,
+            insertorder: 100,
+            mode: "normal",
+            alwaysActive: false,
+            selective: false,
+        });
+        const original = entry("replaced", "owner {{char}}", "old comment");
+        const disabled = entry("disabled", "hidden owner {{char}}");
+        const untouched = entry("untouched", "unchanged {{char}}");
+        const replacement = { ...original, comment: "matching", content: "chat {{char}}", key: "chat key" };
+        const local = entry("local", "local {{char}}");
+        const module = entry("module", "module {{char}}");
+        const chat = {
+            id: "k",
+            name: "K",
+            note: "",
+            message: [],
+            localLore: [local, entry("other-comment", "excluded {{char}}", "matching suffix")],
+            loreOverrides: [
+                { entry: entry("orphan", "orphan {{char}}"), off: false },
+                { entry: { ...disabled, content: "hidden chat {{char}}" }, off: true },
+                { entry: replacement, off: false },
+            ],
+        } satisfies Chat;
+        const owner = {
+            chaId: "owner",
+            type: "character",
+            name: "Owner",
+            chats: [chat],
+            chatPage: 0,
+            globalLore: [original, disabled, untouched],
+        } as unknown as character;
+        const scope = {
+            characterId: owner.chaId,
+            chatId: chat.id,
+            db: {
+                characters: [owner],
+                personas: [],
+                modules: [{ id: "module", name: "Module", lorebook: [module] }],
+                enabledModules: ["module"],
+            },
+        } as unknown as JobScope;
+        const signal = new AbortController().signal;
+        const ctx: HostContext = {
+            identity: { characterId: owner.chaId, chatId: chat.id, presetId: "p", personaId: "u" },
+            access: "safe",
+            signal,
+            regex: async () => ({ value: false }),
+        };
+        // This synchronous reader needs no worker or I/O; stop the CBS deadline clock as well.
+        const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+        try {
+            const bindings = createLuaBindings({
+                job: { context: {}, signal } as RunningJob,
+                scope,
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                store: {} as never,
+                rootDir: REPO_ROOT,
+                savePath: rootDir,
+                llm: {} as never,
+                tokens: {} as never,
+                runCharacterId: owner.chaId,
+                engineCharacterId: owner.chaId,
+                frozen: true,
+            });
+
+            expect(JSON.parse(bindings.host.sync!.getLoreBooksMain(["id", "matching"], ctx) as string)).toEqual([
+                { ...local, content: "local Owner" },
+                { ...replacement, content: "chat Owner" },
+                { ...untouched, content: "unchanged Owner" },
+                { ...module, content: "module Owner" },
+            ]);
+        } finally {
+            clock.mockRestore();
+        }
+    });
 });
 
 describe("the host-function contract through the real worker", () => {

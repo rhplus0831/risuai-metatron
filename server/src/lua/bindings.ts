@@ -19,6 +19,7 @@ import type {
     StreamResponseChunk,
 } from "../../../shared/llm/request.ts";
 import { activateLore } from "../../../shared/lore/activation.ts";
+import { mergeOwnerLore } from "../../../shared/lore/overrides.ts";
 import type { MultiModal, OpenAIChat } from "../../../shared/openai.ts";
 import { pickHashRand } from "../../../shared/hashRand.ts";
 import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
@@ -1489,9 +1490,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (selectedChar.type !== "character") {
                 return undefined;
             }
-            const loreSources: loreBook[][] = [
+            const loreSources = [
                 engineChat()?.localLore ?? [],
-                selectedChar.globalLore,
+                mergeOwnerLore(selectedChar.globalLore ?? [], engineChat()?.loreOverrides ?? []).lore,
                 jobModuleLorebooks(scope, ref),
             ];
             const found = [];

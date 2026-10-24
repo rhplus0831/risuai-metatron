@@ -108,6 +108,7 @@ import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { supaMemoryOnCount } from "../../../../shared/characters.ts";
+import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -1815,7 +1816,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                     throw new PluginTargetGoneError(character ? "chat" : "character");
                 }
                 return $state.snapshot([
-                    ...(character.globalLore ?? []),
+                    ...mergeOwnerLore(character.globalLore ?? [], chat.loreOverrides ?? []).lore,
                     ...(chat.localLore ?? []),
                     ...getModuleLorebooks(ref),
                 ]);

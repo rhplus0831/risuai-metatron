@@ -1,6 +1,7 @@
 import type { Chat, character, groupChat } from "../database.ts";
 import { LLMFlags, LLMFormat, type LLMModel } from "../llm.ts";
 import { greetingText } from "../greetings.ts";
+import { mergeOwnerLore } from "../lore/overrides.ts";
 import { replaceAllBound } from "./limits.ts";
 import type { CBSRegisterArg, matcherArg } from "./types.ts";
 
@@ -316,7 +317,8 @@ export function registerCBS(arg: CBSRegisterArg) {
             const achara = argChara && typeof argChara !== "string" ? argChara : contextChar(matcherArg);
             const selchar = contextChar(matcherArg);
             const chat = contextChat(matcherArg);
-            const characterLore = achara.type === "group" ? [] : (achara.globalLore ?? []);
+            const characterLore =
+                achara.type === "group" ? [] : mergeOwnerLore(achara.globalLore ?? [], chat.loreOverrides ?? []).lore;
             const chatLore = chat.localLore ?? [];
             const fullLore = [...characterLore, ...chatLore, ...getModuleLorebooks(matcherArg.chatRef)];
             return makeArray(
