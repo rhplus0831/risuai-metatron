@@ -41,6 +41,7 @@ git show 2e359afde:docs/plan/generation-stage-spinner.md
 git show 2e359afde:docs/plan/upstream-integration.md
 git show 2e359afde:docs/plan/combined-run.md
 git show 12fd77196:docs/plan/combine-audit-fixes.md
+git show a179640ad:docs/plan/chat-lore-overrides.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -83,6 +84,7 @@ it is not a current architecture guide.
 | Upstream Integration                     | `2e359afde`: `docs/plan/upstream-integration.md`                          | [persistence](../structure/persistence.md), [plugins/MCP](../structure/plugins-mcp.md), [LLM requests](../structure/llm-requests.md), [chat pipeline](../structure/chat-pipeline.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md), and the other guides its slices name                                                                                                                                                                     |
 | Combined Run index                       | `2e359afde`: `docs/plan/combined-run.md`                                  | the eight plans above (one `plan-runner` run); [build/test platforms](../structure/build-test-platforms.md) for the run's checks                                                                                                                                                                                                                                                                                                                                                             |
 | Combine Audit Fixes                      | `12fd77196`: `docs/plan/combine-audit-fixes.md`                           | [scripts/triggers](../structure/scripts-triggers.md), [UI/theming](../structure/ui-theming.md), [LLM requests](../structure/llm-requests.md), [global API](../structure/global-api.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                           |
+| Chat Lore Overrides                      | `a179640ad`: `docs/plan/chat-lore-overrides.md`                           | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [plugins/MCP](../structure/plugins-mcp.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md)                                                                                         |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -468,6 +470,27 @@ Plan): lost-create recovery past a checkpoint restore (audit F01, with the check
 harness and a summary-boot mode for `chatCheckpoints.test.ts`), a refused deletion becoming a
 whole-chat replace after Retry (F02), completed `once` plugin listeners retaining detached DOM (F09);
 the audit's evidence stays in `/home/codex/metatron-stage/combine-audit/evidence/`.
+
+Chat Lore Overrides (a chat overrides its owner's lorebook entries for itself only, planned with
+the user on 2026-10-24) landed all 4 slices on `metatron` on 2026-10-24 through the plan runner
+(`delegate-implementation`, Codex implementers), one cherry-picked commit each: 1 the
+`Chat.loreOverrides` field, `shared/lore/overrides.ts` merge, activation, and persistence
+(`8363beb57`); 2 CBS `{{lorebook}}`, Lua `getLoreBooksMain`, and plugin
+`getCurrentLorebookEntries` read the merged lore (`47e83fa24`); 3 the 409
+`chatLoreOverrideOrphaned` admission refusal with its client alert and pre-send checks
+(`0a9c9c721`); 4 the collapsed override editor in the chat lorebook tab (`740a05d1d`). The final
+checks on `a179640ad` passed: `pnpm check`, `check:tests`, 6965 unit tests, 56 slow tests, the
+four related e2e specs (`chatLoreOverrides`, `chatBinding`, `perChatSends`, `readersCharacters`),
+and prettier. Decisions made by the slices: `loreOverrides` has no default and readers use
+`?? []` (1); `mergeOwnerLore` returns references, not clones, because the client passes `$state`
+proxies (1); "off wins" is also enforced in activation through `offOverrideIds` (1); Reroll
+refuses before removing the reply, beside Send and Continue (3); a folder checkbox pins or
+releases its entries, not the folder (4); "Move to chat lorebook" drops the `folder` key (4).
+Slice 4 ran the plan's manual check in headless Chrome against a mock provider (the request body
+instead of the DevTool preview). Still open: the manual check by hand in a real browser, and
+whether auxiliary LLM requests (suggestions, memory summaries, translation, MCP AIAccess, plugin
+and WebLLM requests) should also refuse a chat with orphaned overrides; the plan limited the
+refusal to generation jobs.
 
 ## Server-Owned Data Chronology
 
