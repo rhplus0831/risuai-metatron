@@ -7,7 +7,8 @@
   - Realm hub browse and download (upload, report, and remove were removed),
   - the settings report export.
 - Paths:
-  - `src/ts/drive/backuplocal.ts` (the folder name is historical; Google Drive sync, Risu Account sync, and Kei auto-backup were removed)
+  - `src/ts/drive/*` (the folder name is historical; Google Drive sync, Risu Account sync, and Kei auto-backup were removed)
+  - `src/ts/realmBlocking.ts` (creator block-list rules used by the Realm UI and card entry points)
   - `src/lib/UI/Realm/*`
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
 - Not here:
@@ -32,7 +33,7 @@
 - `RealmBlockedCreators.svelte`: the blocked creators list (name and id), unblock and refetch, and empty state.
 - `src/ts/realmBlocking.ts`: pure block lookup, add/remove, and card filtering helpers.
 - `RealmHubIcon.svelte`, `RealmLicense.svelte` (`CCLicenseData`).
-- `SettingsExportButtons.svelte`: a redacted settings report (strips characters, keys, `irisDialogue`, `googleSearchCredentials`, `pluginCustomStorage`, and `blockedRealmCreators`), the request logs popup (`alertRequestLogs`, `global-api.md`), and statistics.
+- `SettingsExportButtons.svelte`: the redacted settings report (`buildSettingsReport` and its complete field projection are in [persistence](persistence.md)), the request logs popup (`alertRequestLogs`, [global-api](global-api.md)), and statistics.
 
 ## Flows
 
@@ -47,8 +48,8 @@
 
 ## State
 
-- DB: `localNetworkMode`, `localNetworkTimeoutSec`. The removed legacy `account` token is no record field (the boot never installs it); old saves may still carry an unused character `realmId`.
-- Stores: `OpenRealmStore`.
+- Realm has no account token field (the boot never installs the removed legacy `account` token); old saves may still carry an unused character `realmId`.
+- UI state: `OpenRealmStore` in `stores.svelte.ts` ([app-shell](app-shell.md)).
 
 ## Coupling
 
@@ -56,12 +57,11 @@
 
 ## Invariants
 
-- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads the manifest. An archive or snapshot whose resource database has another schema version than the server's (3, with settings sections and collections) is refused with a message. Those versions are formats of metatron's implementation phases, so no migration is owed. Archives in the upstream format (upstream RisuAI and older metatron backups with `database.risudat`) are restored through the upstream import under the compatibility rule (`persistence.md` Invariants): a one-way, full-replace migration with a report before anything is replaced. That covers both `database.risudat` encodings, the legacy MessagePack save and the block save current upstream backups write (its SaveKV namespaces are listed in the report as not imported); a live block save whose data lies outside the file (a remote block, or a directory naming a block the file lacks) is refused with a message; the version-2 import route still refuses them with a message naming the upstream import. A Risu Account backup (`encryption.risudat`) is refused with a message.
+- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads the manifest. An archive or snapshot whose resource database schema version differs from the server's current version (3, with settings sections and collections) is refused with a message; metatron does not migrate these archive schemas. Archives in the upstream format (upstream RisuAI and older metatron backups with `database.risudat`) are restored through the upstream import under the compatibility rule ([persistence](persistence.md#invariants)): a one-way, full-replace migration with a report before anything is replaced. That covers both `database.risudat` encodings, the legacy MessagePack save and the block save current upstream backups write (its SaveKV namespaces are listed in the report as not imported); a live block save whose data lies outside the file (a remote block, or a directory naming a block the file lacks) is refused with a message; the version-2 import route still refuses them with a message naming the upstream import. A Risu Account backup (`encryption.risudat`) is refused with a message.
 - The upstream import reads plugin storage (`pluginCustomStorage`, converted by `server/src/data/upstream/importCollections.ts` `convertPluginStorage` into the `pluginStorage` record, v3 values under `_pluginStorage`) in each form upstream wrote: inline top-level values (copied into `_pluginStorage` only in a file without one), the older per-key `_coldplugin` pointers, and current upstream's `_coldpluginIndex`, the id of one cold-storage record `{ type: "risu-plugin-storage-index", entries: [{ k, s?, l? }], trash }` whose `s` is a small value's JSON text and whose `l` names another cold record holding a large value of any JSON type (`trash` is dropped). Cold records are read as `data` (a list, or an object with `character` or `message`) or `plugin` (any other JSON; `archive.ts` `readColdRecord`), and when both name forms of one key exist, character and chat restores read the last `data` record while plugin storage reads the last `plugin` one, as upstream's restore does. With an index, inline copies override index values, which override `_coldplugin` (used only for keys no index entry claims, a failed one included); without one, `_coldplugin` overrides an inline copy as before. Index entries are decided before their values are read: `l` beats `s`, and a later entry of a key replaces an earlier one even when it then fails. Problems are listed in the report and the rest imports: a missing or unreadable index record (`cold-missing`, `_coldpluginIndex`: the keys cannot be named without it), a record that is not an index (`invalid-setting`), an entry without a key or value or a displaced duplicate or unparsable `s` (`invalid-data`), a large value whose record is missing, over the per-record cap, or not JSON (`cold-missing`, by key). The commit stays all-or-nothing, so plugins never run against a half-restored store.
 - Export, change, and restore are covered end to end on a version-3 store: an archive import undoes changes made after the export (a plugin `setCharacter`, an MCP tool), and restoring the safety snapshot the import took brings them back.
 - A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards because every revision the tab held is void (new epoch).
-- Private backups carry everything, including `googleSearchCredentials`, the Iris dialogue, plugin storage, and the plugin permission grants.
-- `getLocalNetworkRequestOptions` must stay paired with `isLocalNetworkUrl`. Browsers reject the local route.
+- Full version-2 archives carry private data, including `googleSearchCredentials`, the Iris dialogue, plugin storage, and the plugin permission grants.
 
 ## Recipes
 

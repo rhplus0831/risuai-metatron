@@ -3,8 +3,8 @@
 ## Scope
 
 Owns durable LLM request history, checked job failures, content-free server/browser
-diagnostics, combined reports, and user-selected support copies. Documentation audit:
-2026-10-17. The completed design is in the [plan archive](../archived-plan/README.md).
+diagnostics, combined reports, and user-selected support copies. The completed design
+is in the [plan archive](../archived-plan/README.md).
 
 Paths: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`,
 `server/src/data/requestHistory.ts`, `server/src/diagnostics/`,
@@ -52,8 +52,11 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `removeShares`, `removeAllShares`, `listShares`, `eventsFor`.
   Events are `http`, `job`, `request`, `runtime`, and `lifecycle`; HTTP events record
   only failures or responses over 5 s, with a registered route template.
-  Daily JSONL appends and bounded share/report work are synchronous. Failed appends
-  truncate back; a partial final line is separated before the next append.
+  Journal and share/report work is synchronous. Failed daily JSONL appends truncate
+  back; a partial final line is separated before the next append. Whole-file state,
+  report, and share writes flush the temporary file before rename and sync the folder
+  afterwards; a folder-sync failure is counted even though the renamed file is treated
+  as landed. Daily event appends are not flushed to disk.
   Failed writes increment a counter and log the first error code without throwing.
 - `server/src/diagnostics/share.ts` `createRequestShares`: `history.readShare` takes
   one transaction snapshot, oldest rows first; content-off rows contribute summaries.
@@ -180,8 +183,8 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   Sharing a job includes its other requests, including memory and auxiliary LLM calls.
 - Configure sftp for only the resolved diagnostics directory, with group read access
   compatible with the file modes. In Docker, map the actual diagnostics directory
-  and verify the restriction from that account; no production/sftp check was run
-  by this documentation audit.
+  and verify the restriction from that account; this production check remains a
+  manual follow-up in the archive.
 - Add a diagnostic kind/field in shared projection/validation, the emitting source,
   report canonicalization if applicable, and focused tests. Keep raw provider/error
   content out of event fields.
@@ -211,9 +214,9 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
 - `src/ts/network/generationJobs.test.ts`: checked job-link events;
   `src/ts/diagnostics/jobDebugInfo.test.ts`: copied metadata excludes the message.
 
-Manual follow-ups: full viewer/alert flow, production Docker+sftp isolation, pull a
-shared job then withdraw it, and save a phone browser report. These remain pending
-in the [archive](../archived-plan/README.md); this audit does not claim those results.
+Manual follow-ups tracked in the [archive](../archived-plan/README.md): the full
+viewer/alert flow, production Docker+sftp isolation, pulling and withdrawing a shared
+job, and saving a phone browser report. The automated tests above do not cover these.
 
 ## Known Hazards
 
@@ -224,3 +227,5 @@ in the [archive](../archived-plan/README.md); this audit does not claim those re
   window collector.
 - Journal/share work is synchronous. Folder write failures leave in-memory diagnostics
   available. A client timeout after report dispatch can leave a successfully saved file.
+- Daily event appends are unsynced, so a power loss can lose recent events; whole-file
+  state, report, and share writes flush their staged files before rename.
