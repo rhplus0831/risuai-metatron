@@ -1,6 +1,6 @@
 # Chat Lore Overrides Plan
 
-Status: planned, nothing landed.
+Status: slice 1 (8363beb57) landed.
 
 Planned on 2026-10-24. Sources: the code at `170b90879` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
@@ -123,7 +123,9 @@ ones marked _confirmed_ were proposed by the plan and accepted by the user on
 - **One shared merge.** `shared/lore/overrides.ts` exports
   `mergeOwnerLore(ownerLore, overrides)` returning
   `{ lore, orphans }`: each owner entry whose id matches a non-off override is
-  replaced in place by `structuredClone(entry)`; an entry matched by an off
+  replaced in place by `entry` (a reference, not a clone: the client passes
+  `$state` proxies, which `structuredClone` rejects; callers that mutate copy
+  first); an entry matched by an off
   override is removed; overrides whose id matches no owner entry are returned as
   `orphans` and are not inserted. If ids repeat in the owner lore, an override
   replaces the first match only. Removing off entries (instead of keeping them
@@ -201,6 +203,13 @@ Guides: chat-pipeline, persistence, backup-sync-hub.
   `server/src/tests/transform.test.ts`; `server/src/tests/upstreamExport.test.ts`.
 - Docs: chat-pipeline (activation), persistence (chat field inventory around
   `:172-180`, checkpoints), backup-sync-hub (upstream projection).
+
+Landed notes (slice 1): `loreOverrides` is optional with no default (like
+`toolCalls`; validated by `assertLoreOverrides` when present), so the client
+defaults and empty-chat literals were left unchanged and every reader uses
+`chat.loreOverrides ?? []`. "Off wins" is also enforced inside activation
+through `offOverrideIds` (duplicate ids, `@@activate` children). The upstream
+character import drops a malformed `loreOverrides` and keeps the chat.
 
 ### 2. Chat-scoped lore readers (_small_)
 
