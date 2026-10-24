@@ -9,7 +9,6 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import { routePath } from "hono/route";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
@@ -80,6 +79,7 @@ import { createTransformService } from "./prompt/transform.ts";
 import { registerLlmRoutes } from "./routes/llm.ts";
 import { registerTokenRoutes, TOKEN_COUNT_PATH, TOKEN_ENCODE_PATH } from "./routes/tokens.ts";
 import { registerLlmSecretRoutes } from "./routes/llmSecrets.ts";
+import { limitedBody } from "./routes/limitedBody.ts";
 import { registerProxyRoutes } from "./routes/proxy.ts";
 import {
     REQUEST_HISTORY_PATH,
@@ -521,7 +521,8 @@ export function createServerContext(options: {
         // A running upstream prepare ends now (its worker is terminated), not after the HTTP drain, and
         // the prepared imports are removed (a running commit is tracked).
         void upstreamStaging.close();
-        // The prepared exports waiting for their download are removed (a running download is tracked).
+        // A running upstream export prepare ends now (its worker is terminated), and the prepared
+        // exports waiting for their download are removed (a running download is tracked).
         void upstreamExportStaging.close();
         for (const [server, listener] of upgradeListeners) {
             server.off("upgrade", listener);
@@ -634,10 +635,7 @@ export function createServerContext(options: {
 
     // The backup (version-2 and upstream), module, and CharX imports stream their bodies to disk with
     // their own cap; Hono's limiter would buffer them.
-    const limitBody = bodyLimit({
-        maxSize: MAX_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
+    const limitBody = limitedBody(MAX_BODY_BYTES);
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
     // message search's, the memory task start's, the checkpoint POSTs' and policy PUT's, and the token routes cap their bodies themselves

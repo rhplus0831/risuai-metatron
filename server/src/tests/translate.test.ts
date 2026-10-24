@@ -4,7 +4,7 @@ import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterEach, beforeAll, afterAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, afterAll, describe, expect, it, onTestFinished, vi, type MockInstance } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -17,6 +17,7 @@ import { createGenerationLock, type GenerationLock } from "../jobs/generationLoc
 import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec } from "../llm/requests.ts";
 import type { TokenCountScope } from "../prompt/tokens.ts";
+import * as localModels from "../prompt/transformers.ts";
 import {
     createTranslationRunner,
     MAX_RUNNING_TRANSLATIONS,
@@ -395,6 +396,60 @@ describe("POST /api/translate/message with the Echo model", () => {
         } as RequestInit);
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+    });
+
+    it("answers 400 with Invalid JSON body when a declared-length upload fails during the JSON read", async () => {
+        client = await createResourceTestClient();
+        let sent = false;
+        const res = await client.request(TRANSLATE, {
+            method: "POST",
+            headers: { "content-type": "application/json", "content-length": "128" },
+            body: new ReadableStream<Uint8Array>(
+                {
+                    pull(controller) {
+                        if (!sent) {
+                            sent = true;
+                            controller.enqueue(new TextEncoder().encode('{"characterId":'));
+                        } else {
+                            controller.error(new DOMException("The client went away", "AbortError"));
+                        }
+                    },
+                },
+                { highWaterMark: 0 },
+            ),
+            duplex: "half",
+        } as RequestInit);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "Invalid JSON body" });
+    });
+
+    it("preserves WebLLM queue-full and queue-wait refusal statuses in the HTTP response", async () => {
+        // Hold both deadline clocks still while the real request layer reaches the model process boundary.
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        const createdModels = vi.spyOn(localModels, "createTransformers");
+        let inference: MockInstance<localModels.TransformersService["runTextGeneration"]> | undefined;
+        try {
+            await seed();
+            const transformers: localModels.TransformersService = createdModels.mock.results[0].value;
+            createdModels.mockRestore();
+            const profiles = await single("modelProfiles");
+            profiles.data[0] = { ...profiles.data[0], modelId: "hf:::test/translation-model" };
+            await write("modelProfiles", profiles.data);
+            inference = vi.spyOn(transformers, "runTextGeneration");
+            for (const [error, status] of [
+                [new localModels.TransformersQueueFullError(), 429],
+                [new localModels.TransformersQueueWaitError(), 503],
+            ] as const) {
+                inference.mockRejectedValue(error);
+                const res = await translate(req("u"));
+                expect.soft(res.status, error.name).toBe(status);
+                expect((await message("u")).translation).toBeUndefined();
+            }
+        } finally {
+            inference?.mockRestore();
+            createdModels.mockRestore();
+            vi.useRealTimers();
+        }
     });
 
     it("the route: authentication before the body, the body rules, the epoch, the 16 KiB cap, missing records, and the binding mismatch", async () => {

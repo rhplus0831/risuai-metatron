@@ -86,7 +86,7 @@ vi.mock("../../storage/chatStore.svelte", async () => {
 });
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { CharEmotion: writable({}) };
+    return (await import("src/ts/tests/storesMock")).createStoresMock({ CharEmotion: writable({}) });
 });
 // The tab's selected prompt preset, model preset, and persona ids, the display rule's fallback
 // (`tabSelectionIds`: `""` when there is none).

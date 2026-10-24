@@ -22,6 +22,7 @@ tiktoken families reject text that contains a special token), or, for the `long`
 `{ count, hash }`: the token count and the FNV-1a 32-bit hash of the ids joined by commas. `texts.long`
 is `unit.repeat(times)`.
 
-The capture cannot be rerun from the tab with `node util/playwright/captureTokenizerIds.mjs`: the tab
-counts through the server and no longer has a tokenizer. Changes to the server tokenizers or payloads
-must still reproduce these ids; the fixture is never regenerated from the server.
+The capture harness has been retired: the tab no longer exports `encode`, and `encodeWithTokenizer`
+now gets ids from the server. It cannot capture independent browser expectations. Changes to the
+server tokenizers or payloads must still reproduce these frozen ids; the fixture is never regenerated
+from the server. Historical capture code is available in repository history.

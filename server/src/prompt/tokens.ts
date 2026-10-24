@@ -4,16 +4,16 @@ import { selectTokenizer, tokenizerIdentityKey, type TabTokenScope } from "../..
 import type { Tokenizers } from "./tokenizers/index.ts";
 
 /**
- * The server's token counter: the client's `encode` (`src/ts/tokenizer.ts`) with the settings of
- * one job or the tab's supplied scope. The routing is the shared `selectTokenizer`, the families are the
- * server's tokenizers, and with `useTokenizerCaching` the results stay in an LRU of 1,500, keyed
- * by the client's fields plus the model's `internalID`.
+ * The server's token counter for jobs and tab-supplied scopes (`/api/tokens/count` and LLM requests).
+ * The routing is the shared `selectTokenizer`, the families are the server's tokenizers, and with
+ * `useTokenizerCaching` the results stay in an LRU of 1,500, keyed by the captured scope including
+ * the model's `internalID`. Browser ids are a frozen reference captured from the former client
+ * tokenizer (`server/src/tests/fixtures/tokens/browser-ids.json`).
  *
- * Differences from the client:
- * - a legacy plugin provider's `custom` tokenizer (`tokenizerFunc`) is never called; the text is
- *   counted with `cl100k_base` (the Safety Contract: plugin tokenizers are not used server-side);
- * - Google's `countTokens` uses the server's `llmSecrets.google.accessToken`, and its cache is an
- *   LRU of 1,500 instead of an unbounded map; a count rejects after 30 s.
+ * - A legacy plugin provider's `custom` tokenizer (`tokenizerFunc`) is never called; the text is
+ *   counted with `cl100k_base`, including counts requested by the tab.
+ * - Google's `countTokens` uses the server's `llmSecrets.google.accessToken`, with an LRU of 1,500;
+ *   a count rejects after 30 s.
  */
 export const TOKEN_CACHE_SIZE = 1500;
 export const GOOGLE_COUNT_TIMEOUT_MS = 30_000;
@@ -69,7 +69,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
     const encodeCache = new LRUMap<string, Encoded>(TOKEN_CACHE_SIZE);
     const googleCache = new LRUMap<string, number>(TOKEN_CACHE_SIZE);
 
-    // The client's `tokenizeGoogleCloud`: a count of `totalTokens` zeros, or the Gemma
+    // Google counts are represented as `totalTokens` zeros, or the Gemma
     // SentencePiece ids when the endpoint answers anything but 200.
     async function countWithGoogle(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
         const cacheKey = text + scope.model.internalID;
@@ -108,7 +108,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         signal?.throwIfAborted();
         let cacheKey = "";
         if (scope.useTokenizerCaching) {
-            // The client's key, plus the model's `internalID`: two scopes may resolve one `aiModel`
+            // The shared identity includes the model's `internalID`: two scopes may resolve one `aiModel`
             // to different models, and Google counts by `internalID`.
             cacheKey = JSON.stringify([text, tokenizerIdentityKey(scope)]);
             const cached = encodeCache.get(cacheKey);

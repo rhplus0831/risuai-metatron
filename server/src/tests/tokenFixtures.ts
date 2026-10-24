@@ -7,7 +7,8 @@ import { LLMTokenizer } from "../../../shared/llm.ts";
 
 /**
  * Shared by the tokenizer tests (`tokens.test.ts`, `tokenParity.test.ts`, `tokenPlainNode.test.ts`):
- * the repository paths, the browser's captured ids, the baseline token counts, and temp roots.
+ * the repository paths, the frozen ids captured from the former client tokenizer, the baseline
+ * token counts, and temp roots.
  */
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
@@ -15,7 +16,7 @@ export const TOKENIZERS_DIR = path.resolve(import.meta.dirname, "../prompt/token
 export const FIXTURE_PATH = path.join(import.meta.dirname, "fixtures/tokens/browser-ids.json");
 export const BASELINE_DIR = path.join(import.meta.dirname, "fixtures/baseline");
 
-/** `fixtures/tokens/browser-ids.json`: the client's ids, captured in the browser (see its README). */
+/** `fixtures/tokens/browser-ids.json`: frozen ids captured from the former client tokenizer (see its README). */
 export type FixtureText = string | { unit: string; times: number };
 export type FixtureRecord = { ids: number[] } | { error: string } | { count: number; hash: number };
 export type Fixture = {
@@ -95,7 +96,7 @@ export const baselineCounts = JSON.parse(
     readFileSync(path.join(BASELINE_DIR, "token-counts.json"), "utf8"),
 ) as BaselineTokenCounts;
 
-/** A `TokenCountScope` with the fields the client's `encode` read, defaulted as the capture's base settings. */
+/** A `TokenCountScope` with the fields the former client tokenizer read, defaulted as the frozen capture's base settings. */
 export function scope(fields: Partial<TokenCountScope> = {}): TokenCountScope {
     return {
         aiModel: "gpt-5.5",

@@ -28,9 +28,11 @@ vi.mock("src/ts/util", () => ({
     selectSingleFile: vi.fn(),
 }));
 
-vi.mock("src/ts/stores.svelte", () => ({
-    hotReloading: [] as string[],
-}));
+vi.mock("src/ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        hotReloading: [] as string[],
+    }),
+);
 
 vi.mock("./apiV3/v3.svelte", () => ({
     loadV3Plugins: mocks.loadV3Plugins,

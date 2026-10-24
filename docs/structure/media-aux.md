@@ -127,6 +127,9 @@ Settings:
 
 ## Invariants
 
+- Server translation preserves a failed WebLLM request's `localModelRefusal` status:
+  429 for a full local model queue, 503 for an expired queue wait. Other failed
+  provider requests remain 502 with their redacted failure text.
 - Provider discriminators are literal and case-sensitive: `VOICEVOX`, `Imagen`, `openai-compat`, `comfy` vs `comfyui`. Saved `ttsMode: 'none'` is migrated to `''`.
 - TTS hooks apply only on paths through `playAudio`. The GPT-SoVITS gain path must still call `runPostprocessorPipeline`.
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.

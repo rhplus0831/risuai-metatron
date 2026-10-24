@@ -203,7 +203,8 @@ function regexCapError(op: RegexOp): string | null {
 
 /**
  * A host function's answer must be a primitive within the cap; anything else is the call's error.
- * A JS object would reach Lua as a live proxy of the worker's object (see the runtime).
+ * Together with the runtime's value guard, the primitive/JSON contract keeps values detached from
+ * worker objects without relying on wasmoon's conversion; structured data crosses as JSON text.
  */
 function checkHostReply(name: string, value: unknown): string | null {
     if (value !== null && value !== undefined && !["string", "number", "boolean"].includes(typeof value)) {

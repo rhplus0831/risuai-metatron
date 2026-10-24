@@ -11,7 +11,10 @@ vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).cre
 vi.mock("src/ts/util", () => ({ sleep: vi.fn() }));
 vi.mock("src/ts/stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { gridOpenStore: writable(false), OpenRealmStore: writable(false) };
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
+        gridOpenStore: writable(false),
+        OpenRealmStore: writable(false),
+    });
 });
 
 import { language } from "src/lang";

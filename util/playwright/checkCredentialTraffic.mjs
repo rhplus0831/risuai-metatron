@@ -22,7 +22,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // a key replaced in the tab and then used, `registerModelDynamic` (Google, Anthropic, OpenAI model
 // lists), `generateAIImage` with DALL-E and with Imagen, `sayTTS` with OpenAI, Whisper (its only
 // consumer is a component: the transport call it makes), `HypaProcesser` embeddings
-// (`supaMemoryKey`), and the Google token count (`encode`). The coverage table lists each row and
+// (`supaMemoryKey`), and the Google token count (`tokenize`). The coverage table lists each row and
 // what is not exercised.
 //
 // What this proves: in these runs, no sentinel reached the browser. It is not a proof for every
@@ -784,7 +784,7 @@ try {
         (count) => count === 2,
     );
     await scenario(
-        "Google token count (encode with googleClaudeTokenizing)",
+        "Google token count (tokenize with googleClaudeTokenizing)",
         "google/accessToken",
         () =>
             page.evaluate(async () => {

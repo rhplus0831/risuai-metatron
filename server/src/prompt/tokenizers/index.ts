@@ -22,9 +22,10 @@ const sentencePiece =
         loadWebTokenizer(rootDir, "sentencepiece", relPath);
 
 /**
- * One loader per tokenizer the client's `tokenizer.ts` can pick, under the client's names, with the
- * payload it fetches. `gemma` is `gemmaTokenize`; `gemmaSentencePiece` is the `gemma` case of
- * `tokenizeWebTokenizers`, the fallback of a failed Google count. `gemma/tokenizer.json` is unused.
+ * One loader per server tokenizer family. Names and payloads preserve the frozen browser-id
+ * reference captured from the former client tokenizer (`server/src/tests/fixtures/tokens/browser-ids.json`).
+ * `gemma` preserves its `gemmaTokenize`; `gemmaSentencePiece` is the SentencePiece fallback of a
+ * failed Google count. `gemma/tokenizer.json` is unused.
  */
 const LOADERS = {
     cl100k_base: tiktoken("cl100k_base"),

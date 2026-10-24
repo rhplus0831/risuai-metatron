@@ -65,7 +65,7 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   `diagnostics/` owns request history, diagnostic journals, reports, and support
   shares ([diagnostics](diagnostics.md)).
 - HTTP helpers: `http/{body,rateLimit,clientIp,compressedJson,staticCache,assetVerification,assetThumbnails}.ts`
-  cover request limits, client IPs, caching, and asset delivery. `routes/limitedBody.ts` owns route-specific streaming body caps. Thumbnail cache
+  cover request limits, client IPs, caching, and asset delivery. `routes/limitedBody.ts` owns global and route-specific streaming body caps. Thumbnail cache
   publication, removal, and stale-entry sweeps synchronize per key directory. See
   [global API](global-api.md)
   for the tab's transport and fetch policy.
@@ -83,9 +83,9 @@ The route matrix below is the server's current HTTP and WebSocket surface. Check
 Registration order in `createServerContext`:
 
 1. `onError` (`HTTPException` responses pass through; maintenance and a closed resource store answer 503 with `Retry-After`; other errors are a 500 `Internal Server Error`). Shutdown admission middleware runs before body parsing, tracks resource handlers (`/api/resources`, `/api/llm-secrets`, `/api/chats/search`, `/api/memory/tasks`, and `/api/chat-checkpoints`), refuses new resource, message search, credential, backup, module import, CharX import, Realm import, token, and request history requests with 503, and adds `Connection: close` to every response during shutdown; every `/api/request-history` answer gets `Cache-Control: no-store` there, so a 429 or 413 carries it too.
-2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`), skipped for `POST /api/backups/import`, `POST /api/backups/import-upstream/prepare`, `POST /api/import/module`, and `POST /api/import/charx`, which stream their bodies to disk under their own cap, and for `POST /api/import/realm` and its `/commit` and `/cancel`, which cap their `{ id }` or `{ token }` body at 4 KiB, and for `POST /api/chat-checkpoints/*` and `PUT /api/chat-checkpoints/policy`, which cap their bodies at 16 KiB after authentication, and for `POST /api/chats/search`, which caps its body at 4 KiB of received bytes, and for `POST /api/tokens/count` and `/api/tokens/encode`, which cap theirs at 2 MiB after authentication. A route that caps its own body with `bodyLimit` uses the shared helper in `server/src/routes/limitedBody.ts`: a body over the cap answers 413, and a request stream that fails while the limiter reads it answers 400, never the app's 500.
+2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`), skipped for `POST /api/backups/import`, `POST /api/backups/import-upstream/prepare`, `POST /api/import/module`, and `POST /api/import/charx`, which stream their bodies to disk under their own cap, and for `POST /api/import/realm` and its `/commit` and `/cancel`, which cap their `{ id }` or `{ token }` body at 4 KiB, and for `POST /api/chat-checkpoints/*` and `PUT /api/chat-checkpoints/policy`, which cap their bodies at 16 KiB after authentication, and for `POST /api/chats/search`, which caps its body at 4 KiB of received bytes, and for `POST /api/tokens/count` and `/api/tokens/encode`, which cap theirs at 2 MiB after authentication. The global cap and routes that cap their own bodies with `bodyLimit` use the shared helper in `server/src/routes/limitedBody.ts`: a body over the cap answers 413, and a request stream that fails while the limiter reads it answers 400, never the app's 500.
 3. `GET /` and `GET /index.html` (one shared handler, with `no-cache`, a weak size/mtime ETag, `Last-Modified`, and conditional 304 responses), then the same handler for the client's screen routes: a `GET *` handler serves it when `isClientRoutePath` (`shared/routes.ts`: first segment `chat`, `playground`, `realm`, `characters`, or `settings`) matches and passes every other path on ([URL routes](app-shell.md)).
-4. `createStaticCache` (`server/src/http/staticCache.ts`) checks regular files before `serveStatic` handles every other GET/HEAD: `/assets/*` gets `public, max-age=31536000, immutable`; all other files (including `sw.js` and `manifest.json`) get `no-cache`. Both carry a weak size/mtime ETag and `Last-Modified`. Matching `If-None-Match` (weak comparison; `*` only as the whole field) answers a bodyless 304; only when that header is absent, a parseable `If-Modified-Since` at or after mtime floored to whole seconds also answers 304. Missing or rejected paths pass on without cache headers.
+4. `createStaticCache` (`server/src/http/staticCache.ts`) checks regular files before `serveStatic` handles every other GET/HEAD: `/assets/*` gets `public, max-age=31536000, immutable`; all other files (including `sw.js` and `manifest.json`) get `no-cache`. Both carry a weak size/mtime ETag and `Last-Modified`. Matching `If-None-Match` (weak comparison; `*` only as the whole field) answers a bodyless 304; only when that header is absent, a parseable `If-Modified-Since` at or after mtime floored to whole seconds also answers 304. Otherwise, `If-Range` permits Range only with a matching strong ETag or the exact `Last-Modified` date; weak tags, stale validators, and invalid values discard Range and serve the full 200. Missing or rejected paths pass on without cache headers.
 5. The routes below.
 
 Routing is non-strict (a trailing slash matches).
@@ -170,7 +170,7 @@ Routing is non-strict (a trailing slash matches).
 
 The resource, proxy, and job rows marked "2000/min" share one limiter; `test_auth` has its own. Login has its own. The storage rows marked "2000/min (storage)" have their own bucket with the same threshold, so an asset burst (a module import or export) cannot starve resource sync.
 
-`/api/asset/*` answers with `Content-Security-Policy: sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'`, `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: same-origin`, `Accept-Ranges: bytes`, and `Content-Disposition: inline`, including errors and 304s. Byte responses and 304s use the extension's MIME from `shared/assetMime.ts` (unknown types: `application/octet-stream`); `html`, `htm`, `xhtml`, `xml`, `js`, and `mjs` use `attachment` and `application/octet-stream`, while SVG stays inline under the CSP sandbox. Successful responses and 304s are `Cache-Control: private, no-cache` with a weak ETag unless the content name is verified against the stat of the handle supplying the bytes. Verified names use `Cache-Control: private, max-age=31536000, immutable` and the strong ETag `"sha256-<hex>"` on 200/206 responses. A verified name accepts either its strong tag or its current weak stat tag in `If-None-Match`; a 304 carries the tag that matched and the immutable Cache-Control, so revalidating an earlier weak-tagged copy upgrades its caching policy. Comparison is weak for both tag forms, lists, whitespace, and a lone `*`; a strong-tag match takes precedence when both tags match. The weak ETag uses size, nanosecond mtime, and inode; a matching `If-None-Match` takes precedence over Range. Errors remain `no-store`. A single satisfiable `bytes=` range gets 206 with `Content-Range` and its length; an unsatisfiable range gets 416 with `Content-Range: bytes */<size>`. HEAD ignores Range and returns the full length (or 304); empty files ignore Range and return an empty 200.
+`/api/asset/*` answers with `Content-Security-Policy: sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'`, `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: same-origin`, `Accept-Ranges: bytes`, and `Content-Disposition: inline`, including errors and 304s. Byte responses and 304s use the extension's MIME from `shared/assetMime.ts`, including `flac` as `audio/flac` and `mkv` as `video/x-matroska` (unknown types: `application/octet-stream`); `html`, `htm`, `xhtml`, `xml`, `js`, and `mjs` use `attachment` and `application/octet-stream`, while SVG stays inline under the CSP sandbox. Successful responses and 304s are `Cache-Control: private, no-cache` with a weak ETag unless the content name is verified against the stat of the handle supplying the bytes. Verified names use `Cache-Control: private, max-age=31536000, immutable` and the strong ETag `"sha256-<hex>"` on 200/206 responses. A verified name accepts either its strong tag or its current weak stat tag in `If-None-Match`; a 304 carries the tag that matched and the immutable Cache-Control, so revalidating an earlier weak-tagged copy upgrades its caching policy. Comparison is weak for both tag forms, lists, whitespace, and a lone `*`; a strong-tag match takes precedence when both tags match. The weak ETag uses size, nanosecond mtime, and inode; a matching `If-None-Match` takes precedence over Range. Errors remain `no-store`. A single satisfiable `bytes=` range gets 206 with `Content-Range` and its length; an unsatisfiable range gets 416 with `Content-Range: bytes */<size>`. HEAD ignores Range and returns the full length (or 304); empty files ignore Range and return an empty 200.
 
 The thumbnail variant (`?w=256|512`, the short side's size class, not the output width) keeps the route's limiter, authentication before any file access, security headers, and the open-once rule: the route opens and stats the source once and hands that handle and stat to `assetThumbnails.ts`, which never reopens the source path. A WebP answer is `image/webp`, `inline`, served from the cache file with the same Range, HEAD, and 304 rules as the original. Its tags carry the size and transform version so they never equal the original's, another size's, or another version's: a verified source gets `"sha256-<hex>-w<size>-v<THUMBNAIL_VERSION>"` with the immutable Cache-Control and also accepts its current weak tag (a 304 then upgrades that copy); any other source gets `W/"<size>-<mtimeNs>-<ino>-<dev>-w<size>-v<THUMBNAIL_VERSION>"` with `private, no-cache`. A concrete variant-tag match answers 304 before the service runs, with no decode; a lone `*` goes through the service and applies to a WebP outcome only. When the original should be shown (the short side is at most the size, an animated GIF or WebP (`pages > 1`) or a PNG with `acTL` before its first `IDAT`, a source that is not a PNG, JPEG, GIF, WebP, or AVIF or that sharp reports as an unsupported format, an empty source, or one over 32 MiB or 40 megapixels) the answer is `307 Temporary Redirect` to the relative, query-free `/api/asset/<hex>` with `x-risu-thumbnail: original`, no ETag, and the original's Cache-Control (immutable when verified, else `private, no-cache`); preconditions are ignored, so it is never a 304. The encoder failing to load, a full generation queue, or any other service error (I/O, memory, encoder) answers the same redirect with `x-risu-thumbnail: unavailable`, `busy`, or `error` and `Cache-Control: no-store` (`error` also logs a line); a thumbnail failure is never a 5xx. The browser and the service worker follow the redirect to the original, so a page needs no status handling.
 
@@ -201,6 +201,20 @@ Auth:
 2. Later HTTP and WebSocket requests carry that JWT. The optional initial
    `RISU_PASSWORD_SHA256` seeds only a missing password file. `RISU_AGENT_DEV_AUTH_BYPASS`
    is accepted only for a numeric loopback host.
+3. JWT input failures answer 400; malformed tokens and token parse/crypto exceptions
+   use `{ error: "Invalid Signature" }`. The asset route still rewrites auth failures
+   to 401. Token acceptance rules are shared with WebSocket authentication.
+
+Request bodies use `routes/limitedBody.ts` for both the global cap and route-specific
+caps: oversized bodies answer 413, and stream failures while prereading answer 400
+`{ error: "Invalid JSON body" }` (or the route's configured read error). A JSON body
+read failure in `http/body.ts`, including one after a declared Content-Length skips
+the limiter's preread, uses the same 400 answer as invalid JSON.
+
+Local model refusals preserve the status from `prompt/transformers.ts`
+`localModelRefusal`: a full queue answers 429, an expired queue wait answers 503.
+Prompt jobs and manual trigger commands both use that mapping; server translations
+preserve the refusal status carried by a failed WebLLM request.
 
 Resources and chats:
 
@@ -300,6 +314,11 @@ Process memory: the module-level `assetVerification` singleton holds bounded ver
   bytes are verified. Asset responses open and stat one file handle; thumbnail
   generation uses that same handle. Keep `/api/asset/*` authenticated and preserve
   its security headers, range, conditional-request, and thumbnail behavior.
+  Accepted exposure (owner decision, 2026-10-23): a fresh immutable copy has no
+  `Vary` on auth, so the browser's HTTP cache answers any same-origin request of
+  that URL without reaching the server, including a plugin's `nativeFetch`; the
+  service worker passes a request whose destination it does not sign through
+  unsigned instead of answering 401 itself. Do not reopen this without a new finding.
 - File publication flushes staged file data before rename and syncs its directory
   where supported. Preserve atomic replacement and the ordering of durable writes;
   `EINVAL` and `EPERM` from directory sync are tolerated.
@@ -356,6 +375,8 @@ and timing rules belong to [build-test-platforms](build-test-platforms.md).
 - Resources, chats, checkpoints, and feed: `resourceStore.test.ts`,
   `resources*.test.ts`, `chatStore.test.ts`, `chatCheckpointRoutes.test.ts`,
   `chatCheckpoints.test.ts`, `changeFeed.test.ts`, `events.test.ts`.
+- `chatMetadataCoalescingEvents.test.ts` counts transactions on the job fixture’s SQLite connection, so background writes in other stores cannot alter the coalescing assertion.
+- `backups.test.ts` waits for an abandoned export’s backup to enter the exclusive queue before aborting; directory visibility alone precedes that admission.
 - Snapshots, archives, and imports: `snapshots.test.ts`, `backups.test.ts`,
   `durableWrite.test.ts`, `importModule.test.ts`, `importCharx.test.ts`,
   `importRealm.test.ts`, `upstream*.test.ts`.

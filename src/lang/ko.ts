@@ -247,7 +247,7 @@ export const languageKorean = {
         embedding:
             "임베딩 모델은 여러 기능에서 유사도 검색에 사용됩니다:\n\n- **장기 기억**: HypaV2, HypaV3, Hanurai Memory, SupaMemory (HypaMemory 활성화 시)\n- **추가 텍스트**: 컨텍스트 기반 캐릭터 추가 정보 매칭\n- **동적 에셋**: 정확한 에셋 이름을 찾지 못했을 때 유사한 이름 검색\n- **트리거 스크립트**: 트리거 스크립트의 유사도 조건\n- **파일 첨부**: PDF/TXT/XML 첨부 파일 내 검색",
         keepSessionAlive:
-            "브라우저에서 탭을 활성 상태로 유지하고 비활성 상태로 인한 세션 만료를 방지합니다. 적용하려면 새로고침이 필요할 수 있습니다.\n\n- **소리 사용**: 일정 간격으로 무음 오디오를 재생하여 세션을 유지합니다. 대부분의 브라우저에서 호환성이 가장 높고 효과적인 방법으로 알려져 있습니다.\n",
+            "탭이 백그라운드에서도 활성 상태를 유지하도록 돕습니다. 변경 사항이 적용되지 않으면 페이지를 새로고침하세요.\n\n- **소리 사용**: 들리지 않는 20 Hz 소리를 계속 반복 재생합니다. Android에서는 미디어 알림이 표시되며 다른 음악 앱의 재생이 일시 정지될 수 있습니다.\n",
         reSummarizationPrompt:
             "벌크 수정에서 선택한 여러 요약을 하나로 합칠 때 사용되는 프롬프트입니다. 비어있으면 기본 프롬프트를 사용합니다.",
         hypaV3MemoryTokensRatio: "프롬프트의 최대 컨텍스트 크기에서 장기기억 블록 {{slot}}에 할당되는 비율입니다.",
@@ -975,6 +975,12 @@ export const languageKorean = {
     setNodePassword: "보안을 위해 비밀번호를 정해주세요",
     inputNodePassword:
         "비밀번호를 입력해주세요. 기억이 안나신다면, save/server/password를 지우고 서버를 재시작해주세요.",
+    serverAuth: {
+        loginFailed: (status: number) => `로그인에 실패했습니다 (${status})`,
+        passwordSetupFailed: (status: number) => `비밀번호 설정에 실패했습니다 (${status})`,
+        authenticationFailed: (status: number) => `인증에 실패했습니다 (${status})`,
+        passwordCryptoFailed: (status: number) => `비밀번호 암호화에 실패했습니다 (${status})`,
+    },
     simple: "간단",
     advanced: "고급",
     askReRollAutoSuggestions: "자동 제안 다시 뽑기",

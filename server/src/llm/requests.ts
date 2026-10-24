@@ -1371,7 +1371,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             }
             redactor = createRedactor(collectSecrets(loaded.db));
             tracker.prompt(body.arg.formated, redactor);
-            // The client's `encode` scope, read in the tab when the request started (its main model,
+            // The tab's captured `tabTokenScope` when the request started (its main model,
             // whatever preset the request uses), with the stored Google key for a remote count.
             const tokenScope = tokenScopeFromTab(body.context.tokenizer, loaded.db.google?.accessToken);
             /** Ends the request (and, for a barrier failure, a timeout, or a disconnect, the job). */

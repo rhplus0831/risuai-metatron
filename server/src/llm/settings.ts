@@ -284,9 +284,9 @@ export function mainModelOf(db: RequestDb): LLMModel {
 }
 
 /**
- * The client's `encode` scope (`src/ts/process/request/transport.ts` builds it for
- * `/api/llm/request`), derived on the server for a job's own requests and counts: the job's
- * settings' main model and tokenizer fields, with the stored Google key. A plugin provider's
+ * The job's tokenizer scope, derived from its main model and tokenizer settings with the stored
+ * Google key. Tab requests instead capture `tabTokenScope` in `src/ts/tokenizer.ts` and send it
+ * through `src/ts/process/request/transport.ts` to `/api/llm/request`. A plugin provider's
  * tokenizer is not used (`"none"`: plugin tokenizers do not count on the server, Safety Contract).
  */
 export function tokenScopeFor(db: RequestDb): TokenCountScope {

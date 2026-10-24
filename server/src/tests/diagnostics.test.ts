@@ -1290,6 +1290,7 @@ describe("the report journal", () => {
     });
 
     it("keeps the newest 50 reports by name after a save, never the one just saved (a clock set back), and leaves every other entry alone", () => {
+        vi.spyOn(process, "uptime").mockReturnValue(123);
         const { dir, journal } = openJournal();
         const reports = path.join(dir, "reports");
         mkdirSync(reports);

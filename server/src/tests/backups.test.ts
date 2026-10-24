@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
@@ -644,20 +645,29 @@ describe("POST /api/backups/export", () => {
             await holding.promise;
         });
         await entered.promise;
+        const queued = defer();
+        const exclusive = s.context.snapshots.exclusive;
+        vi.spyOn(s.context.snapshots, "exclusive").mockImplementation(<T>(fn: () => Promise<T>) => {
+            const pending = exclusive(fn);
+            queued.resolve();
+            return pending;
+        });
         const controller = new AbortController();
         const pending = s.request(
             "/api/backups/export",
             { method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal: controller.signal },
             null,
         );
-        await waitFor(() => readdirSync(tmpDir(s)).some((name) => name.startsWith("export-")));
+        // The directory can be visible before makeStaging returns. Wait until preparation has
+        // actually queued its backup; an earlier abort skips the queue and removes staging.
+        await queued.promise;
         controller.abort();
-        await sleep(20);
+        await nextTurn();
         // Preparation is still queued behind the lock: nothing is removed under it, and the lifetime is held.
         expect(readdirSync(tmpDir(s))).toHaveLength(1);
         let stopped = false;
         const stopping = s.context.snapshots.stop().then(() => (stopped = true));
-        await sleep(20);
+        await nextTurn();
         expect(stopped).toBe(false);
 
         holding.resolve();

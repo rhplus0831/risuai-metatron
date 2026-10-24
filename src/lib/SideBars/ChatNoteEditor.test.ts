@@ -16,7 +16,10 @@ vi.mock("src/ts/gui/highlight", () => ({
 }));
 vi.mock("src/ts/stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { disableHighlight: writable(true), popUpEditorStore: {} };
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
+        disableHighlight: writable(true),
+        popUpEditorStore: { open: false, value: "", mode: "default", language: "markdown" },
+    });
 });
 
 import { language } from "src/lang";

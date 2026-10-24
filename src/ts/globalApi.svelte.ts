@@ -183,10 +183,12 @@ function directAssetFetchUrl(input: RequestInfo | URL): string | null {
     try {
         const url = new URL(input instanceof Request ? input.url : input, location.href);
         if (url.origin !== location.origin) return null;
-        const hex = /^\/api\/asset\/((?:[\da-fA-F]{2})+)$/.exec(url.pathname)?.[1];
+        const hex = /^\/(?:api\/asset|sw\/img)\/((?:[\da-fA-F]{2})+)$/.exec(url.pathname)?.[1];
         if (!hex) return null;
         const key = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(hex, "hex"));
-        return key.startsWith("assets/") ? url.href : null;
+        if (!key.startsWith("assets/")) return null;
+        url.pathname = "/api/asset/" + hex;
+        return url.href;
     } catch {
         return null;
     }
@@ -207,14 +209,18 @@ async function fetchFileSrcWith(
             const token = await getNodeServerProxyAuth();
             if (active()) {
                 headers.set("risu-auth", token);
-                return originalFetch.call(globalThis, request ?? url, { ...init, headers, mode: "same-origin" });
+                return originalFetch.call(globalThis, request ? new Request(url, request) : url, {
+                    ...init,
+                    headers,
+                    mode: "same-origin",
+                });
             }
         }
     }
     return originalFetch.call(globalThis, input, init);
 }
 
-/** Fetches displayed assets with auth only for same-origin direct URLs under the assets/ namespace. */
+/** Fetches same-origin displayed assets with auth, mapping legacy worker URLs to the asset route. */
 export function fetchFileSrc(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     return fetchFileSrcWith(fetch, input, init);
 }

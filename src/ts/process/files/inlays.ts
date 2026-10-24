@@ -3,6 +3,7 @@ import { v4 } from "uuid";
 import { getImageType } from "src/ts/media";
 import { getModelInfoForMode, LLMFlags, LLMFormat } from "src/ts/model/modellist";
 import { asBuffer } from "../../util";
+import { assetMimeType } from "../../../../shared/assetMime.ts";
 import {
     compareRevision,
     type InlayResource,
@@ -162,17 +163,7 @@ function clearMetaCaches() {
 }
 
 function mimeOf(meta: InlayResource): string {
-    const ext = meta.ext.toLowerCase();
-    if (meta.type === "image") {
-        return `image/${ext === "jpg" ? "jpeg" : ext}`;
-    }
-    if (meta.type === "audio") {
-        return `audio/${ext === "mp3" ? "mpeg" : ext}`;
-    }
-    if (meta.type === "video") {
-        return `video/${ext}`;
-    }
-    return "application/json";
+    return meta.type === "signature" ? "application/json" : assetMimeType(meta.ext);
 }
 
 async function getMeta(id: string): Promise<Meta | null> {

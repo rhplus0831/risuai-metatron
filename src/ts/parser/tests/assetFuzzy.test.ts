@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { CurrentTriggerIdStore: writable(null), CharEmotion: writable({}) };
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
+        CurrentTriggerIdStore: writable(null),
+        CharEmotion: writable({}),
+    });
 });
 vi.mock("../../storage/database.svelte", () => ({ appVer: "test", defaultSdDataFunc: () => [] }));
 vi.mock("../../globalApi.svelte", () => ({

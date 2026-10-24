@@ -23,7 +23,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ selectSingleFile: vi.fn() }));
-vi.mock("src/ts/stores.svelte", () => ({ hotReloading: [] as string[] }));
+vi.mock("src/ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({ hotReloading: [] as string[] }),
+);
 vi.mock("./apiV3/transpiler", () => ({ pluginCodeTranspiler: vi.fn(async (code: string) => code) }));
 vi.mock("src/ts/safeBoot", () => ({ safeBootOff: (category: string) => mocks.off.has(category) }));
 vi.mock("./apiV3/v3.svelte", () => ({

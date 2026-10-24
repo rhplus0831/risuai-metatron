@@ -6,6 +6,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import * as localModels from "../prompt/transformers.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -28,6 +29,7 @@ const SLOW = 60_000;
 
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
+let transformers: localModels.TransformersService;
 let node: http.Server;
 let base = "";
 let epoch = "";
@@ -66,7 +68,17 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir, scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS, cbsTimeLimits: UNHURRIED_CBS });
+    const createdModels = vi.spyOn(localModels, "createTransformers");
+    try {
+        server = createTestServer({
+            rootDir,
+            scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+            cbsTimeLimits: UNHURRIED_CBS,
+        });
+        transformers = createdModels.mock.results[0].value;
+    } finally {
+        createdModels.mockRestore();
+    }
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -290,6 +302,37 @@ const notices = (events: any[], kind: string) =>
     events.filter((event) => event.type === "notice" && event.kind === kind);
 
 describe("the route", () => {
+    it("preserves local model queue-full and queue-wait statuses when a manual trigger fails", async () => {
+        // The refusal comes from the model process boundary; no inference or queue-wait clock runs.
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        const embeddings = vi.spyOn(transformers, "runEmbedding");
+        try {
+            const chaId = await seedCharacter({
+                triggers: [
+                    trig("similarity", [
+                        ef("v2CheckSimilarity", {
+                            sourceType: "value",
+                            source: "query",
+                            ...v("candidate"),
+                            outputVar: "similar",
+                        }),
+                    ]),
+                ],
+            });
+            for (const [error, status] of [
+                [new localModels.TransformersQueueFullError(), 429],
+                [new localModels.TransformersQueueWaitError(), 503],
+            ] as const) {
+                embeddings.mockRejectedValue(error);
+                const { terminal } = await runManual(chaId, "similarity");
+                expect.soft(terminal, error.name).toMatchObject({ type: "error", status });
+            }
+        } finally {
+            embeddings.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
     it("accepts a manual command with a free-text trigger id, and refuses a bad shape, an over-long name, or an empty or over-long trigger id", async () => {
         const chaId = await seedCharacter({ triggers: [trig("go", [say("char", "id={{trigger_id}}")])] });
         for (const [body, message] of [

@@ -76,6 +76,19 @@ export function createStaticCache(root: string): MiddlewareHandler<AppEnv> {
         if (setCacheHeaders(c, stat, cacheControl)) {
             return c.body(null, 304);
         }
+        const ifRange = c.req.header("If-Range");
+        if (ifRange !== undefined && c.req.header("Range") !== undefined) {
+            const validator = ifRange.trim();
+            const etag = c.res.headers.get("ETag");
+            const lastModified = c.res.headers.get("Last-Modified");
+            // If-Range requires a strong ETag match or the exact Last-Modified date.
+            const matches =
+                (etag !== null && !etag.startsWith("W/") && validator === etag) ||
+                (lastModified !== null && Date.parse(validator) === Date.parse(lastModified));
+            if (!matches) {
+                c.req.raw.headers.delete("Range");
+            }
+        }
         return next();
     };
 }

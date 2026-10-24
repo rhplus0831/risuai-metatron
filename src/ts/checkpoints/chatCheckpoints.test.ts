@@ -163,6 +163,32 @@ afterEach(() => {
 });
 
 describe("chat checkpoints over the server store", () => {
+    it("persists policy changes through the service and refuses a missing chat", async () => {
+        const policy = { autoEvery: 2, autoKeep: 3 };
+        expect(await tab.checkpoints.readCheckpointPolicy(ref)).toEqual({ status: "available", policy: null });
+        expect(await tab.checkpoints.writeCheckpointPolicy(ref, policy)).toEqual({ status: "ok", policy });
+        expect(server.service.readPolicy({ body: address })).toEqual({
+            status: 200,
+            body: { epoch: server.store.epoch(), policy },
+        });
+        expect(await tab.checkpoints.readCheckpointPolicy(ref)).toEqual({ status: "available", policy });
+        expect(await tab.checkpoints.writeCheckpointPolicy(ref, null)).toEqual({ status: "ok", policy: null });
+        expect(server.service.readPolicy({ body: address }).body.policy).toBeNull();
+
+        const missing = { ...address, chatId: "missing" };
+        const query = new URLSearchParams(missing);
+        const read = await server.fetch(`/api/chat-checkpoints/policy?${query}`);
+        expect(read.status).toBe(404);
+        expect(await read.json()).toEqual({ error: "Chat or checkpoint not found" });
+        const write = await server.fetch("/api/chat-checkpoints/policy", {
+            method: "PUT",
+            headers: { "x-resource-epoch": server.store.epoch() },
+            body: JSON.stringify({ ...missing, ...policy }),
+        });
+        expect(write.status).toBe(404);
+        expect(await write.json()).toEqual({ error: "Chat or checkpoint not found" });
+    });
+
     it("saves pending message edits before capturing the checkpoint", async () => {
         tab.chat.setMessageText(ref, "reply", "Unsaved draft at the fork");
         expect(server.resources.texts(ref.chaId, ref.chatId)).toEqual(["At the fork"]);

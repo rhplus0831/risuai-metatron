@@ -315,8 +315,8 @@ export const languageEnglish = {
             "- **File Attachments**: Searching within PDF/TXT/XML attachments\n" +
             "- **Playground**: Embedding testing in Playground",
         keepSessionAlive:
-            "Keeps the tab active and prevents the session from expiring due to inactivity in browsers. This may require refresh to take effect.\n\n" +
-            "- **Via Sound**: Plays a silent audio at regular intervals to keep the session alive. This method is known as most compatible and effective in most browsers.\n",
+            "Helps keep the tab active in the background. Refresh the page if changes do not take effect.\n\n" +
+            "- **Via Sound**: Continuously loops an inaudible 20 Hz tone. On Android, this shows a media notification and may pause playback in other music apps.\n",
         reSummarizationPrompt:
             "The prompt used when merging multiple selected summaries into one via bulk edit. If blank, the default prompt is used.",
         hypaV3MemoryTokensRatio:
@@ -1038,6 +1038,12 @@ export const languageEnglish = {
     setNodePassword: "Set your password to security",
     inputNodePassword:
         "Input your password. if you can't remember, remove save/server/password in your server files and restart the server.",
+    serverAuth: {
+        loginFailed: (status: number) => `Login failed (${status})`,
+        passwordSetupFailed: (status: number) => `Password setup failed (${status})`,
+        authenticationFailed: (status: number) => `Authentication failed (${status})`,
+        passwordCryptoFailed: (status: number) => `Password crypto failed (${status})`,
+    },
     simple: "Simple",
     advanced: "Advanced",
     askReRollAutoSuggestions: "Re-Roll Auto Suggestions",

@@ -3,6 +3,7 @@ import type { GenerationCommand } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { runPromptJob } from "../prompt/runner.ts";
+import { localModelRefusal } from "../prompt/transformers.ts";
 import {
     failureOf,
     type GenerationRunner,
@@ -204,9 +205,10 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
         if (job.signal.aborted || error instanceof GenerationRunnerError || error instanceof LuaJobFatalError) {
             throw error;
         }
+        const refusal = localModelRefusal(error);
         throw new GenerationRunnerError(
-            500,
-            `Trigger: ${error instanceof Error ? error.message : String(error)}`,
+            refusal?.status ?? 500,
+            refusal?.message ?? `Trigger: ${error instanceof Error ? error.message : String(error)}`,
             failureOf(error),
         );
     }

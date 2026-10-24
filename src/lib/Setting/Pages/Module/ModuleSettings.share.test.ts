@@ -32,9 +32,11 @@ vi.mock("src/ts/storage/settingsViews.svelte", () => ({
     },
     activePreset: { modules: [] },
 }));
-vi.mock("src/ts/stores.svelte", () => ({
-    alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(store.alertStore, key) }),
-}));
+vi.mock("src/ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(store.alertStore, key) }),
+    }),
+);
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,

@@ -17,7 +17,7 @@ export const UPSTREAM_CONVERTED_CODES = [
     "cold-character-restored",
     /** A cold-storage chat came back from its payload, one per chat; examples are character names. */
     "cold-chat-restored",
-    /** A plugin storage value came back from cold storage (`_coldplugin`); examples are storage keys. */
+    /** A plugin value came back from `_coldplugin` or an `_coldpluginIndex` entry; examples are storage keys. */
     "cold-plugin-storage-restored",
     /**
      * An upstream plugin storage value kept at the top level of `pluginCustomStorage` (upstream's v3
@@ -49,11 +49,11 @@ export const UPSTREAM_EXCLUDED_CODES = [
     /** A custom model with invalid required fields or rejected serialized data; examples are names or positions. */
     "invalid-custom-model",
     /**
-     * A cold-storage pointer whose payload the backup lacks or holds unreadable, one per pointer: a
+     * A cold-storage pointer whose value cannot be restored, one per pointer: a
      * character kept as its stub (name, image, an empty chat), a chat kept without its messages, or
-     * a plugin storage value left out. Upstream's own backup never writes a plugin value that is
-     * not a list or an object with `character` or `message`. Examples are character names or
-     * storage keys.
+     * a plugin storage value left out. Plugin values may be any JSON type. Missing or unreadable
+     * `_coldpluginIndex` records and missing or unreadable large-value records count here too.
+     * Examples are character names, storage keys, or `_coldpluginIndex` for an unavailable index.
      */
     "cold-missing",
     /** A multiuser or playground leftover (`§temp`, `§playground`), one per character. */

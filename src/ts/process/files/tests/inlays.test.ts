@@ -283,6 +283,33 @@ describe("reads", () => {
         I.invalidateInlayCaches();
         expect(await I.getInlayAssetBlob("gone")).toBeNull();
     });
+
+    test("getInlayObjectUrl uses canonical MIME types for fallback media blobs", async () => {
+        const created: Blob[] = [];
+        const create = vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+            created.push(blob as Blob);
+            return `blob:fallback-${created.length}`;
+        });
+        try {
+            for (const [type, ext, mime] of [
+                ["video", "mkv", "video/x-matroska"],
+                ["audio", "flac", "audio/flac"],
+                ["audio", "m4a", "audio/mp4"],
+            ] as const) {
+                const key = `assets/fallback.${ext}`;
+                const bytes = `fallback ${ext} bytes`;
+                assets.set(key, new TextEncoder().encode(bytes));
+                fake.set("inlays", ext, { name: ext, type, ext, asset: key });
+
+                expect(await I.getInlayObjectUrl(ext)).not.toBeNull();
+                expect(created.at(-1)!.type, ext).toBe(mime);
+                expect(await created.at(-1)!.text(), ext).toBe(bytes);
+            }
+            expect(create).toHaveBeenCalledTimes(3);
+        } finally {
+            create.mockRestore();
+        }
+    });
 });
 
 describe("caches", () => {

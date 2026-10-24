@@ -45,7 +45,7 @@ vi.mock("../storage/characterStore.svelte", () => ({
     characterList: () => stubs.db.characters,
 }));
 // `stores.svelte` runs module effects; the module under test reads the records through the stubs above.
-vi.mock("../stores.svelte", () => ({}));
+vi.mock("../stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 vi.mock("./prereroll", () => ({ addRerolls: stubs.addRerolls }));
 
 type Module = typeof import("./serverGeneration");

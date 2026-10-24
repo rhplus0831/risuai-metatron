@@ -35,7 +35,6 @@ beforeEach(() => {
     vi.spyOn(HTMLIFrameElement.prototype, "contentWindow", "get").mockImplementation(() => guestWindow as any);
     vi.spyOn(HTMLIFrameElement.prototype, "srcdoc", "set").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(console, "log").mockImplementation(() => {});
     for (const key of Object.keys(api)) delete api[key];
     host = new SandboxHost(api);
     host.run(document.createElement("iframe"), "");

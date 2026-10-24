@@ -17,7 +17,7 @@ vi.mock(import("../../globalApi.svelte"), () => ({
 }));
 
 // `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
-vi.mock(import("../../stores.svelte"), () => ({}) as unknown as typeof import("../../stores.svelte"));
+vi.mock(import("../../stores.svelte"), async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 
 //#endregion
 

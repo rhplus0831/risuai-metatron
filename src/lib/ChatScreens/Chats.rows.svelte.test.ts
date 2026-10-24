@@ -72,11 +72,13 @@ vi.mock("src/ts/characters", () => ({
         thumb === undefined ? `image:${path}:original` : `image:${path}`,
     ),
 }));
-vi.mock("src/ts/stores.svelte", () => ({
-    createSimpleCharacter: vi.fn(() => ({})),
-    ReloadChatPointer: writable({}),
-    reloadChatKey: (id: string | undefined, idx: number) => (id !== undefined ? `m:${id}` : `i:${idx}`),
-}));
+vi.mock("src/ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        createSimpleCharacter: vi.fn(() => ({ type: "simple" as const, chaId: "c", customscript: [] })),
+        ReloadChatPointer: writable({}),
+        reloadChatKey: (id: string | undefined, idx: number) => (id !== undefined ? `m:${id}` : `i:${idx}`),
+    }),
+);
 vi.mock("src/ts/storage/chatStore.svelte", () => {
     const selection = $state({ chaId: "c", chatId: "chat" });
     // Chat key → the entry that chat shows as streaming.

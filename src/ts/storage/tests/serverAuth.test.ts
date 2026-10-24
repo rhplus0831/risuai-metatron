@@ -1,4 +1,6 @@
+import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { safeStructuredClone } from "../../polyfill";
 
 // The tab's server authentication (`serverAuth.ts`, the auth half of the removed storage client,
 // one module-level state for every caller) against a fake of the server's auth routes: the first
@@ -24,7 +26,6 @@ vi.mock("../../alert", async () =>
         waitAlert: alerts.waitAlert,
     }),
 );
-vi.mock("src/lang", () => ({ language: { setNodePassword: "set password", inputNodePassword: "input password" } }));
 vi.mock("../../util", () => ({
     base64url: (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url"),
     getKeypairStore: async (name: string) => keypairs.get(name) ?? null,
@@ -35,6 +36,7 @@ vi.mock("../../util", () => ({
 
 type ServerAuth = typeof import("../serverAuth");
 let auth$: ServerAuth;
+let lang$: typeof import("src/lang");
 
 type FakeAuth = {
     password: string | null;
@@ -54,6 +56,9 @@ let auth: FakeAuth;
 
 beforeEach(async () => {
     vi.resetModules();
+    vi.stubGlobal("safeStructuredClone", safeStructuredClone);
+    lang$ = await import("src/lang");
+    lang$.changeLanguage("en");
     auth$ = await import("../serverAuth");
     auth = {
         password: null,
@@ -129,7 +134,7 @@ describe("first run", () => {
     it("sets the password once and logs this browser in with the same digest, so the next request is authorized", async () => {
         prompts.answers = ["hunter2"];
         await auth$.ensureAuth();
-        expect(prompts.asked).toEqual(["set password"]);
+        expect(prompts.asked).toEqual([lang$.language.setNodePassword]);
         expect(paths()).toEqual(["/api/test_auth", "/api/crypto", "/api/set_password", "/api/login"]);
         expect(auth.password).toBe("digest(hunter2)");
         expect(auth.calls[3].body.password).toBe("digest(hunter2)");
@@ -179,7 +184,7 @@ describe("existing server", () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
         await auth$.ensureAuth();
-        expect(prompts.asked).toEqual(["input password"]);
+        expect(prompts.asked).toEqual([lang$.language.inputNodePassword]);
         expect(paths()).toEqual(["/api/test_auth", "/api/crypto", "/api/login"]);
         expect(await checkedState()).toBe(true);
         // A fresh module state (a new tab: the removed storage client's second instance) checks once more,
@@ -187,7 +192,7 @@ describe("existing server", () => {
         vi.resetModules();
         const fresh: ServerAuth = await import("../serverAuth");
         await fresh.ensureAuth();
-        expect(prompts.asked).toEqual(["input password"]);
+        expect(prompts.asked).toEqual([lang$.language.inputNodePassword]);
         expect(paths().slice(3)).toEqual(["/api/test_auth"]);
     });
 
@@ -200,7 +205,7 @@ describe("existing server", () => {
         // Unchecked: the next call runs the check (and the prompt) again, and succeeds.
         prompts.answers = ["pw"];
         expect(await checkedState()).toBe(false);
-        expect(prompts.asked).toEqual(["input password", "input password"]);
+        expect(prompts.asked).toEqual([lang$.language.inputNodePassword, lang$.language.inputNodePassword]);
         expect(paths()).toEqual([
             "/api/test_auth",
             "/api/crypto",
@@ -216,9 +221,40 @@ describe("existing server", () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];
         await Promise.all([auth$.ensureAuth(), auth$.ensureAuth(), auth$.getNodeServerProxyAuth()]);
-        expect(prompts.asked).toEqual(["input password"]);
+        expect(prompts.asked).toEqual([lang$.language.inputNodePassword]);
         expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(1);
         expect(paths().filter((path) => path === "/api/login")).toHaveLength(1);
+    });
+});
+
+describe("localized failures", () => {
+    it("uses the selected English or Korean serverAuth message and HTTP status for empty failure bodies", async () => {
+        const serverFetch = vi.mocked(fetch).getMockImplementation()!;
+        for (const locale of ["en", "ko"]) {
+            lang$.changeLanguage(locale);
+            for (const [route, key, status] of [
+                ["/api/login", "loginFailed", 401],
+                ["/api/set_password", "passwordSetupFailed", 409],
+                ["/api/test_auth", "authenticationFailed", 503],
+                ["/api/crypto", "passwordCryptoFailed", 422],
+            ] as const) {
+                auth.password = route === "/api/login" ? "digest(pw)" : null;
+                auth.registered.clear();
+                prompts.answers = ["pw"];
+                alerts.alertError.mockClear();
+                vi.mocked(fetch).mockImplementation((input, init) =>
+                    input === route ? Promise.resolve(new Response(null, { status })) : serverFetch(input, init),
+                );
+
+                const expected = lang$.language.serverAuth[key](status);
+                expect(expected).toContain(String(status));
+                expect(expected).toMatch(locale === "ko" ? /[가-힣]/ : /[a-z]/i);
+                await expect(auth$.ensureAuth(), `${locale} ${key}`).rejects.toBe(expected);
+                if (route === "/api/login" || route === "/api/set_password") {
+                    expect(alerts.alertError).toHaveBeenCalledExactlyOnceWith(expected);
+                }
+            }
+        }
     });
 });
 
@@ -238,9 +274,9 @@ describe("authFetch", () => {
         expect(new Headers(init.headers).get("x-custom")).toBe("1");
         expect(init.method).toBe("POST");
         expect(init.cache).toBe("no-store");
-        expect(prompts.asked).toEqual(["input password"]);
+        expect(prompts.asked).toEqual([lang$.language.inputNodePassword]);
         await auth$.authFetch("/api/ping");
-        expect(prompts.asked).toEqual(["input password"]);
+        expect(prompts.asked).toEqual([lang$.language.inputNodePassword]);
     });
 
     it("runs beforeDispatch after the authentication and the signing, right before the request, and a throw stops it (7b)", async () => {

@@ -1,4 +1,4 @@
-import type { CheckpointPolicy, CheckpointSummary } from "../../../../shared/chatCheckpoints.ts";
+import type { CheckpointSummary } from "../../../../shared/chatCheckpoints.ts";
 import type { Chat } from "../../../../shared/database.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../../shared/resources.ts";
 import { StoreBackedServer, type ServerStore } from "../../storage/tests/storeBackedServer";
@@ -6,7 +6,7 @@ import { StoreBackedServer, type ServerStore } from "../../storage/tests/storeBa
 type ServiceRequest = { body: unknown; epoch?: string };
 type ServiceResult = { status: number; body: Record<string, unknown> };
 type CheckpointService = Record<
-    "list" | "save" | "rename" | "remove" | "load",
+    "list" | "save" | "rename" | "remove" | "load" | "readPolicy" | "writePolicy",
     (request: ServiceRequest) => ServiceResult
 >;
 type CheckpointStore = ServerStore & {
@@ -62,7 +62,6 @@ export class CheckpointServer {
     dropLoadAnswer = false;
     beforeLoad: ReturnType<typeof latch> | null = null;
     afterLoad: ReturnType<typeof latch> | null = null;
-    private readonly policies = new Map<string, CheckpointPolicy>();
 
     private constructor(
         readonly resources: StoreBackedServer,
@@ -104,17 +103,10 @@ export class CheckpointServer {
 
         let result: ServiceResult;
         if (operation === "policy" && (method === "GET" || method === "PUT")) {
-            // These routes are not in the server yet; only their documented wire contract is stood in.
-            const key = JSON.stringify([body.characterId, body.chatId]);
-            if (method === "PUT" && epoch !== this.store.epoch()) {
-                result = { status: 412, body: { error: "EpochMismatch", epoch: this.store.epoch() } };
-            } else {
-                if (method === "PUT") {
-                    if (body.off === true) this.policies.delete(key);
-                    else this.policies.set(key, { autoEvery: body.autoEvery, autoKeep: body.autoKeep });
-                }
-                result = { status: 200, body: { epoch: this.store.epoch(), policy: this.policies.get(key) ?? null } };
-            }
+            result =
+                method === "GET"
+                    ? this.service.readPolicy({ body })
+                    : this.service.writePolicy({ body, epoch: epoch ?? undefined });
         } else if (url.pathname === PATH && method === "GET") {
             result = this.service.list({ body });
         } else if (method === "POST" && ["save", "rename", "delete", "load"].includes(operation)) {

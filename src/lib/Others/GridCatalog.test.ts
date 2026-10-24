@@ -12,7 +12,11 @@ vi.mock("src/ts/characters", () => ({
     restoreChar: vi.fn(),
 }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("src/ts/stores.svelte", () => ({ popupStore: { children: null, mouseX: 0, mouseY: 0 } }));
+vi.mock("src/ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        popupStore: { children: null, mouseX: 0, mouseY: 0, openId: 0 },
+    }),
+);
 
 import { getCharImage } from "src/ts/characters";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";

@@ -2,8 +2,7 @@
 
 The golden values the server path is compared against, captured once from the **browser
 path at commit `efad2b76`** (the tree differed only by added server files the client does not load).
-They were captured by
-`util/playwright/captureBrowserBaseline.mjs` from the client's own functions on the Vite dev stack
+They were captured by a retired browser harness from the client's own functions on the Vite dev stack
 (`util/playwright/stack.mjs`: a fresh server working directory, so an empty `save/`) in a headless
 system Chrome, and never derived from server code. `provenance.json` records the commit, the Chrome,
 Playwright, and wasmoon versions, the page errors, and every request the capture blocked or served
@@ -30,8 +29,8 @@ Contract changes) are separate reviewed expected-delta files.
 The capture files above stay as captured. An approved behavior change (a defect fix, a Safety
 Contract change) gets a reviewed expected-delta file here, which names the scenarios it changes,
 the value after the change, and why the change produces it; a test takes the delta where it has an
-entry and the capture everywhere else. The re-capture (`node util/playwright/captureBrowserBaseline.mjs`,
-at `219dfb51` or earlier; see "Re-capture") does not write this folder.
+entry and the capture everywhere else. The retired capture harness did not write the `deltas/`
+folder; the original captures and the reviewed deltas remain separate.
 
 | File                               | What it holds                                                                                                                                                                                                                                                                                                                                      | Consumer                                                                                                                                                 |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -151,9 +150,8 @@ at `219dfb51` or earlier; see "Re-capture") does not write this folder.
 
 ## Re-capture
 
-The capture drives the browser path removed when scripting moved to the server: it imports
-`src/ts/process/scripts.ts`. It runs only on a checkout at `219dfb51` or earlier.
-
-`node util/playwright/captureBrowserBaseline.mjs` writes this folder (an `outDir` argument writes
-elsewhere, for example to compare two runs). A difference from the checked-in files after a client
-change is a behavior change to attribute and record, not a fixture to overwrite silently.
+The capture harness has been retired: it calls the former client `encode`, which the tab no longer
+exports. The remaining `encodeWithTokenizer` gets ids from the server and cannot supply independent
+browser expectations. Historical capture code is available in repository history; `provenance.json`
+records the browser code used for the capture. Keep the original captures and reviewed deltas as recorded;
+a difference from them is a behavior change to attribute and record.

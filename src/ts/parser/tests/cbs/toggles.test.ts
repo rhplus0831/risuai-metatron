@@ -2,10 +2,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock(import("../../../stores.svelte"), async () => {
     const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
-    return {
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
         CurrentTriggerIdStore: writable(null),
         CharEmotion: writable({}),
-    } as unknown as typeof import("../../../stores.svelte");
+    });
 });
 vi.mock(
     import("../../../storage/database.svelte"),

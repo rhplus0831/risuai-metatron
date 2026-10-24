@@ -7,7 +7,9 @@ vi.mock("./storage/settingsViews.svelte", () => ({ settings: { providers: {} } }
 vi.mock("./util", () => ({ checkNullish: (x: unknown) => x == null, sleep: async () => {} }));
 vi.mock("streamsaver", () => ({ default: {} }));
 vi.mock("./storage/database.svelte", () => ({}));
-vi.mock("./stores.svelte", () => ({ bodyIntercepterStore: [] }));
+vi.mock("./stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({ bodyIntercepterStore: [] }),
+);
 vi.mock("./plugins/plugins.svelte", () => ({}));
 vi.mock("./alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("./parser/parser.svelte", () => ({}));
@@ -228,6 +230,33 @@ describe("file source fetch authentication", () => {
             null,
         ]);
         expect(getNodeServerProxyAuth).toHaveBeenCalledTimes(1);
+    });
+
+    it("fetches legacy worker asset URLs through the signed asset route without signing other keys or origins", async () => {
+        const hex = Buffer.from("assets/이전 image.png", "utf8").toString("hex");
+        const legacy = `/sw/img/${hex}`;
+        const expected = `${origin}/api/asset/${hex}`;
+        vi.mocked(getNodeServerProxyAuth).mockReset().mockResolvedValue("legacy-token");
+
+        for (const input of [legacy, new URL(`${origin}${legacy}`), new Request(`${origin}${legacy}`)]) {
+            await fetchFileSrc(input);
+            const [sent, init] = fetchMock.mock.calls.at(-1)!;
+            expect(sent instanceof Request ? sent.url : String(sent)).toBe(expected);
+            expect(new Headers(init?.headers).get("risu-auth")).toBe("legacy-token");
+        }
+        expect(getNodeServerProxyAuth).toHaveBeenCalledTimes(3);
+
+        for (const input of [
+            `/sw/img/${Buffer.from("database/settings.json", "utf8").toString("hex")}`,
+            `https://other.test${legacy}`,
+        ]) {
+            await fetchFileSrc(input);
+            const [sent, init] = fetchMock.mock.calls.at(-1)!;
+            expect(sent).toBe(input);
+            expect(new Headers(init?.headers).has("risu-auth")).toBe(false);
+        }
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        expect(getNodeServerProxyAuth).toHaveBeenCalledTimes(3);
     });
 });
 afterEach(() => {

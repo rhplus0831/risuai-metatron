@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { warmModules } from "./storage/tests/mutationStoresHarness";
@@ -20,53 +21,61 @@ const mocks = vi.hoisted(() => ({
     loadPluginsForBoot: vi.fn(async () => ({ guestsStarted: Promise.resolve(true), stopFollowingGuests: vi.fn() })),
     updateTextThemeAndCSS: vi.fn(),
     seedInlays: vi.fn(),
-    readAsset: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
+    readAsset: vi.fn(async () => Buffer.from([137, 80, 78, 71])),
 }));
-vi.mock("./storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => mocks.server!.fetch(path, init),
-    getNodeServerProxyAuth: async () => "test-token",
-}));
-vi.mock("./storage/assetClient", () => ({ readAsset: mocks.readAsset, writeAsset: vi.fn() }));
-vi.mock("./storage/resourceSync.svelte", () => ({
-    seedResources: vi.fn(),
-    startResourceSync: vi.fn(),
-    onRemoteRecordApplied: vi.fn(),
-    setRemoteResourceOwner: vi.fn(),
-}));
-vi.mock("./characterCards", () => ({ characterURLImport: vi.fn() }));
+vi.mock("./storage/serverAuth", async () =>
+    (await import("./tests/bootMocks")).createBootMock("serverAuth", {
+        authFetch: (path: string, init?: RequestInit) => mocks.server!.fetch(path, init),
+        getNodeServerProxyAuth: async () => "test-token",
+    }),
+);
+vi.mock("./storage/assetClient", async () =>
+    (await import("./tests/bootMocks")).createBootMock("assetClient", { readAsset: mocks.readAsset }),
+);
+vi.mock("./storage/resourceSync.svelte", async () =>
+    (await import("./tests/bootMocks")).createBootMock("resourceSync"),
+);
+vi.mock("./characterCards", async () => (await import("./tests/bootMocks")).createBootMock("characterCards"));
 vi.mock("./alert", async () =>
-    (await import("src/ts/tests/alertMock")).createAlertMock({
+    (await import("./tests/bootMocks")).createBootMock("alert", {
         alertError: mocks.alertError,
         alertNormal: mocks.alertNormal,
         alertMd: mocks.alertMd,
     }),
 );
-vi.mock("./plugins/plugins.svelte", () => ({ loadPlugins: vi.fn(), loadPluginsForBoot: mocks.loadPluginsForBoot }));
-vi.mock("./plugins/apiV3/permissionStore", () => ({ loadPluginPermissions: vi.fn() }));
-vi.mock("./router/router.svelte", () => ({ startRouter: mocks.startRouter }));
-vi.mock("./storage/browserLocalImport", () => ({ importBrowserLocalData: vi.fn() }));
-vi.mock("./process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [] }));
-vi.mock("./parser/parser.svelte", () => ({ risuChatParser: (text: string) => text }));
-vi.mock("./parser/transformClient", () => ({ resetTransformEffects: vi.fn() }));
-vi.mock("./process/files/inlays", () => ({
-    seedInlays: mocks.seedInlays,
-    invalidateInlayCaches: vi.fn(),
-    noteRemoteInlay: vi.fn(),
-    reconcileInlays: vi.fn(),
-}));
-vi.mock("./gui/animation", () => ({ updateAnimationSpeed: vi.fn() }));
-vi.mock("./gui/colorscheme", () => ({
-    updateColorScheme: vi.fn(),
-    updateTextThemeAndCSS: mocks.updateTextThemeAndCSS,
-}));
-vi.mock("./gui/guisize", () => ({ updateGuisize: vi.fn() }));
-vi.mock("./observer.svelte", () => ({ startObserveDom: vi.fn() }));
-vi.mock("./model/modellist", () => ({ registerModelDynamic: vi.fn() }));
-vi.mock("./network/eventFeed", () => ({ startEventFeed: vi.fn() }));
-vi.mock("./network/pushNotifications", () => ({ startPushNotifications: vi.fn() }));
-vi.mock("./process/serverCommands", async () =>
-    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock(),
+vi.mock("./plugins/plugins.svelte", async () =>
+    (await import("./tests/bootMocks")).createBootMock("plugins", { loadPluginsForBoot: mocks.loadPluginsForBoot }),
 );
+vi.mock("./plugins/apiV3/permissionStore", async () =>
+    (await import("./tests/bootMocks")).createBootMock("permissionStore"),
+);
+vi.mock("./router/router.svelte", async () =>
+    (await import("./tests/bootMocks")).createBootMock("router", { startRouter: mocks.startRouter }),
+);
+vi.mock("./storage/browserLocalImport", async () =>
+    (await import("./tests/bootMocks")).createBootMock("browserLocalImport"),
+);
+vi.mock("./process/modules", async () => (await import("./tests/bootMocks")).createBootMock("modules"));
+vi.mock("./parser/parser.svelte", async () => (await import("./tests/bootMocks")).createBootMock("parser"));
+vi.mock("./parser/transformClient", async () => (await import("./tests/bootMocks")).createBootMock("transformClient"));
+vi.mock("./process/files/inlays", async () =>
+    (await import("./tests/bootMocks")).createBootMock("inlays", { seedInlays: mocks.seedInlays }),
+);
+vi.mock("./gui/animation", async () => (await import("./tests/bootMocks")).createBootMock("animation"));
+vi.mock("./gui/colorscheme", async (importOriginal) =>
+    (await import("./tests/bootMocks")).createBootColorSchemeMock(
+        await importOriginal<typeof import("./gui/colorscheme")>(),
+        { updateTextThemeAndCSS: mocks.updateTextThemeAndCSS },
+    ),
+);
+vi.mock("./gui/guisize", async () => (await import("./tests/bootMocks")).createBootMock("guisize"));
+vi.mock("./observer.svelte", async () => (await import("./tests/bootMocks")).createBootMock("observer"));
+vi.mock("./model/modellist", async () => (await import("./tests/bootMocks")).createBootMock("modellist"));
+vi.mock("./network/eventFeed", async () => (await import("./tests/bootMocks")).createBootMock("eventFeed"));
+vi.mock("./network/pushNotifications", async () =>
+    (await import("./tests/bootMocks")).createBootMock("pushNotifications"),
+);
+vi.mock("./process/serverCommands", async () => (await import("./tests/bootMocks")).createBootMock("serverCommands"));
 
 let originalServiceWorker: PropertyDescriptor | undefined;
 let listeners: [string, EventListenerOrEventListenerObject][];

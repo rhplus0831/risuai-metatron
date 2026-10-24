@@ -2,12 +2,14 @@ import { LLMTokenizer } from "./llm.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
- * Which tokenizer counts a model's text, shared by the client (`encode` in `src/ts/tokenizer.ts`)
- * and the server counter and token routes, so their model and playground choices stay aligned.
+ * Which tokenizer counts a model's text on the server. The tab captures `tabTokenScope`
+ * (`src/ts/tokenizer.ts`) for `/api/tokens/count` and LLM requests; shared routing keeps those
+ * choices aligned.
  *
  * The families are the server's (`server/src/prompt/tokenizers/`): `gemma` is the Transformers.js
- * Gemma tokenizer over `llama3.json` (the client's `gemmaTokenize`), `gemmaSentencePiece` the web
- * tokenizer over `gemma/tokenizer.model` (the client's `tokenizeWebTokenizers(..., "gemma")`).
+ * Gemma tokenizer over `llama3.json`, `gemmaSentencePiece` the web tokenizer over
+ * `gemma/tokenizer.model`. Their browser ids are a frozen reference captured from the former
+ * client tokenizer (`server/src/tests/fixtures/tokens/browser-ids.json`).
  */
 export type TokenizerFamily =
     | "cl100k_base"
@@ -30,7 +32,7 @@ export type TokenizerChoice =
     | { kind: "family"; family: TokenizerFamily }
     /** Google's `countTokens` endpoint (`googleClaudeTokenizing`); `gemmaSentencePiece` when it fails. */
     | { kind: "googleCloud" }
-    /** A legacy plugin provider's own `tokenizerFunc` (`custom`); the server never calls one. */
+    /** A legacy provider's `custom` tokenizer: `tokenizerFunc` is never called; counts use `cl100k_base`. */
     | { kind: "pluginFunction" };
 
 export type TokenizerSettings = {
@@ -46,7 +48,7 @@ export type TokenizerSettings = {
     googleClaudeTokenizing: boolean;
 };
 
-/** The tokenizer-selecting fields used by the encode and strong-ban cache keys. */
+/** The tokenizer-selecting fields used by the server encode, tab count, and strong-ban cache keys. */
 export type TokenizerIdentity = {
     aiModel: string;
     customTokenizer: string;

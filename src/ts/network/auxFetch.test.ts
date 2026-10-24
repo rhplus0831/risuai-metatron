@@ -30,9 +30,11 @@ vi.mock("../storage/resourceSync.svelte", () => ({
 vi.mock("../globalApi.svelte", () => ({
     addFetchLog: (entry: unknown) => deps.addFetchLog(entry),
 }));
-vi.mock("../stores.svelte", () => ({
-    bodyIntercepterStore: deps.interceptors,
-}));
+vi.mock("../stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        bodyIntercepterStore: deps.interceptors,
+    }),
+);
 
 import { auxFetch, auxFetchJson } from "./auxFetch";
 
@@ -371,6 +373,48 @@ describe("auxFetch", () => {
         expect(dispatched).toBe(0);
         // The signal also travels with the request itself.
         expect(sent()!.init.signal).toBe(controller.signal);
+    });
+
+    it("auxFetchJson rejects with the signal reason when aborted during dispatch", async () => {
+        const dispatched = deferred();
+        const response = deferred<Response>();
+        deps.authFetch.mockImplementation(() => {
+            dispatched.resolve();
+            return response.promise;
+        });
+        const controller = new AbortController();
+        const reason = new Error("dispatch aborted");
+        const call = auxFetchJson("openai-models", "https://api.openai.com/v1/models", {
+            method: "GET",
+            signal: controller.signal,
+        });
+        const rejected = expect(call).rejects.toBe(reason);
+        await dispatched.promise;
+        controller.abort(reason);
+        await rejected;
+        response.resolve(Response.json({ data: [] }));
+    });
+
+    it("auxFetchJson rejects with the signal reason when the body resolves after an abort", async () => {
+        const reading = deferred();
+        const body = deferred<string>();
+        const response = Response.json({ data: [] });
+        vi.spyOn(response, "text").mockImplementation(() => {
+            reading.resolve();
+            return body.promise;
+        });
+        answering(() => response);
+        const controller = new AbortController();
+        const reason = new Error("body read aborted");
+        const call = auxFetchJson("openai-models", "https://api.openai.com/v1/models", {
+            method: "GET",
+            signal: controller.signal,
+        });
+        const rejected = expect(call).rejects.toBe(reason);
+        await reading.promise;
+        controller.abort(reason);
+        body.resolve('{"data":[]}');
+        await rejected;
     });
 
     it("auxFetchJson answers like globalFetch: parsed JSON, text otherwise, and a failed call as ok: false with its message", async () => {

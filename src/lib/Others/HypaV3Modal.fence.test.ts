@@ -55,7 +55,11 @@ vi.mock("src/ts/process/memory/hypav3", () => ({
 }));
 vi.mock("src/ts/stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { hypaV3ModalOpen: writable(true), settingsOpen: writable(false), SettingsMenuIndex: writable(-1) };
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
+        hypaV3ModalOpen: writable(true),
+        settingsOpen: writable(false),
+        SettingsMenuIndex: writable(-1),
+    });
 });
 
 import { MEMORY_TASKS_PATH } from "../../../shared/events.ts";

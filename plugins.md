@@ -406,17 +406,17 @@ const rects = await element.getClientRects();
 
 #### Event Listeners
 
-Event listeners have security restrictions and return unique IDs:
+Event listeners register on the wrapped element and return unique IDs. Normal DOM capture and
+bubble propagation applies, including capture listeners on ancestors receiving non-bubbling events.
+For document-wide listening, call `getRootDocument()` and register on the returned wrapper (requires
+permission).
 
 ```javascript
 // Add event listener - returns ID for later removal
 const listenerId = await element.addEventListener(
   "click",
   async (event) => {
-    console.log("Element clicked!");
-
-    // Do something with the event
-    const target = event.target;
+    console.log("Clicked at", event.clientX, event.clientY, "with button", event.button);
   },
   { capture: false },
 );
@@ -424,6 +424,11 @@ const listenerId = await element.addEventListener(
 // Remove event listener using the ID
 await element.removeEventListener("click", listenerId);
 ```
+
+Callbacks receive a plain event summary, without `target`, `currentTarget`, or event methods.
+Every event includes `type`. Mouse and pointer events also include `clientX`, `clientY`, `button`,
+and `buttons`; keyboard events add `key`, `code`, and `repeat`. Both groups include `altKey`,
+`ctrlKey`, `shiftKey`, and `metaKey`. Other allowed events carry only `type`.
 
 **Allowed Events (Unlimited):**
 

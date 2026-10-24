@@ -74,6 +74,8 @@ Languages (`src/lang/`):
 - `index.ts`: `language` (a mutable export) and `changeLanguage(code)`, which merges the locale over a clone of English.
 - `en.ts` `languageEnglish`: the source of truth and the type.
 - `de`, `es`, `ko`, `vi`, `cn`, `zh-Hant`: `DeepPartial` overrides.
+- `serverAuth` supplies the self-host authentication failure fallbacks as functions taking the HTTP status, with Korean overrides and English fallback for other locales. Server-provided error text takes precedence.
+- `help.keepSessionAlive` describes the continuously looping inaudible 20 Hz tone used by Via Sound, Android's media notification, and possible interruption of other music apps, in English and Korean ([app shell](app-shell.md)).
 
 ## Flows
 

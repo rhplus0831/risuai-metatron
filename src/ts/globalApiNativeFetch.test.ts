@@ -5,7 +5,9 @@ vi.mock("./storage/settingsViews.svelte", () => ({ settings: { providers: {} } }
 vi.mock("./util", () => ({ checkNullish: (x: unknown) => x == null, sleep: async () => {} }));
 vi.mock("streamsaver", () => ({ default: {} }));
 vi.mock("./storage/database.svelte", () => ({}));
-vi.mock("./stores.svelte", () => ({ bodyIntercepterStore: [] }));
+vi.mock("./stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({ bodyIntercepterStore: [] }),
+);
 vi.mock("./plugins/plugins.svelte", () => ({}));
 vi.mock("./alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("./parser/parser.svelte", () => ({}));

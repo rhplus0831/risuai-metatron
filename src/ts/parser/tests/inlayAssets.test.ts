@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return { CurrentTriggerIdStore: writable(null), CharEmotion: writable({}) };
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
+        CurrentTriggerIdStore: writable(null),
+        CharEmotion: writable({}),
+    });
 });
 vi.mock("../../storage/database.svelte", () => ({ appVer: "test", defaultSdDataFunc: () => [] }));
 vi.mock("../../globalApi.svelte", () => ({
@@ -17,6 +20,7 @@ vi.mock("../../process/files/inlays", () => ({ getInlayMedia: vi.fn(), getInlayO
 
 import { getDirectAssetSrc } from "../../globalApi.svelte";
 import { getInlayMedia, getInlayObjectUrl } from "../../process/files/inlays";
+import { selectedCharacter } from "../../storage/characterStore.svelte";
 import { selectCharacter } from "../../storage/selection.svelte";
 import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
 import { ParseMarkdown } from "../parser.svelte";
@@ -25,6 +29,8 @@ const mediaCases = [
     ["video", "webm", "video/webm", "inlay"],
     ["audio", "ogg", "audio/ogg", "inlayed"],
     ["audio", "m4a", "audio/mp4", "inlayeddata"],
+    ["audio", "flac", "audio/flac", "inlay"],
+    ["video", "mkv", "video/x-matroska", "inlay"],
 ] as const;
 
 const directAssetUrl = (key: string) => "/api/asset/" + Buffer.from(key, "utf-8").toString("hex");
@@ -62,6 +68,33 @@ beforeEach(() => {
     flushSync();
 });
 
+describe("additional asset media rendering", () => {
+    it("uses each asset's MIME type for media tags and omits unknown types", async () => {
+        const cases = [
+            ["video", "webm", "video", "video/webm"],
+            ["video-img", "webm", "video", "video/webm"],
+            ["audio", "ogg", "audio", "audio/ogg"],
+            ["asset", "webm", "video", "video/webm"],
+            ["video", "aac", "video", null],
+            ["video-img", "aac", "video", null],
+            ["audio", "aac", "audio", null],
+            ["asset", "avi", "video", null],
+        ] as const;
+        const char = selectedCharacter();
+        if (char?.type !== "character") throw new Error("Missing character fixture");
+        char.additionalAssets = cases.map(([tag, ext], i) => [`media-${i}`, `assets/${tag}-${i}.${ext}`, ext]);
+
+        for (const [i, [tag, ext, element, mime]] of cases.entries()) {
+            const container = document.createElement("div");
+            container.innerHTML = await ParseMarkdown(`{{${tag}::media-${i}}}`, "c", "normal", -1, {}, null);
+            const source = container.querySelector(`${element} source`);
+            expect(source, `${tag} ${ext}`).not.toBeNull();
+            expect(source!.getAttribute("src"), `${tag} ${ext}`).toBe(`assets/${tag}-${i}.${ext}`);
+            expect(source!.getAttribute("type"), `${tag} ${ext}`).toBe(mime);
+        }
+    });
+});
+
 describe("inlay media rendering", () => {
     it("uses direct asset URLs and real MIME types for video and audio without creating object URLs", async () => {
         vi.mocked(getDirectAssetSrc).mockImplementation(directAssetUrl);
@@ -85,7 +118,7 @@ describe("inlay media rendering", () => {
     it("omits the source type for unknown extensions in both modes", async () => {
         for (const directMode of [true, false]) {
             vi.mocked(getDirectAssetSrc).mockImplementation((key) => (directMode ? directAssetUrl(key) : null));
-            const { source, asset, objectUrl } = await renderSource("audio", "flac");
+            const { source, asset, objectUrl } = await renderSource("audio", "aac");
             expect(source?.getAttribute("src")).toBe(directMode ? directAssetUrl(asset) : objectUrl);
             expect(source?.getAttribute("type")).toBeNull();
         }

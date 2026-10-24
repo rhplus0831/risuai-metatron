@@ -13,10 +13,12 @@ import { createAlertQueue, createDialogKeyGate, NEXT_DIALOG_GAP_MS, type AlertQu
 /** The queue `alert.ts` writes to in this file: a fresh one per helper test. */
 const holder = vi.hoisted(() => ({ queue: null as unknown as AlertQueue }));
 
-vi.mock("./stores.svelte", () => ({
-    // The helpers resolve the queue at each call, so every test starts from an empty one.
-    alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(holder.queue, key) }),
-}));
+vi.mock("./stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        // The helpers resolve the queue at each call, so every test starts from an empty one.
+        alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(holder.queue, key) }),
+    }),
+);
 vi.mock("./storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../lang", () => ({ language: { errors: {}, addCharacter: "add", chatOptions: "options" } }));
 

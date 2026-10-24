@@ -23,7 +23,7 @@ export default defineConfig({
         // Playwright specs (`pnpm test:e2e`) match Vitest's default `*.spec.ts` include. Claude Code
         // worktrees under `.claude/worktrees/` are full checkouts of other branches.
         exclude: [...configDefaults.exclude, "e2e/**", ".claude/**"],
-        // A hang guard, not a performance budget (`STRUCTURE.md` V3, timing plan D5): a deterministic
+        // A hang guard, not a performance budget (`STRUCTURE.md` V3): a deterministic
         // test may take this long under load. `pnpm test:agent --slow-tests` lists the slow ones.
         testTimeout: 60_000,
         hookTimeout: 60_000,

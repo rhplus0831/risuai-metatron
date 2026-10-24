@@ -10,10 +10,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 
 vi.mock(import("../../../stores.svelte"), async () => {
     const { writable } = await vi.importActual<typeof import("svelte/store")>("svelte/store");
-    return {
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
         CurrentTriggerIdStore: writable<string | null>(null),
         CharEmotion: writable({}),
-    } as unknown as typeof import("../../../stores.svelte");
+    });
 });
 
 vi.mock(import("../../../storage/database.svelte"), () => {

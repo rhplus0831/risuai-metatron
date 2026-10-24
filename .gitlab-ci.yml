@@ -5,8 +5,8 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^(metatron|main)$/
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(metatron|main)$/
 
-# The Runner should mount /tmp as tmpfs ([runners.docker] tmpfs): the SQLite tests write their
-# databases under os.tmpdir(), and on a disk-backed /tmp one of them runs past Vitest's 5 s timeout.
+# Mounting /tmp as tmpfs ([runners.docker] tmpfs) can speed up the Runner: some tests still write
+# file-backed SQLite databases under os.tmpdir().
 check:
   image: node:24
   interruptible: true

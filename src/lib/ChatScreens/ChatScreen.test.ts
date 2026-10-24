@@ -18,7 +18,11 @@ vi.mock("src/ts/storage/settingsViews.svelte", () => ({
 }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ selectedCharacter: () => undefined }));
 vi.mock("../../ts/util", () => ({ getCustomBackground: async () => "", getEmotion: () => "" }));
-vi.mock("../../ts/stores.svelte", async () => ({ CharEmotion: (await import("svelte/store")).writable({}) }));
+vi.mock("../../ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        CharEmotion: (await import("svelte/store")).writable({}),
+    }),
+);
 for (const child of [
     "./ResizeBox.svelte",
     "./DefaultChatScreen.svelte",

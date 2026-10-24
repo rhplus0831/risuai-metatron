@@ -70,6 +70,38 @@ describe("GET / and /index.html", () => {
         expect(await res.text()).toBe(content);
     });
 
+    it("serves ranges only when If-Range matches the current date and never for a weak ETag", async () => {
+        const { app, rootDir } = freshServer();
+        const content = "0123456789";
+        const filePath = path.join(rootDir, "dist", "range.txt");
+        writeFileSync(filePath, content);
+        utimesSync(filePath, modifiedAt, modifiedAt);
+        const first = await app.request("/range.txt");
+        expect(first.status).toBe(200);
+        expect(await first.text()).toBe(content);
+        const etag = first.headers.get("etag")!;
+        expect(etag).toMatch(/^W\//);
+        expect(first.headers.get("last-modified")).toBe(modifiedAt.toUTCString());
+
+        for (const [validator, status] of [
+            [undefined, 206],
+            [modifiedAt.toUTCString(), 206],
+            ["Tue, 31 Dec 2024 00:00:00 GMT", 200],
+            ['"outdated"', 200],
+            [etag, 200],
+            [etag.slice(2), 200],
+            ["invalid validator", 200],
+        ] as const) {
+            const res = await app.request("/range.txt", {
+                headers: { Range: "bytes=2-5", ...(validator === undefined ? {} : { "If-Range": validator }) },
+            });
+            expect(res.status, validator).toBe(status);
+            expect(res.headers.get("content-range"), validator).toBe(status === 206 ? "bytes 2-5/10" : null);
+            expect(res.headers.get("content-length"), validator).toBe(status === 206 ? "4" : "10");
+            expect(await res.text(), validator).toBe(status === 206 ? "2345" : content);
+        }
+    });
+
     it("revalidates the service worker, manifest, and other unversioned static files", async () => {
         const { app, rootDir } = freshServer();
         for (const [filename, content] of [
@@ -191,6 +223,36 @@ describe("GET / and /index.html", () => {
         expect((await app.request("/settings/model", { method: "POST" })).status).toBe(404);
         // The routes registered after the fallback still answer.
         expect((await app.request("/api/test_auth")).status).toBe(200);
+    });
+});
+
+describe("global body limit", () => {
+    it("answers 400 for a failed upload without Content-Length", async () => {
+        const s = await createResourceTestClient();
+        try {
+            let sent = false;
+            const failed = await s.request("/api/resources/batch", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: new ReadableStream<Uint8Array>(
+                    {
+                        pull(controller) {
+                            if (!sent) {
+                                sent = true;
+                                controller.enqueue(new TextEncoder().encode('{"ops":'));
+                            } else {
+                                controller.error(new DOMException("The client went away", "AbortError"));
+                            }
+                        },
+                    },
+                    { highWaterMark: 0 },
+                ),
+                duplex: "half",
+            } as RequestInit);
+            expect(failed.status).toBe(400);
+        } finally {
+            await s.close();
+        }
     });
 });
 
@@ -358,8 +420,8 @@ describe("auth routes", () => {
             ["unknown key", { "risu-auth": await other.jwt() }, 400, "Unknown Public Key"],
             ["bad alg", { "risu-auth": await signer.jwt({ alg: "HS256" }) }, 400, "Unsupported Algorithm"],
             ["bad signature", { "risu-auth": await signer.jwt({ breakSignature: true }) }, 400, "Invalid Signature"],
-            ["garbage", { "risu-auth": "garbage" }, 500, "Internal Server Error"],
-            ["stored password is not a JWT", { "risu-auth": "pw" }, 500, "Internal Server Error"],
+            ["garbage", { "risu-auth": "garbage" }, 400, "Invalid Signature"],
+            ["stored password is not a JWT", { "risu-auth": "pw" }, 400, "Invalid Signature"],
         ];
         for (const [name, headers, status, error] of cases) {
             const res = await app.request("/api/list", { headers });

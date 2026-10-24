@@ -203,7 +203,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   suites exercise stage propagation; domain owners list them.
 - `shared/tests/{diagnostics,diagnosticsReport}.test.ts` and
   `server/src/tests/diagnostics.test.ts`: projection, journal
-  retention/state/report/share files, unsafe paths, canonical reports, and admission.
+  retention/state/report/share files, unsafe paths, canonical reports, and admission. The report-retention text comparison stubs `process.uptime()` so its server state is deterministic.
   `server/src/tests/diagnosticsCrash.test.ts` covers fatal faults in fresh Node
   processes and is slow; select it through [build-test](build-test-platforms.md).
 - `src/ts/diagnostics/{collector,report}.test.ts`: ring/mirror/fetch-wrapper behavior,

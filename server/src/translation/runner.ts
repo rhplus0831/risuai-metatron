@@ -332,7 +332,10 @@ export function createTranslationRunner(deps: {
                     // An ended run reports its own end, not the request layer's failure it caused.
                     assertLive(life);
                     if (response.type === "fail") {
-                        throw new TranslationEnd(502, redactor.text(response.result));
+                        throw new TranslationEnd(
+                            response.localModelRefusal?.status ?? 502,
+                            redactor.text(response.result),
+                        );
                     }
                     if (response.type !== "success") {
                         throw new TranslationEnd(502, "The translation model answered in an unexpected form");

@@ -303,7 +303,24 @@ describe("coalescing through generation routes", () => {
         async (kind) => {
             // The effect loop's clock stands still: its 50 ms yield never comes, so the setters after
             // the alert answer coalesce with it whatever the wait or the machine's speed.
+            // Capture only connections opened during this fixture, then identify its store by epoch.
+            const connections = new Set<DatabaseSync>();
+            const prepare = DatabaseSync.prototype.prepare;
+            const capture = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+                this: DatabaseSync,
+                sql,
+            ) {
+                if (sql === "SELECT value FROM meta WHERE key = 'epoch'") connections.add(this);
+                return prepare.call(this, sql);
+            });
             const client = await createResourceTestClient({ generationEffectClock: () => 0 });
+            capture.mockRestore();
+            const database = [...connections].find(
+                (connection) =>
+                    (connection.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: string })
+                        .value === client.epoch,
+            )!;
+            expect(database).toBeDefined();
             mkdirSync(path.join(client.rootDir, "public"));
             symlinkSync(
                 path.resolve(import.meta.dirname, "../../../public/lua"),
@@ -432,8 +449,8 @@ describe("coalescing through generation routes", () => {
             const question = events.find((e) => e.type === "question")!;
             if (question.type !== "question") throw new Error("expected question");
             let transactions = 0;
-            const exec = DatabaseSync.prototype.exec;
-            vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql) {
+            const exec = database.exec;
+            vi.spyOn(database, "exec").mockImplementation(function (this: DatabaseSync, sql) {
                 if (/^BEGIN\b/i.test(sql)) transactions++;
                 return exec.call(this, sql);
             });

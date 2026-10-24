@@ -54,9 +54,13 @@ vi.mock("src/ts/process/webllm", () => ({
     },
     unloadEngine: async () => {},
 }));
-vi.mock("src/ts/stores.svelte", () => ({
-    hypaV3ProgressStore: { set: (payload: unknown) => current.progress(payload) },
-}));
+vi.mock("src/ts/stores.svelte", async () => {
+    const { createStoresMock } = await import("src/ts/tests/storesMock");
+    const stores = createStoresMock();
+    return createStoresMock({
+        hypaV3ProgressStore: { ...stores.hypaV3ProgressStore, set: (payload) => current.progress(payload) },
+    });
+});
 vi.mock("src/ts/tokenizer", () => ({ tokenize: async (text: string) => countTokens(text) }));
 vi.mock("src/ts/process/transformers", () => ({
     runEmbedding: (texts: string[], model: string) => current.embed(texts, model),

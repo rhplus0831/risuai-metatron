@@ -6,15 +6,14 @@ import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts"
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 
-type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature" | "error";
+type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature";
 
-const failureBodies: Record<JwtFailure, { status: 400 | 500; error: string; log: string }> = {
+const failureBodies: Record<JwtFailure, { status: 400; error: string; log: string }> = {
     no_header: { status: 400, error: "No auth header", log: "No auth header" },
     expired: { status: 400, error: "Token Expired", log: "Token expired" },
     unknown_key: { status: 400, error: "Unknown Public Key", log: "Unknown public key" },
     unsupported_alg: { status: 400, error: "Unsupported Algorithm", log: "Unsupported algorithm" },
     invalid_signature: { status: 400, error: "Invalid Signature", log: "Invalid signature" },
-    error: { status: 500, error: "Internal Server Error", log: "" },
 };
 
 export function hashJSON(json: unknown): string {
@@ -129,9 +128,8 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
                 Buffer.from(`${jsonHeaderB64}.${jsonPayloadB64}`),
             );
             return isValid ? null : "invalid_signature";
-        } catch (error) {
-            console.log(error);
-            return "error";
+        } catch {
+            return "invalid_signature";
         }
     }
 

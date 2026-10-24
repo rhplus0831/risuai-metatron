@@ -10,9 +10,11 @@ import { createAlertQueue, type AlertQueue } from "./alertQueue";
 
 const { alertStore } = vi.hoisted(() => ({ alertStore: { current: null as unknown as AlertQueue } }));
 
-vi.mock("./stores.svelte", () => ({
-    alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(alertStore.current, key) }),
-}));
+vi.mock("./stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(alertStore.current, key) }),
+    }),
+);
 vi.mock("./storage/database.svelte", () => ({ getDatabase: () => ({}) }));
 vi.mock("../lang", () => ({ language: { errors: {} } }));
 

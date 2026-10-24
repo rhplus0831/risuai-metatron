@@ -102,7 +102,7 @@ vi.mock("../storage/chatStore.svelte", () => {
 });
 vi.mock("../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
-    return {
+    return (await import("src/ts/tests/storesMock")).createStoresMock({
         alertStore: new Proxy({} as AlertQueue, { get: (_target, key) => Reflect.get(deps.alertQueue, key) }),
         ReloadGUIPointer: writable(0),
         ReloadChatPointer: writable({} as Record<string, number>),
@@ -112,7 +112,7 @@ vi.mock("../stores.svelte", async () => {
         hypaV3ProgressStore: writable({ open: false, miniMsg: "", msg: "", subMsg: "" }),
         memoryProgressStore: writable<MemoryProgressState>({ runs: {}, chats: {}, legacy: null }),
         bodyIntercepterStore: [] as { id: string; callback: (body: unknown, type: string) => Promise<unknown> }[],
-    };
+    });
 });
 // The server's memory-stop route and the loaded epoch; the rest of both modules is real.
 vi.mock("../storage/serverAuth", async (importOriginal) => ({
@@ -266,9 +266,10 @@ const userAnswers = (msg: string) => stores.alertStore.answer(msg);
 
 beforeAll(
     () =>
-        warmModules(() =>
-            Promise.all([
-                import("../stores.svelte"),
+        warmModules(async () => {
+            // Finish the async stores factory before parallel imports reach it through cycles.
+            await import("../stores.svelte");
+            return Promise.all([
                 import("../plugins/pluginHooks"),
                 import("./jobChannel"),
                 import("../storage/characterStore.svelte"),
@@ -276,8 +277,8 @@ beforeAll(
                 import("../storage/selection.svelte"),
                 import("../storage/settingsViews.svelte"),
                 import("../../lang"),
-            ]),
-        ),
+            ]);
+        }),
     60_000,
 );
 

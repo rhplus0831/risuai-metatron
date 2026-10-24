@@ -15,7 +15,7 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     getFileSrc: async (path: string) => path,
 }));
 // `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
-vi.mock("src/ts/stores.svelte", () => ({}));
+vi.mock("src/ts/stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 vi.mock("src/ts/translator/translator", () => ({
     applyEdittransToStoredTranslation: (text: string) => text,
     getLLMCache: async () => null,

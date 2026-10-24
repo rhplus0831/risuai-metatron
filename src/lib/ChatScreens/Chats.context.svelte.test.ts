@@ -22,12 +22,14 @@ vi.mock("./Chat.svelte", async () => {
 });
 vi.mock("src/ts/storage/settingsViews.svelte", () => ({ settings: { ui: {} } }));
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(() => "") }));
-vi.mock("src/ts/stores.svelte", () => ({
-    createSimpleCharacter: vi.fn(() => ({})),
-    ReloadChatPointer: writable({}),
-    reloadChatKey: (messageId: string | undefined, idx: number) =>
-        messageId !== undefined ? `m:${messageId}` : `i:${idx}`,
-}));
+vi.mock("src/ts/stores.svelte", async () =>
+    (await import("src/ts/tests/storesMock")).createStoresMock({
+        createSimpleCharacter: vi.fn(() => ({ type: "simple" as const, chaId: "c", customscript: [] })),
+        ReloadChatPointer: writable({}),
+        reloadChatKey: (messageId: string | undefined, idx: number) =>
+            messageId !== undefined ? `m:${messageId}` : `i:${idx}`,
+    }),
+);
 vi.mock("src/ts/storage/chatStore.svelte", () => ({
     currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
     selectedChatId: () => "chat",

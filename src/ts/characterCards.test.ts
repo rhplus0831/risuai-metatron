@@ -3,7 +3,7 @@ import { createBaseV3 } from "./characterCards";
 import type { character } from "./storage/database.svelte";
 
 // Importing the real store module runs rune effects over the records and the selection; nothing under test reads it.
-vi.mock(import("src/ts/stores.svelte"), () => ({}) as unknown as typeof import("src/ts/stores.svelte"));
+vi.mock(import("src/ts/stores.svelte"), async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 
 // CharacterJS (`virtualscript`) was removed. Stale keys can still sit on a stored
 // character or inside its raw `extentions` (generic plugin/DB APIs accept any key),

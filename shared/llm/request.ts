@@ -147,9 +147,9 @@ export type LlmRequestBody = {
         /** Whether the tab's main model (`getModelInfo(db.aiModel)`) takes images (`supportsInlayImage`). */
         mainModel: { imageInput: boolean };
         /**
-         * The tab's `encode` scope when the request started (`src/ts/tokenizer.ts`): the client
-         * tokenizes bias strings with its main model and its settings, whatever model and preset
-         * the request uses.
+         * The tab's `tabTokenScope` captured when the request started (`src/ts/tokenizer.ts`): the
+         * server tokenizes bias strings with that main model and its settings, whatever model and
+         * preset the request uses.
          */
         tokenizer: {
             aiModel: string;

@@ -668,6 +668,8 @@ async function parseAdditionalAssets(
         }
 
         const p = await getFileSrcCached(pSrc);
+        const mime = assetMimeType(assetExtension(pSrc));
+        const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
         switch (type) {
             case "raw":
             case "path":
@@ -677,11 +679,11 @@ async function parseAdditionalAssets(
             case "image":
                 return `<div class="risu-inlay-image"><img src="${p}" alt="${p}" style="${assetWidthString}"/></div>\n`;
             case "video":
-                return `<video controls autoplay loop><source src="${p}" type="video/mp4"></video>\n`;
+                return `<video controls autoplay loop><source src="${p}"${sourceType}></video>\n`;
             case "video-img":
-                return `<video autoplay muted loop><source src="${p}" type="video/mp4"></video>\n`;
+                return `<video autoplay muted loop><source src="${p}"${sourceType}></video>\n`;
             case "audio":
-                return `<audio controls autoplay loop><source src="${p}" type="audio/mpeg"></audio>\n`;
+                return `<audio controls autoplay loop><source src="${p}"${sourceType}></audio>\n`;
             case "bg":
                 if (mode === "back") {
                     return `<div style="width:100%;height:100%;background: linear-gradient(rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)),url(${p}); background-size: cover;"></div>`;
@@ -689,7 +691,7 @@ async function parseAdditionalAssets(
                 break;
             case "asset": {
                 if (match.ext && videoExtensions.includes(match.ext)) {
-                    return `<video autoplay muted loop><source src="${p}" type="video/mp4"></video>\n`;
+                    return `<video autoplay muted loop><source src="${p}"${sourceType}></video>\n`;
                 }
                 return `<img src="${p}" alt="${p}" style="${assetWidthString} "/>\n`;
             }

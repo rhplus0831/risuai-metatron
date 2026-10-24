@@ -63,14 +63,14 @@ async function createAuth() {
     return JSONStringlifyAndbase64Url(header) + "." + JSONStringlifyAndbase64Url(payload) + "." + sigString;
 }
 
-function failedResponseMessage(text: string, fallback: string): string {
+function failedResponseMessage(text: string, fallback: () => string): string {
     try {
         const body = JSON.parse(text);
         if (typeof body?.error === "string") {
             return body.error;
         }
     } catch {}
-    return text || fallback;
+    return text || fallback();
 }
 
 /** Registers this browser's public key with the password digest; alerts and throws on failure. */
@@ -88,7 +88,7 @@ async function login(passwordDigest: string) {
         },
     });
     if (s.status < 200 || s.status >= 300) {
-        const message = failedResponseMessage(await s.text(), `Login failed (${s.status})`);
+        const message = failedResponseMessage(await s.text(), () => language.serverAuth.loginFailed(s.status));
         alertError(message);
         await waitAlert();
         throw message;
@@ -122,7 +122,7 @@ async function runAuthCheck() {
             status = JSON.parse(text)?.status;
         } catch {}
         if (!response.ok || (status !== "success" && status !== "unset" && status !== "incorrect")) {
-            throw failedResponseMessage(text, `Authentication failed (${response.status})`);
+            throw failedResponseMessage(text, () => language.serverAuth.authenticationFailed(response.status));
         }
 
         if (status === "unset") {
@@ -137,7 +137,9 @@ async function runAuthCheck() {
                 },
             });
             if (!setup.ok) {
-                const message = failedResponseMessage(await setup.text(), `Password setup failed (${setup.status})`);
+                const message = failedResponseMessage(await setup.text(), () =>
+                    language.serverAuth.passwordSetupFailed(setup.status),
+                );
                 alertError(message);
                 await waitAlert();
                 throw message;
@@ -197,7 +199,9 @@ async function digestPassword(message: string) {
     });
 
     if (response.status < 200 || response.status >= 300) {
-        throw failedResponseMessage(await response.text(), `Password crypto failed (${response.status})`);
+        throw failedResponseMessage(await response.text(), () =>
+            language.serverAuth.passwordCryptoFailed(response.status),
+        );
     }
     const crypt = await response.text();
 
