@@ -17,6 +17,50 @@ const rejects = (fn: () => unknown, error: string, label = error) => {
 };
 
 describe("normalizeChatMeta", () => {
+    it("leaves lore overrides absent, preserves valid arrays as sent, and refuses malformed overrides", () => {
+        expect(normalizeChatMeta({}, "k")).not.toHaveProperty("loreOverrides");
+        const entry = {
+            id: "owner",
+            key: "gate",
+            secondkey: "",
+            insertorder: 7,
+            comment: "Gate",
+            content: "Closed in this chat",
+            mode: "normal",
+            alwaysActive: false,
+            selective: false,
+        };
+        // No matching owner is needed to store an override, and duplicates stay in array order.
+        for (const loreOverrides of [
+            [],
+            [
+                { entry, off: false },
+                { entry, off: true },
+            ],
+        ]) {
+            expect(normalizeChatMeta({ loreOverrides }, "k").loreOverrides).toEqual(loreOverrides);
+        }
+        for (const loreOverrides of [
+            null,
+            {},
+            "bad",
+            [null],
+            [[]],
+            [{ off: false }],
+            [{ entry: null, off: false }],
+            [{ entry: [], off: false }],
+            [{ entry: {}, off: false }],
+            [{ entry: { id: "" }, off: false }],
+            [{ entry: { id: 1 }, off: false }],
+            [{ entry }],
+            [{ entry, off: "false" }],
+        ]) {
+            expect(() => normalizeChatMeta({ loreOverrides }, "k"), JSON.stringify(loreOverrides)).toThrow(
+                ResourceValidationError,
+            );
+        }
+    });
+
     it("keeps every field except the messages and the streaming flags, sets the id, and defaults name, note, localLore, and fmIndex", () => {
         const input = {
             id: "k",

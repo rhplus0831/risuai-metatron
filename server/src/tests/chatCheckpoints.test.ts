@@ -9,6 +9,7 @@ import { CHECKPOINT_CHAT_FIELDS } from "../../../shared/chatCheckpoints.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     createResourceStore,
@@ -139,6 +140,22 @@ const captured = {
             selective: false,
         },
     ],
+    loreOverrides: [
+        {
+            entry: {
+                id: "owner-gate",
+                key: "gate",
+                secondkey: "",
+                insertorder: 5,
+                comment: "Owner gate",
+                content: "Closed in this chat",
+                mode: "normal",
+                alwaysActive: false,
+                selective: false,
+            },
+            off: false,
+        },
+    ],
     scriptstate: { chapter: 3, ready: true, weather: "rain" },
     supaMemoryData: "An older summary",
     hypaV2Data: {
@@ -209,6 +226,26 @@ function fullChat(): Required<Chat> {
 }
 
 describe("chat checkpoints", () => {
+    it("loads saved lore overrides and removes current overrides when the checkpoint had none", () => {
+        const { store } = fileStore();
+        seed(store);
+        const absent = save(store, "Without overrides");
+        edit(store, [{ op: "meta", set: { loreOverrides: captured.loreOverrides } }]);
+        const saved = save(store, "With overrides");
+        edit(store, [{ op: "meta", set: { loreOverrides: [] } }]);
+        const service = createCheckpointService({ store, busy: () => false, memoryTasks: null });
+        const load = (id: string) =>
+            service.load({
+                epoch: store.epoch(),
+                body: { characterId: "c", chatId: "k", id, chatBaseRevision: store.chatRevision("c", "k") },
+            });
+        const read = () => store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data;
+        expect(load(saved.id).status).toBe(200);
+        expect(read()).toHaveProperty("loreOverrides", captured.loreOverrides);
+        expect(load(absent.id).status).toBe(200);
+        expect(read()).not.toHaveProperty("loreOverrides");
+    });
+
     it("classifies every chat metadata field and captures exactly story state and stored message bytes", () => {
         const { store, db, events } = fileStore();
         const fixture = fullChat();

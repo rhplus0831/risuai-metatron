@@ -381,6 +381,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                     GLGlobalVariables: chat.GLGlobalVariables ?? {},
                     note: chat.note ?? "",
                     localLore: chat.localLore ?? [],
+                    loreOverrides: chat.loreOverrides ?? [],
                     name: chat.name ?? "",
                     modules: chat.modules ?? [],
                     bindedPersona: chat.bindedPersona ?? null,

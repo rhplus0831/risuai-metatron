@@ -636,6 +636,30 @@ describe("buildUpstreamDatabase: settings", () => {
 });
 
 describe("buildUpstreamDatabase: characters and chats", () => {
+    it("strips lore overrides from every exported character and group chat", async () => {
+        const snapshot = await snapshotOf((w) => {
+            for (const type of ["character", "group"]) {
+                w.put(RESOURCE_KIND.characters, type, { chaId: type, name: type, type });
+                for (const id of ["one", "two"]) {
+                    w.chat(type, id, {
+                        name: id,
+                        message: [{ role: "user", data: `${type} ${id}`, chatId: "m" }],
+                        loreOverrides: [{ entry: { id: "owner", content: "Only in metatron" }, off: id === "one" }],
+                    });
+                }
+            }
+        });
+        const { db } = exportOf(snapshot);
+        for (const type of ["character", "group"]) {
+            const chats = chatsOf(db, type);
+            expect(chats.map((chat) => chat.name)).toEqual(["one", "two"]);
+            for (const chat of chats) {
+                expect(chat).not.toHaveProperty("loreOverrides");
+                expect(chat.message).toEqual([{ role: "user", data: `${type} ${chat.name}`, chatId: "m" }]);
+            }
+        }
+    });
+
     it("rebuilds chats in chatOrders order, strips metatron chat fields and translations, and sets lastDate", async () => {
         const { db, report } = exportOf(await snapshotOf(), { selectedChat: { characterId: "c1", chatId: "k1" } });
         const alice = characterNamed(db, "Alice");

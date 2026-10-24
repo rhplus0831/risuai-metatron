@@ -172,6 +172,7 @@ const METATRON_CHAT_FIELDS = [
     "memoryTrimAck",
     "bindingReview",
     "toolCalls",
+    "loreOverrides",
     "togglePresetId",
     "promptPresetId",
     "modelPresetId",

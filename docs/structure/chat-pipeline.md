@@ -13,7 +13,7 @@
 - Paths:
   - `src/ts/process/index.svelte.ts`, `src/ts/process/serverGeneration.ts`
   - `src/ts/process/{prompt,stringlize,group,prereroll,command,infunctions,inlayScreen}.ts`
-  - `src/ts/process/lorebook.svelte.ts`, `shared/lore/activation.ts`
+  - `src/ts/process/lorebook.svelte.ts`, `shared/lore/{activation,overrides}.ts`
   - `src/ts/process/templates/*`, `shared/prompt/{chatTemplate,templateCheck}.ts`
   - `src/ts/process/files/{inlays,multisend}.ts`
   - `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`
@@ -41,7 +41,8 @@
   - Types: `PromptItem` (discriminated union), `PromptSettings`, `PromptRole`.
   - `tokenizePreset`.
   - Legacy import: `detectPromptJSONType`, `stChatConvert`, `promptConvertion`.
-- `shared/lore/activation.ts` `activateLore(input, host)`: lore activation, shared with the server. It merges three sources: character `globalLore`, chat `localLore`, and the module lore the caller resolved; matches keys, regex keys (`/pattern/flags`: the last `/` ends the pattern, empty flags allowed), and decorators over the scanned messages; recurses; applies the token budget and `@@inject_lore`; and returns `{ actives, matchLog }`. `LoreHost` supplies the clone, the speaker names, the chat variables (the keep and don't-activate-after-match flags), CBS, the token count, and the regex test (on the server, the script worker's).
+- `shared/lore/activation.ts` `activateLore(input, host)`: lore activation, shared with the server. It merges three sources: character `globalLore` with the chat's `loreOverrides` applied (`mergeOwnerLore`), chat `localLore`, and the module lore the caller resolved; matches keys, regex keys (`/pattern/flags`: the last `/` ends the pattern, empty flags allowed), and decorators over the scanned messages; recurses; applies the token budget and `@@inject_lore`; and returns `{ actives, matchLog }`. `LoreHost` supplies the clone, the speaker names, the chat variables (the keep and don't-activate-after-match flags), CBS, the token count, and the regex test (on the server, the script worker's).
+- `shared/lore/overrides.ts`: chat overrides of the owner's lore (`Chat.loreOverrides`, `ChatLoreOverride`: a frozen full copy linked by `entry.id`, and `off`). `mergeOwnerLore(ownerLore, overrides)` returns `{ lore, orphans }`: an override matches the first owner entry with its non-empty id, a non-off one replaces that entry in place, an off one removes it, later owner entries with the same id stay, the first override of an id applies and later ones are ignored, and an override that matches no owner entry is an orphan, returned and not inserted. `findOrphanedOverrides` and `offOverrideIds` follow the same rule. It returns references and never clones (the client passes live `$state` proxies); callers that mutate copy first.
 - `lorebook.svelte.ts`: the client wrapper of lore activation and the lorebook codecs.
   - `loadLoreBookV3Prompt(chatRef?)` runs `activateLore` for the chat with `getModuleLorebooks(ref)`, `loreBookDepth`, `loreBookToken`, and `getUserName(ref)` (the bound persona's name), and the client host.
   - Also `addLorebook`, `addLorebookFolder`, `importLoreBook`, `exportLoreBook`, `convertExternalLorebook`. Lorebook file import/export supports character (`"global"`) and chat (`"local"`) lore; persisted global lore pages have no editor or file-codec mode. Local export refuses an unloaded chat with `localLoreExportNotLoaded`.
@@ -145,6 +146,8 @@ Not in `sendChat`:
   - Supports selective secondary keys, negative keys, and all-key mode.
   - Recursion is controlled by `recursiveScanning` and `@@recursive`/`@@unrecursive`/`@@no_recursive_search`, with no explicit depth counter.
   - Decorators are parsed with `CCardLib.decorator.parse`.
+  - Overrides apply to the chat owner's `globalLore` only (a group chat's: the group's own), never to module lore. Activation drops orphans silently; the merged view is for chat-scoped readers, while editors, token estimates, and import/export read the raw character lore.
+  - A `child` entry ("Always active in this chat") activates from the first earlier entry with its id when that entry did not activate, copying its `comment` and `content` and taking its `insertorder` as order and priority (`@@priority` in the content still wins). A child whose id is turned off by the chat's overrides (`offOverrideIds`) never activates, even when another entry shares the id or its content has `@@activate`.
   - `@@keep_activate_after_match` and `@@dont_activate_after_match` are per entry: an activated entry writes `__internal_ka_<id>`/`__internal_da_<id>` (its `id`, else `pickHashRand(5555, content)`) only for its own decorator. On later runs a set `__internal_ka_` activates the entry without a key match, and a set `__internal_da_` keeps it off.
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them (`captionImage`, `memory.md`).
@@ -164,6 +167,7 @@ Not in `sendChat`:
 
 - Send-job and prompt contracts: `server/src/tests/promptRunner.test.ts`, `assemble.test.ts`, and `promptTail.test.ts`; server implementation details are in [self-host server](self-host-server.md). Memory job and task contracts are in [memory](memory.md).
 - Send admission and tab state: `src/ts/process/{localSends,serverGeneration,jobStages,chatStatus}.test.ts`, `index.test.ts`, and `sendAborts.svelte.test.ts` cover per-chat admission, stage tracking, terminal/lost status, and Stop controllers. `e2e/perChatSends.spec.ts` covers two chats running at once, per-chat Stop and suggestions, and auto mode across a chat switch.
+- Lore activation and chat overrides: `server/src/tests/lore.test.ts` ("chat lore overrides": first-match merge, orphans, overridden content, off beating `child` links, child insert order). Override persistence: `chats.test.ts` (validation), `chatCheckpoints.test.ts` (capture and load), `transform.test.ts` (cache key), `upstreamExport.test.ts` and `upstreamImportCharacters.test.ts` (strip and repair).
 - Caller workflows: `src/ts/process/command.test.ts` covers slash commands and per-chat `/multisend`; `rerollHistory.test.ts` and `sendDraft.test.ts` cover chat-scoped reroll bundles and draft recovery; `src/ts/process/request/tests/{requestChat,transport}.test.ts` covers pinned chat context and cancellation after target replacement.
 - Files and media: `src/ts/process/files/tests/multisend.test.ts` covers TXT/XML retrieval and PO sends; `inlays.test.ts` covers metadata, media caching, ordered writes, conflict recovery, and cancellation. The chat module's save paths are in [persistence](persistence.md).
 - Message search: `src/ts/messageSearch.test.ts` covers request scopes, paging, errors, and jump state; panel behavior is covered in [UI theming](ui-theming.md). The server scan is covered in [self-host server](self-host-server.md).

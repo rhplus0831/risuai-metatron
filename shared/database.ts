@@ -620,6 +620,12 @@ export interface loreBook {
     folder?: string;
 }
 
+/**
+ * A frozen full copy of one of the chat owner's `globalLore` entries, linked by the required
+ * `entry.id`, which equals the original's id. `off` turns the entry off in this chat.
+ */
+export type ChatLoreOverride = { entry: loreBook; off: boolean };
+
 export interface character {
     type?: "character";
     name: string;
@@ -1186,6 +1192,8 @@ export interface Chat {
      */
     pinned?: boolean;
     localLore: loreBook[];
+    /** Replacements and off switches for this chat owner's lore, applied only in this chat. */
+    loreOverrides?: ChatLoreOverride[];
     sdData?: string;
     supaMemoryData?: string;
     hypaV2Data?: SerializableHypaV2Data;

@@ -6,6 +6,7 @@ import { TOGGLE_VARIABLE_PREFIX } from "./prompt/toggles.ts";
 export const CHECKPOINT_CHAT_FIELDS: Record<keyof ChatMeta, "capture" | "keep" | "split"> = {
     note: "capture",
     localLore: "capture",
+    loreOverrides: "capture",
     scriptstate: "capture",
     supaMemoryData: "capture",
     hypaV2Data: "capture",

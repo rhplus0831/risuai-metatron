@@ -48,6 +48,9 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     if (!Array.isArray(meta.localLore)) {
         throw new ResourceValidationError("chat.localLore must be an array");
     }
+    if (meta.loreOverrides !== undefined) {
+        assertLoreOverrides(meta.loreOverrides);
+    }
     // The greeting the chat starts from (-1: the first message). The client gives a chat it creates its
     // character's `firstMsgIndex` (`prepareChatInput`); a chat written without one starts from the first
     // message, as a selection's formatter gave it before characters were normalized by the shared
@@ -72,6 +75,26 @@ export function assertToolCalls(value: unknown): void {
     }
     for (const id of Object.keys(value)) {
         assertToolCallRecord(id, value[id]);
+    }
+}
+
+/** `chat.loreOverrides`: full lore copies linked to their owner's entries by non-empty ids. */
+export function assertLoreOverrides(value: unknown): void {
+    if (!Array.isArray(value)) {
+        throw new ResourceValidationError("chat.loreOverrides must be an array");
+    }
+    for (const override of value) {
+        if (
+            !isPlainObject(override) ||
+            !isPlainObject(override.entry) ||
+            typeof override.entry.id !== "string" ||
+            override.entry.id.length === 0 ||
+            typeof override.off !== "boolean"
+        ) {
+            throw new ResourceValidationError(
+                "chat.loreOverrides must be an array of { entry: { id: non-empty string }, off: boolean }",
+            );
+        }
     }
 }
 

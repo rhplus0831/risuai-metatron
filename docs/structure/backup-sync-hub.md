@@ -67,7 +67,7 @@
 
 - Add a partial-backup asset category: `selectPartialBackupAssets` in `shared/backups.ts`, its labels and inventory mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/routes/backups.ts` if another kind is needed (a full backup already takes every asset).
 - Change the archive format: the server side (see `self-host-server.md`) and `tryReadManifest` here. Add a round-trip test.
-- Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts` (`persistence.md`); a new report code goes into `shared/upstreamExportReport.ts` and `language.upstreamExport` (`en.ts`, `ko.ts`). The record layout (assets by basename, then `database.risudat`) is upstream's restore format: keep `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import reads every export back.
+- Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts` (`persistence.md`; metatron-only chat fields such as `loreOverrides` are in its `METATRON_CHAT_FIELDS` strip list); a new report code goes into `shared/upstreamExportReport.ts` and `language.upstreamExport` (`en.ts`, `ko.ts`). The record layout (assets by basename, then `database.risudat`) is upstream's restore format: keep `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import reads every export back.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
 
 ## Tests

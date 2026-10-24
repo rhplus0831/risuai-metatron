@@ -1046,6 +1046,25 @@ describe("convertUpstreamDatabase: recovery of malformed input", () => {
         },
     );
 
+    it("drops invalid imported lore overrides while keeping each chat and its messages and retaining valid overrides", () => {
+        const valid = [{ entry: { id: "owner", content: "Frozen content" }, off: false }];
+        const invalid = [null, {}, [{ entry: { id: "" }, off: false }], [{ entry: { id: "owner" }, off: "false" }]];
+        const chats = [...invalid, valid].map((loreOverrides, index) => ({
+            id: `chat-${index}`,
+            name: `Chat ${index}`,
+            message: [msg("user", `message ${index}`, { chatId: `message-${index}` })],
+            loreOverrides,
+        }));
+        const out = convert({ formatversion: 5, characters: [{ chaId: "a", name: "A", chats }] });
+        const imported = chatsOf(out, "a");
+        expect(imported).toHaveLength(chats.length);
+        for (const [index, chat] of imported.entries()) {
+            expect(chat).toMatchObject({ id: chats[index].id, name: chats[index].name, message: chats[index].message });
+            if (index < invalid.length) expect(chat).not.toHaveProperty("loreOverrides");
+            else expect(chat.loreOverrides).toEqual(valid);
+        }
+    });
+
     it("resets tool calls the store cannot serialize and keeps the chat, also inside a cold payload", () => {
         const toolCalls = (arg: unknown) => ({ t1: { call: { id: "t1", name: "fn", arg }, response: [] } });
         for (const arg of [deep(20_000), 10n]) {

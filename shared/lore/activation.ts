@@ -1,6 +1,7 @@
 import { CCardLib } from "@risuai/ccardlib";
 import type { Chat, Message, character, groupChat, loreBook } from "../database.ts";
 import type { DeepReadonly } from "../readonly.ts";
+import { mergeOwnerLore, offOverrideIds } from "./overrides.ts";
 
 /**
  * Lorebook activation, shared by the client and the server: the key, regex, and decorator matching
@@ -8,8 +9,9 @@ import type { DeepReadonly } from "../readonly.ts";
  * through `input` and `host`; the module also uses `Math.random` (`@@probability`) and `console`.
  */
 export type LoreActivationInput = {
-    /** The chat's owner (a group's own lore and settings for a group chat): what activation reads. */
+    /** The chat's owner (a group's own lore and settings for a group chat), before chat overrides. */
     character: DeepReadonly<Pick<character | groupChat, "name" | "globalLore" | "loreSettings">>;
+    /** The chat, including its local lore and overrides of the owner's lore. */
     chat: DeepReadonly<Chat>;
     /** The enabled modules' lore for this chat: global, chat, character, the bound persona's. */
     moduleLorebooks: loreBook[];
@@ -80,11 +82,16 @@ function runSteps(
     return step.value;
 }
 
-/** The lore of `input.chat` that activates, and why: `loadLoreBookV3Prompt` on the client. */
+/**
+ * The lore of `input.chat` that activates, and why: `loadLoreBookV3Prompt` on the client.
+ * Applies chat overrides to owner lore, silently drops orphans, and keeps off child links inactive.
+ */
 export async function activateLore(input: LoreActivationInput, host: LoreHost): Promise<LoreActivation> {
     const char = input.character;
     const lorechat = input.chat;
-    const characterLore = char.globalLore ?? [];
+    const overrides = lorechat.loreOverrides ?? [];
+    const characterLore = mergeOwnerLore(char.globalLore ?? [], overrides).lore;
+    const offIds = offOverrideIds(overrides);
     const chatLore = lorechat.localLore ?? [];
     const moduleLorebook = input.moduleLorebooks;
     const fullLore = host.clone([...characterLore, ...chatLore, ...moduleLorebook]) as loreBook[];
@@ -270,6 +277,11 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
             if (activatedIndexes.includes(i)) {
                 continue;
             }
+            // A child link to an entry this chat turns off never activates, even when another entry
+            // shares its id or the child's content has `@@activate`.
+            if (fullLore[i].mode === "child" && offIds.has(fullLore[i].id ?? "")) {
+                continue;
+            }
             if (!fullLore[i].alwaysActive && !fullLore[i].key) {
                 continue;
             }
@@ -305,6 +317,8 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                             fullLore[i].comment = fullLore[j].comment;
                             fullLore[i].content = fullLore[j].content;
                             fullLore[i].alwaysActive = true;
+                            order = fullLore[j].insertorder;
+                            priority = fullLore[j].insertorder;
                             activated = true;
                         }
                         break;

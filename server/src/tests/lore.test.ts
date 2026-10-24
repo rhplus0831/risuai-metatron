@@ -2,13 +2,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Chat, Message, loreBook } from "../../../shared/database.ts";
+import type { Chat, ChatLoreOverride, Message, loreBook } from "../../../shared/database.ts";
 import {
     activateLore,
     type LoreActivation,
     type LoreActivationInput,
     type LoreHost,
 } from "../../../shared/lore/activation.ts";
+import { findOrphanedOverrides, mergeOwnerLore, offOverrideIds } from "../../../shared/lore/overrides.ts";
 import type { RegexOpResult } from "../scripts/worker.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
 import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -93,6 +94,121 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
+});
+
+describe("chat lore overrides", () => {
+    it("replaces or removes only the first owner match, keeps the first override, and reports orphans without mutating inputs", () => {
+        const owners = [
+            lore("no id", "x", "unlinked"),
+            lore("first a", "x", "a", { id: "a" }),
+            lore("empty id", "x", "also unlinked", { id: "" }),
+            lore("first b", "x", "b", { id: "b" }),
+            lore("second a", "x", "keep a", { id: "a" }),
+            lore("second b", "x", "keep b", { id: "b" }),
+        ];
+        const replacement = lore("chat a", "new key", "frozen copy", { id: "a", insertorder: 7 });
+        const orphan = { entry: lore("deleted", "x", "do not insert", { id: "gone" }), off: true };
+        const missingId = { entry: lore("missing id", "x", "do not insert"), off: true };
+        const emptyId = { entry: lore("empty id", "x", "do not insert", { id: "" }), off: true };
+        const overrides: ChatLoreOverride[] = [
+            orphan,
+            { entry: replacement, off: false },
+            { entry: owners[3], off: true },
+            { entry: lore("ignored a", "x", "ignored", { id: "a" }), off: true },
+            missingId,
+            { entry: lore("ignored b", "x", "ignored", { id: "b" }), off: false },
+            emptyId,
+        ];
+        const before = structuredClone({ owners, overrides });
+        expect(mergeOwnerLore(owners, overrides)).toEqual({
+            lore: [owners[0], replacement, owners[2], owners[4], owners[5]],
+            orphans: [orphan, missingId, emptyId],
+        });
+        expect(findOrphanedOverrides(owners, overrides)).toEqual([orphan, missingId, emptyId]);
+        expect(offOverrideIds(overrides)).toEqual(new Set(["gone", "b"]));
+        expect({ owners, overrides }).toEqual(before);
+    });
+
+    it("activates overridden owner content before local and module lore only in the overriding chat", async () => {
+        const owners = [
+            lore("owner", "old", "owner text", { id: "a" }),
+            lore("off", "new", "@@activate\noff text", { id: "b" }),
+        ];
+        const chat = makeChat([user("new")], {
+            localLore: [lore("local", "new", "local text")],
+            loreOverrides: [
+                { entry: lore("override", "new", "override text", { id: "a" }), off: false },
+                { entry: owners[1], off: true },
+                { entry: lore("orphan", "new", "@@activate\norphan text", { id: "gone" }), off: false },
+            ],
+        });
+        const input = makeInput(owners, [], {
+            chat,
+            moduleLorebooks: [lore("module", "new", "module text")],
+        });
+        const before = structuredClone(input);
+        const result = await activateLore(input, makeHost());
+        // Equal insert orders reverse the source order: owner, then chat, then module.
+        expect(result.actives.map((a) => [a.source, a.prompt])).toEqual([
+            ["module", "module text"],
+            ["local", "local text"],
+            ["override", "override text"],
+        ]);
+        expect(sources(await run(owners, [user("old")]))).toEqual(["off", "owner"]);
+        expect(input).toEqual(before);
+    });
+
+    it("keeps off child links inactive despite duplicate owner ids or activate decorators, using the first override", async () => {
+        const owners = [
+            lore("off parent", "missing", "parent text", { id: "off" }),
+            lore("duplicate", "missing", "duplicate text", { id: "off" }),
+            lore("removed parent", "missing", "removed text", { id: "removed" }),
+            lore("on parent", "missing", "on text", { id: "on" }),
+        ];
+        const chat = makeChat([user("unrelated")], {
+            localLore: ["off", "removed", "on"].map((id) =>
+                lore("child", "", "@@activate\nchild text", { id, mode: "child", alwaysActive: true }),
+            ),
+            loreOverrides: [
+                { entry: owners[0], off: true },
+                { entry: owners[0], off: false },
+                { entry: owners[2], off: true },
+                { entry: owners[3], off: false },
+                { entry: owners[3], off: true },
+            ],
+        });
+        const result = await activateLore(makeInput(owners, [], { chat }), makeHost());
+        expect(result.actives.map((a) => [a.source, a.prompt])).toEqual([["on parent", "on text"]]);
+    });
+
+    it("gives child links the linked entry's content and insert order, with decorators setting priority afterward", async () => {
+        const owners = [
+            lore("plain parent", "missing", "plain text", { id: "plain", insertorder: 7 }),
+            lore("old parent", "missing", "old text", { id: "changed", insertorder: 8 }),
+            lore("old decorated", "missing", "old text", { id: "decorated", insertorder: 9 }),
+        ];
+        const chat = makeChat([user("unrelated")], {
+            localLore: owners.map(({ id }) =>
+                lore("child", "", "child text", { id, mode: "child", alwaysActive: true, insertorder: 100 }),
+            ),
+            loreOverrides: [
+                { entry: lore("new parent", "missing", "new text", { id: "changed", insertorder: 13 }), off: false },
+                {
+                    entry: lore("new decorated", "missing", "@@priority 31\ndecorated text", {
+                        id: "decorated",
+                        insertorder: 17,
+                    }),
+                    off: false,
+                },
+            ],
+        });
+        const result = await activateLore(makeInput(owners, [], { chat }), makeHost());
+        expect(result.actives.map((a) => [a.source, a.prompt, a.order, a.priority])).toEqual([
+            ["plain parent", "plain text", 7, 7],
+            ["new parent", "new text", 13, 13],
+            ["new decorated", "decorated text", 17, 31],
+        ]);
+    });
 });
 
 describe("activation and the result", () => {

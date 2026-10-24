@@ -7,7 +7,7 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import type { UpstreamImportReport, UpstreamImportSelection } from "../../../../shared/upstreamBackup.ts";
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
 import { prepareChatGroups } from "../chatStore.ts";
-import { assertToolCalls, normalizeChatMeta, normalizeMessage } from "../chats.ts";
+import { assertLoreOverrides, assertToolCalls, normalizeChatMeta, normalizeMessage } from "../chats.ts";
 import { isValidResourceId, ResourceValidationError } from "../resourceStore.ts";
 import type { ColdRecordResult } from "./archive.ts";
 import { kindOf, ownCopy, PendingReport, setOwn, storedValue, tryNormalize } from "./importRecords.ts";
@@ -448,6 +448,16 @@ function convertChat(
     }
     if (typeof chat.fmIndex !== "number") {
         reset("fmIndex", -1);
+    }
+    if (chat.loreOverrides !== undefined) {
+        try {
+            assertLoreOverrides(chat.loreOverrides);
+        } catch (error) {
+            if (!(error instanceof ResourceValidationError)) {
+                throw error;
+            }
+            reset("loreOverrides");
+        }
     }
     if (chat.toolCalls !== undefined) {
         const stored = storedValue(chat.toolCalls);

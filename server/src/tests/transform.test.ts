@@ -454,6 +454,37 @@ describe("the transform's stages", () => {
 });
 
 describe("the transform cache's key", () => {
+    it("changes the transform key when only a chat's override content or off switch changes", async () => {
+        // Freeze the render deadline and CBS clock; no worker scripts are needed for this cache contract.
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        try {
+            await batch({ ops: [character("overrides")], chats: [chatCreate("overrides", "k")] });
+            const run = async () => {
+                const response = await render("overrides", "k", [target("a", "overrides", "text")]);
+                expect(response.status).toBe(200);
+                return response.body.results[0];
+            };
+            const first = await run();
+            expect(first).toMatchObject({ ok: true, text: "text", cached: false });
+            expect(await run()).toMatchObject({ cached: true, key: first.key });
+            const keys = new Set([first.key]);
+            for (const [content, off] of [
+                ["first", false],
+                ["changed", false],
+                ["changed", true],
+            ] as const) {
+                await patchChat("overrides", "k", { loreOverrides: [{ entry: { id: "owner", content }, off }] });
+                const result = await run();
+                expect(result).toMatchObject({ ok: true, text: "text", cached: false });
+                expect(keys.has(result.key)).toBe(false);
+                keys.add(result.key);
+                expect(await run()).toMatchObject({ cached: true, key: result.key });
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it(
         "renders again after a committed variable, author's note, local lore, source character, or language change; not for the viewport or the other messages",
         async () => {
