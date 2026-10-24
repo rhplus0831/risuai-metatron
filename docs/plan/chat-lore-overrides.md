@@ -1,6 +1,6 @@
 # Chat Lore Overrides Plan
 
-Status: slices 1 (8363beb57), 2 (47e83fa24) landed.
+Status: slices 1 (8363beb57), 2 (47e83fa24), 3 (0a9c9c721) landed.
 
 Planned on 2026-10-24. Sources: the code at `170b90879` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
