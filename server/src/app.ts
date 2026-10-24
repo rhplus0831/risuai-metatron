@@ -249,7 +249,8 @@ export function createServerContext(options: {
         feed: changeFeed,
         epoch: () => resources.epoch(),
         authorize: auth.isAuthorizedToken,
-        // The service is built below; a socket connects only once the context exists.
+        // The services are built below; a socket connects only once the context exists.
+        streaming: () => generationJobs.streamingSnapshot(),
         memoryTasks: () =>
             memoryTasks?.snapshot().map(({ chatRef, status }) => ({
                 characterId: chatRef.chaId,

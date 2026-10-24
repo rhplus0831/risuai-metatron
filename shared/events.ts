@@ -12,6 +12,12 @@ export const EVENT_FEED_PATH = "/api/events/ws";
 export type ChatStreaming = { characterId: string; id: string; streaming: StreamingMessage[] };
 
 /**
+ * A chat's current generation locks. `revision` is the chat's stored revision sampled in the same
+ * synchronous step as the ownership, not a version of the ownership (null: the chat is gone).
+ */
+export type ChatStreamingSnapshot = ChatStreaming & { revision: string | null };
+
+/**
  * A chat's HypaV3 memory task status on the live-update socket: the running task, else the queued
  * one, else the last terminal (kept 10 minutes). A terminal carries `terminalRevision`, the chat's
  * revision when the task's writes closed (null: the chat is gone).
@@ -20,9 +26,10 @@ export type MemoryTaskEntry = { characterId: string; chatId: string; status: Mem
 
 /**
  * A frame of the live-update socket, server to client:
- * - `hello`: sent once on every connection with the database epoch and every chat's memory task
- *   status (`memoryTasks`, the whole set: it replaces what the client held); the client reconciles
- *   its revisions against `GET /api/resources/revisions` (nothing is replayed);
+ * - `hello`: sent once on every connection with the database epoch, current generation locks
+ *   (`streaming`), and every chat's memory task status (`memoryTasks`); both snapshots replace the
+ *   client's whole sets. The client reconciles its revisions against `GET /api/resources/revisions`
+ *   (nothing is replayed);
  * - `change`: one committed write's refs and revisions, optionally with record or by-id chat patches;
  *   `streaming` lists the locks of every chat a generation job's write touched, or whose locks the
  *   job's end released (then `changes` may be empty);
@@ -32,7 +39,7 @@ export type MemoryTaskEntry = { characterId: string; chatId: string; status: Mem
  * - `ping`: the heartbeat.
  */
 export type EventFeedFrame =
-    | { type: "hello"; epoch: string; memoryTasks: MemoryTaskEntry[] }
+    | { type: "hello"; epoch: string; streaming: ChatStreamingSnapshot[]; memoryTasks: MemoryTaskEntry[] }
     | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[] }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
     | { type: "epoch"; epoch: string }

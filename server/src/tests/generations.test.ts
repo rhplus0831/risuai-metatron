@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
+import type { EventFeedFrame } from "../../../shared/events.ts";
 import { type CallbackResult, type GenerationEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { MemoryControl, RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
@@ -1129,6 +1130,73 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await commander.closed;
     });
 
+    it("includes another tab's running job locks and the current stored revision in the feed hello, then omits them after the job ends", async () => {
+        // Freeze the job's expiry clock and the socket heartbeat while the runner waits for work.
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        try {
+            await listen();
+            const running = new Promise<RunningJob>((resolve) => step(resolve));
+            await createOk("command", "other-tab");
+            const job = await running;
+            const written = job.write(
+                () => ({
+                    chats: [
+                        group(job.context.chatRevision, [
+                            { op: "begin", id: "r", generationId: "g1" },
+                            checkpoint(1, "waiting for provider"),
+                        ]),
+                    ],
+                }),
+                { covers: [{ messageId: "r", generationId: "g1", seq: 3 }] },
+            );
+            // A later metadata write makes the stored revision differ from the job's last write.
+            const updated = await request(
+                "/api/resources/batch",
+                json({
+                    chats: [group(written.chats[0].revision, [{ op: "meta", set: { note: "another writer" } }])],
+                }),
+            );
+            expect(updated.status).toBe(200);
+            const stored = await revision();
+            expect(stored.revision).not.toBe(written.chats[0].revision);
+
+            const readHello = async () => {
+                const ws = new WsClient(`${base.replace("http", "ws")}/api/events/ws?risu-auth=${await signer.jwt()}`);
+                const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+                try {
+                    return await new Promise<EventFeedFrame>((resolve, reject) => {
+                        ws.once("message", (data) => resolve(JSON.parse(String(data)) as EventFeedFrame));
+                        ws.once("error", reject);
+                        ws.once("close", () => reject(new Error("feed closed before hello")));
+                    });
+                } finally {
+                    ws.terminate();
+                    await closed;
+                }
+            };
+
+            expect(await readHello()).toMatchObject({
+                type: "hello",
+                epoch,
+                streaming: [
+                    {
+                        characterId: "c",
+                        id: "k",
+                        streaming: [{ messageId: "r", generationId: "g1", seq: 3 }],
+                        revision: stored.revision,
+                    },
+                ],
+            });
+            // Ending without a final write releases ownership while the stored chat stays put.
+            job.emit({ type: "done", revision: stored.revision });
+            step(() => "end" as never);
+            expect(await readHello()).toMatchObject({ type: "hello", epoch, streaming: [] });
+        } finally {
+            await closeServer();
+            vi.useRealTimers();
+        }
+    });
+
     it("dispatches upgrades by path: an unknown path is destroyed, the live-update socket works beside the generation socket, and shutdown removes the listener", async () => {
         await listen();
         const unknown = await new Promise<string>((resolve) => {
@@ -1153,7 +1221,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await waitFor(() => feedFrames.length > 0);
         expect(feedOpened).toBe(true);
-        expect(feedFrames[0]).toEqual({ type: "hello", epoch, memoryTasks: [] });
+        expect(feedFrames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
         const generation = await createOk();
         const owner = await follow(generation);
         await until(owner, 1);

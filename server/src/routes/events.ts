@@ -1,7 +1,12 @@
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-import { EVENT_FEED_PATH, type EventFeedFrame, type MemoryTaskEntry } from "../../../shared/events.ts";
+import {
+    EVENT_FEED_PATH,
+    type ChatStreamingSnapshot,
+    type EventFeedFrame,
+    type MemoryTaskEntry,
+} from "../../../shared/events.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 
 const HEARTBEAT_MS = 15_000;
@@ -14,8 +19,9 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * The live-update socket (`/api/events/ws`): every committed change the resource store
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
  * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
- * `hello` with the epoch and every chat's memory task status (`memoryTasks`, read in the same
- * synchronous step); nothing is replayed, so a client reconciles from the revision listing after
+ * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
+ * status (`memoryTasks`), all read in the same synchronous step before the socket is registered and
+ * the hello sent. Nothing is replayed, so a client reconciles from the revision listing after
  * every `hello`. Every published event goes to every socket in publication order, also one published
  * while another is being sent. Sockets are not tracked by the snapshot manager and not gated by
  * maintenance: a restore publishes `epoch`, which reloads the clients.
@@ -24,10 +30,12 @@ export function createEventSockets(options: {
     feed: ChangeFeed;
     epoch: () => string;
     authorize: (token: string | undefined) => Promise<boolean>;
+    /** Every chat's current generation locks, for `hello`, read synchronously. */
+    streaming: () => ChatStreamingSnapshot[];
     /** Every chat's memory task status, for `hello`. */
     memoryTasks: () => MemoryTaskEntry[];
 }) {
-    const { feed, epoch, authorize, memoryTasks } = options;
+    const { feed, epoch, authorize, streaming, memoryTasks } = options;
     const wsServer = new WebSocketServer({ noServer: true });
     const sockets = new Set<WebSocket>();
     let closed = false;
@@ -108,10 +116,11 @@ export function createEventSockets(options: {
             hello = JSON.stringify({
                 type: "hello",
                 epoch: epoch(),
+                streaming: streaming(),
                 memoryTasks: memoryTasks(),
             } satisfies EventFeedFrame);
         } catch (error) {
-            // A partial `hello` would hide the statuses it lacks: the client reconnects instead.
+            // A partial `hello` would hide the locks or statuses it lacks: the client reconnects instead.
             console.error("[Live updates] hello failed:", error instanceof Error ? error.name : typeof error);
             ws.close(1011);
             return;

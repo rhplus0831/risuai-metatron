@@ -523,7 +523,83 @@ describe("the feed's generation locks", () => {
         expect(b.chat.isMessageLocked(refK, "zz")).toBe(false);
     });
 
-    it("a whole read releases a lock announced at an older revision and keeps one at its own; `hello`, a chat's removal, and a character's forgetting drop locks without retiring the generation", async () => {
+    it("replaces every feed lock from a hello snapshot without releasing this tab's job locks", async () => {
+        const b = await boot();
+        const other = { chaId: "d", chatId: "m" };
+        b.chat.noteRemoteStreaming([
+            { characterId: "c", id: "k", streaming: [lockOf("a", "finished")] },
+            { characterId: "d", id: "m", streaming: [lockOf("x", "also-finished")] },
+        ]);
+        expect(
+            b.chat.applyServerGeneration(refK, {
+                jobId: "own-job",
+                messageId: "c",
+                generationId: "own-generation",
+                seq: 1,
+                text: "own reply",
+            }),
+        ).toBe(true);
+        expect(locked(b, "a")).toBe(true);
+        expect(b.chat.isMessageLocked(other, "x")).toBe(true);
+        expect(locked(b)).toBe(false);
+
+        b.chat.replaceFeedLocks([
+            {
+                characterId: "c",
+                id: "k",
+                revision: b.fake.chat("c", "k")!.revision,
+                streaming: [lockOf("b", "running", 2)],
+            },
+        ]);
+        expect(locked(b, "a")).toBe(false);
+        expect(b.chat.isMessageLocked(other, "x")).toBe(false);
+        expect(locked(b)).toBe(true);
+        expect(locked(b, "c")).toBe(true);
+
+        b.chat.replaceFeedLocks([]);
+        expect(locked(b)).toBe(false);
+        expect(locked(b, "c")).toBe(true);
+        b.chat.endServerJob("own-job");
+        expect(locked(b, "c")).toBe(false);
+    });
+
+    it("keeps a snapshot lock through reconciliation's whole read at its revision and releases it after a newer whole read", async () => {
+        const b = await boot();
+        b.live.paused = true;
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "waiting for provider")], [lockOf("b", "g", 1)]);
+        const snapshotRevision = b.fake.chat("c", "k")!.revision;
+        expect(mirror(b).message[1].data).toBe("B");
+        expect(locked(b)).toBe(false);
+
+        b.chat.replaceFeedLocks([
+            {
+                characterId: "c",
+                id: "k",
+                revision: snapshotRevision,
+                streaming: [lockOf("b", "g", 1)],
+            },
+        ]);
+        expect(locked(b)).toBe(true);
+        b.sync.reconcileRemote(b.fake.store.listRevisions());
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(reads(b)).toHaveLength(1);
+        expect(mirror(b).message[1].data).toBe("waiting for provider");
+        expect(b.chat.heldChatRevision(refK)).toBe(snapshotRevision);
+        expect(locked(b)).toBe(true);
+
+        remote(b, [{ op: "meta", set: { note: "newer stored chat" } }]);
+        b.sync.reconcileRemote(b.fake.store.listRevisions());
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(reads(b)).toHaveLength(2);
+        expect(mirror(b).note).toBe("newer stored chat");
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(locked(b)).toBe(false);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("a whole read releases a lock announced at an older revision and keeps one at its own; a `hello` snapshot without the lock, a chat's removal, and a character's forgetting drop locks without retiring the generation", async () => {
         const b = await boot();
         jobLock(b);
         jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
@@ -541,7 +617,7 @@ describe("the feed's generation locks", () => {
         // The job's next write announces the lock again: not retired.
         jobWrite(b, [setText("setText", "b", "one two")], [lockOf("b", "g", 2)]);
         expect(locked(b)).toBe(true);
-        b.chat.releaseFeedLocks();
+        b.chat.replaceFeedLocks([]);
         expect(locked(b)).toBe(false);
         jobWrite(b, [setText("setText", "b", "one two three")], [lockOf("b", "g", 3)]);
         expect(locked(b)).toBe(true);

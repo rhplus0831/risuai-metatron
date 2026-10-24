@@ -58,13 +58,10 @@ Rechecked 2026-10-21 against the code: still present.
 
 ### Feed lock windows
 
-Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `releaseFeedLocks`, `dropFeedLocksOf` in `src/ts/storage/chatStore.svelte.ts`) are advisory. A tab shows a generating reply unlocked (2a's `dropLockedEdits` then catches an edit) before the job's first write frame, after every feed `hello` (all feed locks dropped, `src/ts/network/eventFeed.ts`), and after an adopted whole read at a newer revision than the lock's frame (another writer changed the chat), until the job's next write re-announces the lock: every 3 s while streaming (`CHECKPOINT_INTERVAL_MS`), but a job waiting on its provider or a callback can write nothing for its whole remaining life. The server sends no lock snapshot on connect or with a chat read.
+Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `dropFeedLocksOf` in `src/ts/storage/chatStore.svelte.ts`) are advisory. A tab shows a generating reply unlocked (2a's `dropLockedEdits` then catches an edit) before the job's first write frame (the job owns no message before its `begin`, so the `hello` snapshot cannot list it either), and after an adopted whole read at a newer revision than the lock's frame or snapshot (another writer changed the chat), until the job's next write re-announces the lock: every 3 s while streaming (`CHECKPOINT_INTERVAL_MS`), but a job waiting on its provider or a callback can write nothing for its whole remaining life. Since 2026-10-24 every `hello` carries the server's lock snapshot with each chat's sampled revision, so a reconnect no longer drops live locks; the server still sends no lock snapshot with a chat read.
 
 **Why it matters:** these are the remaining paths for A4 (edit over the generating reply) and D7-style surprises.
-**Decision (2026-10-24):** the owner approved the `hello` snapshot (the server's current `ChatStreaming[]` sent with `hello`, replacing the client's drop-all on `hello`); a snapshot with chat reads stays out unless needed.
-**Suggested handling:** add an ownership snapshot to `hello` (server lock table → `ChatStreaming[]`) or to chat reads. Related: [Feed lock character predicate](#feed-lock-character-predicate).
-
-Rechecked 2026-10-21 against the code: still present.
+**Suggested handling:** a lock snapshot with chat reads (owner decision 2026-10-24: only if needed), or let authoritative lock lists alone end feed locks instead of a newer whole read (changes the release policy; audit the collection-removal paths, which drop revisions without clearing feed locks). Related: [Feed lock character predicate](#feed-lock-character-predicate).
 
 ### Duplicate group feed ref
 

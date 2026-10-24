@@ -119,6 +119,15 @@ export function createGenerationLock() {
                 }));
         },
 
+        /** The distinct chats with owned messages (any job). */
+        ownedChats(): { characterId: string; chatId: string }[] {
+            const chats = new Map<string, { characterId: string; chatId: string }>();
+            for (const { characterId, chatId } of owned.values()) {
+                chats.set(`${characterId}\u0000${chatId}`, { characterId, chatId });
+            }
+            return [...chats.values()];
+        },
+
         /** Every owned message of a chat (any job), with its owner. */
         ownedIn(characterId: string, chatId: string): (MessageOwner & { messageId: string })[] {
             return [...owned.values()]

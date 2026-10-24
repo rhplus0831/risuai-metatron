@@ -13,7 +13,7 @@ import type {
     MessageAnchor,
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
-import type { ChatStreaming } from "../../../shared/events.ts";
+import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
 import { type ChangeSet, type ChatPatchBody, compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
@@ -264,7 +264,7 @@ const staleChats = new Set<string>();
  */
 const noticedChats = new Map<string, { seq: number; revision: string | null }>();
 let noticeSeq = 0;
-/** Bumped whenever `serverGenerations` gains or loses a lock, so the chat screen's lock reads re-run. */
+/** Bumped when `serverGenerations` or `feedLocks` changes, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
 /**
  * Messages a server generation job writes (`messageKeyOf`) → the job, its generation, the last
@@ -280,10 +280,10 @@ const serverWatermarks = new Map<string, { generationId: string; seq: number }>(
 const retiredGenerations = new Set<string>();
 /**
  * Messages (`messageKeyOf`) the change feed announced as locked by a generation job of any tab or
- * device (`noteRemoteStreaming`) → the generation and the chat revision of the frame that announced
- * it (null: none). A lock only: no stream text, no watermark, no retirement, and it never holds the
- * save loop's reads, patches, or reloads (`isChatStreamedHere`). Independent of this tab's job
- * events: losing a follow does not release the feed lock.
+ * device (`noteRemoteStreaming`, `replaceFeedLocks`) → the generation and the chat revision of the
+ * frame or snapshot that announced it (null: none). A lock only: no stream text, no watermark, no
+ * retirement, and it never holds the save loop's reads, patches, or reloads (`isChatStreamedHere`).
+ * Independent of this tab's job events: losing a follow does not release the feed lock.
  */
 const feedLocks = new Map<string, { generationId: string; revision: string | null }>();
 /**
@@ -1277,9 +1277,42 @@ export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes
 }
 
 /**
+ * Replaces the feed's whole lock set with a `hello` snapshot, including chats the mirror does not
+ * hold. The sampled chat revisions keep locks through reconciliation reads at those revisions.
+ * Only feed locks change; this tab's job events and stream state remain independent.
+ */
+export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
+    const desired = new Map<string, { generationId: string; revision: string | null }>();
+    for (const chat of snapshot) {
+        for (const { messageId, generationId } of chat.streaming) {
+            desired.set(messageKeyOf({ chaId: chat.characterId, chatId: chat.id }, messageId), {
+                generationId,
+                revision: chat.revision,
+            });
+        }
+    }
+    let moved = false;
+    for (const messageKey of feedLocks.keys()) {
+        if (!desired.has(messageKey)) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    for (const [messageKey, lock] of desired) {
+        const current = feedLocks.get(messageKey);
+        if (current?.generationId !== lock.generationId || current?.revision !== lock.revision) {
+            feedLocks.set(messageKey, lock);
+            moved = true;
+        }
+    }
+    if (moved) {
+        lockState.version += 1;
+    }
+}
+
+/**
  * Releases every feed lock whose message key starts with `prefix` (all of them by default): the
- * change feed reconnected, so a release frame may have been missed (a job that is still running
- * announces its locks again with its next write), or the character is gone. Not retired.
+ * character is gone. Not retired.
  */
 export function releaseFeedLocks(prefix = "") {
     let moved = false;

@@ -113,11 +113,11 @@ describe("the live-update socket on the server", () => {
         const byQuery = await open();
         expect(await byQuery.opened).toBe("open");
         await waitFor(() => byQuery.frames.length > 0);
-        expect(byQuery.frames[0]).toEqual({ type: "hello", epoch, memoryTasks: [] });
+        expect(byQuery.frames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
         expect(await byHeader.opened).toBe("open");
         await waitFor(() => byHeader.frames.length > 0);
-        expect(byHeader.frames[0]).toEqual({ type: "hello", epoch, memoryTasks: [] });
+        expect(byHeader.frames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
         expect(server.context.eventSockets.size()).toBe(2);
     });
 
@@ -250,7 +250,7 @@ describe("createEventSockets", () => {
         memoryTasks: () => MemoryTaskEntry[] = () => [],
     ) {
         const feed = createChangeFeed();
-        const sockets = createEventSockets({ feed, epoch: () => "E", authorize, memoryTasks });
+        const sockets = createEventSockets({ feed, epoch: () => "E", authorize, streaming: () => [], memoryTasks });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
             if (!sockets.handleUpgrade(req, socket, head)) {
@@ -307,7 +307,7 @@ describe("createEventSockets", () => {
             expect(client.frames[1]).toEqual({ type: "epoch", epoch: "F" });
         }
         expect(await failed.closed).toBe(1006);
-        expect(failed.frames).toEqual([{ type: "hello", epoch: "E", memoryTasks: [] }]);
+        expect(failed.frames).toEqual([{ type: "hello", epoch: "E", streaming: [], memoryTasks: [] }]);
         await waitFor(() => sockets.size() === 2);
         for (const client of others) {
             client.ws.terminate();
@@ -321,7 +321,7 @@ describe("createEventSockets", () => {
         const client = connect(url);
         expect(await client.opened).toBe("open");
         await waitFor(() => client.frames.length > 0);
-        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E", memoryTasks: [] });
+        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E", streaming: [], memoryTasks: [] });
         vi.advanceTimersByTime(15_000);
         await waitFor(() => client.frames.length > 1);
         expect(client.frames[1]).toMatchObject({ type: "ping", ts: expect.any(Number) });

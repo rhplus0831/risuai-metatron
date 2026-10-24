@@ -2,7 +2,7 @@ import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts"
 import { epochMismatch, getResourceEpoch, listRevisions, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
-import { noteRemoteStreaming, releaseFeedLocks } from "../storage/chatStore.svelte";
+import { noteRemoteStreaming, replaceFeedLocks } from "../storage/chatStore.svelte";
 import { recordClientEvent } from "../diagnostics/collector";
 import {
     noteMemoryTaskFrame,
@@ -21,8 +21,8 @@ import {
  * `change` frame's refs are dispatched before its generation locks (`streaming`) go to the chat
  * module (`noteRemoteStreaming`), so a fitting `begin` patch puts the row in the mirror before its
  * lock. For a chat the mirror lacks, an unloaded chat, or a patch that does not fit, the lock is
- * installed by id and the row arrives locked with the read. A `hello` drops the feed's locks, since
- * a release may have been sent while disconnected.
+ * installed by id and the row arrives locked with the read. A `hello` replaces the feed's whole
+ * lock set with the server's snapshot before reconciliation starts.
  *
  * HypaV3 memory task statuses go to `memoryTasks.svelte.ts`: a `memoryTask` frame of the loaded epoch
  * as it comes, a `hello`'s snapshot as the whole status set, and the revision listing that follows
@@ -86,8 +86,7 @@ function receive(ws: WebSocket, frame: EventFeedFrame, connectAttempt: number) {
                 epochMismatch(frame.epoch);
                 return;
             }
-            // Nothing is replayed: a running job announces its locks again with its next write.
-            releaseFeedLocks();
+            replaceFeedLocks(Array.isArray(frame.streaming) ? frame.streaming : []);
             const hello = noteMemoryTaskHello(frame.memoryTasks);
             if (connectedSocket !== ws) {
                 connectedSocket = ws;

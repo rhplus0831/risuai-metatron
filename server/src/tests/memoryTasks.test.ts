@@ -2053,7 +2053,7 @@ describe("the server wiring", () => {
     it("frames reach a socket in publication order (a summary's `change` before the status counting it) and `hello` reports a running task and a recent failure, one status per chat", async () => {
         const w = await wiring();
         const a = await w.socket();
-        expect(a.frames[0]).toEqual({ type: "hello", epoch: w.epoch, memoryTasks: [] });
+        expect(a.frames[0]).toEqual({ type: "hello", epoch: w.epoch, streaming: [], memoryTasks: [] });
 
         w.handOff("k1");
         const { terminal: done, answered } = await w.drive(a, "k1", 0);
@@ -2226,7 +2226,7 @@ describe("the server wiring", () => {
         expect(a.ws.readyState).toBe(WsClient.OPEN);
         held.answer("A late summary");
         const b = await w.socket();
-        expect(b.frames[0]).toEqual({ type: "hello", epoch: next, memoryTasks: [] });
+        expect(b.frames[0]).toEqual({ type: "hello", epoch: next, streaming: [], memoryTasks: [] });
         // The old epoch's retained input is gone with the registry: a start waits for the next send.
         w.epoch = next;
         const start = await w.start({ characterId: "c", chatId: "k1" });

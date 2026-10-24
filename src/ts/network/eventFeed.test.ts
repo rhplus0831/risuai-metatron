@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => {
         reconcileRemote: vi.fn(),
         /** The chat module's side of a frame's generation locks. */
         noteRemoteStreaming: vi.fn(),
-        releaseFeedLocks: vi.fn(),
+        replaceFeedLocks: vi.fn(),
         EpochMismatch,
         /** `recordClientEvent`: the feed's diagnostics. */
         record: vi.fn<(input: unknown) => void>(),
@@ -42,7 +42,7 @@ vi.mock("../storage/resourceSync.svelte", () => ({
 }));
 vi.mock("../storage/chatStore.svelte", () => ({
     noteRemoteStreaming: mocks.noteRemoteStreaming,
-    releaseFeedLocks: mocks.releaseFeedLocks,
+    replaceFeedLocks: mocks.replaceFeedLocks,
     chatEntry: () => ({ id: "k" }),
     findChat: () => (mocks.held.loaded ? { id: "k" } : undefined),
     heldChatRevision: () => mocks.held.revision,
@@ -304,7 +304,8 @@ describe("the live-update socket client", () => {
 });
 
 // A `change` frame's generation locks go to the chat module after its refs, and a `hello` of the
-// loaded epoch drops the feed's locks (a release may have been sent while disconnected).
+// loaded epoch replaces the feed's whole lock set with its snapshot (a release may have been sent
+// while disconnected, and a running job may write nothing for a while).
 describe("the frame's generation locks", () => {
     const streaming = [{ characterId: "c", id: "k", streaming: [{ messageId: "r", generationId: "g1", seq: 0 }] }];
     const chats = { resources: [], chats: [{ characterId: "c", id: "k", revision: "E1:1:5" }], chatOrders: [] };
@@ -328,29 +329,32 @@ describe("the frame's generation locks", () => {
         expect(mocks.noteRemoteStreaming).toHaveBeenCalledTimes(2);
     });
 
-    it("drops the feed's locks on every `hello` of the loaded epoch, and touches no lock for another epoch's frames", async () => {
+    it("replaces the feed's locks with every `hello`'s snapshot of the loaded epoch before reconciling, and touches no lock for another epoch's frames", async () => {
         const ws = await started();
         ws.frame({ type: "change", epoch: "E1", changes: chats, streaming });
         expect(mocks.noteRemoteStreaming).toHaveBeenCalledTimes(1);
-        ws.frame({ type: "hello", epoch: "E1" });
+        const snapshot = [{ ...streaming[0], revision: "E1:1:5" }];
+        ws.frame({ type: "hello", epoch: "E1", streaming: snapshot, memoryTasks: [] });
         await vi.advanceTimersByTimeAsync(0);
-        expect(mocks.releaseFeedLocks).toHaveBeenCalledTimes(1);
-        expect(mocks.releaseFeedLocks.mock.invocationCallOrder[0]).toBeLessThan(
+        expect(mocks.replaceFeedLocks).toHaveBeenCalledTimes(1);
+        expect(mocks.replaceFeedLocks).toHaveBeenLastCalledWith(snapshot);
+        expect(mocks.replaceFeedLocks.mock.invocationCallOrder[0]).toBeLessThan(
             mocks.reconcileRemote.mock.invocationCallOrder[0],
         );
-        // A reconnect's hello drops again.
+        // A reconnect's hello replaces again; one without a snapshot leaves no feed lock.
         ws.close();
         await vi.advanceTimersByTimeAsync(1000);
         const next = FakeSocket.instances.at(-1)!;
         next.frame({ type: "hello", epoch: "E1" });
         await vi.advanceTimersByTimeAsync(0);
-        expect(mocks.releaseFeedLocks).toHaveBeenCalledTimes(2);
-        // Another epoch halts: its locks are neither installed nor dropped here.
+        expect(mocks.replaceFeedLocks).toHaveBeenCalledTimes(2);
+        expect(mocks.replaceFeedLocks).toHaveBeenLastCalledWith([]);
+        // Another epoch halts: its locks are neither installed nor replaced here.
         next.frame({ type: "change", epoch: "E0", changes: chats, streaming });
-        next.frame({ type: "hello", epoch: "E2" });
+        next.frame({ type: "hello", epoch: "E2", streaming: snapshot, memoryTasks: [] });
         expect(mocks.epochMismatch).toHaveBeenCalledWith("E2");
         expect(mocks.noteRemoteStreaming).toHaveBeenCalledTimes(1);
-        expect(mocks.releaseFeedLocks).toHaveBeenCalledTimes(2);
+        expect(mocks.replaceFeedLocks).toHaveBeenCalledTimes(2);
     });
 });
 

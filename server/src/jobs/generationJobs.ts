@@ -29,7 +29,7 @@ import {
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
-import type { ChatStreaming } from "../../../shared/events.ts";
+import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import {
     type AppliedChanges,
     CommittedWriteError,
@@ -1439,6 +1439,14 @@ export function createGenerationJobs(options: {
 
     return {
         create,
+
+        /** The change feed's whole lock snapshot, with stored chat revisions sampled synchronously. */
+        streamingSnapshot(): ChatStreamingSnapshot[] {
+            return lock.ownedChats().map(({ characterId, chatId }) => ({
+                ...chatStreaming(characterId, chatId),
+                revision: store.chatRevision(characterId, chatId),
+            }));
+        },
 
         /** A job of any kind holds the chat from admission, before it owns any message. */
         chatBusy(characterId: string, chatId: string): boolean {
