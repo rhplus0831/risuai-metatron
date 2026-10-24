@@ -10,12 +10,13 @@ import { languageEnglish } from "../../lang/en";
 // re-registered), the one-time banner's conditions and its dismissal flag from either action,
 // `enablePushOnThisBrowser` requesting the permission synchronously inside the click, the server
 // refusing a subscription, the browser opt-out with the server removal retried at the next sync, the
-// tab's notification (suppressed while subscribed, the worker's `showNotification`, the page's
-// `Notification` fallback with the click opening the chat), the foreground cleanup of the tagged
-// notifications, and the worker's `risu-open-route` message. A browser unsubscribe that rejects or
-// resolves `false` (at a disable, and for an older key's subscription) is reported in `error` and
-// retried at the next sync, dropped by a re-enable, and repaired when another tab turns this browser
-// on mid-retry; the failure details follow the selected language.
+// tab's notification (suppressed while subscribed or while the page is in front with the focus, the
+// worker's `showNotification`, the page's `Notification` fallback with the click opening the chat),
+// the foreground cleanup of the tagged notifications, and the worker's `risu-open-route` message. A
+// browser unsubscribe that rejects or resolves `false` (at a disable, and for an older key's
+// subscription) is reported in `error` and retried at the next sync, dropped by a re-enable, and
+// repaired when another tab turns this browser on mid-retry; the failure details follow the selected
+// language.
 
 const deps = vi.hoisted(() => ({
     authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
@@ -106,6 +107,8 @@ class FakeNotification {
 const server = { publicKey: KEY as string | null, put: 204, delete: 204 };
 const requests: { method: string; path: string; body?: unknown }[] = [];
 let visibility: DocumentVisibilityState = "visible";
+/** `document.hasFocus()`: off by default, so the tab's notification is shown. */
+let focused = false;
 /** The module's `visibilitychange` listeners (captured, so an earlier module instance's never fire). */
 const visibilityListeners: EventListener[] = [];
 
@@ -174,6 +177,7 @@ beforeEach(() => {
     current = null;
     shown = [];
     visibility = "visible";
+    focused = false;
     server.publicKey = KEY;
     server.put = 204;
     server.delete = 204;
@@ -198,6 +202,7 @@ beforeEach(() => {
     Object.defineProperty(window, "PushManager", { value: class {}, configurable: true });
     Object.defineProperty(navigator, "serviceWorker", { value: container, configurable: true });
     Object.defineProperty(document, "visibilityState", { get: () => visibility, configurable: true });
+    vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
     visibilityListeners.length = 0;
     vi.spyOn(document, "addEventListener").mockImplementation(((type: string, listener: EventListener) => {
         if (type === "visibilitychange") {
@@ -680,6 +685,19 @@ describe("showCompletionNotification", () => {
             data: { url: "/chat/a/k" },
         });
         expect(created).toEqual([]);
+    });
+
+    it("shows nothing while the page is in front with the focus, and shows it when the page is hidden", async () => {
+        FakeNotification.permission = "granted";
+        localStorage.setItem(BROWSER_OFF, "1");
+        const module = await boot();
+        focused = true;
+        await module.showCompletionNotification(payload);
+        expect(registration.showNotification).not.toHaveBeenCalled();
+        expect(created).toEqual([]);
+        visibility = "hidden";
+        await module.showCompletionNotification(payload);
+        expect(registration.showNotification).toHaveBeenCalledTimes(1);
     });
 
     it("falls back to the page's Notification without a worker, and its click focuses the window and opens the chat", async () => {

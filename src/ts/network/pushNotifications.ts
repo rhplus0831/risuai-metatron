@@ -442,7 +442,9 @@ async function dismissCompletionNotifications() {
 /**
  * The tab's completion notice (`jobChannel.ts`). A browser subscribed to push shows the push instead
  * (the same chat's tag would replace it anyway); otherwise the worker's `showNotification`, else the page's
- * `Notification`. Never asks for the permission.
+ * `Notification`. A page in front with the focus shows nothing, so the notification does not sound after
+ * the page's message sound (`playMessage`, when on); another window of the app having the focus is not
+ * seen here. Never asks for the permission.
  */
 export async function showCompletionNotification(payload: {
     title: string;
@@ -451,6 +453,9 @@ export async function showCompletionNotification(payload: {
     tag: string;
 }): Promise<void> {
     if (currentPermission() !== "granted" || get(pushBrowserState).subscribed) {
+        return;
+    }
+    if (document.visibilityState === "visible" && document.hasFocus()) {
         return;
     }
     const options = { body: payload.body, tag: payload.tag, icon: NOTIFICATION_ICON, badge: NOTIFICATION_ICON };

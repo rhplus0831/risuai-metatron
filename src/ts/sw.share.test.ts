@@ -37,7 +37,19 @@ function worker(windows: FakeWindow[] = []) {
         matchAll: vi.fn(async () => windows),
         openWindow: vi.fn(async () => null),
     };
-    const registration = { showNotification: vi.fn(async (_title: string, _options: { tag?: string }) => {}) };
+    /** The notifications on screen, as `getNotifications` lists them; a later one replaces its tag's. */
+    const shown: { tag: string; data?: unknown; close: ReturnType<typeof vi.fn> }[] = [];
+    const registration = {
+        showNotification: vi.fn(async (_title: string, options: { tag?: string; silent?: boolean; data?: unknown }) => {
+            const tag = options.tag ?? "";
+            const replaced = shown.findIndex((notification) => notification.tag === tag);
+            if (replaced >= 0) shown.splice(replaced, 1);
+            shown.push({ tag, data: options.data, close: vi.fn() });
+        }),
+        getNotifications: vi.fn(async (filter?: { tag?: string }) =>
+            shown.filter((notification) => filter?.tag === undefined || notification.tag === filter.tag),
+        ),
+    };
     runInNewContext(source, {
         self: {
             location: { origin },
@@ -87,7 +99,7 @@ function worker(windows: FakeWindow[] = []) {
         expect(waitUntil).toHaveBeenCalledTimes(1);
         await waitUntil.mock.calls[0][0];
     };
-    return { entries, open, dispatch, post, activate, clients, click, push, registration };
+    return { entries, open, dispatch, post, activate, clients, click, push, registration, shown };
 }
 
 function redirected(response: Response, path: string) {
@@ -247,6 +259,109 @@ describe("completion push", () => {
         await sw.push(payload(7));
         await sw.push(payload(`${COMPLETION_NOTIFICATION_TAG}:${"x".repeat(64)}`));
         expect(shownTags(sw)).toEqual(Array(4).fill(COMPLETION_NOTIFICATION_TAG));
+    });
+
+    const appWindow = (focused: boolean, url = origin + "/chat/c/a"): FakeWindow => ({
+        url,
+        focused,
+        visibilityState: "visible",
+        focus: vi.fn(async () => {}),
+        navigate: vi.fn(async () => null),
+        postMessage: vi.fn(),
+    });
+    /** Each shown notification's `silent`, or "unset" when the option is left out (the platform's default). */
+    const silentFlags = (sw: ReturnType<typeof worker>) =>
+        sw.registration.showNotification.mock.calls.map((call) => ("silent" in call[1] ? call[1].silent : "unset"));
+
+    it("shows the push silently and closes it at once while a window of the app has the focus", async () => {
+        const front = appWindow(false);
+        const sw = worker([appWindow(false), front]);
+        // Another chat's notice, shown before the window took the focus, stays.
+        const other = completionNotificationTag("c", "b");
+        await sw.push(payload(other));
+        front.focused = true;
+        sw.clients.matchAll.mockClear();
+        const tag = completionNotificationTag("c", "a");
+        await sw.push(payload(tag));
+        expect(sw.clients.matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
+        expect(silentFlags(sw)).toEqual(["unset", true]);
+        expect(sw.shown.find((notification) => notification.tag === tag)!.close).toHaveBeenCalledTimes(1);
+        expect(sw.shown.find((notification) => notification.tag === other)!.close).not.toHaveBeenCalled();
+    });
+
+    it("sounds and keeps the push when the app's windows are unfocused, foreign, or cannot be listed", async () => {
+        const tag = completionNotificationTag("c", "a");
+        for (const sw of [
+            worker([appWindow(false)]),
+            worker([appWindow(true, "https://elsewhere.example/chat/c/a")]),
+            worker(),
+        ]) {
+            await sw.push(payload(tag));
+            expect(silentFlags(sw)).toEqual(["unset"]);
+            expect(sw.shown[0].close).not.toHaveBeenCalled();
+        }
+        const failing = worker([appWindow(true)]);
+        failing.clients.matchAll.mockRejectedValueOnce(new Error("no clients"));
+        await failing.push(payload(tag));
+        expect(silentFlags(failing)).toEqual(["unset"]);
+        expect(failing.shown[0].close).not.toHaveBeenCalled();
+    });
+
+    it("keeps a later notification of the same tag, and its own when the focus left while it was shown", async () => {
+        const tag = completionNotificationTag("c", "a");
+        const raced = worker([appWindow(true)]);
+        // A later push of the chat replaced this one before the lookup.
+        raced.registration.getNotifications.mockImplementationOnce(async () => {
+            raced.shown.splice(0, raced.shown.length, { tag, data: { url: "/chat/c/a", push: 99 }, close: vi.fn() });
+            return raced.shown;
+        });
+        await raced.push(payload(tag));
+        expect(raced.shown[0].close).not.toHaveBeenCalled();
+
+        const front = appWindow(true);
+        const left = worker([front]);
+        // The focus leaves while the notification is looked up.
+        left.registration.getNotifications.mockImplementationOnce(async () => {
+            front.focused = false;
+            return left.shown;
+        });
+        await left.push(payload(tag));
+        expect(silentFlags(left)).toEqual([true]);
+        expect(left.shown[0].close).not.toHaveBeenCalled();
+    });
+
+    it("shows a push only after the previous one closed its own, each under its own number", async () => {
+        const tag = completionNotificationTag("c", "a");
+        const sw = worker([appWindow(true)]);
+        let listed!: () => void;
+        sw.registration.getNotifications.mockImplementationOnce(
+            () => new Promise((resolve) => (listed = () => resolve([...sw.shown]))),
+        );
+        const microtasks = async () => {
+            for (let i = 0; i < 20; i++) await Promise.resolve();
+        };
+        const first = sw.push(payload(tag));
+        await microtasks();
+        expect(listed).toBeDefined();
+        const second = sw.push(payload(tag));
+        await microtasks();
+        // Chromium closes by tag: the first push's close must not land on the second's notification.
+        expect(sw.registration.showNotification).toHaveBeenCalledTimes(1);
+        listed();
+        await Promise.all([first, second]);
+        const numbers = sw.registration.showNotification.mock.calls.map(
+            (call) => (call[1].data as { push: number }).push,
+        );
+        expect(numbers).toHaveLength(2);
+        expect(numbers[0]).not.toBe(numbers[1]);
+    });
+
+    it("keeps the silence on the text-only retry after a refused option", async () => {
+        const sw = worker([appWindow(true)]);
+        sw.registration.showNotification.mockRejectedValueOnce(new TypeError("bad icon"));
+        await sw.push(payload(completionNotificationTag("c", "a")));
+        expect(silentFlags(sw)).toEqual([true, true]);
+        expect(sw.shown[0].close).toHaveBeenCalledTimes(1);
     });
 
     it("keeps the chat's tag when it shows the text alone after a refused option", async () => {

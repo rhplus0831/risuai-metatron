@@ -365,20 +365,66 @@ function completionTag(value){
         : COMPLETION_TAG
 }
 
-async function showPush(event){
+/** Numbers this worker's pushes, so a push closes its own notification and not a later one of its tag. */
+let pushCount = 0
+/**
+ * Pushes are shown one at a time: Chromium closes a notification by its tag, so a push's close must not
+ * land after a later push of the same tag replaced it.
+ */
+let pushQueue = Promise.resolve()
+
+function showPush(event){
+    const shown = pushQueue.then(() => showPushNow(event))
+    pushQueue = shown.catch(() => {})
+    return shown
+}
+
+/**
+ * Every push shows a notification (Safari ends a subscription whose pushes show none). While a window of
+ * the app has the focus, the notification is silent, so it does not sound after the page's message sound
+ * (`playMessage`), and it is closed once shown if the focus stayed (best effort: a browser without
+ * `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own default applies.
+ */
+async function showPushNow(event){
     const push = readPush(event)
+    const inFront = await windowInFront()
+    const quiet = inFront ? { silent: true } : {}
+    const data = { url: push.url, push: ++pushCount }
     const options = {
         body: push.body,
         tag: push.tag,
         icon: NOTIFICATION_LOGO,
         badge: NOTIFICATION_LOGO,
-        data: { url: push.url },
+        ...quiet,
+        data,
     }
     try {
         await self.registration.showNotification(push.title, options)
     } catch {
         // A browser that rejects an option (a badge, an icon it cannot load): the text alone.
-        await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, data: { url: push.url } })
+        await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, ...quiet, data })
+    }
+    if(inFront){
+        try {
+            const listed = await self.registration.getNotifications({ tag: push.tag })
+            if(await windowInFront()){
+                for(const notification of listed){
+                    if(notification.data && notification.data.push === data.push){
+                        notification.close()
+                    }
+                }
+            }
+        } catch {}
+    }
+}
+
+/** Whether a window of the app has the focus; a failed lookup counts as none. */
+async function windowInFront(){
+    try {
+        const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+        return windows.some((client) => client.focused && new URL(client.url).origin === self.location.origin)
+    } catch {
+        return false
     }
 }
 
