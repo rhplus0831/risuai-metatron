@@ -985,7 +985,7 @@
             <div
                 class="{settings.ui.fixedChatTextarea
                     ? 'sticky pt-2 pb-2 right-0 bottom-0 bg-bgcolor'
-                    : 'mt-2 mb-2'} chat-screen-content-width flex items-stretch w-full"
+                    : 'relative mt-2 mb-2'} chat-screen-content-width flex items-stretch w-full"
                 style={settings.ui.fixedChatTextarea ? "z-index:29;" : ""}
             >
                 {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
@@ -1119,6 +1119,211 @@
                         style:height={inputHeight}
                     >
                         <Plus />
+                    </div>
+                {/if}
+
+                <!-- Anchored to the composer row so it opens above the menu button inside the chat column. -->
+                {#if openMenu}
+                    <div
+                        class="absolute right-2 bottom-full mb-2 z-30 p-5 bg-darkbg flex flex-col gap-3 text-textcolor rounded-md"
+                        onclick={(e) => {
+                            e.stopPropagation();
+                        }}
+                    >
+                        {#if currentCharacter.type === "group"}
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={runAutoMode}
+                            >
+                                <DicesIcon />
+                                <span class="ml-2">{language.autoMode}</span>
+                            </div>
+                        {/if}
+
+                        <!-- svelte-ignore block_empty -->
+                        {#if currentCharacter.ttsMode}
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={() => {
+                                    stopTTS();
+                                }}
+                            >
+                                <MicOffIcon />
+                                <span class="ml-2">{language.ttsStop}</span>
+                            </div>
+                        {/if}
+
+                        <div
+                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                            class:text-textcolor2={currentChat.message.length < 2 ||
+                                currentChat.message[currentChat.message.length - 1].role !== "char"}
+                            onclick={() => {
+                                if (
+                                    currentChat.message.length < 2 ||
+                                    currentChat.message[currentChat.message.length - 1].role !== "char"
+                                ) {
+                                    return;
+                                }
+                                sendContinue();
+                            }}
+                        >
+                            <StepForwardIcon />
+                            <span class="ml-2">{language.continueResponse}</span>
+                        </div>
+
+                        <div
+                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                            onclick={() => {
+                                const ref = currentChatRef();
+                                if (ref) {
+                                    if (currentChat.pinned === true) {
+                                        setChatMeta(ref, {}, ["pinned"]);
+                                    } else {
+                                        setChatMeta(ref, { pinned: true });
+                                    }
+                                }
+                                openMenu = false;
+                            }}
+                        >
+                            <PinIcon />
+                            <span class="ml-2"
+                                >{currentChat.pinned === true ? language.unpinChat : language.pinChat}</span
+                            >
+                        </div>
+
+                        {#if settings.ui.showMenuChatList}
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={() => {
+                                    openChatList = true;
+                                    openMenu = false;
+                                }}
+                            >
+                                <DatabaseIcon />
+                                <span class="ml-2">{language.chatList}</span>
+                            </div>
+                        {/if}
+
+                        {#each additionalChatMenu as menu}
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={() => {
+                                    menu.callback();
+                                    openMenu = false;
+                                }}
+                            >
+                                <PluginDefinedIcon ico={menu} />
+                                <span class="ml-2">{menu.name}</span>
+                            </div>
+                        {/each}
+
+                        {#if settings.ui.showMenuHypaMemoryModal}
+                            {#if (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        if (settings.memoryTranslateMedia.hypav2) {
+                                            const ref = currentChatRef();
+                                            if (ref && !findChat(ref)?.hypaV2Data) {
+                                                setChatMeta(ref, {
+                                                    hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
+                                                });
+                                            }
+                                            showHypaV2Alert();
+                                        } else if (settings.memoryTranslateMedia.hypaV3) {
+                                            $hypaV3ModalOpen = true;
+                                        }
+
+                                        openMenu = false;
+                                    }}
+                                >
+                                    <BrainIcon />
+                                    <span class="ml-2">
+                                        {settings.memoryTranslateMedia.hypav2
+                                            ? language.hypaMemoryV2Modal
+                                            : language.hypaMemoryV3Modal}
+                                    </span>
+                                </div>
+                            {/if}
+                        {/if}
+
+                        {#if settings.memoryTranslateMedia.translator !== ""}
+                            <div
+                                class={"flex items-center cursor-pointer " +
+                                    (settings.memoryTranslateMedia.useAutoTranslateInput
+                                        ? "text-green-500"
+                                        : "lg:hover:text-green-500")}
+                                onclick={() => {
+                                    settings.memoryTranslateMedia.useAutoTranslateInput =
+                                        !settings.memoryTranslateMedia.useAutoTranslateInput;
+                                }}
+                            >
+                                <GlobeIcon />
+                                <span class="ml-2">{language.autoTranslateInput}</span>
+                            </div>
+                        {/if}
+
+                        <div
+                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                            onclick={() => {
+                                screenShot();
+                            }}
+                        >
+                            <CameraIcon />
+                            <span class="ml-2">{language.screenshot}</span>
+                        </div>
+
+                        <div
+                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                            onclick={async () => {
+                                const results = await postChatFile(messageInput);
+                                if (!results) return;
+                                for (const res of results) {
+                                    if (res?.type === "asset") {
+                                        fileInput.push(res.data);
+                                    }
+                                    if (res?.type === "text") {
+                                        messageInput += `{{file::${res.name}::${res.data}}}`;
+                                    }
+                                }
+                                updateInputSizeAll();
+                            }}
+                        >
+                            <ImagePlusIcon />
+                            <span class="ml-2">{language.postFile}</span>
+                        </div>
+
+                        <div
+                            class={"flex items-center cursor-pointer " +
+                                (settings.ui.useAutoSuggestions ? "text-green-500" : "lg:hover:text-green-500")}
+                            onclick={async () => {
+                                settings.ui.useAutoSuggestions = !settings.ui.useAutoSuggestions;
+                            }}
+                        >
+                            <ReplyIcon />
+                            <span class="ml-2">{language.autoSuggest}</span>
+                        </div>
+
+                        <div
+                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                            onclick={() => {
+                                openModuleList = true;
+                                openMenu = false;
+                            }}
+                        >
+                            <PackageIcon />
+                            <span class="ml-2">{language.modules}</span>
+                        </div>
+
+                        {#if settings.ui.sideMenuRerollButton}
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={reroll}
+                            >
+                                <RefreshCcwIcon />
+                                <span class="ml-2">{language.reroll}</span>
+                            </div>
+                        {/if}
                     </div>
                 {/if}
             </div>
@@ -1334,210 +1539,6 @@
                         />
                     {/if}
                 {/if}
-            {/if}
-
-            {#if openMenu}
-                <div
-                    class="{settings.ui.fixedChatTextarea
-                        ? 'fixed'
-                        : 'absolute'} right-2 bottom-16 p-5 bg-darkbg flex flex-col gap-3 text-textcolor rounded-md"
-                    onclick={(e) => {
-                        e.stopPropagation();
-                    }}
-                >
-                    {#if currentCharacter.type === "group"}
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={runAutoMode}
-                        >
-                            <DicesIcon />
-                            <span class="ml-2">{language.autoMode}</span>
-                        </div>
-                    {/if}
-
-                    <!-- svelte-ignore block_empty -->
-                    {#if currentCharacter.ttsMode}
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={() => {
-                                stopTTS();
-                            }}
-                        >
-                            <MicOffIcon />
-                            <span class="ml-2">{language.ttsStop}</span>
-                        </div>
-                    {/if}
-
-                    <div
-                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        class:text-textcolor2={currentChat.message.length < 2 ||
-                            currentChat.message[currentChat.message.length - 1].role !== "char"}
-                        onclick={() => {
-                            if (
-                                currentChat.message.length < 2 ||
-                                currentChat.message[currentChat.message.length - 1].role !== "char"
-                            ) {
-                                return;
-                            }
-                            sendContinue();
-                        }}
-                    >
-                        <StepForwardIcon />
-                        <span class="ml-2">{language.continueResponse}</span>
-                    </div>
-
-                    <div
-                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        onclick={() => {
-                            const ref = currentChatRef();
-                            if (ref) {
-                                if (currentChat.pinned === true) {
-                                    setChatMeta(ref, {}, ["pinned"]);
-                                } else {
-                                    setChatMeta(ref, { pinned: true });
-                                }
-                            }
-                            openMenu = false;
-                        }}
-                    >
-                        <PinIcon />
-                        <span class="ml-2">{currentChat.pinned === true ? language.unpinChat : language.pinChat}</span>
-                    </div>
-
-                    {#if settings.ui.showMenuChatList}
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={() => {
-                                openChatList = true;
-                                openMenu = false;
-                            }}
-                        >
-                            <DatabaseIcon />
-                            <span class="ml-2">{language.chatList}</span>
-                        </div>
-                    {/if}
-
-                    {#each additionalChatMenu as menu}
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={() => {
-                                menu.callback();
-                                openMenu = false;
-                            }}
-                        >
-                            <PluginDefinedIcon ico={menu} />
-                            <span class="ml-2">{menu.name}</span>
-                        </div>
-                    {/each}
-
-                    {#if settings.ui.showMenuHypaMemoryModal}
-                        {#if (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
-                            <div
-                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                onclick={() => {
-                                    if (settings.memoryTranslateMedia.hypav2) {
-                                        const ref = currentChatRef();
-                                        if (ref && !findChat(ref)?.hypaV2Data) {
-                                            setChatMeta(ref, {
-                                                hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
-                                            });
-                                        }
-                                        showHypaV2Alert();
-                                    } else if (settings.memoryTranslateMedia.hypaV3) {
-                                        $hypaV3ModalOpen = true;
-                                    }
-
-                                    openMenu = false;
-                                }}
-                            >
-                                <BrainIcon />
-                                <span class="ml-2">
-                                    {settings.memoryTranslateMedia.hypav2
-                                        ? language.hypaMemoryV2Modal
-                                        : language.hypaMemoryV3Modal}
-                                </span>
-                            </div>
-                        {/if}
-                    {/if}
-
-                    {#if settings.memoryTranslateMedia.translator !== ""}
-                        <div
-                            class={"flex items-center cursor-pointer " +
-                                (settings.memoryTranslateMedia.useAutoTranslateInput
-                                    ? "text-green-500"
-                                    : "lg:hover:text-green-500")}
-                            onclick={() => {
-                                settings.memoryTranslateMedia.useAutoTranslateInput =
-                                    !settings.memoryTranslateMedia.useAutoTranslateInput;
-                            }}
-                        >
-                            <GlobeIcon />
-                            <span class="ml-2">{language.autoTranslateInput}</span>
-                        </div>
-                    {/if}
-
-                    <div
-                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        onclick={() => {
-                            screenShot();
-                        }}
-                    >
-                        <CameraIcon />
-                        <span class="ml-2">{language.screenshot}</span>
-                    </div>
-
-                    <div
-                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        onclick={async () => {
-                            const results = await postChatFile(messageInput);
-                            if (!results) return;
-                            for (const res of results) {
-                                if (res?.type === "asset") {
-                                    fileInput.push(res.data);
-                                }
-                                if (res?.type === "text") {
-                                    messageInput += `{{file::${res.name}::${res.data}}}`;
-                                }
-                            }
-                            updateInputSizeAll();
-                        }}
-                    >
-                        <ImagePlusIcon />
-                        <span class="ml-2">{language.postFile}</span>
-                    </div>
-
-                    <div
-                        class={"flex items-center cursor-pointer " +
-                            (settings.ui.useAutoSuggestions ? "text-green-500" : "lg:hover:text-green-500")}
-                        onclick={async () => {
-                            settings.ui.useAutoSuggestions = !settings.ui.useAutoSuggestions;
-                        }}
-                    >
-                        <ReplyIcon />
-                        <span class="ml-2">{language.autoSuggest}</span>
-                    </div>
-
-                    <div
-                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                        onclick={() => {
-                            openModuleList = true;
-                            openMenu = false;
-                        }}
-                    >
-                        <PackageIcon />
-                        <span class="ml-2">{language.modules}</span>
-                    </div>
-
-                    {#if settings.ui.sideMenuRerollButton}
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={reroll}
-                        >
-                            <RefreshCcwIcon />
-                            <span class="ml-2">{language.reroll}</span>
-                        </div>
-                    {/if}
-                </div>
             {/if}
 
             <!-- The rows' shared stylesheets, after the rows (and the greeting) as their own copies were. -->
