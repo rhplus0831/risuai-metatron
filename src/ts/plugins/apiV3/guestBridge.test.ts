@@ -34,7 +34,22 @@ function guestScripts(userCode = ""): { main: string; fallback: string } {
     return { main: scripts[0], fallback: scripts[1] };
 }
 
-type HostMessage = { type: string; reqId: string; method?: string };
+type HostMessage = {
+    type: string;
+    reqId: string;
+    method?: string;
+    args?: unknown[];
+    result?: unknown;
+    error?: string;
+};
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
 
 /**
  * Runs the main script. The srcdoc rethrows a failed plugin script on purpose (the iframe's console
@@ -59,21 +74,30 @@ function evaluateMain(main: string, guestWindow: Record<string, any>, throws: bo
 }
 
 async function startGuest(userCode = "", options: { throws?: boolean } = {}) {
-    const listeners: ((event: { data: unknown; ports: MessagePort[]; source: unknown }) => void)[] = [];
+    const listeners: ((event: { data: unknown; ports: MessagePort[]; source: unknown }) => Promise<void>)[] = [];
     const calls: HostMessage[] = [];
+    const posts: { message: HostMessage; ports: MessagePort[] }[] = [];
+    const initialized = deferred<void>();
     // The host's messages come from the guest's parent window, as `SandboxHost` posts them.
     const deliver = (data: unknown, ports: MessagePort[] = [], source: unknown = guestWindow.parent) => {
-        for (const listener of listeners) listener({ data, ports, source });
+        return Promise.all(listeners.map((listener) => listener({ data, ports, source })));
     };
     const guestWindow: Record<string, any> = {
         parent: {
-            postMessage(message: HostMessage) {
+            postMessage(message: HostMessage, _origin: string, transferables: Transferable[] = []) {
                 calls.push(message);
+                posts.push({
+                    message,
+                    ports: transferables.filter((value): value is MessagePort => value instanceof MessagePort),
+                });
                 // The bridge's start-up calls: no cached properties, no aliases.
                 if (message.method === "_getPropertiesForInitialization")
                     queueMicrotask(() => deliver({ type: "RESPONSE", reqId: message.reqId, result: { list: [] } }));
                 if (message.method === "_getAliases")
-                    queueMicrotask(() => deliver({ type: "RESPONSE", reqId: message.reqId, result: {} }));
+                    queueMicrotask(() => {
+                        void deliver({ type: "RESPONSE", reqId: message.reqId, result: {} });
+                        initialized.resolve();
+                    });
             },
         },
         addEventListener(type: string, listener: (typeof listeners)[number]) {
@@ -86,8 +110,41 @@ async function startGuest(userCode = "", options: { throws?: boolean } = {}) {
     // Node has no ImageBitmap; the bridge's transferable scan checks for it.
     vi.stubGlobal("ImageBitmap", class {});
     evaluateMain(main, guestWindow, options.throws ?? false);
-    await vi.waitFor(() => expect(calls.map((call) => call.method)).toContain("_getAliases"));
-    return { risuai: guestWindow.risuai, calls, deliver, window: guestWindow };
+    await initialized.promise;
+    return { risuai: guestWindow.risuai, calls, posts, deliver, window: guestWindow };
+}
+
+/** Register through the guest API, then invoke the callback with the host's wire-format signals. */
+async function invokeProvider(
+    guest: Awaited<ReturnType<typeof startGuest>>,
+    callback: (...signals: AbortSignal[]) => unknown,
+    abortIds: string[],
+) {
+    const registering = guest.risuai.addProvider("streaming provider", callback);
+    const registration = guest.calls.at(-1)!;
+    const ref = registration.args![1] as { __type: string; id: string };
+    expect(ref.__type).toBe("CALLBACK_REF");
+    await guest.deliver({ type: "RESPONSE", reqId: registration.reqId });
+    await registering;
+    await guest.deliver({
+        type: "INVOKE_CALLBACK",
+        reqId: "provider-call",
+        id: ref.id,
+        args: abortIds.map((abortId) => ({ __type: "ABORT_SIGNAL_REF", abortId, aborted: false })),
+    });
+    const response = guest.posts.find(
+        ({ message }) => message.type === "CALLBACK_RETURN" && message.reqId === "provider-call",
+    );
+    expect(response).toBeDefined();
+    return response!;
+}
+
+function pullFromGuest(port: MessagePort) {
+    const next = new Promise<unknown>((resolve) => {
+        port.onmessage = (event) => resolve(event.data);
+    });
+    port.postMessage({ pull: true });
+    return next;
 }
 
 const settledReports = (calls: HostMessage[]) => calls.filter((call) => call.type === "SCRIPT_SETTLED");
@@ -255,6 +312,116 @@ describe("the guest bridge's reconstructed streams", () => {
         host.postMessage({ done: true });
         expect((await end).done).toBe(true);
         host.close();
+    });
+});
+
+describe("the guest callback's abort signals", () => {
+    it("forwards a host abort after the callback returned its still-open stream", async () => {
+        const guest = await startGuest();
+        let signal!: AbortSignal;
+        const cancelled = deferred<void>();
+        const response = await invokeProvider(
+            guest,
+            (abortSignal) => {
+                signal = abortSignal;
+                return new ReadableStream({
+                    start: (controller) => controller.enqueue("partial response"),
+                    cancel: () => cancelled.resolve(),
+                });
+            },
+            ["request"],
+        );
+        expect(response.message.result).toEqual({ __type: "STREAM_PORT", portIndex: 0 });
+        const [port] = response.ports;
+        try {
+            expect(await pullFromGuest(port)).toEqual({ done: false, value: "partial response" });
+            expect(signal.aborted).toBe(false);
+            await guest.deliver({ type: "ABORT_SIGNAL", abortId: "request" });
+            expect(signal.aborted).toBe(true);
+        } finally {
+            port.postMessage({ cancel: true });
+            await cancelled.promise;
+            port.close();
+        }
+    });
+
+    it.each(["done", "error", "host cancel"] as const)(
+        "keeps signals until every returned stream finishes and releases them after %s",
+        async (ending) => {
+            const guest = await startGuest();
+            let signals!: AbortSignal[];
+            let lastController!: ReadableStreamDefaultController;
+            const cancelled = deferred<void>();
+            const response = await invokeProvider(
+                guest,
+                (...received) => {
+                    signals = received;
+                    return {
+                        first: new ReadableStream({ start: (controller) => controller.close() }),
+                        last: new ReadableStream({
+                            start: (controller) => {
+                                lastController = controller;
+                            },
+                            cancel: () => cancelled.resolve(),
+                        }),
+                    };
+                },
+                ["while-open", "after-finished", "another-after-finished"],
+            );
+            expect(response.ports).toHaveLength(2);
+            const [first, last] = response.ports;
+            let finished = false;
+            try {
+                expect(await pullFromGuest(first)).toEqual({ done: true });
+                // One stream ended, but the other still needs the callback's signals.
+                await guest.deliver({ type: "ABORT_SIGNAL", abortId: "while-open" });
+                expect(signals[0].aborted).toBe(true);
+                expect(signals[1].aborted).toBe(false);
+
+                if (ending === "host cancel") {
+                    last.postMessage({ cancel: true });
+                    await cancelled.promise;
+                } else {
+                    if (ending === "done") lastController.close();
+                    else lastController.error(new Error("provider stream failed"));
+                    expect(await pullFromGuest(last)).toEqual(
+                        ending === "done" ? { done: true } : { done: true, error: "provider stream failed" },
+                    );
+                }
+                finished = true;
+                // A late host abort must no longer reach a signal whose streams all ended.
+                await guest.deliver({ type: "ABORT_SIGNAL", abortId: "after-finished" });
+                expect(signals[1].aborted).toBe(false);
+                await guest.deliver({ type: "ABORT_SIGNAL", abortId: "another-after-finished" });
+                expect(signals[2].aborted).toBe(false);
+            } finally {
+                if (!finished) {
+                    last.postMessage({ cancel: true });
+                    await cancelled.promise;
+                }
+                first.close();
+                last.close();
+            }
+        },
+    );
+
+    it.each(["returns no stream", "throws"])("releases signals immediately when the callback %s", async (outcome) => {
+        const guest = await startGuest();
+        let signal!: AbortSignal;
+        const response = await invokeProvider(
+            guest,
+            (abortSignal) => {
+                signal = abortSignal;
+                if (outcome === "throws") throw new Error("provider failed");
+                return { success: true, content: "complete response" };
+            },
+            ["finished-request"],
+        );
+        if (outcome === "throws") expect(response.message.error).toBe("provider failed");
+        else expect(response.message.result).toEqual({ success: true, content: "complete response" });
+        expect(response.ports).toEqual([]);
+        await guest.deliver({ type: "ABORT_SIGNAL", abortId: "finished-request" });
+        expect(signal.aborted).toBe(false);
     });
 });
 

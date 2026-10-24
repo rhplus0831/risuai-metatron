@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { get } from "svelte/store";
+import { flushSync, mount, unmount } from "svelte";
 import type { character } from "../storage/database.svelte";
 import type { ChannelAnswer } from "../../../shared/jobs.ts";
 
@@ -13,6 +14,7 @@ const deps = vi.hoisted(() => ({
     request: vi.fn(),
     zip: vi.fn(),
     alert: vi.fn(),
+    clickResult: vi.fn(),
 }));
 vi.mock("../globalApi.svelte", () => ({
     globalFetch: deps.globalFetch,
@@ -34,6 +36,23 @@ vi.mock("../parser/parser.svelte", () => ({
     risuChatParser: (text: string) => text,
     risuChatParserScoped: (text: string) => text,
 }));
+vi.mock("src/lib/UI/GUI/Button.svelte", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("src/lib/UI/GUI/Button.svelte")>();
+    return {
+        ...actual,
+        // Keep the real button and DOM click; expose the event promise so the test can handle
+        // a deliberately rejected request instead of leaving an unhandled event rejection.
+        default: ((anchor, props) =>
+            actual.default(anchor, {
+                ...props,
+                onclick(event) {
+                    const result = props.onclick?.(event);
+                    deps.clickResult(result);
+                    return result;
+                },
+            })) satisfies typeof actual.default,
+    };
+});
 
 import { CharEmotion } from "../stores.svelte";
 import { settings } from "../storage/settingsViews.svelte";
@@ -60,10 +79,12 @@ const imagen = {
 const jobs: string[] = [];
 function deferred<T>() {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>((done) => {
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
         resolve = done;
+        reject = fail;
     });
-    return { promise, resolve };
+    return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -113,6 +134,40 @@ afterEach(() => {
 });
 
 describe("generated image delivery", () => {
+    it("returns the Playground Generate button to idle after generation rejects and allows another run", async () => {
+        const { default: PlaygroundImageGen } = await import("src/lib/Playground/PlaygroundImageGen.svelte");
+        settings.memoryTranslateMedia.sdProvider = "stability";
+        const pending = deferred<Response>();
+        const error = new Error("Image provider unavailable");
+        deps.fetch.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
+        deps.clickResult.mockImplementation((result: Promise<void>) => result.catch(() => {}));
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        const component = mount(PlaygroundImageGen, { target });
+        try {
+            flushSync();
+            const button = target.querySelector("button")!;
+            button.click();
+            flushSync();
+            expect(button.textContent.trim()).toBe("");
+            expect(button.querySelector(".loadmove")).not.toBeNull();
+            pending.reject(error);
+            await expect(deps.clickResult.mock.lastCall![0]).rejects.toBe(error);
+            flushSync();
+
+            expect(button.textContent.trim()).toBe("Generate");
+            expect(button.querySelector(".loadmove")).toBeNull();
+            button.click();
+            await deps.clickResult.mock.lastCall![0];
+            flushSync();
+            expect(deps.fetch).toHaveBeenCalledTimes(2);
+            expect(target.querySelector("img")?.getAttribute("src")).toBe(uri);
+        } finally {
+            await unmount(component);
+            target.remove();
+        }
+    });
+
     it("replaces the displayed image with Imagen through stableDiff and returns an empty string", async () => {
         const start = Date.now();
         await expect(stableDiff(char, "describe the garden")).resolves.toBe("");
@@ -385,6 +440,112 @@ describe("cancellable image generation", () => {
     });
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    it("alerts on a failed ComfyUI view response without delivering its HTTP error page", async () => {
+        settings.memoryTranslateMedia.sdProvider = "comfyui";
+        deps.globalFetch.mockResolvedValue({ ok: true, data: { prompt_id: "generated" } });
+        for (const delivery of ["", "inlay"]) {
+            deps.alert.mockClear();
+            deps.fetchNative.mockResolvedValueOnce(Response.json(completedHistory)).mockResolvedValueOnce(
+                new Response("<html>Service unavailable</html>", {
+                    status: 503,
+                    headers: { "content-type": "text/html" },
+                }),
+            );
+            const before = get(CharEmotion);
+
+            await expect(generateAIImage("garden", char, "blurry", delivery)).resolves.toBe(false);
+            expect(deps.alert).toHaveBeenCalledOnce();
+            expect(get(CharEmotion)).toBe(before);
+        }
+    });
+
+    it("alerts on a Stability JSON response without delivering the JSON as an image", async () => {
+        settings.memoryTranslateMedia.sdProvider = "stability";
+        const errorBody = JSON.stringify({ errors: ["Image generation failed"] });
+        for (const delivery of ["", "inlay"]) {
+            deps.alert.mockClear();
+            // A successful HTTP status still does not make a JSON body an image.
+            deps.fetch.mockResolvedValueOnce(
+                new Response(errorBody, {
+                    status: 200,
+                    headers: { "Content-Type": "application/json; charset=utf-8" },
+                }),
+            );
+            const before = get(CharEmotion);
+
+            await expect(generateAIImage("garden", char, "blurry", delivery)).resolves.toBe(false);
+            expect(deps.alert).toHaveBeenCalledOnce();
+            expect(get(CharEmotion)).toBe(before);
+        }
+    });
+
+    describe("NovelAI character reference decoding", () => {
+        const reference = Buffer.from("undecodable character reference").toString("base64");
+        class ControlledImage {
+            onload: (() => void) | null = null;
+            onerror: ((error: Event) => void) | null = null;
+            src = "";
+            constructor() {
+                image = this;
+                decoding.resolve();
+            }
+        }
+        let image: ControlledImage;
+        let decoding: ReturnType<typeof deferred<void>>;
+        beforeEach(() => {
+            settings.memoryTranslateMedia.sdProvider = "novelai";
+            settings.memoryTranslateMedia.NAIImgModel = "nai-diffusion-4-5-full";
+            settings.memoryTranslateMedia.NAIImgConfig.reference_mode = "character";
+            settings.memoryTranslateMedia.NAIImgConfig.character_image = "reference.png";
+            settings.memoryTranslateMedia.NAIImgConfig.character_base64image = reference;
+            deps.globalFetch.mockResolvedValue({ ok: true, data: new Uint8Array([1, 2, 3]) });
+            deps.zip.mockResolvedValue(uri);
+            vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as any);
+            vi.spyOn(console, "warn").mockImplementation(() => {});
+            decoding = deferred<void>();
+            vi.stubGlobal("Image", ControlledImage);
+        });
+
+        it("finishes with the original NovelAI character reference when image decoding fails", async () => {
+            let result: string | false | undefined;
+            const work = generateAIImage("garden", char, "blurry", "inlay").then((value) => {
+                result = value;
+            });
+            await decoding.promise;
+            expect(image.src).toBe(`data:image/png;base64,${reference}`);
+            image.onerror?.(new Event("error"));
+            await vi.advanceTimersByTimeAsync(0);
+
+            expect(result).toBe(uri);
+            await work;
+            expect(deps.globalFetch.mock.lastCall![1].body.parameters.director_reference_images).toEqual([reference]);
+            expect(deps.alert).not.toHaveBeenCalled();
+        });
+
+        it("settles a cancellation while the NovelAI character reference is still decoding", async () => {
+            const controller = new AbortController();
+            const reason = new DOMException("Stopped", "AbortError");
+            const resolved = vi.fn();
+            const rejected = vi.fn();
+            const before = get(CharEmotion);
+            const work = generateAIImage("garden", char, "blurry", "", { signal: controller.signal }).then(
+                resolved,
+                rejected,
+            );
+            await decoding.promise;
+            controller.abort(reason);
+            // No load/error event arrives after Stop: cancellation itself must settle the run.
+            await vi.advanceTimersByTimeAsync(0);
+
+            expect(rejected).toHaveBeenCalledWith(reason);
+            await work;
+            expect(resolved).not.toHaveBeenCalled();
+            expect(deps.globalFetch).not.toHaveBeenCalled();
+            expect(get(CharEmotion)).toBe(before);
+            expect(deps.alert).not.toHaveBeenCalled();
+        });
     });
 
     it.each([

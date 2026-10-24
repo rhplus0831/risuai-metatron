@@ -349,6 +349,8 @@ export async function alertCardExport() {
         msg: "",
     });
 
+    if (result === "") return { type: "cancel", type2: "" };
+
     return JSON.parse(result) as {
         type: string;
         type2: string;

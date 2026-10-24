@@ -230,7 +230,7 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 break;
             }
             case "VOICEVOX": {
-                const jpText = await translateVox(text);
+                const jpText = await translateVox(text, signal);
                 signal.throwIfAborted();
                 const base = settings.memoryTranslateMedia.voicevoxUrl.replace(/\/+$/, "");
                 const queryUrl = new URL(base + "/audio_query");
@@ -362,11 +362,11 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 break;
             }
             case "huggingface": {
+                signal.throwIfAborted();
+                if (character.hfTTS.language !== "en") {
+                    text = await runTranslator(text, false, "en", character.hfTTS.language, { signal });
+                }
                 while (true) {
-                    signal.throwIfAborted();
-                    if (character.hfTTS.language !== "en") {
-                        text = await runTranslator(text, false, "en", character.hfTTS.language);
-                    }
                     signal.throwIfAborted();
                     const response = await fetch(
                         `https://api-inference.huggingface.co/models/${character.hfTTS.model}`,

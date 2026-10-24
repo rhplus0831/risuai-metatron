@@ -20,6 +20,7 @@ const { server, alerts } = vi.hoisted(() => ({
         confirm: vi.fn(),
         moduleSelect: vi.fn(),
         addCharacter: vi.fn(),
+        clear: vi.fn(),
     },
 }));
 
@@ -37,6 +38,7 @@ vi.mock("./alert", async () =>
         alertConfirm: alerts.confirm,
         alertModuleSelect: alerts.moduleSelect,
         alertAddCharacter: alerts.addCharacter,
+        alertClear: alerts.clear,
     }),
 );
 vi.mock("./parser/parser.svelte", () => ({
@@ -173,6 +175,55 @@ describe("selection by id", () => {
 });
 
 describe("handlers that await keep their target", () => {
+    it("skips a failed member image, saves the loaded members as the group image, and clears the wait", async () => {
+        const { characters, characterStore, character, database } = await boot();
+        const globalApi = await import("./globalApi.svelte");
+        const { alertStore } = await import("./alert");
+        characterStore.addCharacter({ chaId: "e", name: "E", image: "e.png" });
+        character("c").image = "c.png";
+        character("d").image = "d.png";
+        const groupId = characters.createNewGroup();
+        character(groupId).characters = ["c", "d", "e"];
+        characterStore.selectCharacter(groupId);
+        vi.spyOn(globalApi, "getFileSrc").mockImplementation(async (loc) => `data:image/png;base64,${loc}`);
+        const save = vi.spyOn(database, "saveImage").mockResolvedValue("group.png");
+        const drawImage = vi.fn();
+        vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage } as any);
+        vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,AQID");
+        const images: ControlledImage[] = [];
+        const loading = gate<void>();
+        class ControlledImage {
+            onload: (() => void) | null = null;
+            onerror: (() => void) | null = null;
+            src = "";
+            crossOrigin = "";
+            constructor() {
+                images.push(this);
+                if (images.length === 3) loading.resolve();
+            }
+        }
+        vi.stubGlobal("Image", ControlledImage);
+        let finished = false;
+        const work = characters.makeGroupImage().then(() => {
+            finished = true;
+        });
+        await loading.promise;
+        expect(alertStore.set).toHaveBeenCalledWith(expect.objectContaining({ type: "wait" }));
+        images[0].onload?.();
+        images[1].onerror?.();
+        images[2].onload?.();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(finished).toBe(true);
+        await work;
+        expect(drawImage).toHaveBeenCalledTimes(2);
+        expect(drawImage.mock.calls.map(([image]) => image)).toEqual(expect.arrayContaining([images[0], images[2]]));
+        expect(save).toHaveBeenCalledWith(Buffer.from([1, 2, 3]));
+        expect(character(groupId).image).toBe("group.png");
+        expect(alerts.clear).toHaveBeenCalledOnce();
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
     it("addCharEmotion writes the character it was opened for, though another is selected after the dialog", async () => {
         const { characters, characterStore, util, assetQueue, character, sync, record } = await boot();
         characterStore.selectCharacter("c");

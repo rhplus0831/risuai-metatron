@@ -2646,6 +2646,35 @@ describe("the request observer", () => {
 });
 
 describe("discovered models on the server", () => {
+    it("uses static Opus 5 request capabilities for a saved dynamic Anthropic id", async () => {
+        const bodies: Record<string, unknown>[] = [];
+        for (const id of ["claude-opus-5", "dynamic_anthropic_claude-opus-5"]) {
+            const records = makeRecords({
+                preset: { aiModel: id, thinkingType: "off", temperature: 70, top_k: 32, top_p: 0.8 },
+                secrets: { claudeAPIKey: "anthropic-key" },
+            });
+            const { registry, calls } = harness(records, () =>
+                Response.json({ content: [{ type: "text", text: "ok" }] }),
+            );
+            try {
+                const { events } = await run(registry, body());
+                expect(terminal(events)).toEqual([{ type: "result", response: { type: "success", result: "ok" } }]);
+                expect(calls).toHaveLength(1);
+                expect(calls[0].url).toBe("https://api.anthropic.com/v1/messages");
+                const sent = JSON.parse(calls[0].body) as Record<string, unknown>;
+                expect(sent.model).toBe("claude-opus-5");
+                expect(sent.thinking).toEqual({ type: "disabled" });
+                for (const parameter of ["temperature", "top_k", "top_p"]) {
+                    expect(sent, `${id}: unsupported ${parameter}`).not.toHaveProperty(parameter);
+                }
+                bodies.push(sent);
+            } finally {
+                await registry.dispose();
+            }
+        }
+        expect(bodies[1]).toEqual(bodies[0]);
+    });
+
     const cases = [
         {
             id: "dynamic_anthropic_claude-future",

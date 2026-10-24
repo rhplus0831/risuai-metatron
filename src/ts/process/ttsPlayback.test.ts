@@ -30,6 +30,7 @@ vi.mock("src/lang", () => ({ language: { errors: { httpError: "HTTP error: " } }
 
 import { sayTTS, stopTTS } from "./tts";
 import { runVITS } from "./transformers";
+import { runTranslator } from "../translator/translator";
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -120,7 +121,7 @@ afterEach(() => {
 describe("sayTTS and stopTTS", () => {
     it("encodes the entire translated VOICEVOX audio_query text and one speaker without a doubled slash", async () => {
         await sayTTS(character("VOICEVOX"), "English source");
-        expect(deps.translateVox).toHaveBeenCalledWith("English source");
+        expect(deps.translateVox).toHaveBeenCalledWith("English source", expect.any(AbortSignal));
         const query = new URL(deps.fetch.mock.calls[0][0]);
         expect(query.origin + query.pathname).toBe("https://voicevox.test/audio_query");
         expect(query.searchParams.getAll("text")).toEqual(["こんにちは &speaker=99 # + 100% 日本語"]);
@@ -313,6 +314,35 @@ describe("sayTTS and stopTTS", () => {
             stopTTS();
             await vi.runOnlyPendingTimersAsync();
             await work;
+            vi.useRealTimers();
+        }
+    });
+
+    it("translates Hugging Face speech once and reuses it through estimated_time retries", async () => {
+        vi.useFakeTimers();
+        const speaker = character("huggingface");
+        speaker.hfTTS = { language: "ja", model: "test/speech-model" };
+        vi.mocked(runTranslator).mockResolvedValue("こんにちは");
+        deps.fetch
+            .mockResolvedValueOnce(Response.json({ estimated_time: 2 }, { status: 503 }))
+            .mockResolvedValueOnce(Response.json({ estimated_time: 3 }, { status: 503 }))
+            .mockResolvedValueOnce(audioResponse());
+        const work = sayTTS(speaker, "Hello");
+        try {
+            await vi.runAllTimersAsync();
+            await work;
+            expect(runTranslator).toHaveBeenCalledOnce();
+            expect(deps.fetch.mock.calls.map(([, init]) => JSON.parse(init.body).inputs)).toEqual([
+                "こんにちは",
+                "こんにちは",
+                "こんにちは",
+            ]);
+            expect(sources).toHaveLength(1);
+            expect(sources[0].start).toHaveBeenCalledOnce();
+            expect(deps.alert).not.toHaveBeenCalled();
+        } finally {
+            stopTTS();
+            vi.clearAllTimers();
             vi.useRealTimers();
         }
     });

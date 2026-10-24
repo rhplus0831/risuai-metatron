@@ -133,6 +133,8 @@
 
 - Only append to the numeric enums (`LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`). Saved custom models store these numbers.
 - A model's `format`, `flags`, `parameters`, `internalID`, endpoint, and tokenizer must agree. Wrong flags silently change the prompt shape.
+- A `dynamic_anthropic_<id>` whose suffix matches an Anthropic-provider static entry's `internalID` or `id` inherits that entry's capabilities, including flags, parameters, format, and tokenizer, while retaining its dynamic `id` and upstream `internalID`. Unknown dynamic Anthropic ids keep the generic budget/adaptive template without `claudeThinkingOnByDefault`. Both the tab registry and server resolution use `dynamicModelOf`.
+- Profile custom flags replace catalogue flags. `ModelProfileEditor.svelte` and `CustomModelsSettings.svelte` expose `noStructuredOutput` (25), `geminiThinkingNoMinimal` (26), and `claudeThinkingOnByDefault` (27) alongside the earlier flags, labelled by their `LLMFlags` names.
 - `claudeThinkingOnByDefault`: off sends `thinking: { type: "disabled" }`; models without the flag omit `thinking` when off.
 - `resolveClaudeThinkingType` resolves stored `budget` to `adaptive` on adaptive-only models (`claudeAdaptiveThinking` without `claudeThinking`) at request and display time; the stored value is never rewritten. Budget-capable models keep their mode. Picking Adaptive while the stored value is `budget` writes nothing because it already displays as Adaptive.
 - Streaming consumers expect cumulative text, not deltas. Tool metadata must survive to the final chunk.

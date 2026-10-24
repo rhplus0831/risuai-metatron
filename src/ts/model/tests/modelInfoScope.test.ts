@@ -89,7 +89,7 @@ describe("getModelInfo with a request's captured scope", () => {
 
 import { auxFetch } from "src/ts/network/auxFetch";
 import { settings } from "src/ts/storage/settingsViews.svelte";
-import { dynamicModelOf } from "../../../../shared/llm/models.ts";
+import { dynamicModelOf, resolveModelInfo } from "../../../../shared/llm/models.ts";
 const catalogueLength = LLMModels.length;
 afterEach(() => {
     LLMModels.splice(catalogueLength);
@@ -97,6 +97,27 @@ afterEach(() => {
 });
 
 describe("dynamic registry discovery", () => {
+    it("resolves a saved Anthropic id with static capabilities before registry discovery", () => {
+        selectModelPreset("plain");
+        settings.providers.dynamicModelRegistry = false;
+        const id = "dynamic_anthropic_claude-opus-5";
+        const catalogue = resolveModelInfo("claude-opus-5");
+        const client = getModelInfo(id);
+        expect(client).toMatchObject({
+            id,
+            internalID: "claude-opus-5",
+            provider: catalogue.provider,
+            flags: catalogue.flags,
+            parameters: catalogue.parameters,
+            format: catalogue.format,
+            tokenizer: catalogue.tokenizer,
+        });
+        expect(client).toEqual(resolveModelInfo(id));
+        expect(getModelInfo("dynamic_anthropic_claude-unknown").flags).not.toContain(
+            LLMFlags.claudeThinkingOnByDefault,
+        );
+    });
+
     it.each([
         ["dynamic_google_gemini-future", "Gemini Future", "gemini-future", undefined],
         ["dynamic_anthropic_claude-future", "Claude Future", "claude-future", true],

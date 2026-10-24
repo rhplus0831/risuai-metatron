@@ -673,6 +673,14 @@ export function dynamicModelOf(id: string): LLMModel | null {
     if (id.startsWith("dynamic_anthropic_")) {
         const internalID = id.slice("dynamic_anthropic_".length);
         if (!internalID) return null;
+        const known = BASE_LLM_MODELS.find(
+            (model) =>
+                model.provider === LLMProvider.Anthropic &&
+                (model.internalID === internalID || model.id === internalID),
+        );
+        if (known) {
+            return { ...structuredClone(known), ...base, internalID };
+        }
         return {
             ...base,
             internalID,

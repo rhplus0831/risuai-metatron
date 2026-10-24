@@ -14,10 +14,13 @@
             return;
         }
         generating = true;
-        const gen = await generateAIImage(prompt, createBlankChar(), negPrompt, "inlay");
-        generating = false;
-        if (gen) {
-            img = gen;
+        try {
+            const gen = await generateAIImage(prompt, createBlankChar(), negPrompt, "inlay");
+            if (gen) {
+                img = gen;
+            }
+        } finally {
+            generating = false;
         }
     };
 </script>

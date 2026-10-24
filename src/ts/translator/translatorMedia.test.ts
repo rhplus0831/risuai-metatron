@@ -46,6 +46,8 @@ import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import type { CapturedTransform } from "src/ts/parser/transformClient";
 import { runTranslator, translate, translateHTML, translateVox } from "./translator";
+import { sayTTS, stopTTS } from "src/ts/process/tts";
+import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 
 const media = settings.memoryTranslateMedia;
 function configure() {
@@ -97,6 +99,47 @@ function reply(url: string, init: Request = {}) {
           };
 }
 const calls = () => deps.globalFetch.mock.calls.length + deps.fetch.mock.calls.length;
+
+it("suppresses translator failures after speech is Stopped while signal-free translator calls still alert", async () => {
+    media.translatorType = "llm";
+    vi.stubGlobal("speechSynthesis", { cancel: vi.fn() });
+    vi.stubGlobal("SpeechSynthesisUtterance", class {});
+    for (const mode of ["VOICEVOX", "huggingface"]) {
+        const started = deferred<void>();
+        const answer = deferred<{ type: "fail"; result: string }>();
+        deps.request.mockImplementationOnce(() => {
+            started.resolve();
+            return answer.promise;
+        });
+        const work = sayTTS(
+            {
+                chaId: "speaker",
+                ttsMode: mode,
+                hfTTS: { language: "ja", model: "test/speech-model" },
+            } as ClientCharacter,
+            "Hello",
+        );
+        try {
+            await started.promise;
+            stopTTS();
+        } finally {
+            answer.resolve({ type: "fail", result: "Translator unavailable" });
+            await work;
+        }
+        expect(deps.alert, mode).not.toHaveBeenCalled();
+        expect(calls(), mode).toBe(0);
+    }
+
+    for (const translateWithoutSignal of [
+        () => runTranslator("Hello", false, "en", "ja"),
+        () => translateVox("Hello"),
+    ]) {
+        deps.alert.mockClear();
+        deps.request.mockResolvedValueOnce({ type: "fail", result: "Translator unavailable" });
+        await expect(translateWithoutSignal()).resolves.toBe("Hello");
+        expect(deps.alert).toHaveBeenCalledExactlyOnceWith("Translator unavailable");
+    }
+});
 
 beforeEach(() => {
     vi.clearAllMocks();

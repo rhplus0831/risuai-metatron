@@ -749,6 +749,7 @@ export async function makeGroupImage() {
                             images.push(img);
                             resolve();
                         };
+                        img.onerror = () => resolve();
                         img.src = url;
                     }),
             ),

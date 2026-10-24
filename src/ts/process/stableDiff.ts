@@ -12,6 +12,7 @@ import { CharEmotion } from "../stores.svelte";
 import type { OpenAIChat } from "./index.svelte";
 import { processZip } from "./processzip";
 import random from "lodash/random";
+import { language } from "src/lang";
 
 /**
  * `chatRef` and `pluginContext` are the send's: the prompt request runs for that chat and that
@@ -402,8 +403,26 @@ async function generateAIImageForProvider(
                 const ctx = canvas.getContext("2d");
                 const imageObj = new Image();
 
-                await new Promise<void>((resolve) => {
-                    imageObj.onload = () => resolve();
+                await new Promise<void>((resolve, reject) => {
+                    signal?.throwIfAborted();
+                    const cleanup = () => {
+                        imageObj.onload = null;
+                        imageObj.onerror = null;
+                        signal?.removeEventListener("abort", onAbort);
+                    };
+                    const onAbort = () => {
+                        cleanup();
+                        reject(signal.reason);
+                    };
+                    imageObj.onload = () => {
+                        cleanup();
+                        resolve();
+                    };
+                    imageObj.onerror = (error) => {
+                        cleanup();
+                        reject(error);
+                    };
+                    signal?.addEventListener("abort", onAbort, { once: true });
                     imageObj.src = `data:image/png;base64,${base64img}`;
                 });
                 signal?.throwIfAborted();
@@ -582,7 +601,7 @@ async function generateAIImageForProvider(
             return false;
         }
 
-        if ((da.headers["content-type"] ?? "").startsWith("application/json")) {
+        if ((da.headers.get("content-type") ?? "").startsWith("application/json")) {
             alertError(Buffer.from(res).toString());
             return false;
         }
@@ -707,6 +726,9 @@ async function generateAIImageForProvider(
                 },
             );
             signal?.throwIfAborted();
+            if (!imgResponse.ok) {
+                throw new Error(`${language.errors.httpError} ${imgResponse.status}`);
+            }
             const imageBytes = await imgResponse.arrayBuffer();
             signal?.throwIfAborted();
             const img64 = Buffer.from(imageBytes).toString("base64");

@@ -152,8 +152,9 @@ export async function runTranslator(
     from: string,
     target: string,
     /** `globalPreset`: translate with the global translator preset, not the selected chat's (the playground). */
-    exarg?: { translatorNote?: string; globalPreset?: boolean; failure?: { failed: boolean } },
+    exarg?: { translatorNote?: string; globalPreset?: boolean; failure?: { failed: boolean }; signal?: AbortSignal },
 ) {
+    exarg?.signal?.throwIfAborted();
     const arg = {
         from: reverse ? from : target,
 
@@ -162,6 +163,7 @@ export async function runTranslator(
         host: "translate.googleapis.com",
 
         translatorNote: exarg?.translatorNote,
+        signal: exarg?.signal,
 
         // The LLM translator's preset, read once for every chunk of this call: a plain copy, since the
         // record view resolves by id on each read and throws once the preset is deleted meanwhile.
@@ -191,6 +193,7 @@ export async function runTranslator(
     try {
         return await translateProtectingLines(source, async (chunk) => {
             const result = await translateMain(chunk, chunkArg);
+            arg.signal?.throwIfAborted();
             if (failure.failed) {
                 throw stopped;
             }
@@ -216,6 +219,7 @@ async function translateMain(
         to: string;
         host: string;
         translatorNote?: string;
+        signal?: AbortSignal;
         preset: TranslatorPreset;
         requestIds: ChatContextIds;
         /** The text is already stripped of its reasoning blocks (`runTranslator`'s chunks). */
@@ -224,6 +228,7 @@ async function translateMain(
         failure?: { failed: boolean };
     },
 ) {
+    arg.signal?.throwIfAborted();
     if (settings.memoryTranslateMedia.translatorType === "llm") {
         const tr = arg.to || "en";
         return translateLLM(
@@ -238,6 +243,7 @@ async function translateMain(
             }),
             false,
             arg.failure,
+            arg.signal,
         );
     }
     if (settings.memoryTranslateMedia.translatorType === "deepl") {
@@ -249,6 +255,7 @@ async function translateMain(
             ? "https://api-free.deepl.com/v2/translate"
             : "https://api.deepl.com/v2/translate";
         const f = await globalFetch(url, {
+            abortSignal: arg.signal,
             headers: {
                 Authorization: "DeepL-Auth-Key " + settings.secrets.deeplOptions.key,
                 "Content-Type": "application/json",
@@ -271,6 +278,7 @@ async function translateMain(
                 await sleep(slot - now);
             }
         }
+        arg.signal?.throwIfAborted();
 
         let url = settings.secrets.deeplXOptions.url ?? "http://localhost:1188";
 
@@ -291,7 +299,13 @@ async function translateMain(
         }
 
         //Since the DeepLX API is non-CORS restricted, we can use the plain fetch function
-        const f = await globalFetch(url, { method: "POST", headers: headers, body: body, plainFetchForce: true });
+        const f = await globalFetch(url, {
+            abortSignal: arg.signal,
+            method: "POST",
+            headers: headers,
+            body: body,
+            plainFetchForce: true,
+        });
 
         if (!f.ok) {
             return "ERR::DeepLX API Error" + (await f.data);
@@ -305,6 +319,7 @@ async function translateMain(
             const d = await globalFetch(
                 `https://translate.google.com/m?tl=${arg.to}&sl=${arg.from}&q=${encodeURIComponent(text)}`,
                 {
+                    abortSignal: arg.signal,
                     headers: {
                         "User-Agent": ua,
                         Accept: "*/*",
@@ -312,13 +327,16 @@ async function translateMain(
                     method: "GET",
                 },
             );
+            arg.signal?.throwIfAborted();
             const parser = new DOMParser();
             const dom = parser.parseFromString(d.data, "text/html");
             const result = dom.querySelector(".result-container")?.textContent?.trim();
             if (result) {
                 return result;
             }
-        } catch (error) {}
+        } catch (error) {
+            arg.signal?.throwIfAborted();
+        }
     }
 
     const url =
@@ -326,6 +344,7 @@ async function translateMain(
         encodeURIComponent(text);
 
     const f = await fetch(url, {
+        signal: arg.signal,
         method: "GET",
     });
 
@@ -350,12 +369,12 @@ async function translateMain(
     return result;
 }
 
-export async function translateVox(text: string) {
-    return jaTrans(text);
+export async function translateVox(text: string, signal?: AbortSignal) {
+    return jaTrans(text, signal);
 }
 
-async function jaTrans(text: string) {
-    return await runTranslator(text, true, "en", "ja");
+async function jaTrans(text: string, signal?: AbortSignal) {
+    return await runTranslator(text, true, "en", "ja", { signal });
 }
 
 export function isExpTranslator() {
@@ -697,10 +716,13 @@ async function translateLLM(
     regenerate = false,
     /** Set to failed when a step fails (the alert is shown and the text returned). */
     failure?: { failed: boolean },
+    signal?: AbortSignal,
 ): Promise<string> {
+    signal?.throwIfAborted();
     const cacheKey = llmCacheKeyPrefix(context) + text;
     if (!regenerate) {
         const cacheMatch = await readLLMCacheEntry(cacheKey);
+        signal?.throwIfAborted();
         if (cacheMatch !== null) {
             return cacheMatch;
         }
@@ -734,6 +756,7 @@ async function translateLLM(
                 translatorNote: context.translatorNote,
             },
             async ({ messages, maxResponse, model }) => {
+                signal?.throwIfAborted();
                 // A step on a profile runs on that profile, an inheriting step on the `translate` slot.
                 const rq = await requestChatData(
                     {
@@ -746,7 +769,9 @@ async function translateLLM(
                         ...(model.mode === "profile" ? { profileId: model.profileId } : {}),
                     },
                     "translate",
+                    signal,
                 );
+                signal?.throwIfAborted();
                 if (rq.type === "fail") {
                     throw new Error(rq.result);
                 }
@@ -756,7 +781,9 @@ async function translateLLM(
                 return rq.result;
             },
         );
+        signal?.throwIfAborted();
     } catch (error) {
+        signal?.throwIfAborted();
         alertError(error instanceof Error ? error.message : String(error));
         if (failure) {
             failure.failed = true;

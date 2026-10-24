@@ -45,10 +45,14 @@ import {
 import ModelProfilesSettings from "./ModelProfilesSettings.svelte";
 import ModelSettings from "./ModelSettings.svelte";
 import PromptPresetSettings from "./PromptPresetSettings.svelte";
+import CustomModelsSettings from "./Advanced/CustomModelsSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
 
-function render(component: typeof ModelSettings | typeof PromptPresetSettings | typeof ModelProfilesSettings) {
+function render(
+    component:
+        typeof ModelSettings | typeof PromptPresetSettings | typeof ModelProfilesSettings | typeof CustomModelsSettings,
+) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     mounted.push(mount(component as typeof ModelSettings, { target }));
@@ -68,6 +72,7 @@ function chooseOption(element: HTMLSelectElement, value: string) {
 beforeEach(() => {
     installFlatDatabase({
         characters: [],
+        customModels: [],
         useLegacyGUI: false,
         botPresets: [{ id: "p1", name: "Prompt One", temperature: 80, maxResponse: 300 }],
         modelPresets: [
@@ -144,6 +149,34 @@ describe("the Model page", () => {
 });
 
 describe("the Connections tab", () => {
+    it("offers flags 25, 26, and 27 and stores their numbers on the edited profile", () => {
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+        const button = (label: string) =>
+            [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+                (entry) => entry.textContent?.trim() === label,
+            );
+        button(language.customFlags)!.click();
+        flushSync();
+        page.querySelector<HTMLInputElement>(`input[alt="${language.enableCustomFlags}"]`)!.click();
+        flushSync();
+        const flags = [
+            ["noStructuredOutput", 25],
+            ["geminiThinkingNoMinimal", 26],
+            ["claudeThinkingOnByDefault", 27],
+        ] as const;
+        for (const [label, number] of flags) {
+            expect(button(label), label).toBeDefined();
+            button(label)!.click();
+            flushSync();
+            expect(settings.modelProfiles.find((profile) => profile.id === "spare")?.customFlags).toEqual([number]);
+            button(label)!.click();
+            flushSync();
+            expect(settings.modelProfiles.find((profile) => profile.id === "spare")?.customFlags).toEqual([]);
+        }
+    });
+
     it("edits the selected profile's context size, also for a profile no slot uses", () => {
         const page = render(ModelProfilesSettings);
         page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
@@ -232,6 +265,46 @@ describe("the Connections tab", () => {
         await Promise.resolve();
         expect(settings.modelProfiles.map((profile) => profile.id)).toEqual(["echo", "spare"]);
         expect(settings.translatorPresets.items).toHaveLength(4);
+    });
+});
+
+describe("custom model definitions", () => {
+    it("offers flags 25, 26, and 27 and stores their numbers on the custom model", () => {
+        settings.customModels = [
+            {
+                id: "xcustom:::claude",
+                name: "Custom Claude",
+                internalId: "claude-opus-5",
+                url: "https://custom.example/v1/messages",
+                format: 2,
+                tokenizer: 6,
+                params: "",
+                flags: [],
+            },
+        ];
+        const page = render(CustomModelsSettings);
+        const button = (label: string) =>
+            [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+                (entry) => entry.textContent?.trim() === label,
+            );
+        for (const label of [language.customModels, "Custom Claude", language.flags]) {
+            button(label)!.click();
+            flushSync();
+        }
+        const flags = [
+            ["noStructuredOutput", 25],
+            ["geminiThinkingNoMinimal", 26],
+            ["claudeThinkingOnByDefault", 27],
+        ] as const;
+        for (const [label, number] of flags) {
+            expect(button(label), label).toBeDefined();
+            button(label)!.click();
+            flushSync();
+            expect(settings.customModels[0].flags).toEqual([number]);
+            button(label)!.click();
+            flushSync();
+            expect(settings.customModels[0].flags).toEqual([]);
+        }
     });
 });
 

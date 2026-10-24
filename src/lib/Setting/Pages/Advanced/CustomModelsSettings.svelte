@@ -197,6 +197,9 @@
                         {@render CustomFlagButton(index, "claudeAdaptiveThinking", 22)}
                         {@render CustomFlagButton(index, "claudeXHighEffort", 23)}
                         {@render CustomFlagButton(index, "deepSeekThinkingToggle", 24)}
+                        {@render CustomFlagButton(index, "noStructuredOutput", 25)}
+                        {@render CustomFlagButton(index, "geminiThinkingNoMinimal", 26)}
+                        {@render CustomFlagButton(index, "claudeThinkingOnByDefault", 27)}
                     </Accordion>
                 </div>
             {/if}

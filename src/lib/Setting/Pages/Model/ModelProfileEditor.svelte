@@ -390,6 +390,9 @@
         {@render CustomFlagButton("claudeAdaptiveThinking", 22)}
         {@render CustomFlagButton("claudeXHighEffort", 23)}
         {@render CustomFlagButton("deepSeekThinkingToggle", 24)}
+        {@render CustomFlagButton("noStructuredOutput", 25)}
+        {@render CustomFlagButton("geminiThinkingNoMinimal", 26)}
+        {@render CustomFlagButton("claudeThinkingOnByDefault", 27)}
     {/if}
 </Accordion>
 

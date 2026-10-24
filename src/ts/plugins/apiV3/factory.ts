@@ -143,32 +143,46 @@ await (async function() {
         return transferables;
     }
 
-    function replaceStreamsWithPorts(obj) {
+    function replaceStreamsWithPorts(obj, onStreamsFinished) {
         const ports = [];
         const cleanups = [];
+        let remainingStreams = 0;
         if (!obj || typeof obj !== 'object') return { result: obj, ports, cleanups };
 
         function replace(val) {
             if (!(val instanceof ReadableStream)) return val;
 
             const ch = new MessageChannel();
+            let reader;
+            try {
+                reader = val.getReader();
+            } catch (error) {
+                ch.port1.close();
+                ch.port2.close();
+                throw error;
+            }
             ports.push(ch.port2);
 
-            const reader = val.getReader();
             let credits = 0;
             let reading = false;
             let finished = false;
 
             function finish() {
+                if (finished) return;
                 finished = true;
                 ch.port1.onmessage = null;
                 ch.port1.close();
+                if (--remainingStreams === 0) onStreamsFinished?.();
             }
 
-            cleanups.push(() => {
+            function cleanup() {
+                ch.port2.close();
+                if (finished) return;
                 reader.cancel().catch(() => {});
                 finish();
-            });
+            }
+            cleanups.push(cleanup);
+            remainingStreams++;
 
             async function pump() {
                 if (reading || finished) return;
@@ -182,7 +196,9 @@ await (async function() {
                         ch.port1.postMessage({ done: false, value });
                     }
                 } catch (e) {
+                    if (finished) return;
                     try { ch.port1.postMessage({ done: true, error: e.message }); } catch(_) {}
+                    reader.cancel().catch(() => {});
                     finish();
                 } finally {
                     reading = false;
@@ -191,8 +207,7 @@ await (async function() {
 
             ch.port1.onmessage = (e) => {
                 if (e.data?.cancel) {
-                    reader.cancel();
-                    finish();
+                    cleanup();
                 } else if (e.data?.pull) {
                     credits++;
                     pump();
@@ -202,11 +217,16 @@ await (async function() {
             return { __type: 'STREAM_PORT', portIndex: ports.length - 1 };
         }
 
-        if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
-        if (obj.constructor === Object) {
-            const out = {};
-            for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
-            return { result: out, ports, cleanups };
+        try {
+            if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
+            if (obj.constructor === Object) {
+                const out = {};
+                for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
+                return { result: out, ports, cleanups };
+            }
+        } catch (error) {
+            for (const cleanup of cleanups) cleanup();
+            throw error;
         }
 
         return { result: obj, ports, cleanups };
@@ -328,6 +348,11 @@ await (async function() {
             let transferables = [];
             let streamCleanups = [];
 
+            const releaseAbortControllers = () => {
+                for (const id of usedAbortIds) abortControllers.delete(id);
+                usedAbortIds.length = 0;
+            };
+
             const rollbackStreams = () => {
                 for (const cleanup of streamCleanups) {
                     try { cleanup(); } catch(_) {}
@@ -349,7 +374,7 @@ await (async function() {
                 });
                 const result = await fn(...deserializedArgs);
                 response.result = result;
-                const { result: streamResult, ports: streamPorts, cleanups } = replaceStreamsWithPorts(response.result);
+                const { result: streamResult, ports: streamPorts, cleanups } = replaceStreamsWithPorts(response.result, releaseAbortControllers);
                 response.result = streamResult;
                 streamCleanups = cleanups;
                 transferables = collectTransferables(response, streamPorts);
@@ -357,10 +382,9 @@ await (async function() {
                 rollbackStreams();
                 delete response.result;
                 response.error = (e && e.message) || String(e || "Guest callback error");
-            }
-            // Clean up abort controllers after callback completes
-            for (const id of usedAbortIds) {
-                abortControllers.delete(id);
+            } finally {
+                // Streaming callbacks keep their signals until every stream finishes or is cleaned up.
+                if (streamCleanups.length === 0) releaseAbortControllers();
             }
             try {
                 send(response, transferables);

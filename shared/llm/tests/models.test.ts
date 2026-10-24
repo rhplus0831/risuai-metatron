@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../models.ts";
-import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types.ts";
+import { ClaudeParameters, LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types.ts";
 
 describe("static model catalogue", () => {
     it("has unique ids including generated Responses API and Vertex variants", () => {
@@ -65,6 +65,49 @@ describe("static model catalogue", () => {
 });
 
 describe("discovered model ids", () => {
+    it("inherits static Anthropic capabilities while preserving the saved dynamic and upstream ids", () => {
+        // Cover adaptive-only, budget-capable, and legacy wire formats.
+        for (const internalID of ["claude-opus-5", "claude-opus-4-6", "claude-2.1"]) {
+            const catalogue = BASE_LLM_MODELS.find((model) => model.id === internalID)!;
+            const id = `dynamic_anthropic_${internalID}`;
+            for (const model of [dynamicModelOf(id), resolveModelInfo(id)]) {
+                expect(model, id).toMatchObject({
+                    id,
+                    internalID,
+                    provider: catalogue.provider,
+                    flags: catalogue.flags,
+                    parameters: catalogue.parameters,
+                    format: catalogue.format,
+                    tokenizer: catalogue.tokenizer,
+                });
+            }
+        }
+    });
+
+    it("keeps the generic Anthropic capabilities without default-on thinking for an unknown dynamic id", () => {
+        const id = "dynamic_anthropic_claude-unknown";
+        for (const model of [dynamicModelOf(id), resolveModelInfo(id)]) {
+            expect(model).toMatchObject({
+                id,
+                internalID: "claude-unknown",
+                provider: LLMProvider.Anthropic,
+                format: LLMFormat.Anthropic,
+                tokenizer: LLMTokenizer.Claude,
+                parameters: [...ClaudeParameters, "thinking_tokens"],
+            });
+            expect(model!.flags.toSorted()).toEqual(
+                [
+                    LLMFlags.hasImageInput,
+                    LLMFlags.hasFirstSystemPrompt,
+                    LLMFlags.hasStreaming,
+                    LLMFlags.claudeThinking,
+                    LLMFlags.claudeAdaptiveThinking,
+                ].sort(),
+            );
+            expect(model!.flags).not.toContain(LLMFlags.claudeThinkingOnByDefault);
+        }
+    });
+
     it.each([
         [
             "dynamic_google_gemini-future",

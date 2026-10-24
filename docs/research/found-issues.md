@@ -9,14 +9,13 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (13)
-- [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (13)
+- [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (10)
 - [Lua scripting](#lua-scripting) (2)
 - [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (5)
 - [Lorebooks and modules](#lorebooks-and-modules) (1)
-- [Chat screen](#chat-screen) (8)
-- [Alerts, dialogs, keys, and settings controls](#alerts-dialogs-keys-and-settings-controls) (5)
+- [Chat screen](#chat-screen) (7)
+- [Alerts, dialogs, keys, and settings controls](#alerts-dialogs-keys-and-settings-controls) (4)
 - [Notifications](#notifications) (2)
-- [Image generation and TTS](#image-generation-and-tts) (6)
 - [Server HTTP, auth, and error codes](#server-http-auth-and-error-codes) (7)
 - [Assets, MIME types, and the service worker](#assets-mime-types-and-the-service-worker) (6)
 - [Backup import](#backup-import) (1)
@@ -159,15 +158,6 @@ Found by the CC3 challenger (2026-10-23). `src/ts/storage/chatStore.svelte.ts` ~
 
 ## Generation jobs, channels, and providers
 
-### Guest provider abort mirror
-
-`src/ts/plugins/apiV3/factory.ts` GUEST_BRIDGE_SCRIPT, the `INVOKE_CALLBACK` branch (~310-350, "Clean up abort controllers after callback completes"), deletes the guest-side AbortControllers as soon as a plugin provider callback returns, even when its result is a ReadableStream bridged over a STREAM_PORT. A host abort (Stop) mid-stream then finds no guest controller, so the provider's `abortSignal` (and any `nativeFetch` it chained to it) never aborts. Mirror of the host-side fix in open-bug-fixes slice G1 (found by the G1 challenger, 2026-10-19, unfixed). The job channel cancelling the reader (`jobChannel.ts` ~707) masks it only for plugins that propagate stream cancel.
-
-**Why it matters:** streaming plugin providers keep downloading after Stop.
-**Suggested handling:** keep the guest controllers until the returned stream ports finish, like the host CALL handler after G1.
-
-Rechecked 2026-10-21 against the code: still present.
-
 ### getModelList ungrouped alias
 
 `src/ts/model/modellist.ts` `getModelList` (:198 `let models = LLMModels`, :234-236 push; unchanged 2026-10-21): with `groupedByProvider` false, `models` aliases `LLMModels` and the plugin entries are pushed into it, so each ungrouped call grows the global catalogue with duplicate plugin models that a plugin reload cannot remove. Only production caller (`ModelList.svelte` ~32) asks for grouped results, so latent. Found by the G1 challenger 2026-10-19.
@@ -245,20 +235,6 @@ Client `src/ts/process/request/request.ts` `requestChatDataMain` (~612) resolves
 
 **Why it matters:** found by the SF5 challenger (2026-10-23); SF5 fixed only the model name inside `requestWebLLM` (the job path).
 **Suggested handling:** if a user reports a reverse proxy + WebLLM/Plugin format failing in the tab, the fix is client-side dispatch (apply `customAPIFormat` before the Plugin/WebLLM check), not the adapter.
-
-### Dynamic Anthropic Opus 5 flags
-
-`shared/llm/models.ts` `dynamicModelOf` (~673, `dynamic_anthropic_` branch) gives every discovered Anthropic model `claudeThinking` + `claudeAdaptiveThinking`, `ClaudeParameters` and `thinking_tokens`. A profile that saved `dynamic_anthropic_claude-opus-5` (discovered by `src/ts/model/modellist.ts` ~105 before the static entry existed, added 2026-10-23 with UP11) keeps that id: thinking off omits `thinking` (Opus 5 then runs adaptive), a stored `budget` sends `budget_tokens` (400), sampling params are sent (400), and xhigh is clamped. Same for adaptive-only 4.7/4.8 if discovered dynamically. The server resolves the same template (`server/src/llm/requests.ts` ~1682).
-
-**Why it matters:** discovery only skips ids already in the static list, so old saved dynamic ids never pick up the static entry's flags.
-**Suggested handling:** a fix would map a known dynamic Anthropic id to its static model's capabilities while keeping the id; do not add flag 27 to every dynamic model. Related: [Custom flag editors miss 25–27](#custom-flag-editors-miss-2527).
-
-### Custom flag editors miss 25–27
-
-`src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` ~369–392 and `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte` ~196–199 list `CustomFlagButton`s only up to `deepSeekThinkingToggle` (24). Custom flags replace the catalog flags (`shared/llm/models.ts` ~747), so enabling custom flags on Claude 5 Opus drops `claudeThinkingOnByDefault` (27, added 2026-10-23 by UP11) with no way to restore it, and a custom model cannot select 25–27 at all.
-
-**Why it matters:** thinking "off" on Opus 5 with custom flags then omits `thinking` and the model thinks anyway.
-**Suggested handling:** add buttons for 25, 26, 27 in both editors (labels are the flag names). Related: [Dynamic Anthropic Opus 5 flags](#dynamic-anthropic-opus-5-flags).
 
 ### Gemini 3.6/3.5 Flash stale params
 
@@ -407,13 +383,6 @@ Rechecked 2026-10-21 against the code: still present.
 
 Also noted: in "off" mode the translate/retranslate buttons stay visible while streaming (`Chat.svelte` ~1388 checks `isOptimizedStreamingMessage`, false in off); a click flips `translated` but shows nothing until the stream ends, and the end-of-stream row remount (`Chats.svelte` mount key text null → data) drops it. Pre-existing reset, see shared composer across chats style row-state issues.
 
-### makeGroupImage onerror hang
-
-`src/ts/characters.ts` `makeGroupImage` (~735-748, 2026-10-23): each member image is loaded with `new Promise((resolve) => { img.onload = ...; img.src = url })` and no `onerror`, so a member whose image fails to load (missing asset, bad data) never resolves; `Promise.all` hangs and the "Loading.." wait stays. Found by the SF6 challenger; SF6 only moved the group check before the wait (the early-return leak).
-
-**Why it matters:** the group image button is only shown for groups, so this hang is the more likely real-world stuck "Loading..".
-**Suggested handling:** resolve (skip the image) on `onerror` too; a unit test can stub `Image` to fire `onerror`. Related: [NovelAI image onload no onerror](#novelai-image-onload-no-onerror).
-
 ## Alerts, dialogs, keys, and settings controls
 
 ### Terminal notice ack keyup
@@ -434,14 +403,6 @@ After A1 (alert queue, 2026-10-20) `alertClear()` clears only the status slot an
 **Suggested handling:** clear by identity (`alertStore.clearStatus(expected)` exists since A1) with the status the caller installed.
 
 Rechecked 2026-10-21 against the code: still present.
-
-### cardexport Escape JSON.parse
-
-`src/ts/alert.ts` ~341 `alertCardExport` returns `JSON.parse(result)` with no guard. `hotkey.ts`'s Escape branch answers any visible dialog with `""` (gate permitting), including the `cardexport` dialog (`AlertComp.svelte` separate branch, whose own close button answers a structured cancel). So Escape on the card export dialog makes the export call reject with a SyntaxError instead of cancelling. Found by the SF8 challenger 2026-10-23; not fixed (outside SF8's files).
-
-**Why it matters:** a keyboard dismissal of the export picker surfaces as an error/unhandled rejection instead of a cancel.
-
-**Suggested handling:** treat `""` as cancel in `alertCardExport` (return the same shape the close button sends), or have hotkey.ts skip `cardexport`.
 
 ### Modifier hotkeys behind alerts
 
@@ -477,50 +438,6 @@ Rechecked 2026-10-21 against the code: still present.
 
 **Why it matters:** with per-chat tags a tab can now show several such page notices at once (one per chat), all left open.
 **Suggested handling:** if notifications get touched again, keep the fallback `Notification` objects (or close them on `visibilitychange`);
-
-## Image generation and TTS
-
-### ComfyUI /view non-OK body
-
-`src/ts/process/stableDiff.ts` ComfyUI branch (~580-595 at cf59bb865, the `/view` request after polling): `fetchNative` returns HTTP error responses without throwing, and the code base64-encodes `imgResponse.arrayBuffer()` as `data:image/png` with no `ok` check. A 404/500 error page is delivered as a broken image (CharEmotion or an inlay) instead of an alert.
-
-**Why it matters:** found while reviewing the image-cancellation slice (SA7, 2026-10-23); left out of scope there.
-**Suggested handling:** check `imgResponse.ok` and throw so the branch's catch alerts; add a case in `imageDelivery.test.ts`.
-
-### Stability headers index
-
-`src/ts/process/stableDiff.ts` Stability branch (~443 at cf59bb865): `da` is a native `fetch` Response, so `da.headers["content-type"]` is always `undefined` (Headers needs `.get()`). The JSON-error guard never fires; a 200 JSON body would be delivered as an image.
-
-**Why it matters:** found during the image-cancellation slice (SA7, 2026-10-23); out of scope there.
-**Suggested handling:** use `da.headers.get("content-type")`.
-
-### NovelAI image onload no onerror
-
-`src/ts/process/stableDiff.ts` NovelAI `reference_mode === "character"` branch (~325-335 at cf59bb865): `await new Promise(resolve => { imageObj.onload = resolve; imageObj.src = ... })` has no `onerror`, so an empty or undecodable base64 image never settles and the generation hangs (an abort check after it cannot fire either).
-
-**Why it matters:** noted by the SA7 challenger, 2026-10-23; out of scope there.
-**Suggested handling:** reject on `onerror` (the catch then falls back to the original), and settle on abort.
-
-### Playground image gen stuck
-
-`src/lib/Playground/PlaygroundImageGen.svelte:16-18`: `generating = false` runs only when `generateAIImage` resolves. Since generateAIImage can reject (an abort rejects with the signal's reason; readAsset/processZip errors outside a catch also reject), the playground then stays `generating` until reload. No signal is passed there today, so abort does not trigger it yet.
-
-**Why it matters:** noted by the SA7 challenger, 2026-10-23.
-**Suggested handling:** wrap in try/finally.
-
-### HF TTS retry re-translates
-
-`src/ts/process/tts.ts` ~368 (huggingface case): `text = await runTranslator(text, false, "en", character.hfTTS.language)` sits inside the `while (true)` 503 `estimated_time` retry loop, so each retry translates the previous iteration's output again (extra translator calls; drift for a non-English model). Seen 2026-10-23 during Combined Run SA8; left as is (out of slice).
-
-**Why it matters:** wasted translator requests/cost and possibly wrong text spoken after a model cold start.
-**Suggested handling:** translate once before the loop; a small fix for a later TTS/media slice. See [TTS translation alerts after Stop](#tts-translation-alerts-after-stop).
-
-### TTS translation alerts after Stop
-
-After SA8 (2026-10-23) Stop aborts every TTS provider request, but `translateVox` and the Hugging Face `runTranslator` call in `src/ts/process/tts.ts` take no signal, and `runTranslator` alerts errors itself (`src/ts/translator/translator.ts` ~199, ~353, ~759), so a translator failure during a cancelled speech run still shows an alert. The slice deliberately left translation on generation checks only.
-
-**Why it matters:** "Stop alerts nothing" holds only for the provider requests.
-**Suggested handling:** if raised, thread an optional signal through `runTranslator`/`translateVox` (media-aux.md guide). See [HF TTS retry re-translates](#hf-tts-retry-re-translates).
 
 ## Server HTTP, auth, and error codes
 
