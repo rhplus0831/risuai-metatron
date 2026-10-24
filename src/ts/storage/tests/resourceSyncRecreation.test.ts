@@ -147,6 +147,77 @@ afterEach(() => {
     server.current = null;
 });
 
+it.each([false, true])(
+    "saves a same-id chat recreation after deleting its old incarnation (delete again: %s)",
+    async (deleteAgain) => {
+        const h = await boot();
+        const ref = { chaId: "c", chatId: "k" };
+        const oldRevision = h.fake.chat("c", "k")!.revision;
+        h.chat.deleteChat(ref);
+        h.chat.createChat("c", chatOf("k", "Recreated transcript"));
+        if (deleteAgain) h.chat.deleteChat(ref);
+
+        // Hold the recreation's answer after commit: deleting the old incarnation must not
+        // satisfy the flush obligation belonging to the new one.
+        let answerCreate!: () => void;
+        const createAnswer = new Promise<void>((resolve) => {
+            answerCreate = resolve;
+        });
+        let reachedCreate!: () => void;
+        const createCommitted = new Promise<void>((resolve) => {
+            reachedCreate = resolve;
+        });
+        const fetch = h.fake.fetch;
+        vi.spyOn(h.fake, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/batch") {
+                const body = JSON.parse(String(init?.body));
+                if (body.chats?.some((group: any) => group.chatId === "k" && group.ops[0]?.op === "create")) {
+                    reachedCreate();
+                    await createAnswer;
+                }
+            }
+            return response;
+        });
+        let settled = false;
+        const flush = h.sync.flushResources().then((result) => {
+            settled = true;
+            return result;
+        });
+        try {
+            if (!deleteAgain) {
+                // A prematurely completed flush also wakes the test, so a broken barrier fails
+                // an assertion rather than waiting for a request that might never be sent.
+                await Promise.race([createCommitted, flush]);
+                expect(settled).toBe(false);
+                expect(h.fake.texts("c", "k")).toEqual(["Recreated transcript"]);
+            }
+        } finally {
+            answerCreate();
+        }
+        expect(await flush).toEqual({ discarded: [] });
+        const groups = h.fake.batchBodies().flatMap((body) => body.chats ?? []);
+        expect(groups[0]).toMatchObject({ chatId: "k", baseRevision: oldRevision, ops: [{ op: "delete" }] });
+        if (deleteAgain) {
+            expect(groups).toHaveLength(1);
+            expect(h.fake.chat("c", "k")).toBeNull();
+            expect(h.chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
+        } else {
+            expect(groups).toHaveLength(2);
+            expect(groups[1]).toMatchObject({
+                chatId: "k",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { message: [m("k-message", "Recreated transcript")] } }],
+            });
+            expect(h.fake.batchBodies()).toHaveLength(2);
+            expect(h.fake.order("c")!.ids).toEqual(["j", "k"]);
+            expect(h.chat.findChat(ref)?.message[0].data).toBe("Recreated transcript");
+        }
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    },
+);
+
 it("a same-id recreation saves the replacement's chats with its fields in one batch, and a fresh boot reads them", async () => {
     const h = await boot();
     expect(h.characterStore.removeCharacter("c")).toBe(true);

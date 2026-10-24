@@ -96,7 +96,7 @@ import {
     retryRefusedChat,
     discardRefusedChat,
     type RefusedChatItem,
-    isCharacterGenerating,
+    isCharacterStreamedHere,
     isChatDeferred,
     noteMirrorReplaced,
     quarantineChat,
@@ -307,8 +307,8 @@ let backoffUntil = 0;
 const hydrate = new Set<string>();
 /**
  * Characters whose chat list an acknowledgement showed another writer changed (`ackChatWork`), or
- * whose create a conflict read adopted without its order: read as a live update that keeps a queued reorder
- * (`applyRemoteCollection` with `keepPendingOrder`), unless a kept chat with a held revision is
+ * whose membership replay or adopted create supplied no order: read as a live update that keeps a
+ * queued reorder (`applyRemoteCollection` with `keepPendingOrder`), unless a kept chat with a held revision is
  * missing from the server's list: then the reorder is discarded with the notice and report. Their
  * reorders wait until then.
  */
@@ -2704,30 +2704,36 @@ async function recoverConflictedWork(
     }
     // Counts only: the conflicting records' ids stay here.
     recordClientEvent({ kind: "sync", phase: "conflict", ...counted });
-    // These refusals need no read: an unrelated read failure must not requeue the locked edits.
-    const generatingRecovery = recoverChatConflicts(
-        { groups: work.groups.filter((group) => generatingChats.has(group.key)), orders: [] },
+    // Drop refused locked edits and retain conflicting order snapshots before any read can fail.
+    const immediateRecovery = recoverChatConflicts(
+        {
+            groups: work.groups.filter((group) => generatingChats.has(group.key)),
+            orders: work.orders.filter((order) => conflictedOrders.has(order.characterId)),
+        },
         new Set(),
-        new Set(),
+        conflictedOrders,
         [],
         generatingChats,
         lockedMessages,
     );
-    if (generating || generatingRecovery.blocked) {
+    if (generating || immediateRecovery.blocked) {
         showGeneratingNotice();
     }
-    if (generatingRecovery.reloaded) {
+    if (immediateRecovery.reloaded) {
         notice.owed = true;
+    }
+    for (const characterId of immediateRecovery.refresh) {
+        hydrate.add(characterId);
     }
     const remainingWork = {
         groups: work.groups.filter((group) => !generatingChats.has(group.key)),
-        orders: work.orders,
+        orders: work.orders.filter((order) => !conflictedOrders.has(order.characterId)),
     };
     let read: Awaited<ReturnType<typeof readRefs>>;
     try {
         read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };
     } catch (readError) {
-        // Only work outside the generating recovery still needs to be requeued.
+        // Only work outside the immediate recovery still needs to be requeued.
         requeueChatWork(remainingWork);
         throw readError;
     }
@@ -2746,6 +2752,9 @@ async function recoverConflictedWork(
     for (const characterId of recovered.refresh) {
         // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
         hydrate.add(characterId);
+    }
+    for (const characterId of recovered.refreshOrders) {
+        listRefresh.add(characterId);
     }
     for (const item of [...rebuilt, ...read.items]) {
         const key = recordKey(item.kind, item.id);
@@ -2787,8 +2796,8 @@ async function recoverConflictedWork(
  * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
  * listed until its read succeeds. A recovery's character (`hydrate`) takes the server's list
  * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
- * generation runs on it, and one the read finds gone is removed with its chats unless its held
- * revision or its chats' lifetime moved during the read (then it stays listed for the next read);
+ * generation of this tab runs on it, and one the read finds gone is removed with its chats unless
+ * its held revision or its chats' lifetime moved during the read (then it stays listed for the next read);
  * an acknowledgement's or adopted create's (`listRefresh`) is applied as a live update that keeps
  * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
  * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
@@ -2809,9 +2818,9 @@ async function hydrateCharacters(): Promise<boolean> {
             parkedListRefresh.add(id);
         }
     }
-    // A recovery's character with a running generation waits until it ends.
+    // A recovery waits for this tab's streamed text; a feed lock alone does not hold it back.
     const ids = [
-        ...[...hydrate].filter((id) => !isCharacterGenerating(id)),
+        ...[...hydrate].filter((id) => !isCharacterStreamedHere(id)),
         ...[...listRefresh].filter((id) => !hydrate.has(id)),
     ];
     if (ids.length === 0) {

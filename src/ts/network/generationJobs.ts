@@ -23,7 +23,7 @@ import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storag
 import { applyHydration, applyPatchHydration, flushResources } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
 import { recordClientEvent } from "../diagnostics/collector";
-import { setJobStage } from "../process/jobStages";
+import { dropJobStage, setJobStage } from "../process/jobStages";
 
 /**
  * The channel dispatcher (UI, plugin registries) loads on first use, so this transport stays free of
@@ -730,6 +730,7 @@ export function applyGenerationEvent(
  * the tab stopped following without its end (lost).
  */
 export function releaseGenerationJob(jobId: string) {
+    dropJobStage(jobId);
     if (dispatcher) {
         onChannel((channel) => channel.endJobChannel(jobId));
     }

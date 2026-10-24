@@ -68,6 +68,11 @@ import { selectModelPreset, selectPreset, selection } from "src/ts/storage/selec
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestChatData, requestChatDataMain } from "../request";
+import { applyChatTemplate } from "src/ts/process/templates/chatTemplate";
+import { applyAdditionalParameters } from "../shared";
+import { runTransformers } from "src/ts/process/transformers";
+import { unstringlizeChat } from "src/ts/process/stringlize";
+import type { ModelProfile } from "../../../../../shared/database";
 
 const MODEL_PRESET_GONE = "The model preset this request runs with no longer exists";
 const PRESET_GONE = "The preset this request runs with no longer exists";
@@ -291,5 +296,65 @@ describe("a chatless request's captured ids and named profile", () => {
         expect(provider1).not.toHaveBeenCalled();
         expect(provider2).toHaveBeenCalledTimes(1);
         expect(stubs.requestServer).not.toHaveBeenCalled();
+    });
+});
+
+describe("reverse proxy routing", () => {
+    it("runs WebLLM and Plugin profiles in the tab and sends every other custom format to the server with the overridden model", async () => {
+        const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
+        profile.modelId = "reverse_proxy";
+        profile.customProxyRequestModel = "hf:::captured-local-model";
+        // A reverse proxy's catalogue format is server-run; its captured profile chooses the format.
+        stubs.getModelInfo.mockImplementation((id) => ({
+            id,
+            internalID: "catalogue-model",
+            format: LLMFormat.OpenAICompatible,
+            flags: [LLMFlags.hasFullSystemPrompt],
+            tokenizer: 0,
+        }));
+        vi.mocked(applyChatTemplate).mockReturnValue("local prompt");
+        vi.mocked(applyAdditionalParameters).mockReturnValue({});
+        vi.mocked(runTransformers).mockResolvedValue({ generated_text: "local answer" });
+        vi.mocked(unstringlizeChat).mockReturnValue("local answer");
+        stubs.requestServer.mockResolvedValue({ type: "success", result: "server answer" });
+
+        for (const format of [
+            LLMFormat.WebLLM,
+            LLMFormat.Plugin,
+            ...Object.values(LLMFormat).filter((value) => value !== LLMFormat.WebLLM && value !== LLMFormat.Plugin),
+        ]) {
+            profile.customAPIFormat = format;
+            provider1.mockClear();
+            stubs.requestServer.mockClear();
+            vi.mocked(runTransformers).mockClear();
+            const result = await requestChatData(argOf(), "model");
+
+            if (format === LLMFormat.Plugin) {
+                expect(result).toMatchObject({ type: "success", result: "from prov-1" });
+                expect(provider1).toHaveBeenCalledTimes(1);
+                expect(stubs.requestServer).not.toHaveBeenCalled();
+                expect(runTransformers).not.toHaveBeenCalled();
+            } else if (format === LLMFormat.WebLLM) {
+                expect(result).toMatchObject({ type: "success", result: "local answer" });
+                expect(runTransformers).toHaveBeenCalledExactlyOnceWith(
+                    expect.anything(),
+                    "captured-local-model",
+                    expect.anything(),
+                );
+                expect(provider1).not.toHaveBeenCalled();
+                expect(stubs.requestServer).not.toHaveBeenCalled();
+            } else {
+                expect(result).toMatchObject({ type: "success", result: "server answer" });
+                expect(stubs.requestServer).toHaveBeenCalledExactlyOnceWith(
+                    expect.anything(),
+                    "model",
+                    null,
+                    expect.objectContaining({ id: "reverse_proxy", internalID: "hf:::captured-local-model", format }),
+                );
+                expect(provider1).not.toHaveBeenCalled();
+                expect(runTransformers).not.toHaveBeenCalled();
+            }
+        }
+        expect(provider2).not.toHaveBeenCalled();
     });
 });

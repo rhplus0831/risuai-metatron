@@ -785,15 +785,16 @@ describe("loading", () => {
         expect((await chat.ensureChatLoaded(other))?.name).toBe("Renamed 2");
     });
 
-    it("a load installed while the chat has list-field work lays the summary over the read and marks it stale; the idle refresh after the acknowledgement brings the other writer's fields (read before the ack)", async () => {
+    it("a load installed while the chat has list-field work lays the summary over the read, keeps the work's base, and marks it stale; the idle refresh after the acknowledgement brings the other writer's fields (read before the ack)", async () => {
         const { server, chat, commit, refreshIdle, remoteMeta } = await boot();
         const target = kRef(3);
+        const original = chat.heldChatRevision(target);
         chat.setChatMeta(target, { name: "Renamed" });
         // Another writer refiles the chat meanwhile.
         remoteMeta("c", "k3", { folderId: "f2" });
         const remote = server.chat("c", "k3")!;
         const loaded = await chat.ensureChatLoaded(target);
-        // The copy: the local list fields over the read, the read's revision held, the chat stale.
+        // The copy: the local list fields over the read, the queued work's base still held, the chat stale.
         expect(loaded).toMatchObject({
             name: "Renamed",
             folderId: "f",
@@ -803,13 +804,15 @@ describe("loading", () => {
             bindingReview: true,
         });
         expect(texts(loaded)).toEqual(["K3 text"]);
-        expect(chat.heldChatRevision(target)).toBe(remote.revision);
+        expect(remote.revision).not.toBe(original);
+        expect(chat.heldChatRevision(target)).toBe(original);
         expect(chat.idleChatRefreshes()).toEqual([]);
         expect(chat.hasChatWork()).toBe(true);
-        // The rename saves on the read's revision (not stale), and the stale mark stays.
+        // The rename saves on its own base (a stale-base list-field write): the stale answer leaves
+        // the older base held, and the stale mark stays.
         const { result } = commit();
-        expect(result.chats[0].stale).toBeFalsy();
-        expect(chat.heldChatRevision(target)).toBe(server.chat("c", "k3")!.revision);
+        expect(result.chats[0].stale).toBe(true);
+        expect(chat.heldChatRevision(target)).toBe(original);
         expect(chat.idleChatRefreshes()).toEqual([target]);
         expect(chat.hasChatWork()).toBe(true);
         // The idle refresh accepts the equal revision and repairs the masked field.
@@ -827,9 +830,10 @@ describe("loading", () => {
         expect(server.chat("c", "k3")!.data).toMatchObject({ name: "Renamed", folderId: "f2" });
     });
 
-    it("the same with the acknowledgement after the read: a delayed older acknowledgement never moves the held revision back, and the refresh converges", async () => {
+    it("the same with the acknowledgement after the read: the read keeps the in-flight work's base, the acknowledgement holds its own revision, and the refresh converges", async () => {
         const { server, chat, take, apply, ack, refreshIdle, remoteMeta } = await boot();
         const target = kRef(4);
+        const original = chat.heldChatRevision(target);
         chat.setChatMeta(target, { name: "Renamed" });
         // The rename is applied on the server, its acknowledgement still on its way.
         const work = take();
@@ -839,14 +843,15 @@ describe("loading", () => {
         remoteMeta("c", "k4", { folderId: "f2" });
         const newer = server.chat("c", "k4")!.revision;
         const loaded = await chat.ensureChatLoaded(target);
-        // In flight: the summary (no folder) is laid over the read, the newer revision held, stale.
+        // In flight: the summary (no folder) is laid over the read, the work's base still held, stale.
         expect(loaded?.name).toBe("Renamed");
         expect(loaded).not.toHaveProperty("folderId");
-        expect(chat.heldChatRevision(target)).toBe(newer);
-        // The delayed acknowledgement does not move the revision back to its own.
+        expect(newer).not.toBe(original);
+        expect(chat.heldChatRevision(target)).toBe(original);
+        // The acknowledgement holds its own revision; the refresh then takes the newer copy.
         ack(work, result);
         expect(result.chats[0].revision).toBe(acked);
-        expect(chat.heldChatRevision(target)).toBe(newer);
+        expect(chat.heldChatRevision(target)).toBe(acked);
         expect(chat.idleChatRefreshes()).toEqual([target]);
         expect(refreshIdle(target)).toBe(true);
         expect(chat.findChat(target)).toMatchObject({ name: "Renamed", folderId: "f2" });

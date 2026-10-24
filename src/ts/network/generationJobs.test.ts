@@ -410,6 +410,40 @@ describe("following a job", () => {
 describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
 
+    it("drops only the released job's presentation stage, including a job resumed from saved generations", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { jobStages, chatStageOf } = await import("../process/jobStages");
+        transport.rememberGenerationJob(ref, "resumed");
+        stubs.fetch.mockResolvedValueOnce(
+            json(200, {
+                jobId: "resumed",
+                kind: "send",
+                characterId: ref.chaId,
+                chatId: ref.chatId,
+                epoch: EPOCH,
+                state: "running",
+            }),
+        );
+        const follows = await transport.resumeSavedGenerations();
+        try {
+            stubs.auth[0].resolve("jwt");
+            await vi.advanceTimersByTimeAsync(0);
+            const [socket] = FakeSocket.instances;
+            socket.open();
+            socket.message({ type: "stage", epoch: EPOCH, stage: "generating" });
+            const other = { chaId: "other", chatId: "chat" };
+            transport.applyGenerationEvent("other-job", other, { type: "stage", epoch: EPOCH, stage: "memory" });
+            expect(chatStageOf(get(jobStages), ref)).toBe("generating");
+
+            transport.releaseGenerationJob("resumed");
+
+            expect(chatStageOf(get(jobStages), ref)).toBeNull();
+            expect([...get(jobStages)]).toEqual([["other-job", { chatKey: "other\u0000chat", stage: "memory" }]]);
+        } finally {
+            follows.forEach((follow) => follow.close());
+        }
+    });
+
     it("records stage events under their job and chat, replacing the job's previous stage", async () => {
         const { jobStages } = await import("../process/jobStages");
         transport.applyGenerationEvent("j1", ref, { type: "stage", epoch: EPOCH, stage: "preparing" });

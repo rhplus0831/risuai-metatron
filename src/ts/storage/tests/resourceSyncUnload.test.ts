@@ -330,7 +330,8 @@ describe("a late unload answer after the chat's character or work is gone", () =
             { characterId: "c", chatId: "k", baseRevision: h.fake.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
         ]);
         h.chat.reorderChats("c", ["j", "k"]);
-        expect(await h.sync.flushResources({ scope })).toEqual({ discarded: ["chats/c/k"] });
+        // The server's order (`[j]`) differs from the sent reorder, so the reorder is reported too.
+        expect(await h.sync.flushResources({ scope })).toEqual({ discarded: ["chats/c", "chats/c/k"] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(h.mirrorIds()).toEqual(["j"]);
         expect(h.chat.heldChatRevision(refK)).toBeNull();

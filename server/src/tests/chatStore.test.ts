@@ -2553,7 +2553,7 @@ describe("group idempotency ids", () => {
         }
     }
 
-    it("answers a replayed id with the earlier result and changes nothing: another writer's later edit stays, the revision and write count stay, and the feed carries the plain remembered ref", () => {
+    it("answers a replayed id with the earlier result and changes nothing: another writer's later edit stays, the revision and write count stay, and the feed carries nothing new", () => {
         const { store, events, base } = setup();
         const ops: ChatOp[] = [
             { op: "append", messages: [m("d", "D")], anchor: { end: true } },
@@ -2577,9 +2577,8 @@ describe("group idempotency ids", () => {
         expect(chat(store, "k")!.revision).toBe(theirs);
         expect(snapshotState(store)).toBe(state);
         expect(store.writeCount()).toBe(writes);
-        // Published as a plain ref at the remembered (older) revision, without a patch.
-        expect(events).toHaveLength(published + 2);
-        expect(events.at(-1)!.changes.chats).toEqual([{ characterId: "c", id: "k", revision: first.revision }]);
+        // Nothing is published: the feed already carried this group's ref when it applied.
+        expect(events).toHaveLength(published);
         // The same ops under a fresh id are a new group: applied on the stale base, over the other writer.
         const fresh = store.applyChanges({ chats: [identified("k", base, ops, "g1-fresh")] }).chats[0];
         expect(fresh).toEqual({ characterId: "c", id: "k", revision: bumped(theirs, 1), stale: true });

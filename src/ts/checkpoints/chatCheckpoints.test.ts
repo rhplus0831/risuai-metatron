@@ -70,7 +70,7 @@ let server: CheckpointServer;
 let tab: Awaited<ReturnType<typeof bootTab>>;
 
 /** Independent module instances represent tabs, while both transports share the same server. */
-async function bootTab() {
+async function bootTab(options: { summaries?: boolean } = {}) {
     vi.resetModules();
     const client = await import("../storage/resourceClient");
     const sync = await import("../storage/resourceSync.svelte");
@@ -79,9 +79,9 @@ async function bootTab() {
     const selection = await import("../storage/selection.svelte");
     const checkpoints = await import("./chatCheckpoints.svelte");
     const { language } = await import("src/lang");
-    const snapshot = await client.readKinds(KINDS, { chats: true });
+    const snapshot = await client.readKinds(KINDS, options.summaries ? { chatSummaries: true } : { chats: true });
     sync.seedResources(snapshot);
-    chat.seedChats(snapshot.chats ?? [], snapshot.chatOrders ?? []);
+    chat.seedChats((options.summaries ? snapshot.chatSummaries : snapshot.chats) ?? [], snapshot.chatOrders ?? []);
     bootstrap.installBootRecords(snapshot);
     selection.selectCharacter(null);
     chat.initializeChats();
@@ -163,6 +163,96 @@ afterEach(() => {
 });
 
 describe("chat checkpoints over the server store", () => {
+    it.each([true, false])(
+        "keeps an unloaded list edit's old base through loading (checkpoint restored: %s)",
+        async (restored) => {
+            tab.chat.setChatMeta(ref, { fmIndex: 1 });
+            const saved = await tab.checkpoints.saveCheckpoint(ref, "First greeting");
+            if (saved.status !== "ok") throw new Error("Checkpoint setup failed");
+            remoteEdit([{ op: "meta", set: { fmIndex: 2 } }]);
+            const olderTab = await bootTab({ summaries: true });
+            expect(olderTab.chat.findChat(ref)).toBeUndefined();
+            const baseRevision = server.resources.chat(ref.chaId, ref.chatId)!.revision;
+            olderTab.chat.setChatMeta(ref, { fmIndex: 3 });
+            if (restored) {
+                const loadingTab = await bootTab();
+                expect(await loadingTab.checkpoints.loadCheckpoint(ref, saved.checkpoint.id)).toMatchObject({
+                    status: "loaded",
+                });
+            } else {
+                // An ordinary intervening write also makes the edit's base stale, but raises no floor.
+                remoteEdit([{ op: "meta", set: { note: "Changed in another tab" } }]);
+            }
+            expect(server.resources.chat(ref.chaId, ref.chatId)!.revision).not.toBe(baseRevision);
+            await olderTab.chat.ensureChatLoaded(ref);
+            server.resources.requests.length = 0;
+            mocks.reloadNotice.mockClear();
+
+            expect(await olderTab.sync.flushResources()).toEqual({
+                discarded: restored ? [`chats/${ref.chaId}/${ref.chatId}`] : [],
+            });
+            expect(server.resources.batchBodies()[0].chats[0]).toMatchObject({ ...address, baseRevision });
+            expect(server.resources.chat(ref.chaId, ref.chatId)!.data.fmIndex).toBe(restored ? 1 : 3);
+            if (restored) expect(mocks.reloadNotice).toHaveBeenCalledWith(olderTab.language.resourceReloaded);
+            else expect(mocks.reloadNotice).not.toHaveBeenCalled();
+        },
+    );
+
+    it("keeps a lost create replay through a collection read so later edits cannot cross a checkpoint restore floor", async () => {
+        const created = { chaId: ref.chaId, chatId: "created" };
+        tab.chat.createChat(ref.chaId, {
+            id: created.chatId,
+            name: "Created",
+            message: [],
+            note: "",
+            localLore: [],
+            fmIndex: 1,
+        });
+        server.resources.dropNextBatchResponse = true;
+        await expect(tab.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const lost = server.resources.batchBodies()[0].chats[0];
+        const loadingTab = await bootTab();
+        const saved = await loadingTab.checkpoints.saveCheckpoint(created, "First greeting");
+        if (saved.status !== "ok") throw new Error("Checkpoint setup failed");
+        loadingTab.chat.setChatMeta(created, { fmIndex: 2 });
+        await loadingTab.sync.flushResources();
+        expect(await loadingTab.checkpoints.loadCheckpoint(created, saved.checkpoint.id)).toMatchObject({
+            status: "loaded",
+        });
+
+        tab.chat.setChatMeta(created, { fmIndex: 3 });
+        const sibling = { chaId: ref.chaId, chatId: "second" };
+        tab.chat.setChatMeta(sibling, { note: "Edit on a deleted sibling" });
+        server.resources.chatBatch([
+            {
+                characterId: sibling.chaId,
+                chatId: sibling.chatId,
+                baseRevision: server.resources.chat(sibling.chaId, sibling.chatId)!.revision,
+                ops: [{ op: "delete" }],
+            },
+        ]);
+        server.resources.requests.length = 0;
+        mocks.reloadNotice.mockClear();
+
+        // The sibling's conflict rolls back the replay batch and requires an authoritative
+        // collection read. Seeing the created id there must not acknowledge its lost answer.
+        const result = await tab.sync.flushResources();
+        expect(result.discarded.sort()).toEqual(
+            [`chats/${created.chaId}/${created.chatId}`, `chats/${sibling.chaId}/${sibling.chatId}`].sort(),
+        );
+        const readIndex = server.resources.requests.findIndex((request) =>
+            request.body?.chatSummaryCollections?.includes(ref.chaId),
+        );
+        expect(readIndex).toBeGreaterThan(0);
+        const afterRead = server.resources.requests
+            .slice(readIndex + 1)
+            .flatMap((request) => request.body?.chats ?? [])
+            .find((group) => group.chatId === created.chatId);
+        expect(afterRead).toEqual({ ...lost, retry: true });
+        expect(server.resources.chat(created.chaId, created.chatId)!.data.fmIndex).toBe(1);
+        expect(mocks.reloadNotice).toHaveBeenCalledWith(tab.language.resourceReloaded);
+    });
+
     it("persists policy changes through the service and refuses a missing chat", async () => {
         const policy = { autoEvery: 2, autoKeep: 3 };
         expect(await tab.checkpoints.readCheckpointPolicy(ref)).toEqual({ status: "available", policy: null });

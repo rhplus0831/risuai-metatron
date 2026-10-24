@@ -755,6 +755,47 @@ describe("the hub: callbacks and nesting", () => {
 });
 
 describe("the hub: delivery, replay, and close", () => {
+    it("orders first-attach notices, replays, and a request promoted by expiry, delivering the promoted request once", async () => {
+        for (const expiry of ["none", "collection", "delivery"] as const) {
+            const h = harness();
+            h.attached.value = false;
+            const link = h.open("a");
+            link.channel.notice({ kind: "alertNormal", payload: { message: "before" } });
+            const first = link.channel.ask({ kind: "alertInput", payload: { message: "first" } }, { timeoutMs: 100 });
+            const firstId = h.last("question").id;
+            link.channel.notice({ kind: "alertNormal", payload: { message: "between" } });
+            const queued = link.channel.ask({ kind: "alertInput", payload: { message: "promoted" } });
+            link.channel.notice({ kind: "alertNormal", payload: { message: "after" } });
+            h.sent.length = 0;
+            h.attached.value = true;
+            if (expiry !== "none") h.clock.value = 1_100;
+            // Collection sees the live request; its delivery sees the deadline, without running a timer.
+            if (expiry === "delivery") h.clock.reads.push(1_000);
+            link.handleAttach();
+
+            const deliveries = h.sent.filter((event) => event.type === "notice" || event.type === "question");
+            expect(deliveries.map((event) => (event.payload as { message: string }).message)).toEqual(
+                expiry === "none"
+                    ? ["before", "first", "between", "after"]
+                    : ["before", "between", "promoted", "after"],
+            );
+            expect(h.ofType("question")).toHaveLength(1);
+            if (expiry === "none") {
+                expect(h.last("question")).toMatchObject({ id: firstId, deadline: 1_100, replay: true });
+                h.answer(link, firstId);
+                expect(await first).toMatchObject({ outcome: "answered" });
+            } else {
+                expect(await first).toMatchObject({ outcome: "timedOut" });
+                expect(h.last("question").id).not.toBe(firstId);
+                expect(h.last("question").replay).toBeUndefined();
+                expect(h.last("question").deadline).toBe(1_100 + QUESTION_TIMEOUT_MS);
+            }
+            h.answer(link, h.last("question").id);
+            expect(await queued).toMatchObject({ outcome: "answered" });
+            link.close("done");
+        }
+    });
+
     it("marks a request as a replay only after an owner socket took it: a first delivery on attach is not one", () => {
         const h = harness();
         h.delivering.value = false;

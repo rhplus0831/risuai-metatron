@@ -298,7 +298,7 @@ function channelIntercept(p: {
         const result = await p.channel.callback(
             "bodyIntercepter",
             { body: value, type },
-            p.parentId ? { parentId: p.parentId } : {},
+            { parentId: p.parentId, signal: p.signal },
         );
         switch (result.outcome) {
             case "answered":

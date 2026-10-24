@@ -441,6 +441,7 @@ describe("setChatTranslationSettings on an unloaded chat", () => {
     it("a load while the meta op is pending keeps the local value over the read, and the idle refresh after the acknowledgement brings another writer's field", async () => {
         const { server, chat, translation, commit, remoteMeta, refreshIdle } = await boot();
         const target = ref("dangling");
+        const original = chat.heldChatRevision(target);
         translation.setChatTranslationSettings(target, { autoTranslate: null, translatorPresetId: "tp2" });
         expect(chat.chatEntry(target)).toEqual({
             id: "dangling",
@@ -460,11 +461,14 @@ describe("setChatTranslationSettings on an unloaded chat", () => {
         expect(loaded).not.toHaveProperty("translateBotOnly");
         expect(translation.chatTranslationSettings(target)).toEqual({ ...OFF, translatorPresetId: "tp2" });
         expect(translation.chatTranslatorPreset(target)).toEqual({ preset: TP2, source: "chat", missing: false });
-        expect(chat.heldChatRevision(target)).toBe(remote.revision);
+        // The queued meta op keeps its base: the read's newer revision is not held.
+        expect(remote.revision).not.toBe(original);
+        expect(chat.heldChatRevision(target)).toBe(original);
         expect(chat.hasChatWork()).toBe(true);
 
+        // Saved on that older base as a stale-base list-field write.
         const { result } = commit();
-        expect(result.chats[0].stale).toBeFalsy();
+        expect(result.chats[0].stale).toBe(true);
         expect(server.chat("c", "dangling")!.data).toMatchObject({ translatorPresetId: "tp2", translateBotOnly: true });
         expect(server.chat("c", "dangling")!.data).not.toHaveProperty("autoTranslate");
         expect(chat.idleChatRefreshes()).toEqual([target]);

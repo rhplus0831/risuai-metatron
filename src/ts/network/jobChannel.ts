@@ -39,6 +39,7 @@ import {
     alertToast,
     alertWait,
     openAlertDialog,
+    type alertData,
 } from "../alert";
 import type { AlertDialog } from "../alertQueue";
 import { language } from "../../lang";
@@ -67,6 +68,7 @@ import {
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 import {
+    alertStore,
     bodyIntercepterStore,
     CharEmotion,
     hypaV3ProgressStore,
@@ -116,6 +118,7 @@ export type ChannelTransport = {
 type Outstanding = {
     jobId: string;
     id: string;
+    parentId?: string;
     targets: CallbackTargets;
     cancelled: boolean;
     /** Aborted when the server cancels the callback or its job ends; image hooks pass its signal to their requests. */
@@ -154,7 +157,16 @@ const transports = new Map<string, ChannelTransport>();
 /** Request id → its state; a finished one keeps its answer for a duplicate delivery. */
 const requests = new Map<string, RequestState>();
 const outstanding: Outstanding[] = [];
+/** One replacement child waits for the cancelled hooks of its parent to finish. */
+let heldChild: {
+    jobId: string;
+    event: GenerationCallbackEvent;
+    parent: Outstanding;
+    timer: ReturnType<typeof setTimeout>;
+} | null = null;
 const uiQueue: UiItem[] = [];
+/** The status object each job installed, so ending it cannot clear a newer writer's status. */
+const jobStatuses = new Map<string, alertData>();
 let uiBusy = false;
 /** The question asked now (its dialog shown or queued): its job, its dialog (to cancel only its own), and its cancellation. */
 let showing: {
@@ -227,7 +239,7 @@ function answer(jobId: string, message: ChannelAnswer) {
 const MODAL_NOTICES = new Set(["alertNormal", "alertError", "alertMd"]);
 const QUEUED_NOTICES = new Set(["alertNormal", "alertError", "alertMd", "alertToast", "alertWait", "alertClear"]);
 
-function showNotice(notice: GenerationNotice): boolean {
+function showNotice(jobId: string, notice: GenerationNotice): boolean {
     switch (notice.kind) {
         case "alertNormal":
             alertNormal(notice.payload.message);
@@ -239,13 +251,14 @@ function showNotice(notice: GenerationNotice): boolean {
             alertMd(notice.payload.message);
             return true;
         case "alertToast":
-            alertToast(notice.payload.message);
+            alertToast(notice.payload.message, (status) => jobStatuses.set(jobId, status));
             return false;
         case "alertWait":
-            alertWait(notice.payload.message);
+            alertWait(notice.payload.message, (status) => jobStatuses.set(jobId, status));
             return false;
         case "alertClear":
             alertClear();
+            jobStatuses.delete(jobId);
             return false;
         default:
             return false;
@@ -447,7 +460,7 @@ async function drainUi() {
             const item = uiQueue.shift()!;
             if (item.type === "notice") {
                 // A modal notice: its own dialog is awaited (not every local dialog queued with it).
-                const { dialog } = openAlertDialog(() => showNotice(item.notice));
+                const { dialog } = openAlertDialog(() => showNotice(item.jobId, item.notice));
                 if (dialog) {
                     await dialog.closed;
                 }
@@ -981,6 +994,54 @@ async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): 
     return { type: "answer", id: event.id, outcome: "answered", value: JSON.parse(wire) };
 }
 
+function takeHeldChild() {
+    const held = heldChild;
+    if (held) {
+        clearTimeout(held.timer);
+        heldChild = null;
+    }
+    return held;
+}
+
+function retireHeldChild() {
+    const held = takeHeldChild();
+    const state = held && requests.get(held.event.id);
+    if (state) {
+        state.retired = true;
+    }
+}
+
+function resumeHeldChild() {
+    if (!heldChild) {
+        return;
+    }
+    const { parent, event } = heldChild;
+    if (parent.cancelled || !outstanding.includes(parent) || Date.now() >= event.deadline) {
+        // The server owns timeout outcomes and sends the cancellation; an expired child never starts.
+        retireHeldChild();
+        return;
+    }
+    if (outstanding.some((entry) => entry !== parent)) {
+        return;
+    }
+    const held = takeHeldChild()!;
+    startCallback(held.jobId, held.event);
+}
+
+function holdChild(jobId: string, event: GenerationCallbackEvent, parent: Outstanding) {
+    const expire = () => {
+        if (heldChild?.event !== event) {
+            return;
+        }
+        if (Date.now() < event.deadline) {
+            heldChild.timer = setTimeout(expire, event.deadline - Date.now());
+            return;
+        }
+        retireHeldChild();
+    };
+    heldChild = { jobId, event, parent, timer: setTimeout(expire, Math.max(0, event.deadline - Date.now())) };
+}
+
 function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     const known = requests.get(event.id);
     if (known) {
@@ -998,18 +1059,33 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
         refuse("The callback may already have run before this page loaded; it is not run again");
         return;
     }
-    const top = outstanding[outstanding.length - 1];
+    const live = outstanding.filter((entry) => !entry.cancelled);
+    const top = live[live.length - 1];
     if (
         event.parentId === undefined
             ? outstanding.length > 0
-            : !top || top.id !== event.parentId || outstanding.length >= 2
+            : !top ||
+              top.id !== event.parentId ||
+              top.parentId !== undefined ||
+              heldChild !== null ||
+              outstanding.some((entry) => entry !== top && (!entry.cancelled || entry.parentId !== top.id))
     ) {
         refuse("A callback may run only inside the outstanding one, one level deep");
         return;
     }
+    remember(event.id, { jobId, answer: null, callback: true });
+    if (event.parentId !== undefined && outstanding.length > 1) {
+        holdChild(jobId, event, top);
+        return;
+    }
+    startCallback(jobId, event);
+}
+
+function startCallback(jobId: string, event: GenerationCallbackEvent) {
     const entry: Outstanding = {
         jobId,
         id: event.id,
+        parentId: event.parentId,
         targets: event.targets,
         cancelled: false,
         abort: new AbortController(),
@@ -1022,13 +1098,13 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
         if (index !== -1) {
             outstanding.splice(index, 1);
         }
+        resumeHeldChild();
         noteChannelCallbacks(outstanding.length);
         // The server kept the lane for a callback it cancelled until its hook is over (this point).
         if (entry.cancelled) {
             void reportCallbackDrained(jobId, event.id);
         }
     };
-    remember(event.id, { jobId, answer: null, callback: true });
     void runCallback(event, entry)
         .then((message) => {
             settle();
@@ -1103,7 +1179,7 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
                 } else if (MODAL_NOTICES.has(notice.kind)) {
                     enqueueUi({ type: "notice", jobId, notice });
                 } else {
-                    showNotice(notice);
+                    showNotice(jobId, notice);
                 }
             } else {
                 if (notice.kind === "progress") {
@@ -1141,6 +1217,9 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
             handleCallback(jobId, event);
             return;
         case "cancel": {
+            if (heldChild?.event.id === event.id) {
+                retireHeldChild();
+            }
             const index = uiQueue.findIndex((item) => item.type === "question" && item.event.id === event.id);
             if (index !== -1) {
                 uiQueue.splice(index, 1);
@@ -1164,6 +1243,7 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
                     cancelOutstanding(entry);
                 }
             }
+            resumeHeldChild();
             return;
         }
     }
@@ -1234,9 +1314,14 @@ export async function stopMemoryRun(jobId: string, runId: string): Promise<void>
     }
 }
 
-/** The job ended: its hydration copies and queued questions are dropped; callbacks stop starting hooks. */
+/** The job ended: its questions and statuses are dropped; modal notices stay and callbacks stop starting hooks. */
 export function endJobChannel(jobId: string) {
     hydrations.delete(jobId);
+    const status = jobStatuses.get(jobId);
+    jobStatuses.delete(jobId);
+    if (status) {
+        alertStore.clearStatus(status);
+    }
     // A cancel the socket lost (a disconnect) must not leave the job's question open.
     if (showing?.jobId === jobId) {
         cancelShowing();
@@ -1255,7 +1340,7 @@ export function endJobChannel(jobId: string) {
     });
     for (let index = uiQueue.length - 1; index >= 0; index -= 1) {
         const item = uiQueue[index];
-        if (item.type === "question" && item.jobId === jobId) {
+        if (item.jobId === jobId && (item.type === "question" || !MODAL_NOTICES.has(item.notice.kind))) {
             uiQueue.splice(index, 1);
         }
     }
@@ -1264,6 +1349,10 @@ export function endJobChannel(jobId: string) {
             cancelOutstanding(entry);
         }
     }
+    if (heldChild?.jobId === jobId) {
+        retireHeldChild();
+    }
+    resumeHeldChild();
     for (const [id, state] of requests) {
         if (state.jobId === jobId && !state.answer && !outstanding.some((entry) => entry.id === id)) {
             state.retired = true;

@@ -336,6 +336,66 @@ afterEach(() => {
 });
 
 describe("notices and questions", () => {
+    it("drops an ended job's queued statuses, keeps its modal notices, and clears only the status it still owns", async () => {
+        // Watch every published value: a stale toast that was immediately cleared must still fail.
+        const seen: string[] = [];
+        const unsubscribe = stores.alertStore.subscribe((value) => seen.push(value.msg));
+        try {
+            for (const blocker of ["question", "modal"] as const) {
+                if (blocker === "question") {
+                    send(question("blocker"), "blocker-job");
+                } else {
+                    send(notice("alertNormal", { message: "blocker modal" }), "blocker-job");
+                }
+                for (const kind of ["alertNormal", "alertError", "alertMd"] as const) {
+                    send(notice(kind, { message: `kept ${kind}` }), "ended");
+                }
+                for (const kind of ["alertWait", "alertToast", "alertClear"] as const) {
+                    send(notice(kind, { message: `stale ${kind}` }), "ended");
+                }
+                channel.endJobChannel("ended");
+                userAnswers("yes");
+                await pump();
+                for (const [kind, type] of [
+                    ["alertNormal", "normal"],
+                    ["alertError", "error"],
+                    ["alertMd", "markdown"],
+                ]) {
+                    expect(alert()).toMatchObject({ type, msg: `kept ${kind}` });
+                    if (kind === "alertMd") {
+                        // Installed after the last modal: a stale queued clear must not remove it.
+                        stores.alertStore.set({ type: "wait", msg: "newer local status" });
+                    }
+                    userAnswers("");
+                    await pump();
+                }
+                expect(alert()).toEqual({ type: "wait", msg: "newer local status" });
+                expect(seen).not.toContain("stale alertWait");
+                expect(seen).not.toContain("stale alertToast");
+                channel.endJobChannel("blocker-job");
+            }
+
+            for (const [kind, type] of [
+                ["alertWait", "wait"],
+                ["alertToast", "toast"],
+            ] as const) {
+                send(notice(kind, { message: "owned status" }), "owner");
+                expect(alert()).toEqual({ type, msg: "owned status" });
+                channel.endJobChannel("owner");
+                expect(alert().type).toBe("none");
+            }
+            // Equal text and type still belong to different writers.
+            send(notice("alertWait", { message: "same status" }), "old");
+            send(notice("alertWait", { message: "same status" }), "new");
+            channel.endJobChannel("old");
+            expect(alert()).toEqual({ type: "wait", msg: "same status" });
+            channel.endJobChannel("new");
+            expect(alert().type).toBe("none");
+        } finally {
+            unsubscribe();
+        }
+    });
+
     it("shows a question, answers it with the alert's raw value, and holds a toast, a modal notice, and the next question behind it", async () => {
         send(question("q1"));
         expect(alert()).toMatchObject({ type: "ask", msg: "q q1" });
@@ -1034,6 +1094,94 @@ describe("callbacks", () => {
         await pump();
         expect(tx.answers[4]).toMatchObject({ id: "p", outcome: "answered", value: "P" });
         expect(channel.liveChannelCallTargets({ jobId: "J", callbackId: "p" })).toBeNull();
+    });
+
+    it("holds a replacement child until the cancelled child's hook settles, then runs it under the outstanding root", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(0);
+        const parent = deferred<string>();
+        const cancelled = deferred<string>();
+        const replacement = deferred<string>();
+        const hook = vi.fn((text: string) =>
+            text === "root" ? parent.promise : text === "cancelled" ? cancelled.promise : replacement.promise,
+        );
+        hooks.editoutput.add(hook);
+        send(callback("root", "editoutput", { text: "root" }));
+        await pump();
+        send(callback("old-child", "editoutput", { text: "cancelled" }, { parentId: "root" }));
+        await pump();
+        // A live child still excludes siblings and grandchildren.
+        send(callback("live-sibling", "editoutput", { text: "refused" }, { parentId: "root" }));
+        send(callback("grandchild", "editoutput", { text: "refused" }, { parentId: "old-child" }));
+        expect(tx.answers).toEqual([
+            expect.objectContaining({ id: "live-sibling", outcome: "failed", failure: "protocol" }),
+            expect.objectContaining({ id: "grandchild", outcome: "failed", failure: "protocol" }),
+        ]);
+        send(cancel("old-child"));
+        send(callback("wrong-parent", "editoutput", { text: "refused" }, { parentId: "other-root" }));
+        send(callback("replacement", "editoutput", { text: "replacement" }, { parentId: "root" }));
+        // Duplicate delivery of a held child must neither refuse nor run it twice.
+        send(callback("replacement", "editoutput", { text: "replacement" }, { parentId: "root" }));
+        await pump();
+        expect(hook.mock.calls.map(([text]) => text)).toEqual(["root", "cancelled"]);
+        expect(tx.answers.map(({ id }) => id)).toEqual(["live-sibling", "grandchild", "wrong-parent"]);
+
+        cancelled.resolve("late cancelled answer");
+        await pump();
+        expect(hook.mock.calls.map(([text]) => text)).toEqual(["root", "cancelled", "replacement"]);
+        expect(tx.answers.map(({ id }) => id)).toEqual(["live-sibling", "grandchild", "wrong-parent"]);
+        replacement.resolve("replacement answer");
+        await pump();
+        expect(tx.answers[3]).toMatchObject({ id: "replacement", outcome: "answered", value: "replacement answer" });
+        parent.resolve("root answer");
+        await pump();
+        expect(tx.answers[4]).toMatchObject({ id: "root", outcome: "answered", value: "root answer" });
+        expect(drainReports()).toEqual([["J", "old-child"]]);
+    });
+
+    it("never starts a held child after its deadline, its cancellation, its parent's cancellation, or its job's end", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        for (const reason of ["deadline", "child cancelled", "parent cancelled", "job ended"] as const) {
+            vi.setSystemTime(0);
+            const parent = deferred<string>();
+            const cancelled = deferred<string>();
+            const hook = vi.fn((text: string) => (text === "root" ? parent.promise : cancelled.promise));
+            hooks.editoutput.add(hook);
+            const rootId = `root ${reason}`;
+            const oldId = `old ${reason}`;
+            const heldId = `held ${reason}`;
+            const jobId = `aux ${reason}`;
+            send(callback(rootId, "editoutput", { text: "root" }));
+            await pump();
+            send(callback(oldId, "editoutput", { text: "old" }, { parentId: rootId, jobId }), jobId);
+            await pump();
+            send(cancel(oldId), jobId);
+            const held = callback(heldId, "editoutput", { text: "held" }, { parentId: rootId, jobId, deadline: 1_000 });
+            send(held, jobId);
+            await pump();
+            // It is held, not immediately refused; otherwise the never-run check is vacuous.
+            expect(tx.answers).toEqual([]);
+            expect(hook.mock.calls.map(([text]) => text)).toEqual(["root", "old"]);
+            if (reason === "deadline") {
+                await vi.advanceTimersByTimeAsync(1_000);
+            } else if (reason === "child cancelled") {
+                send(cancel(heldId), jobId);
+            } else if (reason === "parent cancelled") {
+                send(cancel(rootId));
+            } else {
+                channel.endJobChannel(jobId);
+            }
+            cancelled.resolve("old answer");
+            await pump();
+            send(held, jobId);
+            await pump();
+            expect(hook.mock.calls.map(([text]) => text)).toEqual(["root", "old"]);
+            expect(tx.answers).toEqual([]);
+            parent.resolve("root answer");
+            await pump();
+            hooks.editoutput.delete(hook);
+            tx.answers.length = 0;
+        }
     });
 
     it("keeps a cancelled callback outstanding until its hook settles (Stop in one chat while its hook runs): no root of another job runs meanwhile, and once the hook settles the tab reports the callback drained, after which that job's next root runs", async () => {

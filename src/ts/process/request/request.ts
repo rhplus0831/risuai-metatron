@@ -10,6 +10,7 @@ import {
     type PresetScope,
 } from "../../storage/settingsViews.svelte";
 import { plainClone, presetFieldValue } from "../../../../shared/presets.ts";
+import { applyReverseProxyOverride } from "../../../../shared/llm/reverseProxy.ts";
 import { credentialFor } from "../../model/credentials";
 import { language } from "../../../lang";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
@@ -612,6 +613,12 @@ export async function requestChatDataMain(
     targ.aiModel = resolved.modelId;
     targ.modelProfile = resolved.kind === "profile" ? plainClone(resolved.profile) : undefined;
     targ.modelInfo = safeStructuredClone(getModelInfo(targ.aiModel, scope, targ.modelProfile ?? null));
+    if (targ.aiModel === "reverse_proxy") {
+        applyReverseProxyOverride(targ.aiModel, targ.modelInfo, {
+            customProxyRequestModel: presetFieldValue(targ.modelProfile, "customProxyRequestModel") as string,
+            customAPIFormat: presetFieldValue(targ.modelProfile, "customAPIFormat") as LLMFormat,
+        });
+    }
 
     if (arg.blockPlugins && targ.modelInfo.id.startsWith("pluginmodel:::")) {
         return {

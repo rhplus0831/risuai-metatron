@@ -1007,7 +1007,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         group: PreparedChatGroup,
         changedOrders: Set<string>,
         jobToken: string | undefined,
-    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody; invalidated?: true } {
+    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody; invalidated?: true; duplicate?: true } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined, reason?: ChatConflict["reason"]): never => {
             throw new ChatChangeConflict({
@@ -1025,7 +1025,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             // refuse it now.
             const remembered = rememberedResult(group, row);
             if (remembered) {
-                return { result: remembered, applied: 0 };
+                return { result: remembered, applied: 0, duplicate: true };
             }
             if (group.retry && mayHaveForgotten(group, row)) {
                 // It may have landed before the oldest remembered group: refused, never applied twice.
@@ -1622,6 +1622,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             const results: ChatGroupResult[] = [];
             // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
             const patches = new Map<ChatGroupResult, ChatPatchBody>();
+            const duplicates = new Set<ChatGroupResult>();
             const changedOrders = new Set<string>();
             const invalidated: { characterId: string; id: string }[] = [];
             let applied = 0;
@@ -1630,6 +1631,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 try {
                     const outcome = applyGroup(group, changedOrders, jobToken);
                     results.push(outcome.result);
+                    if (outcome.duplicate) {
+                        duplicates.add(outcome.result);
+                    }
                     if (outcome.patch) {
                         patches.set(outcome.result, outcome.patch);
                     }
@@ -1689,7 +1693,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     });
                 }
             }
-            return { conflicts, results, orders: orderResults, applied, patches, invalidated };
+            return { conflicts, results, orders: orderResults, applied, patches, duplicates, invalidated };
         },
 
         /** The order rows the given reorders name, as they are before the batch writes anything. */

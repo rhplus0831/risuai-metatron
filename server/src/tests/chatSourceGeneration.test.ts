@@ -283,10 +283,14 @@ describe("commit boundaries inside one publishing scope", () => {
                 },
             }),
         ).toThrow("input failed");
-        // The nested commit advanced and notified; the enclosing scope published no change.
+        // The nested commit advanced, notified, and published its ref; the enclosing scope added nothing.
         expect(gen("k")).toBe(notices[0].sourceGeneration);
         expect(ids(notices)).toEqual(["k"]);
-        expect(events).toEqual([]);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+            type: "change",
+            changes: { resources: [], chats: [{ characterId: "c", id: "k", revision: rev("k") }], chatOrders: [] },
+        });
         expect(() =>
             store.applyChanges({
                 get chats() {
@@ -296,6 +300,11 @@ describe("commit boundaries inside one publishing scope", () => {
             }),
         ).toThrow(ResourceBatchConflictError);
         expect(store.get(characters, "d")).toBeNull();
+        expect(events).toHaveLength(2);
+        expect(events[1]).toMatchObject({
+            type: "change",
+            changes: { resources: [{ kind: "characters", id: "d", revision: null }] },
+        });
         expect(ids(notices)).toEqual(["k", "x"]);
         expect(gens()).toEqual([notices[0].sourceGeneration, before[1], before[2], notices[1].sourceGeneration]);
         store.applyChanges({
@@ -310,7 +319,7 @@ describe("commit boundaries inside one publishing scope", () => {
         expect(new Set(issued).size).toBe(4);
         expect(gen("k")).toBe(issued[3]);
         expect(gens().slice(1)).toEqual([before[1], before[2], issued[1]]);
-        expect(events).toHaveLength(1);
+        expect(events).toHaveLength(3);
     });
 
     it("`committed` already reads the new generation; a throwing hook keeps the advance and notifies once (`CommittedWriteError`)", () => {
@@ -347,7 +356,7 @@ describe("commit boundaries inside one publishing scope", () => {
 });
 
 describe("notice delivery", () => {
-    it("waits for the outer publication: a feed listener's own write is published to every listener first, then the notices arrive in commit order", () => {
+    it("waits for the outer publication: a feed listener's own write is published after every listener saw the outer one, then the notices arrive in commit order", () => {
         const { store, feed, notices, log, rev, write } = setup();
         let wrote = false;
         feed!.subscribe((event) => {
@@ -365,10 +374,10 @@ describe("notice delivery", () => {
         expect(log).toEqual([
             "feed:k",
             "feed-2:k",
+            "feed-3:k",
             "feed:k2",
             "feed-2:k2",
             "feed-3:k2",
-            "feed-3:k",
             "notice:k",
             "notice:k2",
         ]);

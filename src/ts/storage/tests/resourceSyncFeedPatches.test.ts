@@ -382,6 +382,60 @@ describe("the feed's generation locks", () => {
     const locked = (b: Booted, id = "b") => b.chat.isMessageLocked(refK, id);
     const setText = (op: "setText", id: string, text: string): ChatOp => ({ op, id, text });
 
+    it.each(["feed", "this tab"])(
+        "protects character membership during a %s job and defers recovery only for this tab's stream",
+        async (owner) => {
+            const b = await boot();
+            const characters = await import("../characterStore.svelte");
+            jobLock(b);
+            jobWrite(b, [setText("setText", "b", "streamed")], [lockOf("b", "g", 1)]);
+            if (owner === "this tab") {
+                b.chat.applyServerGeneration(refK, {
+                    jobId: "J",
+                    messageId: "b",
+                    generationId: "g",
+                    seq: 1,
+                    text: "streamed",
+                });
+            }
+            expect(b.chat.isCharacterGenerating("c")).toBe(true);
+            expect(b.chat.isCharacterGenerating("d")).toBe(false);
+            expect(() => characters.removeCharacter("c")).toThrow(/generating/);
+            expect(() => characters.replaceCharacterAt(0, { chaId: "replacement", name: "Replacement" })).toThrow(
+                /generating/,
+            );
+            expect(characters.removeCharacters(["c"])).toEqual([]);
+            expect(characters.characterList().map((character) => character.chaId)).toEqual(["c", "d"]);
+
+            // The missed deletion makes the sibling edit conflict and forces a recovery list read.
+            b.live.paused = true;
+            b.fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "j",
+                    baseRevision: b.fake.chat("c", "j")!.revision,
+                    ops: [{ op: "delete" }],
+                },
+            ]);
+            b.chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "queued on the deleted sibling" });
+            expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"] });
+            const recoveryReads = () => reads(b).filter((body) => body.chatSummaryCollections?.includes("c"));
+            expect(recoveryReads()).toHaveLength(owner === "feed" ? 1 : 0);
+            expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(owner === "feed" ? ["k"] : ["k", "j"]);
+            expect(b.chat.isCharacterGenerating("c")).toBe(true);
+
+            b.chat.endServerJob("J");
+            // Ending this tab's follow does not release the independent feed lock.
+            expect(b.chat.isCharacterGenerating("c")).toBe(true);
+            expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+            expect(recoveryReads()).toHaveLength(1);
+            expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["k"]);
+            b.live.paused = false;
+            jobEnd(b);
+            expect(b.chat.isCharacterGenerating("c")).toBe(false);
+        },
+    );
+
     it("locks the reply from the job's first write's frame, keeps taking its checkpoint patches, hands it to another generation, and releases it on the final write's frame", async () => {
         const b = await boot();
         const scope = b.sync.beginMutationScope();
@@ -391,8 +445,9 @@ describe("the feed's generation locks", () => {
         expect(b.chat.isMessageLocked(refK, "a")).toBe(false);
         expect(b.chat.isChatGenerating(refK)).toBe(true);
         expect(b.chat.lockedChatKeys()).toEqual(new Set(["c\u0000k"]));
-        // A feed lock is a message and chat lock, not a character one (the save loop's character hydration goes on).
-        expect(b.chat.isCharacterGenerating("c")).toBe(false);
+        // A feed lock also guards the character's membership (the save loop's character hydration
+        // still goes on: it waits only for this tab's own streams).
+        expect(b.chat.isCharacterGenerating("c")).toBe(true);
         expect(() => b.chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
         expect(() => b.chat.removeMessages(refK, ["b"])).toThrow(/being generated/);
         // The checkpoint's feed patch applied at once: the observer sees progress, with no read.

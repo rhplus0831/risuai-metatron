@@ -51,6 +51,46 @@ const chatCreate = (id: string, messages: { chatId: string; data: string; role: 
 const empty = { resources: [], chats: [], chatOrders: [] };
 
 describe("the change feed", () => {
+    it("delivers reentrant publications to every listener in publish order even when a listener throws", () => {
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        const feed = createChangeFeed();
+        const seen: string[] = [];
+        const failure = new Error("listener failed");
+        feed.subscribe((event) => {
+            seen.push(`a:${event.epoch}`);
+            if (event.epoch === "e1") {
+                feed.publish({ type: "epoch", epoch: "e2" });
+                feed.publish({ type: "epoch", epoch: "e3" });
+            }
+        });
+        feed.subscribe((event) => {
+            seen.push(`throwing:${event.epoch}`);
+            throw failure;
+        });
+        feed.subscribe((event) => {
+            seen.push(`b:${event.epoch}`);
+            if (event.epoch === "e1") feed.publish({ type: "epoch", epoch: "e4" });
+        });
+
+        expect(() => feed.publish({ type: "epoch", epoch: "e1" })).not.toThrow();
+        expect(seen).toEqual([
+            "a:e1",
+            "throwing:e1",
+            "b:e1",
+            "a:e2",
+            "throwing:e2",
+            "b:e2",
+            "a:e3",
+            "throwing:e3",
+            "b:e3",
+            "a:e4",
+            "throwing:e4",
+            "b:e4",
+        ]);
+        expect(logged).toHaveBeenCalledTimes(4);
+        for (const call of logged.mock.calls) expect(call).toContain(failure);
+    });
+
     it("delivers to every listener, removes one on unsubscribe, and keeps going when a listener throws", () => {
         vi.spyOn(console, "error").mockImplementation(() => {});
         const feed = createChangeFeed();
@@ -69,6 +109,37 @@ describe("the change feed", () => {
 });
 
 describe("the store publishes committed changes", () => {
+    it("publishes an independently committed input write when the outer batch throws or rolls back", () => {
+        for (const failure of ["input throw", "transaction rollback"] as const) {
+            const { store, events } = setup();
+            const before = store.get(ui, "main")!;
+            let nestedRevision: string | null = null;
+            expect(() =>
+                store.applyChanges({
+                    get ops() {
+                        nestedRevision = store.put(modules, "main", [{ name: "nested" }], null).revision;
+                        if (failure === "input throw") throw new Error("input failed");
+                        return [
+                            { kind: ui, id: "main", baseRevision: before.revision, data: { language: "de" } },
+                            { kind: modules, id: "main", baseRevision: null, data: [] },
+                        ];
+                    },
+                }),
+            ).toThrow(failure === "input throw" ? "input failed" : ResourceBatchConflictError);
+
+            expect(nestedRevision).not.toBeNull();
+            expect(store.get(modules, "main")).toEqual({ revision: nestedRevision, data: [{ name: "nested" }] });
+            expect(store.get(ui, "main")).toEqual(before);
+            expect(events).toEqual([
+                {
+                    type: "change",
+                    epoch: store.epoch(),
+                    changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: nestedRevision }] },
+                },
+            ]);
+        }
+    });
+
     it("publishes a put's create and update with their revisions, after the commit (a listener reads and writes the committed state)", () => {
         const { feed, store, events } = setup();
         const observed: (string | null)[] = [];

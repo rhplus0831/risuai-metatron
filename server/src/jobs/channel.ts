@@ -135,6 +135,7 @@ const MAX_EARLY_NOTICE_BYTES = 1024 * 1024;
 type Draining = { channel: ChannelState; until: number; timer: ReturnType<typeof setTimeout> | null };
 
 type ClientLane = { queue: Request[]; stack: Request[]; draining: Map<string, Draining> };
+type OrderedSend = { order: number; send: () => void };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -281,6 +282,7 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
 export function createChannelHub(options: { now?: () => number } = {}) {
     const now = options.now ?? Date.now;
     const lanes = new Map<string, ClientLane>();
+    const attachSends = new Map<string, OrderedSend[]>();
 
     function laneOf(clientId: string): ClientLane {
         let lane = lanes.get(clientId);
@@ -440,17 +442,28 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         }
         request.dispatched = true;
         lane.stack.push(request);
-        try {
-            // Without an owner socket nothing was delivered: the attach sends it as a first delivery.
-            request.delivered = request.channel.transport.send(build(false));
-        } catch (error) {
-            settle(
-                request,
-                request.kind === "callback"
-                    ? { outcome: "aborted", error: `The callback could not be sent: ${String(error)}` }
-                    : { outcome: "aborted", error: `The question could not be sent: ${String(error)}` },
-                false,
-            );
+        const send = () => {
+            if (request.settled || expireIfDue(request)) {
+                return;
+            }
+            try {
+                // Without an owner socket nothing was delivered: the attach sends it as a first delivery.
+                request.delivered = request.channel.transport.send(build(false));
+            } catch (error) {
+                settle(
+                    request,
+                    request.kind === "callback"
+                        ? { outcome: "aborted", error: `The callback could not be sent: ${String(error)}` }
+                        : { outcome: "aborted", error: `The question could not be sent: ${String(error)}` },
+                    false,
+                );
+            }
+        };
+        const sends = attachSends.get(request.channel.transport.clientId);
+        if (sends) {
+            sends.push({ order: request.order, send });
+        } else {
+            send();
         }
     }
 
@@ -691,39 +704,53 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     const early = state.early ?? [];
                     state.early = null;
                     state.earlyBytes = 0;
-                    // The first attach: the kept notices and the waiting requests in the order made.
-                    const sends: { order: number; send: () => void }[] = early.map(({ order, event }) => ({
-                        order,
-                        send: () => {
-                            transport.send(event);
-                        },
-                    }));
-                    // Only the requests outstanding now: one an expiry below promotes from the queue
-                    // is sent by its dispatch and must not be sent again here.
-                    const outstanding = [...state.requests].filter((request) => request.dispatched);
-                    for (const request of outstanding) {
-                        if (request.settled || expireIfDue(request)) {
-                            continue;
+                    const active = attachSends.get(transport.clientId);
+                    const sends = active ?? [];
+                    attachSends.set(transport.clientId, sends);
+                    try {
+                        // Promotions during collection or delivery join the kept notices and replays.
+                        sends.push(
+                            ...early.map(({ order, event }) => ({
+                                order,
+                                send: () => {
+                                    transport.send(event);
+                                },
+                            })),
+                        );
+                        // A promoted request is collected by dispatch, so snapshot before any expiry.
+                        const outstanding = [...state.requests].filter((request) => request.dispatched);
+                        for (const request of outstanding) {
+                            if (request.settled || expireIfDue(request)) {
+                                continue;
+                            }
+                            const build = request.build!;
+                            sends.push({
+                                order: request.order,
+                                send: () => {
+                                    // An earlier send may have settled it, or used up its time.
+                                    if (request.settled || expireIfDue(request)) {
+                                        return;
+                                    }
+                                    const sent = transport.send(build(request.delivered));
+                                    request.delivered ||= sent;
+                                },
+                            });
                         }
-                        const build = request.build!;
-                        sends.push({
-                            order: request.order,
-                            send: () => {
-                                // An earlier send of this batch may have settled it, or used up its time.
-                                if (request.settled || expireIfDue(request)) {
-                                    return;
-                                }
-                                const sent = transport.send(build(request.delivered));
-                                request.delivered ||= sent;
-                            },
-                        });
-                    }
-                    sends.sort((a, b) => a.order - b.order);
-                    for (const entry of sends) {
-                        try {
-                            entry.send();
-                        } catch (error) {
-                            console.error("[Channel]", error);
+                        if (active) {
+                            return;
+                        }
+                        while (sends.length > 0) {
+                            sends.sort((a, b) => a.order - b.order);
+                            const entry = sends.shift()!;
+                            try {
+                                entry.send();
+                            } catch (error) {
+                                console.error("[Channel]", error);
+                            }
+                        }
+                    } finally {
+                        if (!active) {
+                            attachSends.delete(transport.clientId);
                         }
                     }
                 },

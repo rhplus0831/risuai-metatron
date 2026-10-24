@@ -228,6 +228,20 @@ Resources and chats:
   floor, and invalidates retained memory-task input. Automatic checkpoints run only
   after a job ends with a final `done`, when the chat policy's user-turn threshold
   is met.
+- Group ids: a chat group whose id its chat incarnation remembers returns its
+  earlier result without applying again or publishing a chat feed ref. Duplicate
+  tracking stays internal; the HTTP response shape is unchanged. A newly applied
+  group publishes its chat ref as usual.
+- Change feed events reach listeners in publish order, including events a listener
+  publishes while handling another event. Listener failures are logged and the
+  feed continues draining. Committed nested writes still publish their refs when
+  an enclosing write fails during input evaluation.
+
+Generation channels:
+
+- On attach, buffered notices, outstanding request replays, and first deliveries
+  of requests promoted by an expiry are sent in their original request/notice
+  order. A promoted request joins that ordered batch and is sent once.
 
 Snapshots and backups:
 

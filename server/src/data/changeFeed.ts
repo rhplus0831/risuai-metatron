@@ -17,12 +17,15 @@ export type ChangeFeedListener = (event: ChangeFeedEvent) => void;
 export type ChangeFeed = ReturnType<typeof createChangeFeed>;
 
 /**
- * The listeners of committed changes. Listeners only: there is no buffer and no replay, so a client
- * that was disconnected reconciles from the revision listing. A listener that throws is logged and
- * never fails the write that published (the write has committed already).
+ * The listeners of committed changes. Publications during a dispatch wait until every listener has
+ * received the current event. There is no replay, so a client that was disconnected reconciles from
+ * the revision listing. A listener that throws is logged and never fails the write that published
+ * (the write has committed already).
  */
 export function createChangeFeed() {
     const listeners = new Set<ChangeFeedListener>();
+    const pending: ChangeFeedEvent[] = [];
+    let dispatching = false;
     return {
         /** Adds a listener; returns its removal. */
         subscribe(listener: ChangeFeedListener): () => void {
@@ -33,12 +36,25 @@ export function createChangeFeed() {
         },
 
         publish(event: ChangeFeedEvent) {
-            for (const listener of [...listeners]) {
-                try {
-                    listener(event);
-                } catch (error) {
-                    console.error("[ChangeFeed]", error);
+            pending.push(event);
+            if (dispatching) {
+                return;
+            }
+            dispatching = true;
+            try {
+                for (let index = 0; index < pending.length; index += 1) {
+                    const next = pending[index];
+                    for (const listener of [...listeners]) {
+                        try {
+                            listener(next);
+                        } catch (error) {
+                            console.error("[ChangeFeed]", error);
+                        }
+                    }
                 }
+            } finally {
+                pending.length = 0;
+                dispatching = false;
             }
         },
     };

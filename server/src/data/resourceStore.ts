@@ -602,7 +602,7 @@ export function createResourceStore(options: {
     const pendingInvalidations: ChatInvalidation[] = [];
     let deliveringInvalidations = false;
     /**
-     * Outermost publishing scopes still running, their feed publication included (a feed listener's
+     * Publishing scopes still running, their feed publication included (a feed listener's
      * own write opens another): notices wait until every one has published.
      */
     let publishingDepth = 0;
@@ -676,17 +676,39 @@ export function createResourceStore(options: {
     }
 
     /**
-     * The refs the outermost write (`put`, `delete`, `applyChanges`, `transaction`) changed so far,
-     * keyed so a record written twice keeps its final revision. Dropped when the write throws (it
-     * rolled back); published once after its commit. Null outside a write.
+     * The current write's refs and the independently committed nested writes it must preserve if it
+     * throws. Writes inside an open transaction share its scope. Null outside a write.
      */
-    let changes: ChangeAccumulator | null = null;
+    let publishingScope: { changes: ChangeAccumulator; committed: ChangeAccumulator[] } | null = null;
+
+    function changeAccumulator(): ChangeAccumulator {
+        return { resources: new Map(), chats: new Map(), chatOrders: new Map(), streaming: new Map() };
+    }
+
+    /** Coalesces refs in write order; a second write loses the patch of an unannounced base. */
+    function mergeChanges(target: ChangeAccumulator, source: ChangeAccumulator) {
+        for (const [key, entry] of source.resources) {
+            const { kind, id, revision } = entry;
+            target.resources.set(key, target.resources.has(key) ? { kind, id, revision } : entry);
+        }
+        for (const [key, entry] of source.chats) {
+            const { characterId, id, revision } = entry;
+            target.chats.set(key, target.chats.has(key) ? { characterId, id, revision } : entry);
+        }
+        for (const [key, entry] of source.chatOrders) {
+            target.chatOrders.set(key, entry);
+        }
+        for (const [key, entry] of source.streaming) {
+            target.streaming.set(key, entry);
+        }
+    }
 
     /**
      * `patch`: the write was a field patch whose changes the feed may carry. A record already written
      * in this scope loses it: its base would be a revision no client was told about.
      */
     function recordResource(kind: string, id: string, revision: string | null, patch?: RecordPatch) {
+        const changes = publishingScope?.changes;
         const key = `${kind}\u0000${id}`;
         changes?.resources.set(
             key,
@@ -695,6 +717,7 @@ export function createResourceStore(options: {
     }
 
     function recordChat(characterId: string, id: string, revision: string | null, patch?: ChatPatchBody) {
+        const changes = publishingScope?.changes;
         const key = `${characterId}\u0000${id}`;
         changes?.chats.set(
             key,
@@ -703,11 +726,11 @@ export function createResourceStore(options: {
     }
 
     function recordStreaming(entry: ChatStreaming) {
-        changes?.streaming.set(`${entry.characterId}\u0000${entry.id}`, entry);
+        publishingScope?.changes.streaming.set(`${entry.characterId}\u0000${entry.id}`, entry);
     }
 
     function recordOrder(characterId: string, revision: string | null) {
-        changes?.chatOrders.set(characterId, { characterId, revision });
+        publishingScope?.changes.chatOrders.set(characterId, { characterId, revision });
     }
 
     /** A character's chats and order deleted with it, recorded as deletions and invalidations. */
@@ -722,55 +745,60 @@ export function createResourceStore(options: {
     }
 
     /**
-     * Runs a write as the outermost publishing scope (or inside the current one) and publishes what
-     * it changed after it returns: by then its transaction has committed and `transactionState` is
-     * cleared. A throw publishes nothing. The invalidation notices of every transaction that
-     * committed inside it are delivered after the change is published (after the outermost scope
-     * running, when a feed listener's write opened this one), and also when it throws: a write
-     * nested in its input evaluation may have committed before the throw, and its notices are
-     * delivered although this scope publishes no change.
+     * Runs a write and publishes its refs only after commit, with `transactionState` cleared. Writes
+     * inside an open transaction share its scope. An independently committed write nested in input
+     * evaluation merges into the enclosing scope on success; if that scope throws, only its nested
+     * commits' refs are published. The invalidation notices of every committed transaction are
+     * delivered after publication, once all publishing scopes (including a feed listener's writes)
+     * have ended, even when an enclosing write throws.
      */
     function publishing<T>(fn: () => T): T {
-        if (changes) {
+        if (publishingScope && db.isTransaction) {
             return fn();
         }
-        const scope: ChangeAccumulator = {
-            resources: new Map(),
-            chats: new Map(),
-            chatOrders: new Map(),
-            streaming: new Map(),
-        };
-        changes = scope;
+        const parent = publishingScope;
+        const scope = { changes: changeAccumulator(), committed: [] as ChangeAccumulator[] };
+        publishingScope = scope;
         publishingDepth += 1;
+        let succeeded = false;
         try {
-            let result: T;
-            try {
-                result = fn();
-            } finally {
-                changes = null;
-            }
-            if (
-                feed &&
-                (scope.resources.size > 0 ||
-                    scope.chats.size > 0 ||
-                    scope.chatOrders.size > 0 ||
-                    scope.streaming.size > 0)
-            ) {
-                feed.publish({
-                    type: "change",
-                    epoch,
-                    changes: {
-                        resources: [...scope.resources.values()],
-                        chats: [...scope.chats.values()],
-                        chatOrders: [...scope.chatOrders.values()],
-                    },
-                    ...(scope.streaming.size > 0 ? { streaming: [...scope.streaming.values()] } : {}),
-                });
-            }
+            const result = fn();
+            succeeded = true;
             return result;
         } finally {
-            publishingDepth -= 1;
-            deliverInvalidations();
+            publishingScope = parent;
+            try {
+                const changes = succeeded ? scope.changes : changeAccumulator();
+                if (!succeeded) {
+                    for (const committed of scope.committed) {
+                        mergeChanges(changes, committed);
+                    }
+                }
+                if (parent) {
+                    mergeChanges(parent.changes, changes);
+                    parent.committed.push(changes);
+                } else if (
+                    feed &&
+                    (changes.resources.size > 0 ||
+                        changes.chats.size > 0 ||
+                        changes.chatOrders.size > 0 ||
+                        changes.streaming.size > 0)
+                ) {
+                    feed.publish({
+                        type: "change",
+                        epoch,
+                        changes: {
+                            resources: [...changes.resources.values()],
+                            chats: [...changes.chats.values()],
+                            chatOrders: [...changes.chatOrders.values()],
+                        },
+                        ...(changes.streaming.size > 0 ? { streaming: [...changes.streaming.values()] } : {}),
+                    });
+                }
+            } finally {
+                publishingDepth -= 1;
+                deliverInvalidations();
+            }
         }
     }
 
@@ -1184,7 +1212,9 @@ export function createResourceStore(options: {
                 recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
             for (const chat of chatOutcome.results) {
-                recordChat(chat.characterId, chat.id, chat.revision, chatOutcome.patches.get(chat));
+                if (!chatOutcome.duplicates.has(chat)) {
+                    recordChat(chat.characterId, chat.id, chat.revision, chatOutcome.patches.get(chat));
+                }
             }
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);

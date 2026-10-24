@@ -10,12 +10,14 @@ vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
 vi.mock("src/ts/storage/llmSecrets.svelte", () => ({ isSecretSet: () => true }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
-import { getModelInfo, LLMFlags, LLMModels, registerModelDynamic } from "../modellist";
+import { getModelInfo, getModelList, LLMFlags, LLMFormat, LLMModels, registerModelDynamic } from "../modellist";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { selectModelPreset, selection } from "src/ts/storage/selection.svelte";
 import { trackedRecord } from "src/ts/storage/records.svelte";
 import { PresetTargetGoneError } from "src/ts/storage/settingsViews.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
+
+import { customV3ProviderMetaStore } from "src/ts/plugins/apiV3/v3.svelte";
 
 const CATALOGUE_FLAGS = [LLMFlags.hasFullSystemPrompt, LLMFlags.hasStreaming];
 
@@ -93,6 +95,7 @@ import { dynamicModelOf, resolveModelInfo } from "../../../../shared/llm/models.
 const catalogueLength = LLMModels.length;
 afterEach(() => {
     LLMModels.splice(catalogueLength);
+    customV3ProviderMetaStore.length = 0;
     vi.restoreAllMocks();
 });
 
@@ -164,4 +167,22 @@ describe("dynamic registry discovery", () => {
             expect(LLMModels.filter((model) => model.id === id)).toHaveLength(1);
         },
     );
+});
+
+describe("getModelList", () => {
+    it("returns a fresh catalogue plus plugin models without changing the catalogue or accumulating duplicates", () => {
+        const catalogue = [...LLMModels];
+        const plugin = { ...catalogue[0], id: "pluginmodel:::test-provider", format: LLMFormat.Plugin };
+        customV3ProviderMetaStore.push(plugin);
+
+        const first = getModelList();
+        const second = getModelList({ groupedByProvider: false });
+
+        expect(LLMModels).toHaveLength(catalogue.length);
+        expect(first).not.toBe(LLMModels);
+        expect(second).not.toBe(first);
+        expect(first).toEqual([...catalogue, plugin]);
+        expect(second).toEqual([...catalogue, plugin]);
+        expect(LLMModels).toEqual(catalogue);
+    });
 });

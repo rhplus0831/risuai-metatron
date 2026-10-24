@@ -60,6 +60,14 @@ vi.mock("localforage", () => ({
     },
 }));
 
+vi.mock("src/ts/process/request/request", async () =>
+    (await import("src/ts/process/request/tests/requestMock")).createRequestMock(),
+);
+
+import { requestChatData } from "src/ts/process/request/request";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { trackedRecord } from "src/ts/storage/records.svelte";
+
 const A1 = { chaId: "a", chatId: "a1" };
 const A2 = { chaId: "a", chatId: "a2" };
 const B1 = { chaId: "b", chatId: "b1" };
@@ -316,5 +324,48 @@ describe("callMCPTool and internal:risuai", () => {
         expect(graphOf(G1)?.map((e: { name: string }) => e.name)).toContain("Group");
         expect(graphOf(A1)).toBeUndefined();
         expect(graphOf(B1)).toBeUndefined();
+    });
+});
+
+describe("callMCPTool and internal:aiaccess", () => {
+    it("runs the nested LLM for the calling chat and captured presets after the selection changes", async () => {
+        trackedRecord<import("../../../../../shared/modules").RisuModule[]>("modules")!.push({
+            id: "ai",
+            name: "AI access",
+            description: "Nested LLM access",
+            lorebook: [],
+            mcp: { url: "internal:aiaccess" },
+        });
+        settings.enabledModules.push("ai");
+        const context = { ...capturePluginContext(A1)!, presetId: "pc", modelPresetId: "pc" };
+        const messages = [{ role: "user", content: "a nested request" }];
+        vi.mocked(requestChatData).mockResolvedValue({ type: "success", result: "nested answer" });
+        try {
+            selectCharacter("a");
+            selectChat("a", "a1");
+            const pending = mcp.callMCPTool("runLLM", { model: "lite", messages }, A1, context);
+            selectCharacter("b");
+            selectChat("b", "b1");
+            selectPreset("pb");
+            selectModelPreset("pb");
+
+            expect(JSON.parse(text(await pending))).toEqual({ success: true, message: "nested answer" });
+            expect(requestChatData).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    formated: messages,
+                    bias: {},
+                    chatRef: A1,
+                    pluginContext: expect.objectContaining({
+                        chatRef: A1,
+                        presetId: "pc",
+                        modelPresetId: "pc",
+                        personaId: context.personaId,
+                    }),
+                }),
+                "otherAx",
+            );
+        } finally {
+            vi.mocked(requestChatData).mockReset();
+        }
     });
 });

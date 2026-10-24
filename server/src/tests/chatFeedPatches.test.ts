@@ -45,6 +45,50 @@ function setup() {
 }
 
 describe("by-id chat feed patches", () => {
+    it("omits remembered groups from the feed while returning their earlier result and publishing newly applied groups", () => {
+        const b = setup();
+        const baseRevision = b.read().revision;
+        const group = {
+            characterId: "c",
+            chatId: "k",
+            baseRevision,
+            groupId: "g1",
+            ops: [{ op: "setText", id: "a", text: "mine" }] satisfies ChatOp[],
+        };
+        b.events.length = 0;
+        const first = b.store.applyChanges({ chats: [group] }).chats[0];
+        expect(b.events).toHaveLength(1);
+        expect(b.notice()).toMatchObject({ characterId: "c", id: "k", revision: first.revision });
+        b.write([{ op: "setText", id: "a", text: "theirs" }]);
+        const current = b.read();
+        b.events.length = 0;
+
+        for (const retry of [false, true]) {
+            const replay = b.store.applyChanges({ chats: [{ ...group, ...(retry ? { retry: true as const } : {}) }] });
+            expect(replay.chats).toEqual([first]);
+            expect(b.events).toEqual([]);
+            expect(b.read()).toEqual(current);
+        }
+
+        // A duplicate alongside a different chat's new group still leaves that new ref on the feed.
+        const mixed = b.store.applyChanges({
+            chats: [
+                { ...group, retry: true },
+                {
+                    characterId: "c",
+                    chatId: "j",
+                    baseRevision: null,
+                    groupId: "g2",
+                    ops: [{ op: "create", chat: { ...initial, id: "j" } }],
+                },
+            ],
+        });
+        expect(mixed.chats[0]).toEqual(first);
+        expect(b.events).toHaveLength(1);
+        expect(b.events[0].changes.chats).toEqual([{ characterId: "c", id: "j", revision: mixed.chats[1].revision }]);
+        expect(b.read()).toEqual(current);
+    });
+
     it("publishes final stored rows in order, anchors, removals and full metadata from the actual stored base", () => {
         const b = setup();
         const requestedBase = b.read().revision;

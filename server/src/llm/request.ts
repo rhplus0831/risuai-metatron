@@ -9,6 +9,7 @@ import type { ModelProfile } from "../../../shared/database.ts";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
+import { applyReverseProxyOverride } from "../../../shared/llm/reverseProxy.ts";
 import { forwardProfileRoots, maxContextOverrideOf } from "../../../shared/sections.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type {
@@ -414,10 +415,7 @@ export function resolveRequestModel(
     const aiModel = resolved.modelId;
     // A copy: adapters change its format, internal id, or flags, including a captured plugin model's.
     const modelInfo = structuredClone(ctx.getModelInfo(aiModel, db));
-    if (aiModel === "reverse_proxy") {
-        modelInfo.internalID = db.customProxyRequestModel;
-        modelInfo.format = db.customAPIFormat;
-    }
+    applyReverseProxyOverride(aiModel, modelInfo, db);
     return { kind: "resolved", db, profile, aiModel, modelInfo };
 }
 

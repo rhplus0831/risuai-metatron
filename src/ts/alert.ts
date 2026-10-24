@@ -299,18 +299,22 @@ export function doingAlert() {
     return alertStoreImported.hasDialogs() || get(alertStoreImported).type === "progress";
 }
 
-export function alertToast(msg: string) {
-    alertStoreImported.set({
+export function alertToast(msg: string, onInstall?: (status: alertData) => void) {
+    const data: alertData = {
         type: "toast",
         msg: msg,
-    });
+    };
+    onInstall?.(data);
+    alertStoreImported.set(data);
 }
 
-export function alertWait(msg: string) {
-    alertStoreImported.set({
+export function alertWait(msg: string, onInstall?: (status: alertData) => void) {
+    const data: alertData = {
         type: "wait",
         msg: msg,
-    });
+    };
+    onInstall?.(data);
+    alertStoreImported.set(data);
 }
 
 /** Clears the status (a `wait`, `progress` or toast); a dialog shown or queued stays. */

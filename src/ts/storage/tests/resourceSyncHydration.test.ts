@@ -2431,7 +2431,7 @@ describe("a recovery's list read that finds its character gone", () => {
     const readCount = (fake: StoreBackedServer) =>
         fake.requests.filter((request) => request.path === "/api/resources/read").length;
 
-    it("keeps a character a job hydration installed while the read was pending (another tab created it again under its id), and takes its list at the next read", async () => {
+    it("keeps a character a job hydration installed while the read was pending (another tab created it again under its id), and takes its list at the next read of the same flush", async () => {
         const { fake, sync, character, read, flushing } = await startRecovery();
         fake.store.applyChanges({
             ops: [{ kind: fake.kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "Again" } }],
@@ -2442,13 +2442,9 @@ describe("a recovery's list read that finds its character gone", () => {
         );
         read.release();
         // The null answer is older than the held revision: nothing is removed, and `c` stays listed.
-        expect(await flushing).toEqual({ discarded: [] });
-        expect(character()?.name).toBe("Again");
-        expect(character()!.chats.map((entry: Chat) => entry.id)).toEqual(["j", "k"]);
-        expect(readCount(fake)).toBe(1);
-
-        // The next cycle reads the list again and takes the server's (the old chats are gone there).
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        // The conflicting reorder still waits for a list read, so the same flush reads the list again
+        // and takes the server's (the old chats are gone there); its sent order differs: reported.
+        expect(await flushing).toEqual({ discarded: ["chats/c"] });
         expect(readCount(fake)).toBe(2);
         expect(character()?.name).toBe("Again");
         const ids = character()!.chats.map((entry: Chat) => entry.id);
@@ -2456,11 +2452,11 @@ describe("a recovery's list read that finds its character gone", () => {
         expect(ids).not.toContain("k");
         expect(fake.order("c")!.ids).toEqual(ids);
         expect(alerts.normal.mock.calls).toEqual([["reloaded"]]);
-        await sync.flushResources();
+        expect(await sync.flushResources()).toEqual({ discarded: [] });
         expect(readCount(fake)).toBe(2);
     });
 
-    it("keeps a same-id recreation made here while the read was pending; the next read, on the new lifetime, decides", async () => {
+    it("does not apply an older answer over a same-id recreation made here while the read was pending; the next read, on the new lifetime, decides", async () => {
         const { fake, sync, character, characters, read, flushing } = await startRecovery();
         const characterStore: CharacterStore = await import("../characterStore.svelte");
         expect(characterStore.removeCharacter("c")).toBe(true);
@@ -2470,17 +2466,14 @@ describe("a recovery's list read that finds its character gone", () => {
             chats: [{ id: "n", name: "N", note: "", localLore: [], message: [m("n1", "New")] }],
         });
         read.release();
-        // The held revision did not move, the chats' lifetime did: the answer is not applied.
-        expect(await flushing).toEqual({ discarded: [] });
-        expect(character()?.name).toBe("Replacement");
-        expect(character()!.chats.map((entry: Chat) => entry.id)).toEqual(["n"]);
-        expect(alerts.normal.mock.calls).toEqual([["reloaded"]]);
-
-        // Read again with nothing moved, the server's deletion removes the replacement with the notice.
-        await sync.flushResources();
+        // The held revision did not move, the chats' lifetime did: that answer is not applied. The
+        // conflicting reorder still waits for a list read, so the same flush reads again on the new
+        // lifetime, with nothing moved: the server's deletion removes the replacement and reports it.
+        expect(await flushing).toEqual({ discarded: ["characters/c", "chats/c/n", "chats/c"] });
         expect(readCount(fake)).toBe(2);
+        expect(character()).toBeUndefined();
         expect(characters().map((entry: any) => entry.chaId)).toEqual([]);
         expect(fake.record("characters", "c")).toBeNull();
-        expect(alerts.normal.mock.calls).toEqual([["reloaded"], ["reloaded"]]);
+        expect(alerts.normal.mock.calls).toEqual([["reloaded"]]);
     });
 });

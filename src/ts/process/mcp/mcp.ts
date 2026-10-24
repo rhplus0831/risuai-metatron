@@ -286,9 +286,9 @@ export async function getMCPMeta(additionalMCPs?: string[]) {
 }
 
 /**
- * An internal client whose tools act on a chat (`internal:graphmem`, `internal:risuai`): a call that
+ * An internal client whose tools act on a chat (`internal:graphmem`, `internal:risuai`, `internal:aiaccess`): a call that
  * names its chat runs on that chat (null: none), never on the selection. `scope` is the request's
- * captured prompt and model preset, for a variable's preset default.
+ * captured prompt and model preset, for variable defaults and nested requests.
  */
 type ChatToolClient = {
     callToolForChat(

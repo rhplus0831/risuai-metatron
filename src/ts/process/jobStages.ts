@@ -4,7 +4,7 @@ import type { ChatRef } from "../storage/chatStore.svelte";
 
 /**
  * The latest presentation stage per followed job, set by `applyGenerationEvent` and removed by
- * `followJobToEnd`. Chat keys use the `chatStatusKey` format (`${chaId}\u0000${chatId}`). Like
+ * `releaseGenerationJob`. Chat keys use the `chatStatusKey` format (`${chaId}\u0000${chatId}`). Like
  * `localSends.ts`, a separate module with no runes and type-only imports keeps hand-written mocks
  * of `stores.svelte` and `index.svelte` from reaching it.
  */

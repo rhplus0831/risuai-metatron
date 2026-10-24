@@ -19,6 +19,7 @@ import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 import { type CallbackResult, MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
 import { failureOf } from "../jobs/generationJobs.ts";
+import type { JobChannel } from "../jobs/channel.ts";
 import {
     createLlmRequests,
     JobRequestError,
@@ -1744,6 +1745,58 @@ describe("the child interceptor of a job callback", () => {
         return { registry, calls, payloads, ended: () => ended, settle: () => settled?.() };
     }
     const channelCall = { jobId: "job", callbackId: "cb" };
+
+    it("cancels a pending child body interceptor when the tab withdraws its auxiliary request", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        let enter!: () => void;
+        const entered = new Promise<void>((resolve) => {
+            enter = resolve;
+        });
+        let settleChild!: (result: CallbackResult) => void;
+        const child = new Promise<CallbackResult>((resolve) => {
+            settleChild = resolve;
+        });
+        const controller = new AbortController();
+        const callbacks: { name: string; parentId?: string }[] = [];
+        let childPending = true;
+        const channel: JobChannel = {
+            notice() {},
+            ask: async () => ({ outcome: "aborted" }),
+            callback: (name, _payload, options) => {
+                callbacks.push({ name, parentId: options?.parentId });
+                options?.signal?.addEventListener(
+                    "abort",
+                    () => {
+                        childPending = false;
+                        settleChild({ outcome: "aborted", error: "The request ended" });
+                    },
+                    { once: true },
+                );
+                enter();
+                return child;
+            },
+        };
+        const { registry, calls } = harness(makeRecords(), () => chat("done"), {
+            parentCallback: () => ({ channel, targets: { ...JOB_TARGETS }, unwatch() {}, endJob() {} }),
+        });
+        try {
+            const started = registry.start(body({}, { channelCall }), controller.signal);
+            if (!started.ok) throw new Error(`start refused: ${started.status}`);
+            const received = readAll(started.stream);
+            await entered;
+            expect(callbacks).toEqual([{ name: "bodyIntercepter", parentId: "cb" }]);
+            expect(childPending).toBe(true);
+            controller.abort();
+            expect(childPending).toBe(false);
+            expect(types(terminal(await received))).toEqual(["error"]);
+            expect(registry.liveIds()).toEqual([]);
+            expect(calls).toEqual([]);
+        } finally {
+            controller.abort();
+            settleChild({ outcome: "aborted", error: "test cleanup" });
+            await registry.dispose();
+        }
+    });
 
     it("skips interception for a request outside a job (recorded), and refuses a `channelCall` that is not running", async () => {
         const { registry, calls, payloads } = withParent({ outcome: "answered", value: null }, { registered: false });
