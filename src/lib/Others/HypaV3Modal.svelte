@@ -103,6 +103,7 @@
                 syncedHypaV3Text = text;
                 hypaV3Data = text === undefined ? emptyHypaV3Data() : JSON.parse(text);
                 bulkEditState.selectedSummaries = new Set();
+                closeTagManager();
             }
         });
     });
@@ -122,6 +123,8 @@
             if (fence !== null) {
                 alertError(fence);
                 hypaV3Data = JSON.parse(chatText);
+                bulkEditState.selectedSummaries = new Set();
+                closeTagManager();
                 return;
             }
             syncedHypaV3Text = text;
@@ -357,8 +360,31 @@
     }
 
     function handleOpenTagManager(summaryIndex: number) {
+        if (!hypaV3Data.summaries[summaryIndex]) return;
         tagManagerState.currentSummaryIndex = summaryIndex;
         tagManagerState.isOpen = true;
+    }
+
+    function closeTagManager() {
+        tagManagerState.isOpen = false;
+        tagManagerState.currentSummaryIndex = -1;
+        tagManagerState.editingTag = "";
+        tagManagerState.editingTagIndex = -1;
+    }
+
+    function deleteSummaries(target: SerializableSummary, after: boolean) {
+        const index = hypaV3Data.summaries.indexOf(target);
+        if (index === -1) return;
+        const start = after ? index + 1 : index;
+        const count = after ? hypaV3Data.summaries.length - start : 1;
+        if (count <= 0) return;
+        bulkEditState.selectedSummaries = new Set(
+            [...bulkEditState.selectedSummaries]
+                .filter((index) => index < start || index >= start + count)
+                .map((index) => (index < start ? index : index - count)),
+        );
+        if (tagManagerState.currentSummaryIndex >= start) closeTagManager();
+        hypaV3Data.summaries.splice(start, count);
     }
 
     // Search functionality
@@ -526,6 +552,7 @@
             return;
         }
         const minIndex = targets[0].index;
+        closeTagManager();
 
         hypaV3Data.summaries[minIndex] = {
             text: bulkResummaryState.result,
@@ -1124,6 +1151,7 @@
                             onToggleSummarySelection={handleToggleSummarySelection}
                             onOpenTagManager={handleOpenTagManager}
                             onToggleCollapse={handleToggleCollapse}
+                            onDeleteSummaries={deleteSummaries}
                         />
                     {/if}
                 {/each}

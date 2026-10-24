@@ -2,17 +2,22 @@
 
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { alertData } from "src/ts/alert";
+import { showHypaV2Alert, type alertData } from "src/ts/alert";
 import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "src/ts/alertQueue";
 import { initHotkey } from "src/ts/hotkey";
 import { alertStore, settingsOpen } from "src/ts/stores.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { findCharacter } from "src/ts/storage/characterStore.svelte";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { assembleChats, findChat, selectChat, setChatMeta, setChatWorkListener } from "src/ts/storage/chatStore.svelte";
+import SideChatList from "src/lib/SideBars/SideChatList.svelte";
 import AlertComp from "./AlertComp.svelte";
 
 const dialogs: AlertDialog[] = [];
 let component: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 let composer: HTMLTextAreaElement;
+let sidebar: ReturnType<typeof mount> | undefined;
 
 function open(data: alertData) {
     const dialog = alertStore.open(data);
@@ -65,14 +70,166 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+    setChatWorkListener(null);
     for (const dialog of dialogs.splice(0)) dialog.cancel();
+    alertStore.answer("");
+    await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+    alertStore.answer("");
     alertStore.clearStatus();
+    if (sidebar) await unmount(sidebar);
+    sidebar = undefined;
     await hideAlert();
     await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
     document.body.replaceChildren();
     window.dispatchEvent(new Event("blur"));
     vi.restoreAllMocks();
     vi.useRealTimers();
+});
+
+describe("dialogs keep their requested character and chat", () => {
+    const ref = (chaId: string) => ({ chaId, chatId: `chat-${chaId}` });
+    const memory = (owner: string) => ({
+        lastMainChunkID: 1,
+        chunks: [{ mainChunkID: 1, text: `${owner} chunk` }],
+        mainChunks: [
+            { id: 1, text: `${owner} summary`, chatMemos: [`message-${owner}`], lastChatMemo: `message-${owner}` },
+        ],
+    });
+    function installChats(extraChat = false) {
+        installFlatDatabaseWithChats({
+            characters: ["a", "b", "c"].map((id) => ({
+                chaId: id,
+                type: "character",
+                name: id,
+                firstMessage: `Greeting ${id}`,
+                alternateGreetings: [`Greeting ${id}`],
+                chatFolders: [],
+                chats: (id === "a" && extraChat ? ["a", "a-other"] : [id]).map((owner) => ({
+                    id: `chat-${owner}`,
+                    name: `Chat ${owner}`,
+                    fmIndex: 0,
+                    message: [{ chatId: `message-${owner}`, role: "user", data: `Branch ${owner}` }],
+                    hypaV2Data: memory(owner),
+                })),
+            })),
+        });
+        select("a");
+    }
+    function select(id: string) {
+        selectCharacter(id);
+        selectChat(id, `chat-${id}`);
+        flushSync();
+    }
+    async function showQueued(blocker: AlertDialog) {
+        blocker.cancel();
+        await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+        await showAlert();
+    }
+    function edit(text: string) {
+        const input = target.querySelector<HTMLTextAreaElement>("textarea")!;
+        expect(input).not.toBeNull();
+        input.value = text;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    }
+
+    it("shows the requested character's branches after selection changes while queued and while open", async () => {
+        installChats();
+        const blocker = open({ type: "normal", msg: "Before branches" });
+        const listTarget = document.createElement("div");
+        document.body.append(listTarget);
+        sidebar = mount(SideChatList, { target: listTarget, props: { chara: findCharacter("a")! } });
+        flushSync();
+        listTarget.querySelector<HTMLButtonElement>("button:has(.lucide-split)")!.click();
+        select("b");
+        await showQueued(blocker);
+
+        function hoverMessage() {
+            const nodes = target.querySelectorAll<HTMLElement>('[role="table"]');
+            expect(nodes).toHaveLength(2); // Greeting and the one message of character a.
+            nodes[1].dispatchEvent(new MouseEvent("mouseenter"));
+            flushSync();
+            expect(target.textContent).toContain("Branch a");
+            expect(target.textContent).not.toContain("Branch b");
+            expect(target.textContent).not.toContain("Branch c");
+            nodes[1].dispatchEvent(new MouseEvent("mouseleave"));
+            flushSync();
+        }
+        hoverMessage();
+        select("c");
+        await tick();
+        hoverMessage();
+    });
+
+    it("shows and saves HypaV2 chunks and summaries to the requested chat across queued and open selection changes", async () => {
+        installChats(true);
+        const blocker = open({ type: "normal", msg: "Before memory" });
+        showHypaV2Alert();
+        select("b");
+        await showQueued(blocker);
+        expect(target.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("a chunk");
+        edit("a chunk edited");
+
+        selectCharacter("a");
+        selectChat("a", "chat-a-other");
+        flushSync();
+        expect(target.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("a chunk edited");
+        [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Summarized")!.click();
+        flushSync();
+        expect(target.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("a summary");
+        edit("a summary edited");
+
+        expect(findChat(ref("a"))?.hypaV2Data).toEqual({
+            ...memory("a"),
+            chunks: [{ mainChunkID: 1, text: "a chunk edited" }],
+            mainChunks: [{ ...memory("a").mainChunks[0], text: "a summary edited" }],
+        });
+        expect(findChat(ref("b"))?.hypaV2Data).toEqual(memory("b"));
+        expect(findChat(ref("c"))?.hypaV2Data).toEqual(memory("c"));
+        expect(findChat({ chaId: "a", chatId: "chat-a-other" })?.hypaV2Data).toEqual(memory("a-other"));
+
+        setChatMeta(ref("a"), {}, ["hypaV2Data"]);
+        const work = vi.fn();
+        setChatWorkListener(work);
+        expect(() => flushSync()).not.toThrow();
+        expect(target.querySelector("textarea")).toBeNull();
+        expect(work).not.toHaveBeenCalled();
+    });
+
+    it.each(["unloaded", "without memory"])(
+        "shows no HypaV2 editor and writes nothing when the requested chat is %s",
+        async (state) => {
+            installChats();
+            const blocker = open({ type: "normal", msg: "Before unavailable memory" });
+            showHypaV2Alert();
+            select("b");
+            if (state === "without memory") {
+                setChatMeta(ref("a"), {}, ["hypaV2Data"]);
+            } else {
+                const otherChat = JSON.parse(JSON.stringify(findChat(ref("b"))!));
+                assembleChats(
+                    [{ chaId: "a" }, { chaId: "b" }],
+                    [
+                        { characterId: "a", id: "chat-a", revision: "r1", name: "Chat a", fmIndex: 0 },
+                        { characterId: "b", id: "chat-b", revision: "r1", data: otherChat },
+                    ],
+                    [
+                        { characterId: "a", revision: "o1", ids: ["chat-a"] },
+                        { characterId: "b", revision: "o1", ids: ["chat-b"] },
+                    ],
+                );
+                expect(findChat(ref("a"))).toBeUndefined();
+            }
+            const work = vi.fn();
+            setChatWorkListener(work);
+            await showQueued(blocker);
+
+            expect(target.querySelector("textarea")).toBeNull();
+            expect(work).not.toHaveBeenCalled();
+            expect(findChat(ref("b"))?.hypaV2Data).toEqual(memory("b"));
+            expect(findChat(ref("a"))?.hypaV2Data).toBeUndefined();
+        },
+    );
 });
 
 describe("alert dialog focus and keyboard answers", () => {

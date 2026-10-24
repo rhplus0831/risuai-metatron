@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The modal's half of the generation fence (`docs/structure/memory.md`, UI and Invariants): over the real
@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
     alertError: vi.fn(),
     alertNormal: vi.fn(),
     alertNormalWait: vi.fn(async () => undefined),
+    alertConfirm: vi.fn(async (_message: string) => true),
     /** The save loop's flush, as "Summarize now" awaits it (the loop itself is not under test here). */
     flushResources: vi.fn(async () => ({ discarded: [] as string[] })),
     /** The memory task routes' answers. */
@@ -27,6 +28,7 @@ vi.mock("src/ts/alert", async () =>
         alertError: mocks.alertError,
         alertNormal: mocks.alertNormal,
         alertNormalWait: mocks.alertNormalWait,
+        alertConfirm: mocks.alertConfirm,
     }),
 );
 vi.mock("src/ts/storage/serverAuth", async () =>
@@ -160,6 +162,7 @@ const follow = (ref: ChatRef | null) => followedJobs.set(ref ? new Map([["job-1"
 const storedSummaries = (ref: ChatRef) => (findChat(ref)?.hypaV3Data as any)?.summaries?.map((s: any) => s.text);
 
 beforeEach(() => {
+    mocks.alertConfirm.mockReset().mockResolvedValue(true);
     mocks.alertError.mockClear();
     mocks.alertNormalWait.mockClear();
     vi.mocked(summarize).mockReset();
@@ -167,6 +170,136 @@ beforeEach(() => {
     install();
     setChatWorkListener(chatWork);
     follow(null);
+});
+
+describe("HypaV3Modal's summary identity after deletion", () => {
+    const four = () => [
+        ...summaries(),
+        { text: "three", chatMemos: ["m2"], isImportant: false },
+        { text: "four", chatMemos: ["m3"], isImportant: false },
+    ];
+    function openFour() {
+        setChatMeta(withData, { hypaV3Data: { summaries: four(), categories: [] } });
+        return open(withData).target;
+    }
+    const buttonWithIcon = (root: HTMLElement, icon: string) =>
+        root.querySelector<HTMLButtonElement>(`button:has(.lucide-${icon})`)!;
+    const row = (target: HTMLElement, text: string) =>
+        [...target.querySelectorAll("textarea")].find((textarea) => textarea.value === text)!.parentElement!
+            .parentElement!;
+    const boxes = (target: HTMLElement) => [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    const selectedTexts = (target: HTMLElement) =>
+        boxes(target)
+            .filter((box) => box.checked)
+            .map((box) => box.closest("div.flex-col")!.querySelector("textarea")!.value);
+    function selectFirstAndThird(target: HTMLElement) {
+        buttonWithIcon(target, "square-pen").click();
+        flushSync();
+        boxes(target)[0].click();
+        boxes(target)[2].click();
+        flushSync();
+        expect(selectedTexts(target)).toEqual(["one", "three"]);
+    }
+    async function deleteFrom(target: HTMLElement, text: string, after: boolean) {
+        buttonWithIcon(row(target, text), after ? "scissors-line-dashed" : "trash-2").click();
+        // Drain the resolved dialog answers and Svelte's update, including Delete after's second confirmation.
+        await tick();
+        await tick();
+        flushSync();
+    }
+    function bulkImportant(target: HTMLElement) {
+        target.querySelector<HTMLButtonElement>("button.border-yellow-600")!.click();
+        flushSync();
+    }
+
+    it("keeps later selections on their summaries and drops a deleted selection after Delete this", async () => {
+        const target = openFour();
+        selectFirstAndThird(target);
+        await deleteFrom(target, "one", false);
+
+        expect(mocks.alertConfirm).toHaveBeenCalledWith(language.hypaV3Modal.deleteThisConfirmMessage);
+        expect(storedSummaries(withData)).toEqual(["two", "three", "four"]);
+        expect(selectedTexts(target)).toEqual(["three"]);
+        bulkImportant(target);
+        expect(
+            findChat(withData)?.hypaV3Data?.summaries.map(({ text, isImportant }) => ({ text, isImportant })),
+        ).toEqual([
+            { text: "two", isImportant: false },
+            { text: "three", isImportant: true },
+            { text: "four", isImportant: false },
+        ]);
+    });
+
+    it("drops deleted selections after Delete after and applies a bulk action only to the surviving selection", async () => {
+        const target = openFour();
+        selectFirstAndThird(target);
+        await deleteFrom(target, "two", true);
+
+        expect(mocks.alertConfirm.mock.calls.map(([message]) => message)).toEqual([
+            language.hypaV3Modal.deleteAfterConfirmMessage,
+            language.hypaV3Modal.deleteAfterConfirmSecondMessage,
+        ]);
+        expect(storedSummaries(withData)).toEqual(["one", "two"]);
+        expect(selectedTexts(target)).toEqual(["one"]);
+        bulkImportant(target);
+        expect(
+            findChat(withData)?.hypaV3Data?.summaries.map(({ text, isImportant }) => ({ text, isImportant })),
+        ).toEqual([
+            { text: "one", isImportant: true },
+            { text: "two", isImportant: false },
+        ]);
+    });
+
+    const tagInput = (target: HTMLElement) =>
+        target.querySelector<HTMLInputElement>(`input[placeholder="${language.hypaV3Modal.newTagName}"]`);
+    function openTags(target: HTMLElement, text: string) {
+        [...row(target, text).querySelectorAll("button")]
+            .find((button) => button.title === language.hypaV3Modal.tagManager)!
+            .click();
+        flushSync();
+        const input = tagInput(target)!;
+        expect(input).not.toBeNull();
+        expect(input.value).toBe("");
+        input.value = "unfinished tag";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        return input;
+    }
+
+    it.each(["shifted", "deleted"])(
+        "closes the tag manager when a local delete leaves its summary %s",
+        async (change) => {
+            const target = openFour();
+            openTags(target, change === "shifted" ? "two" : "four");
+            await deleteFrom(target, change === "shifted" ? "one" : "two", change === "deleted");
+
+            expect(tagInput(target)).toBeNull();
+            expect(storedSummaries(withData)).toEqual(change === "shifted" ? ["two", "three", "four"] : ["one", "two"]);
+            openTags(target, change === "shifted" ? "three" : "two");
+            // Reopening starts clean and cannot apply the former summary's pending edit.
+            expect(findChat(withData)?.hypaV3Data?.summaries.every((summary) => !summary.tags?.length)).toBe(true);
+        },
+    );
+
+    it.each(["replacement", "missing"])(
+        "closes the tag manager safely when another writer leaves a %s target",
+        (change) => {
+            const target = openFour();
+            openTags(target, "four");
+            const replacement =
+                change === "missing"
+                    ? summaries()
+                    : four().map((summary) => ({ ...summary, text: `${summary.text} remote` }));
+            setChatMeta(withData, { hypaV3Data: { summaries: replacement, categories: [] } });
+            expect(() => flushSync()).not.toThrow();
+
+            expect(tagInput(target)).toBeNull();
+            expect(storedSummaries(withData)).toEqual(
+                change === "missing" ? ["one", "two"] : ["one remote", "two remote", "three remote", "four remote"],
+            );
+            expect(findChat(withData)?.hypaV3Data?.summaries.every((summary) => !summary.tags?.length)).toBe(true);
+        },
+    );
 });
 
 afterEach(async () => {

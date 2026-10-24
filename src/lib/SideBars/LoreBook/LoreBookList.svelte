@@ -58,7 +58,6 @@
 
 <script lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { settings, selectedLoreBookPage } from "src/ts/storage/settingsViews.svelte";
     import LoreBookData from "./LoreBookData.svelte";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
     import { DetachedWrapperError, replaceRecordList } from "src/ts/storage/records.svelte";
@@ -76,20 +75,13 @@
     const localLore = useLocalLoreDraft();
 
     interface Props {
-        globalMode?: boolean;
         submenu?: number;
         lorePlus?: boolean;
         externalLoreBooks?: loreBook[];
         showFolder?: string;
     }
 
-    let {
-        globalMode = false,
-        submenu = 0,
-        lorePlus = false,
-        externalLoreBooks = null,
-        showFolder = "",
-    }: Props = $props();
+    let { submenu = 0, lorePlus = false, externalLoreBooks = null, showFolder = "" }: Props = $props();
     let stb: Sortable = null;
     let destroyed = false;
     // The `disabled` option `stb` has now (set while the filter is non-empty).
@@ -203,10 +195,6 @@
             ).length;
         } else if (submenu === 1) {
             expectedElements = localLore.value.filter(
-                (item) => (!showFolder && !item.folder) || showFolder === item.folder,
-            ).length;
-        } else if (globalMode) {
-            expectedElements = settings.loreBook[selectedLoreBookPage()].data.filter(
                 (item) => (!showFolder && !item.folder) || showFolder === item.folder,
             ).length;
         } else {
@@ -345,9 +333,6 @@
                 } else if (submenu === 1) {
                     // Use local chat lorebook
                     currentArray = localLore.value;
-                } else if (globalMode) {
-                    // Use global lorebook
-                    currentArray = settings.loreBook[selectedLoreBookPage()].data;
                 } else {
                     // Use character global lorebook (default)
                     currentArray = currentCharacter.globalLore;
@@ -450,8 +435,6 @@
                     replaceRecordList(externalLoreBooks, newArray);
                 } else if (submenu === 1) {
                     localLore.value = newArray;
-                } else if (globalMode) {
-                    settings.loreBook[selectedLoreBookPage()].data = newArray;
                 } else {
                     currentCharacter.globalLore = newArray;
                 }
@@ -484,7 +467,6 @@
     const shownList = (): loreBook[] => {
         if (externalLoreBooks) return externalLoreBooks;
         if (submenu === 1) return localLore.value;
-        if (globalMode) return settings.loreBook[selectedLoreBookPage()].data;
         return selectedCharacter()?.globalLore;
     };
     const listHolding = (book: loreBook, index = -1): loreBook[] | null => {
@@ -611,7 +593,7 @@
     });
 </script>
 
-{#if isRootList && !globalMode}
+{#if isRootList}
     <TextInput
         size="sm"
         fullwidth
@@ -626,11 +608,7 @@
         bind:this={ele}
         data-show-folder={showFolder || ""}
     >
-        {#if globalMode}
-            <!--
-                This was a place for global lorebooks, but it was removed :)
-            -->
-        {:else if externalLoreBooks}
+        {#if externalLoreBooks}
             {@const visibleItems = externalLoreBooks.filter(
                 (book) => ((!showFolder && !book.folder) || showFolder === book.folder) && !filteredOut(book),
             )}

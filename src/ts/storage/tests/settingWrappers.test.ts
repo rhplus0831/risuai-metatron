@@ -331,6 +331,54 @@ describe("SettingSelect", () => {
         ],
     };
 
+    it("preserves a hidden stored value on an equal-options context rebuild and resets to the last option when options change", () => {
+        profile("pb").instructChatTemplate = "hidden";
+        const context = ctx();
+        Object.defineProperty(context, "modelInfo", {
+            get: () => {
+                void activePreset.name;
+                return { flags: activePreset.maxResponse < 1000 ? [LLMFlags.claudeThinking] : [] };
+            },
+        });
+        const select = item({
+            type: "select",
+            bindKey: "instructChatTemplate",
+            options: {
+                selectOptions: [
+                    { value: "chatml", label: "ChatML" },
+                    {
+                        value: "alpaca",
+                        label: "Alpaca",
+                        condition: (context) => context.modelInfo.flags.includes(LLMFlags.claudeThinking),
+                    },
+                    { value: "vicuna", label: "Vicuna" },
+                ],
+            },
+        });
+        const { query } = render(SettingSelect, { item: select, ctx: context });
+        const element = query<HTMLSelectElement>("select");
+        const visible = () => [...element.options].map((option) => option.value);
+        expect(visible()).toEqual(["chatml", "alpaca", "vicuna"]);
+
+        changeToModelPreset("b");
+        changeToPreset("b");
+        flushSync();
+        expect(visible()).toEqual(["chatml", "alpaca", "vicuna"]);
+        expect(profile("pb").instructChatTemplate).toBe("hidden");
+        expect(profile("pa").instructChatTemplate).toBe("chatml");
+        expect(select.onChange).not.toHaveBeenCalled();
+
+        chooseOption(element, "alpaca");
+        flushSync();
+        expect(profile("pb").instructChatTemplate).toBe("alpaca");
+        preset("b").maxResponse = 1000;
+        flushSync();
+        expect(visible()).toEqual(["chatml", "vicuna"]);
+        expect(profile("pb").instructChatTemplate).toBe("vicuna");
+        expect(profile("pa").instructChatTemplate).toBe("chatml");
+        expect(select.onChange).toHaveBeenCalledTimes(2);
+    });
+
     it("writes a choice synchronously into the selected model preset's main profile and follows a switch", () => {
         const select = item({ type: "select", bindKey: "instructChatTemplate", options });
         const { query } = render(SettingSelect, { item: select, ctx: ctx() });

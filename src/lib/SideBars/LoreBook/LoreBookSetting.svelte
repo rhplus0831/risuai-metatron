@@ -19,11 +19,6 @@
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     let submenu = $state(0);
-    interface Props {
-        globalMode?: boolean;
-    }
-
-    let { globalMode = $bindable(false) }: Props = $props();
 
     function isAllCharacterLoreAlwaysActive() {
         const globalLore = currentCharacter.globalLore;
@@ -61,48 +56,44 @@
     }
 </script>
 
-{#if !globalMode}
-    <div class="flex w-full rounded-md border border-selected">
-        <button
-            onclick={() => {
-                submenu = 0;
-            }}
-            class="p-2 flex-1"
-            class:bg-selected={submenu === 0}
-        >
-            <span>{currentCharacter.type === "group" ? language.group : language.character}</span>
-        </button>
-        <button
-            onclick={() => {
-                submenu = 1;
-            }}
-            class="p2 flex-1 border-r border-l border-selected"
-            class:bg-selected={submenu === 1}
-        >
-            <span>{language.Chat}</span>
-        </button>
-        <button
-            onclick={() => {
-                submenu = 2;
-            }}
-            class="p-2 flex-1"
-            class:bg-selected={submenu === 2}
-        >
-            <span>{language.settings}</span>
-        </button>
-    </div>
-{/if}
+<div class="flex w-full rounded-md border border-selected">
+    <button
+        onclick={() => {
+            submenu = 0;
+        }}
+        class="p-2 flex-1"
+        class:bg-selected={submenu === 0}
+    >
+        <span>{currentCharacter.type === "group" ? language.group : language.character}</span>
+    </button>
+    <button
+        onclick={() => {
+            submenu = 1;
+        }}
+        class="p2 flex-1 border-r border-l border-selected"
+        class:bg-selected={submenu === 1}
+    >
+        <span>{language.Chat}</span>
+    </button>
+    <button
+        onclick={() => {
+            submenu = 2;
+        }}
+        class="p-2 flex-1"
+        class:bg-selected={submenu === 2}
+    >
+        <span>{language.settings}</span>
+    </button>
+</div>
 {#if submenu !== 2}
-    {#if !globalMode}
-        <span class="text-textcolor2 mt-2 mb-6 text-sm"
-            >{submenu === 0
-                ? currentCharacter.type === "group"
-                    ? language.groupLoreInfo
-                    : language.globalLoreInfo
-                : language.localLoreInfo}</span
-        >
-    {/if}
-    <LoreBookList {globalMode} {submenu} lorePlus={!globalMode && currentCharacter?.lorePlus} />
+    <span class="text-textcolor2 mt-2 mb-6 text-sm"
+        >{submenu === 0
+            ? currentCharacter.type === "group"
+                ? language.groupLoreInfo
+                : language.globalLoreInfo
+            : language.localLoreInfo}</span
+    >
+    <LoreBookList {submenu} lorePlus={currentCharacter?.lorePlus} />
 {:else}
     {#if currentCharacter.loreSettings}
         <div class="flex items-center mt-4">
@@ -151,7 +142,7 @@
     <div class="text-textcolor2 mt-2 flex">
         <button
             onclick={() => {
-                addLorebook(globalMode ? -1 : submenu);
+                addLorebook(submenu);
             }}
             class="hover:text-textcolor cursor-pointer"
         >
@@ -159,7 +150,7 @@
         </button>
         <button
             onclick={() => {
-                exportLoreBook(globalMode ? "sglobal" : submenu === 0 ? "global" : "local");
+                exportLoreBook(submenu === 0 ? "global" : "local");
             }}
             class="hover:text-textcolor ml-1 cursor-pointer"
         >
@@ -167,7 +158,7 @@
         </button>
         <button
             onclick={() => {
-                addLorebookFolder(globalMode ? -1 : submenu);
+                addLorebookFolder(submenu);
             }}
             class="hover:text-textcolor ml-2 cursor-pointer"
         >
@@ -175,7 +166,7 @@
         </button>
         <button
             onclick={() => {
-                importLoreBook(globalMode ? "sglobal" : submenu === 0 ? "global" : "local");
+                importLoreBook(submenu === 0 ? "global" : "local");
             }}
             class="hover:text-textcolor ml-2 cursor-pointer"
         >

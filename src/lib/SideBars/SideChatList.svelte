@@ -754,6 +754,7 @@
                     alertStore.set({
                         type: "branches",
                         msg: "",
+                        chaId: chara.chaId,
                     });
                 }}
             >

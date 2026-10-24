@@ -99,3 +99,98 @@ it("discards an edited draft when the page unmounts without confirmation", async
 
     expect(settings.modules).toHaveLength(0);
 });
+
+function openEditMode() {
+    installFlatDatabase({
+        enabledModules: [],
+        modules: [
+            { id: "before", name: "Before", description: "keep before" },
+            { id: "edited", name: "Edited", description: "original" },
+            { id: "after", name: "After", description: "keep after" },
+        ],
+    });
+    target = document.createElement("div");
+    document.body.append(target);
+    instance = mount(ModuleSettings, { target });
+    flushSync();
+    const row = [...target.querySelectorAll("span.text-lg")].find(
+        (span) => span.textContent === "Edited",
+    )!.parentElement!;
+    row.querySelector<HTMLButtonElement>("button:has(.lucide-square-pen)")!.click();
+    flushSync();
+    expect(target.querySelector("h2")?.textContent).toBe(language.editModule);
+}
+
+const moduleNames = () => settings.modules.map(({ id, name }) => ({ id, name }));
+
+it("saves live to the module id across removal, insertion, and a replacement copy without overwriting or duplicating modules", async () => {
+    openEditMode();
+    typeName("Live edit");
+    expect(settings.modules.find((module) => module.id === "edited")?.name).toBe("Live edit");
+
+    settings.modules.splice(0, 1);
+    flushSync();
+    typeName("After removal");
+    expect(moduleNames()).toEqual([
+        { id: "edited", name: "After removal" },
+        { id: "after", name: "After" },
+    ]);
+
+    settings.modules.unshift({ id: "inserted", name: "Inserted", description: "keep inserted" });
+    flushSync();
+    typeName("After insertion");
+    expect(moduleNames()).toEqual([
+        { id: "inserted", name: "Inserted" },
+        { id: "edited", name: "After insertion" },
+        { id: "after", name: "After" },
+    ]);
+
+    // A whole-list refresh carries new objects and moves the edited module to another position.
+    settings.modules = [
+        { id: "after", name: "After", description: "keep after" },
+        { id: "inserted", name: "Inserted", description: "keep inserted" },
+        { id: "edited", name: "Remote name", description: "remote description" },
+    ];
+    flushSync();
+    expect(target.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("Remote name");
+    typeName("After refresh");
+    const expected = [
+        { id: "after", name: "After" },
+        { id: "inserted", name: "Inserted" },
+        { id: "edited", name: "After refresh" },
+    ];
+    expect(moduleNames()).toEqual(expected);
+    expect(settings.modules.map((module) => module.description)).toEqual([
+        "keep after",
+        "keep inserted",
+        "remote description",
+    ]);
+    finalButton().click();
+    flushSync();
+    expect(moduleNames()).toEqual(expected);
+
+    // Leaving the settings page also keeps the live edit, without a final button click.
+    [...target.querySelectorAll("span.text-lg")]
+        .find((span) => span.textContent === "After refresh")!
+        .parentElement!.querySelector<HTMLButtonElement>("button:has(.lucide-square-pen)")!
+        .click();
+    flushSync();
+    typeName("Kept on leave");
+    await unmount(instance!);
+    instance = null;
+    expect(settings.modules.find((module) => module.id === "edited")?.name).toBe("Kept on leave");
+});
+
+it("returns to the catalog without writing when the edited module is deleted", () => {
+    openEditMode();
+    settings.modules.splice(1, 1);
+    flushSync();
+
+    expect(target.querySelector("h2")?.textContent).toBe(language.modules);
+    expect(finalButton()).toBeNull();
+    expect(moduleNames()).toEqual([
+        { id: "before", name: "Before" },
+        { id: "after", name: "After" },
+    ]);
+    expect(settings.modules.map((module) => module.description)).toEqual(["keep before", "keep after"]);
+});

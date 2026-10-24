@@ -11,10 +11,10 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (13)
 - [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (13)
 - [Lua scripting](#lua-scripting) (2)
-- [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (7)
-- [Lorebooks and modules](#lorebooks-and-modules) (4)
-- [Chat screen](#chat-screen) (9)
-- [Alerts, dialogs, keys, and settings controls](#alerts-dialogs-keys-and-settings-controls) (6)
+- [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (5)
+- [Lorebooks and modules](#lorebooks-and-modules) (1)
+- [Chat screen](#chat-screen) (8)
+- [Alerts, dialogs, keys, and settings controls](#alerts-dialogs-keys-and-settings-controls) (5)
 - [Notifications](#notifications) (2)
 - [Image generation and TTS](#image-generation-and-tts) (6)
 - [Server HTTP, auth, and error codes](#server-http-auth-and-error-codes) (7)
@@ -308,20 +308,6 @@ Rechecked 2026-10-21 against the code: still present.
 
 ## Memory, embeddings, and token counts
 
-### HypaV3 local delete shifts selection
-
-`src/lib/Others/HypaV3Modal/modal-summary-item.svelte` ~218-232 (`deleteThis`, `deleteAfter`) remove summaries from the modal's copy but leave `bulkEditState.selectedSummaries` (an index `Set`) as it is. Select B, delete A before it, and B's old index now checks C; bulk category/important/resummary then act on the wrong rows. The sync-effect clear added for copy replacement (SF9, 2026-10-23) does not run here, because a successful local save updates `syncedHypaV3Text` first.
-
-**Why it matters:** same wrong-row symptom as the copy-replacement case, via a local edit; a bulk action after it edits the wrong summaries.
-**Suggested handling:** clear (or remap) the selection when a local delete removes rows; see hypav3 bulk selection survives replace and [HypaV3 tag manager stale index](#hypav3-tag-manager-stale-index).
-
-### HypaV3 tag manager stale index
-
-`src/lib/Others/HypaV3Modal/tag-manager-modal.svelte` ~35-60 (`saveEditingTag`, `removeTag`, `addTag`) index `hypaV3Data.summaries` by `tagManagerState.currentSummaryIndex`, which survives the modal's sync `$effect.pre` replacing the copy (`HypaV3Modal.svelte` ~98-106) and local deletes. After another writer shifts or removes summaries, the open tag manager edits a different summary's tags, or its template dereferences a missing row.
-
-**Why it matters:** a wrong-summary write from the modal (saved via `setChatMeta`), not just a cosmetic issue.
-**Suggested handling:** close the tag manager (or re-resolve the summary by identity) when the copy is replaced; sibling of [HypaV3 local delete shifts selection](#hypav3-local-delete-shifts-selection).
-
 ### HypaProcessorV2 contextual bypasses limiter
 
 `server/src/prompt/embeddings.ts` `HypaProcessorV2.getEmbeds` (~808): the contextual branch calls
@@ -361,18 +347,6 @@ Still stale: `src/lib/SideBars/CharConfig.svelte` ~97 (description, greeting, no
 
 ## Lorebooks and modules
 
-### Global lorebook page unreachable
-
-Found 2026-10-19 during open-bug-fixes slice C1. `src/lib/SideBars/LoreBook/LoreBookSetting.svelte:26` takes a bindable `globalMode`, but its only mount (`src/lib/SideBars/CharConfig.svelte:41`, `LoreBook`) never passes it, so the Global Lore Book page (`settings.loreBook[selectedLoreBookPage()]`, shown by `LoreBookList` in `globalMode`) has no UI entry. C1 fixed `exportLoreBook("sglobal")` anyway; nothing in the app calls it today. Matters if someone re-enables the page: see [Global lorebook add targets chat](#global-lorebook-add-targets-chat) and the `importLoreBook("sglobal")` no-write Known Hazard in characters-modules.md.
-
-Rechecked 2026-10-21 against the code: still present.
-
-### Global lorebook add targets chat
-
-Found 2026-10-19 during open-bug-fixes slice C1. `src/lib/SideBars/LoreBook/LoreBookSetting.svelte:154,170` call `addLorebook(globalMode ? -1 : submenu)` / `addLorebookFolder(...)`; `src/ts/process/lorebook.svelte.ts` `addLorebook`/`addLorebookFolder` treat every type other than 0 as the chat (`appendLocalLore`), so in globalMode an add lands in the selected chat's localLore instead of `settings.loreBook[selectedLoreBookPage()].data`. Latent while globalMode is unreachable ([Global lorebook page unreachable](#global-lorebook-page-unreachable)); fix both together if the page returns.
-
-Rechecked 2026-10-21 against the code: still present.
-
 ### Lorebook folder delete child links
 
 `src/lib/SideBars/LoreBook/LoreBookData.svelte` delete handler (~186-212, after SF7 `0e8fc0120`) deactivates only the deleted row's own `id` in the captured chat. A folder delete removes the folder and every member from `globalLore` (`LoreBookList.svelte` `removeEntry`), but the members' `mode: "child"` links (same id, created by `activateLocally`) stay in the chat's `localLore`, where they no longer resolve to anything. Pre-existing before SF7 (the old draft-based deactivation did the same).
@@ -380,13 +354,6 @@ Rechecked 2026-10-21 against the code: still present.
 **Why it matters:** orphan child entries pile up in chats; they activate nothing but show as "Unnamed" rows in the chat lorebook tab.
 
 **Suggested handling:** a fix would collect the member ids before the confirm and filter all of them in the one `setChatMeta`; chats other than the captured one keep their links either way.
-
-### Module edit retained index
-
-`src/lib/Setting/Pages/Module/ModuleSettings.svelte` (~147 captures `editModuleIndex = settings.modules.findIndex(...)`, ~252 writes `settings.modules[editModuleIndex] = tempModule`). If the module list changes while edit mode is open (a remote replacement, a delete or import in another tab), the save lands at the old index: it overwrites a different module or duplicates the edited one. Violates STRUCTURE.md U4 (never retain a list index as an asynchronous address). Fix: resolve by `tempModule.id` at save (or `updateModule(id, …)` from `collectionStore.svelte.ts`). Found by the UP19 challenger, 2026-10-23; not fixed (out of slice).
-
-**Why it matters:** silent data loss on another module.
-**Suggested handling:** a small fix slice touching only ModuleSettings.svelte edit mode plus a component test.
 
 ## Chat screen
 
@@ -410,16 +377,6 @@ Rechecked 2026-10-21 against the code: still present.
 
 **Why it matters:** the same class of bug as the Lua form click (the card UI disappears into the editor), left out of the form fix's scope.
 **Suggested handling:** add `[risu-btn], [risu-trigger]` to the selector in `isInteractiveBodyTarget` with a Chat.test.ts case clicking a `<div risu-btn>` under `clickToEdit`.
-
-### Alert dialogs read selection late
-
-`src/lib/Others/AlertComp.svelte` branches effect (~156, `selectedCharacter()` at display) and the HypaV2 editor (`setHypaV2ChunkText` ~210 writes through `selectedChat()`, rendered from `currentChat`) use the selection at display time. Since A1 (alert queue, 2026-10-20) a dialog can wait (behind another dialog, or the 150 ms gap where the overlay is gone), so a selection change in between (e.g. the ungated prevChar/nextChar hotkeys) shows another character's branches or another chat's memory. Low risk; found by Sol's A1 challenge (point 3), judged minor by Fable.
-
-**Why it matters:** HypaV2 edits could land on the wrong chat, or throw when that chat lacks `hypaV2Data`.
-
-**Suggested handling:** carry `chaId` (branches, `SideChatList.svelte` ~700 `alertStore.set({type:"branches"})`) and a chat ref (HypaV2, `showHypaV2Alert`) in the alert payload; render and write that target.
-
-Rechecked 2026-10-21 against the code: still present.
 
 ### Chats auto-scroll overrides jump
 
@@ -493,20 +450,6 @@ Rechecked 2026-10-21 against the code: still present.
 **Why it matters:** a modifier hotkey can send or act behind a visible dialog.
 
 **Suggested handling:** while `alertStore.hasDialogs()`, skip hotkey actions that act on the chat, or handle the dialog keys first.
-
-### SettingSelect rebuilt-context fallback
-
-`src/lib/Setting/Wrappers/SettingSelect.svelte` (~27-36) reads the value untracked but its effect tracks
-`processedOptions`, a fresh array whenever `SettingRenderer.svelte`'s `ctx` re-derives. With a chat open,
-changing the chat's prompt binding re-runs `readChatBindingIds` (now in `chatBinding.svelte.ts`, reads all
-binding fields), `resolveModelInfo` returns a fresh clone, and the effect reruns, so a select item holding
-a hidden option in the newly bound preset gets the fallback written (Sol found this for SettingSegmented in
-slice C8 of the open-bug-fixes plan, 2026-10-19). C8 fixed only SettingSegmented (tracks a
-`JSON.stringify` of the visible values); SettingSelect was outside its files.
-
-**Why it matters:** a preset switch can silently overwrite a stored select value (same class as the C8 bug).
-**Suggested handling:** still open 2026-10-21 (`SettingSelect.svelte` ~27-36 tracks `processedOptions`). Give SettingSelect the same `visibleValues` derived as SettingSegmented when next in
-the settings wrappers; add a settingWrappers.test.ts case with a rebuilt ctx.
 
 ### Raw selects without risu-select
 

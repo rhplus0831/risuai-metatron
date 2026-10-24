@@ -19,18 +19,22 @@
         (item.options?.selectOptions ?? []).filter((opt) => !opt.condition || opt.condition(ctx)),
     );
 
-    // Reset value if current selection becomes hidden. The value is read untracked, so this runs
-    // when the visible options change, never on a switch of the selected preset.
+    let visibleValues = $derived(JSON.stringify(processedOptions.map((o) => o.value)));
+
+    // Only visible values trigger a reset; rebuilding the context with equal options keeps the stored value.
     $effect(() => {
-        const currentValue = untrack(() => getSettingValue(item, ctx));
-        if (
-            processedOptions.length > 0 &&
-            currentValue !== undefined &&
-            !processedOptions.some((o) => o.value === currentValue)
-        ) {
-            const fallback = processedOptions[processedOptions.length - 1].value;
-            untrack(() => setSettingValue(item, fallback, ctx));
-        }
+        void visibleValues;
+        untrack(() => {
+            const currentValue = getSettingValue(item, ctx);
+            if (
+                processedOptions.length > 0 &&
+                currentValue !== undefined &&
+                !processedOptions.some((o) => o.value === currentValue)
+            ) {
+                const fallback = processedOptions[processedOptions.length - 1].value;
+                setSettingValue(item, fallback, ctx);
+            }
+        });
     });
 </script>
 

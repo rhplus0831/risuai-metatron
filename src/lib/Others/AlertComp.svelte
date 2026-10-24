@@ -21,10 +21,9 @@
 </script>
 
 <script lang="ts">
-    import { findChat, loadChats, pinChats, selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { findChat, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
     import { untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { alertRequestLogs, type alertData } from "../../ts/alert";
     import { jobDebugInfo } from "../../ts/diagnostics/jobDebugInfo";
 
@@ -54,7 +53,8 @@
     import versionData from "../../../version.json";
 
     const currentCharacter = $derived(selectedCharacter());
-    const currentChat = $derived(selectedChat());
+    const hypaV2Ref = $derived($alertStore.type === "hypaV2" ? $alertStore.chatRef : undefined);
+    const hypaV2Data = $derived(hypaV2Ref ? findChat(hypaV2Ref)?.hypaV2Data : undefined);
     /** A `requestdata` dialog's own generation info and message, captured when it was opened. */
     const requestInfo = $derived($alertStore.type === "requestdata" ? $alertStore.generationInfo : undefined);
     const requestMessage = $derived(requestInfo?.message);
@@ -203,7 +203,7 @@
         if ($alertStore.type !== "branches") {
             return;
         }
-        const chaId = untrack(() => selectedCharacter()?.chaId);
+        const chaId = $alertStore.chaId;
         if (chaId === undefined) {
             return;
         }
@@ -258,15 +258,16 @@
         }
     };
 
-    /** Edits the text of one HypaV2 chunk of the selected chat (the whole memory data is saved through the chat module). */
+    /** Edits one chunk in the dialog's captured chat, saving the whole memory data through the chat module. */
     function setHypaV2ChunkText(list: "chunks" | "mainChunks", index: number, text: string) {
-        const data = selectedChat()?.hypaV2Data;
-        if (!data?.[list]?.[index]) {
+        const ref = hypaV2Ref;
+        const data = ref ? findChat(ref)?.hypaV2Data : undefined;
+        if (!ref || !data?.[list]?.[index]) {
             return;
         }
         const next = JSON.parse(JSON.stringify(data)) as Chat["hypaV2Data"];
         next[list][index].text = text;
-        setCurrentChatMeta({ hypaV2Data: next });
+        setChatMeta(ref, { hypaV2Data: next });
     }
 </script>
 
@@ -702,7 +703,7 @@
                         </div>
                     {/if}
                 {/if}
-            {:else if $alertStore.type === "hypaV2" && currentChat}
+            {:else if $alertStore.type === "hypaV2" && hypaV2Data}
                 <div class="flex flex-wrap gap-2 mb-4 max-w-full w-124">
                     <Button
                         selected={generationInfoMenuIndex === 0}
@@ -731,7 +732,7 @@
                 </div>
                 {#if generationInfoMenuIndex === 0}
                     <div class="flex flex-col gap-2 w-full">
-                        {#each currentChat.hypaV2Data.chunks as chunk, i}
+                        {#each hypaV2Data.chunks as chunk, i}
                             <TextAreaInput
                                 bind:value={() => chunk.text, (text) => setHypaV2ChunkText("chunks", i, text)}
                             />
@@ -740,7 +741,7 @@
                         <!-- Adding non-bound chunk is not okay, change the user flow to edit existing ones. -->
                     </div>
                 {:else}
-                    {#each currentChat.hypaV2Data.mainChunks as chunk, i}
+                    {#each hypaV2Data.mainChunks as chunk, i}
                         <!-- Summarized should be mainChunks, afaik. Be aware of that chunks are created with mainChunks, however this editing would not change related chunks. -->
                         <div class="flex flex-col p-2 rounded-md border-darkborderc border">
                             {#if i === 0}

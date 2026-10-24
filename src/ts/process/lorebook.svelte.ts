@@ -1,5 +1,5 @@
 import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
-import { selectedLoreBookPage, settings } from "../storage/settingsViews.svelte";
+import { settings } from "../storage/settingsViews.svelte";
 import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
 import { tokenize } from "../tokenizer";
@@ -64,7 +64,7 @@ export function addLorebook(type: number) {
             secondkey: "",
             selective: false,
         });
-    } else {
+    } else if (type === 1) {
         appendLocalLore([
             {
                 key: "",
@@ -94,7 +94,7 @@ export function addLorebookFolder(type: number) {
             secondkey: "",
             selective: false,
         });
-    } else {
+    } else if (type === 1) {
         appendLocalLore([
             {
                 key: "\uf000folder:" + id,
@@ -177,7 +177,7 @@ async function activatePinnedLore(ref: ChatRef | null) {
     return result;
 }
 
-export async function importLoreBook(mode: "global" | "local" | "sglobal") {
+export async function importLoreBook(mode: "global" | "local") {
     const chaId = selectedCharacter()?.chaId;
     // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect
     // it, with its owner (a replacement of its character's chats meanwhile gets nothing).
@@ -272,14 +272,11 @@ export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) 
     return lore;
 }
 
-export async function exportLoreBook(mode: "global" | "local" | "sglobal") {
+export async function exportLoreBook(mode: "global" | "local") {
     try {
         let lore: unknown;
         if (mode === "global") {
             lore = selectedCharacter().globalLore;
-        } else if (mode === "sglobal") {
-            // The Global Lore Book page `LoreBookList` shows in `globalMode`.
-            lore = settings.loreBook[selectedLoreBookPage()]?.data ?? [];
         } else {
             const chat = selectedChat();
             if (!chat) {

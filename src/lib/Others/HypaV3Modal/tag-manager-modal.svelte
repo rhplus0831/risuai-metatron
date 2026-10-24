@@ -11,6 +11,7 @@
     }
 
     let { tagManagerState = $bindable(), hypaV3Data }: Props = $props();
+    const currentSummary = $derived(hypaV3Data.summaries[tagManagerState.currentSummaryIndex]);
 
     function closeTagManager() {
         tagManagerState.isOpen = false;
@@ -23,6 +24,7 @@
         if (!tagName.trim()) return;
 
         const summary = hypaV3Data.summaries[summaryIndex];
+        if (!summary) return;
         if (!summary.tags) {
             summary.tags = [];
         }
@@ -34,7 +36,7 @@
 
     function removeTag(summaryIndex: number, tagIndex: number) {
         const summary = hypaV3Data.summaries[summaryIndex];
-        if (summary.tags && tagIndex >= 0 && tagIndex < summary.tags.length) {
+        if (summary?.tags && tagIndex >= 0 && tagIndex < summary.tags.length) {
             summary.tags.splice(tagIndex, 1);
         }
     }
@@ -48,7 +50,11 @@
         if (tagManagerState.editingTagIndex === -1 || !tagManagerState.editingTag.trim()) return;
 
         const summary = hypaV3Data.summaries[tagManagerState.currentSummaryIndex];
-        if (summary.tags && tagManagerState.editingTagIndex < summary.tags.length) {
+        if (
+            summary?.tags &&
+            tagManagerState.editingTagIndex >= 0 &&
+            tagManagerState.editingTagIndex < summary.tags.length
+        ) {
             summary.tags[tagManagerState.editingTagIndex] = tagManagerState.editingTag.trim();
         }
 
@@ -82,7 +88,7 @@
 </script>
 
 <!-- Tag Manager Modal -->
-{#if tagManagerState.isOpen && tagManagerState.currentSummaryIndex >= 0}
+{#if tagManagerState.isOpen && currentSummary}
     <div class="fixed inset-0 z-50 p-4 bg-black/70 flex items-center justify-center">
         <div class="bg-zinc-900 rounded-lg p-6 w-full max-w-md">
             <div class="flex justify-between items-center mb-6">
@@ -118,8 +124,8 @@
 
             <!-- Tag List -->
             <div class="space-y-2 max-h-60 overflow-y-auto">
-                {#if hypaV3Data.summaries[tagManagerState.currentSummaryIndex].tags && hypaV3Data.summaries[tagManagerState.currentSummaryIndex].tags.length > 0}
-                    {#each hypaV3Data.summaries[tagManagerState.currentSummaryIndex].tags as tag, tagIndex}
+                {#if currentSummary.tags && currentSummary.tags.length > 0}
+                    {#each currentSummary.tags as tag, tagIndex}
                         <div class="flex items-center gap-2 px-3 py-2 rounded-sm bg-zinc-800">
                             {#if tagManagerState.editingTagIndex === tagIndex}
                                 <input

@@ -7,6 +7,7 @@ import type { AlertDialog } from "./alertQueue";
 import type { DeepReadonly } from "../../shared/readonly.ts";
 import type { GenerationTerminalEvent } from "../../shared/jobs.ts";
 import type { UpstreamImportReport } from "../../shared/upstreamBackup.ts";
+import { currentChatRef, type ChatRef } from "./storage/chatStore.svelte";
 
 /** A server job's failure as the tab received it, for the error alert's debug actions. */
 export type JobFailureInfo = {
@@ -52,6 +53,10 @@ export interface alertData {
     jobId?: string;
     /** `requestdata`: the generation and the message it shows, captured when it was opened. */
     generationInfo?: AlertGenerationInfo;
+    /** `branches`: the character captured when the dialog was requested. */
+    chaId?: string;
+    /** `hypaV2`: the chat captured when the dialog was requested. */
+    chatRef?: ChatRef;
     /** `none` between two dialogs: the next one is queued and shows after the gap (`alertQueue.ts`). */
     dialogPending?: boolean;
 }
@@ -379,6 +384,7 @@ export function showHypaV2Alert() {
     void openDialog({
         type: "hypaV2",
         msg: "",
+        chatRef: currentChatRef() ?? undefined,
     });
 }
 

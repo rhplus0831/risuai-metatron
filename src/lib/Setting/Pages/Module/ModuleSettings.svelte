@@ -38,7 +38,17 @@
         }),
     );
     let mode = $state(0);
-    let editModuleIndex = $state(-1);
+    let editModuleId = $state<string | null>(null);
+    const editModule = $derived(
+        editModuleId === null ? undefined : settings.modules.find((module) => module.id === editModuleId),
+    );
+
+    $effect.pre(() => {
+        if (mode === 2 && !editModule) {
+            mode = 0;
+        }
+    });
+
     let moduleSearch = $state("");
     const moduleQuery = $derived(prepareQuery(moduleSearch));
     let charConversionMode = $state(false);
@@ -152,9 +162,7 @@
                                     use:tooltip={language.edit}
                                     onclick={async (e) => {
                                         e.stopPropagation();
-                                        const index = settings.modules.findIndex((v) => v.id === rmodule.id);
-                                        tempModule = rmodule;
-                                        editModuleIndex = index;
+                                        editModuleId = rmodule.id;
                                         mode = 2;
                                     }}
                                 >
@@ -251,14 +259,13 @@
             mode = 0;
         }}>{hasDraftContent ? language.createModule : language.cancel}</Button
     >
-{:else if mode === 2}
+{:else if mode === 2 && editModule}
     <h2 class="mb-2 text-2xl font-bold mt-2">{language.editModule}</h2>
-    <ModuleMenu bind:currentModule={tempModule} />
-    {#if tempModule.name !== ""}
+    <ModuleMenu currentModule={editModule} />
+    {#if editModule.name !== ""}
         <Button
             className="mt-6"
             onclick={() => {
-                settings.modules[editModuleIndex] = tempModule;
                 mode = 0;
             }}>{language.editModule}</Button
         >

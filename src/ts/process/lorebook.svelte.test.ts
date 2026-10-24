@@ -356,13 +356,8 @@ describe("adding chat lorebook entries during a job in the chat", () => {
     });
 });
 
-// The export of the Global Lore Book page (`"sglobal"`, the list `LoreBookList` shows in
-// `globalMode`) and of the chat lorebook while the selected chat is still loading.
+// The export of the chat lorebook while the selected chat is still loading.
 describe("exportLoreBook", () => {
-    const pages = [
-        { name: "First", data: [lore("p1", "one", "First page")] },
-        { name: "Second", data: [lore("p2", "two", "Second page"), lore("p3", "three", "Also second")] },
-    ];
     async function exporting(seed?: (fake: any) => void) {
         const booted = await boot(undefined, undefined, seed);
         const globalApi = await import("../globalApi.svelte");
@@ -371,26 +366,6 @@ describe("exportLoreBook", () => {
         const exported = (call = 0) => JSON.parse(Buffer.from(download.mock.calls[call][1] as any).toString("utf-8"));
         return { ...booted, download, language, exported };
     }
-
-    it("exports the selected Global Lore Book page", async () => {
-        const { lorebook, selectionModule, exported, language } = await exporting((fake) =>
-            fake.set("loreBook", "main", pages),
-        );
-        await lorebook.exportLoreBook("sglobal");
-        expect(exported(0)).toEqual({ type: "risu", ver: 1, data: pages[0].data });
-        selectionModule.selectLoreBookPage(1);
-        await lorebook.exportLoreBook("sglobal");
-        expect(exported(1)).toEqual({ type: "risu", ver: 1, data: pages[1].data });
-        expect(alerts.error).not.toHaveBeenCalled();
-        expect(alerts.normal).toHaveBeenCalledWith(language.successExport);
-    });
-
-    it("exports an empty list when there is no Global Lore Book page", async () => {
-        const { lorebook, exported } = await exporting((fake) => fake.set("loreBook", "main", []));
-        await lorebook.exportLoreBook("sglobal");
-        expect(exported()).toEqual({ type: "risu", ver: 1, data: [] });
-        expect(alerts.error).not.toHaveBeenCalled();
-    });
 
     it("exports the selected chat's lorebook, and refuses with a notice while that chat is still loading", async () => {
         const { lorebook, chat, ref, chaId, sync, download, exported, language } = await exporting();
