@@ -4,21 +4,23 @@ Bugs, latent defects, stale docs and comments, and test flakes that agent sessio
 
 These are notes, not verified reports. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
+Reviewed against the current source on 2026-10-24. Confirmed fixes have been removed, and partially fixed entries have been narrowed to the remaining gap. Entries that still need runtime reproduction are retained.
+
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (15)
-- [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (15)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (14)
+- [Generation jobs, channels, and providers](#generation-jobs-channels-and-providers) (14)
 - [Lua scripting](#lua-scripting) (2)
-- [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (8)
+- [Memory, embeddings, and token counts](#memory-embeddings-and-token-counts) (7)
 - [Lorebooks and modules](#lorebooks-and-modules) (4)
-- [Chat screen](#chat-screen) (10)
+- [Chat screen](#chat-screen) (9)
 - [Alerts, dialogs, keys, and settings controls](#alerts-dialogs-keys-and-settings-controls) (6)
 - [Notifications](#notifications) (2)
 - [Image generation and TTS](#image-generation-and-tts) (6)
 - [Server HTTP, auth, and error codes](#server-http-auth-and-error-codes) (7)
 - [Assets, MIME types, and the service worker](#assets-mime-types-and-the-service-worker) (6)
 - [Backup import](#backup-import) (1)
-- [Stale docs and comments](#stale-docs-and-comments) (14)
+- [Stale docs and comments](#stale-docs-and-comments) (12)
 - [Tests and tooling](#tests-and-tooling) (11)
 
 ## Chat store, sync, and change feeds
@@ -137,14 +139,6 @@ Rechecked 2026-10-21 against the code: still present.
 **Why it matters:** a lost live update leaves other tabs on a stale revision until reconnect.
 **Suggested handling:** if a production path ever writes from inside batch input evaluation, give each SQL transaction its own feed refs (like `transactionInvalidations`) or publish nested commits immediately.
 
-### Append/replace depth mismatch
-
-`server/src/data/chatStore.ts` ~220–235: `prepareMessage` (append) runs `serialize` on one message, but the whole-chat path (`create`/`replace`) serializes the message array, adding one JSON nesting level against `MAX_JSON_DEPTH` (256). A message accepted by `append` at the depth limit makes the chat refuse a `replace` of itself. Found by the CC2 challenger (2026-10-23) with an in-memory probe: append at the limit → checkpoint save → `compose` ok → `replace` refused.
-
-**Why it matters:** a checkpoint load (Chat Checkpoints slice 3, CC3) applies `compose`'s chat as a `replace` group, so such a checkpoint would be unloadable; also any client whole-chat replace of such a chat fails.
-
-**Suggested handling:** CC3 (or a small fix) should make the two paths agree (check each message's depth the same way in both, or measure the array's depth minus one).
-
 ### Unloaded chat fmIndex passes floor
 
 Found by the CC3 challenger (2026-10-23). `src/ts/storage/chatStore.svelte.ts` ~2526 lets a tab queue `fmIndex` edits for a chat it has not loaded; when the chat later loads, `installRead` (~5299) keeps those local fields but adopts the server's newer revision, and pending work then goes out on that revision (~3732). Sequence: queue an fmIndex edit → another tab loads a checkpoint (restore floor set) → this tab hydrates the chat → the old edit is sent on the post-load base, passes the floor, and overwrites the restored `fmIndex`.
@@ -211,14 +205,6 @@ Rechecked 2026-10-21 against the code: still present.
 **Suggested handling:** if fixed, track the job that installed each status and clear only its own on end; keep modal errors/results of finished jobs.
 
 Rechecked 2026-10-21 against the code: still present.
-
-### Legacy progress before memoryProgress
-
-The tab hides a job's legacy `progress` overlay value in other chats only once the job sent a `memoryProgress` notice (`legacyProgressShown`, `src/ts/stores.svelte.ts`; `memoryProgressStore.chats` set in `src/ts/network/jobChannel.ts` `applyMemoryProgress`). The server's legacy producer (`server/src/prompt/runner.ts` ~981 `progress: payload => services.notice({ kind: "progress" ...})`) stays unchanged by the HypaV3 background memory plan, so a run in chat A that sends legacy `progress` before its first `memoryProgress` briefly shows in chat B.
-
-**Why it matters:** plan U5 says an approved initial run shows progress only in its chat; slice 4 (2026-10-22) can only enforce it after the first `memoryProgress` arrives.
-
-**Suggested handling:** when wiring the `memoryProgress` adapter (slice 3b, runner.ts) send the open `memoryProgress` before any legacy `progress` of the same run, or stop sending legacy `progress` for runs that send `memoryProgress`.
 
 ### Attach promoted request overtakes notices
 
@@ -368,18 +354,6 @@ challenge 2026-10-22. Matters once background tasks warm vectors for many chats.
 
 **Suggested handling:** raise it if a caller ever keeps a `HypaProcessorV2` across calls with changing groups; the fix would key in-memory hits by the cache key, not the id.
 
-### Google count no timeout
-
-`server/src/prompt/tokens.ts` ~62-72 `countWithGoogle` calls `fetchImpl(...countTokens...)` with no
-AbortSignal and no timeout. With `googleClaudeTokenizing` (or a Gemini main model routed to Google
-counting), a stalled endpoint keeps the count pending indefinitely: a job's prompt counting waits on
-it, and the HypaV3 memory task host (`memoryTaskHost.ts`, 2026-10-22, fab4940ca) only stops waiting
-via `untilAborted` while the fetch itself stays live and counts against the caller's drain.
-
-**Why it matters:** found during slice 5b review of the HypaV3 Background Memory plan; outside that slice.
-**Suggested handling:** a fix would give `TokenCounter.encode`/`count` an optional signal or a bounded
-timeout (falling back to gemmaSentencePiece as it does for a non-200).
-
 ### Server lore parallel Google counts
 
 Since TK2 (2026-10-23) the lore engine starts each activated entry's `host.tokenize` in the loop and awaits them together. The server's lore host (`server/src/lua/bindings.ts` ~1156/~1717) calls `deps.tokens.count` directly, and `server/src/prompt/tokens.ts` `countWithGoogle` has a cache and a 30 s timeout but no concurrency limit or in-flight dedupe, so a Google-tokenized model with many actives fires that many `countTokens` requests at once.
@@ -491,13 +465,6 @@ Rechecked 2026-10-21 against the code: still present.
 `src/lib/Others/BookmarkList.svelte` (~222 and the group branch) mounts `Chat` for expanded bookmarks with live `msg.data` but no `messageId`. Since 2026-10-23 (small-fixes slice 10) `Chat.svelte` passes `streaming={isStreamingMessage(displayedChat, messageId)}` to `ChatBody`, which skips auto-translate/`translateHTML` while streaming — but without `messageId` a bookmark preview never counts as streaming, so continuing a bookmarked message with auto-translate on still runs the rendered translation per chunk in an open preview. Adding `messageId` there would switch previews to the stored-translation path (`Chat.svelte` ~222), so a fix needs a separate streaming flag/prop. Rare (panel open during Continue); unplanned.
 
 Also noted: in "off" mode the translate/retranslate buttons stay visible while streaming (`Chat.svelte` ~1388 checks `isOptimizedStreamingMessage`, false in off); a click flips `translated` but shows nothing until the stream ends, and the end-of-stream row remount (`Chats.svelte` mount key text null → data) drops it. Pre-existing reset, see shared composer across chats style row-state issues.
-
-### Screenshot cache strips ?w=
-
-`src/lib/ChatScreens/DefaultChatScreen.svelte` ~804 calls `html2canvas.toCanvas(chat)` with no options. html-to-image's module-level resource cache strips query strings unless `includeQueryParams: true` (`node_modules/html-to-image/src/dataurl.ts` ~40, `embed-resources.ts` ~42), so once chat avatars use `/api/asset/<hex>?w=512` (Server Thumbnails ST4) a screenshot can reuse a thumbnail where the original is shown (cardboard theme) or vice versa. Latent until ST4 moves chat avatars to thumbnails. Fix: `toCanvas(element, { includeQueryParams: true })`. Found by the ST2 challenger (2026-10-24).
-
-**Why it matters:** wrong-resolution images in chat screenshots after ST4.
-**Suggested handling:** raise with ST4/ST5 or as a small follow-up; related the Server Thumbnails plan.
 
 ### makeGroupImage onerror hang
 
@@ -632,15 +599,11 @@ After SA8 (2026-10-23) Stop aborts every TTS provider request, but `translateVox
 
 ### bodyLimit preread 500
 
-Hono's `bodyLimit` prereads the request stream itself when no `Content-Length` is declared, before the handler's own try/catch, so a body stream that errors (client gone mid-upload) escapes to the app's `onError` 500 with a `console.error` and a 500 `http` diagnostic event. Seen 2026-10-20 in `server/src/routes/resources.ts:185` (`POST /api/resources/boot`, `limitBootBody`); `routes/translate.ts` and `routes/transform.ts` use the same route-level limiter pattern. Search slice 4a (docs/plan/search.md) fixed it only for `POST /api/chats/search` with a wrapper that maps the limiter's own read failure to 400.
+Hono's `bodyLimit` prereads the request stream itself when no `Content-Length` is declared, before the handler's own try/catch, so a body stream that errors (client gone mid-upload) escapes to the app's `onError` 500 with a `console.error` and a 500 `http` diagnostic event. The route-level cases originally reported in resources boot, translate, and transform are fixed through `limitedBody()` in `server/src/routes/limitedBody.ts`. The global limiter in `server/src/app.ts` still calls bare `limitBody(c, next)` for routes without their own limiter, including `POST /api/resources/batch`, so that preread failure remains.
 
 **Why it matters:** noisy 500s/diagnostics for every dropped upload; inconsistent with the 400 the boot handler gives for a read failure after the limiter.
 
-**Suggested handling:** if touching these routes, reuse the search route's limiter wrapper (`server/src/routes/messageSearch.ts`) instead of the bare `bodyLimit`.
-
-Rechecked 2026-10-21 against the code: still present.
-
-Fixed 2026-10-23 by small-fixes slice 2 / combined-run SF2 (`82be5442a`, not yet on metatron when written): every route-level limiter goes through `limitedBody()` in `server/src/routes/limitedBody.ts`. The declared-length path is still open: [readJsonBody declared-length read 500](#readjsonbody-declared-length-read-500).
+**Suggested handling:** use the shared `limitedBody()` wrapper for the global limiter too, preserving its existing route exclusions and 413 response. The declared-length path is separate: [readJsonBody declared-length read 500](#readjsonbody-declared-length-read-500).
 
 ### readJsonBody declared-length read 500
 
@@ -732,22 +695,6 @@ Since UP1 (cb7d7a399, 2026-10-23, not pushed), `server/src/data/upstream/importS
 
 ## Stale docs and comments
 
-### memory.md stale V3 mains
-
-`docs/structure/memory.md` lines ~17 and ~107 name `hypaMemoryV3Main` / `hypaMemoryV3MainExp`. Since HypaV3 background-memory slice 1a (2026-10-22), the server copy `server/src/prompt/memory/hypav3.ts` has no such functions: it composes `prepareHypaV3` → `planHypaV3Summaries` → `executeHypaV3Plan` → `selectHypaV3` (the client copy `src/ts/process/memory/hypav3.ts` still has both mains). The invariant at ~107 ("apply behavioral changes to both mains") must now say both implementations' branches in the server parts plus the client mains.
-
-**Why it matters:** the plan assigns memory.md edits to slice 8 only; parallel slices may not touch it, so this staleness persists until then and could mislead a slice reading the guide.
-
-**Suggested handling:** when slice 8 of the HypaV3 Background Memory plan updates memory.md, include these two lines; until then, trust hypav3.ts over the guide.
-
-### memory.md V3 persistence stale
-
-`docs/structure/memory.md:75` (Persistence bullet) says `assemblePrompt` writes `hypaV3Data` "on success and with a returned error" through `mergeHypaV3Write`. Since slice 3b of the HypaV3 background memory plan (`assemble.ts` `hypaV3Step`, 2026-10-22), every summary is saved at its checkpoint (after D15 validation), an error return writes nothing more, and the final write is `mergeHypaV3SelectionWrite`. Line 129 also describes `hypaV3MemoryWrite.test.ts` cases as "a returned-error write"; the memoryJobs case of that name was renamed to describe checkpoint persistence followed by the failure.
-
-**Why it matters:** memory.md is slice 8's file (the plan keeps parallel slices off it), so 3b could not fix it; a reader would believe the old single-write behavior.
-
-**Suggested handling:** when slice 8 (or anyone) edits memory.md, rewrite the Persistence bullet from the 3b commit message.
-
 ### persistence.md plugin index
 
 `docs/structure/persistence.md` ~82 ("Upstream `.bin` conversion of the library") says cold storage folds `pluginCustomStorage._coldplugin` values into `_pluginStorage`; since Combined Run UP2 (2026-10-23) the converter also resolves `_coldpluginIndex` (index record, `s`/`l` entries, precedence inline > index > `_coldplugin`). backup-sync-hub.md documents it; persistence.md was owned by SA3/CC6 during that run.
@@ -792,21 +739,17 @@ Since the tab counts over `/api/tokens/count` (Server Tokenizer TK2, 2026-10-23)
 - `server/src/prompt/tokens.ts:7`: "the client's `encode` (`src/ts/tokenizer.ts`)".
 - `shared/llm/request.ts:150`: `context.tokenizer` is "the tab's `encode` scope" (now `tabTokenScope`).
 - `docs/structure/plugins-mcp.md:220`: says a custom `tokenizerFunc` runs; it is never called now.
-- `docs/structure/global-api.md:180` Known Hazard (tab Google count `tokenizeGoogleCloud` sent without a signal) no longer exists: the tab has no Google count.
-- `docs/structure/self-host-server.md:101-102`, `server/src/llm/settings.ts:287`, `server/src/llm/requests.ts:1374`, `server/src/prompt/tokenizers/{index,gemma,tiktoken}.ts` headers, `server/src/tests/tokenFixtures.ts:98`: "the client's `encode`/`gemmaTokenize`/`tikJS`" parity wording; now historical (the browser ids are a frozen reference).
-- `util/playwright/checkCredentialTraffic.mjs:801` calls the removed `tokenizer.encode(...)` (switch to `tokenizer.tokenize(...)`, which still triggers the server's Google countTokens); `captureTokenizerIds.mjs`/`captureBrowserBaseline.mjs` call `tk.encode` and can no longer capture.
+- `server/src/llm/settings.ts:287`, `server/src/llm/requests.ts:1374`, `server/src/prompt/tokenizers/{index,gemma}.ts` headers, `server/src/tests/tokenFixtures.ts:98`: "the client's `encode`/`gemmaTokenize`" parity wording; now historical (the browser ids are a frozen reference).
+- `util/playwright/checkCredentialTraffic.mjs` now calls `tokenizer.tokenize(...)`, but its header and scenario label still say `encode`; `captureTokenizerIds.mjs`/`captureBrowserBaseline.mjs` still call the removed `tk.encode` and can no longer capture.
 
 **Why it matters:** they were outside TK2's file list. **Suggested handling:** TK4 (docs slice) or any later edit of those files should reword them. See the Combined Run.
 
 ### Lua live-proxy wording stale
 
-Since UP13 (2026-10-23) `server/src/lua/runtime.ts` `createPrepared` creates every engine with wasmoon `enableProxy: false`, so an undecorated object is copied by wasmoon's table extension, not proxied. Two places still give the old reason for "host answers must be primitives":
-
-- `server/src/scripts/workerPool.ts` ~206 (`checkHostReply` doc comment): "A JS object would reach Lua as a live proxy of the worker's object (see the runtime)."
-- `docs/structure/self-host-server.md:104`: "structured data crosses as a JSON string, since a JS object would reach Lua as a live proxy". Line 106 (the runtime entry) does not list the engine options either; the slice documented them in `scripts-triggers.md` only.
+Since UP13 (2026-10-23) `server/src/lua/runtime.ts` `createPrepared` creates every engine with wasmoon `enableProxy: false`, so an undecorated object is copied by wasmoon's table extension, not proxied. `server/src/scripts/workerPool.ts` ~206 (`checkHostReply` doc comment) still gives the old reason for "host answers must be primitives": "A JS object would reach Lua as a live proxy of the worker's object (see the runtime)." The stale wording has been removed from `docs/structure/self-host-server.md`.
 
 **Why it matters:** stale wording misleads the next reader into thinking the proxy is the active risk; the primitive rule still holds (the value guard and JSON contract), only the reason changed.
-**Suggested handling:** reword both when next touching workerPool.ts or self-host-server.md (keep the rule, change the reason: values stay detached from worker objects without relying on wasmoon's conversion).
+**Suggested handling:** reword the workerPool.ts comment (keep the rule, change the reason: values stay detached from worker objects without relying on wasmoon's conversion).
 
 ### Cold-missing comment stale
 
@@ -832,7 +775,7 @@ Since UP13 (2026-10-23) `server/src/lua/runtime.ts` `createPrepared` creates eve
 
 ### Timing plan D5 label
 
-Two spots cite a plan decision as the reason, which `STRUCTURE.md` T5 forbids outside docs/plan, archive, audit, and research: `vitest.config.ts:26` comment "(`STRUCTURE.md` V3, timing plan D5)" and `docs/structure/build-test-platforms.md:230` "(decision D5 of the timing plan, 2026-10-22)". Seen 2026-10-23 at `60abd0c4f`; both came in after the 2026-10-21 label cleanup.
+`vitest.config.ts:26` still cites a plan decision as the reason, which `STRUCTURE.md` T5 forbids outside docs/plan, archive, audit, and research: "(`STRUCTURE.md` V3, timing plan D5)". Seen 2026-10-23 at `60abd0c4f`; it came in after the 2026-10-21 label cleanup. The matching label has been removed from `docs/structure/build-test-platforms.md`.
 
 **Why it matters:** the timing plan is archived, so the label goes stale; the reason itself (a hang guard, not a performance budget) is already stated next to it.
 
