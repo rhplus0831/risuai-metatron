@@ -598,7 +598,7 @@ async function parseAdditionalAssets(
             : "";
 
     const inputs = syncAssetsCache();
-    if (char.type === "character" && (!assetsCache || !emoAssetsCache)) {
+    if (!assetsCache || !emoAssetsCache) {
         resetAssetsCache(
             inputs.character?.charAssets ?? char.additionalAssets ?? [],
             inputs.character?.emoAssets ?? char.emotionImages ?? [],

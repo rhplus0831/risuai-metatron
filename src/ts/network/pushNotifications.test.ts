@@ -23,7 +23,9 @@ const deps = vi.hoisted(() => ({
     openRoute: vi.fn<(path: string) => boolean>(() => true),
     settings: { ui: { notification: true } },
 }));
-vi.mock("../storage/serverAuth", () => ({ authFetch: deps.authFetch }));
+vi.mock("../storage/serverAuth", async () =>
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: deps.authFetch }),
+);
 vi.mock("../router/router.svelte", () => ({ openRoute: deps.openRoute }));
 vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
 
@@ -143,11 +145,14 @@ const storage = {
 function secure(value: boolean) {
     Object.defineProperty(window, "isSecureContext", { value, configurable: true });
 }
-/** Lets the boot's promise chain (the key, the registration, the subscription, the PUT) settle. */
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => (resolve = done));
+    return { promise, resolve };
+}
+/** Drains the mocked I/O without advancing the registration deadline. */
 async function settle() {
-    for (let i = 0; i < 12; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    await vi.advanceTimersByTimeAsync(0);
 }
 async function boot() {
     const module = await import("./pushNotifications");
@@ -166,6 +171,7 @@ function visibilityChange(to: DocumentVisibilityState) {
 const showPage = () => visibilityChange("visible");
 
 beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.resetModules();
     storage.map.clear();
     storage.throwReads = false;
@@ -201,6 +207,7 @@ beforeEach(() => {
     vi.stubGlobal("Notification", FakeNotification);
     Object.defineProperty(window, "PushManager", { value: class {}, configurable: true });
     Object.defineProperty(navigator, "serviceWorker", { value: container, configurable: true });
+    Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
     Object.defineProperty(document, "visibilityState", { get: () => visibility, configurable: true });
     vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
     visibilityListeners.length = 0;
@@ -214,8 +221,109 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+});
+
+describe("subscription serialization", () => {
+    it("serializes sync, disable, and enable across tabs with risu-push, keeping opt-out inside the lock and permission inside the click", async () => {
+        // Independent module instances have their own queues and stores, but share the browser APIs.
+        const tails = new Map<string, Promise<unknown>>();
+        const locks = {
+            request: vi.fn((name: string, task: () => Promise<unknown>) => {
+                const run = (tails.get(name) ?? Promise.resolve()).then(task);
+                tails.set(
+                    name,
+                    run.catch(() => {}),
+                );
+                return run;
+            }),
+        };
+        Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
+        FakeNotification.permission = "granted";
+        const syncing = await boot();
+        vi.resetModules();
+        const disabling = await boot();
+        vi.resetModules();
+        const enabling = await boot();
+        const old = current!;
+        const syncSent = deferred();
+        const finishSync = deferred<Response>();
+        deps.authFetch.mockImplementationOnce(() => {
+            syncSent.resolve();
+            return finishSync.promise;
+        });
+        const sync = syncing.reconcilePush();
+        await syncSent.promise;
+
+        const unsubscribeStarted = deferred();
+        const finishUnsubscribe = deferred();
+        old.unsubscribe.mockImplementation(async () => {
+            unsubscribeStarted.resolve();
+            await finishUnsubscribe.promise;
+            current = null;
+            return true;
+        });
+        const disable = disabling.disablePushOnThisBrowser();
+        FakeNotification.permission = "default";
+        FakeNotification.requestPermission.mockImplementation(async () => {
+            FakeNotification.permission = "granted";
+            return "granted";
+        });
+        const enable = enabling.enablePushOnThisBrowser();
+        expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+        await settle();
+        expect(localStorage.getItem(BROWSER_OFF)).toBeNull();
+        expect(old.unsubscribe).not.toHaveBeenCalled();
+
+        finishSync.resolve(new Response(null, { status: 204 }));
+        await sync;
+        await unsubscribeStarted.promise;
+        await settle();
+        expect(localStorage.getItem(BROWSER_OFF)).toBe("1");
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(1);
+        finishUnsubscribe.resolve();
+        await disable;
+        await expect(enable).resolves.toBe(true);
+
+        expect([...new Set(locks.request.mock.calls.map(([name]) => name))]).toEqual(["risu-push"]);
+        expect(current).not.toBeNull();
+        expect(current).not.toBe(old);
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2);
+        expect(state(enabling)).toMatchObject({ subscribed: true, optedOut: false, error: null });
+        expect(localStorage.getItem(BROWSER_OFF)).toBeNull();
+    });
+
+    it("keeps disable, enable, and sync in the tab's queue when Web Locks are unavailable", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const old = current!;
+        const unsubscribeStarted = deferred();
+        const finishUnsubscribe = deferred();
+        old.unsubscribe.mockImplementation(async () => {
+            unsubscribeStarted.resolve();
+            await finishUnsubscribe.promise;
+            current = null;
+            return true;
+        });
+        const disable = module.disablePushOnThisBrowser();
+        await unsubscribeStarted.promise;
+        const enable = module.enablePushOnThisBrowser();
+        const sync = module.reconcilePush();
+        await settle();
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(1);
+        expect(localStorage.getItem(BROWSER_OFF)).toBe("1");
+
+        finishUnsubscribe.resolve();
+        await disable;
+        await expect(enable).resolves.toBe(true);
+        await sync;
+        expect(current).not.toBeNull();
+        expect(current).not.toBe(old);
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2);
+        expect(state(module)).toMatchObject({ subscribed: true, optedOut: false, error: null });
+    });
 });
 
 describe("startPushNotifications", () => {
@@ -724,6 +832,28 @@ describe("showCompletionNotification", () => {
 });
 
 describe("the page shown and the worker's messages", () => {
+    it("closes every page fallback completion notice on foreground dismissal, including repeated tags, and leaves other notices open", async () => {
+        FakeNotification.permission = "granted";
+        delete (navigator as unknown as Record<string, unknown>).serviceWorker;
+        visibility = "hidden";
+        const module = await boot();
+        for (const tag of [TAG, `${TAG}:a`, `${TAG}:a`, `${TAG}:b`, "other-notice"]) {
+            await module.showCompletionNotification({ title: "Done", body: "Ready", url: "/chat/a/k", tag });
+        }
+        expect(created).toHaveLength(5);
+        for (const notice of created) expect(notice.close).not.toHaveBeenCalled();
+
+        focused = true;
+        showPage();
+        await settle();
+        for (const notice of created.slice(0, 4)) expect(notice.close).toHaveBeenCalledTimes(1);
+        expect(created[4].close).not.toHaveBeenCalled();
+        showPage();
+        await settle();
+        for (const notice of created.slice(0, 4)) expect(notice.close).toHaveBeenCalledTimes(1);
+        expect(created[4].close).not.toHaveBeenCalled();
+    });
+
     it("closes the tagged notifications when the page is shown", async () => {
         const first = { tag: TAG, close: vi.fn() };
         shown = [first];

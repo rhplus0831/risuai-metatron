@@ -1,10 +1,10 @@
 <script module lang="ts">
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { getModuleAssets, getModules } from "src/ts/process/modules";
+    import { getModuleAssets } from "src/ts/process/modules";
     import { findAssetPrefix } from "src/ts/parser/assetSearch";
 
     // This boundary preserves the value on disabled-module edits; every row shares the copies.
-    const moduleAssets = $derived(getModuleAssets(undefined, getModules()));
+    const moduleAssets = $derived(getModuleAssets());
     /** checkImg's normalized assets and per-name results, replaced only when its inputs change. */
     const imageAssets = $derived.by(() => {
         const assets = moduleAssets.concat(selectedCharacter()?.additionalAssets ?? []);
@@ -416,7 +416,11 @@
         return { html: addMetadataToElement(html, modelShortName), styles };
     }
 
-    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision, ++parseRun));
+    let markParsingResult = $derived.by(() => {
+        // Translation can await before ParseMarkdown reads the parser's asset inputs.
+        moduleAssets;
+        return markParsing(msgDisplay, character, idx, renderRevision, ++parseRun);
+    });
 
     /** Wait for a settled DOM render, including auto-translation and replacement parses. */
     export async function whenRendered() {

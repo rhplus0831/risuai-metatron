@@ -102,7 +102,7 @@ export async function stageUpstreamImport(
             addUpstreamReportEntry(report.excluded, "asset-name-invalid", ignored.name);
         }
         for (const namespace of Object.keys(decoded.kv)) {
-            addUpstreamReportEntry(report.excluded, "unknown-setting", `kv:${namespace}`);
+            addUpstreamReportEntry(report.excluded, "savekv-namespace", namespace);
         }
         const converted = convertUpstreamDatabase(decoded.database, {
             report,

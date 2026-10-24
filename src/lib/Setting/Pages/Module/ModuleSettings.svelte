@@ -17,7 +17,7 @@
     } from "@lucide/svelte";
     import { v4 } from "uuid";
     import { tooltip } from "src/ts/gui/tooltip";
-    import { alertClear, alertConfirm, alertNormal, alertSelect } from "src/ts/alert";
+    import { alertConfirm, alertNormal, alertSelect, type alertData } from "src/ts/alert";
     import { alertStore } from "src/ts/stores.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import { matchesAny, prepareQuery, type PreparedQuery } from "src/ts/util/koreanSearch";
@@ -53,12 +53,10 @@
     const moduleQuery = $derived(prepareQuery(moduleSearch));
     let charConversionMode = $state(false);
 
-    // The export is over: a wait or progress status still set is stale (a failure the exporter
-    // could not alert), so clear it and keep the row usable. A dialog is never closed here.
-    function clearStaleExportWait() {
-        const type = alertStore.status()?.type;
-        if (type === "wait" || type === "progress") {
-            alertClear();
+    // Clear a wait left by this export only while it still owns the status slot.
+    function clearStaleExportWait(status: alertData | null) {
+        if (status) {
+            alertStore.clearStatus(status);
         }
     }
 
@@ -141,17 +139,19 @@
                                         const sel = parseInt(
                                             await alertSelect([`CharX (${language.recommended})`, `RisuM (Legacy)`]),
                                         );
+                                        let exportStatus: alertData | null = null;
+                                        const onInstall = (status: alertData) => (exportStatus = status);
                                         try {
                                             if (sel === 0) {
-                                                await exportModule(rmodule);
+                                                await exportModule(rmodule, { onInstall });
                                             } else {
-                                                await exportModuleLegacy(rmodule);
+                                                await exportModuleLegacy(rmodule, { onInstall });
                                             }
                                         } catch (error) {
                                             // Both exporters alert their own failure; add no second alert.
                                             console.error(error);
                                         } finally {
-                                            clearStaleExportWait();
+                                            clearStaleExportWait(exportStatus);
                                         }
                                     }}
                                 >

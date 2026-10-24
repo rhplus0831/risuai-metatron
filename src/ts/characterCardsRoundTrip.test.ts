@@ -1,6 +1,5 @@
 import crc32 from "crc/crc32";
 import * as fflate from "fflate";
-import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,10 +26,11 @@ const { server, alerts, assets } = vi.hoisted(() => ({
     assets: { saved: [] as Uint8Array[] },
 }));
 
-vi.mock("./storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
-    getNodeServerProxyAuth: async () => "signed-token",
-}));
+vi.mock("./storage/serverAuth", async () =>
+    (await import("./storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
+    }),
+);
 vi.mock("./alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
@@ -179,6 +179,94 @@ afterEach(() => {
 });
 
 describe("CharXImporter asset admission", () => {
+    it("rejects parse and done with the original ZIP decoder error and clears assets while aborting pending uploads", async () => {
+        const { globalApi } = await boot();
+        const { CharXImporter } = await import("./process/processzip");
+        const bytes = fflate.zipSync(
+            {
+                "card.json": encode(cardV3("Broken ZIP")),
+                "module.risum": new Uint8Array([1]),
+                "assets/saved.png": new Uint8Array([1]),
+                "assets/pending.png": new Uint8Array([2]),
+                "assets/broken.png": new Uint8Array([3]),
+            },
+            { level: 0 },
+        );
+        const brokenHeader = Buffer.from(bytes).indexOf("assets/broken.png") - 30;
+        // An unsupported compression method makes fflate call ondata with its ZIP error and null data.
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint16(brokenHeader + 8, 0xffff, true);
+
+        let startUpload!: () => void;
+        const started = new Promise<void>((resolve) => {
+            startUpload = resolve;
+        });
+        let finishUpload!: (key: string) => void;
+        let abortUpload!: (error: unknown) => void;
+        const pending = new Promise<string>((resolve, reject) => {
+            finishUpload = resolve;
+            abortUpload = reject;
+        });
+        let uploadSignal: AbortSignal | undefined;
+        let uploadStopped = false;
+        vi.mocked(globalApi.saveAsset).mockImplementation(async (data, _id, _name, options) => {
+            if (data[0] === 1) return "assets/already-saved.png";
+            uploadSignal = options?.signal;
+            uploadSignal?.addEventListener("abort", () => abortUpload(uploadSignal!.reason), { once: true });
+            startUpload();
+            try {
+                return await pending;
+            } finally {
+                uploadStopped = true;
+            }
+        });
+
+        const importer = new CharXImporter();
+        let zipError: Error | undefined;
+        const handle = importer.unzip.onfile!;
+        importer.unzip.onfile = (file) => {
+            const start = file.start.bind(file);
+            file.start = () => {
+                const ondata = file.ondata!;
+                file.ondata = (error, data, final) => {
+                    if (error) {
+                        zipError = error;
+                        expect(data).toBeNull();
+                    }
+                    ondata(error, data, final);
+                };
+                start();
+            };
+            handle(file);
+        };
+        let input!: ReadableStreamDefaultController<Uint8Array>;
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                input = controller;
+            },
+        });
+        // Observe rejection immediately; feed the bad entry only after a save is registered and another is pending.
+        const parsing = importer.parse(stream).catch((error: unknown) => error);
+        try {
+            input.enqueue(bytes.subarray(0, brokenHeader));
+            await started;
+            await vi.advanceTimersByTimeAsync(0);
+            expect(importer.assets).toEqual({ "assets/saved.png": "assets/already-saved.png" });
+            expect(uploadStopped).toBe(false);
+
+            input.enqueue(bytes.subarray(brokenHeader));
+            const failure = await parsing;
+            expect(zipError).toBeInstanceOf(Error);
+            expect(failure).not.toBeInstanceOf(TypeError);
+            expect(failure).toBe(zipError);
+            await expect(importer.done()).rejects.toBe(zipError);
+            expect(uploadSignal?.aborted).toBe(true);
+            expect(uploadStopped).toBe(true);
+            expect(importer.assets).toEqual({});
+        } finally {
+            finishUpload("assets/late-save.png");
+        }
+    });
+
     it("holds about ten decoded unsaved assets while uploads of forty 96 KiB entries are stalled", async () => {
         const { globalApi } = await boot();
         const { CharXImporter, CharXWriter } = await import("./process/processzip");
@@ -188,8 +276,9 @@ describe("CharXImporter asset admission", () => {
             // Each entry stays larger than a 64 KiB feed slice in the zip (level 0 keeps the
             // deflate stream stored), so a single synchronous unzip push cannot complete more than
             // one asset.
-            const data = randomBytes(96 * 1024);
-            data[0] = i;
+            // These deterministic bytes cannot contain a PK ZIP signature. Level 0 still keeps
+            // all 96 KiB in the archive, preserving the feed-slice and backpressure checks.
+            const data = new Uint8Array(96 * 1024).fill(i);
             await writer.write(`assets/${i}.png`, data, 0);
         }
         await writer.write("card.json", JSON.stringify(cardV3("Backpressure")));

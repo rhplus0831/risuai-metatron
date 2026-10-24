@@ -204,10 +204,8 @@ describe("POST /api/backups/import-upstream/prepare and /commit", () => {
             ["database.risudat", encodeBlockSave(UPSTREAM_FIXTURE_DATABASE, { compression: true, kv })],
         ]);
         const prepared = await prepare(s, bytes);
-        const excluded = prepared.report.excluded.find((entry: { code: string }) => entry.code === "unknown-setting");
-        expect(excluded.examples).toEqual(
-            expect.arrayContaining(Object.keys(kv).map((namespace) => `kv:${namespace}`)),
-        );
+        const excluded = prepared.report.excluded.find((entry: { code: string }) => entry.code === "savekv-namespace");
+        expect(excluded.examples).toEqual(expect.arrayContaining(Object.keys(kv)));
 
         const res = await commitRequest(s, { token: prepared.token });
         expect(res.status).toBe(200);

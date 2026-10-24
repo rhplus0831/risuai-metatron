@@ -1,7 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
 import type { ChannelAnswer, GenerationCallbackEvent, GenerationEvent } from "../../../shared/jobs.ts";
-import { bootMutations, m, refK, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
+import { compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
+import { bootMutations, m, plain, refK, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
+import type { StoreBackedServer } from "../storage/tests/storeBackedServer";
+import type { ChannelTransport } from "./jobChannel";
 
 // The callback barrier of the job channel over the real stores: the save adapter, the chat module,
 // the transport (`generationJobs.ts`, whose chain loads the dispatcher lazily and remembers every
@@ -12,12 +15,15 @@ import { bootMutations, m, refK, warmMutationGraph } from "../storage/tests/muta
 // receipt this client cannot hold fails it before the hook runs. Hydration never becomes an
 // outgoing write.
 
-const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
-
-vi.mock("../storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
-    getNodeServerProxyAuth: async () => "signed-token",
+const { server } = vi.hoisted(() => ({
+    server: { current: null as Pick<StoreBackedServer, "fetch" | "close"> | null },
 }));
+
+vi.mock("../storage/serverAuth", async () =>
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init) => server.current!.fetch(path, init),
+    }),
+);
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
@@ -39,6 +45,14 @@ type Hooks = typeof import("../plugins/pluginHooks");
 const serverRef = { characterId: "c", chatId: "k" };
 const targets = { chatRef: refK, presetId: "", modelPresetId: "", personaId: "" };
 
+function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
 async function boot() {
     vi.resetModules();
     const booted = await bootMutations((fake) => {
@@ -49,15 +63,21 @@ async function boot() {
     const { fake } = booted;
     const epoch = fake.store.epoch();
     const answers: ChannelAnswer[] = [];
+    const answerReceived = deferred<ChannelAnswer>();
     const follow = {
-        send: vi.fn((message: ChannelAnswer) => {
-            answers.push(message);
+        send: vi.fn<ChannelTransport["send"]>((message) => {
+            if (message.type === "answer") {
+                answers.push(message);
+                answerReceived.resolve(message);
+            }
             return true;
         }),
     };
     const apply = (event: GenerationEvent) => transport.applyGenerationEvent("J", refK, event, follow);
     /** The server's copy of `k` as the job's chat `resource` event. */
-    const chatEvent = (override: { revision?: string } = {}): GenerationEvent => {
+    const chatEvent = (
+        override: { revision?: string; streaming?: { messageId: string; generationId: string; seq: number }[] } = {},
+    ): GenerationEvent => {
         const record = fake.chat("c", "k")!;
         return {
             type: "resource",
@@ -67,7 +87,7 @@ async function boot() {
             id: "k",
             revision: override.revision ?? record.revision,
             data: record.data,
-            streaming: [],
+            streaming: override.streaming ?? [],
         };
     };
     /** A callback carrying the receipt of `k` at the server's current revision (or `revision`). */
@@ -99,6 +119,7 @@ async function boot() {
         hooks: hooks.pluginHooks,
         epoch,
         answers,
+        answerReceived: answerReceived.promise,
         follow,
         apply,
         chatEvent,
@@ -120,7 +141,8 @@ beforeAll(
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date("2026-10-24T00:00:00Z"));
     vi.stubGlobal("location", { reload: vi.fn(), protocol: "http:", host: "test" });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -135,7 +157,168 @@ afterEach(() => {
     server.current?.close();
 });
 
+/** L < R < A in one incarnation: the active stream keeps the save loop from doing an idle read. */
+async function prepareFloorRefresh() {
+    const b = await boot();
+    const held = b.chat.heldChatRevision(refK)!;
+    b.apply({
+        type: "accepted",
+        epoch: b.epoch,
+        jobId: "J",
+        messageId: "c",
+        generationId: "g",
+        revision: held,
+        text: "",
+        seq: 0,
+    });
+    b.chat.setChatMeta(refK, { note: "user edit" });
+    b.fake.chatBatch([
+        {
+            ...serverRef,
+            baseRevision: held,
+            ops: [{ op: "setText", id: "c", text: "job checkpoint" }],
+        },
+    ]);
+    const receipt = b.fake.chat("c", "k")!.revision;
+    const readStarted = deferred();
+    const readReleased = deferred();
+    const drained = deferred();
+    const reads: unknown[] = [];
+    // Hold the server read before taking its snapshot, so a test can also replace the chat while
+    // the request is in flight. All saves still go through the real store-backed server.
+    server.current = {
+        fetch: async (path, init) => {
+            if (path === "/api/resources/read") {
+                reads.push(JSON.parse(String(init?.body)));
+                readStarted.resolve();
+                await readReleased.promise;
+            }
+            const response = await b.fake.fetch(path, init);
+            if (path.startsWith("/api/generations/J/drained?")) {
+                drained.resolve();
+            }
+            return response;
+        },
+        close: () => b.fake.close(),
+    };
+    b.apply(b.chatEvent({ streaming: [{ messageId: "c", generationId: "g", seq: 0 }] }));
+    expect(b.chat.heldChatRevision(refK)).toBe(held);
+    expect(b.chat.findChat(refK)!.note).toBe("user edit");
+    expect(b.chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["A", "B", ""]);
+    expect(b.chat.isMessageLocked(refK, "c")).toBe(true);
+
+    const startRefresh = async () => {
+        b.apply(b.callbackEvent("floor", receipt));
+        // A premature barrier failure is observable immediately, without waiting for a read that
+        // will never arrive (and without advancing any production deadline).
+        expect(await Promise.race([readStarted.promise.then(() => "reading"), b.answerReceived])).toBe("reading");
+        const acknowledged = b.fake.chat("c", "k")!.revision;
+        const incarnation = { epoch: b.epoch, seq: parseRevisionToken(held)!.seq };
+        expect(parseRevisionToken(receipt)).toMatchObject(incarnation);
+        expect(parseRevisionToken(acknowledged)).toMatchObject(incarnation);
+        expect(compareRevision(held, receipt)).toBe(-1);
+        expect(compareRevision(receipt, acknowledged)).toBe(-1);
+        expect(b.fake.chat("c", "k")!.data.note).toBe("user edit");
+        expect(b.fake.texts("c", "k")).toEqual(["A", "B", "job checkpoint"]);
+        expect(b.fake.batchCount()).toBe(1);
+        expect(b.chat.heldChatRevision(refK)).toBe(held);
+        expect(b.chat.hasUnsavedChatWork()).toBe(false);
+        expect(b.chat.chatHydrationHold(refK)).toBe("none");
+        expect(b.chat.isChatStale(refK)).toBe(true);
+        expect(b.chat.isMessageLocked(refK, "c")).toBe(true);
+        expect(reads).toEqual([{ refs: [], chats: [{ characterId: "c", id: "k" }] }]);
+        expect(b.answers).toEqual([]);
+        return acknowledged;
+    };
+    return { ...b, held, reads, startRefresh, releaseRead: () => readReleased.resolve(), drained: drained.promise };
+}
+
 describe("the callback barrier over the real stores", () => {
+    it("refreshes past an acknowledged floor so the hook sees the job checkpoint and the user's edit with its stream intact", async () => {
+        const b = await prepareFloorRefresh();
+        const hook = vi.fn((text: string) => {
+            const chat = b.chat.findChat(refK)!;
+            expect(chat.note).toBe("user edit");
+            expect(chat.message.map((message) => message.data)).toEqual(["A", "B", "job checkpoint"]);
+            expect(b.chat.isMessageLocked(refK, "c")).toBe(true);
+            expect(b.chat.streamingEntry(refK)).toMatchObject({ messageId: "c" });
+            return `${text}!`;
+        });
+        b.hooks.editoutput.add(hook);
+        const acknowledged = await b.startRefresh();
+        expect(hook).not.toHaveBeenCalled();
+        b.releaseRead();
+        expect(await b.answerReceived).toEqual({ type: "answer", id: "floor", outcome: "answered", value: "t!" });
+        expect(hook).toHaveBeenCalledTimes(1);
+        expect(b.chat.heldChatRevision(refK)).toBe(acknowledged);
+        expect(b.chat.isChatStale(refK)).toBe(false);
+        expect(b.chat.hasUnsavedChatWork()).toBe(false);
+        expect(b.reads).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(1);
+    });
+
+    it("does not adopt the whole read or run the hook when the callback is cancelled during the read", async () => {
+        const b = await prepareFloorRefresh();
+        const hook = vi.fn((text: string) => text);
+        b.hooks.editoutput.add(hook);
+        await b.startRefresh();
+        const before = plain(b.chat.findChat(refK));
+        const channel = await import("./jobChannel");
+        const cancelled = deferred();
+        const unsubscribe = b.transport.onGenerationPluginWork(() => {
+            if (channel.liveChannelCallTargets({ jobId: "J", callbackId: "floor" }) === null) {
+                cancelled.resolve();
+            }
+        });
+        b.apply({ type: "cancel", epoch: b.epoch, id: "floor" });
+        await cancelled.promise;
+        unsubscribe();
+        b.releaseRead();
+        // A cancelled callback drains its lane instead of sending an answer. Wait for that public
+        // HTTP acknowledgement before checking that the completed read changed nothing.
+        await b.drained;
+        expect(b.transport.channelCallbacksRunning()).toBe(false);
+        expect(b.fake.requests).toContainEqual({
+            method: "POST",
+            path: "/api/generations/J/drained",
+            body: { callbackId: "floor" },
+        });
+        expect(b.answers).toEqual([]);
+        expect(hook).not.toHaveBeenCalled();
+        expect(plain(b.chat.findChat(refK))).toEqual(before);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.held);
+        expect(b.chat.isChatStale(refK)).toBe(true);
+        expect(b.reads).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(1);
+    });
+
+    it("fails the barrier without adopting a chat recreated under the same id during the read", async () => {
+        const b = await prepareFloorRefresh();
+        const hook = vi.fn((text: string) => text);
+        b.hooks.editoutput.add(hook);
+        const acknowledged = await b.startRefresh();
+        const before = plain(b.chat.findChat(refK));
+        b.fake.chatBatch([{ ...serverRef, baseRevision: acknowledged, ops: [{ op: "delete" }] }]);
+        b.fake.chatBatch([
+            {
+                ...serverRef,
+                baseRevision: null,
+                ops: [{ op: "create", chat: { id: "k", name: "Replacement", note: "", localLore: [], message: [] } }],
+            },
+        ]);
+        const replacement = b.fake.chat("c", "k")!;
+        expect(parseRevisionToken(replacement.revision)!.epoch).toBe(b.epoch);
+        expect(parseRevisionToken(replacement.revision)!.seq).not.toBe(parseRevisionToken(b.held)!.seq);
+        b.releaseRead();
+        expect(await b.answerReceived).toMatchObject({ id: "floor", outcome: "failed", failure: "barrier" });
+        expect(hook).not.toHaveBeenCalled();
+        expect(plain(b.chat.findChat(refK))).toEqual(before);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.held);
+        expect(b.chat.isChatStale(refK)).toBe(true);
+        expect(b.reads).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(1);
+    });
+
     it("runs the hook on the job's hydrated chat, in socket order despite the lazy dispatcher, without echoing the hydration back", async () => {
         const b = await boot();
         const seen: string[][] = [];

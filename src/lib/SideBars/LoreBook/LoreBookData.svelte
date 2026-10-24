@@ -200,29 +200,37 @@
                 class="valuer"
                 onclick={async () => {
                     // Keep only the entry's primitives and the chat address across the dialogs.
-                    const id = value.id;
+                    const members =
+                        value.mode === "folder"
+                            ? (externalLoreBooks ?? []).filter((entry) => entry.folder === value.key)
+                            : [];
+                    const removedIds = new Set(
+                        [value, ...members].map((entry) => entry.id).filter((id): id is string => !!id),
+                    );
                     const isCharacterEntry = !!selectedCharacter()?.globalLore.includes(value);
                     const chatTarget = currentChatRef();
                     const chatOwner = chatTarget ? chatOwnerToken(chatTarget.chaId) : null;
                     const removeMessage = language.removeConfirm + (value.comment || "Unnamed Folder");
-                    if (value.mode === "folder" && externalLoreBooks.some((e) => e.folder === value.key)) {
+                    if (members.length > 0) {
                         if (!(await alertConfirm(language.folderRemoveConfirm))) return;
                     }
                     if (!(await alertConfirm(removeMessage))) return;
                     const removed = onRemove();
-                    if (!removed || !isCharacterEntry || !id || !chatTarget) return;
+                    if (!removed || !isCharacterEntry || removedIds.size === 0 || !chatTarget) return;
 
                     try {
                         // The captured chat may have been evicted while a dialog was open.
                         const chat = await ensureChatLoaded(chatTarget);
                         if (!chat || chatOwnerToken(chatTarget.chaId) !== chatOwner) return;
                         const localLore = chat.localLore ?? [];
-                        if (!localLore.some((entry) => entry.id === id)) return;
+                        const isRemovedChild = (entry: Pick<loreBook, "id" | "mode">) =>
+                            entry.mode === "child" && !!entry.id && removedIds.has(entry.id);
+                        if (!localLore.some(isRemovedChild)) return;
                         if (isLocalSend(chatTarget) || generatingChatKeys().has(chatStatusKey(chatTarget))) {
                             alertError(language.chatGenerating);
                             return;
                         }
-                        setChatMeta(chatTarget, { localLore: localLore.filter((entry) => entry.id !== id) });
+                        setChatMeta(chatTarget, { localLore: localLore.filter((entry) => !isRemovedChild(entry)) });
                     } catch (error) {
                         alertError(error);
                     }

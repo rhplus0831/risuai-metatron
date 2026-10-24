@@ -38,6 +38,8 @@ export const UPSTREAM_CONVERTED_CODES = [
 export const UPSTREAM_EXCLUDED_CODES = [
     /** A root setting metatron does not know; the examples are field names. */
     "unknown-setting",
+    /** A SaveKV namespace left out of a block save import; every namespace is listed. */
+    "savekv-namespace",
     /** The Risu Account login (`account`). */
     "risu-account",
     /** Saved loadouts (`loadouts`, `lastLoadedLoadoutName`). */
@@ -89,7 +91,7 @@ export const UPSTREAM_EXCLUDED_CODES = [
 export type UpstreamConvertedCode = (typeof UPSTREAM_CONVERTED_CODES)[number];
 export type UpstreamExcludedCode = (typeof UPSTREAM_EXCLUDED_CODES)[number];
 
-/** How many names an entry lists; `count` still counts every occurrence. */
+/** How many names an entry lists, except SaveKV namespaces; `count` still counts every occurrence. */
 export const UPSTREAM_REPORT_EXAMPLE_LIMIT = 5;
 
 export type UpstreamReportEntry<Code extends string = string> = {
@@ -190,8 +192,8 @@ export function createUpstreamImportReport(): UpstreamImportReport {
 
 /**
  * Counts one occurrence of `code` in `list` (one entry per code, in first-occurrence order) and
- * records `example` while the entry lists fewer than `UPSTREAM_REPORT_EXAMPLE_LIMIT` names and
- * does not list it yet.
+ * records distinct examples up to `UPSTREAM_REPORT_EXAMPLE_LIMIT`, except `savekv-namespace`,
+ * which lists every namespace.
  */
 export function addUpstreamReportEntry<Code extends string>(
     list: UpstreamReportEntry<Code>[],
@@ -206,7 +208,7 @@ export function addUpstreamReportEntry<Code extends string>(
     entry.count += 1;
     if (
         example !== undefined &&
-        entry.examples.length < UPSTREAM_REPORT_EXAMPLE_LIMIT &&
+        (code === "savekv-namespace" || entry.examples.length < UPSTREAM_REPORT_EXAMPLE_LIMIT) &&
         !entry.examples.includes(example)
     ) {
         entry.examples.push(example);

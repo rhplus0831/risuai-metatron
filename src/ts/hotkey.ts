@@ -81,7 +81,7 @@ export function initHotkey() {
                 : null;
         const plainKey = !ev.ctrlKey && !ev.altKey && !ev.shiftKey;
         if (
-            plainKey &&
+            (plainKey || (hasDialogs && ev.shiftKey && ev.key === "Enter")) &&
             isTextEntry(document.activeElement) &&
             !(alertInput && (ev.key === "Enter" || ev.key === "Escape"))
         ) {
@@ -89,9 +89,7 @@ export function initHotkey() {
         }
 
         const hotKeys =
-            loadingCheckpoint || (hasDialogs && plainKey)
-                ? []
-                : enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
+            loadingCheckpoint || hasDialogs ? [] : enabledHotkeys(settings.hotkeys ?? defaultHotkeys, settings.ui);
 
         let hotkeyRan = false;
         for (const hotkey of hotKeys) {

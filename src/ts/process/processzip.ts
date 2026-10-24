@@ -176,6 +176,7 @@ export class CharXImporter {
 
     // Asset save queue; its readiness gates the zip feed (backpressure)
     private saveQueue: AssetSaveQueue;
+    private saveAbort = new AbortController();
 
     // Completion tracking
     private totalEnqueued: number = 0;
@@ -211,7 +212,10 @@ export class CharXImporter {
         this.unzip.register(fflate.UnzipInflate);
         this.unzip.onfile = (file) => this.#handleFile(file);
 
-        this.saveQueue = new AssetSaveQueue({ concurrency: MAX_CONCURRENT_ASSET_SAVES });
+        this.saveQueue = new AssetSaveQueue({
+            concurrency: MAX_CONCURRENT_ASSET_SAVES,
+            signal: this.saveAbort.signal,
+        });
         this.onProgress = (done, total) => {
             if (this.alertInfo) {
                 alertStore.set({
@@ -246,20 +250,41 @@ export class CharXImporter {
     async parse(data: Uint8Array | File | ReadableStream<Uint8Array>) {
         // Create completion promise at the start of parsing
         this.completionPromise = this.#awaitCompletion();
+        // Callers await parse before done, so an early rejection must already have an observer.
+        void this.completionPromise.catch(() => {});
 
-        // Convert all input types to ReadableStream for uniform processing
-        const stream = this.#toStream(data);
-
-        const reader = stream.getReader();
-        while (true) {
-            const { done, value } = await reader.read();
-            if (value) {
-                await this.#feedChunk(value, false);
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+        try {
+            // Convert all input types to ReadableStream for uniform processing
+            reader = this.#toStream(data).getReader();
+            while (true) {
+                const { done, value } = await reader.read();
+                if (value) {
+                    await this.#feedChunk(value, false);
+                }
+                if (done) {
+                    await this.#feedChunk(new Uint8Array(0), true);
+                    break;
+                }
             }
-            if (done) {
-                await this.#feedChunk(new Uint8Array(0), true);
-                break;
-            }
+        } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            this.errors = [failure];
+            this.saveAbort.abort(failure);
+            this.assetBuffers = {};
+            this.assets = {};
+            this.cardData = undefined;
+            this.moduleData = undefined;
+            this.excludedFiles = [];
+            try {
+                await reader?.cancel(failure);
+            } catch {}
+            this.isFinalized = true;
+            this.#checkCompletion();
+            // Completion waits for aborted saves to release their admission slots too.
+            await this.completionPromise;
+        } finally {
+            reader?.releaseLock();
         }
     }
 
@@ -364,7 +389,10 @@ export class CharXImporter {
         }
 
         this.assetBuffers[assetIndex] = new AppendableBuffer();
-        file.ondata = (_err, dat, final) => this.#handleFileData(assetIndex, dat, final);
+        file.ondata = (err, dat, final) => {
+            if (err) throw err;
+            this.#handleFileData(assetIndex, dat, final);
+        };
         file.start();
     }
 
@@ -412,12 +440,19 @@ export class CharXImporter {
         this.totalEnqueued += 1;
         try {
             const data = asset.data;
-            this.assets[asset.id] = await this.saveQueue.add({ load: () => data });
+            const key = await this.saveQueue.add({ load: () => data });
+            if (!this.saveAbort.signal.aborted) {
+                this.assets[asset.id] = key;
+            }
         } catch (error) {
-            this.errors.push(error instanceof Error ? error : new Error(String(error)));
+            if (!this.saveAbort.signal.aborted) {
+                this.errors.push(error instanceof Error ? error : new Error(String(error)));
+            }
         } finally {
             this.totalCompleted += 1;
-            this.onProgress?.(this.totalCompleted, this.totalEnqueued);
+            if (!this.saveAbort.signal.aborted) {
+                this.onProgress?.(this.totalCompleted, this.totalEnqueued);
+            }
             this.#checkCompletion();
         }
     }

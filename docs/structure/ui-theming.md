@@ -97,7 +97,7 @@ Theme and GUI helpers:
   - Root palette variables.
   - Chat typography.
   - Shared classes `x-risu-button-default` and `x-risu-risu-comment`.
-  - `risu-select`, on `SelectInput` and the popup editor's language select: WebKit draws a native `<select>` as a fixed-height menulist that ignores vertical padding and clips the selected text, so the class drops the native appearance, draws its own chevron in `currentColor` (the select's theme text color), and reserves `2.25rem` of right padding for it. It is unlayered, so that padding overrides Tailwind `px-*`/`pr-*`. Under `forced-colors: active` it restores the native appearance, since forced colors remove background images. The raw selects in `MemorySettings`, `TranslatorPresetSettings`, and HypaV3 `bulk-edit-actions` do not carry it yet.
+  - `risu-select`, on `SelectInput` and the popup editor's language select: WebKit draws a native `<select>` as a fixed-height menulist that ignores vertical padding and clips the selected text, so the class drops the native appearance, draws its own chevron in `currentColor` (the select's theme text color), and reserves `2.25rem` of right padding for it. It is unlayered, so that padding overrides Tailwind `px-*`/`pr-*`. Under `forced-colors: active` it restores the native appearance, since forced colors remove background images.
   - The `metatron-chat-theme` message-card rules.
   - `.chat-message-container.far` alone uses `content-visibility: auto` and `contain-intrinsic-block-size: auto 240px` (the observer supplies a measured fallback). Width remains controlled by the flex column.
   - CBS `::highlight(...)` colors.

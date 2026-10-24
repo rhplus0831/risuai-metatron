@@ -183,6 +183,7 @@ const terminalNoticeStore = writable<string | null>(null);
 export const terminalNotice = readonly(terminalNoticeStore);
 let terminalPending: Promise<void> | null = null;
 let acknowledgeTerminal: (() => void) | null = null;
+let terminalKeysBlocked = false;
 
 /**
  * Shows `msg` as the terminal notice; resolves once the user acknowledges it. Single-flight: while a
@@ -190,6 +191,7 @@ let acknowledgeTerminal: (() => void) | null = null;
  */
 export function alertTerminal(msg: string): Promise<void> {
     terminalPending ??= new Promise((resolve) => {
+        terminalKeysBlocked = true;
         acknowledgeTerminal = () => {
             acknowledgeTerminal = null;
             terminalPending = null;
@@ -202,12 +204,11 @@ export function alertTerminal(msg: string): Promise<void> {
 }
 
 /**
- * Whether a terminal notice is shown (set and cleared with it, synchronously). A plugin's
- * document key listeners read it at event time: a capture-phase listener runs before the notice's
- * own `stopPropagation`, so it would otherwise see the keys typed into the notice.
+ * Whether terminal-notice keys are blocked, from opening until the page reloads (including the
+ * acknowledgement's key release). Plugin capture listeners run before the notice stops propagation.
  */
 export function terminalNoticeShown(): boolean {
-    return terminalPending !== null;
+    return terminalKeysBlocked;
 }
 
 /** Acknowledges the terminal notice (its OK button); nothing when none is shown. */

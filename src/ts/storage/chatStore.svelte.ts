@@ -289,10 +289,10 @@ const retiredGenerations = new Set<string>();
  */
 const feedLocks = new Map<string, { generationId: string; revision: string | null }>();
 /**
- * Per chat: the revision of the newest job chat event whose job metadata (streaming, releases) was
- * taken, applied or not; an older event's metadata is ignored.
+ * Per chat: the newest job chat event whose metadata (streaming, releases) was taken, applied or
+ * not; an older event's metadata is ignored. The entry's identity fences reads that reuse metadata.
  */
-const jobMetadataRevisions = new Map<string, string>();
+const jobMetadata = new Map<string, { revision: string }>();
 /** Chats whose work the server refused for a generating message → when it may be sent again. */
 const jobBlocked = new Map<string, number>();
 /** Chat keys → local version, bumped by every change of the chat in the mirror. */
@@ -1454,6 +1454,52 @@ export function chatHydrationHold(ref: ChatRef): "none" | "saving" | "held" {
     return pending.has(key) || inflight.has(key) ? "saving" : "none";
 }
 
+/**
+ * A guard for one callback-barrier read when only the acknowledged floor refuses a remembered
+ * whole copy. It fences the owner, chat incarnation, and job metadata across the read; admission
+ * still goes through `hydrateChat`, which checks local work and the floor again.
+ */
+export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((server: ChatRecord) => boolean) | null {
+    const { chaId, chatId } = ref;
+    ref = { chaId, chatId };
+    const key = keyOf(chaId, chatId);
+    const heldRevision = chatRevisions.get(key);
+    const held = parseRevisionToken(heldRevision);
+    if (!held) {
+        return null;
+    }
+    const sameChat = (token: string | undefined) => {
+        const parsed = parseRevisionToken(token);
+        return parsed?.epoch === held.epoch && parsed.seq === held.seq;
+    };
+    const metadata = jobMetadata.get(key);
+    if (
+        !findCharacter(chaId) ||
+        !isMember(ref) ||
+        absentChats.has(key) ||
+        chatHydrationHold(ref) !== "none" ||
+        !sameChat(revision) ||
+        !sameChat(ackedRevisions.get(key)) ||
+        (compareRevision(revision, heldRevision) ?? -1) < 0 ||
+        !belowAckedRevision(key, revision) ||
+        (metadata && (compareRevision(revision, metadata.revision) ?? -1) < 0)
+    ) {
+        return null;
+    }
+    const owner = chatOwnerToken(chaId);
+    return (server) =>
+        server.characterId === chaId &&
+        server.id === chatId &&
+        chatOwnerToken(chaId) === owner &&
+        !!findCharacter(chaId) &&
+        isMember(ref) &&
+        !absentChats.has(key) &&
+        sameChat(chatRevisions.get(key)) &&
+        sameChat(server.revision) &&
+        jobMetadata.get(key) === metadata &&
+        chatHydrationHold(ref) === "none";
+}
+
 /** The body of a job's `chatPatch` (`GenerationChatPatchEvent` without its event fields). */
 export type ChatPatch = Omit<ChatPatchBody, "removed" | "messages"> & {
     characterId: string;
@@ -1476,10 +1522,10 @@ function settleJobHydration(
     const prefix = `${key}\u0000`;
     let released = false;
     let locked = false;
-    const metadataHeld = jobMetadataRevisions.get(key);
-    const metadataCurrent = !metadataHeld || (compareRevision(server.revision, metadataHeld) ?? -1) >= 0;
+    const metadataHeld = jobMetadata.get(key);
+    const metadataCurrent = !metadataHeld || (compareRevision(server.revision, metadataHeld.revision) ?? -1) >= 0;
     if (job && metadataCurrent) {
-        jobMetadataRevisions.set(key, server.revision);
+        jobMetadata.set(key, { revision: server.revision });
         const streaming = new Map(job.streaming.map((entry) => [entry.messageId, entry]));
         for (const [messageKey, entry] of [...serverGenerations]) {
             if (!messageKey.startsWith(prefix) || entry.jobId !== job.jobId) {

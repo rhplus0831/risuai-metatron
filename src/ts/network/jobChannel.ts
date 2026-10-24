@@ -55,6 +55,7 @@ import {
     heldChatRevision,
     loadChats,
     pinChats,
+    prepareChatHydrationRefresh,
     selectedChatId,
     withChatsCopy,
 } from "../storage/chatStore.svelte";
@@ -65,7 +66,7 @@ import {
     heldRecordRevision,
     type HydrationRecord,
 } from "../storage/resourceSync.svelte";
-import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { epochMismatch, getResourceEpoch, readRefs } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 import {
     alertStore,
@@ -93,9 +94,10 @@ import {
  *   job's dialog may wait behind local ones. A `cancel` removes the question's dialog, shown or
  *   still queued, and drops its answer.
  * - A callback runs behind the barrier: pending local work is flushed, the newest hydration of every
- *   record the server listed is applied again, and each must be held at least as new as listed;
- *   otherwise the answer is `failed`/`barrier`. The hook set runs under the job's targets
- *   (`invokeHook`), then the changes it made are flushed in a mutation scope (also when it threw): a
+ *   record the server listed is applied again. A chat copy refused only by the acknowledged floor
+ *   gets one fenced whole read, retaining valid job streaming metadata. Each record must be held at
+ *   least as new as listed; otherwise the answer is `failed`/`barrier`. The hook set runs under the
+ *   job's targets (`invokeHook`), then its changes are flushed in a mutation scope (also when it threw): a
  *   discarded key or a rejected flush is `failed`/`barrier`.
  * - Each request's state is kept in memory: a duplicate delivery never runs a callback twice (the
  *   cached answer is sent again), and a `replay` this page has no state for is refused
@@ -548,7 +550,7 @@ function holds(receipt: HydrationReceipt): boolean {
     return held !== null && (compareRevision(held, receipt.revision) ?? -1) >= 0;
 }
 
-async function barrier(jobId: string, event: GenerationCallbackEvent) {
+async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
     let discarded: string[];
     try {
         ({ discarded } = await flushResources());
@@ -559,9 +561,53 @@ async function barrier(jobId: string, event: GenerationCallbackEvent) {
         throw new CallbackFailed("barrier", "A conflict discarded local changes before the callback", discarded);
     }
     for (const receipt of event.revisions) {
-        const record = hydrations.get(jobId)?.get(recordKey(receipt.kind, receipt.id, receipt.characterId));
-        if (record && !holds(receipt)) {
+        const key = recordKey(receipt.kind, receipt.id, receipt.characterId);
+        const record = hydrations.get(entry.jobId)?.get(key);
+        if (record && !entry.cancelled && !holds(receipt)) {
             applyHydration(record);
+        }
+        if (
+            !entry.cancelled &&
+            record?.kind === "chats" &&
+            record.characterId !== undefined &&
+            record.job?.jobId === entry.jobId &&
+            (compareRevision(record.revision, receipt.revision) ?? -1) >= 0 &&
+            !holds(receipt)
+        ) {
+            const canApply = prepareChatHydrationRefresh(
+                { chaId: record.characterId, chatId: record.id },
+                record.revision,
+            );
+            if (canApply) {
+                const epoch = getResourceEpoch();
+                if (entry.cancelled) {
+                    throw cancelledByServer();
+                }
+                if (epoch !== event.epoch) {
+                    throw new CallbackFailed("barrier", "The callback's resource epoch changed");
+                }
+                const result = await readRefs([], { chats: [{ characterId: record.characterId, id: record.id }] });
+                if (entry.cancelled || !outstanding.includes(entry)) {
+                    throw cancelledByServer();
+                }
+                if (getResourceEpoch() !== epoch || result.epoch !== epoch) {
+                    throw new CallbackFailed("barrier", "The callback's resource epoch changed");
+                }
+                // A job resync may have satisfied the receipt while this read was in flight.
+                if (!holds(receipt)) {
+                    const fresh = result.chats?.find(
+                        (chat) => chat.characterId === record.characterId && chat.id === record.id,
+                    );
+                    if (
+                        hydrations.get(entry.jobId)?.get(key) === record &&
+                        fresh?.revision != null &&
+                        fresh.data != null &&
+                        canApply(fresh)
+                    ) {
+                        applyHydration({ ...record, revision: fresh.revision, data: fresh.data });
+                    }
+                }
+            }
         }
         if (!holds(receipt)) {
             throw new CallbackFailed(
@@ -569,6 +615,10 @@ async function barrier(jobId: string, event: GenerationCallbackEvent) {
                 `The ${receipt.kind} record ${receipt.id} the job changed is not applied on this client`,
             );
         }
+    }
+    // A later receipt's read can outlive a reset of an earlier record.
+    if (event.revisions.some((receipt) => !holds(receipt))) {
+        throw new CallbackFailed("barrier", "A record the job changed is no longer applied on this client");
     }
 }
 
@@ -952,7 +1002,7 @@ async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): 
         ...(discarded ? { discarded } : {}),
     });
     try {
-        await barrier(entry.jobId, event);
+        await barrier(entry, event);
     } catch (error) {
         return error instanceof CallbackFailed
             ? failedAnswer(error.failure, error.message, error.discarded)

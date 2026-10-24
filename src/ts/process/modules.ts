@@ -11,6 +11,7 @@ import {
     alertStore,
     alertWait,
     waitAlert,
+    type alertData,
 } from "../alert";
 import type { customscript, loreBook, triggerscript } from "../storage/database.svelte";
 import { findChat, selectedChat } from "../storage/chatStore.svelte";
@@ -52,6 +53,7 @@ export async function exportModule(
     module: RisuModule,
     arg: {
         alertEnd?: boolean;
+        onInstall?: (status: alertData) => void;
     } = {},
 ) {
     const alertEnd = arg.alertEnd ?? true;
@@ -70,6 +72,7 @@ export async function exportModule(
         const result = await exportCharacterCard(char, "charx", {
             spec: "v3",
             writer,
+            onInstall: arg.onInstall,
         });
         if (alertEnd) {
             alertNormal(
@@ -90,6 +93,7 @@ export async function exportModuleLegacy(
     arg: {
         alertEnd?: boolean;
         saveData?: boolean;
+        onInstall?: (status: alertData) => void;
     } = {},
 ): Promise<Uint8Array | undefined> {
     const alertEnd = arg.alertEnd ?? true;
@@ -136,10 +140,7 @@ export async function exportModuleLegacy(
 
         const keys = assets.map((asset) => asset[1]);
         for await (const { index, key, bytes } of loadAssetsInBatches(keys, { signal: controller.signal })) {
-            alertStore.set({
-                type: "wait",
-                msg: `Loading... (Adding Assets ${index} / ${assets.length})`,
-            });
+            alertWait(`Loading... (Adding Assets ${index} / ${assets.length})`, arg.onInstall);
             if (bytes === null) {
                 missingAssets++;
                 console.warn("Export asset missing or empty:", key);

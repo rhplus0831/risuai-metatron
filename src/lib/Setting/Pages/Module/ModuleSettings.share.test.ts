@@ -2,9 +2,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { alertData } from "src/ts/alert";
 import { createAlertQueue, type AlertQueue } from "src/ts/alertQueue";
 
-// The share button awaits the exporter and clears a wait it left behind. The exporters themselves
+// The share button awaits the exporter and clears a wait the export left behind (the status the
+// exporter handed back through `onInstall`). The exporters themselves
 // (and their own failure alerts) are covered by src/ts/exportBatches.test.ts. The alert store is the
 // real queue, a fresh one per test: a stale wait or progress is a status the button clears; an error
 // or success dialog is never closed by it.
@@ -70,6 +72,11 @@ afterEach(async () => {
 const WAIT = { type: "wait", msg: "Loading... (Adding Assets 3 / 10)" } as const;
 const share = () => target.querySelector<HTMLButtonElement>(`button[data-tip="${language.download}"]`)!;
 const alert = () => get(store.alertStore);
+/** Sets a status as the exporters do, handing it to the share button that owns the export. */
+function install(arg: { onInstall?: (status: alertData) => void } | undefined, status: alertData) {
+    arg?.onInstall?.(status);
+    store.alertStore.set(status);
+}
 function deferred() {
     let resolve!: () => void;
     let reject!: (reason: unknown) => void;
@@ -87,8 +94,8 @@ describe("module share button", () => {
     ] as const)("%s: waits for the export before clearing the wait it left", async (_label, choice, name) => {
         alerts.select.mockResolvedValue(choice);
         const gate = deferred();
-        exporters[name].mockImplementation(async () => {
-            store.alertStore.set(WAIT);
+        exporters[name].mockImplementation(async (_module, arg) => {
+            install(arg, WAIT);
             await gate.promise;
         });
         share().click();
@@ -106,8 +113,8 @@ describe("module share button", () => {
     it.each(["wait", "progress"])("a rejected export clears a stale %s alert and adds no error alert", async (type) => {
         alerts.select.mockResolvedValue("1");
         const failure = new Error("export failed");
-        exporters.exportModuleLegacy.mockImplementation(async () => {
-            store.alertStore.set({ type: type as "wait" | "progress", msg: "Loading..." });
+        exporters.exportModuleLegacy.mockImplementation(async (_module, arg) => {
+            install(arg, { type: type as "wait" | "progress", msg: "Loading..." });
             throw failure;
         });
         share().click();
@@ -147,9 +154,9 @@ describe("module share button", () => {
         // A wait set after the dialog opened stays as the status behind it; the share button clears it.
         alerts.select.mockResolvedValue("0");
         const final = { type: "normal", msg: language.successExport } as const;
-        exporters.exportModule.mockImplementation(async () => {
+        exporters.exportModule.mockImplementation(async (_module, arg) => {
             store.alertStore.set(final);
-            store.alertStore.set(WAIT);
+            install(arg, WAIT);
         });
         share().click();
         await vi.waitFor(() => expect(exporters.exportModule).toHaveBeenCalledOnce());

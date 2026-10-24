@@ -212,7 +212,7 @@ describe("HypaV3Modal's summary identity after deletion", () => {
         flushSync();
     }
     function bulkImportant(target: HTMLElement) {
-        target.querySelector<HTMLButtonElement>("button.border-yellow-600")!.click();
+        target.querySelector<HTMLButtonElement>("button.border-secondary-600")!.click();
         flushSync();
     }
 

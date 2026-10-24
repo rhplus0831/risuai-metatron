@@ -3,6 +3,10 @@ import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../models.ts"
 import { ClaudeParameters, LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types.ts";
 
 describe("static model catalogue", () => {
+    it("offers only reasoning_effort for Gemini 3.6 Flash", () => {
+        expect(resolveModelInfo("gemini-3.6-flash").parameters).toEqual(["reasoning_effort"]);
+    });
+
     it("has unique ids including generated Responses API and Vertex variants", () => {
         const seen = new Set<string>();
         const duplicates = new Set<string>();

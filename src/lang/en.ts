@@ -1420,6 +1420,7 @@ export const languageEnglish = {
         },
         excluded: {
             "unknown-setting": "Settings this app does not know",
+            "savekv-namespace": "SaveKV namespaces not imported",
             "risu-account": "The Risu Account login",
             loadouts: "Saved loadouts",
             "removed-feature": "Settings of features this app removed",

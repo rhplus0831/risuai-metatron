@@ -242,6 +242,12 @@ Generation channels:
 - On attach, buffered notices, outstanding request replays, and first deliveries
   of requests promoted by an expiry are sent in their original request/notice
   order. A promoted request joins that ordered batch and is sent once.
+- A callback's client barrier flushes local work and retries the job's remembered
+  hydration copies. A chat copy refused only by the acknowledged floor gets one
+  whole resource read, even while streaming, fenced on the callback, epoch, chat
+  owner and incarnation, and hydration metadata. Normal hydration admission still
+  protects local work and the floor; the callback runs only when the client holds
+  every receipt or a newer revision ([persistence](persistence.md)).
 
 Snapshots and backups:
 

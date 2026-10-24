@@ -36,13 +36,15 @@ const stubs = vi.hoisted(() => ({
     record: vi.fn<(input: unknown) => void>(),
 }));
 
-vi.mock("../storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
-    getNodeServerProxyAuth: () =>
-        new Promise<string>((resolve, reject) => {
-            stubs.auth.push({ resolve, reject });
-        }),
-}));
+vi.mock("../storage/serverAuth", async () =>
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
+        getNodeServerProxyAuth: () =>
+            new Promise<string>((resolve, reject) => {
+                stubs.auth.push({ resolve, reject });
+            }),
+    }),
+);
 vi.mock("../storage/chatStore.svelte", () => ({
     applyServerGeneration: stubs.applyServerGeneration,
     applyServerGenerationChunk: stubs.applyServerGenerationChunk,
@@ -109,6 +111,11 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const settled = async <T>(promise: Promise<T>) =>
     Promise.race([promise.then(() => "settled" as const), flush().then(() => "pending" as const)]);
 const json = (status: number, body: unknown) => Response.json(body, { status });
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => (resolve = done));
+    return { promise, resolve };
+}
 
 let transport: Transport;
 let client: Client;
@@ -176,6 +183,31 @@ describe("the requests", () => {
             chatRevision: "r",
         },
     };
+
+    it("shows preparing when creation returns, preserves a stage received before the create response, and clears each released job", async () => {
+        const { jobStages, chatStageOf } = await import("../process/jobStages");
+        const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "new-job" }));
+        await transport.createGenerationJob(body);
+        expect(chatStageOf(get(jobStages), ref)).toBe("preparing");
+        transport.releaseGenerationJob("new-job");
+        expect(chatStageOf(get(jobStages), ref)).toBeNull();
+
+        const requested = deferred();
+        const response = deferred<Response>();
+        stubs.fetch.mockImplementationOnce(() => {
+            requested.resolve();
+            return response.promise;
+        });
+        const creating = transport.createGenerationJob(body);
+        await requested.promise;
+        transport.applyGenerationEvent("early-stage", ref, { type: "stage", epoch: EPOCH, stage: "memory" });
+        response.resolve(json(200, { jobId: "early-stage" }));
+        await creating;
+        expect(chatStageOf(get(jobStages), ref)).toBe("memory");
+        transport.releaseGenerationJob("early-stage");
+        expect(chatStageOf(get(jobStages), ref)).toBeNull();
+    });
 
     it("creates a job with the epoch, the client id, and the hooks, remembers it, and maps the refusals to typed errors", async () => {
         // Without a `hooks` list, the body carries the dispatcher's registered hooks.
@@ -409,6 +441,27 @@ describe("following a job", () => {
 
 describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
+
+    it("shows preparing on accepted until the first stage event, preserves that stage on reaccept, and removes it on release", async () => {
+        const { jobStages, chatStageOf } = await import("../process/jobStages");
+        const accepted = {
+            type: "accepted" as const,
+            epoch: EPOCH,
+            jobId: "accepted-job",
+            revision: "r",
+            text: "",
+        };
+        transport.applyGenerationEvent("accepted-job", ref, accepted);
+        expect(chatStageOf(get(jobStages), ref)).toBe("preparing");
+        transport.applyGenerationEvent("accepted-job", ref, accepted);
+        expect(chatStageOf(get(jobStages), ref)).toBe("preparing");
+        transport.applyGenerationEvent("accepted-job", ref, { type: "stage", epoch: EPOCH, stage: "generating" });
+        expect(chatStageOf(get(jobStages), ref)).toBe("generating");
+        transport.applyGenerationEvent("accepted-job", ref, accepted);
+        expect(chatStageOf(get(jobStages), ref)).toBe("generating");
+        transport.releaseGenerationJob("accepted-job");
+        expect(chatStageOf(get(jobStages), ref)).toBeNull();
+    });
 
     it("drops only the released job's presentation stage, including a job resumed from saved generations", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

@@ -3,10 +3,10 @@ import type { GenerationStage } from "../../../shared/jobs.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
 /**
- * The latest presentation stage per followed job, set by `applyGenerationEvent` and removed by
- * `releaseGenerationJob`. Chat keys use the `chatStatusKey` format (`${chaId}\u0000${chatId}`). Like
- * `localSends.ts`, a separate module with no runes and type-only imports keeps hand-written mocks
- * of `stores.svelte` and `index.svelte` from reaching it.
+ * The latest presentation stage per followed job, seeded at creation, set by `applyGenerationEvent`,
+ * and removed by `releaseGenerationJob`. Chat keys use the `chatStatusKey` format
+ * (`${chaId}\u0000${chatId}`). Like `localSends.ts`, a separate module with no runes and type-only
+ * imports keeps hand-written mocks of `stores.svelte` and `index.svelte` from reaching it.
  */
 type JobStage = { chatKey: string; stage: GenerationStage };
 const stages = writable<ReadonlyMap<string, JobStage>>(new Map());
@@ -18,12 +18,17 @@ function jobStageKey(ref: ChatRef): string {
 /** The latest stage per job, exposed read-only with a new Map for every change. */
 export const jobStages: Readable<ReadonlyMap<string, JobStage>> = { subscribe: stages.subscribe };
 
-/** Sets a job's stage in its original Map position, without notifying for an unchanged entry. */
-export function setJobStage(jobId: string, ref: ChatRef, stage: GenerationStage): void {
+/** Sets a job's stage in its original Map position; an initial seed preserves any known stage. */
+export function setJobStage(
+    jobId: string,
+    ref: ChatRef,
+    stage: GenerationStage,
+    { onlyIfMissing = false }: { onlyIfMissing?: boolean } = {},
+): void {
     const chatKey = jobStageKey(ref);
     const current = get(stages);
     const entry = current.get(jobId);
-    if (entry?.chatKey === chatKey && entry.stage === stage) {
+    if ((onlyIfMissing && entry) || (entry?.chatKey === chatKey && entry.stage === stage)) {
         return;
     }
     stages.set(new Map(current).set(jobId, { chatKey, stage }));

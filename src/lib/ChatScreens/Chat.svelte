@@ -56,13 +56,13 @@
     import { v4 as uuidv4, v4 } from "uuid";
     import { language } from "../../lang";
     import {
-        alertClear,
         alertConfirm,
         alertError,
         alertInput,
         alertNormal,
         alertRequestData,
         alertWait,
+        type alertData,
     } from "../../ts/alert";
     import {
         ParseMarkdown,
@@ -93,7 +93,7 @@
         setMessageText,
         selectedChat,
     } from "../../ts/storage/chatStore.svelte";
-    import { HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
+    import { alertStore, HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
     import ChatBody from "./ChatBody.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
@@ -208,6 +208,7 @@
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
     let displayedChat = $derived(chatRef);
+    let streaming = $derived(streamingOverride ?? isStreamingMessage(displayedChat, messageId));
     /**
      * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
      * off): while it streams and until the job releases it, and also a previous group speaker's reply.
@@ -954,19 +955,21 @@
                     </span>
                 </button>
             {/if}
-            <button
-                class={"text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
-                    (translationViewControlsDisabled || (storedPath && storedPending)
-                        ? "opacity-50 cursor-not-allowed"
-                        : "hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
-                disabled={translationViewControlsDisabled || (storedPath && storedPending)}
-                onclick={requestRetranslation}
-            >
-                <RefreshCcwIcon size={20} />
-                <span class="ml-1">
-                    {language.retranslate}
-                </span>
-            </button>
+            {#if !isOptimizedStreamingMessage && !streaming}
+                <button
+                    class={"text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
+                        (translationViewControlsDisabled || (storedPath && storedPending)
+                            ? "opacity-50 cursor-not-allowed"
+                            : "hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
+                    disabled={translationViewControlsDisabled || (storedPath && storedPending)}
+                    onclick={requestRetranslation}
+                >
+                    <RefreshCcwIcon size={20} />
+                    <span class="ml-1">
+                        {language.retranslate}
+                    </span>
+                </button>
+            {/if}
             <button
                 class={"text-sm p-1 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
                     (editTranslationMode
@@ -1072,7 +1075,7 @@
                     bind:translated
                     bind:translating
                     bind:retranslate
-                    streaming={streamingOverride ?? isStreamingMessage(displayedChat, messageId)}
+                    {streaming}
                     {renderRawStreaming}
                     {rawStreamingText}
                     {storedPath}
@@ -1149,8 +1152,9 @@
                 const copyUserIcon = getUserIcon(copyChat);
                 const copyText = renderRawStreaming ? displayPrePass(rawStreamingText) : msgDisplay;
                 if (window.navigator.clipboard.write) {
+                    let copyStatus: alertData | null = null;
                     try {
-                        alertWait(language.loading);
+                        alertWait(language.loading, (status) => (copyStatus = status));
                         const root = document.querySelector(":root") as HTMLElement;
 
                         const parser = new DOMParser();
@@ -1418,7 +1422,7 @@
                         alertNormal(language.copied);
                         return;
                     } catch (e) {
-                        alertClear();
+                        if (copyStatus) alertStore.clearStatus(copyStatus);
                         window.navigator.clipboard.writeText(copyText).then(() => {
                             setStatusMessage(language.copied);
                         });
@@ -1466,7 +1470,7 @@
 {/snippet}
 
 {#snippet translationButton(showNames = false)}
-    {#if settings.memoryTranslateMedia.translator !== "" && !blankMessage && !isOptimizedStreamingMessage}
+    {#if settings.memoryTranslateMedia.translator !== "" && !blankMessage && !isOptimizedStreamingMessage && !streaming}
         <button
             class={"flex items-center transition-colors button-icon-translate " +
                 (translationViewControlsDisabled

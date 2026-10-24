@@ -140,11 +140,12 @@ function update(patch: Partial<PushBrowserState>) {
 
 let started = false;
 let serverKey: string | null = null;
-/** Enable, disable, and sync run one at a time, in order. */
+/** Enable, disable, and sync run one at a time, across tabs when Web Locks are available. */
 let queue: Promise<unknown> = Promise.resolve();
 
 function serial<T>(task: () => Promise<T>): Promise<T> {
-    const run = queue.then(task, task);
+    const locked = async (): Promise<T> => (navigator.locks ? navigator.locks.request("risu-push", task) : task());
+    const run = queue.then(locked, locked);
     queue = run.catch(() => {});
     return run;
 }
@@ -393,8 +394,8 @@ export function enablePushOnThisBrowser(): Promise<boolean> {
  * its subscription is reported in `error` and unsubscribed again at the next sync.
  */
 export function disablePushOnThisBrowser(): Promise<void> {
-    writeStored(OPTED_OUT_KEY, "1");
     return serial(async () => {
+        writeStored(OPTED_OUT_KEY, "1");
         update({ busy: true, optedOut: true, error: null });
         try {
             const registration = await readyRegistration();
@@ -423,11 +424,21 @@ export function declinePushPrompt() {
     update({ promptDismissed: true });
 }
 
+const fallbackNotifications = new Map<string, Set<Notification>>();
+
 /**
  * Closes this browser's completion notifications of every chat (the page is in front, so they are
  * read): each chat has its own tag, so they are listed whole and picked by the tag's prefix.
  */
 async function dismissCompletionNotifications() {
+    for (const [tag, notices] of fallbackNotifications) {
+        if (isCompletionNotificationTag(tag)) {
+            fallbackNotifications.delete(tag);
+            for (const notification of notices) {
+                notification.close();
+            }
+        }
+    }
     try {
         const registration = await readyRegistration();
         const shown = await registration?.getNotifications();
@@ -468,6 +479,15 @@ export async function showCompletionNotification(payload: {
     } catch {}
     try {
         const shown = new Notification(payload.title, options);
+        const notices = fallbackNotifications.get(payload.tag) ?? new Set<Notification>();
+        notices.add(shown);
+        fallbackNotifications.set(payload.tag, notices);
+        shown.onclose = () => {
+            notices.delete(shown);
+            if (notices.size === 0 && fallbackNotifications.get(payload.tag) === notices) {
+                fallbackNotifications.delete(payload.tag);
+            }
+        };
         shown.onclick = () => {
             window.focus();
             openRoute(payload.url);

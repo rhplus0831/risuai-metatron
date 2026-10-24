@@ -10,6 +10,7 @@ import {
     alertNormal,
     alertStore,
     alertWait,
+    type alertData,
 } from "./alert";
 import {
     defaultSdDataFunc,
@@ -1445,11 +1446,16 @@ export async function exportCharacterCard(
         password?: string;
         writer?: LocalWriter | VirtualWriter;
         spec?: "v2" | "v3";
+        onInstall?: (status: alertData) => void;
     } = {},
 ) {
     const spec: "v2" | "v3" = arg.spec ?? "v2"; //backward compatibility
     const localWriter = arg.writer ?? (type === "json" ? undefined : new LocalWriter());
     const controller = new AbortController();
+    const setStatus = (status: alertData) => {
+        arg.onInstall?.(status);
+        alertStore.set(status);
+    };
     let missingAssets = 0;
     let jsonAssetBytes = 0;
     const assetBytes = (key: string, bytes: Uint8Array | null) => {
@@ -1500,7 +1506,7 @@ export async function exportCharacterCard(
             if (card.data.extensions.risuai.emotions && card.data.extensions.risuai.emotions.length > 0) {
                 const keys = card.data.extensions.risuai.emotions.map((asset) => asset[1]);
                 for await (const { index: i, key, bytes } of loadAssetsInBatches(keys, { signal: controller.signal })) {
-                    alertStore.set({
+                    setStatus({
                         type: "progress",
                         msg: "Loading... (Adding Emotions)",
                         submsg: ((i / card.data.extensions.risuai.emotions.length) * 100).toFixed(2),
@@ -1519,7 +1525,7 @@ export async function exportCharacterCard(
             ) {
                 const keys = card.data.extensions.risuai.additionalAssets.map((asset) => asset[1]);
                 for await (const { index: i, key, bytes } of loadAssetsInBatches(keys, { signal: controller.signal })) {
-                    alertStore.set({
+                    setStatus({
                         type: "progress",
                         msg: "Loading... (Adding Additional Assets)",
                         submsg: ((i / card.data.extensions.risuai.additionalAssets.length) * 100).toFixed(2),
@@ -1538,7 +1544,7 @@ export async function exportCharacterCard(
                 for await (const { index: i, key: assetKey, bytes } of loadAssetsInBatches(assetKeys, {
                     signal: controller.signal,
                 })) {
-                    alertStore.set({
+                    setStatus({
                         type: "progress",
                         msg: "Loading... (Adding VITS)",
                         submsg: ((i / keys.length) * 100).toFixed(2),
@@ -1560,7 +1566,7 @@ export async function exportCharacterCard(
             }
 
             await sleep(10);
-            alertStore.set({
+            setStatus({
                 type: "wait",
                 msg: "Loading... (Writing)",
             });
@@ -1577,7 +1583,7 @@ export async function exportCharacterCard(
                 try {
                     // Walk the original list: URI skips and the portrait still control asset numbering.
                     for (let i = 0; i < card.data.assets.length; i++) {
-                        alertStore.set({
+                        setStatus({
                             type: "progress",
                             msg: "Loading... (Adding Assets)",
                             submsg: ((i / card.data.assets.length) * 100).toFixed(2),
@@ -1744,7 +1750,7 @@ export async function exportCharacterCard(
             }
 
             await sleep(10);
-            alertStore.set({
+            setStatus({
                 type: "wait",
                 msg: "Loading... (Writing)",
             });
@@ -1763,6 +1769,7 @@ export async function exportCharacterCard(
                 const moduleBytes = await exportModuleLegacy(md, {
                     alertEnd: false,
                     saveData: false,
+                    onInstall: arg.onInstall,
                 });
                 if (!moduleBytes) throw new Error(language.errors.noData);
                 await writer.write("module.risum", moduleBytes);

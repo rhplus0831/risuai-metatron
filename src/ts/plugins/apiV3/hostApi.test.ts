@@ -845,13 +845,14 @@ describe("v3 document key listeners and the terminal notice", () => {
             expect(captured).toEqual([]);
             expect(bubbled).toEqual([]);
 
+            // The page reloads after the acknowledgement: keys stay withheld until then.
             acknowledgeTerminalNotice();
             await notice;
-            expect(terminalNoticeShown()).toBe(false);
+            expect(terminalNoticeShown()).toBe(true);
             press("a");
             await settle();
-            expect(captured).toEqual(["a"]);
-            expect(bubbled).toEqual(["a"]);
+            expect(captured).toEqual([]);
+            expect(bubbled).toEqual([]);
         } finally {
             root.removeEventListener("keydown", captureId, true);
             root.removeEventListener("keydown", bubbleId);

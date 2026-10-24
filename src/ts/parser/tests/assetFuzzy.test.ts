@@ -23,6 +23,7 @@ import { selectCharacter } from "../../storage/selection.svelte";
 import { settings } from "../../storage/settingsViews.svelte";
 import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
 import { createProbe } from "../../storage/tests/reactiveProbe.svelte";
+import { moduleBackgroundEmbedding } from "../../stores.svelte";
 
 type Asset = [string, string, string];
 const asset = (name: string, path = `assets/${name}.png`): Asset => [name, path, "png"];
@@ -55,6 +56,24 @@ afterEach(() => {
 });
 
 describe("parser asset inputs", () => {
+    it("renders a lone enabled module image on the first simple-character parse without a background", async () => {
+        install([]);
+        moduleBackgroundEmbedding.set("");
+        const simple: simpleCharacterArgument = {
+            type: "simple",
+            chaId: "c",
+            customscript: [],
+            additionalAssets: [],
+            emotionImages: [],
+        };
+
+        // No full-character parse or explicit cache reset primes this row's asset lookup.
+        const html = await ParseMarkdown("{{img::module}}", simple, "normal", -1, {}, null);
+        const row = document.createElement("div");
+        row.innerHTML = html;
+        expect(row.querySelector("img")?.getAttribute("src")).toBe("assets/module.png");
+    });
+
     it("reads module and character edits at the next parse and in a tracked derived before any flush", async () => {
         const probe = createProbe(() => parse("module", "img"));
         try {

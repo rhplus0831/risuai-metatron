@@ -1438,6 +1438,7 @@ export const languageKorean = {
         },
         excluded: {
             "unknown-setting": "이 앱이 모르는 설정",
+            "savekv-namespace": "가져오지 않은 SaveKV 네임스페이스",
             "risu-account": "Risu 계정 로그인",
             loadouts: "저장된 로드아웃",
             "removed-feature": "이 앱에서 제거된 기능의 설정",

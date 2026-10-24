@@ -301,7 +301,9 @@ async function createJob(body: CreateInput): Promise<string> {
         body: JSON.stringify({ ...body, context, hooks, clientId: generationClientId() }),
     });
     const { jobId } = (await response.json()) as { jobId: string };
-    rememberGenerationJob({ chaId: body.context.characterId, chatId: body.context.chatId }, jobId);
+    const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
+    setJobStage(jobId, ref, "preparing", { onlyIfMissing: true });
+    rememberGenerationJob(ref, jobId);
     return jobId;
 }
 
@@ -637,6 +639,7 @@ export function applyGenerationEvent(
 ) {
     switch (event.type) {
         case "accepted":
+            setJobStage(jobId, ref, "preparing", { onlyIfMissing: true });
             if (transport) {
                 resyncingReplies.delete(transport);
             }

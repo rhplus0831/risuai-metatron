@@ -70,7 +70,7 @@
 
 <!-- Bulk Edit Action Bar -->
 {#if bulkEditState.isEnabled}
-    <div class="sticky bottom-0 p-3 bg-zinc-800 border-t border-zinc-700 rounded-b-lg">
+    <div class="sticky bottom-0 p-3 bg-darkbg border-t border-darkborderc rounded-b-lg">
         <div class="flex items-center justify-between">
             <!-- Left Side: Resummarize Button -->
             <div class="flex items-center gap-2">
@@ -78,8 +78,8 @@
                 <button
                     class="px-4 py-2 rounded text-sm font-medium transition-colors {bulkEditState.selectedSummaries
                         .size > 1
-                        ? 'bg-green-600 hover:bg-blue-700 text-white'
-                        : 'bg-zinc-600 text-zinc-400 cursor-not-allowed'}"
+                        ? 'bg-success-600 hover:bg-success-700 text-neutral-50'
+                        : 'bg-darkbutton text-textcolor2 cursor-not-allowed'}"
                     onclick={onResummarize}
                     disabled={bulkEditState.selectedSummaries.size < 2}
                 >
@@ -91,7 +91,7 @@
             <div class="flex items-center gap-2">
                 <!-- Category Selection -->
                 <select
-                    class="px-3 py-2 rounded-sm border border-zinc-600 bg-zinc-900 text-zinc-200 text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                    class="risu-select px-3 py-2 rounded-sm border border-darkborderc bg-bgcolor text-textcolor text-sm focus:outline-hidden focus:ring-2 focus:ring-borderc"
                     value={bulkEditState.selectedCategory}
                     onchange={handleCategoryChange}
                 >
@@ -104,8 +104,8 @@
                 <button
                     class="px-4 py-2 rounded text-sm font-medium transition-colors {bulkEditState.selectedSummaries
                         .size > 0
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                        : 'bg-zinc-600 text-zinc-400 cursor-not-allowed'}"
+                        ? 'bg-primary-600 hover:bg-primary-700 text-neutral-50'
+                        : 'bg-darkbutton text-textcolor2 cursor-not-allowed'}"
                     onclick={applyCategoryToSelected}
                     disabled={bulkEditState.selectedSummaries.size === 0}
                 >
@@ -114,7 +114,7 @@
 
                 <!-- Bulk Toggle Important Button -->
                 <button
-                    class="px-3 py-2 rounded-sm border border-yellow-600 hover:bg-yellow-700 text-yellow-300 text-sm transition-colors flex items-center gap-2 {bulkEditState
+                    class="px-3 py-2 rounded-sm border border-secondary-600 hover:bg-secondary-700 text-secondary-300 text-sm transition-colors flex items-center gap-2 {bulkEditState
                         .selectedSummaries.size === 0
                         ? 'opacity-50 cursor-not-allowed'
                         : ''}"
@@ -131,11 +131,11 @@
                         value={bulkEditState.bulkSelectInput}
                         oninput={handleBulkSelectInputChange}
                         placeholder="1,3,5-8"
-                        class="w-32 px-3 py-2 text-sm bg-zinc-800 border border-zinc-600 rounded-sm text-zinc-300 placeholder-zinc-500 focus:border-blue-500 outline-hidden"
+                        class="w-32 px-3 py-2 text-sm bg-darkbg border border-darkborderc rounded-sm text-textcolor placeholder:text-textcolor2 focus:border-borderc outline-hidden"
                         onkeydown={handleBulkSelectKeydown}
                     />
                     <button
-                        class="px-3 py-2 rounded-sm border border-blue-600 hover:bg-blue-700 text-blue-300 text-sm transition-colors"
+                        class="px-3 py-2 rounded-sm border border-primary-600 hover:bg-primary-700 text-primary-300 text-sm transition-colors"
                         onclick={parseAndSelectSummaries}
                     >
                         {language.select}
@@ -144,7 +144,7 @@
 
                 <!-- Clear Selection Button -->
                 <button
-                    class="px-3 py-2 rounded-sm border border-red-600 hover:bg-red-700 text-red-300 text-sm transition-colors"
+                    class="px-3 py-2 rounded-sm border border-danger-600 hover:bg-danger-700 text-danger-300 text-sm transition-colors"
                     onclick={clearSelection}
                 >
                     {language.cancel}
