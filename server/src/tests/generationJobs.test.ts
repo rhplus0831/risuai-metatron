@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient } from "ws";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
-import type { GenerationEvent } from "../../../shared/jobs.ts";
+import type { loreBook } from "../../../shared/database.ts";
+import { GENERATION_KINDS, type GenerationEvent } from "../../../shared/jobs.ts";
 import { type ChangeFeedEvent, createChangeFeed } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { CommittedWriteError, createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
@@ -326,6 +327,18 @@ describe("the presentation stage", () => {
 });
 
 describe("admission", () => {
+    const lore = (id: string, comment = "", key = ""): loreBook => ({
+        id,
+        comment,
+        key,
+        secondkey: "",
+        content: "Frozen lore",
+        insertorder: 100,
+        mode: "normal",
+        alwaysActive: false,
+        selective: false,
+    });
+
     it("checks the epoch, the chat, a running job (before staleness), and the revision, in that order", async () => {
         const { jobs, store, context, create, run, ended } = setup();
         const stale = { ...context(), chatRevision: "00000000-0000-4000-8000-000000000000:1:1" };
@@ -449,6 +462,168 @@ describe("admission", () => {
         expect(jobs.status(jobId, "tab")?.state).toBe("ended");
         // Nothing ran for the refused ones: no job of chat `loose` exists, and its slot is free.
         expect(jobs.create({ kind: "send", context: loose, clientId: "tab" }, store.epoch())).toEqual(incomplete);
+    });
+
+    it("refuses every job kind for orphaned lore overrides, naming them by comment, key, then id, without creating or running a job", async () => {
+        vi.useFakeTimers();
+        const { jobs, store, context, revision, run } = setup();
+        const runner = vi.fn(async () => {});
+        void run(runner);
+        store.applyChanges({
+            chats: [
+                group(revision(), [
+                    {
+                        op: "meta",
+                        set: {
+                            loreOverrides: [
+                                { entry: lore("deleted-title", "Lost title", "Ignored key"), off: false },
+                                { entry: lore("deleted-key", "", "Lost key"), off: false },
+                                { entry: lore("deleted-off"), off: true },
+                            ],
+                        },
+                    },
+                ]),
+            ],
+        });
+        const before = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] });
+
+        for (const kind of GENERATION_KINDS) {
+            const body =
+                kind === "command"
+                    ? { kind, context: context(), clientId: "tab", command: { type: "button" as const, data: "" } }
+                    : { kind, context: context(), clientId: "tab" };
+            expect(jobs.create(body, store.epoch()), kind).toEqual({
+                ok: false,
+                status: 409,
+                body: {
+                    error: "chatLoreOverrideOrphaned",
+                    entries: [
+                        { id: "deleted-title", name: "Lost title" },
+                        { id: "deleted-key", name: "Lost key" },
+                        { id: "deleted-off", name: "deleted-off" },
+                    ],
+                },
+            });
+        }
+
+        expect(jobs.live()).toBe(0);
+        await jobs.drain();
+        expect(runner).not.toHaveBeenCalled();
+        expect(store.readRefs([], { chats: [{ characterId: "c", id: "k" }] })).toEqual(before);
+    });
+
+    it("admits chats with no overrides or with every override id in the owner's lore, including off entries", async () => {
+        vi.useFakeTimers();
+        const { jobs, store, context, revision, run } = setup();
+        const runner = vi.fn(async (job: RunningJob) => {
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        });
+        void run(runner);
+        store.applyChanges({
+            ops: [
+                {
+                    kind: characters,
+                    id: "c",
+                    baseRevision: store.get(characters, "c")!.revision,
+                    data: { chaId: "c", name: "C", globalLore: [lore("kept"), lore("disabled")] },
+                },
+            ],
+            chats: [
+                group(revision(), [
+                    {
+                        op: "meta",
+                        set: {
+                            loreOverrides: [
+                                { entry: lore("kept", "Chat's frozen title"), off: false },
+                                { entry: lore("disabled"), off: true },
+                            ],
+                        },
+                    },
+                ]),
+            ],
+        });
+
+        for (const chatId of ["k", "j"]) {
+            expect(
+                jobs.create(
+                    {
+                        kind: "send",
+                        context: { ...context(), chatId, chatRevision: store.chatRevision("c", chatId)! },
+                        clientId: "tab",
+                    },
+                    store.epoch(),
+                ),
+            ).toEqual({ ok: true, jobId: expect.any(String) });
+            await jobs.drain();
+        }
+        expect(runner).toHaveBeenCalledTimes(2);
+    });
+
+    it("checks group overrides against the group's own lore, refusing a member-only id and admitting a group-only id", async () => {
+        vi.useFakeTimers();
+        const { jobs, store, context, revision, run } = setup();
+        const runner = vi.fn(async (job: RunningJob) => {
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        });
+        void run(runner);
+        store.applyChanges({
+            ops: [
+                {
+                    kind: characters,
+                    id: "c",
+                    baseRevision: store.get(characters, "c")!.revision,
+                    data: {
+                        chaId: "c",
+                        type: "group",
+                        name: "Group",
+                        characters: ["member"],
+                        useCharacterLore: true,
+                        globalLore: [lore("group-only")],
+                    },
+                },
+                {
+                    kind: characters,
+                    id: "member",
+                    baseRevision: null,
+                    data: { chaId: "member", name: "Member", globalLore: [lore("member-only")] },
+                },
+            ],
+            chats: [
+                group(revision(), [
+                    {
+                        op: "meta",
+                        set: { loreOverrides: [{ entry: lore("member-only", "Member lore"), off: false }] },
+                    },
+                ]),
+            ],
+        });
+        const createGroupJob = () =>
+            jobs.create(
+                { kind: "group", context: { ...context(), speakerChaId: "member" }, clientId: "tab" },
+                store.epoch(),
+            );
+        expect(createGroupJob()).toEqual({
+            ok: false,
+            status: 409,
+            body: { error: "chatLoreOverrideOrphaned", entries: [{ id: "member-only", name: "Member lore" }] },
+        });
+        expect(jobs.live()).toBe(0);
+        await jobs.drain();
+        expect(runner).not.toHaveBeenCalled();
+
+        store.applyChanges({
+            chats: [
+                group(revision(), [
+                    {
+                        op: "meta",
+                        set: { loreOverrides: [{ entry: lore("group-only"), off: false }] },
+                    },
+                ]),
+            ],
+        });
+        expect(createGroupJob()).toEqual({ ok: true, jobId: expect.any(String) });
+        await jobs.drain();
+        expect(runner).toHaveBeenCalledTimes(1);
     });
 });
 

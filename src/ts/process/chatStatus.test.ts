@@ -58,6 +58,7 @@ vi.mock("../network/generationJobs", () => ({
         return { closed, send: () => true, close() {} };
     },
     ChatBindingRefusedError: class extends Error {},
+    ChatLoreOverrideOrphanedError: class extends Error {},
     GenerationBusyError: class extends Error {},
     readGenerationJob: stubs.read,
     releaseGenerationJob: vi.fn(),

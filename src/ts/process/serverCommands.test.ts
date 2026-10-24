@@ -73,6 +73,12 @@ class BindingRefusedError extends Error {
         super(code);
     }
 }
+class LoreOverrideOrphanedError extends Error {
+    constructor(readonly entries: readonly { id: string; name: string }[]) {
+        super("chatLoreOverrideOrphaned");
+        this.name = "ChatLoreOverrideOrphanedError";
+    }
+}
 /** `flushResources` refused because a change it must save waits for a generation. */
 class BlockedError extends Error {
     constructor() {
@@ -108,6 +114,10 @@ vi.mock("src/lang", () => ({
             review: "needs a confirmation",
             mismatch: "binding changed",
         },
+        chatLoreOverrides: {
+            refused: "overrides lost their entries",
+            fixes: "delete or move them",
+        },
     },
 }));
 vi.mock("../alert", async () =>
@@ -129,6 +139,7 @@ vi.mock("../network/generationJobs", () => ({
         return { closed, send: () => true, close() {} };
     },
     ChatBindingRefusedError: BindingRefusedError,
+    ChatLoreOverrideOrphanedError: LoreOverrideOrphanedError,
     GenerationBusyError: BusyError,
     readGenerationJob: stubs.read,
     releaseGenerationJob: stubs.release,
@@ -707,6 +718,27 @@ describe("runServerJob", () => {
         expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
         await flush();
         expect(stubs.alertError).toHaveBeenCalledTimes(3);
+    });
+
+    it("reports refused for orphaned lore overrides and alerts once with localized text naming every entry", async () => {
+        const entries = [
+            { id: "deleted-title", name: "Lost title" },
+            { id: "deleted-key", name: "Lost key" },
+            { id: "deleted-off", name: "deleted-off" },
+        ];
+        stubs.create.mockRejectedValueOnce(new LoreOverrideOrphanedError(entries));
+        const onStart = vi.fn();
+
+        expect(await send({ input: "hi" }, { onStart })).toEqual({ outcome: "refused", terminal: null });
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        const [message] = stubs.alertError.mock.calls[0];
+        expect(message).toContain("overrides lost their entries");
+        expect(message).toContain("delete or move them");
+        for (const name of ["Lost title", "Lost key", "deleted-off"]) {
+            expect(message).toContain(name);
+        }
+        expect(onStart).not.toHaveBeenCalled();
+        expect(follows()).toHaveLength(0);
     });
 
     it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {

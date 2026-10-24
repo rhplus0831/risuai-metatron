@@ -205,7 +205,8 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
 /**
  * `/api/generations`: `POST` creates a job (`{ jobId }`; 409 `chatBusy` with the running job's id,
  * 409 `stale`, 409 `chatBindingIncomplete` with `problems` or `chatBindingMismatch` when the
- * context's ids are not the chat's complete binding, 404, 412 for another epoch, 503 while the
+ * context's ids are not the chat's complete binding, 409 `chatLoreOverrideOrphaned` with `entries`
+ * (`{ id, name }`) when overrides lost their owner entries, 404, 412 for another epoch, 503 while the
  * server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
  * `DELETE /:id?clientId=` aborts it, and `POST /:id/memory-stop?clientId=` (`{ runId }`, the epoch
  * checked) stops the job's initial memory summarization run `runId` after its summary in progress

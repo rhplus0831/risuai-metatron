@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
+import type { OrphanedOverrideEntry } from "../../../shared/lore/overrides.ts";
 import {
     type ChannelDrainedBody,
     type ChatResyncRequest,
@@ -154,6 +155,16 @@ export class ChatBindingRefusedError extends Error {
     }
 }
 
+/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries. Nothing ran. */
+export class ChatLoreOverrideOrphanedError extends Error {
+    readonly entries: readonly OrphanedOverrideEntry[];
+    constructor(entries: readonly OrphanedOverrideEntry[]) {
+        super("chatLoreOverrideOrphaned");
+        this.name = "ChatLoreOverrideOrphanedError";
+        this.entries = entries;
+    }
+}
+
 function storage(): Storage | null {
     try {
         return globalThis.sessionStorage ?? null;
@@ -220,9 +231,13 @@ export function forgetGenerationJob(jobId: string) {
 }
 
 async function failure(response: Response): Promise<never> {
-    let body: { error?: string; jobId?: string; epoch?: string; problems?: ChatBindingProblem[] } = {};
+    let body: { error?: string; jobId?: string; epoch?: string; problems?: ChatBindingProblem[]; entries?: unknown } =
+        {};
     try {
-        body = await response.json();
+        const parsed = await response.json();
+        if (parsed && typeof parsed === "object") {
+            body = parsed;
+        }
     } catch {}
     if (response.status === 409 && body.error === "chatBusy" && typeof body.jobId === "string") {
         throw new GenerationBusyError(body.jobId);
@@ -232,6 +247,20 @@ async function failure(response: Response): Promise<never> {
     }
     if (response.status === 409 && (body.error === "chatBindingIncomplete" || body.error === "chatBindingMismatch")) {
         throw new ChatBindingRefusedError(body.error, Array.isArray(body.problems) ? body.problems : []);
+    }
+    if (response.status === 409 && body.error === "chatLoreOverrideOrphaned") {
+        const entries = Array.isArray(body.entries)
+            ? body.entries
+                  .filter(
+                      (entry): entry is OrphanedOverrideEntry =>
+                          entry !== null &&
+                          typeof entry === "object" &&
+                          typeof entry.id === "string" &&
+                          typeof entry.name === "string",
+                  )
+                  .map(({ id, name }) => ({ id, name }))
+            : [];
+        throw new ChatLoreOverrideOrphanedError(entries);
     }
     if (response.status === 412 && body.error === "EpochMismatch") {
         // The restore notice and reload, as for any other resource request.

@@ -1671,6 +1671,10 @@ export const languageEnglish = {
                 ? "1 chat uses it. It will show this setting as deleted and cannot be sent until another one is chosen."
                 : `${count} chats use it. They will show this setting as deleted and cannot be sent until another one is chosen.`,
     },
+    chatLoreOverrides: {
+        refused: "This chat cannot be sent because these character lorebook overrides lost their original entries:",
+        fixes: "In the chat lorebook tab, delete the overrides or move them to the chat lorebook. Overrides set to Off in this chat can only be deleted.",
+    },
     maxSupaChunkSize: "Max SupaMemory Chunk Size",
     addCharacter: "Add Character",
     importFromRealm: "Choose from RisuRealm",

@@ -253,6 +253,20 @@ describe("the requests", () => {
         expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
     });
 
+    it("parses an orphaned lore override 409 into a typed refusal with all entry ids and names", async () => {
+        const entries = [
+            { id: "deleted-title", name: "Lost title" },
+            { id: "deleted-key", name: "Lost key" },
+            { id: "deleted-off", name: "deleted-off" },
+        ];
+        stubs.fetch.mockResolvedValueOnce(json(409, { error: "chatLoreOverrideOrphaned", entries }));
+
+        const creating = transport.createGenerationJob(body);
+        await expect(creating).rejects.toBeInstanceOf(transport.ChatLoreOverrideOrphanedError);
+        await expect(creating).rejects.toMatchObject({ entries });
+        expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
     it("reads a status (null when the server does not know the job) and aborts (a 404 is fine)", async () => {
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
         await expect(transport.readGenerationJob("j1")).resolves.toMatchObject({ jobId: "j1", state: "running" });

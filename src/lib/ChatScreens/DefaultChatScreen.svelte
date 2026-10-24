@@ -35,6 +35,7 @@
         chatBindingDialog,
     } from "../../ts/stores.svelte";
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
+    import { chatOrphanedOverrideEntries, chatLoreOverrideRefusalText } from "src/ts/process/loreOverrides";
     import { onDestroy, tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import {
@@ -442,6 +443,11 @@
             chatBindingDialog.set(ref);
             return;
         }
+        const orphans = chatOrphanedOverrideEntries(ref);
+        if (orphans.length > 0) {
+            alertError(chatLoreOverrideRefusalText(orphans));
+            return;
+        }
 
         if (fileInput.length > 0) {
             for (const file of fileInput) {
@@ -495,6 +501,11 @@
         }
         if (rerollHistory.canForward(ref)) {
             rerollHistory.forward(ref);
+            return;
+        }
+        const orphans = chatOrphanedOverrideEntries(ref);
+        if (orphans.length > 0) {
+            alertError(chatLoreOverrideRefusalText(orphans));
             return;
         }
         let cha = safeStructuredClone(currentChat.message) as Message[];

@@ -19,6 +19,7 @@ import {
     abortGenerationJob,
     applyGenerationEvent,
     ChatBindingRefusedError,
+    ChatLoreOverrideOrphanedError,
     createGenerationJob,
     followGenerationJob,
     type GenerationFollow,
@@ -40,6 +41,7 @@ import { sleep } from "../util";
 import { recordClientEvent } from "../diagnostics/collector";
 import { chatStatusKey as chatKeyOf, noteJobDone, noteJobLost } from "src/ts/process/chatStatus.svelte";
 import { dropJobStage } from "./jobStages";
+import { chatLoreOverrideRefusalText } from "./loreOverrides";
 
 /** How often a follow whose socket closed before the job's end attaches again. */
 const MAX_ATTACHES = 5;
@@ -420,6 +422,10 @@ async function runPinnedServerJob(
             } else {
                 alertError(chatBindingRefusalText(error.problems));
             }
+            return refused;
+        }
+        if (error instanceof ChatLoreOverrideOrphanedError) {
+            alertError(chatLoreOverrideRefusalText(error.entries));
             return refused;
         }
         if (error instanceof GenerationBusyError) {

@@ -70,3 +70,19 @@ export function findOrphanedOverrides(
 ): DeepReadonly<ChatLoreOverride>[] {
     return mergeOwnerLore(ownerLore, overrides).orphans;
 }
+
+export type OrphanedOverrideEntry = { id: string; name: string };
+
+/** Orphans named for a refusal; persisted override comments and keys may be missing or non-strings. */
+export function orphanedOverrideEntries(
+    ownerLore: DeepReadonly<loreBook[]>,
+    overrides: DeepReadonly<ChatLoreOverride[]>,
+): OrphanedOverrideEntry[] {
+    return findOrphanedOverrides(ownerLore, overrides).map((override) => {
+        const entry = override?.entry;
+        const id = typeof entry?.id === "string" ? entry.id : "";
+        const comment = typeof entry?.comment === "string" ? entry.comment.trim() : "";
+        const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+        return { id, name: comment || key || id };
+    });
+}

@@ -41,6 +41,7 @@ import type { MaintenanceGate, SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, logEvent, recordSafely } from "../diagnostics/log.ts";
 import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import { checkChatBinding, readChatBindingState } from "./chatBinding.ts";
+import { readOrphanedOverrideEntries } from "./loreOverrides.ts";
 import { type ChannelHub, createChannelHub, type JobChannel, parseGenerationHooks } from "./channel.ts";
 import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.ts";
 
@@ -1183,6 +1184,10 @@ export function createGenerationJobs(options: {
         const refusal = binding.chat && checkChatBinding(binding.chat, binding.lookup, body.context, "send");
         if (refusal) {
             return { ok: false, status: 409, body: refusal };
+        }
+        const entries = readOrphanedOverrideEntries(store, kinds, { characterId, chatId });
+        if (entries.length > 0) {
+            return { ok: false, status: 409, body: { error: "chatLoreOverrideOrphaned", entries } };
         }
         let resolveFinished!: () => void;
         const finished = new Promise<void>((resolve) => {
