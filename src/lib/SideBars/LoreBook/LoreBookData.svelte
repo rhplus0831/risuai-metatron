@@ -17,13 +17,9 @@
     import { isLocalSend } from "src/ts/process/localSends";
     import { alertConfirm, alertError, alertMd } from "../../../ts/alert";
     import Check from "../../UI/GUI/CheckInput.svelte";
-    import Help from "../../Others/Help.svelte";
     import TextInput from "../../UI/GUI/TextInput.svelte";
-    import NumberInput from "../../UI/GUI/NumberInput.svelte";
-    import TextAreaInput from "../../UI/GUI/TextAreaInput.svelte";
-    import { countTokens, tokenCountInput, type TokenCountInput } from "src/ts/tokenizer";
-    import { createTokenCountField } from "src/ts/tokenCountField";
-    import { onDestroy } from "svelte";
+    import { offOverrideIds } from "../../../../shared/lore/overrides.ts";
+    import LoreEntryFields from "./LoreEntryFields.svelte";
     import LoreBookList from "./LoreBookList.svelte";
 
     interface Props {
@@ -65,25 +61,7 @@
     let open = $derived(isOpen);
     const shownOpen = $derived(open || forceOpen);
 
-    let tokens = $state(0);
-    const tokenField = createTokenCountField<TokenCountInput>({
-        count: async (input, signal) => {
-            if ("error" in input) throw input.error;
-            return countTokens(input.expanded, undefined, signal);
-        },
-        apply: (count) => (tokens = count),
-        same: (a, b) => !("error" in a) && !("error" in b) && a.expanded === b.expanded && a.scope === b.scope,
-    });
-
-    $effect(() => {
-        if (shownOpen && value.mode !== "folder") {
-            tokenField.update(tokenCountInput(value.content));
-        } else {
-            tokenField.reset();
-        }
-    });
-
-    onDestroy(() => tokenField.dispose());
+    const offIds = $derived(offOverrideIds(selectedChat()?.loreOverrides ?? []));
 
     function isLocallyActivated(book: loreBook) {
         return book.id ? selectedChat()?.localLore.some((e) => e.id === book.id) : false;
@@ -256,6 +234,9 @@
             </button>
         {/if}
     </div>
+    {#if value.mode === "child" && offIds.has(value.id)}
+        <p class="text-xs text-textcolor2 mt-1">{language.chatLoreOverrides.linkOffNotice}</p>
+    {/if}
     {#if shownOpen}
         {#if value.mode === "folder"}
             <div class="border-0 outline-hidden w-full mt-2 flex flex-col mb-2">
@@ -288,77 +269,22 @@
                 </div>
             </div>
         {:else}
-            <div class="border-0 outline-hidden w-full mt-2 flex flex-col mb-2">
-                <span class="text-textcolor mt-6">{language.name} <Help key="loreName" /></span>
-                <TextInput size="sm" bind:value={value.comment} />
-                {#if !lorePlus}
-                    {#if !value.alwaysActive}
-                        <span class="text-textcolor mt-6"
-                            >{language.activationKeys} <Help key="loreActivationKey" /></span
-                        >
-                        <span class="text-xs text-textcolor2">{language.activationKeysInfo}</span>
-                        <TextInput size="sm" bind:value={value.key} />
-
-                        {#if value.selective}
-                            <span class="text-textcolor mt-6">{language.SecondaryKeys}</span>
-                            <span class="text-xs text-textcolor2">{language.activationKeysInfo}</span>
-                            <TextInput size="sm" bind:value={value.secondkey} />
+            <LoreEntryFields bind:value {lorePlus}>
+                {#snippet localActivation()}
+                    {#if !value.alwaysActive && selectedCharacter()?.globalLore?.includes(value) && settings.ui.localActivationInGlobalLorebook}
+                        <div class="flex items-center mt-2">
+                            <Check
+                                check={isLocallyActivated(value)}
+                                onChange={(check: boolean) => toggleLocalActive(check, value)}
+                                name={language.alwaysActiveInChat}
+                            />
+                        </div>
+                        {#if offIds.has(value.id)}
+                            <p class="text-xs text-textcolor2 mt-1">{language.chatLoreOverrides.linkOffNotice}</p>
                         {/if}
                     {/if}
-                {/if}
-                {#if !lorePlus}
-                    {#if !(value.activationPercent === undefined || value.activationPercent === null)}
-                        <span class="text-textcolor mt-6">{language.activationProbability}</span>
-                        <NumberInput
-                            size="sm"
-                            bind:value={value.activationPercent}
-                            onChange={() => {
-                                if (
-                                    isNaN(value.activationPercent) ||
-                                    !value.activationPercent ||
-                                    value.activationPercent < 0
-                                ) {
-                                    value.activationPercent = 0;
-                                }
-                                if (value.activationPercent > 100) {
-                                    value.activationPercent = 100;
-                                }
-                            }}
-                        />
-                    {/if}
-                {/if}
-                {#if !lorePlus}
-                    <span class="text-textcolor mt-4">{language.insertOrder} <Help key="loreorder" /></span>
-                    <NumberInput size="sm" bind:value={value.insertorder} min={0} max={1000} />
-                {/if}
-                <span class="text-textcolor mt-4 mb-2">{language.prompt}</span>
-                <TextAreaInput highlight autocomplete="off" bind:value={value.content} />
-                <span class="text-textcolor2 mt-2 mb-2 text-sm">{tokens} {language.tokens}</span>
-                <div class="flex items-center mt-4">
-                    <Check bind:check={value.alwaysActive} name={language.alwaysActive} />
-                </div>
-                {#if !value.alwaysActive && selectedCharacter()?.globalLore?.includes(value) && settings.ui.localActivationInGlobalLorebook}
-                    <div class="flex items-center mt-2">
-                        <Check
-                            check={isLocallyActivated(value)}
-                            onChange={(check: boolean) => toggleLocalActive(check, value)}
-                            name={language.alwaysActiveInChat}
-                        />
-                    </div>
-                {/if}
-                {#if !lorePlus && !value.useRegex}
-                    <div class="flex items-center mt-2">
-                        <Check bind:check={value.selective} name={language.selective} />
-                        <Help key="loreSelective" name={language.selective} />
-                    </div>
-                {/if}
-                {#if !lorePlus && !value.alwaysActive}
-                    <div class="flex items-center mt-2">
-                        <Check bind:check={value.useRegex} name={language.useRegexLorebook} />
-                        <Help key="useRegexLorebook" name={language.useRegexLorebook} />
-                    </div>
-                {/if}
-            </div>
+                {/snippet}
+            </LoreEntryFields>
         {/if}
     {/if}
 </div>

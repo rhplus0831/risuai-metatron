@@ -67,7 +67,7 @@ Others:
 
 GUI primitives (`src/lib/UI/GUI/*`):
 
-- `Button`, `IconButton`, `CheckInput`, `ColorInput`, `NumberInput`, `TextInput`, `TextAreaInput` (contenteditable plus CBS highlight and autocomplete), `TextAreaResizable`, `SelectInput`/`OptionInput` (`SelectInput` forwards native select attributes, including accessible labels and data attributes, and carries `risu-select`), `SegmentedControl`, `SliderInput` (`-1000` means disabled; a touch or pen drags only after it moves sideways past a slop, a vertical move is left to page scrolling, and a tap sets the value through its click), `OptionalInput` (nullable), `MultiLangInput`/`MultiLangDisplay`.
+- `Button`, `IconButton`, `CheckInput` (`disabled` prevents toggling and dims with theme tokens; `indeterminate` displays the native mixed state and a dash), `ColorInput`, `NumberInput`, `TextInput`, `TextAreaInput` (contenteditable plus CBS highlight and autocomplete), `TextAreaResizable`, `SelectInput`/`OptionInput` (`SelectInput` forwards native select attributes, including accessible labels and data attributes, and carries `risu-select`), `SegmentedControl`, `SliderInput` (`-1000` means disabled; a touch or pen drags only after it moves sideways past a slop, a vertical move is left to page scrolling, and a tap sets the value through its click), `OptionalInput` (nullable), `MultiLangInput`/`MultiLangDisplay`.
 - `Portal`/`PortalConsumer`/`LazyPortal`.
 - `LazyFileSrc`: holds a stored file's URL through `holdFileSrc` only once its wrapper nears the viewport (an `IntersectionObserver`, 200px margin) and renders its snippet with it. The loading effect releases its hold on a path change or unmount; a reused row waits to be seen again. Unpinned fallback object URLs are revoked after the last hold and a short grace period (`global-api.md`). Asset lists preview through it; filtering, paging, live-row indices, and name-cache rules belong to [characters-modules](characters-modules.md).
 - `LazyCharImage`: defers `getCharImage` until its wrapper nears the viewport and restarts the read on a path change; it loads immediately without `IntersectionObserver`. Its optional 256/512 `thumb` class requests server thumbnails through `getCharImage`; catalog, sidebar, pins, and persona lists use 256, while chat avatars and active persona/character editors use 512. `cardboard` chat keeps the original; editors and asset previews do too. See `LazyCharImage.test.ts` for the observer contract.
@@ -84,7 +84,7 @@ Other UI:
   - Record Export downloads `{ kind, id, data }` using only that kind’s `SECTION_FIELDS`. Managed credentials, the pending secret queue, and client-only character fields are excluded. Labels and reasons use `language.refusedData`; the chat badge uses `language.chatStatus.refused`.
 
 - `UI/PopupButton.svelte` writes `popupStore`. `UI/PopupList.svelte` is the fixed-position host mounted by `App`.
-- `UI/Accordion.svelte` (its button carries `aria-expanded`; the `styled` one takes an optional `badge` pill beside the name; `startOpen`, read at mount, opens it), `UI/BaseRoundedButton.svelte`, `UI/NewGUI/Button.svelte` (no secondary variant).
+- `UI/Accordion.svelte` (its button carries `aria-expanded`; the `styled` one takes an optional `badge` pill beside the name; `startOpen`, read at mount, opens it; optional bindable `open` lets a caller control subsequent transitions while keeping user toggles), `UI/BaseRoundedButton.svelte`, `UI/NewGUI/Button.svelte` (no secondary variant).
 
 Mobile:
 

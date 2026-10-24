@@ -1,6 +1,8 @@
 <script lang="ts">
     interface Props {
         check?: boolean;
+        disabled?: boolean;
+        indeterminate?: boolean;
         onChange?: (check: boolean) => any;
         margin?: boolean;
         name?: string;
@@ -13,6 +15,8 @@
 
     let {
         check = $bindable(),
+        disabled = false,
+        indeterminate = false,
         onChange = (check: boolean) => {},
         margin = true,
         name = "",
@@ -25,9 +29,10 @@
 </script>
 
 <label
-    class={"flex items-center gap-2 cursor-pointer" +
+    class={"flex items-center gap-2" +
+        (disabled ? " cursor-default opacity-60" : " cursor-pointer") +
         (className ? " " + className : "") +
-        (grayText ? " text-textcolor2" : " text-textcolor")}
+        (grayText || disabled ? " text-textcolor2" : " text-textcolor")}
     class:mr-2={margin}
     aria-describedby="{name} {check ? 'abled' : 'disabled'}"
     aria-labelledby="{name} {check ? 'abled' : 'disabled'}"
@@ -38,10 +43,21 @@
     <input
         class="hidden"
         type="checkbox"
+        {disabled}
+        {indeterminate}
+        aria-checked={indeterminate ? "mixed" : check}
         alt={name}
-        bind:checked={check}
-        onchange={() => {
-            onChange(check);
+        bind:checked={
+            () => check,
+            (next) => {
+                if (!disabled) check = next;
+            }
+        }
+        onchange={(event) => {
+            if (!disabled) onChange(check);
+            // A controlled checkbox may decline a change or wait for confirmation.
+            event.currentTarget.checked = !!check;
+            event.currentTarget.indeterminate = indeterminate;
         }}
         aria-describedby="{name} {check ? 'abled' : 'disabled'}"
         aria-labelledby="{name} {check ? 'abled' : 'disabled'}"
@@ -54,7 +70,9 @@
         aria-describedby="{name} {check ? 'abled' : 'disabled'}"
         aria-labelledby="{name} {check ? 'abled' : 'disabled'}"
     >
-        {#if check}
+        {#if indeterminate}
+            <span class="w-3 h-0.5 bg-textcolor"></span>
+        {:else if check}
             <svg
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"

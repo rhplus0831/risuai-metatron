@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
@@ -15,10 +15,35 @@
     import NumberInput from "../../UI/GUI/NumberInput.svelte";
     import LoreBookList from "./LoreBookList.svelte";
     import Help from "src/lib/Others/Help.svelte";
+    import Accordion from "../../UI/Accordion.svelte";
+    import LoreOverrideList from "./LoreOverrideList.svelte";
+    import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
+    import { untrack } from "svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     let submenu = $state(0);
+
+    let overridesOpen = $state(false);
+    const chatKey = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? `${ref.chaId}\u0000${ref.chatId}` : "";
+    });
+    let previousChat = "";
+    let previousOrphans = new Map<string, number>();
+    // Open on a switch to a chat with orphans, or when a new orphan appears in the same chat.
+    $effect(() => {
+        const key = chatKey;
+        const orphans = mergeOwnerLore(currentCharacter?.globalLore ?? [], currentChat?.loreOverrides ?? []).orphans;
+        const ids = new Map<string, number>();
+        for (const override of orphans) ids.set(override.entry.id, (ids.get(override.entry.id) ?? 0) + 1);
+        untrack(() => {
+            if (key !== previousChat) overridesOpen = ids.size > 0;
+            else if ([...ids].some(([id, count]) => count > (previousOrphans.get(id) ?? 0))) overridesOpen = true;
+            previousChat = key;
+            previousOrphans = ids;
+        });
+    });
 
     function isAllCharacterLoreAlwaysActive() {
         const globalLore = currentCharacter.globalLore;
@@ -201,4 +226,12 @@
             </button>
         {/if}
     </div>
+{/if}
+
+{#if submenu === 1}
+    <Accordion styled name={language.chatLoreOverrides.title} bind:open={overridesOpen}>
+        {#key chatKey}
+            <LoreOverrideList />
+        {/key}
+    </Accordion>
 {/if}

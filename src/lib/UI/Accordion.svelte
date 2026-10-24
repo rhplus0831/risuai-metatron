@@ -13,6 +13,8 @@
         badge?: string;
         /** Starts open (read once, at mount). */
         startOpen?: boolean;
+        /** Controlled when bound; otherwise starts at startOpen. */
+        open?: boolean;
     }
 
     let {
@@ -24,9 +26,8 @@
         className = "",
         badge = "",
         startOpen = false,
+        open = $bindable(startOpen),
     }: Props = $props();
-    // svelte-ignore state_referenced_locally
-    let open = $state(startOpen);
 </script>
 
 {#if disabled}
