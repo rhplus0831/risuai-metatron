@@ -4,7 +4,7 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
 historical paths/commits, retrieval commands, and pending manual follow-ups.
 
-Active planning and implementation: None
+Active planning and implementation: [Chat Lore Overrides](chat-lore-overrides.md)
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
