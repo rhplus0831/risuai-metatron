@@ -1,6 +1,6 @@
 # Context Usage Meter Plan
 
-Status: landed 1 (2eb869497), 2 (630ba6396). Revised 2026-10-25 after a read-only GPT-6-Astra
+Status: landed 1 (2eb869497), 2 (630ba6396), 3 (2febc0f44). Revised 2026-10-25 after a read-only GPT-6-Astra
 review of the first draft; its confirmed findings are folded in below.
 
 Slice 1 deviations later slices rely on:
@@ -30,6 +30,24 @@ from `shared/database.ts`. The section `interaction.contextMeter` (label
 `interaction.contextMeterTurnUnit`, and `interaction.contextMeterFixedWarn`; its
 first item has no condition, so a section `SettingHit` for it stays available
 while the meter is off.
+
+Slice 3 notes for slice 4:
+
+- `ContextMeter.svelte` props are `chatRef`, `group`, and `height`; it is mounted
+  after the composer textarea inside `{#key chatKey}`, so a chat switch makes a
+  new instance. `source` (`$derived`) is a report or legacy source with its
+  `messageId` (`Message.chatId`, optional: no id means no estimate) and scans only
+  the message list and each `generationInfo`; keep the draft count and the digest
+  check out of that scan.
+- Extension points: a `draft` prop, a "≈ −2" suffix on the `chip` derived
+  (`{ text, note, summary }`), and an estimate block under the popover's heading.
+- Deviations: the memory-mode chip shows the kept count and the coverage note
+  only (the memory kind is in the label and the popover; the note is hidden below
+  `sm`), and memory mode shows the kept count even when all history was kept. The
+  bar is scaled to the section sum when it exceeds the prompt budget. The
+  section `SettingHit` is built at click time. Strings are in `language.contextUsage`.
+- No real-browser check yet (placement, narrow layout, light theme); it belongs
+  to the manual check after slice 4.
 
 Planned on 2026-10-25. Sources: the code at `49b046098` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
