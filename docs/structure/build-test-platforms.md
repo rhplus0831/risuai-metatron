@@ -19,7 +19,7 @@
   - `util/agentTest.mjs`, `util/agentTestReporter.ts`, `util/agentTestResults.mjs` (the `test:agent` wrapper, its reporter, and their shared summary line and rerun of failed files), `util/agentE2e.mjs` (which specs `test:agent --e2e` selects), `util/requireHuman.mjs` (the human gate)
   - `util/overloadTest.mjs` (the `test:overload` runner)
   - `util/testInventory.mjs` (the `check:tests` test inventory check)
-  - `util/ci/check.sh` and `.gitlab-ci.yml` (the CI gate and its GitLab pipeline)
+  - `util/ci/check.sh` and `.github/workflows/ci.yml` (the CI gate and its GitHub Actions workflow)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
   - `util/heap/` (V8 heap snapshot analysis)
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
@@ -114,8 +114,7 @@ Web:
 ## Flows
 
 - Production: `pnpm build` produces `dist/`, which only the Hono self-host server (`pnpm run server`, `server/src/`) or Docker serves. Served any other way (static hosting), the client shows the `NodeServerRequired` notice.
-- Development: `pnpm run server` plus `pnpm dev`.
-- CI: the forge is a self-hosted GitLab, and `.gitlab-ci.yml` runs one job, `check`, for pushes to `metatron` and `main` and for merge requests that target them (`workflow: rules`; nothing else starts a pipeline). The job runs on the `node:24` image with `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA provider download in the postinstall), runs `corepack enable` (so `pnpm` is the `packageManager` version), and then `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm format:check`, `pnpm check:tests`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first failure with its exit code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI. The pnpm store is cached at `node_modules/.pnpm-store` (`PNPM_STORE_DIR`, which the script passes to `pnpm install`), keyed on `pnpm-lock.yaml`; inside `node_modules` the formatting check, Vitest, and the test inventory skip it. The job uses no secrets and no `save/` data. A person can run the same script locally (it checks the Node and pnpm versions first); agents keep using `pnpm --silent test:agent` (V1).
+- Development: `pnpm run server`- CI: GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`, for pushes to `metatron` and `main` and for pull requests that target them (`on: push` / `pull_request` branch filters; nothing else starts a run, and a newer run for the same ref cancels the older one). The job runs on `ubuntu-latest` with Node 24 (`actions/setup-node`) and `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA provider download in the postinstall), runs `corepack enable` (so `pnpm` is the `packageManager` version), and then `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm format:check`, `pnpm check:tests`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first failure with its exit code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI. The pnpm store is kept outside the checkout at `$RUNNER_TEMP/pnpm-store` (`PNPM_STORE_DIR`, which the script passes to `pnpm install`) and cached with `actions/cache`, keyed on `pnpm-lock.yaml`. The job uses no secrets and no `save/` data. A person can run the same script locally (it checks the Node and pnpm versions first); agents keep using `pnpm --silent test:agent` (V1). test:agent` (V1).
 - There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python llama.cpp sidecar were removed.
 
 ## State
