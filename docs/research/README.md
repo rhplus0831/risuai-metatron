@@ -3,11 +3,12 @@
 Read-only surveys of sibling RisuAI forks, written on 2026-10-20 against metatron
 `44e18f2ae`. They list what each fork has that metatron lacks, what metatron already
 covers, and what should not be ported. None of them changed code. Pending decisions
-from each survey are collected at the bottom. Three later notes are not fork surveys: the
+from each survey are collected at the bottom. Later notes are not fork surveys: the
 2026-10-23 spinner analysis looks at a metatron regression, the upstream ledger records
 which upstream RisuAI commits metatron has taken and how to run the next intake, and the
 found-issues list collects out-of-scope bugs and stale docs that sessions noticed while
-working on something else.
+working on something else. The 2026-10-25 rendering investigation traces the current
+rendering pipeline and records browser probes, remaining costs, and proposed fixes.
 
 | File                                                                                         | Subject                                                                                                                                                                                                                                | Written by                                                                                           |
 | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
@@ -21,6 +22,7 @@ working on something else.
 | [chat-generation-stage-colors-analysis.md](chat-generation-stage-colors-analysis.md)         | Why the send/stop spinner no longer changes color (its stage class is fixed to 0 since server jobs replaced the browser pipeline), with a server-reported stage design and a smaller client-side alternative; inspected at `79ae26cc4` | Not recorded; imported 2026-10-23                                                                    |
 | [upstream-ledger.md](upstream-ledger.md)                                                     | Upstream RisuAI (`/home/codex/Risuai`) `25001174..f50b5942`: 79 commits with dispositions, harness targets, intake procedure                                                                                                           | Codex sub-agent, from the Upstream Integration plan's inventory; checked by the session              |
 | [found-issues.md](found-issues.md)                                                           | 107 out-of-scope bugs, latent defects, stale docs and comments, and test flakes noticed 2026-10-14..24, grouped by area; delete an entry when it is fixed                                                                              | Agent sessions while working on other changes; moved from project memory 2026-10-24, not re-verified |
+| [rendering-performance-investigation.md](rendering-performance-investigation.md)             | Rendering and related performance at `6336e2954`: stream ingress, CSS/Markdown, asynchronous work, row lifecycle, editing, media, and screenshots; measured probes and implementation priorities                                       | Codex; Luna source exploration, findings re-checked against code and browser probes                  |
 
 ## Decisions these surveys left open
 
