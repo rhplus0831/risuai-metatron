@@ -2,7 +2,7 @@
     import { v4 } from "uuid";
     import { language } from "src/lang";
     import { alertConfirm, alertError } from "src/ts/alert";
-    import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import { findCharacter, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import {
         chatOwnerToken,
         currentChatRef,
@@ -15,10 +15,10 @@
     import { loreWriteFenced } from "src/ts/storage/chatFieldDraft.svelte";
     import { useLoreOverridesDraft } from "src/ts/storage/loreOverridesDraft.svelte";
     import { DetachedWrapperError } from "src/ts/storage/records.svelte";
-    import type { ChatLoreOverride, loreBook } from "../../../../shared/database.ts";
+    import type { Chat, ChatLoreOverride, loreBook } from "../../../../shared/database.ts";
     import type { DeepReadonly } from "../../../../shared/readonly.ts";
     import { mergeOwnerLore, offOverrideIds } from "../../../../shared/lore/overrides.ts";
-    import LoreOverrideRow from "./LoreOverrideRow.svelte";
+    import LoreOverrideRow, { type EntryState, type FolderState } from "./LoreOverrideRow.svelte";
 
     const draft = useLoreOverridesDraft();
     // The section remounts for another chat; stale input events cannot edit its draft.
@@ -59,6 +59,7 @@
         return draft.value.find((override) => override.entry.id === book.id);
     }
 
+    const isGroupKey = (key: unknown): key is string => typeof key === "string" && key !== "";
     type Node = { book: loreBook; children: Node[] };
     // Show every owner entry once, including dangling folders and cycles. Owner order decides
     // override matching before this presentation grouping ever runs.
@@ -69,7 +70,8 @@
         function node(book: loreBook): Node {
             shown.add(book);
             const children: Node[] = [];
-            if (book.mode === "folder" && !expandedKeys.has(book.key)) {
+            // Only a non-empty string key groups entries, as in mergeOwnerLore: a keyless folder holds none.
+            if (book.mode === "folder" && isGroupKey(book.key) && !expandedKeys.has(book.key)) {
                 expandedKeys.add(book.key);
                 for (const child of lore) {
                     if (!shown.has(child) && child.folder === book.key) children.push(node(child));
@@ -86,22 +88,54 @@
         }
         return roots;
     });
-    function descendants(folder: loreBook): loreBook[] {
-        if (!holdsOriginal(folder)) return [];
+    /**
+     * The owner entries inside the folders with these keys, by the owner's current folder keys: an
+     * entry whose `folder` equals a collected key is inside, and a folder inside adds its own key until
+     * nothing changes (the key set ends cycles), the membership rule of `mergeOwnerLore`.
+     */
+    function membersOf(keys: unknown[]): Set<loreBook> {
         const lore = ownerLore();
-        const keys = new Set<string>();
-        const entries = new Set<loreBook>();
-        function visit(key: string) {
-            if (keys.has(key)) return;
-            keys.add(key);
+        const seen = new Set<string>();
+        const pending: string[] = [];
+        const add = (key: unknown) => {
+            if (isGroupKey(key) && !seen.has(key)) {
+                seen.add(key);
+                pending.push(key);
+            }
+        };
+        keys.forEach(add);
+        const members = new Set<loreBook>();
+        while (pending.length > 0) {
+            const key = pending.pop();
             for (const book of lore) {
-                if (book.folder !== key) continue;
-                if (book.mode === "folder") visit(book.key);
-                else entries.add(book);
+                if (members.has(book) || book.folder !== key) continue;
+                members.add(book);
+                if (book.mode === "folder") add(book.key);
             }
         }
-        visit(folder.key);
-        return [...entries];
+        return members;
+    }
+    // Entries and folders that an off folder drops from this chat's lore.
+    const offMembers = $derived(
+        membersOf(
+            ownerLore()
+                .filter((book) => book.mode === "folder" && overrideFor(book)?.off === true)
+                .map((book) => book.key),
+        ),
+    );
+    /** The overrides a folder's indicator counts: its entries' overrides and its nested folders that are off. */
+    function changedIds(folder: loreBook): string[] {
+        if (!holdsOriginal(folder)) return [];
+        const own = overrideFor(folder)?.entry.id;
+        const ids = new Set<string>();
+        for (const book of membersOf([folder.key])) {
+            if (book === folder) continue;
+            const override = overrideFor(book);
+            if (override && override.entry.id !== own && (book.mode !== "folder" || override.off)) {
+                ids.add(override.entry.id);
+            }
+        }
+        return [...ids];
     }
     const orphans = $derived(mergeOwnerLore(ownerLore(), selectedChat()?.loreOverrides ?? []).orphans);
     const offIds = $derived(offOverrideIds(ownerLore(), selectedChat()?.loreOverrides ?? []));
@@ -117,47 +151,108 @@
         alertError(language.chatGenerating);
         return true;
     }
-    function pin(entries: loreBook[]) {
+    const entryState = (override?: ChatLoreOverride): EntryState =>
+        !override ? "original" : override.off ? "off" : "overridden";
+    const folderState = (override?: ChatLoreOverride): FolderState => (override?.off ? "off" : "on");
+    /** The mounted chat while it is still selected with its draft, and `book` is one of its owner's entries. */
+    function writableRef(book: loreBook): ChatRef | undefined {
         const ref = currentChatRef();
         if (!ref || !selectedChat() || keyOf(ref) !== mountedKey || draft.key !== mountedKey) return;
-        if (refuseFenced(ref)) return;
-        for (const book of entries) {
-            if (!holdsOriginal(book) || book.mode === "folder" || overrideFor(book)) continue;
-            if (!book.id || ownerLore().some((entry) => entry !== book && entry.id === book.id)) book.id = v4();
-            const entry = JSON.parse(JSON.stringify($state.snapshot(book))) as ChatLoreOverride["entry"];
-            draft.value.push({ entry, off: false });
+        return holdsOriginal(book) ? ref : undefined;
+    }
+    function pin(book: loreBook, off: boolean) {
+        const ref = writableRef(book);
+        if (!ref || refuseFenced(ref) || overrideFor(book)) return;
+        if (!book.id || ownerLore().some((entry) => entry !== book && entry.id === book.id)) book.id = v4();
+        const entry = JSON.parse(JSON.stringify($state.snapshot(book))) as ChatLoreOverride["entry"];
+        draft.value.push({ entry, off });
+    }
+    function setRowState(book: loreBook, next: EntryState | FolderState) {
+        const ref = writableRef(book);
+        if (!ref) return;
+        const override = overrideFor(book);
+        if (book.mode === "folder") {
+            if (next === folderState(override) || (next !== "on" && next !== "off")) return;
+            if (!override) {
+                pin(book, true);
+                return;
+            }
+            if (refuseFenced(ref)) return;
+            if (next === "off") {
+                // An on folder override can arrive through data; turning it off keeps that copy.
+                liveOverride(override).off = true;
+                return;
+            }
+            // A folder copy holds no edits: remove every override with its id, leaving members as they were.
+            const id = override.entry.id;
+            for (let i = draft.value.length - 1; i >= 0; i--) {
+                if (draft.value[i].entry.id === id) draft.value.splice(i, 1);
+            }
+            return;
+        }
+        if (next === entryState(override) || next === "on") return;
+        if (!override) {
+            pin(book, next === "off");
+        } else if (next === "original") {
+            void release(ref, [override.entry.id], false);
+        } else if (!refuseFenced(ref)) {
+            // The copy and its edits stay; only the state changes.
+            liveOverride(override).off = next === "off";
         }
     }
-    async function release(entries: loreBook[]) {
-        const ref = currentChatRef();
-        if (!ref || !selectedChat() || keyOf(ref) !== mountedKey) return;
+    function releaseAll(folder: loreBook) {
+        const ref = writableRef(folder);
+        const ids = ref ? changedIds(folder) : [];
+        if (ref && ids.length) void release(ref, ids, true);
+    }
+    /** Whether releasing changes more than the state: a collected entry copy differs from its original. */
+    function hasEdits(chaId: string, collected: DeepReadonly<ChatLoreOverride[]>) {
+        const lore = findCharacter(chaId)?.globalLore ?? [];
+        return collected.some((override) => {
+            const original = lore.find((entry) => entry.id === override.entry.id);
+            if (original?.mode === "folder") return false;
+            return (
+                !original ||
+                JSON.stringify($state.snapshot(override.entry)) !== JSON.stringify($state.snapshot(original))
+            );
+        });
+    }
+    /**
+     * Removes every override with one of `ids` from the captured chat, which may no longer be the
+     * selected one. A single entry confirms only when its copy holds edits; a folder's bulk release
+     * always confirms. Changed overrides after the dialog write nothing, so the user decides again.
+     */
+    async function release(ref: ChatRef, ids: string[], bulk: boolean) {
         const owner = chatOwnerToken(ref.chaId);
-        const ids = new Set(
-            entries
-                .map(overrideFor)
-                .filter((value) => !!value)
-                .map((value) => value.entry.id),
-        );
-        if (!ids.size || refuseFenced(ref)) return;
-        try {
-            if (!(await alertConfirm(language.chatLoreOverrides.releaseConfirm))) return;
-            await ensureChatLoaded(ref);
+        const targets = new Set(ids);
+        if (!targets.size || refuseFenced(ref)) return;
+        const collect = (chat: DeepReadonly<Chat>) =>
+            (chat.loreOverrides ?? []).filter((override) => targets.has(override.entry.id));
+        // Synchronous, so nothing runs between these checks and the comparison and write that follow.
+        function captured() {
             const chat = findChat(ref);
-            if (!chat || chatOwnerToken(ref.chaId) !== owner || refuseFenced(ref)) return;
-            // Remove only the first override per captured id, as in mergeOwnerLore.
-            const remaining = new Set(ids);
-            const loreOverrides = (chat.loreOverrides ?? []).filter((override) => !remaining.delete(override.entry.id));
-            if (remaining.size === ids.size) return;
+            return chat && chatOwnerToken(ref.chaId) === owner && !refuseFenced(ref) ? chat : undefined;
+        }
+        try {
+            await ensureChatLoaded(ref);
+            let chat = captured();
+            if (!chat) return;
+            const collected = collect(chat);
+            if (!collected.length) return;
+            if (bulk || hasEdits(ref.chaId, collected)) {
+                const before = JSON.stringify($state.snapshot(collected));
+                const count = new Set(collected.map((override) => override.entry.id)).size;
+                const strings = language.chatLoreOverrides;
+                if (!(await alertConfirm(bulk ? strings.releaseAllConfirm(count) : strings.releaseConfirm))) return;
+                await ensureChatLoaded(ref);
+                chat = captured();
+                if (!chat || JSON.stringify($state.snapshot(collect(chat))) !== before) return;
+            }
+            const loreOverrides = (chat.loreOverrides ?? []).filter((override) => !targets.has(override.entry.id));
             setChatMeta(ref, { loreOverrides });
         } catch (error) {
             alertError(error);
         }
-    }
-    function toggle(book: loreBook, checked: boolean) {
-        if (!holdsOriginal(book)) return;
-        const entries = book.mode === "folder" ? descendants(book) : [book];
-        if (checked) pin(entries);
-        else void release(entries);
     }
     async function resolveOrphan(target: DeepReadonly<ChatLoreOverride>, move: boolean) {
         const ref = currentChatRef();
@@ -194,6 +289,7 @@
 </script>
 
 <div class="flex flex-col gap-2">
+    <p class="text-xs text-textcolor2">{language.chatLoreOverrides.hint}</p>
     {#each orphans as orphan (orphan)}
         <div class="border border-darkborderc rounded-md p-2">
             <p class="text-textcolor2 text-xs">{language.chatLoreOverrides.originalDeleted}</p>
@@ -223,18 +319,20 @@
 {#snippet rows(nodes: Node[])}
     {#each nodes as node (node.book)}
         {@const book = node.book}
-        {@const entries = liveOriginal(book).mode === "folder" ? descendants(book) : []}
-        {@const pinned = entries.filter((entry) => !!overrideFor(entry)).length}
+        {@const folder = liveOriginal(book).mode === "folder"}
         {@const override = overrideFor(book)}
         <LoreOverrideRow
             original={() => liveOriginal(book)}
             {override}
             {liveOverride}
             {replaceEntry}
-            toggle={(checked) => toggle(book, checked)}
-            all={entries.length > 0 && pinned === entries.length}
-            some={pinned > 0}
+            rowState={folder ? folderState(override) : entryState(override)}
+            setRowState={(next) => setRowState(book, next)}
+            changed={folder ? changedIds(book).length : 0}
+            notApplied={folder && (override?.off === true || offMembers.has(book))}
+            inOffFolder={offMembers.has(book)}
             offNotice={hasOffLink(override)}
+            releaseAll={() => releaseAll(book)}
         >
             {@render rows(node.children)}
         </LoreOverrideRow>

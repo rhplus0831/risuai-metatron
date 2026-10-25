@@ -282,13 +282,43 @@ describe("GUI rendering without a browser session", () => {
         const buttons = Array.from(segmented.target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]"));
         expect(buttons.map((button) => button.textContent?.trim())).toEqual(["List", "Card", "Grid"]);
         expect(buttons[0].classList.contains("segmented-btn-active")).toBe(true);
+        expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
         expect(segmented.target.querySelector(".segmented-indicator")).not.toBeNull();
+        // Without a label the container is a plain box that keeps the settings pages' bottom margin.
+        const container = segmented.getBySelector(".segmented-control-container");
+        expect(container.hasAttribute("role")).toBe(false);
+        expect(container.hasAttribute("aria-label")).toBe(false);
+        expect(container.hasAttribute("aria-describedby")).toBe(false);
+        expect(container.classList.contains("segmented-margin")).toBe(true);
 
         buttons[2].click();
         await tick();
 
         expect(buttons[0].classList.contains("segmented-btn-active")).toBe(false);
         expect(buttons[2].classList.contains("segmented-btn-active")).toBe(true);
+        expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]);
+    });
+
+    it("names a segmented group, describes it, and drops its margin on request", () => {
+        const segmented = renderGui(SegmentedControl, {
+            value: "off",
+            options: [
+                { value: "on", label: "On" },
+                { value: "off", label: "Off" },
+            ],
+            size: "sm",
+            label: "Dragon: state in this chat",
+            describedBy: "dragon-indicator",
+            margin: false,
+        });
+        const container = segmented.getBySelector(".segmented-control-container");
+        expect(container.getAttribute("role")).toBe("group");
+        expect(container.getAttribute("aria-label")).toBe("Dragon: state in this chat");
+        expect(container.getAttribute("aria-describedby")).toBe("dragon-indicator");
+        expect(container.classList.contains("segmented-margin")).toBe(false);
+        const buttons = Array.from(segmented.target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]"));
+        expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+        expect(buttons.every((button) => button.classList.contains("text-xs"))).toBe(true);
     });
 
     it("renders slider semantics and supports keyboard changes", async () => {

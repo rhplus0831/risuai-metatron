@@ -10,9 +10,22 @@
         options: SegmentOption[];
         size?: "sm" | "md" | "lg";
         className?: string;
+        /** Accessible name of the group; the container is a named `role="group"` only when set. */
+        label?: string;
+        describedBy?: string;
+        /** Keeps the bottom margin the settings pages lay out with. */
+        margin?: boolean;
     }
 
-    let { value = $bindable(), options = [], size = "md", className = "" }: Props = $props();
+    let {
+        value = $bindable(),
+        options = [],
+        size = "md",
+        className = "",
+        label,
+        describedBy,
+        margin = true,
+    }: Props = $props();
 
     let containerRef: HTMLDivElement | undefined = $state();
     let indicatorStyle = $state("");
@@ -57,7 +70,14 @@
     }
 </script>
 
-<div class="segmented-control-container {className}" bind:this={containerRef}>
+<div
+    class="segmented-control-container {className}"
+    class:segmented-margin={margin}
+    role={label ? "group" : undefined}
+    aria-label={label}
+    aria-describedby={describedBy}
+    bind:this={containerRef}
+>
     <!-- Sliding indicator -->
     <div class="segmented-indicator" class:no-transition={!mounted} style={indicatorStyle}></div>
 
@@ -76,6 +96,7 @@
             class:py-2={size === "md"}
             class:px-6={size === "lg"}
             class:py-3={size === "lg"}
+            aria-pressed={opt.value === value}
             onclick={() => handleSelect(opt)}
         >
             {opt.label}
@@ -95,6 +116,9 @@
         padding: 4px;
         gap: 2px;
         user-select: none;
+    }
+
+    .segmented-margin {
         margin-bottom: 1rem;
     }
 
