@@ -1,6 +1,6 @@
 # Chat Lore Override States Plan
 
-Status: slices landed: 1 (e497efaa8). Revised 2026-10-25 after a read-only GPT-6-Astra
+Status: slices landed: 1 (e497efaa8), 2 (37902a9d5). Revised 2026-10-25 after a read-only GPT-6-Astra
 review of the first draft and a follow-up discussion with the user; the confirmed
 findings and the user's answers are folded in below.
 
