@@ -61,7 +61,7 @@
     let open = $derived(isOpen);
     const shownOpen = $derived(open || forceOpen);
 
-    const offIds = $derived(offOverrideIds(selectedChat()?.loreOverrides ?? []));
+    const offIds = $derived(offOverrideIds(selectedCharacter()?.globalLore ?? [], selectedChat()?.loreOverrides ?? []));
 
     function isLocallyActivated(book: loreBook) {
         return book.id ? selectedChat()?.localLore.some((e) => e.id === book.id) : false;

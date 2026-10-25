@@ -104,7 +104,7 @@
         return [...entries];
     }
     const orphans = $derived(mergeOwnerLore(ownerLore(), selectedChat()?.loreOverrides ?? []).orphans);
-    const offIds = $derived(offOverrideIds(selectedChat()?.loreOverrides ?? []));
+    const offIds = $derived(offOverrideIds(ownerLore(), selectedChat()?.loreOverrides ?? []));
     function hasOffLink(override: ChatLoreOverride | undefined) {
         return (
             !!override &&

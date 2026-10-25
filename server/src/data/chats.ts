@@ -50,6 +50,7 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     }
     if (meta.loreOverrides !== undefined) {
         assertLoreOverrides(meta.loreOverrides);
+        meta.loreOverrides = firstOverridePerId(meta.loreOverrides);
     }
     // The greeting the chat starts from (-1: the first message). The client gives a chat it creates its
     // character's `firstMsgIndex` (`prepareChatInput`); a chat written without one starts from the first
@@ -79,7 +80,7 @@ export function assertToolCalls(value: unknown): void {
 }
 
 /** `chat.loreOverrides`: full lore copies linked to their owner's entries by non-empty ids. */
-export function assertLoreOverrides(value: unknown): void {
+export function assertLoreOverrides(value: unknown): asserts value is { entry: { id: string }; off: boolean }[] {
     if (!Array.isArray(value)) {
         throw new ResourceValidationError("chat.loreOverrides must be an array");
     }
@@ -96,6 +97,21 @@ export function assertLoreOverrides(value: unknown): void {
             );
         }
     }
+}
+
+/**
+ * The first override per `entry.id`, in array order. The merge already applies only the first
+ * (`shared/lore/overrides.ts`), so dropping the later ones changes no behavior.
+ */
+function firstOverridePerId<T extends { entry: { id: string } }>(overrides: T[]): T[] {
+    const seen = new Set<string>();
+    return overrides.filter((override) => {
+        if (seen.has(override.entry.id)) {
+            return false;
+        }
+        seen.add(override.entry.id);
+        return true;
+    });
 }
 
 /** One entry of `chat.toolCalls`, and its size (`MAX_TOOL_CALL_RECORD_BYTES`). */

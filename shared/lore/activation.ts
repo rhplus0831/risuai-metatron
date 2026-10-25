@@ -90,8 +90,9 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     const char = input.character;
     const lorechat = input.chat;
     const overrides = lorechat.loreOverrides ?? [];
-    const characterLore = mergeOwnerLore(char.globalLore ?? [], overrides).lore;
-    const offIds = offOverrideIds(overrides);
+    const ownerLore = char.globalLore ?? [];
+    const characterLore = mergeOwnerLore(ownerLore, overrides).lore;
+    const offIds = offOverrideIds(ownerLore, overrides);
     const chatLore = lorechat.localLore ?? [];
     const moduleLorebook = input.moduleLorebooks;
     const fullLore = host.clone([...characterLore, ...chatLore, ...moduleLorebook]) as loreBook[];

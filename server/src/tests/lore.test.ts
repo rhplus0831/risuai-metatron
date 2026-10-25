@@ -125,8 +125,83 @@ describe("chat lore overrides", () => {
             orphans: [orphan, missingId, emptyId],
         });
         expect(findOrphanedOverrides(owners, overrides)).toEqual([orphan, missingId, emptyId]);
-        expect(offOverrideIds(overrides)).toEqual(new Set(["gone", "b"]));
+        expect(offOverrideIds(owners, overrides)).toEqual(new Set(["gone", "b"]));
         expect({ owners, overrides }).toEqual(before);
+    });
+
+    it("drops every entry inside an off folder by the owner's current folder keys, whatever the members' own overrides", () => {
+        const folder = (comment: string, key: string, extra: Partial<loreBook> = {}) =>
+            lore(comment, key, "", { mode: "folder", ...extra });
+        const owners = [
+            folder("off folder", "folder:a", { id: "fa" }),
+            lore("member", "x", "member text", { id: "member", folder: "folder:a" }),
+            folder("nested", "folder:b", { id: "fb", folder: "folder:a" }),
+            lore("nested member", "x", "nested text", { id: "nested", folder: "folder:b" }),
+            folder("twin", "folder:a", { id: "twin" }),
+            folder("cycle c", "folder:c", { id: "fc", folder: "folder:d" }),
+            folder("cycle d", "folder:d", { id: "fd", folder: "folder:c" }),
+            lore("cycle member", "x", "cycle text", { id: "cycled", folder: "folder:d" }),
+            folder("keyless", "", { id: "keyless" }),
+            folder("unkeyed", undefined as never, { id: "unkeyed" }),
+            lore("ungrouped", "x", "ungrouped text", { id: "ungrouped" }),
+            lore("empty folder", "x", "empty folder text", { id: "empty", folder: "" }),
+            lore("stale member", "x", "stale text", { id: "stale", folder: "folder:stale" }),
+            lore("moved out", "x", "moved text", { id: "moved" }),
+            lore("no id member", "x", "no id text", { folder: "folder:a" }),
+        ];
+        const memberCopy = lore("member copy", "x", "applied?", { id: "member" });
+        const movedCopy = lore("moved copy", "x", "moved copy text", { id: "moved", folder: "folder:a" });
+        const overrides: ChatLoreOverride[] = [
+            // The frozen copy's key is never used: the owner's `folder:a` decides membership.
+            { entry: { ...owners[0], key: "folder:stale" }, off: true },
+            { entry: memberCopy, off: false },
+            { entry: owners[3], off: true },
+            { entry: owners[5], off: true },
+            { entry: owners[8], off: true },
+            { entry: owners[9], off: true },
+            // A copy filed under the off folder does not move its owner entry into it.
+            { entry: movedCopy, off: false },
+        ];
+        const before = structuredClone({ owners, overrides });
+        expect(mergeOwnerLore(owners, overrides)).toEqual({
+            lore: [owners[4], owners[10], owners[11], owners[12], movedCopy],
+            orphans: [],
+        });
+        expect(offOverrideIds(owners, overrides)).toEqual(
+            new Set(["fa", "member", "fb", "nested", "fc", "fd", "cycled", "keyless", "unkeyed"]),
+        );
+        expect({ owners, overrides }).toEqual(before);
+
+        // Membership is the owner's now: an entry moved into the folder later is dropped too.
+        const later = [...owners, lore("added later", "x", "later text", { id: "later", folder: "folder:a" })];
+        expect(mergeOwnerLore(later, overrides).lore).not.toContain(later.at(-1));
+        expect(offOverrideIds(later, overrides)).toContain("later");
+    });
+
+    it("turns a folder off only through the first owner entry with its id and an off override that matches it", () => {
+        const owners = [
+            lore("first", "folder:x", "", { id: "dup", mode: "folder" }),
+            lore("in first", "x", "first text", { id: "in-x", folder: "folder:x" }),
+            lore("second", "folder:y", "", { id: "dup", mode: "folder" }),
+            lore("in second", "x", "second text", { id: "in-y", folder: "folder:y" }),
+            lore("on folder", "folder:on", "", { id: "on", mode: "folder" }),
+            lore("in on", "x", "on text", { id: "in-on", folder: "folder:on" }),
+            lore("plain", "folder:plain", "", { id: "plain" }),
+            lore("in plain", "x", "plain text", { id: "in-plain", folder: "folder:plain" }),
+        ];
+        // The orphan's copy names a live key, and the plain entry's copy claims to be a folder.
+        const orphan = { entry: lore("deleted", "folder:on", "", { id: "gone", mode: "folder" }), off: true };
+        const overrides: ChatLoreOverride[] = [
+            { entry: owners[0], off: true },
+            { entry: owners[4], off: false },
+            orphan,
+            { entry: { ...owners[6], mode: "folder" }, off: true },
+        ];
+        expect(mergeOwnerLore(owners, overrides)).toEqual({
+            lore: [owners[2], owners[3], owners[4], owners[5], owners[7]],
+            orphans: [orphan],
+        });
+        expect(offOverrideIds(owners, overrides)).toEqual(new Set(["dup", "in-x", "gone", "plain"]));
     });
 
     it("activates overridden owner content before local and module lore only in the overriding chat", async () => {
@@ -179,6 +254,23 @@ describe("chat lore overrides", () => {
         });
         const result = await activateLore(makeInput(owners, [], { chat }), makeHost());
         expect(result.actives.map((a) => [a.source, a.prompt])).toEqual([["on parent", "on text"]]);
+    });
+
+    it("keeps child links to entries inside an off folder inactive, even with activate decorators", async () => {
+        const owners = [
+            lore("folder", "folder:f", "", { id: "folder", mode: "folder" }),
+            lore("member", "missing", "member text", { id: "member", folder: "folder:f" }),
+            lore("keyed member", "hit", "keyed text", { id: "keyed", folder: "folder:f" }),
+            lore("outside", "missing", "outside text", { id: "outside" }),
+        ];
+        const chat = makeChat([user("hit")], {
+            localLore: ["member", "outside"].map((id) =>
+                lore("child", "", "@@activate\nchild text", { id, mode: "child", alwaysActive: true }),
+            ),
+            loreOverrides: [{ entry: owners[0], off: true }],
+        });
+        const result = await activateLore(makeInput(owners, [], { chat }), makeHost());
+        expect(result.actives.map((a) => [a.source, a.prompt])).toEqual([["outside", "outside text"]]);
     });
 
     it("gives child links the linked entry's content and insert order, with decorators setting priority afterward", async () => {
