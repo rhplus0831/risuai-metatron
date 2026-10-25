@@ -1,7 +1,27 @@
 # Context Usage Meter Plan
 
-Status: planned, nothing landed. Revised 2026-10-25 after a read-only GPT-6-Astra
+Status: landed 1 (2eb869497). Revised 2026-10-25 after a read-only GPT-6-Astra
 review of the first draft; its confirmed findings are folded in below.
+
+Slice 1 deviations later slices rely on:
+
+- The three `Database` UI field types were not added: the type-level partition
+  check (`src/ts/storage/tests/presetSchema.test.ts` `everyDatabaseKeyIsListed`)
+  fails unless `shared/sections.ts` lists them, so slice 2 adds them to
+  `shared/database.ts` with their section. `ContextMeterTurnUnit` is exported
+  from `shared/contextReport.ts`.
+- `sections` rows have no `name` (one row per kind); `sections` and `trim.queue`
+  are `readonly`. `history.droppedTokens` covers every eligible message missing
+  from the final prompt (trimmed, summarized, removed by the recheck or
+  `editRequest`, or outside every chat range).
+- `trim` is also omitted when the new-chat marker has no recheck count or a
+  queued message is no longer in the final prompt. `"beyondQueue"` means the
+  known queue (at most 8 entries) ran out, not "8 or more" messages.
+- `memory.coverage` is `"covered"` only on HypaV3 evidence; HypaV2, SupaMemory,
+  and Hanurai are always `"unknown"`. `historyDigest` includes the `allBefore`
+  reset and leaves out a continue's target.
+- The runner passes `AssemblyHost.tokenScope` and `AssembleInput.continueMessageId`
+  (`server/src/prompt/runner.ts`).
 
 Planned on 2026-10-25. Sources: the code at `49b046098` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
@@ -278,7 +298,7 @@ message's id, role, `disabled`, and `data`, computed the same way on both sides)
   is the reply's own continue) + the draft's tokens, each plus `perMessage`.
   Both counts use the job-equivalent scope (below).
 - `displacement` pops `trim.queue` while `added > headroom`. Past the queue it
-  answers `"beyondQueue"` ("8 or more"). The tooltip's "18 → 17 turns" uses the
+  answers `"beyondQueue"` (more than the known queue covers). The tooltip's "18 → 17 turns" uses the
   popped entries' `user` flags.
 - Known misses (shown as "≈"): lore the draft would activate, CBS randomness and
   scripts that change text, inlays and media, a translation sent instead of the
@@ -313,8 +333,8 @@ warning level are conditional on `contextMeter`.
 ## Slices
 
 One slice is one session, one commit, one file cluster. The slices run in order:
-slice 1 owns every `shared/database.ts` change (the message field and the three
-settings fields), so slice 2 starts after it.
+slice 1 owns the `shared/database.ts` message field and slice 2 the three
+settings fields, so slice 2 starts after it.
 
 ### 1. Context report on the server (_large_)
 
@@ -351,6 +371,8 @@ Guides: chat-pipeline, llm-requests, persistence.
 
 Guides: settings-i18n, persistence.
 
+- `shared/database.ts`: the three `Database` UI fields (slice 1 left them out;
+  see its deviations).
 - `shared/sections.ts` (UI section), `server/src/data/normalize/ui.ts` (kinds,
   defaults, the enum and clamp rules in `normalizeUi`),
   `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`.
