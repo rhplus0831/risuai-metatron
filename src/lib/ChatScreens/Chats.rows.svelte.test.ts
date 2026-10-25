@@ -1056,7 +1056,30 @@ describe("opening staged mounting", () => {
         expect(state.rows.some((row) => row.props.messageId === "m1")).toBe(false);
     });
 
-    it.each(["append", "load-more", "unfold", "name context", "image context"])(
+    it.each(["reload", "name context", "image context"])(
+        "a %s that shows the same rows keeps the opening's staging",
+        async (change) => {
+            const ui = staged();
+            const first = [...state.rows];
+            clearUpdates();
+            if (change === "reload") ReloadChatPointer.set({});
+            if (change === "name context") ui.props.currentUsername = "New user";
+            if (change === "image context") ui.props.currentCharacter.image = "new.png";
+            flushSync();
+            expect(state.rows).toEqual(first);
+            expect(mountedIds()).toEqual(["m11", "m10", "m9"]);
+            if (change === "name context") expect(latest("m11").updates).toEqual([{ name: "New user" }]);
+            if (change === "image context") expect(latest("m10").updates).toEqual([{ img: "image:new.png" }]);
+            expect(ui.props.revealing).toBe(true);
+            first.forEach((row) => row.settle());
+            await flushWaits();
+            expect(mountedIds()).toHaveLength(12);
+            if (change === "name context") expect(latest("m1").props.name).toBe("New user");
+            if (change === "image context") expect(latest("m0").props).toMatchObject({ img: "image:new.png" });
+        },
+    );
+
+    it.each(["append", "load-more", "unfold"])(
         "%s arms all rows immediately without starting another reveal batch",
         (change) => {
             if (change === "unfold") folded.index = 8;
@@ -1069,8 +1092,6 @@ describe("opening staged mounting", () => {
                 ui.props.loadPages = 20;
                 folded.index = -1;
             }
-            if (change === "name context") ui.props.currentUsername = "New user";
-            if (change === "image context") ui.props.currentCharacter.image = "new.png";
             flushSync();
             const expected = ui.props.messages
                 .slice(-ui.props.loadPages)
@@ -1081,9 +1102,6 @@ describe("opening staged mounting", () => {
             expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
             for (const element of containers(ui).filter((element) => !oldElements.includes(element)))
                 expect(element.classList.contains("chat-row-pending")).toBe(false);
-            if (change === "name context") expect(latest("m17").updates).toEqual([{ name: "New user" }]);
-            if (change === "name context") expect(latest("m9").props.name).toBe("New user");
-            if (change === "image context") expect(latest("m8").props).toMatchObject({ img: "image:new.png" });
         },
     );
 
