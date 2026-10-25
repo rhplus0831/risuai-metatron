@@ -237,7 +237,11 @@
                 if (!entry.settled) return;
                 entry.row.element.classList.remove("chat-row-pending");
                 batch.next++;
-                if (scroller && entry.row.element.getBoundingClientRect().top <= scroller.getBoundingClientRect().top) {
+                // Within a pixel: the start anchor's whole-pixel scrollTop can leave the newest row's
+                // fractional top just below the scroller's, and the row above it is off screen, its
+                // lazy images unloaded, so waiting on it would hold the reveal until the deadline.
+                const top = scroller?.getBoundingClientRect().top;
+                if (top !== undefined && entry.row.element.getBoundingClientRect().top < top + 1) {
                     finishReveal();
                     return;
                 }

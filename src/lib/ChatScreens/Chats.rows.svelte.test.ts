@@ -789,6 +789,17 @@ describe("opening row reveal", () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
+    it("releases the rest when the newest top sits within a pixel below the scroller top", async () => {
+        // The start anchor scrolls in whole pixels, leaving a fractional row top just below the scroller's.
+        const ui = opening(messages(4));
+        vi.mocked(latest("m3").element.getBoundingClientRect).mockReturnValue(rect(100.391, 2309));
+        latest("m3").settle();
+        await frame();
+        expect(ui.pending()).toEqual([]);
+        expect(ui.props.revealing).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("resets scrollTop and binds revealing for each opening, releasing on switch and destroy", async () => {
         const ui = opening([], 3, { suspendTrim: false, scrollTop: -90 });
         expect(ui.props.revealing).toBe(false);
