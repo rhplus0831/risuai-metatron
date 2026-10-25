@@ -1,6 +1,6 @@
 # Context Usage Meter Plan
 
-Status: landed 1 (2eb869497). Revised 2026-10-25 after a read-only GPT-6-Astra
+Status: landed 1 (2eb869497), 2 (630ba6396). Revised 2026-10-25 after a read-only GPT-6-Astra
 review of the first draft; its confirmed findings are folded in below.
 
 Slice 1 deviations later slices rely on:
@@ -22,6 +22,14 @@ Slice 1 deviations later slices rely on:
   reset and leaves out a continue's target.
 - The runner passes `AssemblyHost.tokenScope` and `AssembleInput.continueMessageId`
   (`server/src/prompt/runner.ts`).
+
+Slice 2 notes for slice 3: the three fields are required `Database` fields;
+`CONTEXT_METER_FIXED_WARN` (`{ min: 10, max: 95, default: 60 }`) is exported
+from `shared/database.ts`. The section `interaction.contextMeter` (label
+`settingsSectionContextMeter`) holds `interaction.contextMeterEnabled`,
+`interaction.contextMeterTurnUnit`, and `interaction.contextMeterFixedWarn`; its
+first item has no condition, so a section `SettingHit` for it stays available
+while the meter is off.
 
 Planned on 2026-10-25. Sources: the code at `49b046098` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
