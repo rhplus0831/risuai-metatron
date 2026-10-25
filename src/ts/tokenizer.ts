@@ -58,6 +58,14 @@ export function tabTokenScope(presetScope?: PresetScope, mainModel?: LLMModel): 
     };
 }
 
+/**
+ * The scope a server job counts with (`tokenScopeFor` in `server/src/llm/settings.ts`): the tab's,
+ * without the plugin provider's tokenizer, which never counts on the server.
+ */
+export function jobTokenScope(presetScope?: PresetScope): TabTokenScope {
+    return { ...tabTokenScope(presetScope), pluginTokenizer: "none" };
+}
+
 export function tokenScopeKey(captured: TabTokenScope = tabTokenScope()): string {
     return tokenizerIdentityKey({
         ...captured,
@@ -165,7 +173,14 @@ export async function countTokens(text: string, scope?: PresetScope, signal?: Ab
     if (signal?.aborted) {
         throw signal.reason;
     }
-    const captured = tabTokenScope(scope);
+    return countTokensInScope(text, tabTokenScope(scope), signal);
+}
+
+/** `countTokens` with an already captured scope (for example `jobTokenScope()`). */
+export async function countTokensInScope(text: string, captured: TabTokenScope, signal?: AbortSignal): Promise<number> {
+    if (signal?.aborted) {
+        throw signal.reason;
+    }
     const cacheKey = captured.useTokenizerCaching ? JSON.stringify([text, tokenScopeKey(captured)]) : "";
     if (captured.useTokenizerCaching) {
         const cached = countCache.get(cacheKey);

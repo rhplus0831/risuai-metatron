@@ -64,7 +64,8 @@
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { getCharImage } from "../../ts/characters";
     import { sendChat } from "../../ts/process/index.svelte";
-    import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import { chatStatusKey, generatingChatKeys, isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { followedJobs, followedJobsOf } from "src/ts/process/serverCommands";
     import { jobStages, chatStageOf } from "src/ts/process/jobStages";
@@ -1115,6 +1116,10 @@
                             chatRef={displayedChat}
                             group={currentCharacter.type === "group"}
                             height={inputHeight}
+                            draft={messageInput}
+                            generating={stoppable ||
+                                isLocalSend(displayedChat, $localSends) ||
+                                generatingChatKeys().has(chatStatusKey(displayedChat))}
                         />
                     {/key}
                 {/if}

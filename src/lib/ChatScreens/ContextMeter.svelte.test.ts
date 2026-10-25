@@ -3,24 +3,38 @@
 import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ContextReport } from "../../../shared/contextReport.ts";
+import { historyDigest, type ContextReport } from "../../../shared/contextReport.ts";
+import { normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../../../shared/presets.ts";
+import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 
 // `ContextMeter.svelte` over the real chat module and settings views: the chip reads the open chat's
 // newest valid `generationInfo.context`, else the newest legacy token counts; the popover is
 // portaled to the body, positioned from the chip's rectangle (stubbed here: happy-dom has no
 // layout), and closed by Escape, an outside pointer, focus leaving, its source disappearing, or
-// the chip leaving the viewport. The settings link records a real settings jump.
+// the chip leaving the viewport. The settings link records a real settings jump. The displacement
+// estimate counts the draft and the last reply through the real `countTokensInScope` against a
+// stubbed count route (each signal-bearing count is one request, answered by the test when it
+// chooses, so the debounce and the in-flight races are driven by fake timers and deferred answers).
+
+const mocks = vi.hoisted(() => ({
+    authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
+}));
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
+);
 
 import { language } from "src/lang";
 import { doingAlert } from "src/ts/alert";
 import { currentJump, finishJump, jumpVersion } from "src/ts/setting/settingJump.svelte";
 import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
-import { patchMessage, removeMessages, type ChatRef } from "src/ts/storage/chatStore.svelte";
-import { settings } from "src/ts/storage/settingsViews.svelte";
+import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
+import { findChat, patchMessage, removeMessages, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+import { jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
 import ContextMeter from "./ContextMeter.svelte";
 
 const ref: ChatRef = { chaId: "c", chatId: "k" };
@@ -82,9 +96,18 @@ function install(messages: FixtureMessage[]) {
 
 const CHIP = { x: 500, y: 700, left: 500, right: 600, top: 700, bottom: 744, width: 100, height: 44 };
 
-function render(props: { group?: boolean } = {}) {
-    mounted.push(mount(ContextMeter, { target, props: { chatRef: ref, group: props.group ?? false, height: "44px" } }));
+/** Mounts the meter; the returned props are reactive, so a test changes the draft or the generating flag. */
+function render(props: { group?: boolean; draft?: string; generating?: boolean } = {}) {
+    const state = $state({
+        chatRef: ref,
+        group: props.group ?? false,
+        height: "44px",
+        draft: props.draft ?? "",
+        generating: props.generating ?? false,
+    });
+    mounted.push(mount(ContextMeter, { target, props: state }));
     flushSync();
+    return state;
 }
 const chip = () => target.querySelector<HTMLButtonElement>("button.context-meter-chip");
 const panel = () => document.body.querySelector<HTMLElement>('[role="dialog"].context-meter-panel');
@@ -479,5 +502,477 @@ describe("dismissal and focus", () => {
             menu: INTERACTION_SETTINGS_MENU,
             available: true,
         });
+    });
+});
+
+describe("the displacement estimate", () => {
+    type CountRequest = {
+        text: string;
+        scope: TabTokenScope;
+        aborted: () => boolean;
+        answer: (count: number) => void;
+        fail: () => void;
+    };
+    /** Every count request the meter made, in order; each carries one text (a signal owns its request). */
+    const requests: CountRequest[] = [];
+    /** When set, answers each request as it arrives; otherwise the test answers `requests[i]` itself. */
+    let autoCount: ((text: string) => number) | null = null;
+    const byLength = (text: string) => text.length;
+
+    const REPLY = "x".repeat(20);
+    const PER_MESSAGE = 3;
+    const bound: ChatRef = { chaId: "c", chatId: "k" };
+    const user = (chatId: string, data: string): FixtureMessage => ({ chatId, role: "user", data });
+    const char = (chatId: string, data: string, info?: Info): FixtureMessage => ({
+        chatId,
+        role: "char",
+        data,
+        generationInfo: info,
+    });
+
+    /**
+     * A bound chat (model preset `m1` → profile `gpt` with `maxContext` 1000, prompt preset `p1` with
+     * `maxResponse` 200, persona `u1`), no memory, no preset chain. The messages' last reply carries
+     * the report `trim` describes, computed over the tab's own scope key, sizes, and history digest.
+     */
+    function installEstimate(trim: NonNullable<ContextReport["trim"]>, options: { continued?: boolean } = {}) {
+        const before = [user("m1", "hello")];
+        const context = (): ContextReport =>
+            trimmed({
+                tokenScope: tokenScopeKey(jobTokenScope()),
+                maxContext: readSettingsRoot("maxContext") as number,
+                maxResponse: readSettingsRoot("maxResponse") as number,
+                historyDigest: historyDigest(before),
+                trim: options.continued ? { ...trim, replyPrefix: { messageId: "m2", tokens: 15 } } : trim,
+            });
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chatPage: 0,
+                    chats: [
+                        {
+                            id: "k",
+                            name: "K",
+                            note: "",
+                            localLore: [],
+                            message: [...before, char("m2", REPLY)],
+                            modelPresetId: "m1",
+                            promptPresetId: "p1",
+                            bindedPersona: "u1",
+                        },
+                    ],
+                },
+            ],
+            botPresets: [normalizePreset({ name: "Prompt One", maxResponse: 200 }, { id: "p1" })],
+            modelPresets: [normalizeModelPreset({ name: "Model One", mainSlot: { profileId: "gpt" } }, { id: "m1" })],
+            modelProfiles: [normalizeModelProfile({ id: "gpt", name: "GPT", modelId: "gpt4o", maxContext: 1000 })],
+            personas: [{ id: "u1", name: "Ann", icon: "", note: "", personaPrompt: "" }],
+            supaModelType: "none",
+            hypaV3: false,
+            hypav2: false,
+            hanuraiEnable: false,
+            presetChain: "",
+            useTokenizerCaching: false,
+            googleClaudeTokenizing: false,
+        } as any);
+        settings.ui.contextMeter = true;
+        settings.ui.contextMeterTurnUnit = "user";
+        settings.ui.contextMeterFixedWarn = 60;
+        // The report is written once the views answer (the scope key reads the installed profile).
+        patchMessage(bound, "m2", { generationInfo: { context: context() } });
+        flushSync();
+    }
+
+    /** Overflow 26 for `REPLY` + a 10-character draft: the example, then two messages (one the user's). */
+    const QUEUE = {
+        headroom: 10,
+        perMessage: PER_MESSAGE,
+        queue: [
+            { tokens: 12, kind: "example", user: false },
+            { tokens: 10, kind: "message", user: true },
+            { tokens: 8, kind: "message", user: false },
+            { tokens: 9, kind: "message", user: true },
+            { tokens: 30, kind: "message", user: false },
+        ],
+    } satisfies NonNullable<ContextReport["trim"]>;
+
+    const suffix = () => chip()?.querySelector("[data-context-meter-estimate]")?.textContent ?? null;
+    const block = () => panel()?.querySelector("[data-context-meter-estimate-block]") ?? null;
+    const texts = () => requests.map((request) => request.text);
+    /** The report on the chat's last reply, as the chat module holds it. */
+    const lastReport = () => findChat(bound)!.message.at(-1)!.generationInfo!.context as ContextReport;
+    const s = language.contextUsage;
+
+    beforeEach(() => {
+        requests.length = 0;
+        autoCount = null;
+        mocks.authFetch.mockReset();
+        mocks.authFetch.mockImplementation(
+            (path, init) =>
+                new Promise<Response>((resolve, reject) => {
+                    expect(path).toBe("/api/tokens/count");
+                    const body = JSON.parse(String(init?.body)) as { scope: TabTokenScope; texts: string[] };
+                    expect(body.texts).toHaveLength(1);
+                    const signal = init?.signal ?? null;
+                    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                    const request: CountRequest = {
+                        text: body.texts[0],
+                        scope: body.scope,
+                        aborted: () => signal?.aborted === true,
+                        answer: (count) => resolve(Response.json({ counts: [count] })),
+                        fail: () => resolve(new Response("count failed", { status: 500 })),
+                    };
+                    requests.push(request);
+                    if (autoCount) {
+                        request.answer(autoCount(request.text));
+                    }
+                }),
+        );
+    });
+
+    it("counts the reply and the draft at once in the job scope, then only the draft after 400 ms of quiet", async () => {
+        installEstimate(QUEUE);
+        const props = render({ draft: "d".repeat(10) });
+        // Both counts leave immediately, each alone, in the job scope (no plugin tokenizer).
+        expect(texts()).toEqual([REPLY, "d".repeat(10)]);
+        expect(requests[0].scope).toEqual(jobTokenScope());
+        expect(requests[0].scope.pluginTokenizer).toBe("none");
+        expect(suffix()).toBeNull();
+        requests[0].answer(20);
+        requests[1].answer(10);
+        await settle();
+        // added = 20 + 3 + 10 + 3 = 36; over 26 drops the example, a user turn, and a reply.
+        expect(suffix()).toBe(s.estimateSuffix(1));
+        expect(chip()!.getAttribute("title")).toBe(
+            `${s.chipLabel(s.trimmedSummary("2 turns"))} ${s.estimateTitle}: ${s.estimateDrops("1 turn", "2 turns", 1)}`,
+        );
+
+        // A later edit waits 400 ms; the earlier estimate stays shown meanwhile; the reply is not recounted.
+        props.draft = "d".repeat(30);
+        await vi.advanceTimersByTimeAsync(399);
+        expect(requests).toHaveLength(2);
+        expect(suffix()).toBe(s.estimateSuffix(1));
+        await vi.advanceTimersByTimeAsync(1);
+        expect(texts()).toEqual([REPLY, "d".repeat(10), "d".repeat(30)]);
+        requests[2].answer(30);
+        await settle();
+        // added = 56; over 46 also drops the next user turn (over 46 − 12 − 10 − 8 − 9 = 7 → the 30).
+        expect(suffix()).toBe(s.estimateSuffix(2));
+        settings.ui.contextMeterTurnUnit = "message";
+        flushSync();
+        expect(suffix()).toBe(s.estimateSuffix(4));
+        expect(chip()!.getAttribute("title")).toContain(s.estimateDrops("4 messages", "4 messages", 0));
+
+        // An emptied draft shows nothing and sends nothing; the next text counts at once (the draft only).
+        props.draft = "";
+        flushSync();
+        expect(suffix()).toBeNull();
+        expect(requests).toHaveLength(3);
+        props.draft = "d".repeat(10);
+        flushSync();
+        expect(texts().at(-1)).toBe("d".repeat(10));
+        expect(requests).toHaveLength(4);
+    });
+
+    it("strips the Thoughts block from the reply and the draft before counting", () => {
+        installEstimate(QUEUE);
+        patchMessage(bound, "m2", { data: `<Thoughts>hidden</Thoughts>${REPLY}` });
+        flushSync();
+        render({ draft: "<Thoughts>plan</Thoughts>visible" });
+        expect(texts()).toEqual([REPLY, "visible"]);
+    });
+
+    it("shows the three outcomes: within the queue, fitting (in both units), and past the saved queue", async () => {
+        autoCount = byLength;
+        // Fits: a headroom above the 36 added tokens.
+        installEstimate({ ...QUEUE, headroom: 100 });
+        render({ draft: "d".repeat(10) });
+        await settle();
+        expect(suffix()).toBeNull();
+        let opened = await openPanel();
+        expect(block()!.textContent).toContain(s.estimateFits);
+        expect(block()!.textContent).toContain(s.estimateNote);
+        keydown(opened, "Escape");
+
+        // Over 20 drops the example and one of the character's messages: no user turn, one message.
+        patchMessage(bound, "m2", {
+            generationInfo: {
+                context: trimmed({
+                    tokenScope: tokenScopeKey(jobTokenScope()),
+                    maxContext: 1000,
+                    maxResponse: 200,
+                    historyDigest: historyDigest([user("m1", "hello")]),
+                    trim: {
+                        headroom: 16,
+                        perMessage: PER_MESSAGE,
+                        queue: [
+                            { tokens: 12, kind: "example", user: false },
+                            { tokens: 8, kind: "message", user: false },
+                            { tokens: 10, kind: "message", user: true },
+                        ],
+                    },
+                }),
+            },
+        });
+        await settle();
+        expect(suffix()).toBeNull();
+        opened = await openPanel();
+        expect(block()!.textContent).toContain(s.estimateNoTurns("1 message"));
+        settings.ui.contextMeterTurnUnit = "message";
+        flushSync();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+        expect(block()!.textContent).toContain(s.estimateDrops("1 message", "4 messages", 3));
+        keydown(opened, "Escape");
+        settings.ui.contextMeterTurnUnit = "user";
+
+        // Past the queue: the saved entries sum to 15 against an overflow of 36.
+        patchMessage(bound, "m2", {
+            generationInfo: {
+                context: trimmed({
+                    tokenScope: tokenScopeKey(jobTokenScope()),
+                    maxContext: 1000,
+                    maxResponse: 200,
+                    historyDigest: historyDigest([user("m1", "hello")]),
+                    trim: {
+                        headroom: 0,
+                        perMessage: PER_MESSAGE,
+                        queue: [
+                            { tokens: 5, kind: "example", user: false },
+                            { tokens: 0, kind: "marker", user: false },
+                            { tokens: 5, kind: "message", user: true },
+                            { tokens: 5, kind: "message", user: false },
+                        ],
+                    },
+                }),
+            },
+        });
+        await settle();
+        expect(suffix()).toBe(s.estimateBeyondSuffix(1));
+        opened = await openPanel();
+        expect(block()!.textContent).toContain(s.estimateBeyond("1 turn"));
+        settings.ui.contextMeterTurnUnit = "message";
+        flushSync();
+        expect(suffix()).toBe(s.estimateBeyondSuffix(2));
+        expect(block()!.textContent).toContain(s.estimateBeyond("2 messages"));
+        keydown(opened, "Escape");
+
+        // A queue without a message entry gives no count at all.
+        patchMessage(bound, "m2", {
+            generationInfo: {
+                context: trimmed({
+                    tokenScope: tokenScopeKey(jobTokenScope()),
+                    maxContext: 1000,
+                    maxResponse: 200,
+                    historyDigest: historyDigest([user("m1", "hello")]),
+                    trim: {
+                        headroom: 0,
+                        perMessage: PER_MESSAGE,
+                        queue: [{ tokens: 5, kind: "example", user: false }],
+                    },
+                }),
+            },
+        });
+        await settle();
+        expect(suffix()).toBe("≈ −?");
+        opened = await openPanel();
+        expect(block()!.textContent).toContain(s.estimateBeyondUnknown);
+    });
+
+    it("subtracts a continue's prefix once and shows nothing when the overflow reaches the queue's last entry", async () => {
+        autoCount = byLength;
+        // The continued reply was in the ledger at 15 tokens (overhead included): added = 20 + 3 − 15 + 10 + 3 = 21.
+        installEstimate(
+            {
+                headroom: 10,
+                perMessage: PER_MESSAGE,
+                queue: [
+                    { tokens: 6, kind: "message", user: true },
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 50, kind: "message", user: true },
+                ],
+            },
+            { continued: true },
+        );
+        const props = render({ draft: "d".repeat(10) });
+        await settle();
+        // Over 11 drops two messages, one the user's; without the prefix (over 26) it would reach the third.
+        expect(suffix()).toBe(s.estimateSuffix(1));
+        settings.ui.contextMeterTurnUnit = "message";
+        flushSync();
+        expect(suffix()).toBe(s.estimateSuffix(2));
+        settings.ui.contextMeterTurnUnit = "user";
+
+        // Over 31 passes the first two entries (12): the last entry may be the continued reply itself.
+        props.draft = "d".repeat(30);
+        await vi.advanceTimersByTimeAsync(400);
+        await settle();
+        expect(suffix()).toBeNull();
+        await openPanel();
+        expect(block()).toBeNull();
+    });
+
+    it("needs the report on the chat's last, enabled message, with a matching prefix and digest", async () => {
+        autoCount = byLength;
+        installEstimate(QUEUE);
+        render({ draft: "d".repeat(10) });
+        await settle();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+
+        // An edit before the reply changes the digest; undoing it brings the estimate back at once.
+        patchMessage(bound, "m1", { data: "hello?" });
+        await settle();
+        expect(suffix()).toBeNull();
+        patchMessage(bound, "m1", { data: "hello" });
+        await settle();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+
+        // The reply disabled, either way, or no longer the last message.
+        patchMessage(bound, "m2", { disabled: true });
+        await settle();
+        expect(suffix()).toBeNull();
+        patchMessage(bound, "m2", { disabled: "allBefore" });
+        await settle();
+        expect(suffix()).toBeNull();
+        patchMessage(bound, "m2", {}, ["disabled"]);
+        await settle();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+        patchMessage(bound, "m2", { data: `${REPLY}!` });
+        await settle();
+        // A changed reply is a new basis: recounted at once (the memoized count is for the old text).
+        expect(texts().slice(-2)).toEqual([`${REPLY}!`, "d".repeat(10)]);
+        expect(suffix()).toBe(s.estimateSuffix(1));
+
+        // A continue report whose prefix names another message.
+        const report = lastReport();
+        patchMessage(bound, "m2", {
+            generationInfo: {
+                context: { ...report, trim: { ...report.trim!, replyPrefix: { messageId: "m1", tokens: 15 } } },
+            },
+        });
+        await settle();
+        expect(suffix()).toBeNull();
+    });
+
+    it("needs no generation, no memory, no preset chain, a complete binding, and the same scope and sizes", async () => {
+        autoCount = byLength;
+        installEstimate(QUEUE);
+        const props = render({ draft: "d".repeat(10) });
+        await settle();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+        const shownAgain = async () => {
+            await settle();
+            expect(suffix()).toBe(s.estimateSuffix(1));
+        };
+        const hidden = async () => {
+            await settle();
+            expect(suffix()).toBeNull();
+            await openPanel();
+            expect(block()).toBeNull();
+            keydown(panel()!, "Escape");
+        };
+
+        props.generating = true;
+        await hidden();
+        props.generating = false;
+        await shownAgain();
+
+        settings.memoryTranslateMedia.hypaV3 = true;
+        await hidden();
+        settings.memoryTranslateMedia.hypaV3 = false;
+        settings.memoryTranslateMedia.supaModelType = "subModel";
+        await hidden();
+        settings.memoryTranslateMedia.supaModelType = "none";
+        await shownAgain();
+
+        settings.providers.presetChain = "Prompt One, Other";
+        await hidden();
+        settings.providers.presetChain = "";
+        await shownAgain();
+
+        chatBindingPatch(bound, { personaId: null });
+        await hidden();
+        chatBindingPatch(bound, { personaId: "u1" });
+        await shownAgain();
+
+        // Another model is another token scope.
+        activeMainProfile.modelId = "hf:::Xenova/opt-350m";
+        await hidden();
+        activeMainProfile.modelId = "gpt4o";
+        await shownAgain();
+
+        // The effective context size is the prompt preset's override when it is on.
+        activeMainProfile.maxContext = 2000;
+        await hidden();
+        activePreset.maxContextOverride = true;
+        activePreset.maxContextOverrideSize = 1000;
+        await shownAgain();
+        activePreset.maxResponse = 300;
+        await hidden();
+        activePreset.maxResponse = 200;
+        await shownAgain();
+    });
+
+    it("recounts the draft after a failed count, including the draft that counted before the failure", async () => {
+        installEstimate(QUEUE);
+        const props = render({ draft: "d".repeat(10) });
+        requests[0].answer(20);
+        requests[1].answer(10);
+        await settle();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+
+        // The failing draft hides the estimate.
+        props.draft = "bad";
+        await vi.advanceTimersByTimeAsync(400);
+        expect(texts().at(-1)).toBe("bad");
+        requests[2].fail();
+        await settle();
+        expect(suffix()).toBeNull();
+
+        // Back to the earlier draft: counted at once (not skipped as already applied) and shown again.
+        props.draft = "d".repeat(10);
+        flushSync();
+        expect(texts()).toEqual([REPLY, "d".repeat(10), "bad", "d".repeat(10)]);
+        requests[3].answer(10);
+        await settle();
+        expect(suffix()).toBe(s.estimateSuffix(1));
+    });
+
+    it("aborts the sibling count when one count fails, and both when the basis changes or the meter unmounts", async () => {
+        installEstimate(QUEUE);
+        const props = render({ draft: "d".repeat(10) });
+        expect(requests).toHaveLength(2);
+        requests[1].fail();
+        await settle();
+        expect(requests[0].aborted()).toBe(true);
+        expect(suffix()).toBeNull();
+
+        // The next draft counts the reply again (its count never landed) and the draft.
+        props.draft = "d".repeat(11);
+        flushSync();
+        expect(texts().slice(2)).toEqual([REPLY, "d".repeat(11)]);
+        // A basis change while they are in flight aborts both; their late answers show nothing.
+        patchMessage(bound, "m1", { data: "edited" });
+        await settle();
+        expect(requests[2].aborted()).toBe(true);
+        expect(requests[3].aborted()).toBe(true);
+        requests[2].answer(20);
+        requests[3].answer(11);
+        await settle();
+        expect(suffix()).toBeNull();
+        patchMessage(bound, "m1", { data: "hello" });
+        flushSync();
+        expect(requests).toHaveLength(6);
+
+        // Unmounting aborts the pending counts and ignores their answers.
+        await Promise.all(mounted.splice(0).map((instance) => unmount(instance)));
+        expect(requests[4].aborted()).toBe(true);
+        expect(requests[5].aborted()).toBe(true);
+        requests[4].answer(20);
+        requests[5].answer(11);
+        await settle();
+        expect(chip()).toBeNull();
     });
 });

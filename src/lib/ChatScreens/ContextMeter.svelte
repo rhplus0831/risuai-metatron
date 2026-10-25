@@ -1,21 +1,34 @@
 <script lang="ts">
-    import { tick, untrack } from "svelte";
+    import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
     import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import type { SettingHit } from "src/ts/setting/searchIndex";
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
+    import { chatBinding } from "src/ts/storage/chatBinding.svelte";
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
-    import { settings } from "src/ts/storage/settingsViews.svelte";
+    import { readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
+    import { createTokenCountField } from "src/ts/tokenCountField";
+    import { countTokensInScope, jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
     import { get } from "svelte/store";
-    import { fixedShare, parseContextReport, turnCount, type ContextReport } from "../../../shared/contextReport.ts";
+    import {
+        displacement,
+        fixedShare,
+        historyDigest,
+        parseContextReport,
+        turnCount,
+        type ContextReport,
+    } from "../../../shared/contextReport.ts";
+    import { maxContextOverrideOf } from "../../../shared/sections.ts";
+    import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
     import Portal from "../UI/GUI/Portal.svelte";
 
     // The composer's context chip: how the last request spent the model's context, read from the open
     // chat's latest `generationInfo.context` (`shared/contextReport.ts`). The prompt is rebuilt and
     // trimmed every send, so the chip shows the history window, or the share of the prompt budget while
-    // all eligible history fits; the popover breaks the last request down.
+    // all eligible history fits; the popover breaks the last request down. While the user types, the
+    // chip estimates how many older messages the send would push out (`displacement`).
 
     interface Props {
         /** The displayed chat; the mount is keyed by it, so a chat switch starts closed. */
@@ -24,9 +37,13 @@
         group: boolean;
         /** The composer row's height, matched like the send and menu buttons. */
         height: string;
+        /** The composer text (shared across chats), for the displacement estimate. */
+        draft?: string;
+        /** A send or job runs in the chat: no estimate. */
+        generating?: boolean;
     }
 
-    const { chatRef, group, height }: Props = $props();
+    const { chatRef, group, height, draft = "", generating = false }: Props = $props();
 
     type Source =
         | { kind: "report"; messageId: string | undefined; report: ContextReport }
@@ -103,6 +120,219 @@
     const fixedOver = $derived(report !== null && fixed > warn);
     const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
 
+    type Basis = {
+        report: ContextReport;
+        trim: NonNullable<ContextReport["trim"]>;
+        /** The report is a continue of the last reply: its prefix is already in the ledger. */
+        continued: boolean;
+        prefix: number;
+        /** The last reply as assembly counts it. */
+        reply: string;
+        scope: TabTokenScope;
+        /** Identifies the basis: a result for another reply, scope, or ledger is never shown. */
+        key: string;
+    };
+
+    /** Assembly counts a message without its `<Thoughts>` block (`server/src/prompt/thoughts.ts`). */
+    function stripThoughts(text: string): string {
+        const start = text.indexOf("<Thoughts>");
+        if (start < 0) {
+            return text;
+        }
+        const close = text.lastIndexOf("</Thoughts>");
+        return close <= start + "<Thoughts>".length
+            ? text
+            : text.slice(0, start) + text.slice(close + "</Thoughts>".length);
+    }
+
+    /** The main model's context size as the job's database has it (the prompt preset's override applied). */
+    const effectiveMaxContext = () =>
+        maxContextOverrideOf({
+            maxContextOverride: readSettingsRoot("maxContextOverride"),
+            maxContextOverrideSize: readSettingsRoot("maxContextOverrideSize"),
+        }) ?? readSettingsRoot("maxContext");
+
+    /**
+     * The report's trim ledger while it still describes the next send: no memory that could run instead
+     * of the trim loop (the server asks first when the character has it off), no preset chain picking
+     * another prompt preset, a complete binding, the report's message the chat's last and enabled, the
+     * history before it unchanged, and the same token scope and sizes.
+     */
+    function estimateBasis(r: ContextReport, trim: Basis["trim"], messageId: string): Basis | null {
+        const memoryConfigured =
+            readSettingsRoot("supaModelType") !== "none" ||
+            !!readSettingsRoot("hanuraiEnable") ||
+            !!readSettingsRoot("hypav2") ||
+            !!readSettingsRoot("hypaV3");
+        if (memoryConfigured || readSettingsRoot("presetChain") || chatBinding(chatRef)?.ok === false) {
+            return null;
+        }
+        const messages = findChat(chatRef)?.message;
+        const last = messages?.at(-1);
+        if (!messages || !last || last.chatId !== messageId || last.disabled) {
+            return null;
+        }
+        const prefix = trim.replyPrefix;
+        if (prefix !== undefined && prefix.messageId !== messageId) {
+            return null;
+        }
+        const scope = jobTokenScope();
+        const scopeKey = tokenScopeKey(scope);
+        if (
+            r.tokenScope !== scopeKey ||
+            r.maxContext !== effectiveMaxContext() ||
+            r.maxResponse !== readSettingsRoot("maxResponse")
+        ) {
+            return null;
+        }
+        if (historyDigest(messages.slice(0, -1)) !== r.historyDigest) {
+            return null;
+        }
+        const reply = stripThoughts(last.data);
+        return {
+            report: r,
+            trim,
+            continued: prefix !== undefined,
+            prefix: prefix?.tokens ?? 0,
+            reply,
+            scope,
+            key: JSON.stringify([messageId, scopeKey, prefix?.tokens ?? null, trim.perMessage, reply]),
+        };
+    }
+
+    // `generating` is read first, so a streaming reply never reruns the message reads.
+    const basis: Basis | null = $derived.by(() => {
+        if (generating || !report?.trim || source?.messageId === undefined) {
+            return null;
+        }
+        try {
+            return estimateBasis(report, report.trim, source.messageId);
+        } catch {
+            // No model preset resolves: the scope cannot be prepared.
+            return null;
+        }
+    });
+
+    type CountInput = Pick<Basis, "key" | "scope" | "reply" | "prefix"> & { perMessage: number; draft: string };
+    type CountResult = { key: string; added: number };
+
+    let counted: CountResult | null = $state(null);
+    // The last reply's count by basis key, so typing recounts only the draft. Set only by a run that
+    // was not superseded.
+    let replyCount: { key: string; tokens: number } | undefined;
+    // The basis key the field counts for: a new one resets it, so it counts at once.
+    let fieldKey: string | null = null;
+
+    const field = createTokenCountField<CountInput, CountResult>({
+        count: async (input, signal) => {
+            const controller = new AbortController();
+            const abort = () => controller.abort(signal.reason);
+            if (signal.aborted) {
+                abort();
+            } else {
+                signal.addEventListener("abort", abort, { once: true });
+            }
+            try {
+                const known = replyCount?.key === input.key ? replyCount.tokens : undefined;
+                const [reply, draftTokens] = await Promise.all([
+                    known ?? countTokensInScope(input.reply, input.scope, controller.signal),
+                    countTokensInScope(input.draft, input.scope, controller.signal),
+                ]);
+                if (!signal.aborted) {
+                    replyCount = { key: input.key, tokens: reply };
+                }
+                // The ledger adds each new message's count plus the per-message overhead; a continue's
+                // prefix (overhead included) is already in it.
+                return {
+                    key: input.key,
+                    added: reply + input.perMessage - input.prefix + draftTokens + input.perMessage,
+                };
+            } catch (error) {
+                controller.abort(error);
+                throw error;
+            } finally {
+                signal.removeEventListener("abort", abort);
+            }
+        },
+        apply: (result) => (counted = result),
+        onError: () => {
+            counted = null;
+            field.reset();
+        },
+        same: (a, b) => a.key === b.key && a.draft === b.draft,
+    });
+    onDestroy(() => field.dispose());
+
+    $effect(() => {
+        const current = basis;
+        const text = draft;
+        untrack(() => {
+            if (!current || text === "") {
+                field.reset();
+                fieldKey = null;
+                counted = null;
+                return;
+            }
+            if (fieldKey !== current.key) {
+                field.reset();
+                fieldKey = current.key;
+                counted = null;
+            }
+            field.update({
+                key: current.key,
+                scope: current.scope,
+                reply: current.reply,
+                prefix: current.prefix,
+                perMessage: current.trim.perMessage,
+                draft: stripThoughts(text),
+            });
+        });
+    });
+
+    // A count for an earlier draft of the same basis stays until the debounced recount lands, as
+    // editor token counts do.
+    const estimate = $derived.by(() => {
+        if (!basis || !counted || counted.key !== basis.key || draft === "") {
+            return null;
+        }
+        const { trim } = basis;
+        const outcome = displacement(basis.report, counted.added);
+        if (outcome === "unavailable") {
+            return null;
+        }
+        // A continue's reply can be the queue's last entry, saved with its prefix's count: an overflow
+        // reaching that entry cannot be estimated.
+        if (basis.continued) {
+            const beforeLast = trim.queue.slice(0, -1).reduce((sum, entry) => sum + entry.tokens, 0);
+            if (counted.added - trim.headroom > beforeLast) {
+                return null;
+            }
+        }
+        const s = language.contextUsage;
+        const unitText = (count: number) => (unit === "user" ? s.turns(count) : s.messages(count));
+        if (outcome === "beyondQueue") {
+            const atLeast = trim.queue.filter(
+                (entry) => entry.kind === "message" && (unit === "message" || entry.user),
+            ).length;
+            return {
+                suffix: s.estimateBeyondSuffix(atLeast),
+                line: atLeast > 0 ? s.estimateBeyond(unitText(atLeast)) : s.estimateBeyondUnknown,
+            };
+        }
+        const count = unit === "user" ? outcome.userMessages : outcome.messages;
+        const kept = turnCount(basis.report, unit).kept;
+        if (count > 0) {
+            return {
+                suffix: s.estimateSuffix(count),
+                line: s.estimateDrops(unitText(count), unitText(kept), Math.max(0, kept - count)),
+            };
+        }
+        return {
+            suffix: "",
+            line: outcome.messages > 0 ? s.estimateNoTurns(s.messages(outcome.messages)) : s.estimateFits,
+        };
+    });
+
     const chip = $derived.by(() => {
         if (!source) {
             return null;
@@ -141,6 +371,13 @@
 
     // Sections with tokens, largest first (the sort is stable, so ties keep the report's order). The
     // bar spans the prompt budget, or the section total when attribution exceeds it.
+    const chipTitle = $derived(
+        chip
+            ? language.contextUsage.chipLabel(chip.summary) +
+                  (estimate ? ` ${language.contextUsage.estimateTitle}: ${estimate.line}` : "")
+            : "",
+    );
+
     const rows = $derived.by(() => {
         if (!report) {
             return [];
@@ -300,11 +537,11 @@
         class:text-textcolor2={!fixedOver}
         class:text-danger-500={fixedOver}
         style:height
-        aria-label={language.contextUsage.chipLabel(chip.summary)}
+        aria-label={chipTitle}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        title={language.contextUsage.chipLabel(chip.summary)}
+        title={chipTitle}
         onfocusout={onFocusOut}
         onclick={() => {
             if (open) {
@@ -314,7 +551,10 @@
             }
         }}
     >
-        <span class="shrink-0">{chip.text}</span>
+        <span class="min-w-0 truncate">{chip.text}</span>
+        {#if estimate?.suffix}
+            <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
+        {/if}
         {#if chip.note}
             <span class="hidden sm:inline truncate min-w-0 text-xs">· {chip.note}</span>
         {/if}
@@ -350,6 +590,14 @@
                     {language.contextUsage.close}
                 </button>
             </div>
+
+            {#if estimate}
+                <div class="flex flex-col gap-1 rounded-md bg-darkbutton p-2" data-context-meter-estimate-block>
+                    <span class="font-semibold">{language.contextUsage.estimateTitle}</span>
+                    <span>{estimate.line}</span>
+                    <span class="text-xs text-textcolor2">{language.contextUsage.estimateNote}</span>
+                </div>
+            {/if}
 
             {#if source.kind === "legacy"}
                 <span>{language.contextUsage.input(fmt(source.input), fmt(source.maxContext))}</span>

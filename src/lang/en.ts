@@ -1671,6 +1671,19 @@ export const languageEnglish = {
         basisMessages: "all messages",
         changeSettings: "Change",
         legacyNote: "No breakdown for this reply: it was generated before the meter, or its report could not be read.",
+        estimateTitle: "If you send this draft",
+        estimateSuffix: (count: number) => `≈ −${count}`,
+        estimateBeyondSuffix: (count: number) => (count > 0 ? `≈ −${count}+` : "≈ −?"),
+        estimateDrops: (dropped: string, kept: string, left: number) =>
+            `About ${dropped} of the earlier history would be pushed out (${kept} kept before, ${left} of them after).`,
+        estimateNoTurns: (dropped: string) => `About ${dropped} would be pushed out, none of them your turns.`,
+        estimateFits: "No earlier history would be pushed out.",
+        estimateBeyond: (dropped: string) =>
+            `At least ${dropped} would be pushed out: more than the last request's trim queue covers.`,
+        estimateBeyondUnknown:
+            "The estimate exceeds the last request's trim queue; how much history would be pushed out is unknown.",
+        estimateNote:
+            "An estimate: the draft and the last reply are counted as the server counts them, but lore the draft activates, scripts and CBS, images, sent names, a translated send, and extra removals while formatting are not.",
     },
     openChat: {
         name: "Chat name",

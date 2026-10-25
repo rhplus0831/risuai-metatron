@@ -11,10 +11,13 @@ import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import {
     ChatTokenizer,
     countTokens,
+    countTokensInScope,
     encodeWithTokenizer,
     getCharToken,
     getChatToken,
+    jobTokenScope,
     tabTokenScope,
+    tokenScopeKey,
     tokenize,
     tokenizeAccurate,
 } from "./tokenizer";
@@ -348,5 +351,62 @@ describe("ChatTokenizer", () => {
             expect.arrayContaining(["hello", "ab", "ab", "thought"]),
         );
         expect(countBodies().flatMap(({ texts }) => texts)).not.toContain("ignored");
+    });
+});
+
+describe("job scope counts", () => {
+    it("jobTokenScope is the tab scope without the plugin provider's tokenizer", () => {
+        pluginHooks.providerOptions.set("tokenizer-test-plugin", { tokenizer: "custom", tokenizerFunc: vi.fn() });
+        activeMainProfile.modelId = "custom";
+        activeMainProfile.currentPluginProvider = "tokenizer-test-plugin";
+        const tab = tabTokenScope();
+        expect(tab.pluginTokenizer).toBe("custom");
+        expect(jobTokenScope()).toEqual({ ...tab, pluginTokenizer: "none" });
+        expect(tokenScopeKey(jobTokenScope())).not.toBe(tokenScopeKey(tab));
+        // Without a plugin provider the two scopes are one.
+        activeMainProfile.modelId = "gpt4om";
+        activeMainProfile.currentPluginProvider = "";
+        expect(jobTokenScope()).toEqual(tabTokenScope());
+    });
+
+    it("countTokensInScope posts the captured scope after the selection changes, in the batch of same-scope counts", async () => {
+        const answers: Record<string, number> = { captured: 4, tab: 6, late: 8, switched: 10 };
+        serveCounts((text) => answers[text]);
+        const captured = jobTokenScope();
+        const first = countTokensInScope("captured", captured);
+        const tab = countTokens("tab");
+        activeMainProfile.modelId = "gpt4om";
+        const late = countTokensInScope("late", captured);
+        const switched = countTokens("switched");
+        await vi.runAllTimersAsync();
+
+        expect(await Promise.all([first, tab, late, switched])).toEqual([4, 6, 8, 10]);
+        const bodies = countBodies();
+        expect(bodies.map(({ texts }) => texts)).toEqual([["captured", "tab", "late"], ["switched"]]);
+        expect(bodies[0].scope).toEqual(captured);
+        expect(bodies[1].scope.aiModel).toBe("gpt4om");
+    });
+
+    it("countTokensInScope reuses a cached count only for the captured scope's key, and sends nothing for an aborted signal", async () => {
+        settings.providers.useTokenizerCaching = true;
+        const captured = jobTokenScope();
+        serveCounts(() => 3);
+        const first = countTokensInScope("cached", captured);
+        await vi.runAllTimersAsync();
+        expect(await first).toBe(3);
+        const calls = mocks.authFetch.mock.calls.length;
+        expect(await countTokensInScope("cached", captured)).toBe(3);
+        expect(mocks.authFetch).toHaveBeenCalledTimes(calls);
+        // Another model's captured scope has another key: the cache does not answer.
+        activeMainProfile.modelId = "gpt4om";
+        const other = countTokensInScope("cached", jobTokenScope());
+        await vi.runAllTimersAsync();
+        expect(await other).toBe(3);
+        expect(mocks.authFetch).toHaveBeenCalledTimes(calls + 1);
+
+        const reason = new Error("superseded");
+        await expect(countTokensInScope("never sent", captured, AbortSignal.abort(reason))).rejects.toBe(reason);
+        await vi.runAllTimersAsync();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(calls + 1);
     });
 });
