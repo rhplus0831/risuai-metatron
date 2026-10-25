@@ -5,10 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { type ContextReport, historyDigest, parseContextReport } from "../../../shared/contextReport.ts";
+import type { Chat, Message } from "../../../shared/database.ts";
+import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
+import type { LoreActive } from "../../../shared/lore/activation.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
+import type { PromptItem } from "../../../shared/prompt.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
-import { assemblePrompt, type AssemblyHost } from "../prompt/assemble.ts";
+import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
+import { type RequestDb, tokenScopeFor } from "../llm/settings.ts";
+import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
+import type { MemoryHost } from "../prompt/memory/host.ts";
 import {
     normalizePreset,
     PERSONA_ROOT_ALIASES,
@@ -427,7 +435,11 @@ describe("assemblePrompt final token recheck", () => {
             findCharacter: () => character,
             userName: () => "User",
             personaPrompt: () => "",
-            activateLore: async () => ({ actives: [], matchLog: [] }),
+            activateLore: async () => ({
+                actives: [],
+                matchLog: [],
+                budget: { used: 0, limit: 0, rejectedCount: 0, rejectedTokens: 0 },
+            }),
             scripts: {
                 process: async (_char, data) => ({ data, emoChanged: false }),
                 editRequest: async (_char, messages) => messages,
@@ -449,6 +461,7 @@ describe("assemblePrompt final token recheck", () => {
                 throw new Error("Images must remain multimodal");
             },
             tokenizer,
+            tokenScope: "counting",
             getModelInfo: (id) => resolveModelInfo(id),
             fence() {},
         };
@@ -579,5 +592,799 @@ describe("assemblePrompt final token recheck", () => {
         expect(result.formated[1]).toEqual({ role: "system", content: "d".repeat(400) });
         expect(result.generationInfo.inputTokens).toBe(661); // 255 + 3 for the image message; 400 + 3 for depth.
         expect(result.generationInfo.inputTokens).toBe(await tokenizer.tokenizeChats(result.formated));
+    });
+});
+
+describe("the context report", () => {
+    // The report `assemblePrompt` writes into `generationInfo.context` (`shared/contextReport.ts`),
+    // under the same deterministic counter as above: one character is one token, three tokens of
+    // overhead per message, names uncounted. Every expected number below is computed by hand from
+    // the texts, never from the assembler's own sums.
+    type Entry = { chatId: string; data: string; role?: Message["role"]; disabled?: Message["disabled"] };
+    type Options = {
+        messages: Entry[];
+        /** The character's first message; the default is "Hi!" (6 tokens). */
+        greeting?: string;
+        /** The character's example dialogue (`exampleMessage`). */
+        examples?: string;
+        /** The prompt template; `null` runs the legacy (no-template) path. */
+        template?: PromptItem[] | null;
+        maxContext?: number;
+        db?: Record<string, unknown>;
+        promptSettings?: Record<string, unknown>;
+        character?: Record<string, unknown>;
+        lore?: LoreActive[];
+        editRequest?: (formated: OpenAIChat[]) => OpenAIChat[];
+        hypaV3?: boolean;
+        memoryJob?: AssemblyMemoryJob;
+    };
+    const CHAT_CARD: PromptItem = { type: "chat", rangeStart: 0, rangeEnd: "end" };
+    const plain = (type2: "main" | "globalNote" | "normal", text: string): PromptItem => ({
+        type: "plain",
+        type2,
+        text,
+        role: "system",
+    });
+    const LORE_BUDGET = { used: 12, limit: 100, rejectedCount: 1, rejectedTokens: 40 };
+    const NEW_CHAT_TOKENS = "[Start a new chat]".length + 3; // 21
+    const EMPTY_SUMMARY_CARD = "<Past Events Summary>\n\n</Past Events Summary>"; // 45 characters
+
+    function contextAssembly(options: Options) {
+        const preset = createHypaV3Preset("Test", { similarMemoryRatio: 0 }, "hypa-test");
+        const character = {
+            ...scenario.characters[0],
+            type: "character",
+            chaId: "counter",
+            name: "Counter",
+            firstMessage: options.greeting ?? "Hi!",
+            alternateGreetings: [],
+            exampleMessage: options.examples ?? "",
+            desc: "",
+            personality: "",
+            scenario: "",
+            additionalText: "",
+            bias: [],
+            depth_prompt: { depth: 0, prompt: "" },
+            supaMemory: options.hypaV3 === true,
+            systemPrompt: "",
+            replaceGlobalNote: "",
+            ...options.character,
+        } as unknown as AssemblyHost["speaker"];
+        const chat: Chat = {
+            id: "k",
+            fmIndex: -1,
+            name: "Counter",
+            note: "",
+            localLore: [],
+            message: options.messages.map(({ chatId, data, role, disabled }) => ({
+                chatId,
+                data,
+                role: role ?? "user",
+                ...(disabled === undefined ? {} : { disabled }),
+            })),
+        };
+        const tokenizer = new ChatTokenCounter(3, "noName", {
+            count: async (text) => text.length,
+            supportsInlayImage: () => true,
+            mainModel: () => resolveModelInfo("gpt4o"),
+            gptVisionQuality: () => "high",
+        });
+        const counts = vi.spyOn(tokenizer, "tokenizeChat");
+        const db = {
+            ...scenario.baseSettings,
+            ...normalizePreset({}),
+            aiModel: "gpt4o",
+            maxContext: options.maxContext ?? 400,
+            maxResponse: 10,
+            bias: [],
+            personaPrompt: "",
+            promptPreprocess: false,
+            promptInfoInsideChat: false,
+            mainPrompt: "",
+            globalNote: "",
+            jailbreakToggle: false,
+            chainOfThought: false,
+            formatingOrder: [
+                "main",
+                "description",
+                "personaPrompt",
+                "chats",
+                "lastChat",
+                "jailbreak",
+                "lorebook",
+                "globalNote",
+                "authorNote",
+            ],
+            promptTemplate: options.template === null ? undefined : (options.template ?? [CHAT_CARD]),
+            promptSettings: {
+                trimStartNewChat: true,
+                sendName: false,
+                sendChatAsSystem: false,
+                ...options.promptSettings,
+            },
+            supaModelType: "none",
+            hanuraiEnable: false,
+            hypav2: false,
+            hypaV3: options.hypaV3 === true,
+            hypaV3Presets: [preset],
+            hypaV3PresetId: preset.id,
+            ...options.db,
+        } as unknown as AssemblyHost["db"];
+        const memory: MemoryHost = {
+            db,
+            tokenize: async (text) => text.length,
+            request: async () => {
+                throw new Error("No summary request runs in these tests");
+            },
+            completions: async () => {
+                throw new Error("No completion runs in these tests");
+            },
+            summarizer: async () => {
+                throw new Error("No summarizer runs in these tests");
+            },
+            embeddings: { db: {} } as unknown as MemoryHost["embeddings"],
+            regex: async () => {
+                throw new Error("No regex runs in these tests");
+            },
+            parseChatML: () => null,
+            userName: () => "User",
+            progress() {},
+            random: () => 0,
+            redact: (text) => text,
+            fence() {},
+            signal: new AbortController().signal,
+        };
+        const host: AssemblyHost = {
+            db,
+            owner: character,
+            speaker: character,
+            chatRef: { chaId: "counter", chatId: "k" },
+            parse: (text) => text,
+            chat: () => chat,
+            findCharacter: () => character,
+            userName: () => "User",
+            personaPrompt: () => "",
+            activateLore: async () => ({ actives: options.lore ?? [], matchLog: [], budget: { ...LORE_BUDGET } }),
+            scripts: {
+                process: async (_char, data) => ({ data, emoChanged: false }),
+                editRequest: async (_char, messages) => messages,
+            },
+            runStartTrigger: async () => null,
+            runEditRequest: async (messages) => (options.editRequest ? options.editRequest(messages) : messages),
+            readInlay: async () => null,
+            readAsset: async () => null,
+            moduleAssets: () => [],
+            moduleToggles: () => "",
+            runCurrentChatFunction() {},
+            setLastMemory() {},
+            memoryTrim: { enabled: () => false, confirm: async () => "trim" },
+            memory,
+            writeMemory() {},
+            endMemoryProgress() {},
+            stage() {},
+            captionImage: async () => {
+                throw new Error("Images must remain multimodal");
+            },
+            tokenizer,
+            tokenScope: "counting",
+            getModelInfo: (id) => resolveModelInfo(id),
+            fence() {},
+            ...(options.memoryJob ? { memoryJob: options.memoryJob } : {}),
+        };
+        /** Runs the assembly and returns the prompt with its report, which must also parse as stored. */
+        const run = async (input: { continue?: boolean; continueMessageId?: string } = {}) => {
+            const result = await assemblePrompt(host, {
+                chatAdditonalTokens: 3,
+                continue: input.continue ?? false,
+                ...(input.continueMessageId !== undefined ? { continueMessageId: input.continueMessageId } : {}),
+                generationId: "counting",
+                stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+            });
+            expect(result.type, JSON.stringify(result)).toBe("prompt");
+            if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+            const report = result.generationInfo.context!;
+            expect(report).toBeDefined();
+            expect(parseContextReport(JSON.parse(JSON.stringify(report)))).toEqual(report);
+            expect(report.input).toBe(result.generationInfo.inputTokens);
+            expect(report.input).toBe(report.adjustment + report.sections.reduce((sum, row) => sum + row.tokens, 0));
+            return { report, formated: result.formated, texts: result.formated.map((entry) => entry.content) };
+        };
+        return { run, chat, counts, host };
+    }
+
+    /** The report's fixed parts for this fixture. */
+    const fixed = (chat: Chat, maxContext = 400) => ({
+        v: 1 as const,
+        maxContext,
+        maxResponse: 10,
+        lore: { budgetUsed: 12, budget: 100, rejectedCount: 1, rejectedTokens: 40, active: 0 },
+        tokenScope: "counting",
+        historyDigest: historyDigest(chat.message),
+    });
+
+    it("attributes a template prompt with full history by section and records the trim ledger", async () => {
+        const { run, chat, counts } = contextAssembly({
+            template: [plain("main", "MAIN"), plain("globalNote", "NOTE!"), plain("normal", "P"), CHAT_CARD],
+            promptSettings: { trimStartNewChat: false },
+            messages: [
+                { chatId: "u1", data: "hello" },
+                { chatId: "c1", data: "hey there", role: "char" },
+                { chatId: "u2", data: "ok" },
+            ],
+        });
+        const { report, texts } = await run();
+        // The three system cards merge into one entry (two "\n\n" joins: 19 counted, 17 sent); the
+        // new-chat marker is uncounted when pushed and 21 in the recheck.
+        expect(texts).toEqual(["MAIN\n\nNOTE!\n\nP", "[Start a new chat]", "Hi!", "hello", "hey there", "ok"]);
+        const expected: ContextReport = {
+            ...fixed(chat),
+            input: 17 + 21 + 6 + 8 + 12 + 5,
+            sections: [
+                { kind: "main", tokens: 7 },
+                { kind: "globalNote", tokens: 8 },
+                { kind: "plain", tokens: 4 },
+                { kind: "history", tokens: 6 + 8 + 12 + 5 },
+            ],
+            adjustment: 21 - 2,
+            attributionExact: true,
+            history: { total: 4, kept: 4, totalUser: 2, keptUser: 2, droppedTokens: 0 },
+            trim: {
+                // 400 − (10 + 50 + 19 cards + 31 history)
+                headroom: 290,
+                queue: [
+                    { tokens: NEW_CHAT_TOKENS, kind: "marker", user: false },
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 8, kind: "message", user: true },
+                    { tokens: 12, kind: "message", user: false },
+                    { tokens: 5, kind: "message", user: true },
+                ],
+                perMessage: 3,
+            },
+        };
+        expect(report).toEqual(expected);
+        // No new token work: the three cards, the greeting, three messages, and the six-entry recheck.
+        expect(counts).toHaveBeenCalledTimes(3 + 1 + 3 + 6);
+    });
+
+    it("keeps the trim loop's order in the queue (examples, the marker, then messages) and counts what it dropped", async () => {
+        const examples = "<START>\n{{user}}: ex u\n{{char}}: ex c";
+        const messages: Entry[] = [
+            { chatId: "m1", data: "a".repeat(20) },
+            { chatId: "m2", data: "b".repeat(20), role: "char" },
+            { chatId: "m3", data: "c" },
+        ];
+        // The ledger: 60 + 21 (example marker) + 7 + 7 + 0 (marker) + 6 + 23 + 23 + 4 = 151.
+        const partial = contextAssembly({
+            examples,
+            messages,
+            maxContext: 140,
+            promptSettings: { trimStartNewChat: false },
+        });
+        const a = await partial.run();
+        expect(a.texts).toEqual(["ex u", "ex c", "[Start a new chat]", "Hi!", "a".repeat(20), "b".repeat(20), "c"]);
+        expect(a.report).toEqual({
+            ...fixed(partial.chat, 140),
+            input: 7 + 7 + 21 + 6 + 23 + 23 + 4,
+            sections: [
+                { kind: "examples", tokens: 14 },
+                { kind: "history", tokens: 56 },
+            ],
+            adjustment: 21,
+            attributionExact: true,
+            history: { total: 4, kept: 4, totalUser: 2, keptUser: 2, droppedTokens: 0 },
+            trim: {
+                headroom: 140 - (151 - 21),
+                queue: [
+                    { tokens: 7, kind: "example", user: false },
+                    { tokens: 7, kind: "example", user: false },
+                    { tokens: NEW_CHAT_TOKENS, kind: "marker", user: false },
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 23, kind: "message", user: true },
+                    { tokens: 23, kind: "message", user: false },
+                    { tokens: 4, kind: "message", user: true },
+                ],
+                perMessage: 3,
+            },
+        });
+        // Three examples, the greeting, three messages, one trim drop, and the seven-entry recheck:
+        // the marker's queue count comes from that recheck, not from a count of its own.
+        expect(partial.counts).toHaveBeenCalledTimes(3 + 1 + 3 + 1 + 7);
+
+        // 151 → drop the example marker, both examples, the marker (21), and the greeting: 89 ≤ 92.
+        const deep = contextAssembly({
+            examples,
+            messages,
+            maxContext: 92,
+            promptSettings: { trimStartNewChat: false },
+        });
+        const b = await deep.run();
+        expect(b.texts).toEqual(["a".repeat(20), "b".repeat(20), "c"]);
+        expect(b.report).toEqual({
+            ...fixed(deep.chat, 92),
+            input: 50,
+            sections: [{ kind: "history", tokens: 50 }],
+            adjustment: 0,
+            attributionExact: true,
+            history: { total: 4, kept: 3, totalUser: 2, keptUser: 2, droppedTokens: 6 },
+            trim: {
+                headroom: 3,
+                queue: [
+                    { tokens: 23, kind: "message", user: true },
+                    { tokens: 23, kind: "message", user: false },
+                    { tokens: 4, kind: "message", user: true },
+                ],
+                perMessage: 3,
+            },
+        });
+        expect(deep.counts).toHaveBeenCalledTimes(3 + 1 + 3 + 5 + 3);
+
+        // The queue holds at most eight entries, the greeting first.
+        const long = contextAssembly({
+            messages: Array.from({ length: 12 }, (_, i) => ({
+                chatId: `m${i}`,
+                data: "x",
+                role: i % 2 ? "char" : "user",
+            })),
+        });
+        const c = await long.run();
+        expect(c.report.trim?.queue).toEqual([
+            { tokens: 6, kind: "message", user: false },
+            ...Array.from({ length: 7 }, (_, i) => ({ tokens: 4, kind: "message", user: i % 2 === 0 })),
+        ]);
+        expect(c.report.history).toEqual({ total: 13, kept: 13, totalUser: 6, keptUser: 6, droppedTokens: 0 });
+    });
+
+    it("counts a message emitted by overlapping chat ranges once; the duplicate goes to the adjustment", async () => {
+        const { run, chat } = contextAssembly({
+            template: [CHAT_CARD, { type: "chat", rangeStart: -1, rangeEnd: "end" }],
+            messages: [
+                { chatId: "u1", data: "hello" },
+                { chatId: "c1", data: "yo", role: "char" },
+            ],
+        });
+        const { report, formated, texts } = await run();
+        expect(texts).toEqual(["Hi!", "hello", "yo", "yo"]);
+        expect(formated[2]).toBe(formated[3]);
+        expect(report).toEqual({
+            ...fixed(chat),
+            input: 6 + 8 + 5 + 5,
+            sections: [{ kind: "history", tokens: 19 }],
+            adjustment: 5,
+            attributionExact: true,
+            history: { total: 3, kept: 3, totalUser: 1, keptUser: 1, droppedTokens: 0 },
+            trim: {
+                headroom: 400 - (60 + 19),
+                queue: [
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 8, kind: "message", user: true },
+                    { tokens: 5, kind: "message", user: false },
+                ],
+                perMessage: 3,
+            },
+        });
+    });
+
+    it("sendChatAsSystem: one merged entry keeps every source; a recheck removal of it drops them all", async () => {
+        const messages: Entry[] = [
+            { chatId: "u1", data: "hello" },
+            { chatId: "c1", data: "yo", role: "char" },
+        ];
+        const merged = contextAssembly({ messages, promptSettings: { sendChatAsSystem: true } });
+        const a = await merged.run();
+        // "assistant: Hi!" + "\n\n" + "user: hello" + "\n\n" + "assistant: yo" = 42 characters.
+        expect(a.texts).toEqual(["assistant: Hi!\n\nuser: hello\n\nassistant: yo"]);
+        expect(a.report).toEqual({
+            ...fixed(merged.chat),
+            input: 45,
+            sections: [{ kind: "history", tokens: 19 }],
+            adjustment: 26,
+            attributionExact: true,
+            history: { total: 3, kept: 3, totalUser: 1, keptUser: 1, droppedTokens: 0 },
+            trim: {
+                headroom: 400 - (60 + 19),
+                queue: [
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 8, kind: "message", user: true },
+                    { tokens: 5, kind: "message", user: false },
+                ],
+                perMessage: 3,
+            },
+        });
+
+        // A late depth prompt (uncounted, 403) pushes the recheck over 420: the merged entry goes.
+        const removed = contextAssembly({
+            messages,
+            maxContext: 420,
+            promptSettings: { sendChatAsSystem: true },
+            character: { depth_prompt: { depth: 0, prompt: "d".repeat(400) } },
+        });
+        const b = await removed.run();
+        expect(b.texts).toEqual(["d".repeat(400)]);
+        expect(b.report).toEqual({
+            ...fixed(removed.chat, 420),
+            input: 403,
+            sections: [],
+            adjustment: 403,
+            attributionExact: true,
+            history: { total: 3, kept: 0, totalUser: 1, keptUser: 0, droppedTokens: 19 },
+        });
+    });
+
+    it("a recheck removal of traced messages leaves kept history; an untraced part makes it approximate", async () => {
+        const traced = contextAssembly({
+            messages: [
+                { chatId: "old", data: "x".repeat(50) },
+                { chatId: "kept", data: "keep" },
+            ],
+            maxContext: 700,
+            character: { depth_prompt: { depth: 0, prompt: "d".repeat(650) } },
+        });
+        const a = await traced.run();
+        // 6 + 53 + 7 + 653 = 719 > 700: the greeting (6) and `old` (53) are cleared, in order.
+        expect(a.texts).toEqual(["keep", "d".repeat(650)]);
+        expect(a.report).toEqual({
+            ...fixed(traced.chat, 700),
+            input: 660,
+            sections: [{ kind: "history", tokens: 7 }],
+            adjustment: 653,
+            attributionExact: true,
+            history: { total: 3, kept: 1, totalUser: 2, keptUser: 1, droppedTokens: 59 },
+            // No ledger: the queue's first entries are no longer in the prompt, so they cannot be
+            // displaced again.
+        });
+
+        // A depth lore entry (no source) merged into systemized history, then removed by the recheck.
+        const untraced = contextAssembly({
+            messages: [{ chatId: "u1", data: "hello" }],
+            maxContext: 420,
+            promptSettings: { sendChatAsSystem: true },
+            character: { depth_prompt: { depth: 0, prompt: "d".repeat(400) } },
+            lore: [
+                {
+                    depth: 1,
+                    pos: "depth",
+                    prompt: "LORE",
+                    role: "system",
+                    order: 0,
+                    tokens: 4,
+                    priority: 0,
+                    source: "lore",
+                    inject: null,
+                },
+            ],
+        });
+        const b = await untraced.run();
+        expect(b.texts).toEqual(["d".repeat(400)]);
+        expect(b.report).toEqual({
+            ...fixed(untraced.chat, 420),
+            lore: { budgetUsed: 12, budget: 100, rejectedCount: 1, rejectedTokens: 40, active: 1 },
+            input: 403,
+            sections: [{ kind: "lorebook", tokens: 7 }],
+            adjustment: 396,
+            attributionExact: false,
+            history: { total: 2, kept: 0, totalUser: 1, keptUser: 0, droppedTokens: 14 },
+        });
+    });
+
+    it("an editRequest that changes the list makes attribution approximate and traces kept history by identity, id, then text", async () => {
+        const messages: Entry[] = [
+            { chatId: "a", data: "ok" },
+            { chatId: "b", data: "ok" },
+        ];
+        const copy = (entry: OpenAIChat): OpenAIChat => JSON.parse(JSON.stringify(entry));
+        const hook = async (editRequest: Options["editRequest"]) => {
+            const assembly = contextAssembly({ messages, editRequest });
+            return { ...(await assembly.run()), chat: assembly.chat };
+        };
+        const base = (chat: Chat) => ({ ...fixed(chat), attributionExact: false });
+        const allKept = { total: 3, kept: 3, totalUser: 2, keptUser: 2, droppedTokens: 0 };
+        const queue = [
+            { tokens: 6, kind: "message" as const, user: false },
+            { tokens: 5, kind: "message" as const, user: true },
+            { tokens: 5, kind: "message" as const, user: true },
+        ];
+
+        // A deletion: the deleted message is not kept, and the ledger is gone with it.
+        const deleted = await hook((list) => list.filter((entry) => entry.memo !== "a"));
+        expect(deleted.texts).toEqual(["Hi!", "ok"]);
+        expect(deleted.report).toEqual({
+            ...base(deleted.chat),
+            input: 11,
+            sections: [{ kind: "history", tokens: 11 }],
+            adjustment: 0,
+            history: { total: 3, kept: 2, totalUser: 2, keptUser: 1, droppedTokens: 5 },
+        });
+
+        // A reorder of two equal texts: each entry keeps its own source (traced by identity).
+        const reversed = await hook((list) => [...list].reverse());
+        expect(reversed.texts).toEqual(["ok", "ok", "Hi!"]);
+        expect(reversed.report).toEqual({
+            ...base(reversed.chat),
+            input: 16,
+            sections: [{ kind: "history", tokens: 16 }],
+            adjustment: 0,
+            history: allKept,
+            trim: { headroom: 400 - 76, queue, perMessage: 3 },
+        });
+
+        // Two copies of `b` in place of `a` and `b`: one stored message is kept, by its id.
+        const doubled = await hook((list) => [list[0], copy(list[2]), copy(list[2])]);
+        expect(doubled.report).toEqual({
+            ...base(doubled.chat),
+            input: 16,
+            sections: [{ kind: "history", tokens: 11 }],
+            adjustment: 5,
+            history: { total: 3, kept: 2, totalUser: 2, keptUser: 1, droppedTokens: 5 },
+        });
+
+        // An in-place rewrite, and a name-only change: the same objects, no longer exact.
+        const rewritten = await hook((list) => {
+            list[1].content = "changed";
+            return list;
+        });
+        expect(rewritten.texts).toEqual(["Hi!", "changed", "ok"]);
+        expect(rewritten.report).toEqual({
+            ...base(rewritten.chat),
+            input: 6 + 10 + 5,
+            sections: [{ kind: "history", tokens: 16 }],
+            adjustment: 5,
+            history: allKept,
+            trim: { headroom: 400 - 76, queue, perMessage: 3 },
+        });
+        const renamed = await hook((list) => {
+            list[1].name = "someone";
+            return list;
+        });
+        expect(renamed.report).toMatchObject({ attributionExact: false, input: 16, history: allKept });
+
+        // Copies of every entry (a Lua hook's round trip): the ids and the greeting's text trace them.
+        const roundTrip = await hook((list) => list.map(copy));
+        expect(roundTrip.report).toEqual({
+            ...base(roundTrip.chat),
+            input: 16,
+            sections: [{ kind: "history", tokens: 16 }],
+            adjustment: 0,
+            history: allKept,
+            trim: { headroom: 400 - 76, queue, perMessage: 3 },
+        });
+
+        // An entry with no source in place of both messages.
+        const replaced = await hook((list) => [list[0], { role: "system", content: "injected" }]);
+        expect(replaced.report).toEqual({
+            ...base(replaced.chat),
+            input: 6 + 11,
+            sections: [{ kind: "history", tokens: 6 }],
+            adjustment: 11,
+            history: { total: 3, kept: 1, totalUser: 2, keptUser: 0, droppedTokens: 10 },
+        });
+
+        // The same list back: exact.
+        const same = await hook((list) => list);
+        expect(same.report).toMatchObject({ attributionExact: true, history: allKept });
+    });
+
+    it("the legacy path maps the main prompt and global note to sections and keeps lastChat in history", async () => {
+        const { run, chat } = contextAssembly({
+            template: null,
+            db: { mainPrompt: "MAIN", globalNote: "NOTE!" },
+            messages: [
+                { chatId: "u1", data: "hello" },
+                { chatId: "c1", data: "yo", role: "char" },
+            ],
+        });
+        const { report, texts } = await run();
+        expect(texts).toEqual(["MAIN", "Hi!", "hello", "yo", "NOTE!"]);
+        expect(report).toEqual({
+            ...fixed(chat),
+            input: 7 + 6 + 8 + 5 + 8,
+            // The empty description is counted (3) and then dropped from the prompt.
+            sections: [
+                { kind: "main", tokens: 7 },
+                { kind: "globalNote", tokens: 8 },
+                { kind: "description", tokens: 3 },
+                { kind: "history", tokens: 19 },
+            ],
+            adjustment: -3,
+            attributionExact: true,
+            history: { total: 3, kept: 3, totalUser: 1, keptUser: 1, droppedTokens: 0 },
+            trim: {
+                headroom: 400 - (60 + 7 + 8 + 3 + 19),
+                queue: [
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 8, kind: "message", user: true },
+                    { tokens: 5, kind: "message", user: false },
+                ],
+                perMessage: 3,
+            },
+        });
+    });
+
+    it("a continue records its target as the reply prefix and leaves that message out of the digest", async () => {
+        const { run, chat } = contextAssembly({
+            messages: [
+                { chatId: "u1", data: "hello" },
+                { chatId: "c1", data: "yo", role: "char" },
+            ],
+        });
+        const without = (id: string) => historyDigest(chat.message.filter((message) => message.chatId !== id));
+        const last = await run({ continue: true, continueMessageId: "c1" });
+        expect(last.texts).toEqual(["Hi!", "hello", "yo", "[Continue the last response]"]);
+        expect(last.report).toEqual({
+            ...fixed(chat),
+            historyDigest: without("c1"),
+            input: 6 + 8 + 5 + 31,
+            sections: [{ kind: "history", tokens: 19 }],
+            adjustment: 31,
+            attributionExact: true,
+            history: { total: 3, kept: 3, totalUser: 1, keptUser: 1, droppedTokens: 0 },
+            trim: {
+                headroom: 400 - (60 + 19),
+                queue: [
+                    { tokens: 6, kind: "message", user: false },
+                    { tokens: 8, kind: "message", user: true },
+                    { tokens: 5, kind: "message", user: false },
+                ],
+                replyPrefix: { messageId: "c1", tokens: 5 },
+                perMessage: 3,
+            },
+        });
+        expect(last.report.historyDigest).not.toBe(historyDigest(chat.message));
+
+        // An explicit target that is not the last message.
+        const explicit = await run({ continue: true, continueMessageId: "u1" });
+        expect(explicit.report.trim?.replyPrefix).toEqual({ messageId: "u1", tokens: 8 });
+        expect(explicit.report.historyDigest).toBe(without("u1"));
+
+        // A target no message has: no prefix, the whole history in the digest.
+        const unknown = await run({ continue: true, continueMessageId: "gone" });
+        expect(unknown.report.trim?.replyPrefix).toBeUndefined();
+        expect(unknown.report.historyDigest).toBe(historyDigest(chat.message));
+
+        // A plain send of the same chat.
+        const plainSend = await run();
+        expect(plainSend.report.trim?.replyPrefix).toBeUndefined();
+        expect(plainSend.report.adjustment).toBe(0);
+    });
+
+    it("HypaV3 reports covered summaries as sent, and unknown coverage when the card is suppressed", async () => {
+        const messages: Entry[] = [
+            { chatId: "u1", data: "hello" },
+            { chatId: "c1", data: "yo", role: "char" },
+        ];
+        const memoryBlock = (tokens: number, coverage: "covered" | "unknown") => ({
+            kind: "hypaV3" as const,
+            tokens,
+            budget: 80, // floor(400 × 0.2)
+            coverage,
+        });
+        // No memory card: the empty summary card travels in the history, wrapped (23 + 45 + 24).
+        const inline = contextAssembly({ messages, hypaV3: true });
+        const a = await inline.run();
+        expect(a.texts).toEqual([
+            `<Previous Conversation>${EMPTY_SUMMARY_CARD}</Previous Conversation>`,
+            "Hi!",
+            "hello",
+            "yo",
+        ]);
+        expect(a.report).toEqual({
+            ...fixed(inline.chat),
+            input: 95 + 19,
+            sections: [
+                { kind: "memory", tokens: 95 },
+                { kind: "history", tokens: 19 },
+            ],
+            adjustment: 0,
+            attributionExact: true,
+            history: { total: 3, kept: 3, totalUser: 1, keptUser: 1, droppedTokens: 0 },
+            memory: memoryBlock(95, "covered"),
+        });
+
+        // A memory card: the card as formatted.
+        const card = contextAssembly({ messages, hypaV3: true, template: [{ type: "memory" }, CHAT_CARD] });
+        const b = await card.run();
+        expect(b.texts).toEqual([EMPTY_SUMMARY_CARD, "Hi!", "hello", "yo"]);
+        expect(b.report).toMatchObject({
+            input: 48 + 19,
+            sections: [
+                { kind: "memory", tokens: 48 },
+                { kind: "history", tokens: 19 },
+            ],
+            memory: memoryBlock(48, "covered"),
+        });
+
+        // A memory card whose inner format leaves nothing: the summaries never reach the prompt.
+        const suppressed = contextAssembly({
+            messages,
+            hypaV3: true,
+            template: [{ type: "memory", innerFormat: " " }, CHAT_CARD],
+        });
+        const c = await suppressed.run();
+        expect(c.texts).toEqual(["Hi!", "hello", "yo"]);
+        expect(c.report).toEqual({
+            ...fixed(suppressed.chat),
+            input: 19,
+            sections: [{ kind: "history", tokens: 19 }],
+            adjustment: 0,
+            attributionExact: true,
+            history: { total: 3, kept: 3, totalUser: 1, keptUser: 1, droppedTokens: 0 },
+            memory: memoryBlock(0, "unknown"),
+        });
+    });
+
+    it("HypaV3 reports a gap when a select-only step trims uncovered history", async () => {
+        const previewJob: AssemblyMemoryJob = {
+            preview: true,
+            input: false,
+            tasks: true,
+            sourceGeneration: () => undefined,
+            readSource: () => null,
+            blockingReason: () => null,
+            confirmGap: async () => {
+                throw new Error("A preview asks no gap question");
+            },
+            markStopped() {},
+            acquireWriter: async () => {
+                throw new Error("A select-only step takes no writer lease");
+            },
+            openRun: () => ({ update() {}, close() {}, registerStop: () => null }),
+            taskInput: () => null,
+        };
+        const { run, chat } = contextAssembly({
+            hypaV3: true,
+            maxContext: 200,
+            memoryJob: previewJob,
+            messages: Array.from({ length: 5 }, (_, i) => ({
+                chatId: `m${i + 1}`,
+                data: String.fromCharCode(97 + i).repeat(20),
+                role: i % 2 ? "char" : "user",
+            })),
+        });
+        const { report, texts } = await run();
+        // The ledger reaches the selection at 181 − 10 + 40 (the full memory budget, as the empty
+        // card does not fit) = 211; the trim runs from 211 − 40 + 48 = 219 and drops the greeting
+        // (6) and m1 (23) to 190, never the last three history entries.
+        expect(texts).toEqual([
+            `<Previous Conversation>${EMPTY_SUMMARY_CARD}</Previous Conversation>`,
+            "b".repeat(20),
+            "c".repeat(20),
+            "d".repeat(20),
+            "e".repeat(20),
+        ]);
+        expect(report).toEqual({
+            ...fixed(chat, 200),
+            input: 95 + 4 * 23,
+            sections: [
+                { kind: "memory", tokens: 95 },
+                { kind: "history", tokens: 92 },
+            ],
+            adjustment: 0,
+            attributionExact: true,
+            history: { total: 6, kept: 4, totalUser: 3, keptUser: 2, droppedTokens: 29 },
+            memory: { kind: "hypaV3", tokens: 95, budget: 40, coverage: "gap" },
+        });
+    });
+
+    it("the runner's token scope is the job scope's identity, which never uses a plugin tokenizer", () => {
+        const db = {
+            aiModel: "gpt4o",
+            currentPluginProvider: "plug",
+            customTokenizer: "",
+            googleClaudeTokenizing: false,
+            useTokenizerCaching: false,
+        } as unknown as RequestDb;
+        const key = tokenizerIdentityKey(tokenScopeFor(db));
+        expect(JSON.parse(key)).toEqual([
+            "gpt4o",
+            "",
+            "plug",
+            false,
+            resolveModelInfo("gpt4o").tokenizer,
+            resolveModelInfo("gpt4o").internalID ?? null,
+            "none",
+        ]);
+        // A tab scope with the plugin's declared tokenizer is a different identity.
+        expect(tokenizerIdentityKey({ ...tokenScopeFor(db), pluginTokenizer: "plug-tokenizer" })).not.toBe(key);
+        const runner = readFileSync(path.join(REPO_ROOT, "server/src/prompt/runner.ts"), "utf8");
+        expect(runner).toContain("tokenScope: tokenizerIdentityKey(tokenScopeFor(requestDb)),");
     });
 });

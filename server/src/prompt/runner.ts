@@ -21,6 +21,7 @@ import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
 import { jobModules } from "../jobs/cbsHost.ts";
 import type { OwnedGeneration } from "../jobs/chatResult.ts";
 import {
@@ -1345,6 +1346,7 @@ async function runSpeaker(arg: {
                         gptVisionQuality: () => db.gptVisionQuality,
                     },
                 ),
+                tokenScope: tokenizerIdentityKey(tokenScopeFor(requestDb)),
                 getModelInfo: (model) =>
                     resolveModelInfo(model, {
                         enableCustomFlags: db.enableCustomFlags,
@@ -1355,7 +1357,13 @@ async function runSpeaker(arg: {
                 fence: () => setup.check(),
                 memoryJob,
             },
-            { chatAdditonalTokens: arg.chatAdditonalTokens, continue: arg.continueSend, generationId, stageTimings },
+            {
+                chatAdditonalTokens: arg.chatAdditonalTokens,
+                continue: arg.continueSend,
+                ...(arg.continueSend && generation ? { continueMessageId: generation.messageId } : {}),
+                generationId,
+                stageTimings,
+            },
         );
         setup.check();
         if (assembled.type === "stopped") {

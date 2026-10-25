@@ -608,6 +608,29 @@ describe("the token budget", () => {
         });
         expect(sources(budgeted)).toEqual(["a"]);
     });
+
+    it("reports the budget pass: the rejected entry that recursed, and the accepted injector it counted", async () => {
+        const result = await run(
+            [
+                // 14 tokens: over the budget, dropped after its recursion activated `child`.
+                lore("parent", "x", "hill hill hill"),
+                lore("child", "hill", "vvvv"),
+                // 2 tokens, kept and counted, then folded into `child` and removed from the actives.
+                lore("injector", "x", "@@inject_lore child\nii"),
+            ],
+            [user("x")],
+            makeHost(),
+            { loreBookToken: 12 },
+        );
+        expect(result.actives.map((active) => [active.source, active.prompt])).toEqual([["child", "vvvv ii"]]);
+        expect(result.budget).toEqual({ used: 6, limit: 12, rejectedCount: 1, rejectedTokens: 14 });
+        // Nothing rejected, and the character's own budget is the limit.
+        const within = await run([lore("a", "x", "aaaa")], [user("x")], makeHost(), {
+            loreBookToken: 10_000,
+            loreSettings: { tokenBudget: 8 },
+        });
+        expect(within.budget).toEqual({ used: 4, limit: 8, rejectedCount: 0, rejectedTokens: 0 });
+    });
 });
 
 describe("recursion", () => {

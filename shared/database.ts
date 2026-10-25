@@ -3,6 +3,7 @@
 // `persistence.md`). Never rename persisted keys (STRUCTURE D3).
 
 import type { NewChatBinding } from "./chatBinding.ts";
+import type { ContextReport } from "./contextReport.ts";
 import type { LLMFlags, LLMFormat, LLMTokenizer } from "./llm.ts";
 import type {
     HypaModel,
@@ -1301,6 +1302,8 @@ export interface MessageGenerationInfo {
     inputTokens?: number;
     outputTokens?: number;
     maxContext?: number;
+    /** How the request spent the context (`shared/contextReport.ts`); read through `parseContextReport`. */
+    context?: ContextReport;
     stageTiming?: {
         stage1?: number;
         stage2?: number;

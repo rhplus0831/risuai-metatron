@@ -58,7 +58,13 @@ export type LoreActive = {
 
 export type LoreMatch = { prompt: string; source: string; activated: string };
 
-export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[] };
+/**
+ * The token budget pass: `used` is the kept entries' total before `@@inject_lore` edits (accepted
+ * injectors included), `limit` the budget, and the rejected entries are the ones the pass dropped.
+ */
+export type LoreBudget = { used: number; limit: number; rejectedCount: number; rejectedTokens: number };
+
+export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget };
 
 /**
  * Runs `steps` synchronously while every yielded value is a boolean; at the first promise it
@@ -664,12 +670,16 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     });
 
     let usedTokens = 0;
+    let rejectedCount = 0;
+    let rejectedTokens = 0;
 
     const activesFiltered = activesSorted.filter((act) => {
         if (usedTokens + act.tokens <= loreToken) {
             usedTokens += act.tokens;
             return true;
         }
+        rejectedCount++;
+        rejectedTokens += act.tokens;
         return false;
     });
 
@@ -713,5 +723,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     return {
         actives: activesResorted.reverse(),
         matchLog: matchLog,
+        budget: { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens },
     };
 }

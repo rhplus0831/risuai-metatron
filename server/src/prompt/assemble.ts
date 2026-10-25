@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import type { CbsParseArg } from "../../../shared/cbs/evaluator.ts";
+import {
+    type ContextReport,
+    type ContextSectionKind,
+    type ContextTrimEntry,
+    eligibleHistory,
+    historyDigest,
+} from "../../../shared/contextReport.ts";
 import type {
     Chat,
     character,
@@ -140,6 +147,8 @@ export type AssemblyHost = {
     /** `runImageEmbedding(dataUrl)[0].generated_text`: the caption of an image a model cannot take. */
     captionImage(dataUrl: string): Promise<string>;
     tokenizer: ChatTokenCounter;
+    /** `tokenizerIdentityKey` of the scope `tokenizer` counts with (the context report's `tokenScope`). */
+    tokenScope: string;
     getModelInfo(id: string): LLMModel;
     /** Raises after an abort or a latched failure (after every await). */
     fence(): void;
@@ -197,6 +206,8 @@ export type AssemblyMemoryRun = {
 export type AssembleInput = {
     chatAdditonalTokens: number;
     continue: boolean;
+    /** The message a continue extends (the runner's resolved target); absent for a preview. */
+    continueMessageId?: string;
     generationId: string;
     stageTimings: { stage1Duration: number; stage2Duration: number };
 };
@@ -383,6 +394,11 @@ type HypaV3StepResult =
           currentTokens: number;
           /** The history entries the final re-check never removes (a select-only or initial selection's tail). */
           protectedEntries: OpenAIChat[];
+          /**
+           * Whether the summaries cover the history the step left out: "gap" when a trimmed selection
+           * dropped uncovered history, "unknown" when the stored summaries end past the history.
+           */
+          coverage: "covered" | "gap" | "unknown";
           memoryTask?: { input: MemoryTaskInput; due: boolean };
       };
 
@@ -538,7 +554,12 @@ async function hypaV3Step(
     /** Whether the next sends need summaries: a lookahead plan of `prepared` with a summary request. */
     const dueFrom = async (prepared: HypaV3Prepared) =>
         input ? (await part(() => planHypaV3Summaries(prepared, { lookahead: true }))).llmCalls > 0 : false;
-    const finish = (selection: HypaV3Selection, protect: boolean, due: boolean): HypaV3StepResult => {
+    const finish = (
+        prepared: HypaV3Prepared,
+        selection: HypaV3Selection,
+        protect: boolean,
+        due: boolean,
+    ): HypaV3StepResult => {
         if (selection.error) {
             return failed(selection.error);
         }
@@ -548,6 +569,7 @@ async function hypaV3Step(
             chats: selection.chats,
             currentTokens: selection.currentTokens,
             protectedEntries: count > 0 ? selection.chats.slice(-count) : [],
+            coverage: (selection.trim?.gap.tokens ?? 0) > 0 ? "gap" : prepared.coverageAhead ? "unknown" : "covered",
             ...(input ? { memoryTask: { input, due } } : {}),
         };
     };
@@ -575,7 +597,7 @@ async function hypaV3Step(
             return failed(result.selection.error);
         }
         writeSelection(result.prepared.snapshot, result.selection.memory);
-        return finish(result.selection, true, await dueFrom(result.prepared));
+        return finish(result.prepared, result.selection, true, await dueFrom(result.prepared));
     };
     /** Releases in order, each even when an earlier one throws. */
     const releaseAll = (...steps: (() => void)[]) => {
@@ -626,7 +648,7 @@ async function hypaV3Step(
                 return failed(selection.error);
             }
             writeSelection(execution.baseline, selection.memory);
-            return finish(selection, false, false);
+            return finish(prepared, selection, false, false);
         } finally {
             releaseAll(
                 () => lease?.release(),
@@ -697,7 +719,7 @@ async function hypaV3Step(
                 const after = await prepare({ ...room, hypaV3Data: execution.baseline ?? undefined });
                 due = after.ok ? await dueFrom(after.prepared) : false;
             }
-            return finish(selection, true, due);
+            return finish(prepared, selection, true, due);
         } finally {
             releaseAll(
                 () => control?.release(),
@@ -727,7 +749,7 @@ async function hypaV3Step(
             }
         }
         writeSelection(prepared.snapshot, selection.memory);
-        return finish(selection, true, await dueFrom(prepared));
+        return finish(prepared, selection, true, await dueFrom(prepared));
     };
 
     if (!job?.tasks) {
@@ -1136,13 +1158,45 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         return tokens;
     };
 
+    // The context report's ledger: the tokens of each section where assembly counts them, and the
+    // source of each history-side entry (by identity; `systemizeChat` changes entries in place).
+    const sectionTokens = new Map<ContextSectionKind, number>();
+    const addSection = (kind: ContextSectionKind, tokens: number) => {
+        sectionTokens.set(kind, (sectionTokens.get(kind) ?? 0) + tokens);
+    };
+    const sourceOf = new Map<OpenAIChat, ContextSource>();
+    const messageSourceById = new Map<string, ContextSource>();
+    /** The greeting and the stored messages, in order. */
+    const historySources: ContextSource[] = [];
+    /** The memory step's entries (and their copies in the `memory` card). */
+    const memoryEntries = new Set<OpenAIChat>();
+    /**
+     * What each prompt entry carries, by identity, once a merge changed it (`pushPrompts` appends to
+     * the previous entry in place, and a later chat range can push that same object again).
+     */
+    const mergedProvenance = new Map<OpenAIChat, EntryProvenance>();
+    const provenanceOf = (chat: OpenAIChat): EntryProvenance | null => {
+        const merged = mergedProvenance.get(chat);
+        if (merged) {
+            return merged;
+        }
+        const source = sourceOf.get(chat);
+        if (source) {
+            return { sources: [source], memory: false, untraced: false };
+        }
+        return memoryEntries.has(chat) ? { sources: [], memory: true, untraced: false } : null;
+    };
+
     if (promptTemplate) {
         const template = promptTemplate;
         async function tokenizeChatArray(chats: OpenAIChat[]) {
+            let sum = 0;
             for (const chat of chats) {
                 const tokens = await tokenizeChat(chat);
                 currentTokens += tokens;
+                sum += tokens;
             }
+            return sum;
         }
         for (const card of template) {
             switch (card.type) {
@@ -1157,7 +1211,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                             }).replace("{{slot}}", pmt[i].content);
                         }
                     }
-                    await tokenizeChatArray(pmt);
+                    addSection("persona", await tokenizeChatArray(pmt));
                     break;
                 }
                 case "description": {
@@ -1170,7 +1224,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                             }).replace("{{slot}}", pmt[i].content);
                         }
                     }
-                    await tokenizeChatArray(pmt);
+                    addSection("description", await tokenizeChatArray(pmt));
                     break;
                 }
                 case "authornote": {
@@ -1184,17 +1238,22 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                             }).replace("{{slot}}", pmt[i].content || card.defaultText || "");
                         }
                     }
-                    await tokenizeChatArray(pmt);
+                    addSection("authornote", await tokenizeChatArray(pmt));
                     break;
                 }
                 case "lorebook": {
-                    await tokenizeChatArray(unformated.lorebook);
+                    addSection("lorebook", await tokenizeChatArray(unformated.lorebook));
                     break;
                 }
                 case "postEverything": {
-                    await tokenizeChatArray(unformated.postEverything);
+                    addSection("postEverything", await tokenizeChatArray(unformated.postEverything));
                     if (usingPromptTemplate && db.promptSettings.postEndInnerFormat) {
-                        await tokenizeChatArray([{ role: "system", content: db.promptSettings.postEndInnerFormat }]);
+                        addSection(
+                            "postEverything",
+                            await tokenizeChatArray([
+                                { role: "system", content: db.promptSettings.postEndInnerFormat },
+                            ]),
+                        );
                     }
                     break;
                 }
@@ -1207,15 +1266,16 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     if (!db.chainOfThought && card.type === "cot") {
                         continue;
                     }
-                    await tokenizeChatArray([plainCardPrompt(card)]);
+                    addSection(plainCardSection(card), await tokenizeChatArray([plainCardPrompt(card)]));
                     break;
                 }
                 case "chatML": {
                     const prompts = parseChatML(card.text, (text) => parse(text));
-                    await tokenizeChatArray(prompts!);
+                    addSection("chatML", await tokenizeChatArray(prompts!));
                     break;
                 }
                 case "chat": {
+                    // The history is not built yet: this counts nothing (history is counted as it is pushed).
                     const { start, end } = chatRange(card);
                     if (start >= end) {
                         break;
@@ -1240,21 +1300,35 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     } else {
         for (const key in unformated) {
             const chats = unformated[key as keyof typeof unformated] as OpenAIChat[];
+            let sum = 0;
             for (const chat of chats) {
-                currentTokens += await tokenizeChat(chat);
+                const tokens = await tokenizeChat(chat);
+                currentTokens += tokens;
+                sum += tokens;
+            }
+            // The history keys are still empty here.
+            const kind = LEGACY_SECTIONS[key];
+            if (kind) {
+                addSection(kind, sum);
             }
         }
     }
 
     const examples = exampleMessage(currentChar, parse);
     for (const example of examples) {
-        currentTokens += await tokenizeChat(example);
+        const tokens = await tokenizeChat(example);
+        currentTokens += tokens;
+        sourceOf.set(example, { kind: "example", tokens, user: false });
     }
 
     let chats: OpenAIChat[] = examples;
 
+    // The new-chat marker is not counted here (the trim loop still subtracts it when it drops it).
+    let marker: OpenAIChat | null = null;
     if (!db.aiModel.startsWith("novelai") && !db?.promptSettings?.trimStartNewChat) {
-        chats.push({ role: "system", content: "[Start a new chat]", memo: "NewChat" });
+        marker = { role: "system", content: NEW_CHAT_MARKER, memo: "NewChat" };
+        sourceOf.set(marker, { kind: "marker", tokens: 0, user: false });
+        chats.push(marker);
     }
     // Where the chat history (the greeting, then the stored messages) starts; the example dialogue and
     // the new-chat marker before it are not history the trim question protects.
@@ -1262,20 +1336,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     let msReseted = false;
     const makeMs = (currentChat: Chat) => {
-        const mss: Message[] = [];
-        msReseted = false;
-        for (let i = currentChat.message.length - 1; i >= 0; i--) {
-            const d = currentChat.message[i];
-            if (d.disabled === true) {
-                continue;
-            }
-            if (d.disabled === "allBefore") {
-                msReseted = true;
-                break;
-            }
-            mss.unshift(d);
-        }
-        return mss;
+        const eligible = eligibleHistory(currentChat.message);
+        msReseted = eligible.reset;
+        return eligible.messages;
     };
 
     let ms: Message[] = makeMs(currentChat);
@@ -1306,7 +1369,11 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             chat.attr = ["nameAdded"];
         }
         chats.push(chat);
-        currentTokens += await tokenizeChat(chat);
+        const tokens = await tokenizeChat(chat);
+        currentTokens += tokens;
+        const source: ContextSource = { kind: "greeting", tokens, user: false };
+        sourceOf.set(chat, source);
+        historySources.push(source);
     }
 
     const triggerResult = await host.runStartTrigger();
@@ -1317,10 +1384,17 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         currentChat = stored ?? triggerResult.chat;
         ms = makeMs(currentChat);
         currentTokens += triggerResult.tokens;
+        addSection("triggers", triggerResult.tokens);
         if (triggerResult.stopSending) {
             return { type: "stopped" };
         }
     }
+    // The history this send reads, as the tab will compare it: without the message a continue extends.
+    const assembledDigest = historyDigest(
+        input.continueMessageId !== undefined
+            ? currentChat.message.filter((message) => message.chatId !== input.continueMessageId)
+            : currentChat.message,
+    );
 
     const modelinfo = host.getModelInfo(db.aiModel);
     let index = 0;
@@ -1462,7 +1536,14 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             delete chat.multimodals;
         }
         chats.push(chat);
-        currentTokens += await tokenizeChat(chat);
+        const tokens = await tokenizeChat(chat);
+        currentTokens += tokens;
+        const source: ContextSource = { kind: "message", tokens, user: msg.role === "user", id: msg.chatId };
+        sourceOf.set(chat, source);
+        historySources.push(source);
+        if (msg.chatId !== undefined) {
+            messageSourceById.set(msg.chatId, source);
+        }
         index++;
     }
 
@@ -1472,7 +1553,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             role: depthPrompt.role,
             content: parse(resolvePosition(depthPrompt.prompt), { chatRef: chatTarget, chara: currentChar }),
         };
-        currentTokens += await tokenizeChat(chat);
+        const tokens = await tokenizeChat(chat);
+        currentTokens += tokens;
+        addSection("lorebook", tokens);
     }
 
     const memoryConfigured = db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3;
@@ -1498,7 +1581,17 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
      */
     const protectedEntries = new Set<OpenAIChat>();
     let memoryTask: { input: MemoryTaskInput; due: boolean } | undefined;
+    /** The memory branch that ran, for the report. */
+    let memoryRun: {
+        kind: NonNullable<ContextReport["memory"]>["kind"];
+        coverage: "covered" | "gap" | "unknown";
+        budget?: number;
+    } | null = null;
+    /** The no-memory trim ledger after the trim loop: its headroom and the entries it would drop next. */
+    let trimLedger: { headroom: number; next: OpenAIChat[] } | null = null;
     if (useMemory) {
+        // The entries before the step, for the sources of the copies an algorithm returns.
+        const beforeMemory = chats.map((chat) => ({ chat, signature: entrySignature(chat) }));
         input.stageTimings.stage1Duration = Date.now() - stage1Start;
         const stage2Start = Date.now();
         host.stage("memory");
@@ -1523,6 +1616,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
                 chats = hn.chats;
                 currentTokens = hn.tokens;
+                memoryRun = { kind: "hanurai", coverage: "unknown" };
             } else if (db.hypav2) {
                 const room = detachedChat();
                 // The value the algorithm reads: its result is placed onto the value stored at the write.
@@ -1542,6 +1636,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 }
                 chats = sp.chats;
                 currentTokens = sp.currentTokens;
+                memoryRun = { kind: "hypaV2", coverage: "unknown" };
                 if (sp.memory) {
                     const data = sp.memory;
                     host.writeMemory((stored) => {
@@ -1581,6 +1676,11 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     protectedEntries.add(entry);
                 }
                 memoryTask = step.memoryTask;
+                memoryRun = {
+                    kind: "hypaV3",
+                    coverage: step.coverage,
+                    budget: Math.floor(maxContextTokens * getCurrentHypaV3Preset(memory).settings.memoryTokensRatio),
+                };
 
                 currentChat = host.chat();
             } else {
@@ -1602,6 +1702,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 }
                 chats = sp.chats;
                 currentTokens = sp.currentTokens;
+                memoryRun = { kind: "supa", coverage: "unknown" };
                 if (sp.memory || sp.lastId) {
                     // The client's fallbacks (`currentChat`'s fields), read from the chat as stored now.
                     host.writeMemory((stored) => ({
@@ -1616,6 +1717,12 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         }
         host.stage("preparing");
         input.stageTimings.stage2Duration = Date.now() - stage2Start;
+        for (const chat of chats) {
+            if (chat.memo === "supaMemory" || chat.memo === "hypaMemory") {
+                memoryEntries.add(chat);
+            }
+        }
+        adoptSources(chats, beforeMemory, sourceOf, messageSourceById);
     } else {
         input.stageTimings.stage1Duration = Date.now() - stage1Start;
         while (currentTokens > maxContextTokens) {
@@ -1627,6 +1734,15 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         }
         // The first kept message's memo, or none (a stale one would outlive the trim).
         host.setLastMemory(chats[0]?.memo);
+        trimLedger = { headroom: maxContextTokens - currentTokens, next: chats.slice(0, TRIM_QUEUE_LENGTH) };
+    }
+    /** The sources of the history-side entries the memory step or the trim left (before formatting). */
+    const assembledSources = new Set<ContextSource>();
+    for (const chat of chats) {
+        const source = sourceOf.get(chat);
+        if (source) {
+            assembledSources.add(source);
+        }
     }
 
     const biases: [string, number][] = db.bias.concat(currentChar.bias).map((v) => [
@@ -1715,6 +1831,24 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             if (chat.role === "system") {
                 const endf = formated.at(-1);
                 if (endf && endf.role === "system" && endf.memo === chat.memo && endf.name === chat.name) {
+                    const into = provenanceOf(endf);
+                    const from = provenanceOf(chat);
+                    if (into || from) {
+                        const merged = mergedProvenance.get(endf) ?? {
+                            sources: into?.sources.slice() ?? [],
+                            memory: !!into?.memory,
+                            untraced: !!into?.untraced,
+                        };
+                        // A part with no source, or memory joined with history, cannot be attributed.
+                        merged.untraced ||= !into || !from || from.untraced || into.memory !== from.memory;
+                        merged.memory ||= !!from?.memory;
+                        // A repeated range can merge an entry into itself; append only its original sources.
+                        const length = from?.sources.length ?? 0;
+                        for (let i = 0; i < length; i++) {
+                            merged.sources.push(from!.sources[i]);
+                        }
+                        mergedProvenance.set(endf, merged);
+                    }
                     formated[formated.length - 1].content += "\n\n" + chat.content;
                     if (protectedEntries.has(chat)) {
                         delete endf.removable;
@@ -1847,6 +1981,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 }
                 case "memory": {
                     const pmt = clone(memories);
+                    for (const entry of pmt) {
+                        memoryEntries.add(entry);
+                    }
                     applyPromptBlockRole(pmt, card.role2);
                     innerFormat(pmt, card, false, (content) => content);
                     pushPrompts(pmt);
@@ -1900,8 +2037,30 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     // prompt marked removable (the same role, text, and media, never shared with an entry that was not
     // removable): a changed, new, or ambiguous entry is not.
     const removableBefore = protectedEntries.size > 0 ? removableEntryCounts(formated) : null;
+    const beforeEdit = formated.map((chat) => {
+        const provenance = provenanceOf(chat);
+        return {
+            chat,
+            memo: chat.memo,
+            signature: entrySignature(chat),
+            provenance: provenance ? { ...provenance, sources: provenance.sources.slice() } : null,
+        };
+    });
     formated = await host.runEditRequest(formated);
     host.fence();
+    // An unchanged list keeps its sources. Otherwise trace identities and message ids before
+    // signatures, using the captured provenance so writes cannot affect later matches.
+    let attributionExact =
+        formated.length === beforeEdit.length &&
+        formated.every(
+            (chat, i) =>
+                chat === beforeEdit[i].chat &&
+                chat.memo === beforeEdit[i].memo &&
+                sameEntrySignature(chat, beforeEdit[i].signature),
+        );
+    if (!attributionExact) {
+        traceEditedEntries(formated, beforeEdit, mergedProvenance, messageSourceById);
+    }
     if (removableBefore) {
         for (const chat of formated) {
             if (!chat?.removable) {
@@ -1925,8 +2084,12 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     // token rechecking
     let inputTokens = 0;
+    /** Each entry's count in the recheck, before any removal. */
+    const recheckTokens = new Map<OpenAIChat, number>();
     for (const chat of formated) {
-        inputTokens += await tokenizeChat(chat);
+        const tokens = await tokenizeChat(chat);
+        inputTokens += tokens;
+        recheckTokens.set(chat, tokens);
     }
     if (inputTokens > maxContextTokens) {
         let pointer = 0;
@@ -1938,6 +2101,10 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 };
             }
             if (formated[pointer].removable) {
+                const provenance = provenanceOf(formated[pointer]);
+                if (!provenance || provenance.untraced) {
+                    attributionExact = false;
+                }
                 inputTokens -= await tokenizeChat(formated[pointer]);
                 formated[pointer].content = "";
                 delete formated[pointer].multimodals;
@@ -1958,6 +2125,28 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         inputTokens: inputTokens,
         outputTokens: outputTokens,
         maxContext: maxContextTokens,
+        context: buildContextReport({
+            db,
+            input,
+            inputTokens,
+            maxContextTokens,
+            formated,
+            provenanceOf,
+            recheckTokens,
+            attributionExact,
+            sectionTokens,
+            historySources,
+            assembledSources,
+            sourceOf,
+            messageSourceById,
+            marker,
+            trimLedger,
+            memoryRun,
+            hadMemoryEntries: memoryEntries.size > 0,
+            lore: lorepmt,
+            tokenScope: host.tokenScope,
+            historyDigest: assembledDigest,
+        }),
         stageTiming: {
             stage1: input.stageTimings.stage1Duration,
             stage2: input.stageTimings.stage2Duration,
@@ -1975,6 +2164,409 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         maxContextTokens,
         ...(memoryTask ? { memoryTask } : {}),
     };
+}
+
+/** The new-chat marker's text. */
+const NEW_CHAT_MARKER = "[Start a new chat]";
+
+/** How many of the trim ledger's next entries the context report keeps. */
+const TRIM_QUEUE_LENGTH = 8;
+
+/** The context report's section of each `unformated` key of the no-template path (the history keys: none). */
+const LEGACY_SECTIONS: Readonly<Record<string, ContextSectionKind | null>> = {
+    main: "main",
+    jailbreak: "jailbreak",
+    chats: null,
+    lorebook: "lorebook",
+    globalNote: "globalNote",
+    authorNote: "authornote",
+    lastChat: null,
+    description: "description",
+    postEverything: "postEverything",
+    personaPrompt: "persona",
+};
+
+/** A history-side prompt entry as assembly counted it when it pushed it (the marker is not counted). */
+type ContextSource = {
+    kind: "example" | "marker" | "greeting" | "message";
+    tokens: number;
+    /** A stored user message (a turn). */
+    user: boolean;
+    /** The stored message's id. */
+    id?: string;
+};
+
+/** What a prompt entry carries: history-side sources, memory, or a part with no source (`untraced`). */
+type EntryProvenance = { sources: ContextSource[]; memory: boolean; untraced: boolean };
+
+/** The context report's section of a `plain`/`jailbreak`/`cot` card (`plain` cards by `type2`). */
+function plainCardSection(card: PromptItemPlain): ContextSectionKind {
+    if (card.type !== "plain") {
+        return card.type;
+    }
+    return card.type2 === "main" ? "main" : card.type2 === "globalNote" ? "globalNote" : "plain";
+}
+
+/** Captured count-relevant fields; media strings are retained, never serialized or hashed. */
+type EntrySignature = Pick<OpenAIChat, "role" | "content" | "name" | "multimodals">;
+
+function entrySignature(chat: OpenAIChat): EntrySignature {
+    return {
+        role: chat.role,
+        content: chat.content,
+        name: chat.name,
+        multimodals: chat.multimodals?.map(({ type, base64, width, height }) => ({ type, base64, width, height })),
+    };
+}
+
+function sameEntrySignature(a: EntrySignature, b: EntrySignature): boolean {
+    return (
+        a.role === b.role &&
+        a.content === b.content &&
+        (a.name ?? null) === (b.name ?? null) &&
+        (a.multimodals == null) === (b.multimodals == null) &&
+        (a.multimodals?.length ?? 0) === (b.multimodals?.length ?? 0) &&
+        (a.multimodals?.every((media, i) => {
+            const other = b.multimodals![i];
+            return (
+                media.type === other.type &&
+                media.width === other.width &&
+                media.height === other.height &&
+                media.base64.length === other.base64.length &&
+                media.base64 === other.base64
+            );
+        }) ??
+            true)
+    );
+}
+
+/** Descriptor buckets avoid hashing media payloads; equal descriptors still compare captured strings. */
+function signatureBuckets<T>() {
+    type Bucket = { signature: EntrySignature; entries: T[]; next: number };
+    const buckets = new Map<string, Bucket[]>();
+    const keyOf = (signature: EntrySignature) =>
+        JSON.stringify([
+            signature.role,
+            signature.content,
+            signature.name ?? null,
+            signature.multimodals?.map(({ type, base64, width, height }) => [type, base64.length, width, height]) ??
+                null,
+        ]);
+    return {
+        add(signature: EntrySignature, entry: T) {
+            const key = keyOf(signature);
+            let matches = buckets.get(key);
+            if (!matches) {
+                matches = [];
+                buckets.set(key, matches);
+            }
+            let bucket = matches.find((candidate) => sameEntrySignature(candidate.signature, signature));
+            if (!bucket) {
+                bucket = { signature, entries: [], next: 0 };
+                matches.push(bucket);
+            }
+            bucket.entries.push(entry);
+        },
+        take(signature: EntrySignature): T | undefined {
+            const bucket = buckets
+                .get(keyOf(signature))
+                ?.find(
+                    (candidate) =>
+                        candidate.next < candidate.entries.length && sameEntrySignature(candidate.signature, signature),
+                );
+            return bucket ? bucket.entries[bucket.next++] : undefined;
+        },
+    };
+}
+
+const isMemoryEntry = (chat: OpenAIChat) => chat.memo === "supaMemory" || chat.memo === "hypaMemory";
+
+/**
+ * Gives copies returned by memory their stored-message source first, else the first unclaimed
+ * entry with the same signature. Synthesized memory entries never adopt history sources.
+ */
+function adoptSources(
+    chats: readonly OpenAIChat[],
+    before: readonly { chat: OpenAIChat; signature: EntrySignature }[],
+    sourceOf: Map<OpenAIChat, ContextSource>,
+    messageSourceById: ReadonlyMap<string, ContextSource>,
+) {
+    const present = new Set(chats);
+    const claimed = new Set<ContextSource>();
+    for (const chat of chats) {
+        if (isMemoryEntry(chat)) {
+            sourceOf.delete(chat);
+            continue;
+        }
+        const source = sourceOf.get(chat) ?? (chat.memo !== undefined ? messageSourceById.get(chat.memo) : undefined);
+        if (source) {
+            sourceOf.set(chat, source);
+            claimed.add(source);
+        }
+    }
+    const bySignature = signatureBuckets<ContextSource>();
+    for (const { chat, signature } of before) {
+        const source = sourceOf.get(chat);
+        if (source && !present.has(chat) && !claimed.has(source)) {
+            bySignature.add(signature, source);
+        }
+    }
+    for (const chat of chats) {
+        if (isMemoryEntry(chat) || sourceOf.has(chat)) {
+            continue;
+        }
+        const source = bySignature.take(entrySignature(chat));
+        if (source) {
+            sourceOf.set(chat, source);
+        }
+    }
+}
+
+/**
+ * Trace hook results from the pre-hook snapshot: identity first, then stored-message memo, then
+ * an unclaimed removed entry's signature. Rewritten memory retains only uncertain provenance.
+ */
+function traceEditedEntries(
+    formated: readonly OpenAIChat[],
+    before: readonly { chat: OpenAIChat; signature: EntrySignature; provenance: EntryProvenance | null }[],
+    mergedProvenance: Map<OpenAIChat, EntryProvenance>,
+    messageSourceById: ReadonlyMap<string, ContextSource>,
+) {
+    const present = new Set(formated);
+    const known = new Map(before.map((entry) => [entry.chat, entry]));
+    const claimed = new Set<ContextSource>();
+    const traced = new Set<OpenAIChat>();
+    for (const chat of formated) {
+        if (!chat) {
+            continue;
+        }
+        const original = known.get(chat);
+        const source = !isMemoryEntry(chat) && chat.memo !== undefined ? messageSourceById.get(chat.memo) : undefined;
+        let provenance = original
+            ? original.provenance
+            : source
+              ? { sources: [source], memory: false, untraced: false }
+              : null;
+        if (provenance?.memory && original && !sameEntrySignature(chat, original.signature)) {
+            provenance = { ...provenance, untraced: true };
+        }
+        if (original || source) {
+            traced.add(chat);
+            if (provenance) {
+                mergedProvenance.set(chat, provenance);
+                for (const source of provenance.sources) {
+                    claimed.add(source);
+                }
+            }
+        }
+    }
+    const bySignature = signatureBuckets<EntryProvenance>();
+    for (const { chat, signature, provenance } of before) {
+        if (
+            provenance &&
+            !present.has(chat) &&
+            !(provenance.sources.length === 1 && claimed.has(provenance.sources[0]))
+        ) {
+            bySignature.add(signature, provenance);
+        }
+    }
+    for (const chat of formated) {
+        if (!chat || traced.has(chat)) {
+            continue;
+        }
+        const matched = bySignature.take(entrySignature(chat));
+        const provenance =
+            isMemoryEntry(chat) && !matched?.memory ? { sources: [], memory: true, untraced: true } : matched;
+        if (provenance) {
+            mergedProvenance.set(chat, provenance);
+        }
+    }
+}
+
+/**
+ * The context report of an assembled prompt (`MessageGenerationInfo.context`): sections from the
+ * counts assembly made, history kept by the sources in the final prompt, the trim ledger's next
+ * entries, the memory step's kind and coverage, and the lore budget.
+ */
+function buildContextReport(arg: {
+    db: Database;
+    input: AssembleInput;
+    inputTokens: number;
+    maxContextTokens: number;
+    /** The final prompt. */
+    formated: readonly OpenAIChat[];
+    provenanceOf: (chat: OpenAIChat) => EntryProvenance | null;
+    /** Each entry's count in the recheck, before any removal. */
+    recheckTokens: ReadonlyMap<OpenAIChat, number>;
+    attributionExact: boolean;
+    sectionTokens: ReadonlyMap<ContextSectionKind, number>;
+    historySources: readonly ContextSource[];
+    /** The sources of the entries the memory step or the trim loop left. */
+    assembledSources: ReadonlySet<ContextSource>;
+    sourceOf: ReadonlyMap<OpenAIChat, ContextSource>;
+    messageSourceById: ReadonlyMap<string, ContextSource>;
+    marker: OpenAIChat | null;
+    trimLedger: { headroom: number; next: readonly OpenAIChat[] } | null;
+    memoryRun: {
+        kind: NonNullable<ContextReport["memory"]>["kind"];
+        coverage: "covered" | "gap" | "unknown";
+        budget?: number;
+    } | null;
+    hadMemoryEntries: boolean;
+    lore: LoreActivation;
+    tokenScope: string;
+    historyDigest: string;
+}): ContextReport {
+    let attributionExact = arg.attributionExact;
+    const kept = new Set<ContextSource>();
+    let memoryTokens = 0;
+    let tracedMemorySurvives = false;
+    let untracedMemory = false;
+    for (const chat of arg.formated) {
+        const provenance = arg.provenanceOf(chat);
+        if (!provenance) {
+            continue;
+        }
+        for (const source of provenance.sources) {
+            kept.add(source);
+        }
+        if (provenance.memory) {
+            if (provenance.untraced || provenance.sources.length > 0) {
+                attributionExact = false;
+                untracedMemory = true;
+            } else {
+                tracedMemorySurvives = true;
+                memoryTokens += arg.recheckTokens.get(chat) ?? 0;
+            }
+        }
+    }
+
+    const history = { total: arg.historySources.length, kept: 0, totalUser: 0, keptUser: 0, droppedTokens: 0 };
+    let historyTokens = 0;
+    for (const source of arg.historySources) {
+        history.totalUser += source.user ? 1 : 0;
+        if (kept.has(source)) {
+            history.kept++;
+            history.keptUser += source.user ? 1 : 0;
+            historyTokens += source.tokens;
+        } else {
+            history.droppedTokens += source.tokens;
+        }
+    }
+    let exampleTokens = 0;
+    for (const source of kept) {
+        if (source.kind === "example") {
+            exampleTokens += source.tokens;
+        }
+    }
+
+    const totals = new Map(arg.sectionTokens);
+    const add = (kind: ContextSectionKind, tokens: number) => totals.set(kind, (totals.get(kind) ?? 0) + tokens);
+    add("examples", exampleTokens);
+    add("memory", memoryTokens);
+    add("history", historyTokens);
+    const sections = [...totals].filter(([, tokens]) => tokens !== 0).map(([kind, tokens]) => ({ kind, tokens }));
+    const sectionSum = sections.reduce((sum, section) => sum + section.tokens, 0);
+
+    const report: ContextReport = {
+        v: 1,
+        maxContext: arg.maxContextTokens,
+        maxResponse: arg.db.maxResponse,
+        input: arg.inputTokens,
+        sections,
+        adjustment: arg.inputTokens - sectionSum,
+        attributionExact,
+        history,
+        lore: {
+            budgetUsed: arg.lore.budget.used,
+            budget: arg.lore.budget.limit,
+            rejectedCount: arg.lore.budget.rejectedCount,
+            rejectedTokens: arg.lore.budget.rejectedTokens,
+            active: arg.lore.actives.length,
+        },
+        tokenScope: arg.tokenScope,
+        historyDigest: arg.historyDigest,
+    };
+
+    if (arg.trimLedger) {
+        const trim = contextTrim(arg, arg.trimLedger, kept);
+        if (trim) {
+            report.trim = trim;
+        }
+    }
+    if (arg.memoryRun) {
+        // History the step kept raw and the prompt then lost is not covered by the summaries either.
+        const lostAfter = [...arg.assembledSources].some(
+            (source) => source.kind !== "example" && source.kind !== "marker" && !kept.has(source),
+        );
+        const lostMemory =
+            arg.memoryRun.kind === "hypaV3" && ((arg.hadMemoryEntries && !tracedMemorySurvives) || untracedMemory);
+        report.memory = {
+            kind: arg.memoryRun.kind,
+            tokens: memoryTokens,
+            ...(arg.memoryRun.budget !== undefined ? { budget: arg.memoryRun.budget } : {}),
+            coverage:
+                lostMemory || (arg.memoryRun.coverage === "covered" && lostAfter) ? "unknown" : arg.memoryRun.coverage,
+        };
+    }
+    return report;
+}
+
+/**
+ * The trim ledger of the report: the next entries' counts as the loop subtracts them. The marker's
+ * count is its recheck count while it reached the prompt unchanged; without one there is no ledger.
+ * A queued message already absent from the prompt cannot be displaced again, so omit that ledger.
+ */
+function contextTrim(
+    arg: Parameters<typeof buildContextReport>[0],
+    ledger: { headroom: number; next: readonly OpenAIChat[] },
+    kept: ReadonlySet<ContextSource>,
+): ContextReport["trim"] | null {
+    const queue: ContextTrimEntry[] = [];
+    for (const chat of ledger.next) {
+        const source = arg.sourceOf.get(chat);
+        if (!source || ((source.kind === "greeting" || source.kind === "message") && !kept.has(source))) {
+            return null;
+        }
+        if (source.kind === "marker") {
+            const tokens = markerRecheckTokens(arg, source);
+            if (tokens === undefined) {
+                return null;
+            }
+            queue.push({ tokens, kind: "marker", user: false });
+        } else {
+            queue.push({
+                tokens: source.tokens,
+                kind: source.kind === "example" ? "example" : "message",
+                user: source.user,
+            });
+        }
+    }
+    const continued =
+        arg.input.continueMessageId !== undefined ? arg.messageSourceById.get(arg.input.continueMessageId) : undefined;
+    return {
+        headroom: ledger.headroom,
+        queue,
+        ...(continued && arg.assembledSources.has(continued)
+            ? { replyPrefix: { messageId: arg.input.continueMessageId!, tokens: continued.tokens } }
+            : {}),
+        perMessage: arg.input.chatAdditonalTokens,
+    };
+}
+
+/** The recheck's count of the new-chat marker as it was pushed (not merged or rewritten), if it reached the prompt. */
+function markerRecheckTokens(arg: Parameters<typeof buildContextReport>[0], source: ContextSource): number | undefined {
+    const signature = entrySignature({ role: "system", content: NEW_CHAT_MARKER });
+    for (const [chat, tokens] of arg.recheckTokens) {
+        const provenance = arg.provenanceOf(chat);
+        if (
+            (chat === arg.marker || (provenance?.sources.length === 1 && provenance.sources[0] === source)) &&
+            sameEntrySignature(chat, signature)
+        ) {
+            return tokens;
+        }
+    }
+    return undefined;
 }
 
 /** The identity of a prompt entry across `editRequest`: a digest of its role, text, and media. */
