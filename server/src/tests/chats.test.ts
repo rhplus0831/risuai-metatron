@@ -17,7 +17,7 @@ const rejects = (fn: () => unknown, error: string, label = error) => {
 };
 
 describe("normalizeChatMeta", () => {
-    it("leaves lore overrides absent, preserves valid arrays as sent, and refuses malformed overrides", () => {
+    it("leaves lore overrides absent, keeps the first valid override per id, and refuses malformed overrides", () => {
         expect(normalizeChatMeta({}, "k")).not.toHaveProperty("loreOverrides");
         const entry = {
             id: "owner",
@@ -30,16 +30,26 @@ describe("normalizeChatMeta", () => {
             alwaysActive: false,
             selective: false,
         };
-        // No matching owner is needed to store an override, and duplicates stay in array order.
-        for (const loreOverrides of [
-            [],
-            [
-                { entry, off: false },
-                { entry, off: true },
-            ],
-        ]) {
-            expect(normalizeChatMeta({ loreOverrides }, "k").loreOverrides).toEqual(loreOverrides);
-        }
+        // No matching owner is needed to store an override; a later duplicate id is dropped, keeping
+        // the first, which is the one the merge applies.
+        const other = { ...entry, id: "other" };
+        expect(normalizeChatMeta({ loreOverrides: [] }, "k").loreOverrides).toEqual([]);
+        expect(
+            normalizeChatMeta(
+                {
+                    loreOverrides: [
+                        { entry, off: false },
+                        { entry: other, off: true },
+                        { entry: { ...entry, content: "later" }, off: true },
+                        { entry: other, off: false },
+                    ],
+                },
+                "k",
+            ).loreOverrides,
+        ).toEqual([
+            { entry, off: false },
+            { entry: other, off: true },
+        ]);
         for (const loreOverrides of [
             null,
             {},

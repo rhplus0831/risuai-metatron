@@ -223,6 +223,38 @@ describe("evaluators", () => {
         }
     });
 
+    it("lorebook leaves out an off folder and every entry inside it for a single character", () => {
+        const entry = (id: string, extra: Partial<loreBook> = {}): loreBook => ({
+            id,
+            key: id,
+            secondkey: "",
+            comment: id,
+            content: `${id} content`,
+            insertorder: 100,
+            mode: "normal",
+            alwaysActive: false,
+            selective: false,
+            ...extra,
+        });
+        const folder = entry("folder", { key: "folder:f", mode: "folder" });
+        const member = entry("member", { folder: "folder:f" });
+        const outside = entry("outside");
+        const db = clone(parity.database) as Database;
+        const owner = db.characters[0] as character;
+        owner.globalLore = [folder, member, outside];
+        const chat = owner.chats[0] as Chat;
+        chat.localLore = [];
+        chat.loreOverrides = [{ entry: folder, off: true }];
+        const { risuChatParser } = createCbsEvaluator({
+            ...createNodeCbsHost(db, { selectedCharID: 0 }),
+            getModuleLorebooks: () => [],
+        });
+        const chatRef = { chaId: owner.chaId, chatId: chat.id! };
+        expect(JSON.parse(risuChatParser("{{lorebook}}", { chara: owner, chatRef }))).toEqual([
+            JSON.stringify(outside),
+        ]);
+    });
+
     it("are independent: each evaluator answers its own host", () => {
         const db = clone(parity.database) as Database;
         const wide = createCbsEvaluator(

@@ -31,7 +31,7 @@
 
 ## Files
 
-- `shared/cbs/registry.ts`: the CBS function catalogue (re-exported by `cbs.ts`). `{{lorebook}}` (`worldinfo`) returns the character's `globalLore` with the chat's `loreOverrides` applied (`shared/lore/overrides.ts` `mergeOwnerLore`: an override's copy in the original's place, an off entry left out, an orphan not inserted; a group character contributes none), then the chat's `localLore`, then the chat's module lore.
+- `shared/cbs/registry.ts`: the CBS function catalogue (re-exported by `cbs.ts`). `{{lorebook}}` (`worldinfo`) returns the character's `globalLore` with the chat's `loreOverrides` applied (`shared/lore/overrides.ts` `mergeOwnerLore`: an override's copy in the original's place, an off entry left out, an off folder with every entry inside it, an orphan not inserted; a group character contributes none), then the chat's `localLore`, then the chat's module lore.
   - `registerCBS(arg: CBSRegisterArg)` enumerates every built-in function (name, callback, aliases, description, `internalOnly`/`doc_only`) into a callback supplied by the consumer. Every host read goes through `CBSRegisterArg`, including `getTriggerId` (`trigger_id`), `getViewport` (`screenwidth`/`screenheight`), and `getBrowserLanguage` (`metadata::browserlang`).
   - `contextChar`/`contextChat`: the parse's `chatRef` character and chat, or the selected ones.
   - `prefillsupported` (`prefill_supported`, `prefill`): for a model whose descriptor (`CBSRegisterArg.getModelInfo`, which both hosts resolve through `shared/llm/models.ts` `resolveModelInfo` with the custom flags) is Anthropic or Anthropic legacy format, its `hasPrefill` flag (so an adaptive-only Claude model answers `0`); for any other format, whether `aiModel` starts with `claude`.
