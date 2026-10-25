@@ -655,7 +655,10 @@
         }
         // Decide deferral before creating effects, including duplicate-id fallback keys.
         const opening = inputs.length > 0 && inputs.every(({ key }) => !rows.has(key));
-        armDeferredRows();
+        // A diff that shows the same rows (a reload, as a module change makes right after a switch,
+        // or a context or mode change) keeps an opening's staging; any other diff arms its rows.
+        const sameRows = inputs.length === rows.size && inputs.every(({ key }) => rows.has(key));
+        if (!sameRows) armDeferredRows();
         if (opening) finishReveal();
         let firstStage = inputs.length;
         if (opening && !capturing && !suspendTrim) {

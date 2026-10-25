@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
-- [Chat screen](#chat-screen) (1)
+- [Chat screen](#chat-screen) (2)
 
 ## Chat store, sync, and change feeds
 
@@ -43,3 +43,10 @@ The Display settings still offer `showMemoryLimit` and `memoryLimitThickness` (`
 
 **Why it matters:** the setting does nothing, and users expect a line where the model's history starts.
 **Suggested handling:** restore the line in `Chats.svelte`, or remove the two settings. `lastMemory` is set before the final recheck (`assemble.ts:1940`), so it can be off by the entries the recheck removes; the context usage meter's report ([plan](../plan/context-usage-meter.md)) could supply the exact kept ids.
+
+### Stale fold index at a chat switch
+
+Switching away from a folded chat (`foldChatToMessage`) opens the next chat's rows with the old `chatFoldedStateMessageIndex.index`: `Chats.svelte`'s structural effect runs before the `$effect.root` pair in `src/ts/globalApi.svelte.ts` (~1508-1536) clears `chatFoldedState.data` and resets the index to -1 in the same flush. The opening diff therefore stages a window that ends at the old fold index, and the rerun right after it shows the full window, which arms every staged row. A diff that keeps the shown rows (a reload, a context change) no longer arms them, but this rerun changes the window. Reproduced in a browser on 2026-10-25 (fold to index 20, then switch chats of one character: four of four switches); found while finding the module reload trigger of the same symptom.
+
+**Why it matters:** the opening's first stage is mounted for the wrong window, and every row of the chat is then mounted before the first reveal.
+**Suggested handling:** read the fold index in `Chats.svelte` only while `chatFoldedState.data` targets the shown chat (the three `src/lib/ChatScreens/Chats*.svelte.test.ts` files mock `src/ts/globalApi.svelte` inline and would need `chatFoldedState` too), or reset the fold where the chat selection changes rather than in an effect.
