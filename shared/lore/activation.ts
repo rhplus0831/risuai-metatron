@@ -58,11 +58,21 @@ export type LoreActive = {
 
 export type LoreMatch = { prompt: string; source: string; activated: string };
 
+/** An entry the budget pass dropped: its trimmed comment, else its trimmed key, else `lorebook <index>`. */
+export type LoreRejected = { name: string; tokens: number };
+
 /**
  * The token budget pass: `used` is the kept entries' total before `@@inject_lore` edits (accepted
- * injectors included), `limit` the budget, and the rejected entries are the ones the pass dropped.
+ * injectors included), `limit` the budget, and the rejected entries are the ones the pass dropped,
+ * listed in the order it tried them (priority descending).
  */
-export type LoreBudget = { used: number; limit: number; rejectedCount: number; rejectedTokens: number };
+export type LoreBudget = {
+    used: number;
+    limit: number;
+    rejectedCount: number;
+    rejectedTokens: number;
+    rejected: LoreRejected[];
+};
 
 export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget };
 
@@ -86,6 +96,12 @@ function runSteps(
         step = steps.next(value);
     }
     return step.value;
+}
+
+function loreEntryName(entry: loreBook, index: number): string {
+    const comment = typeof entry.comment === "string" ? entry.comment.trim() : "";
+    const key = typeof entry.key === "string" ? entry.key.trim() : "";
+    return comment || key || `lorebook ${index}`;
 }
 
 /**
@@ -274,6 +290,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     let matching = true;
     let actives: LoreActive[] = [];
     const pendingCounts: { active: LoreActive; count: Promise<number> }[] = [];
+    const activeNames = new Map<LoreActive, string>();
     const pendingFlags = new Map<string, string>();
     let activatedIndexes: number[] = [];
     let disabledUIPrompts: string[] = [];
@@ -315,6 +332,8 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
             let dontSearchWhenRecursive = false;
             let keepActivateAfterMatch = false;
             let dontActivateAfterMatch = false;
+            // A child takes its linked entry's name, as the editor shows it.
+            let nameIndex = i;
 
             if (fullLore[i].mode === "child") {
                 activated = false;
@@ -326,6 +345,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                             fullLore[i].alwaysActive = true;
                             order = fullLore[j].insertorder;
                             priority = fullLore[j].insertorder;
+                            nameIndex = j;
                             activated = true;
                         }
                         break;
@@ -616,6 +636,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                     source: fullLore[i].comment || `lorebook ${i}`,
                     inject: inject ?? null,
                 };
+                activeNames.set(active, loreEntryName(fullLore[nameIndex], nameIndex));
                 // Parse CBS in entry order, with runVar left false as in the output path.
                 // Start each count now and await them together before the budget pass, so cutoff
                 // uses evaluated text without yielding at each entry's count.
@@ -673,6 +694,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     let usedTokens = 0;
     let rejectedCount = 0;
     let rejectedTokens = 0;
+    const rejected: LoreRejected[] = [];
 
     const activesFiltered = activesSorted.filter((act) => {
         if (usedTokens + act.tokens <= loreToken) {
@@ -681,6 +703,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
         }
         rejectedCount++;
         rejectedTokens += act.tokens;
+        rejected.push({ name: activeNames.get(act) ?? act.source, tokens: act.tokens });
         return false;
     });
 
@@ -724,6 +747,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     return {
         actives: activesResorted.reverse(),
         matchLog: matchLog,
-        budget: { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens },
+        budget: { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens, rejected },
     };
 }

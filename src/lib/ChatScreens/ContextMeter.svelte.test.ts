@@ -30,7 +30,7 @@ import { doingAlert } from "src/ts/alert";
 import { currentJump, finishJump, jumpVersion } from "src/ts/setting/settingJump.svelte";
 import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { findChat, patchMessage, removeMessages, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import { findChat, patchMessage, removeMessages, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
@@ -331,6 +331,77 @@ describe("the popover", () => {
         const lore = opened.querySelector("[data-context-meter-lore]")!;
         expect(lore.textContent).toContain(language.contextUsage.loreRejected(2, "80"));
         expect(lore.textContent).toContain("0 / 0");
+        // A report written before entries were named lists none.
+        expect(lore.querySelector("[data-context-meter-lore-rejected]")).toBeNull();
+    });
+
+    it("warns on the chip of left-out lore, names the entries, and turns the warning off in this chat", async () => {
+        install([
+            reply("m1", {
+                context: report({
+                    lore: {
+                        budgetUsed: 90,
+                        budget: 100,
+                        rejectedCount: 10,
+                        rejectedTokens: 500,
+                        rejected: [
+                            { name: "Far kingdom", tokens: 60 },
+                            { name: "Old war", tokens: 40 },
+                        ],
+                        active: 3,
+                    },
+                }),
+            }),
+        ]);
+        render();
+        const warned = () => chip()!.querySelector("[data-context-meter-lore-warn]") !== null;
+        expect(warned()).toBe(true);
+        expect(chip()!.getAttribute("aria-label")).toContain(language.contextUsage.loreWarnSummary(10));
+        const opened = await openPanel();
+        const lore = opened.querySelector("[data-context-meter-lore]")!;
+        const named = () =>
+            [...lore.querySelectorAll("[data-context-meter-lore-rejected] li")].map((row) =>
+                row.textContent!.replace(/\s+/g, " ").trim(),
+            );
+        expect(named()).toEqual([
+            "Far kingdom 60 tokens",
+            "Old war 40 tokens",
+            language.contextUsage.loreRejectedMore(8),
+        ]);
+        const toggle = () => lore.querySelector<HTMLButtonElement>("[data-context-meter-lore-toggle]")!;
+        expect(toggle().textContent!.trim()).toBe(language.contextUsage.loreWarnOff);
+
+        toggle().click();
+        flushSync();
+        expect(findChat(ref)!.loreBudgetWarnOff).toBe(true);
+        expect(warned()).toBe(false);
+        expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.loreWarnSummary(10));
+        // The popover still lists the entries and offers the warning back.
+        expect(named()).toHaveLength(3);
+        expect(lore.textContent).toContain(language.contextUsage.loreWarnOffNote);
+        expect(toggle().textContent!.trim()).toBe(language.contextUsage.loreWarnOn);
+
+        toggle().click();
+        flushSync();
+        expect(Object.hasOwn(findChat(ref)!, "loreBudgetWarnOff")).toBe(false);
+        expect(warned()).toBe(true);
+    });
+
+    it("keeps the way back while the warning is off, even when the last request used no lore", async () => {
+        install([reply("m1", { context: report() })]);
+        render();
+        const lore = async () => (await openPanel()).querySelector("[data-context-meter-lore]");
+        expect(await lore()).toBeNull();
+        chip()!.click();
+        flushSync();
+
+        setChatMeta(ref, { loreBudgetWarnOff: true });
+        flushSync();
+        const block = (await lore())!;
+        expect(block.textContent).toContain(language.contextUsage.loreWarnOffNote);
+        block.querySelector<HTMLButtonElement>("[data-context-meter-lore-toggle]")!.click();
+        flushSync();
+        expect(Object.hasOwn(findChat(ref)!, "loreBudgetWarnOff")).toBe(false);
     });
 
     it("shows the HypaV3 budget meter only with a budget, else the memory line, with the coverage text", async () => {

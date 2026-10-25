@@ -1618,6 +1618,8 @@ export const languageEnglish = {
             `the last request kept ${kept}, ${memory} ${coverage}`,
         legacySummary: (percent: number) => `${percent}% of the context`,
         fixedWarnSummary: "the fixed part crowds out the history",
+        loreWarnSummary: (count: number) =>
+            `the lorebook budget left out ${count === 1 ? "1 entry" : `${count} entries`}`,
         input: (input: string, maxContext: string) => `${input} of ${maxContext} tokens`,
         replyBudget: (tokens: string) =>
             `Reply budget: ${tokens} tokens. The prompt budget is the context size minus it.`,
@@ -1652,6 +1654,10 @@ export const languageEnglish = {
         loreBudgetHelp: "Tokens of the activated entries before injection edits, not the lore tokens finally sent.",
         loreRejected: (count: number, tokens: string) =>
             `${count === 1 ? "1 entry" : `${count} entries`} left out by the budget (${tokens} tokens).`,
+        loreRejectedMore: (count: number) => `and ${count === 1 ? "1 more entry" : `${count} more entries`}`,
+        loreWarnOff: "Don't warn in this chat",
+        loreWarnOn: "Warn in this chat again",
+        loreWarnOffNote: "The chip does not warn of left-out lore in this chat.",
         memoryKinds: {
             hypaV3: "HypaV3",
             hypaV2: "HypaV2",

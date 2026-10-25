@@ -438,7 +438,7 @@ describe("assemblePrompt final token recheck", () => {
             activateLore: async () => ({
                 actives: [],
                 matchLog: [],
-                budget: { used: 0, limit: 0, rejectedCount: 0, rejectedTokens: 0 },
+                budget: { used: 0, limit: 0, rejectedCount: 0, rejectedTokens: 0, rejected: [] },
             }),
             scripts: {
                 process: async (_char, data) => ({ data, emoChanged: false }),
@@ -625,7 +625,17 @@ describe("the context report", () => {
         text,
         role: "system",
     });
-    const LORE_BUDGET = { used: 12, limit: 100, rejectedCount: 1, rejectedTokens: 40 };
+    // Nine rejected entries, the first with an 81-code-point name: the report keeps eight and
+    // shortens that name, or the stored report would not parse.
+    const LORE_BUDGET = {
+        used: 12,
+        limit: 100,
+        rejectedCount: 9,
+        rejectedTokens: 40,
+        rejected: Array.from({ length: 9 }, (_, i) =>
+            i === 0 ? { name: "n".repeat(81), tokens: 32 } : { name: `entry ${i}`, tokens: 1 },
+        ),
+    };
     const NEW_CHAT_TOKENS = "[Start a new chat]".length + 3; // 21
     const EMPTY_SUMMARY_CARD = "<Past Events Summary>\n\n</Past Events Summary>"; // 45 characters
 
@@ -797,7 +807,17 @@ describe("the context report", () => {
         v: 1 as const,
         maxContext,
         maxResponse: 10,
-        lore: { budgetUsed: 12, budget: 100, rejectedCount: 1, rejectedTokens: 40, active: 0 },
+        lore: {
+            budgetUsed: 12,
+            budget: 100,
+            rejectedCount: 9,
+            rejectedTokens: 40,
+            rejected: [
+                { name: "n".repeat(79) + "…", tokens: 32 },
+                ...Array.from({ length: 7 }, (_, i) => ({ name: `entry ${i + 1}`, tokens: 1 })),
+            ],
+            active: 0,
+        },
         tokenScope: "counting",
         historyDigest: historyDigest(chat.message),
     });
@@ -1057,7 +1077,7 @@ describe("the context report", () => {
         expect(b.texts).toEqual(["d".repeat(400)]);
         expect(b.report).toEqual({
             ...fixed(untraced.chat, 420),
-            lore: { budgetUsed: 12, budget: 100, rejectedCount: 1, rejectedTokens: 40, active: 1 },
+            lore: { ...fixed(untraced.chat).lore, active: 1 },
             input: 403,
             sections: [{ kind: "lorebook", tokens: 7 }],
             adjustment: 396,

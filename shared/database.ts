@@ -1214,6 +1214,11 @@ export interface Chat {
      * question: the question is skipped for this chat while the owner's count is still this value.
      */
     memoryTrimAck?: number;
+    /**
+     * The context meter's chip does not warn of lore entries dropped by the lore budget in this chat
+     * (its popover still lists them). Present only while set (unset to warn again, never false).
+     */
+    loreBudgetWarnOff?: boolean;
     suggestMessages?: string[];
     isStreaming?: boolean;
     activeStreamingDisplayOptimizationMode?: StreamingDisplayOptimizationMode;

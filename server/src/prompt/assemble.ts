@@ -6,6 +6,7 @@ import {
     type ContextTrimEntry,
     eligibleHistory,
     historyDigest,
+    reportedLoreRejections,
 } from "../../../shared/contextReport.ts";
 import type {
     Chat,
@@ -2482,6 +2483,7 @@ function buildContextReport(arg: {
             budget: arg.lore.budget.limit,
             rejectedCount: arg.lore.budget.rejectedCount,
             rejectedTokens: arg.lore.budget.rejectedTokens,
+            rejected: reportedLoreRejections(arg.lore.budget.rejected),
             active: arg.lore.actives.length,
         },
         tokenScope: arg.tokenScope,

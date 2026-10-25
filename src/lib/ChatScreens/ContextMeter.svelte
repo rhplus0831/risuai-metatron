@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { BookAlertIcon } from "@lucide/svelte";
     import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
@@ -7,7 +8,7 @@
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
-    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { countTokensInScope, jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
@@ -119,6 +120,10 @@
     const fixed = $derived(report ? fixedShare(report) * 100 : 0);
     const fixedOver = $derived(report !== null && fixed > warn);
     const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
+    // The lore budget left entries out of the last request: the chip warns unless this chat turned
+    // the warning off (the popover lists them either way).
+    const loreWarnOff = $derived(findChat(chatRef)?.loreBudgetWarnOff === true);
+    const loreWarn = $derived(report !== null && report.lore.rejectedCount > 0 && !loreWarnOff);
 
     type Basis = {
         report: ContextReport;
@@ -366,6 +371,9 @@
         if (fixedOver) {
             result.summary += `; ${language.contextUsage.fixedWarnSummary}`;
         }
+        if (loreWarn) {
+            result.summary += `; ${language.contextUsage.loreWarnSummary(r.lore.rejectedCount)}`;
+        }
         return result;
     });
 
@@ -501,6 +509,17 @@
         }
     }
 
+    function setLoreWarnOff(off: boolean) {
+        if (!findChat(chatRef)) {
+            return;
+        }
+        if (off) {
+            setChatMeta(chatRef, { loreBudgetWarnOff: true });
+        } else {
+            setChatMeta(chatRef, {}, ["loreBudgetWarnOff"]);
+        }
+    }
+
     function openSettings() {
         close(false);
         openSetting({
@@ -551,6 +570,11 @@
             }
         }}
     >
+        {#if loreWarn}
+            <span class="shrink-0 text-danger-500" data-context-meter-lore-warn>
+                <BookAlertIcon size={14} aria-hidden="true" />
+            </span>
+        {/if}
         <span class="min-w-0 truncate">{chip.text}</span>
         {#if estimate?.suffix}
             <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
@@ -676,7 +700,7 @@
                     {/if}
                 </div>
 
-                {#if report.lore.budget > 0 || report.lore.budgetUsed > 0 || report.lore.rejectedCount > 0}
+                {#if report.lore.budget > 0 || report.lore.budgetUsed > 0 || report.lore.rejectedCount > 0 || loreWarnOff}
                     {@const rejected = report.lore.rejectedCount > 0}
                     <div class="flex flex-col gap-1" data-context-meter-lore>
                         <div class="flex justify-between gap-2 text-textcolor">
@@ -692,12 +716,47 @@
                             ></div>
                         </div>
                         {#if rejected}
+                            {@const named = report.lore.rejected ?? []}
                             <span class="text-xs text-textcolor"
                                 >{language.contextUsage.loreRejected(
                                     report.lore.rejectedCount,
                                     fmt(report.lore.rejectedTokens),
                                 )}</span
                             >
+                            {#if named.length > 0}
+                                <ul class="flex flex-col gap-0.5 text-xs" data-context-meter-lore-rejected>
+                                    {#each named as entry, index (index)}
+                                        <li class="flex gap-2">
+                                            <span class="min-w-0 grow truncate" title={entry.name}>{entry.name}</span>
+                                            <span class="shrink-0 tabular-nums text-textcolor2"
+                                                >{language.contextUsage.tokens(fmt(entry.tokens))}</span
+                                            >
+                                        </li>
+                                    {/each}
+                                    {#if report.lore.rejectedCount > named.length}
+                                        <li class="text-textcolor2">
+                                            {language.contextUsage.loreRejectedMore(
+                                                report.lore.rejectedCount - named.length,
+                                            )}
+                                        </li>
+                                    {/if}
+                                </ul>
+                            {/if}
+                        {/if}
+                        {#if rejected || loreWarnOff}
+                            <div class="flex flex-wrap items-center gap-x-2 text-xs text-textcolor2">
+                                {#if loreWarnOff}
+                                    <span>{language.contextUsage.loreWarnOffNote}</span>
+                                {/if}
+                                <button
+                                    type="button"
+                                    class="text-textcolor underline hover:text-primary-500"
+                                    data-context-meter-lore-toggle
+                                    onclick={() => setLoreWarnOff(!loreWarnOff)}
+                                >
+                                    {loreWarnOff ? language.contextUsage.loreWarnOn : language.contextUsage.loreWarnOff}
+                                </button>
+                            </div>
                         {/if}
                     </div>
                 {/if}

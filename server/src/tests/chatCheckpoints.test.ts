@@ -195,6 +195,7 @@ const kept = {
     bilingualEmphasis: "original",
     bilingualSentences: 2,
     memoryTrimAck: 3,
+    loreBudgetWarnOff: true,
     modules: ["module-old"],
 } satisfies Partial<Chat>;
 const storyVariables = { bonus: "5", toggle: "story", Toggle_upper: "story too" };
@@ -550,7 +551,11 @@ describe("chat checkpoints", () => {
         edit(store, [
             {
                 op: "meta",
-                unset: Object.keys(captured).filter((key) => !["note", "localLore", "fmIndex", "sdData"].includes(key)),
+                // A kept field removed since the save stays removed.
+                unset: [
+                    ...Object.keys(captured).filter((key) => !["note", "localLore", "fmIndex", "sdData"].includes(key)),
+                    "loreBudgetWarnOff",
+                ],
                 set: {
                     ...currentKept,
                     note: "Changed",

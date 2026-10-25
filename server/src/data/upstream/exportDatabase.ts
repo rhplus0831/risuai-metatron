@@ -170,6 +170,7 @@ const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCou
 const METATRON_CHAT_FIELDS = [
     "pinned",
     "memoryTrimAck",
+    "loreBudgetWarnOff",
     "bindingReview",
     "toolCalls",
     "loreOverrides",

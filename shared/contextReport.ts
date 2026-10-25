@@ -27,6 +27,24 @@ export type ContextSectionKind =
 /** What the meter counts as a turn: kept user messages, or every kept message. */
 export type ContextMeterTurnUnit = "user" | "message";
 
+/** A lore entry the budget pass dropped, by its display name. */
+export type ContextLoreRejected = { name: string; tokens: number };
+
+/** How many rejected lore entries a report names, and the code points kept of each name. */
+export const CONTEXT_LORE_REJECTED = { entries: 8, nameLength: 80 } as const;
+
+/** The rejected entries a report keeps: the first ones, each name shortened with an ellipsis. */
+export function reportedLoreRejections(rejected: readonly ContextLoreRejected[]): ContextLoreRejected[] {
+    return rejected.slice(0, CONTEXT_LORE_REJECTED.entries).map(({ name, tokens }) => {
+        const points = Array.from(name);
+        const short =
+            points.length > CONTEXT_LORE_REJECTED.nameLength
+                ? points.slice(0, CONTEXT_LORE_REJECTED.nameLength - 1).join("") + "…"
+                : name;
+        return { name: short, tokens };
+    });
+}
+
 export type ContextTrimEntry = { tokens: number; kind: "example" | "marker" | "message"; user: boolean };
 
 export type ContextReport = {
@@ -84,6 +102,11 @@ export type ContextReport = {
         budget: number;
         rejectedCount: number;
         rejectedTokens: number;
+        /**
+         * The first rejected entries in the budget pass's order (`reportedLoreRejections`); absent in
+         * reports written before entries were named.
+         */
+        rejected?: readonly ContextLoreRejected[];
         /** Returned actives (injectors excluded). */
         active: number;
     };
@@ -165,6 +188,24 @@ export function parseContextReport(value: unknown): ContextReport | null {
     const lore = value.lore;
     if (!isRecord(lore) || !counts(lore, ["budgetUsed", "budget", "rejectedCount", "rejectedTokens", "active"])) {
         return null;
+    }
+    if (lore.rejected !== undefined) {
+        const rejected = lore.rejected;
+        if (!Array.isArray(rejected) || rejected.length > CONTEXT_LORE_REJECTED.entries) {
+            return null;
+        }
+        for (let i = 0; i < rejected.length; i++) {
+            const entry: unknown = rejected[i];
+            if (
+                !Object.hasOwn(rejected, i) ||
+                !isRecord(entry) ||
+                typeof entry.name !== "string" ||
+                Array.from(entry.name).length > CONTEXT_LORE_REJECTED.nameLength ||
+                !isCount(entry.tokens)
+            ) {
+                return null;
+            }
+        }
     }
     if (value.trim !== undefined) {
         const trim = value.trim;

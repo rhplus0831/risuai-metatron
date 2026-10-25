@@ -36,6 +36,7 @@ export const CHECKPOINT_CHAT_FIELDS: Record<keyof ChatMeta, "capture" | "keep" |
     bilingualEmphasis: "keep",
     bilingualSentences: "keep",
     memoryTrimAck: "keep",
+    loreBudgetWarnOff: "keep",
     modules: "keep",
 };
 

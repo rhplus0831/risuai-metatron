@@ -7,6 +7,7 @@ import {
     fixedShare,
     historyDigest,
     parseContextReport,
+    reportedLoreRejections,
     turnCount,
 } from "./contextReport.ts";
 
@@ -42,7 +43,14 @@ function report(): ContextReport {
             perMessage: 3,
         },
         memory: { kind: "hypaV3", tokens: 40, budget: 200, coverage: "gap" },
-        lore: { budgetUsed: 50, budget: 400, rejectedCount: 1, rejectedTokens: 30, active: 2 },
+        lore: {
+            budgetUsed: 50,
+            budget: 400,
+            rejectedCount: 1,
+            rejectedTokens: 30,
+            rejected: [{ name: "Far kingdom", tokens: 30 }],
+            active: 2,
+        },
         tokenScope: '["gpt4o","","",false,"o200k",null,"none"]',
         historyDigest: "abc123",
     };
@@ -70,6 +78,7 @@ describe("parseContextReport", () => {
         const minimal = changed((copy) => {
             delete copy.trim;
             delete copy.memory;
+            delete copy.lore.rejected;
         });
         expect(parseContextReport(minimal)).toBe(minimal);
         expect(parseContextReport(changed((copy) => delete copy.trim.replyPrefix))).not.toBeNull();
@@ -115,6 +124,23 @@ describe("parseContextReport", () => {
         expect(parseContextReport(changed((copy) => (copy.sections = {})))).toBeNull();
         const sparse = report() as unknown as { sections: unknown[] };
         sparse.sections = [{ kind: "main", tokens: 1 }, , { kind: "plain", tokens: 2 }];
+        expect(parseContextReport(sparse)).toBeNull();
+    });
+
+    it("refuses a bad rejected lore list: not a list, too long, a bad name or count, a hole", () => {
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected = "Far kingdom")))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].name = 7)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].tokens = -1)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].name = "n".repeat(81))))).toBeNull();
+        // The name limit counts code points: 80 astral characters are 160 code units.
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].name = "😀".repeat(80))))).not.toBeNull();
+        expect(
+            parseContextReport(
+                changed((copy) => (copy.lore.rejected = Array.from({ length: 9 }, () => ({ name: "e", tokens: 1 })))),
+            ),
+        ).toBeNull();
+        const sparse = report();
+        (sparse.lore.rejected as unknown[]) = [{ name: "a", tokens: 1 }, ,];
         expect(parseContextReport(sparse)).toBeNull();
     });
 
@@ -230,5 +256,18 @@ describe("the meter helpers", () => {
         const memoryOnly = report();
         delete memoryOnly.trim;
         expect(displacement(memoryOnly, 0)).toBe("unavailable");
+    });
+});
+
+describe("reportedLoreRejections", () => {
+    it("keeps the first 8 entries and shortens a long name to 80 code points with an ellipsis", () => {
+        const rejected = Array.from({ length: 10 }, (_, i) => ({ name: `entry ${i}`, tokens: i }));
+        rejected[0].name = "😀".repeat(81);
+        rejected[1].name = "n".repeat(80);
+        const kept = reportedLoreRejections(rejected);
+        expect(kept.map((entry) => entry.tokens)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+        expect(kept[0].name).toBe("😀".repeat(79) + "…");
+        expect(kept[1].name).toBe("n".repeat(80));
+        expect(parseContextReport({ ...report(), lore: { ...report().lore, rejected: kept } })).not.toBeNull();
     });
 });

@@ -715,13 +715,53 @@ describe("the token budget", () => {
             { loreBookToken: 12 },
         );
         expect(result.actives.map((active) => [active.source, active.prompt])).toEqual([["child", "vvvv ii"]]);
-        expect(result.budget).toEqual({ used: 6, limit: 12, rejectedCount: 1, rejectedTokens: 14 });
+        expect(result.budget).toEqual({
+            used: 6,
+            limit: 12,
+            rejectedCount: 1,
+            rejectedTokens: 14,
+            rejected: [{ name: "parent", tokens: 14 }],
+        });
         // Nothing rejected, and the character's own budget is the limit.
         const within = await run([lore("a", "x", "aaaa")], [user("x")], makeHost(), {
             loreBookToken: 10_000,
             loreSettings: { tokenBudget: 8 },
         });
-        expect(within.budget).toEqual({ used: 4, limit: 8, rejectedCount: 0, rejectedTokens: 0 });
+        expect(within.budget).toEqual({ used: 4, limit: 8, rejectedCount: 0, rejectedTokens: 0, rejected: [] });
+    });
+
+    it("names the rejected entries in the order the pass tried them, by comment, then key, then index", async () => {
+        const result = await run(
+            [
+                lore(" late ", "x", "l".repeat(9), { insertorder: 10 }),
+                lore("kept", "x", "aaaa", { insertorder: 300 }),
+                lore("  ", "x", "b".repeat(8), { insertorder: 200 }),
+                lore("", "", "c".repeat(7), { alwaysActive: true, insertorder: 100 }),
+            ],
+            [user("x")],
+            makeHost(),
+            { loreBookToken: 6 },
+        );
+        expect(sources(result)).toEqual(["kept"]);
+        expect(result.budget.rejected).toEqual([
+            { name: "x", tokens: 8 },
+            { name: "lorebook 3", tokens: 7 },
+            { name: "late", tokens: 9 },
+        ]);
+    });
+
+    it("names a rejected child by its linked entry, key included, since the child inherits no key", async () => {
+        const result = await run(
+            [
+                // Not matched itself (no "Castle" in the chat), so its child activates with its content.
+                lore("  ", "Castle", "tower text", { id: "p" }),
+                lore("", "", "", { id: "p", mode: "child", alwaysActive: true }),
+            ],
+            [user("x")],
+            makeHost(),
+            { loreBookToken: 4 },
+        );
+        expect(result.budget.rejected).toEqual([{ name: "Castle", tokens: "tower text".length }]);
     });
 });
 
