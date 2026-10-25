@@ -1,0 +1,44 @@
+# One CI workflow: util/ci/check.sh (docs/structure/build-test-platforms.md, "CI").
+# Runs for pushes to `metatron` and `main` and for pull requests that target them.
+name: CI
+
+on:
+  push:
+    branches: [metatron, main]
+  pull_request:
+    branches: [metatron, main]
+
+permissions:
+  contents: read
+
+# A newer run for the same branch or pull request cancels the one still running.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      # onnxruntime-node's postinstall would download its CUDA providers on every job (.npmrc
+      # turns the side-effects cache off, so the store cache does not keep them); CI runs on
+      # the CPU.
+      ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          # The pnpm store is cached below; setup-node's own cache would need pnpm first.
+          package-manager-cache: false
+      - run: corepack enable
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
+      - run: bash util/ci/check.sh
+        env:
+          PNPM_STORE_DIR: ${{ runner.temp }}/pnpm-store
