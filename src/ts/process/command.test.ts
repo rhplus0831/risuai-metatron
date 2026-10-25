@@ -66,7 +66,8 @@ vi.mock("./serverCommands", async () =>
     }),
 );
 
-import { processMultiCommand } from "./command";
+import { processMultiCommand, runMultisend } from "./command";
+import { alertError } from "../alert";
 import { sendChat } from "./index.svelte";
 import { beginLocalSend, localSends } from "./localSends";
 import { followedJobs } from "./serverCommands";
@@ -432,5 +433,34 @@ describe("/multisend", () => {
         } finally {
             unsubscribe();
         }
+    });
+
+    it("refuses a part while its chat has orphaned lore overrides, before clearing or appending anything", async () => {
+        vi.mocked(alertError).mockClear();
+        const ref = freshChat();
+        // An override whose owner entry is gone (the character has no lore).
+        chat.setChatMeta(ref, {
+            loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+        });
+        expect(await runMultisend(ref, true, ["one", "two"])).toBe(false);
+        expect(await runMultisend(ref, false, ["one"])).toBe(false);
+        expect(hooks.sends).toEqual([]);
+        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+        expect(vi.mocked(alertError)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(alertError).mock.calls[0][0]).toContain("Gone entry");
+    });
+
+    it("checks again before each part: an orphan made during a part's send refuses the next before its clear", async () => {
+        vi.mocked(alertError).mockClear();
+        const ref = freshChat();
+        hooks.onSend = () =>
+            chat.setChatMeta(ref, {
+                loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+            });
+        expect(await runMultisend(ref, true, ["one", "two"])).toBe(false);
+        expect(hooks.sends).toHaveLength(1);
+        // The first part cleared and appended; the second neither cleared nor appended.
+        expect(texts(ref)).toEqual(["one"]);
+        expect(vi.mocked(alertError)).toHaveBeenCalledTimes(1);
     });
 });

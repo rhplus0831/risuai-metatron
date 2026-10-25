@@ -1,4 +1,5 @@
 import { language } from "src/lang";
+import { alertError } from "../alert";
 import { orphanedOverrideEntries, type OrphanedOverrideEntry } from "../../../shared/lore/overrides.ts";
 import { characterList } from "../storage/characterStore.svelte";
 import { findChat, type ChatRef } from "../storage/chatStore.svelte";
@@ -20,4 +21,18 @@ export function chatOrphanedOverrideEntries(ref: ChatRef): OrphanedOverrideEntry
 export function chatLoreOverrideRefusalText(entries: readonly OrphanedOverrideEntry[]): string {
     const strings = language.chatLoreOverrides;
     return [strings.refused, ...entries.map((entry) => entry.name), "", strings.fixes].join("\n");
+}
+
+/**
+ * Alerts the refusal and answers true when the chat has orphaned overrides. A caller that writes the
+ * chat before its send (a cleared history, an appended user message) checks first, since the server
+ * refuses the send only after that write.
+ */
+export function refuseOrphanedOverrides(ref: ChatRef): boolean {
+    const orphans = chatOrphanedOverrideEntries(ref);
+    if (orphans.length === 0) {
+        return false;
+    }
+    alertError(chatLoreOverrideRefusalText(orphans));
+    return true;
 }

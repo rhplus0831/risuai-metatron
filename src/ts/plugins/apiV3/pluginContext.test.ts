@@ -36,7 +36,8 @@ import type { loreBook } from "../../../../shared/database";
 //   admission: the target chat's own local send, followed job, or lock refuses it without appending
 //   (checked again after the chat load), another chat's does not, every send is refused while a job
 //   channel callback runs in this tab (so no hook run as a callback can start, let alone await, a
-//   send in any chat), and the call answers the send's own result;
+//   send in any chat), orphaned lore overrides refuse it without appending (false, with the alert),
+//   and the call answers the send's own result;
 // - unload: a reload removes the old instance's script handlers, replacers, and listeners, the old
 //   instance's stack is not the reloaded instance's, and `SandboxHost.terminate` rejects a pending
 //   callback so the hook's entry pops.
@@ -208,6 +209,7 @@ import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDa
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { beginLocalSend, isLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
+import { alertError } from "src/ts/alert";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
@@ -1249,6 +1251,32 @@ describe("sendChat admission", () => {
         expect(texts(refB1)).toEqual(["hello from b1", "after"]);
         expect(texts(refA0)).toEqual(["hello from a0", "after, outside"]);
         expect(sends).toHaveLength(2);
+    });
+
+    it("refuses a chat with orphaned lore overrides without appending, inside and outside a hook: the alert names them and the answer is false", async () => {
+        const api = await makeApi();
+        vi.mocked(alertError).mockClear();
+        // Overrides whose owner entries are gone (both characters have no lore).
+        const orphan = (comment: string) => ({
+            loreOverrides: [{ entry: { id: comment, key: "", comment, content: "" }, off: false }],
+        });
+        chatStore.setChatMeta(refA0, orphan("Gone in a0"));
+        chatStore.setChatMeta(refB1, orphan("Gone in b1"));
+        expect(await api.sendChat("outside")).toBe(false);
+        await invokeHook(
+            await listenerOf(api, async () => {
+                expect(await api.sendChat("in the hook")).toBe(false);
+            }),
+            capturePluginContext(refB1),
+            listenerArg,
+        );
+        expect(texts(refA0)).toEqual(["hello from a0"]);
+        expect(texts(refB1)).toEqual(["hello from b1"]);
+        expect(sends).toEqual([]);
+        expect(vi.mocked(alertError).mock.calls).toEqual([
+            [expect.stringContaining("Gone in a0")],
+            [expect.stringContaining("Gone in b1")],
+        ]);
     });
 
     it("answers the send's result: false for a send that did not run", async () => {

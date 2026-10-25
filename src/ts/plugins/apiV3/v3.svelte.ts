@@ -97,6 +97,7 @@ import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat } from "src/ts/process/index.svelte";
 import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
 import { anyLocalSend } from "src/ts/process/localSends";
 import {
     channelCallbacksRunning,
@@ -2290,6 +2291,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // Again after the load: from here to the send's registry entry nothing awaits.
             refuseBusy();
 
+            // The chat captured before the load (the hook's, else the selection after permission).
+            const sendTarget = { chaId: char.chaId, chatId: chat.id };
+            // Orphaned lore overrides refuse it before the message is appended, as the server would
+            // after: the alert names them, and the answer is false like a refused send.
+            if (refuseOrphanedOverrides(sendTarget)) {
+                return false;
+            }
+
             if (message && chat.id) {
                 appendMessage(
                     { chaId: char.chaId, chatId: chat.id },
@@ -2297,8 +2306,6 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 );
             }
 
-            // The chat captured before the load (the hook's, else the selection after permission).
-            const sendTarget = { chaId: char.chaId, chatId: chat.id };
             return await processSendChat(
                 -1,
                 context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },

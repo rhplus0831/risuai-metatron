@@ -17,19 +17,21 @@ import { sendChat } from "./index.svelte";
 import { isChatBusy } from "./chatStatus.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runServerManualTrigger } from "./serverCommands";
+import { refuseOrphanedOverrides } from "./loreOverrides";
 
 /**
  * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
  * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
  * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
- * other chats' work does not refuse it. Stops when a part's chat is gone or busy, or its send returns
+ * other chats' work does not refuse it. Orphaned lore overrides refuse a part before its chat is
+ * cleared or appended to. Stops when a part's chat is gone, busy, or refused, or its send returns
  * false (refused, failed, lost, or stopped); false then. A server command job's `/multisend` runs it
  * too, after the job (`serverCommands.ts`).
  */
 export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
     for (const e of parts) {
         const chat = findChat(ref);
-        if (!chat || isChatBusy(ref)) {
+        if (!chat || isChatBusy(ref) || refuseOrphanedOverrides(ref)) {
             return false;
         }
         if (clearMode) {

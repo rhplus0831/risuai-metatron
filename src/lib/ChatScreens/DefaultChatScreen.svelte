@@ -36,7 +36,7 @@
         chatBindingDialog,
     } from "../../ts/stores.svelte";
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
-    import { chatOrphanedOverrideEntries, chatLoreOverrideRefusalText } from "src/ts/process/loreOverrides";
+    import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
     import { onDestroy, tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import {
@@ -453,9 +453,7 @@
             chatBindingDialog.set(ref);
             return;
         }
-        const orphans = chatOrphanedOverrideEntries(ref);
-        if (orphans.length > 0) {
-            alertError(chatLoreOverrideRefusalText(orphans));
+        if (refuseOrphanedOverrides(ref)) {
             return;
         }
 
@@ -534,9 +532,7 @@
             void showSwappedReply(ref, follow);
             return;
         }
-        const orphans = chatOrphanedOverrideEntries(ref);
-        if (orphans.length > 0) {
-            alertError(chatLoreOverrideRefusalText(orphans));
+        if (refuseOrphanedOverrides(ref)) {
             return;
         }
         let cha = safeStructuredClone(currentChat.message) as Message[];

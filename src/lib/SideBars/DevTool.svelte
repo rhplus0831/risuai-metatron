@@ -21,6 +21,7 @@
     import { getUserName, selectSingleFile } from "src/ts/util";
     import { previewChat, sendChat, type OpenAIChat } from "src/ts/process/index.svelte";
     import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
     import { alertStore } from "src/ts/stores.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { applyChatTemplate, chatTemplates } from "src/ts/process/templates/chatTemplate";
@@ -270,13 +271,14 @@
         className="mt-2"
         onclick={async () => {
             // Each line is appended to the chat selected at the start and sent as a server job (a
-            // group's speakers are chosen by the server); the run stops at a send that did not go.
+            // group's speakers are chosen by the server); the run stops at a send that did not go,
+            // and before a line while the chat has orphaned lore overrides.
             const ref = currentChatRef();
             if (!ref) {
                 return;
             }
             for (const line of autopilot) {
-                if (!findChat(ref) || isChatBusy(ref)) {
+                if (!findChat(ref) || isChatBusy(ref) || refuseOrphanedOverrides(ref)) {
                     return;
                 }
                 appendMessage(ref, { role: "user", data: line });

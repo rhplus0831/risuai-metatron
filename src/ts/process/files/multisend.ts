@@ -1,6 +1,7 @@
 import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
 import { sendChat } from "../index.svelte";
 import { isChatBusy } from "../chatStatus.svelte";
+import { refuseOrphanedOverrides } from "../loreOverrides";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
@@ -18,7 +19,8 @@ async function sendPofile(arg: sendFileArg) {
     let speaker = "";
     let parseMode = 0;
     // Every line is sent in the chat selected when the file was sent. The run stops, downloading
-    // nothing, when that chat is gone or busy before an entry, or an entry's send does not run.
+    // nothing, when that chat is gone, busy, or has orphaned lore overrides before an entry, or an
+    // entry's send does not run.
     const ref = currentChatRef();
     if (!ref) {
         return;
@@ -39,7 +41,7 @@ async function sendPofile(arg: sendFileArg) {
             if (note !== "") {
                 text = `Note: ${note}\n${text}`;
             }
-            if (!findChat(ref) || isChatBusy(ref)) {
+            if (!findChat(ref) || isChatBusy(ref) || refuseOrphanedOverrides(ref)) {
                 return;
             }
             appendMessage(ref, { role: "user", data: text });

@@ -3,7 +3,8 @@ import { installFlatDatabase, installFlatDatabaseWithChats } from "../../../stor
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { sendChat } from "src/ts/process/index.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
-import { findChat, selectChat } from "src/ts/storage/chatStore.svelte";
+import { findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
+import { alertError } from "src/ts/alert";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 
 // File retrieval (`postChatFile`'s TXT and XML branches) over the tab's `HypaProcesser` with an API embedding
@@ -22,6 +23,7 @@ vi.mock("src/ts/globalApi.svelte", () => ({
     downloadFile: vi.fn(),
     saveAsset: vi.fn(),
 }));
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("localforage", () => ({
     default: { createInstance: () => ({ getItem: async () => null, setItem: async () => {} }) },
 }));
@@ -34,6 +36,7 @@ beforeEach(() => {
     sends.length = 0;
     vi.mocked(sendChat).mockClear();
     vi.mocked(downloadFile).mockClear();
+    vi.mocked(alertError).mockClear();
     vi.spyOn(console, "log").mockImplementation(() => {});
     installFlatDatabase({ hypaModel: "voyage4", voyageApiKey: "voyage-key" }, "multisend-preset");
 });
@@ -121,5 +124,33 @@ describe("postChatFile with a PO file", () => {
         expect(sendChat).not.toHaveBeenCalled();
         expect(texts()).toEqual([]);
         expect(downloadFile).not.toHaveBeenCalled();
+    });
+
+    it("stops before an entry while the chat has orphaned lore overrides, appending nothing", async () => {
+        const { postChatFile } = await import("../multisend");
+        // An override whose owner entry is gone (the character has no lore).
+        setChatMeta(ref, {
+            loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+        });
+        await postChatFile({ name: "lines.po", data: po });
+        expect(sendChat).not.toHaveBeenCalled();
+        expect(texts()).toEqual([]);
+        expect(downloadFile).not.toHaveBeenCalled();
+        expect(vi.mocked(alertError).mock.calls).toEqual([[expect.stringContaining("Gone entry")]]);
+    });
+
+    it("checks again before each entry: an orphan made during an entry's send stops the next, downloading nothing", async () => {
+        const { postChatFile } = await import("../multisend");
+        vi.mocked(sendChat).mockImplementationOnce(async () => {
+            setChatMeta(ref, {
+                loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+            });
+            return true;
+        });
+        await postChatFile({ name: "lines.po", data: po });
+        expect(sendChat).toHaveBeenCalledTimes(1);
+        expect(texts()).toEqual(["hello"]);
+        expect(downloadFile).not.toHaveBeenCalled();
+        expect(alertError).toHaveBeenCalledTimes(1);
     });
 });

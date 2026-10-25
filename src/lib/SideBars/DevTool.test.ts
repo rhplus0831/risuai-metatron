@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
-import { alertMd } from "src/ts/alert";
-import { selectChat } from "src/ts/storage/chatStore.svelte";
+import { alertError, alertMd } from "src/ts/alert";
+import { findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectPersona } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import DevTool from "./DevTool.svelte";
@@ -96,4 +96,60 @@ it("renders instruct preview with the starting chat's character and user after s
     flushSync();
 
     expect(alertMd).toHaveBeenCalledExactlyOnceWith("### Instruction\n```\nLuna speaks to Alice: Hello.\n```\n");
+});
+
+it("autopilot appends nothing while the chat has orphaned lore overrides, and checks again before each line", async () => {
+    installFlatDatabaseWithChats({
+        characters: [
+            { chaId: "c1", type: "character", name: "Luna", chats: [{ id: "k1", name: "Chat", message: [] }] },
+        ],
+    });
+    selectCharacter("c1");
+    selectChat("c1", "k1");
+    const ref = { chaId: "c1", chatId: "k1" };
+    // An override whose owner entry is gone (the character has no lore).
+    setChatMeta(ref, {
+        loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+    });
+    mocks.serverSend.mockResolvedValue({ ok: true, outcome: "started", settled: true });
+
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(DevTool, { target });
+    flushSync();
+    [...target.querySelectorAll("button")].find((button) => button.textContent.trim() === "Autopilot")!.click();
+    flushSync();
+    const plus = target.querySelector(".lucide-plus")!.closest("button")!;
+    plus.click();
+    plus.click();
+    flushSync();
+    const lines = [...target.querySelectorAll("textarea")];
+    expect(lines).toHaveLength(2);
+    for (const [index, text] of ["hello", "again"].entries()) {
+        lines[index].value = text;
+        lines[index].dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    flushSync();
+    const run = () =>
+        [...target!.querySelectorAll("button")].find((button) => button.textContent.trim() === "Run")!.click();
+
+    run();
+    await vi.waitFor(() => expect(alertError).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(alertError).mock.calls[0][0]).toContain("Gone entry");
+    expect(findChat(ref)!.message).toEqual([]);
+    expect(mocks.serverSend).not.toHaveBeenCalled();
+
+    // Without the orphan the run appends its first line; an orphan made during that line's send
+    // refuses the second before it is appended.
+    setChatMeta(ref, { loreOverrides: [] });
+    mocks.serverSend.mockImplementationOnce(async () => {
+        setChatMeta(ref, {
+            loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+        });
+        return { ok: true, outcome: "started", settled: true };
+    });
+    run();
+    await vi.waitFor(() => expect(alertError).toHaveBeenCalledTimes(2));
+    expect(mocks.serverSend).toHaveBeenCalledTimes(1);
+    expect(findChat(ref)!.message.map((message) => message.data)).toEqual(["hello"]);
 });

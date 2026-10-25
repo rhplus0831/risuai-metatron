@@ -489,10 +489,10 @@ proxies (1); "off wins" is also enforced in activation through `offOverrideIds` 
 refuses before removing the reply, beside Send and Continue (3); a folder checkbox pins or
 releases its entries, not the folder (4); "Move to chat lorebook" drops the `folder` key (4).
 Slice 4 ran the plan's manual check in headless Chrome against a mock provider (the request body
-instead of the DevTool preview). Still open: the manual check by hand in a real browser, and
-whether auxiliary LLM requests (suggestions, memory summaries, translation, MCP AIAccess, plugin
-and WebLLM requests) should also refuse a chat with orphaned overrides; the plan limited the
-refusal to generation jobs.
+instead of the DevTool preview). Still open: the manual check by hand in a real browser. The plan
+limited the refusal to generation jobs; on 2026-10-25 the owner decided that auxiliary LLM requests
+(suggestions, memory summaries, translation, MCP AIAccess, plugin and WebLLM requests) do not
+refuse a chat with orphaned overrides ([chat pipeline](../structure/chat-pipeline.md) `Invariants`).
 
 Context Usage Meter (a composer chip showing how the last request spent the model's context,
 shaped for RisuAI's per-send rebuild and trim, planned with the user on 2026-10-25) landed all 4
