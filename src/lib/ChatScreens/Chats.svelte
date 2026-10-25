@@ -250,18 +250,58 @@
         });
     }
 
-    function waitForImage(image: HTMLImageElement, signal: AbortSignal) {
+    // Waits for the row's unfinished images that intersect the transcript's view. Lazy images outside
+    // it (further down a tall newest row, or detached by a re-render) do not load while the row is
+    // hidden, and loading later they cannot move what is shown: the anchor holds the view.
+    function waitForViewImages(images: HTMLImageElement[], root: Element | null, signal: AbortSignal) {
         return new Promise<void>((resolve) => {
+            // An image leaves this map when it finishes; until then it holds its latest intersection,
+            // or undefined before its first observation.
+            const waiting = new Map<HTMLImageElement, boolean | undefined>();
+            const observer =
+                typeof IntersectionObserver === "undefined"
+                    ? undefined
+                    : new IntersectionObserver(
+                          (entries) => {
+                              for (const entry of entries) {
+                                  const image = entry.target as HTMLImageElement;
+                                  if (waiting.has(image)) waiting.set(image, entry.isIntersecting);
+                              }
+                              check();
+                          },
+                          { root },
+                      );
+            const finish = (event: Event) => {
+                const image = event.target as HTMLImageElement;
+                image.removeEventListener("load", finish);
+                image.removeEventListener("error", finish);
+                observer?.unobserve(image);
+                waiting.delete(image);
+                check();
+            };
             const done = () => {
-                image.removeEventListener("load", done);
-                image.removeEventListener("error", done);
+                observer?.disconnect();
+                for (const image of waiting.keys()) {
+                    image.removeEventListener("load", finish);
+                    image.removeEventListener("error", finish);
+                }
+                waiting.clear();
                 signal.removeEventListener("abort", done);
                 resolve();
             };
-            image.addEventListener("load", done);
-            image.addEventListener("error", done);
+            // Without an observer every unfinished image counts as in view.
+            function check() {
+                if (signal.aborted || [...waiting.values()].every((intersecting) => intersecting === false)) done();
+            }
+            for (const image of images) {
+                if (image.complete) continue;
+                waiting.set(image, observer ? undefined : true);
+                image.addEventListener("load", finish);
+                image.addEventListener("error", finish);
+                observer?.observe(image);
+            }
             signal.addEventListener("abort", done, { once: true });
-            if (image.complete || signal.aborted) done();
+            check();
         });
     }
 
@@ -281,8 +321,10 @@
                 // A failed parse must not strand the reveal queue.
             }
             if (wait.signal.aborted) return;
-            await Promise.all(
-                [...entry.row.element.querySelectorAll("img")].map((image) => waitForImage(image, wait.signal)),
+            await waitForViewImages(
+                [...entry.row.element.querySelectorAll("img")],
+                chatBody?.parentElement ?? null,
+                wait.signal,
             );
         } catch {
             // Failed settle waits count as settled, just like an image error.
