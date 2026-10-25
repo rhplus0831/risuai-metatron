@@ -13,8 +13,11 @@ import { StoreBackedServer } from "./storeBackedServer";
 // tests call `noteRemoteChanges` directly at that boundary with the revision the server store
 // holds; the socket, its epoch filtering, and its frame parsing are outside this file. A send whose
 // flush is refused because a change waits for another tab's job shows `chatGenerating`
-// (`GenerationBlockedError`). The save adapter, the chat module, the job transport, and
-// `runServerJob` run for real against the real server store guarded by the real generation lock.
+// (`GenerationBlockedError`). A follow of this tab's job that is lost (the server out of reach) or
+// gone (the job unknown) reads the chat again itself, whether or not the job still locked anything
+// in it, so the reply the job left shows and the chat's controls are free without opening another
+// chat. The save adapter, the chat module, the job transport, and `runServerJob` run for real
+// against the real server store guarded by the real generation lock.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -41,7 +44,12 @@ vi.mock("../../alert", async (importOriginal) => {
     });
 });
 vi.mock("src/lang", () => ({
-    language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    language: {
+        resourceReloaded: "reloaded",
+        resourceRestored: "restored",
+        chatGenerating: "generating",
+        serverJob: { lost: "job lost", endedAway: "ended away", followUpsNotRun: "follow-ups not run" },
+    },
     changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
@@ -390,6 +398,91 @@ describe("a send on a clean tab", () => {
         expect(fake.batchCount()).toBe(0);
         expect(fake.record("characters", "c")).toEqual(before);
         expect(fake.requests.filter((r) => r.path === "/api/resources/batch")).toEqual([]);
+    });
+});
+
+// The job's socket never opens (the device came back after the server collected the job, or the
+// server is out of reach): every attach closes at once, and the status reads decide.
+describe("a lost or gone follow of this tab's job", () => {
+    class ClosedSocket {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSING = 2;
+        static readonly CLOSED = 3;
+        readyState = ClosedSocket.CLOSED;
+        onopen: (() => void) | null = null;
+        onmessage: ((event: { data: string }) => void) | null = null;
+        onerror: (() => void) | null = null;
+        onclose: ((event: { code: number }) => void) | null = null;
+        constructor(readonly url: string) {
+            queueMicrotask(() => this.onclose?.({ code: 1006 }));
+        }
+        send() {}
+        close() {}
+    }
+    /** The attaches' waits (1, 2, 4, 8 s) and every deadline on the way. */
+    const RETRIES_MS = 20_000;
+
+    /** Boots with the job's reply written on the server while this tab still holds the chat as it was. */
+    async function bootBehind() {
+        const booted = await boot();
+        vi.stubGlobal("WebSocket", ClosedSocket);
+        const commands = await import("../../process/serverCommands");
+        const chatStatus = await import("../../process/chatStatus.svelte");
+        const { alertToast } = await import("../../alert");
+        const r0 = booted.fake.chat("c", "k")!.revision;
+        booted.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: r0,
+                ops: [{ op: "setText", id: "c", text: "reply" } as any],
+            },
+        ]);
+        expect(booted.mirrorChat()!.message.map((m) => m.data)).toEqual(["A", "B", "C"]);
+        return { ...booted, commands, chatStatus, alertToast };
+    }
+
+    /** The chat shows the server's copy, is not known to be behind, and nothing holds its controls. */
+    function expectCurrent(booted: Awaited<ReturnType<typeof bootBehind>>) {
+        const { chat, chatStatus, commands, mirrorChat } = booted;
+        expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["A", "B", "reply"]);
+        expect(chat.isChatBehind(refK)).toBe(false);
+        expect(chat.isChatGenerating(refK)).toBe(false);
+        expect(chat.lockedChatKeys()).toEqual(new Set());
+        expect(chatStatus.isChatBusy(refK)).toBe(false);
+        expect(get(commands.followedJobs).size).toBe(0);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
+    }
+
+    it("reads the chat again after a follow the server stayed out of reach for (lost), with the lost alert, although the job held no lock in it", async () => {
+        const booted = await bootBehind();
+        const { fake, commands, alertToast } = booted;
+        fake.failNext = { status: 0, times: 5, match: (path) => path.startsWith("/api/generations/") };
+        const end = commands.followJobToEnd("job-1", refK);
+        await vi.advanceTimersByTimeAsync(RETRIES_MS);
+        expect(await end).toBe("lost");
+        expect(fake.requests.filter((r) => r.path.startsWith("/api/generations/"))).toHaveLength(5);
+        expect(alerts.error.mock.calls).toEqual([["job lost"]]);
+        expect(alertToast).not.toHaveBeenCalled();
+        expectCurrent(booted);
+        expect(fake.requests.filter((r) => r.path === "/api/resources/read")).toHaveLength(1);
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it("reads the chat again after a follow of a job the server no longer knows (gone), then shows the `endedAway` toast and no lost alert", async () => {
+        const booted = await bootBehind();
+        const { fake, commands, alertToast } = booted;
+        fake.failNext = { status: 404, times: 1, match: (path) => path.startsWith("/api/generations/") };
+        const end = commands.followJobToEnd("job-2", refK);
+        await vi.advanceTimersByTimeAsync(RETRIES_MS);
+        expect(await end).toBe("lost");
+        expect(fake.requests.filter((r) => r.path.startsWith("/api/generations/"))).toHaveLength(1);
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alertToast).toHaveBeenCalledTimes(1);
+        expect(alertToast).toHaveBeenCalledWith("ended away");
+        expectCurrent(booted);
+        expect(alerts.normal).not.toHaveBeenCalled();
     });
 });
 

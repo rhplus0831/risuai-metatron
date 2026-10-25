@@ -339,16 +339,42 @@ async function createJob(body: CreateInput): Promise<string> {
 const jobPath = (jobId: string) =>
     `/api/generations/${encodeURIComponent(jobId)}?clientId=${encodeURIComponent(generationClientId())}`;
 
-/** This tab's job, or null when the server does not know it (ended long ago, or another tab's). */
-export async function readGenerationJob(jobId: string): Promise<GenerationStatus | null> {
+/**
+ * This tab's job (or its kept outcome, `kept`, once the server collected it), or null when the server
+ * does not know it (ended long ago, the server restarted, or another tab's). `deadlineMs` bounds the
+ * whole read (authentication, request, and body): past it the request is aborted and the read fails
+ * as a request without an answer (`ResourceRequestError` status 0).
+ */
+export async function readGenerationJob(
+    jobId: string,
+    options: { deadlineMs?: number } = {},
+): Promise<GenerationStatus | null> {
     const reservations = busyJobs.get(jobId);
     const reservation = reservations && [...reservations].find((entry) => !entry.reading);
     if (reservation) {
         reservation.reading = true;
     }
     let status: GenerationStatus | null = null;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-        status = (await (await request(jobPath(jobId))).json()) as GenerationStatus;
+        const read = (async () =>
+            (await (await request(jobPath(jobId), { signal: controller.signal })).json()) as GenerationStatus)();
+        if (options.deadlineMs === undefined) {
+            status = await read;
+        } else {
+            // A late answer after the deadline is dropped (the read already failed).
+            read.catch(() => {});
+            status = await Promise.race([
+                read,
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => {
+                        controller.abort();
+                        reject(new ResourceRequestError(0, "The job's status read timed out"));
+                    }, options.deadlineMs);
+                }),
+            ]);
+        }
         return status;
     } catch (error) {
         if (error instanceof ResourceRequestError && error.status === 404) {
@@ -366,6 +392,7 @@ export async function readGenerationJob(jobId: string): Promise<GenerationStatus
             }
             notifyPluginWork();
         }
+        clearTimeout(timer);
     }
 }
 
@@ -406,6 +433,8 @@ export type GenerationFollow = {
     close(): void;
     /** Resolves when the socket closes, with the terminal event if one arrived. */
     closed: Promise<{ terminal: GenerationTerminalEvent | null }>;
+    /** True once the socket opened; false when the follow settled before it opened. */
+    opened: Promise<boolean>;
 };
 
 /**
@@ -434,7 +463,14 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
     const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
         resolveClosed = resolve;
     });
-    const finish = () => resolveClosed({ terminal });
+    let resolveOpened!: (value: boolean) => void;
+    const opened = new Promise<boolean>((resolve) => {
+        resolveOpened = resolve;
+    });
+    const finish = () => {
+        resolveOpened(false);
+        resolveClosed({ terminal });
+    };
     const handle = {
         cancel() {
             cancelled = true;
@@ -459,10 +495,11 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             `&attach=${stamp}`;
         const socket = new WebSocket(url);
         ws = socket;
-        let opened = false;
+        let wasOpened = false;
         socket.onopen = () => {
-            opened = true;
+            wasOpened = true;
             if (!cancelled) {
+                resolveOpened(true);
                 recordClientEvent({ kind: "jobLink", phase: "attach", jobId });
             }
         };
@@ -497,7 +534,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             if (!cancelled && !terminal) {
                 recordClientEvent({
                     kind: "jobLink",
-                    phase: opened ? "detach" : "attachFailed",
+                    phase: wasOpened ? "detach" : "attachFailed",
                     jobId,
                     code: event.code,
                 });
@@ -534,6 +571,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             handle.cancel();
         },
         closed,
+        opened,
     };
     // A closed or superseded follow asks nothing more of its job.
     void closed.then(() => endFollowRecovery(follow));

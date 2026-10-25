@@ -1,14 +1,19 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type { GenerationEvent, GenerationStatus, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type { createFollowStub } from "../network/tests/generationJobsMock";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // The tab's side of a server Lua button (`serverCommands.ts`) over a stubbed transport: one
 // lifecycle per job shared by every caller (a button, a busy job of this tab, the boot resume), the
-// bounded reattach after a socket closed without the terminal (a failed status read retried, a job
-// the server no longer knows released as lost), the end reported once, the boot discovery joining
-// an active follow and never releasing it, and `runServerButton`'s preflight (ids before the flush,
-// a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
+// bounded reattach after a socket closed without the terminal (growing waits, a failed status read
+// retried, an attach that does not open in time given up), the end read from the job's status (the
+// server's kept outcome of a collected job, or the last ended status when the attaches run out), a
+// job the server no longer knows (gone: no lost alert, the chat read again, then the `endedAway`
+// toast) told from a server that stays unreachable (lost), the chat read again after a lost or gone
+// follow with its one retry at the next visible or online, the end reported once, the boot discovery
+// joining an active follow and never releasing it, and `runServerButton`'s preflight (ids before the
+// flush, a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
 // `runServerJob` itself: the send kinds with their context, the `unknown` outcome of a create
 // request without an answer, the abort signal (a DELETE for a started job, for a followed busy job,
 // and for a signal that fired during the create; nothing posted after an abort before the flush
@@ -17,23 +22,24 @@ import { warmModules } from "../storage/tests/mutationStoresHarness";
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
 
-type Follow = {
-    jobId: string;
-    onEvent: (event: GenerationEvent) => void;
-    end: (terminal: GenerationTerminalEvent | null) => void;
-};
+type Follow = ReturnType<typeof createFollowStub> & { onEvent: (event: GenerationEvent) => void };
+type Transport = typeof import("../network/generationJobs");
 
 const stubs = vi.hoisted(() => ({
     follows: [] as unknown[],
     create: vi.fn<(body: unknown) => Promise<string>>(),
     abort: vi.fn<(jobId: string) => Promise<void>>(async () => {}),
-    read: vi.fn<(jobId: string) => Promise<unknown>>(),
+    read: vi.fn<Transport["readGenerationJob"]>(),
     release: vi.fn(),
     saved: vi.fn<() => string[]>(() => []),
     apply: vi.fn(),
     alertError: vi.fn(),
     /** `alertJobError`: a job's error terminal with its failure fields. */
     alertJobError: vi.fn(),
+    /** `alertToast`: the nonmodal notice of a gone job's chat read again. */
+    alertToast: vi.fn(),
+    /** `sleep`: immediate, its requested waits recorded. */
+    sleep: vi.fn<(ms: number) => Promise<void>>(async () => {}),
     flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
     /** `refreshStaleChat`: the pre-send read of a chat this tab knows is behind; true once it is current. */
     refresh: vi.fn<(ref: unknown) => Promise<boolean>>(),
@@ -46,6 +52,10 @@ const stubs = vi.hoisted(() => ({
     /** `pinChat`: a release per pin, so the runner's pin/release pairs run as the real ones do. */
     pin: vi.fn(() => vi.fn()),
     held: vi.fn<() => string | null>(() => "e:1:1"),
+    /** `markChatStale`: true for a chat this tab holds. */
+    markStale: vi.fn<() => boolean>(() => true),
+    /** `isChatStale`: whether the stale mark is still there when a retry fires. */
+    stale: vi.fn<() => boolean>(() => true),
     /**
      * `chatEntry`: the target chat's list entry, whose binding the runner sends; `undefined` for a
      * chat that is not listed. The default binds the records installed below.
@@ -59,26 +69,10 @@ const stubs = vi.hoisted(() => ({
 /** The seeded chat's binding: the one prompt and model preset (`preset`) and the selected persona. */
 const BOUND = { modelPresetId: "preset", promptPresetId: "preset", bindedPersona: "selected" };
 
-class BusyError extends Error {
-    constructor(readonly jobId: string) {
-        super("busy");
-    }
-}
-/** The job transport's 409 `chatBindingIncomplete` / `chatBindingMismatch` (`ChatBindingRefusedError`). */
-class BindingRefusedError extends Error {
-    constructor(
-        readonly code: "chatBindingIncomplete" | "chatBindingMismatch",
-        readonly problems: { field: string; reason?: string }[] = [],
-    ) {
-        super(code);
-    }
-}
-class LoreOverrideOrphanedError extends Error {
-    constructor(readonly entries: readonly { id: string; name: string }[]) {
-        super("chatLoreOverrideOrphaned");
-        this.name = "ChatLoreOverrideOrphanedError";
-    }
-}
+/** The job transport's typed refusals (the mock's classes, which the product code's `instanceof` sees). */
+let BusyError: Transport["GenerationBusyError"];
+let BindingRefusedError: Transport["ChatBindingRefusedError"];
+let LoreOverrideOrphanedError: Transport["ChatLoreOverrideOrphanedError"];
 /** `flushResources` refused because a change it must save waits for a generation. */
 class BlockedError extends Error {
     constructor(readonly chats: readonly { chaId: string; chatId: string }[] = []) {
@@ -101,6 +95,8 @@ vi.mock("src/lang", () => ({
         chatGenerating: "generating",
         serverJob: {
             lost: "job lost",
+            endedAway: "ended away",
+            followUpsNotRun: "follow-ups not run",
             discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
             saveFailed: "save failed: {0}",
             chatLoadFailed: "load failed: {0}",
@@ -124,32 +120,34 @@ vi.mock("../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: stubs.alertError,
         alertJobError: stubs.alertJobError,
+        alertToast: stubs.alertToast,
     }),
 );
-vi.mock("../network/generationJobs", () => ({
-    abortGenerationJob: (jobId: string) => stubs.abort(jobId),
-    applyGenerationEvent: stubs.apply,
-    createGenerationJob: stubs.create,
-    followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
-        let end!: (terminal: GenerationTerminalEvent | null) => void;
-        const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
-            end = (terminal) => resolve({ terminal });
-        });
-        stubs.follows.push({ jobId, onEvent, end });
-        return { closed, send: () => true, close() {} };
-    },
-    ChatBindingRefusedError: BindingRefusedError,
-    ChatLoreOverrideOrphanedError: LoreOverrideOrphanedError,
-    GenerationBusyError: BusyError,
-    readGenerationJob: stubs.read,
-    releaseGenerationJob: stubs.release,
-    savedGenerationJobIds: stubs.saved,
-}));
+vi.mock("../network/generationJobs", async () => {
+    const { createGenerationJobsMock, createFollowStub } = await import("../network/tests/generationJobsMock");
+    return createGenerationJobsMock({
+        abortGenerationJob: (jobId: string) => stubs.abort(jobId),
+        applyGenerationEvent: stubs.apply,
+        createGenerationJob: stubs.create,
+        followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
+            const stub = createFollowStub(jobId);
+            stubs.follows.push({ ...stub, onEvent });
+            return stub.follow;
+        },
+        readGenerationJob: stubs.read,
+        releaseGenerationJob: stubs.release,
+        savedGenerationJobIds: stubs.saved,
+    });
+});
 vi.mock("../storage/chatStore.svelte", () => ({
     chatEntry: stubs.entry,
+    /** No chat open: every reply lands away from the open chat. */
+    currentChatRef: () => null,
     ensureChatLoaded: stubs.load,
     heldChatRevision: stubs.held,
+    isChatStale: stubs.stale,
     loadChat: stubs.loadChat,
+    markChatStale: stubs.markStale,
     pinChat: stubs.pin,
 }));
 vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
@@ -160,7 +158,7 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     generatingNoticeCount: stubs.notices,
     watchForRestore: stubs.restored,
 }));
-vi.mock("../util", () => ({ sleep: async () => {} }));
+vi.mock("../util", () => ({ sleep: (ms: number) => stubs.sleep(ms) }));
 vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
 
 type Module = typeof import("./serverCommands");
@@ -170,7 +168,23 @@ const follows = () => stubs.follows as Follow[];
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const done: GenerationTerminalEvent = { type: "done", epoch: EPOCH, revision: "e:1:2" };
 const failed: GenerationTerminalEvent = { type: "error", epoch: EPOCH, message: "boom", status: 500, reason: "failed" };
-const status = { jobId: "j", kind: "command", characterId: "c", chatId: "k", epoch: EPOCH, state: "running" };
+const status: GenerationStatus = {
+    jobId: "j",
+    kind: "command",
+    characterId: "c",
+    chatId: "k",
+    epoch: EPOCH,
+    state: "running",
+};
+/** The server's kept outcome of the collected job `j` (its status after the job was collected). */
+const kept = (terminal: GenerationTerminalEvent): GenerationStatus => ({
+    ...status,
+    state: "ended",
+    kept: true,
+    terminal,
+});
+/** The waits `sleep` was asked for, in order. */
+const sleeps = () => stubs.sleep.mock.calls.map(([ms]) => ms);
 /** Delivers the terminal through the follow's events and closes its socket, as the real follow does. */
 const endWith = (follow: Follow, terminal: GenerationTerminalEvent) => {
     follow.onEvent(terminal);
@@ -198,6 +212,9 @@ beforeEach(async () => {
     stubs.notices.mockReset().mockReturnValue(0);
     stubs.restored.mockReset().mockResolvedValue(false);
     stubs.abort.mockReset().mockResolvedValue(undefined);
+    stubs.markStale.mockReset().mockReturnValue(true);
+    stubs.stale.mockReset().mockReturnValue(true);
+    stubs.sleep.mockReset().mockResolvedValue(undefined);
     vi.spyOn(console, "error").mockImplementation(() => {});
     // The records the chat's binding names (`chatBinding` checks that they exist): the prompt preset
     // `preset` (and the model preset of the same id it implies), the personas `selected` and `bound`.
@@ -210,6 +227,11 @@ beforeEach(async () => {
         ],
     });
     commands = await import("./serverCommands");
+    ({
+        GenerationBusyError: BusyError,
+        ChatBindingRefusedError: BindingRefusedError,
+        ChatLoreOverrideOrphanedError: LoreOverrideOrphanedError,
+    } = await import("../network/generationJobs"));
 });
 
 afterEach(() => {
@@ -257,15 +279,24 @@ describe("followJobToEnd", () => {
         expect(stubs.release).not.toHaveBeenCalled();
     });
 
-    it("releases a job the server no longer knows (or of another epoch) as lost, with one alert, and does not alert an aborted end", async () => {
+    it("releases a job the server no longer knows (or of another epoch) as gone: no lost alert, the chat marked stale and read again, then the `endedAway` toast; the caller gets `lost`; an aborted end is not alerted", async () => {
         stubs.read.mockResolvedValueOnce(null);
-        const lost = commands.followJobToEnd("j", ref);
+        const gone = commands.followJobToEnd("j", ref);
         await flush();
         follows()[0].end(null);
-        expect(await lost).toBe("lost");
+        expect(await gone).toBe("lost");
         expect(stubs.release).toHaveBeenCalledWith("j");
-        expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError.mock.calls[0][0]).toBe("job lost");
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
+        expect(stubs.record.mock.calls.map(([input]) => input)).toEqual([
+            { kind: "jobLink", phase: "gone", jobId: "j" },
+            { kind: "jobLink", phase: "recovered", jobId: "j" },
+        ]);
+        // Read before the toast: the toast tells of a chat already reloaded.
+        expect(stubs.refresh.mock.invocationCallOrder[0]).toBeLessThan(stubs.alertToast.mock.invocationCallOrder[0]);
 
         stubs.read.mockResolvedValueOnce({ ...status, epoch: "other" });
         const other = commands.followJobToEnd("j2", ref);
@@ -273,16 +304,19 @@ describe("followJobToEnd", () => {
         follows()[1].end(null);
         expect(await other).toBe("lost");
         expect(stubs.release).toHaveBeenCalledWith("j2");
+        expect(stubs.alertToast).toHaveBeenCalledTimes(2);
 
         const aborted = commands.followJobToEnd("j3", ref);
         await flush();
         endWith(follows()[2], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
         await aborted;
-        expect(stubs.alertError).toHaveBeenCalledTimes(2);
+        expect(stubs.alertError).not.toHaveBeenCalled();
         expect(stubs.alertJobError).not.toHaveBeenCalled();
+        // A live end: nothing to read again.
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
     });
 
-    it("gives up after the bounded number of attaches and releases the job", async () => {
+    it("gives up after the bounded number of attaches, waiting 1, 2, 4, then 8 s between them, releases the job as lost with its alert, and reads the chat again", async () => {
         stubs.read.mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
@@ -292,7 +326,15 @@ describe("followJobToEnd", () => {
         }
         expect(await end).toBe("lost");
         expect(follows()).toHaveLength(5);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
+        // Each status read is bounded.
+        expect(stubs.read).toHaveBeenCalledTimes(5);
+        expect(stubs.read).toHaveBeenCalledWith("j", { deadlineMs: 10_000 });
         expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
     });
 
     it("leaves a job a restore or import ended (`maintenance`) to the restore watch: no alert when the data was replaced, its error once when nothing was, timed at the terminal's receipt", async () => {
@@ -351,14 +393,18 @@ describe("followJobToEnd", () => {
 });
 
 describe("resumeServerJobs (boot)", () => {
-    it("discovers a saved job's chat from its status, retrying a failed read inside the shared lifecycle, and releases it as lost when the reads keep failing", async () => {
+    it("discovers a saved job's chat from its status, retrying a failed read inside the shared lifecycle with growing waits, and releases it as lost when the reads keep failing", async () => {
         stubs.saved.mockReturnValue(["j"]);
         stubs.read.mockRejectedValue(new Error("offline"));
         await commands.resumeServerJobs();
         expect(stubs.read).toHaveBeenCalledTimes(5);
+        expect(stubs.read).toHaveBeenCalledWith("j", { deadlineMs: 10_000 });
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
         expect(follows()).toHaveLength(0);
         expect(stubs.release).toHaveBeenCalledWith("j");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        // No chat is known: nothing to read again.
+        expect(stubs.refresh).not.toHaveBeenCalled();
     });
 
     it("joins an active follow of the job instead of discovering it, and never releases it", async () => {
@@ -986,6 +1032,324 @@ describe("`/multisend` follow-ups of a command job", () => {
     });
 });
 
+// After a socket closed without the terminal, the follow reads the job's status: the server's kept
+// outcome of a collected job is the end (applied as the socket's terminal would be), a job the server
+// no longer knows is gone, a failed read attaches again. After a lost or gone follow, and after an end
+// read from the status that this tab's copy may lack, the chat is marked stale and read again within
+// the step deadline, with one retry at the next visible or online.
+describe("the end read from the job's status, and the chat read after the follow", () => {
+    const links = () => stubs.record.mock.calls.map(([input]) => input);
+    const settle = async () => {
+        for (let round = 0; round < 8; round += 1) {
+            await flush();
+        }
+    };
+    /** Closes the newest follow without a terminal, so the status is read. */
+    const closeLatest = async () => {
+        await flush();
+        follows().at(-1)!.end(null);
+    };
+    const unseen = async () => get((await import("src/ts/process/chatStatus.svelte")).unseenChatKeys);
+
+    beforeEach(() => {
+        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
+    });
+
+    it("applies a kept `done` as the job's end: the unseen reply marked, the chat read again only when the terminal's revision is newer than the held one, no notice", async () => {
+        // Real revision tokens, so the comparison is the shared one (not "incomparable, so newer").
+        const held = `${EPOCH}:1:1`;
+        const newer = `${EPOCH}:1:2`;
+        stubs.held.mockReturnValue(held);
+        const done = { type: "done", epoch: EPOCH, revision: newer } satisfies GenerationTerminalEvent;
+        stubs.read.mockResolvedValueOnce(kept(done));
+        const end = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await end).toEqual(done);
+        expect(follows()).toHaveLength(1);
+        // Released as the socket's terminal would release it, not as a lost job.
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, done);
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(await unseen()).toEqual(new Set());
+        expect(links()).toEqual([{ kind: "jobLink", phase: "kept", jobId: "j" }]);
+        // Newer than the held revision: read again, silently.
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+
+        // A reply the tab did not see: the sidebar's unseen mark needs the message id.
+        stubs.read.mockResolvedValueOnce(kept({ ...done, messageId: "reply" }));
+        stubs.refresh.mockClear();
+        const marked = commands.followJobToEnd("j2", ref);
+        await closeLatest();
+        await marked;
+        expect(await unseen()).toEqual(new Set(["c\u0000k"]));
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+
+        // The held revision already: nothing to read.
+        stubs.refresh.mockClear();
+        stubs.markStale.mockClear();
+        stubs.read.mockResolvedValueOnce(kept({ ...done, revision: held }));
+        const same = commands.followJobToEnd("j3", ref);
+        await closeLatest();
+        expect(await same).toEqual({ ...done, revision: held });
+        stubs.read.mockResolvedValueOnce(kept({ ...done, revision: null }));
+        const none = commands.followJobToEnd("j4", ref);
+        await closeLatest();
+        await none;
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("applies a kept `error` as the job's end: the same alert as when watched live, and the chat read again", async () => {
+        stubs.read.mockResolvedValueOnce(kept(failed));
+        const end = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await end).toEqual(failed);
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, failed);
+        expect(stubs.alertJobError).toHaveBeenCalledTimes(1);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", failed);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "kept", jobId: "j" }]);
+    });
+
+    it("refuses a kept outcome's follow-ups when the server dropped them (`followUpsDropped`), with a notice instead of a send", async () => {
+        stubs.read.mockResolvedValueOnce(kept({ ...done, followUpsDropped: true }));
+        const end = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await end).toEqual({ ...done, followUpsDropped: true });
+        await settle();
+        expect(followUpStubs.runMultisend).not.toHaveBeenCalled();
+        expect(stubs.alertError.mock.calls).toEqual([["follow-ups not run"]]);
+        // Once per job: the terminal seen again does not alert again.
+        stubs.read.mockResolvedValueOnce(kept({ ...done, followUpsDropped: true }));
+        const again = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        await again;
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps an ended status's terminal as the end when a later read finds the job unknown (the server restarted) or the attaches run out, applying it once; another epoch's terminal is not kept", async () => {
+        // Ended but still live on the server (inside its grace): attached again for its final records;
+        // the next read answers 404.
+        stubs.read.mockResolvedValueOnce({ ...status, state: "ended", terminal: failed }).mockResolvedValueOnce(null);
+        const restarted = commands.followJobToEnd("j", ref);
+        await flush();
+        follows()[0].end(null);
+        await flush();
+        await flush();
+        expect(follows()).toHaveLength(2);
+        follows()[1].end(null);
+        expect(await restarted).toEqual(failed);
+        expect(stubs.apply).toHaveBeenCalledTimes(1);
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, failed);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", failed);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(links().filter((link) => (link as { phase: string }).phase !== "reattach")).toEqual([]);
+
+        // Ended and live through every attach (sockets that never deliver): the last read's terminal.
+        stubs.apply.mockClear();
+        stubs.refresh.mockClear();
+        stubs.read.mockReset().mockResolvedValue({ ...status, state: "ended", terminal: done });
+        const exhausted = commands.followJobToEnd("j2", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await flush();
+            await flush();
+            follows()[2 + attach].end(null);
+        }
+        expect(await exhausted).toEqual(done);
+        expect(stubs.apply).toHaveBeenCalledTimes(1);
+        expect(stubs.apply).toHaveBeenCalledWith("j2", ref, done);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(links().filter((link) => (link as { phase: string }).phase === "lost")).toEqual([]);
+
+        // The terminal read names another epoch: a 404 after it is a gone job, not that end.
+        stubs.apply.mockClear();
+        stubs.read
+            .mockReset()
+            .mockResolvedValueOnce({ ...status, state: "ended", terminal: { ...failed, epoch: "other" } })
+            .mockResolvedValueOnce(null);
+        const replaced = commands.followJobToEnd("j3", ref);
+        await flush();
+        follows()[7].end(null);
+        await flush();
+        await flush();
+        follows()[8].end(null);
+        expect(await replaced).toBe("lost");
+        expect(stubs.apply).not.toHaveBeenCalled();
+        expect(stubs.release).toHaveBeenCalledWith("j3");
+        expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
+    });
+
+    it("gives up an attach whose socket does not open within 10 s and reads the status; an attach that opened is left alone", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const tick = () => vi.advanceTimersByTimeAsync(0);
+            stubs.read.mockResolvedValue(status);
+            const end = commands.followJobToEnd("j", ref);
+            await tick();
+            expect(follows()).toHaveLength(1);
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(stubs.read).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            await tick();
+            expect(stubs.read).toHaveBeenCalledTimes(1);
+            expect(follows()).toHaveLength(2);
+            follows()[1].open();
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(follows()).toHaveLength(2);
+            expect(stubs.read).toHaveBeenCalledTimes(1);
+            endWith(follows()[1], done);
+            expect(await end).toEqual(done);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("reports an unreachable server as lost and reads the chat once more at the next `online` or visible, once, unless the stale mark is gone by then", async () => {
+        stubs.read.mockRejectedValue(new RequestError(0, "offline"));
+        stubs.refresh.mockResolvedValueOnce(false);
+        const end = commands.followJobToEnd("j", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await flush();
+            await flush();
+            follows()[attach].end(null);
+        }
+        expect(await end).toBe("lost");
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "lost", jobId: "j" });
+        expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j" });
+        // Hidden: not yet.
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("online"));
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        visibility.mockReturnValue("visible");
+        window.dispatchEvent(new Event("online"));
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j" });
+        // Once: the listeners are gone.
+        window.dispatchEvent(new Event("online"));
+        document.dispatchEvent(new Event("visibilitychange"));
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        visibility.mockRestore();
+
+        // A gone job whose read did not take: its toast waits for the retry's read.
+        stubs.refresh.mockClear();
+        stubs.read.mockReset().mockResolvedValue(null);
+        stubs.refresh.mockResolvedValueOnce(false);
+        const gone = commands.followJobToEnd("j2", ref);
+        await flush();
+        follows()[5].end(null);
+        expect(await gone).toBe("lost");
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        document.dispatchEvent(new Event("visibilitychange"));
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
+
+        // The stale mark gone by the retry (the chat was read another way): no read, no toast.
+        stubs.refresh.mockClear();
+        stubs.alertToast.mockClear();
+        stubs.refresh.mockResolvedValueOnce(false);
+        const elsewhere = commands.followJobToEnd("j3", ref);
+        await flush();
+        follows()[6].end(null);
+        await elsewhere;
+        stubs.stale.mockReturnValue(false);
+        window.dispatchEvent(new Event("online"));
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("does not read a chat this tab does not hold, and reads nothing twice for one chat: a newer recovery ends the older, whose late result does nothing", async () => {
+        stubs.markStale.mockReturnValueOnce(false);
+        stubs.read.mockResolvedValue(null);
+        const unheld = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await unheld).toBe("lost");
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(links()).toEqual([{ kind: "jobLink", phase: "gone", jobId: "j" }]);
+
+        let answerFirst!: (current: boolean) => void;
+        stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerFirst = resolve)));
+        const first = commands.followJobToEnd("j2", ref);
+        await flush();
+        follows()[1].end(null);
+        await flush();
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        const second = commands.followJobToEnd("j3", ref);
+        await flush();
+        follows()[2].end(null);
+        expect(await second).toBe("lost");
+        expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j3" });
+        answerFirst(true);
+        expect(await first).toBe("lost");
+        expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
+    });
+
+    it("bounds the chat's read to 10 s: a kept command whose chat is not current by then runs no follow-ups, a lost follow's late read still counts", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const tick = () => vi.advanceTimersByTimeAsync(0);
+            let answer!: (current: boolean) => void;
+            stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
+            const followUps = [{ clear: true, parts: ["next"] }];
+            stubs.read.mockResolvedValueOnce(kept({ ...done, followUps }));
+            const end = commands.followJobToEnd("j", ref);
+            await tick();
+            follows()[0].end(null);
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(stubs.alertError).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await end).toEqual({ ...done, followUps });
+            expect(followUpStubs.runMultisend).not.toHaveBeenCalled();
+            expect(stubs.alertError.mock.calls).toEqual([["follow-ups not run"]]);
+            // The read that lands later takes, but the refused follow-ups stay refused.
+            answer(true);
+            await tick();
+            expect(followUpStubs.runMultisend).not.toHaveBeenCalled();
+
+            stubs.refresh.mockReset();
+            let late!: (current: boolean) => void;
+            stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (late = resolve)));
+            stubs.read.mockReset().mockRejectedValue(new RequestError(0, "offline"));
+            const lost = commands.followJobToEnd("j2", ref);
+            for (let attach = 0; attach < 5; attach++) {
+                await tick();
+                follows()[1 + attach].end(null);
+            }
+            await vi.advanceTimersByTimeAsync(10_000);
+            expect(await lost).toBe("lost");
+            expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
+            late(true);
+            await tick();
+            expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
+            // Recovered: the retry listeners are gone.
+            window.dispatchEvent(new Event("online"));
+            await tick();
+            expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
+
 // The job's chat is pinned from the start and loaded after the flush, before the job is created (a
 // failed load alerts and runs nothing); a followed job's chat is pinned once it is known and loaded
 // before the follow attaches (retried like a status read; a load that keeps failing makes the job
@@ -1047,8 +1411,10 @@ describe("the job's chat", () => {
         expect(pinsBalanced()).toBe(true);
 
         stubs.load.mockReset().mockRejectedValue(new Error("offline"));
+        stubs.sleep.mockClear();
         expect(await commands.followJobToEnd("j2", ref)).toBe("lost");
         expect(stubs.load).toHaveBeenCalledTimes(5);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
         expect(follows()).toHaveLength(1);
         expect(stubs.release).toHaveBeenCalledWith("j2");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
@@ -1084,7 +1450,7 @@ describe("the job's chat", () => {
 describe("the follow's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
-    it("records `reattach` with its attempt before every attach after the first, and `lost` once when the attaches run out", async () => {
+    it("records `reattach` with its attempt before every attach after the first, `lost` once when the attaches run out, and `recovered` when the chat's read after it took", async () => {
         stubs.read.mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
@@ -1099,17 +1465,21 @@ describe("the follow's diagnostics", () => {
             { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 3 },
             { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 4 },
             { kind: "jobLink", phase: "lost", jobId: "j" },
+            { kind: "jobLink", phase: "recovered", jobId: "j" },
         ]);
     });
 
-    it("records `lost` once for a job the server does not know and for a chat that cannot be loaded, and nothing for a job that ends", async () => {
+    it("records `gone` once for a job the server does not know at boot, `lost` for a chat that cannot be loaded, and nothing for a job that ends", async () => {
         stubs.read.mockResolvedValue(null);
         expect(await commands.followJobToEnd("gone")).toBe("lost");
-        expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "gone" }]);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "gone", jobId: "gone" }]);
         stubs.record.mockClear();
         stubs.load.mockResolvedValue(undefined);
+        // A chat that could not be loaded is not held: nothing is marked or read again.
+        stubs.markStale.mockReturnValueOnce(false);
         expect(await commands.followJobToEnd("unloaded", ref)).toBe("lost");
         expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "unloaded" }]);
+        expect(stubs.refresh).not.toHaveBeenCalled();
         stubs.record.mockClear();
         stubs.load.mockResolvedValue({});
         const end = commands.followJobToEnd("fine", ref);
@@ -1173,7 +1543,7 @@ describe("followedJobs", () => {
         await flush();
         setJobStage("j", ref, "memory");
         expect(jobsOf({ chaId: status.characterId, chatId: status.chatId })).toEqual(["j"]);
-        // The socket closes without a terminal and the server no longer knows the job: lost.
+        // The socket closes without a terminal and the server no longer knows the job: gone.
         stubs.read.mockResolvedValue(null);
         follows()[0].end(null);
         await boot;

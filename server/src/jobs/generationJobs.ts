@@ -49,6 +49,17 @@ import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.
 export const JOB_ABORT_GRACE_MS = 5000;
 /** An ended job stays readable (status, reconnect) this long. */
 export const JOB_DONE_GRACE_MS = 60_000;
+/**
+ * After that, its outcome (`GenerationStatus.kept`) stays readable this long, at most
+ * `MAX_KEPT_OUTCOMES` of them (the oldest goes first), so an owner that comes back late still learns
+ * how its job ended. Kept in memory only: a restart forgets them, and an epoch change clears them.
+ */
+export const KEPT_OUTCOME_MS = 24 * 60 * 60_000;
+export const MAX_KEPT_OUTCOMES = 500;
+/** A kept error's message is cut to this many UTF-8 bytes. */
+export const MAX_KEPT_MESSAGE_BYTES = 4096;
+/** A kept done's `followUps` and `alternatives` are each kept only while their JSON fits this many bytes. */
+export const MAX_KEPT_LIST_BYTES = 64 * 1024;
 /** A running job is aborted (`timeout`) after this long. */
 export const JOB_MAX_DURATION_MS = 30 * 60_000;
 const JOB_GC_INTERVAL_MS = 30_000;
@@ -291,6 +302,33 @@ type Job = {
 
 const chatKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
 
+/** `text` cut to at most `bytes` UTF-8 bytes, never inside a code point. */
+function cutUtf8(text: string, bytes: number): string {
+    const encoded = Buffer.from(text);
+    if (encoded.length <= bytes) {
+        return text;
+    }
+    // A code point the limit cuts decodes as one U+FFFD at the end: dropped.
+    return encoded
+        .subarray(0, bytes)
+        .toString()
+        .replace(/\uFFFD$/, "");
+}
+
+/** A terminal as an outcome keeps it: small, whatever the job produced (`MAX_KEPT_*`). */
+function keptTerminal(terminal: GenerationTerminalEvent): GenerationTerminalEvent {
+    if (terminal.type === "error") {
+        return { ...terminal, message: cutUtf8(terminal.message, MAX_KEPT_MESSAGE_BYTES) };
+    }
+    const { result: _result, followUps, alternatives, ...rest } = terminal;
+    const fits = (value: unknown) => Buffer.byteLength(JSON.stringify(value)) <= MAX_KEPT_LIST_BYTES;
+    return {
+        ...rest,
+        ...(alternatives && fits(alternatives) ? { alternatives } : {}),
+        ...(followUps ? (fits(followUps) ? { followUps } : { followUpsDropped: true as const }) : {}),
+    };
+}
+
 function isResyncRequest(message: unknown): message is ChatResyncRequest {
     return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "resync";
 }
@@ -416,6 +454,9 @@ export function createGenerationJobs(options: {
     let disposed = false;
     let maintenancePending = 0;
     let gcTimer: ReturnType<typeof setInterval> | null = null;
+    /** The kept outcomes of collected jobs, oldest first (`KEPT_OUTCOME_MS`), all of `keptEpoch`. */
+    const kept = new Map<string, { clientId: string; keptAt: number; status: GenerationStatus }>();
+    let keptEpoch = store.epoch();
 
     /** A `job` event to the journal; a recorder's throw never reaches the job. */
     const record = (input: DiagnosticEventInput) => recordSafely(diagnostics, input);
@@ -1264,6 +1305,56 @@ export function createGenerationJobs(options: {
         return job && job.clientId === clientId ? job : null;
     }
 
+    /** The kept outcomes, cleared first when the epoch changed (a restore or import replaced the data). */
+    function keptOutcomes(): typeof kept {
+        const epoch = store.epoch();
+        if (epoch !== keptEpoch) {
+            kept.clear();
+            keptEpoch = epoch;
+        }
+        return kept;
+    }
+
+    /** Keeps a collected job's outcome; a job of an older epoch keeps none. */
+    function keepOutcome(job: Job, now: number) {
+        const outcomes = keptOutcomes();
+        if (!job.terminal || job.epoch !== keptEpoch) {
+            return;
+        }
+        outcomes.delete(job.id);
+        outcomes.set(job.id, {
+            clientId: job.clientId,
+            keptAt: now,
+            status: {
+                jobId: job.id,
+                kind: job.kind,
+                characterId: job.context.characterId,
+                chatId: job.context.chatId,
+                epoch: job.epoch,
+                state: "ended",
+                ...(job.current?.messageId ? { messageId: job.current.messageId } : {}),
+                terminal: keptTerminal(job.terminal),
+                kept: true,
+            },
+        });
+        for (const id of outcomes.keys()) {
+            if (outcomes.size <= MAX_KEPT_OUTCOMES) {
+                break;
+            }
+            outcomes.delete(id);
+        }
+    }
+
+    /** Drops the kept outcomes older than `KEPT_OUTCOME_MS` (oldest first, so the scan stops at the first young one). */
+    function expireOutcomes(now: number) {
+        for (const [id, outcome] of keptOutcomes()) {
+            if (now - outcome.keptAt < KEPT_OUTCOME_MS) {
+                break;
+            }
+            kept.delete(id);
+        }
+    }
+
     function status(job: Job): GenerationStatus {
         return {
             jobId: job.id,
@@ -1487,9 +1578,18 @@ export function createGenerationJobs(options: {
                 : null;
         },
 
+        /**
+         * The owner's job, or its kept outcome once the job was collected (`kept`, of the current
+         * epoch, not expired). Null for an unknown job or another client's.
+         */
         status(jobId: string, clientId: string | undefined): GenerationStatus | null {
             const job = ownJob(jobId, clientId);
-            return job ? status(job) : null;
+            if (job) {
+                return status(job);
+            }
+            expireOutcomes(Date.now());
+            const outcome = kept.get(jobId);
+            return outcome && outcome.clientId === clientId ? outcome.status : null;
         },
 
         /**
@@ -1548,12 +1648,14 @@ export function createGenerationJobs(options: {
             }
             gcTimer = setInterval(() => {
                 const now = Date.now();
+                expireOutcomes(now);
                 for (const [id, job] of jobs) {
                     if (job.ended && now - job.endedAt >= JOB_DONE_GRACE_MS) {
                         for (const ws of job.sockets) {
                             ws.close();
                         }
                         jobs.delete(id);
+                        keepOutcome(job, now);
                     } else if (!job.ended && now - job.startedAt >= JOB_MAX_DURATION_MS) {
                         abort(job, "timeout");
                     }

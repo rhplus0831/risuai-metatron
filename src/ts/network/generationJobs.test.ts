@@ -4,8 +4,9 @@ import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 
 // The client transport of server generation jobs (`generationJobs.ts`): the tab's identity and
-// saved jobs, the create/status/abort requests and their errors, the owner socket's lifetime
-// (cancellation before and after authentication, supersession, stamps, event filtering), the event
+// saved jobs, the create/status/abort requests and their errors (a status read's deadline), the
+// owner socket's lifetime (cancellation before and after authentication, `opened`, supersession,
+// stamps, event filtering), the event
 // dispatcher's wiring, and the resume after a reload. The chat module, the save adapter, and the
 // channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create body's `hooks`) are
 // stubbed here; the hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
@@ -108,6 +109,12 @@ class FakeSocket {
 }
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** A few microtask turns, for a check under fake timers (`flush` would wait on a faked timer). */
+const microtasks = async () => {
+    for (let turn = 0; turn < 10; turn += 1) {
+        await Promise.resolve();
+    }
+};
 const settled = async <T>(promise: Promise<T>) =>
     Promise.race([promise.then(() => "settled" as const), flush().then(() => "pending" as const)]);
 const json = (status: number, body: unknown) => Response.json(body, { status });
@@ -284,6 +291,51 @@ describe("the requests", () => {
         await expect(transport.abortGenerationJob("j1")).rejects.toMatchObject({ status: 500 });
     });
 
+    it("bounds a status read to its deadline (the request and its body): past it the request is aborted and the read fails as one without an answer; an answer in time leaves no timer", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let signal: AbortSignal | null | undefined;
+        stubs.fetch.mockImplementationOnce((_path, init) => {
+            signal = init?.signal;
+            return new Promise<Response>(() => {});
+        });
+        const outcome = transport.readGenerationJob("j1", { deadlineMs: 10_000 }).then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        // Settled by the deadline's timer, not by any answer.
+        const error = await Promise.race([outcome, microtasks().then(() => "pending")]);
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect((error as InstanceType<Client["ResourceRequestError"]>).status).toBe(0);
+        expect(signal?.aborted).toBe(true);
+        // A body that never arrives is bounded too.
+        stubs.fetch.mockResolvedValueOnce(
+            new Response(new ReadableStream({ start() {} }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            }),
+        );
+        const hanging = transport.readGenerationJob("j1", { deadlineMs: 10_000 }).then(
+            () => "answered",
+            (error: { status: number }) => error.status,
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(await Promise.race([hanging, microtasks().then(() => "pending")])).toBe(0);
+        // In time: the status, and the deadline's timer cleared; a 404 is still null.
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
+        await expect(transport.readGenerationJob("j1", { deadlineMs: 10_000 })).resolves.toMatchObject({ jobId: "j1" });
+        expect(vi.getTimerCount()).toBe(0);
+        stubs.fetch.mockResolvedValueOnce(json(404, { error: "Generation not found" }));
+        await expect(transport.readGenerationJob("j1", { deadlineMs: 10_000 })).resolves.toBeNull();
+        expect(vi.getTimerCount()).toBe(0);
+        // Without a deadline: no timer at all.
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
+        await transport.readGenerationJob("j1");
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("reports a cancelled callback drained to the job's route with the client id, and never fails: a 404 (the job is gone) is silent, any other failure is logged", async () => {
         stubs.fetch.mockResolvedValueOnce(json(200, { drained: true }));
         await expect(transport.reportCallbackDrained("j/1", "cb-1")).resolves.toBeUndefined();
@@ -396,6 +448,45 @@ describe("following a job", () => {
         await expect(third.closed).resolves.toEqual({ terminal: null });
         expect(FakeSocket.instances).toHaveLength(0);
         expect(console.error).toHaveBeenCalled();
+    });
+
+    it("settles `opened` true once the socket opens, and false when the follow ends before that: cancelled before authentication, closed while connecting, a failed authentication, or a socket the server closed unopened", async () => {
+        const open = transport.followGenerationJob("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        expect(await settled(open.opened)).toBe("pending");
+        FakeSocket.instances[0].open();
+        expect(await settled(open.opened)).toBe("settled");
+        await expect(open.opened).resolves.toBe(true);
+        FakeSocket.instances[0].onclose!({ code: 1000 });
+        await open.closed;
+        await expect(open.opened).resolves.toBe(true);
+
+        const early = transport.followGenerationJob("j2", () => {});
+        early.close();
+        expect(await settled(early.opened)).toBe("settled");
+        await expect(early.opened).resolves.toBe(false);
+        stubs.auth[1].resolve("jwt");
+        await flush();
+
+        const connecting = transport.followGenerationJob("j3", () => {});
+        stubs.auth[2].resolve("jwt");
+        await flush();
+        expect(await settled(connecting.opened)).toBe("pending");
+        connecting.close();
+        await expect(connecting.opened).resolves.toBe(false);
+        await expect(connecting.closed).resolves.toEqual({ terminal: null });
+
+        const unauthenticated = transport.followGenerationJob("j4", () => {});
+        stubs.auth[3].reject(new Error("no auth"));
+        await expect(unauthenticated.opened).resolves.toBe(false);
+
+        const refused = transport.followGenerationJob("j5", () => {});
+        stubs.auth[4].resolve("jwt");
+        await flush();
+        FakeSocket.instances.at(-1)!.onclose!({ code: 1006 });
+        await expect(refused.opened).resolves.toBe(false);
+        await expect(refused.closed).resolves.toEqual({ terminal: null });
     });
 
     it("lets a newer follow of the job supersede an older one, whichever authenticates first, with one usable stream", async () => {

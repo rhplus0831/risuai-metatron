@@ -39,31 +39,26 @@ const stubs = vi.hoisted(() => ({
     serverSends: [] as { target?: ChatRef }[],
 }));
 
-vi.mock("src/lang", () => ({ language: { serverJob: { lost: "job lost" } } }));
-vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("../network/generationJobs", () => ({
-    abortGenerationJob: vi.fn(),
-    applyGenerationEvent: vi.fn(),
-    createGenerationJob: vi.fn(),
-    followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
-        let end!: Follow["end"];
-        const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
-            end = (terminal) => {
-                if (terminal) onEvent(terminal);
-                resolve({ terminal });
-            };
-        });
-        stubs.follows.push({ jobId, end });
-        if (stubs.closeWithoutTerminal) end(null);
-        return { closed, send: () => true, close() {} };
-    },
-    ChatBindingRefusedError: class extends Error {},
-    ChatLoreOverrideOrphanedError: class extends Error {},
-    GenerationBusyError: class extends Error {},
-    readGenerationJob: stubs.read,
-    releaseGenerationJob: vi.fn(),
-    savedGenerationJobIds: () => [],
+vi.mock("src/lang", () => ({
+    language: { serverJob: { lost: "job lost", endedAway: "ended away", followUpsNotRun: "follow-ups not run" } },
 }));
+vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+vi.mock("../network/generationJobs", async () => {
+    const { createGenerationJobsMock, createFollowStub } = await import("../network/tests/generationJobsMock");
+    return createGenerationJobsMock({
+        followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
+            const stub = createFollowStub(jobId);
+            const end: Follow["end"] = (terminal) => {
+                if (terminal) onEvent(terminal);
+                stub.end(terminal);
+            };
+            stubs.follows.push({ jobId, end });
+            if (stubs.closeWithoutTerminal) end(null);
+            return stub.follow;
+        },
+        readGenerationJob: stubs.read,
+    });
+});
 vi.mock("../storage/resourceClient", () => ({
     getResourceEpoch: () => EPOCH,
     readRefs: vi.fn(),
@@ -71,7 +66,8 @@ vi.mock("../storage/resourceClient", () => ({
 }));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: vi.fn(),
-    refreshStaleChat: vi.fn(),
+    /** The chat read after a lost follow takes at once: no retry listener outlives a test. */
+    refreshStaleChat: vi.fn(async () => true),
     GenerationBlockedError: class extends Error {},
     generatingNoticeCount: () => 0,
     watchForRestore: vi.fn(),

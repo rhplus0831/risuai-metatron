@@ -87,6 +87,10 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
 - Hooks in `generationJobs.ts`, `serverCommands.ts`, `eventFeed.ts`,
   `resourceSync.svelte.ts`, and `bootstrap.ts` report job attachment/retry/loss,
   feed state, sync conflicts/reloads, and service-worker setup. They contain no content.
+  `jobLink` phases: `attach`, `detach`, `attachFailed`, `reattach`, `resume`; `lost`
+  (the server stayed unreachable), `gone` (the server no longer knows the job), `kept`
+  (the end came from the server's kept outcome of a collected job), and `recovered`
+  (the chat read after a lost or gone follow took).
 - `src/ts/diagnostics/report.ts`, `shared/diagnosticsReport.ts`, and
   `DiagnosticsPanel.svelte`: Settings → Advanced → Developer & diagnostics. Read the server for
   at most 10 s; failure still gives the browser report. Merge checked events by time

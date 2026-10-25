@@ -1283,6 +1283,22 @@ export function endServerJob(jobId: string) {
 }
 
 /**
+ * Marks a chat this client holds to be read whole by the idle refresh (or `refreshStaleChat`),
+ * whether or not a job still locks anything in it: a server job's end this tab did not see (a lost
+ * or gone follow, a kept outcome). The read applies under the idle refresh's rules (no local work,
+ * the epoch and revision fences). False, marking nothing, for a chat the client does not hold.
+ */
+export function markChatStale(ref: ChatRef): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (!chatRevisions.has(key)) {
+        return false;
+    }
+    staleChats.add(key);
+    notifyWork();
+    return true;
+}
+
+/**
  * The generation locks a change-feed frame announces (`ChatStreaming`: every job's locks of a chat
  * after a job's write or end, `[]` when none is left), so a tab that does not follow the job (an
  * observer, or an owner whose follow was lost) shows the generating reply locked: its edit, delete,

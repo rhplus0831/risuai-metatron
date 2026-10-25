@@ -14,7 +14,7 @@ import type {
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { writable } from "svelte/store";
-import { alertError, alertJobError } from "../alert";
+import { alertError, alertJobError, alertToast } from "../alert";
 import {
     abortGenerationJob,
     applyGenerationEvent,
@@ -28,7 +28,16 @@ import {
     releaseGenerationJob,
     savedGenerationJobIds,
 } from "../network/generationJobs";
-import { type ChatRef, ensureChatLoaded, heldChatRevision, loadChat, pinChat } from "../storage/chatStore.svelte";
+import { compareRevision } from "../../../shared/resources.ts";
+import {
+    type ChatRef,
+    ensureChatLoaded,
+    heldChatRevision,
+    isChatStale,
+    loadChat,
+    markChatStale,
+    pinChat,
+} from "../storage/chatStore.svelte";
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import {
     flushResources,
@@ -43,9 +52,26 @@ import { chatStatusKey as chatKeyOf, noteJobDone, noteJobLost } from "src/ts/pro
 import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
 
-/** How often a follow whose socket closed before the job's end attaches again. */
+/**
+ * How often a follow whose socket closed before the job's end attaches, and the wait before each
+ * attach after the first (doubling, so a network still waking up gets about 15 s). The status reads
+ * of `discover` and the chat loads of `loadJobChat` retry on the same schedule.
+ */
 const MAX_ATTACHES = 5;
-const REATTACH_DELAY_MS = 1000;
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+/** The longest a status read, an attach's opening, or the chat's read after a lost follow may take. */
+const STEP_DEADLINE_MS = 10_000;
+
+/** The wait before retry `attempt` (1-based). */
+const retryDelay = (attempt: number) => RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1];
+
+/**
+ * How a follow ended: a terminal (`applied` when the socket delivered it through the events, else
+ * read from the job's status: `kept` when it is the server's kept outcome of a collected job), a job
+ * the server does not know (`"gone"`: collected long ago, the server restarted, another epoch), or
+ * a server that could not be reached through every attach (`"lost"`).
+ */
+type FollowEnd = { terminal: GenerationTerminalEvent; applied: boolean; kept: boolean } | "gone" | "lost";
 
 function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -87,12 +113,19 @@ export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef):
  * first to learn its chat, retrying a failed read; a job the server does not know (or of another
  * epoch) is released. Every event is applied to the chat and the channel (the follow is the
  * channel's transport). A socket that closes before the end attaches again, a bounded number of
- * times, without creating the job again: a status read that fails is retried; a job that ended
- * meanwhile is attached again too (its attach sends its final records and its terminal). The end is
- * reported once (`alertError` for an error or a lost job). Returns the terminal event, or `"lost"`;
- * a lost job is released as its end would release it. The job's chat is pinned and loaded before the
- * follow attaches (a load that keeps failing makes the job lost) and stays pinned through every
- * reconnect and the terminal's hydration, so no event of the job finds its chat evicted.
+ * times with growing waits, without creating the job again; the job's status is read after every
+ * such close: a failed read is retried; a job that ended meanwhile and is still live is attached
+ * again too (its attach sends its final records and its terminal); the server's kept outcome of a
+ * collected job is its end, applied as the socket's terminal would be (as is the last ended status
+ * read when the attaches ran out). The end is reported once: an error terminal as it is when
+ * watched live, a server that stayed unreachable as `serverJob.lost`. A job the server no longer
+ * knows shows no alert: its chat is read again, then `serverJob.endedAway`. After a lost or gone
+ * follow, and after an end from the status that this tab's copy may lack, the chat is marked stale
+ * and read again (`recoverJobChat`). Returns the terminal event, or `"lost"` (also for a gone job:
+ * its outcome is unknown); a lost job is released as its end would release it. The job's chat is
+ * pinned and loaded before the follow attaches (a load that keeps failing makes the job lost) and
+ * stays pinned through every reconnect, the terminal's hydration, and the chat's read again, so no
+ * event of the job finds its chat evicted.
  */
 export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<GenerationTerminalEvent | "lost"> {
     let shared = following.get(jobId);
@@ -102,7 +135,8 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
             try {
                 const discovered = ref ?? (await discover(jobId));
                 if (discovered === "gone") {
-                    recordClientEvent({ kind: "jobLink", phase: "lost", jobId });
+                    // No chat known (the boot resume): the page has just read its data.
+                    recordClientEvent({ kind: "jobLink", phase: "gone", jobId });
                     releaseGenerationJob(jobId);
                     return "lost";
                 }
@@ -112,13 +146,22 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                     followedJobs.update((jobs) => new Map(jobs).set(jobId, key));
                     release ??= pinChat(target);
                 }
-                const end =
+                const result: FollowEnd =
                     target === "lost" || !(await loadJobChat(target)) ? "lost" : await followOnce(jobId, target);
-                if (end === "lost") {
-                    recordClientEvent({ kind: "jobLink", phase: "lost", jobId });
+                const end = typeof result === "string" ? "lost" : result.terminal;
+                if (typeof result === "string") {
+                    recordClientEvent({ kind: "jobLink", phase: result, jobId });
                     releaseGenerationJob(jobId);
+                } else if (!result.applied) {
+                    if (result.kept) {
+                        recordClientEvent({ kind: "jobLink", phase: "kept", jobId });
+                    }
+                    // Released as the socket's terminal releases the job (its locks, channel, saved job).
+                    applyGenerationEvent(jobId, target as ChatRef, result.terminal);
                 }
-                reportEnd(end, jobId);
+                if (result !== "gone") {
+                    reportEnd(end, jobId);
+                }
                 if (target !== "lost") {
                     if (end === "lost") {
                         noteJobLost(target, jobId);
@@ -126,22 +169,29 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                         noteJobDone(target, end);
                     }
                 }
-                if (
-                    end !== "lost" &&
-                    end.type === "done" &&
-                    end.followUps?.length &&
-                    target !== "lost" &&
-                    !followedUp.has(jobId)
-                ) {
-                    // `/multisend` of a command job: sent now, once per job in this tab (a job followed
-                    // again later gets the same terminal), not awaited by the job's caller. A reload
-                    // meanwhile drops what is left.
-                    followedUp.add(jobId);
-                    // Pinned before the follow-ups' first await (this follow's pin ends below).
-                    const followUpRelease = pinChat(target);
-                    void runFollowUps(target, end.followUps)
-                        .catch((error) => console.error("[Generation]", error))
-                        .finally(followUpRelease);
+                // Before the follow-ups: they clear and append on the chat as the job left it, so a
+                // chat this tab could not read again runs none of them.
+                const current =
+                    target === "lost" ||
+                    !needsChatRead(result, target) ||
+                    (await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome"));
+                if (end !== "lost" && end.type === "done" && target !== "lost" && !followedUp.has(jobId)) {
+                    if (end.followUpsDropped || (end.followUps?.length && !current)) {
+                        // A kept outcome whose `/multisend` parts were too large to keep, or whose chat
+                        // could not be read again: none is sent.
+                        followedUp.add(jobId);
+                        alertError(language.serverJob.followUpsNotRun);
+                    } else if (end.followUps?.length) {
+                        // `/multisend` of a command job: sent now, once per job in this tab (a job
+                        // followed again later gets the same terminal), not awaited by the job's
+                        // caller. A reload meanwhile drops what is left.
+                        followedUp.add(jobId);
+                        // Pinned before the follow-ups' first await (this follow's pin ends below).
+                        const followUpRelease = pinChat(target);
+                        void runFollowUps(target, end.followUps)
+                            .catch((error) => console.error("[Generation]", error))
+                            .finally(followUpRelease);
+                    }
                 }
                 return end;
             } finally {
@@ -161,13 +211,126 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
 }
 
 /**
+ * Whether the job's chat is read again after the follow: always after a lost or gone follow (the
+ * job may have written anything); after an end read from the status (the socket's final chat
+ * hydration never came), for an error (it carries no revision, and an abort keeps the text so far)
+ * or a done whose revision is newer than the one this tab holds.
+ */
+function needsChatRead(result: FollowEnd, ref: ChatRef): boolean {
+    if (typeof result === "string") {
+        return true;
+    }
+    if (result.applied) {
+        return false;
+    }
+    const { terminal } = result;
+    if (terminal.type === "error") {
+        return true;
+    }
+    if (terminal.revision === null) {
+        return false;
+    }
+    const held = heldChatRevision(ref);
+    return held === null || (compareRevision(terminal.revision, held) ?? 1) > 0;
+}
+
+/** The chat reads after a follow that have not ended, one per chat: chat key → its end (a newer one ends it). */
+const recoveries = new Map<string, () => void>();
+
+/**
+ * Reads a followed job's chat again (the caller pinned it): it is marked stale, whether or not the
+ * job still locked anything in it, and read through the idle refresh's rules (`refreshStaleChat`: no
+ * local work, the epoch and revision fences), within `STEP_DEADLINE_MS`. Resolves true when the chat
+ * is current within that time. After a lost or gone follow a read that took is recorded
+ * (`recovered`), and a gone job then shows `serverJob.endedAway`. A read that did not take (offline,
+ * local work, a read past the deadline) is tried once more, at the next `visibilitychange` to visible
+ * or `online` (one listener pair); a chat whose stale mark is gone by then was read another way, and
+ * nothing more is done. A read past the deadline still counts when it takes. One recovery per chat:
+ * a newer one ends the older, whose late results and listeners then do nothing. A chat this tab does
+ * not hold (it could not be loaded) is not read: its next load reads it whole.
+ */
+async function recoverJobChat(ref: ChatRef, jobId: string, after: "lost" | "gone" | "outcome"): Promise<boolean> {
+    const key = chatKeyOf(ref);
+    recoveries.get(key)?.();
+    if (!markChatStale(ref)) {
+        return false;
+    }
+    let active = true;
+    const removeListeners = () => {
+        document.removeEventListener("visibilitychange", retry);
+        window.removeEventListener("online", retry);
+    };
+    const end = () => {
+        active = false;
+        removeListeners();
+        if (recoveries.get(key) === end) {
+            recoveries.delete(key);
+        }
+    };
+    recoveries.set(key, end);
+    const recovered = () => {
+        if (!active) {
+            return;
+        }
+        end();
+        if (after !== "outcome") {
+            recordClientEvent({ kind: "jobLink", phase: "recovered", jobId });
+        }
+        if (after === "gone") {
+            alertToast(language.serverJob.endedAway);
+        }
+    };
+    const refresh = () =>
+        refreshStaleChat(ref).catch((error) => {
+            console.error("[Generation]", error);
+            return false;
+        });
+    const retry = () => {
+        if (document.visibilityState !== "visible") {
+            return;
+        }
+        removeListeners();
+        if (!active) {
+            return;
+        }
+        if (!isChatStale(ref)) {
+            end();
+            return;
+        }
+        void refresh().then((current) => (current ? recovered() : end()));
+    };
+    const read = refresh();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const inTime = await Promise.race([
+        read,
+        new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), STEP_DEADLINE_MS);
+        }),
+    ]);
+    clearTimeout(timer);
+    if (!active) {
+        return false;
+    }
+    if (inTime) {
+        recovered();
+        return true;
+    }
+    if (inTime === null) {
+        void read.then((current) => current && recovered());
+    }
+    document.addEventListener("visibilitychange", retry);
+    window.addEventListener("online", retry);
+    return false;
+}
+
+/**
  * The job's chat, loaded (the caller pinned it): a failed read is retried like `discover`; false when
  * it is gone or could not be loaded.
  */
 async function loadJobChat(ref: ChatRef): Promise<boolean> {
     for (let read = 0; read < MAX_ATTACHES; read++) {
         if (read > 0) {
-            await sleep(REATTACH_DELAY_MS);
+            await sleep(retryDelay(read));
         }
         try {
             return (await ensureChatLoaded(ref)) !== undefined;
@@ -191,15 +354,18 @@ async function runFollowUps(ref: ChatRef, followUps: readonly GenerationFollowUp
     }
 }
 
-/** The chat of a saved job from its status: `"gone"` when the server does not know it, `"lost"` after the retries. */
+/**
+ * The chat of a saved job from its status: `"gone"` when the server does not know it, `"lost"` after
+ * the retries (each read bounded by `STEP_DEADLINE_MS`).
+ */
 async function discover(jobId: string): Promise<ChatRef | "gone" | "lost"> {
     for (let read = 0; read < MAX_ATTACHES; read++) {
         if (read > 0) {
-            await sleep(REATTACH_DELAY_MS);
+            await sleep(retryDelay(read));
         }
         let status;
         try {
-            status = await readGenerationJob(jobId);
+            status = await readGenerationJob(jobId, { deadlineMs: STEP_DEADLINE_MS });
         } catch (error) {
             console.error("[Generation]", error);
             continue;
@@ -212,31 +378,54 @@ async function discover(jobId: string): Promise<ChatRef | "gone" | "lost"> {
     return "lost";
 }
 
-async function followOnce(jobId: string, ref: ChatRef): Promise<GenerationTerminalEvent | "lost"> {
+/**
+ * One follow of a job to its end through at most `MAX_ATTACHES` attaches. An attach whose socket
+ * does not open within `STEP_DEADLINE_MS` is given up. After every close without the terminal the
+ * job's status is read (bounded the same way): a failed read attaches again (the server may be out of
+ * reach), a job the server does not know is `"gone"`, its kept outcome is the end, and a job still
+ * running or ended but still live is attached again. When the attaches run out, or the job is no
+ * longer known after an ended status was read, the terminal of the last ended status read is the
+ * end, if there was one; `"lost"` (or `"gone"`) otherwise.
+ */
+async function followOnce(jobId: string, ref: ChatRef): Promise<FollowEnd> {
+    let known: GenerationTerminalEvent | null = null;
     for (let attach = 0; attach < MAX_ATTACHES; attach++) {
         if (attach > 0) {
-            await sleep(REATTACH_DELAY_MS);
+            await sleep(retryDelay(attach));
             recordClientEvent({ kind: "jobLink", phase: "reattach", jobId, attempt: attach });
         }
         const follow: GenerationFollow = followGenerationJob(jobId, (event) =>
             applyGenerationEvent(jobId, ref, event, follow),
         );
+        const deadline = setTimeout(() => follow.close(), STEP_DEADLINE_MS);
+        void follow.opened.then(() => clearTimeout(deadline));
         const { terminal } = await follow.closed;
+        clearTimeout(deadline);
         if (terminal) {
-            return terminal;
+            return { terminal, applied: true, kept: false };
         }
         let status;
         try {
-            status = await readGenerationJob(jobId);
+            status = await readGenerationJob(jobId, { deadlineMs: STEP_DEADLINE_MS });
         } catch {
             // A failed read (the network, the server restarting): attach again.
             continue;
         }
-        if (!status || status.epoch !== getResourceEpoch()) {
-            break;
+        if (!status) {
+            // Not known any more (the server restarted meanwhile): an end an earlier read named stands.
+            return known && known.epoch === getResourceEpoch()
+                ? { terminal: known, applied: false, kept: false }
+                : "gone";
         }
+        if (status.epoch !== getResourceEpoch()) {
+            return "gone";
+        }
+        if (status.kept && status.terminal) {
+            return { terminal: status.terminal, applied: false, kept: true };
+        }
+        known = status.state === "ended" ? (status.terminal ?? null) : null;
     }
-    return "lost";
+    return known ? { terminal: known, applied: false, kept: false } : "lost";
 }
 
 /**
@@ -437,7 +626,7 @@ async function runPinnedServerJob(
         }
         if (error instanceof GenerationBusyError) {
             // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
-            const owned = await readGenerationJob(error.jobId).catch(() => null);
+            const owned = await readGenerationJob(error.jobId, { deadlineMs: STEP_DEADLINE_MS }).catch(() => null);
             if (!owned) {
                 alertError(language.chatGenerating);
                 // Another tab's job runs in this chat, with or without a lock this tab knows of yet.

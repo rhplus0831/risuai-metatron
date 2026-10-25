@@ -273,6 +273,11 @@ export type GenerationTerminalEvent =
            * before each part, and stops at the first part that does not send.
            */
           followUps?: GenerationFollowUp[];
+          /**
+           * Only in a kept outcome (`GenerationStatus.kept`): the job's `/multisend` follow-ups were
+           * too large to keep after the job was collected, so none of them is sent.
+           */
+          followUpsDropped?: true;
       }
     | {
           type: "error";
@@ -689,7 +694,12 @@ export type GenerationEvent =
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
 
-/** `GET /api/generations/:id`: what the owner needs to attach again. */
+/**
+ * `GET /api/generations/:id`: what the owner needs to attach again. After an ended job is collected,
+ * the server keeps its outcome for a while (`kept`): the job can no longer be attached, and its
+ * terminal is trimmed (no preview `result`, large `alternatives` and `followUps` dropped, an error
+ * message cut).
+ */
 export type GenerationStatus = {
     jobId: string;
     kind: GenerationKind;
@@ -700,6 +710,8 @@ export type GenerationStatus = {
     messageId?: string;
     generationId?: string;
     terminal?: GenerationTerminalEvent;
+    /** The job was collected: this is its kept outcome, and an attach to it is refused. */
+    kept?: true;
 };
 
 /** Record kinds a job never sends as `resource` events (credentials stay on the server). */

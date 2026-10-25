@@ -20,8 +20,13 @@ import {
     GenerationRunnerError,
     type GenerationRunner,
     JOB_ABORT_GRACE_MS,
+    JOB_DONE_GRACE_MS,
     JobWriteConflictError,
+    KEPT_OUTCOME_MS,
     markFailure,
+    MAX_KEPT_LIST_BYTES,
+    MAX_KEPT_MESSAGE_BYTES,
+    MAX_KEPT_OUTCOMES,
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
@@ -30,8 +35,8 @@ import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
 // The generation job registry (`server/src/jobs/generationJobs.ts`) in process, with a fake runner
 // per test: admission, the job's write capability (lock handoff, rollback, the one F-b retry, the
 // fence outcomes), the end of a job (one terminal, dead capabilities, released locks and slot), the
-// abort deadline, maintenance, and shutdown. The routes and the owner socket are covered by
-// `generations.test.ts`.
+// abort deadline, the outcome kept after the job is collected, maintenance, and shutdown. The routes
+// and the owner socket are covered by `generations.test.ts`.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -1278,5 +1283,166 @@ describe("the memory stop control", () => {
             status: 409,
             body: { error: "jobEnded" },
         });
+    });
+});
+
+describe("the kept outcome of a collected job", () => {
+    /** The GC's own interval (`JOB_GC_INTERVAL_MS`), after which an ended job past its grace is collected. */
+    const GC_TICK_MS = 30_000;
+    /** Only the clock the registry reads and the GC's interval are faked: `ended` and `drain` keep their real timers. */
+    const fakeClock = () => vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    /** Runs the clock to the GC tick 60 s after the ended jobs' end (the clock stands still otherwise): they are collected. */
+    const collect = () => vi.advanceTimersByTimeAsync(JOB_DONE_GRACE_MS);
+    /** Lets `job` run as a command job of chat `k` and returns the job's id once the runner is done. */
+    const endJob = async (
+        s: ReturnType<typeof setup>,
+        body: (job: RunningJob) => void,
+        kind: "send" | "command" = "command",
+    ) => {
+        const outcome = s.run(async (job) => body(job));
+        const jobId = s.create("", kind);
+        await outcome;
+        await s.ended(jobId);
+        return jobId;
+    };
+
+    it("answers a collected job's outcome as `ended` and `kept` to its owner only, without the preview result, and refuses an attach to it", async () => {
+        fakeClock();
+        const s = setup();
+        const { jobs, store, revision, follow } = s;
+        jobs.startGc();
+        const followUps = [{ clear: false, parts: ["next"] }];
+        const jobId = await endJob(s, (job) =>
+            job.emit({
+                type: "done",
+                revision: revision(),
+                messageId: "r",
+                result: { assembled: "x".repeat(10_000) },
+                alternatives: ["alt"],
+                followUps,
+            }),
+        );
+        // Still live inside the grace: the whole terminal, not kept.
+        expect(jobs.status(jobId, "tab")).toMatchObject({
+            state: "ended",
+            terminal: { type: "done", result: { assembled: expect.any(String) } },
+        });
+        expect(jobs.status(jobId, "tab")?.kept).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(GC_TICK_MS);
+        expect(jobs.status(jobId, "tab")?.kept).toBeUndefined();
+        await collect();
+        expect(jobs.status(jobId, "tab")).toEqual({
+            jobId,
+            kind: "command",
+            characterId: "c",
+            chatId: "k",
+            epoch: store.epoch(),
+            state: "ended",
+            terminal: {
+                type: "done",
+                epoch: store.epoch(),
+                revision: revision(),
+                messageId: "r",
+                alternatives: ["alt"],
+                followUps,
+            },
+            kept: true,
+        });
+        expect(jobs.status(jobId, "other")).toBeNull();
+        expect(jobs.abort(jobId, "tab")).toBeNull();
+        // The job is gone: its socket is refused as for an unknown job.
+        await expect(follow(jobId)).rejects.toThrow();
+    });
+
+    it("trims a kept terminal: follow-ups or alternatives whose JSON exceeds 64 KiB are dropped (follow-ups flagged), and an error message is cut to 4 KiB at a code point boundary", async () => {
+        fakeClock();
+        const s = setup();
+        const { jobs, revision } = s;
+        jobs.startGc();
+        const big = "y".repeat(MAX_KEPT_LIST_BYTES);
+        const largeFollowUps = await endJob(s, (job) =>
+            job.emit({
+                type: "done",
+                revision: revision(),
+                alternatives: ["alt"],
+                followUps: [{ clear: true, parts: [big] }],
+            }),
+        );
+        const largeAlternatives = await endJob(s, (job) =>
+            job.emit({
+                type: "done",
+                revision: revision(),
+                alternatives: [big],
+                followUps: [{ clear: false, parts: ["small"] }],
+            }),
+        );
+        // 4095 one-byte characters, then a three-byte one that the 4096-byte limit cuts through.
+        const message = "x".repeat(MAX_KEPT_MESSAGE_BYTES - 1) + "\u20ac" + "z".repeat(10);
+        const longError = await endJob(s, (job) => job.emit({ type: "error", message, status: 500, reason: "failed" }));
+        await collect();
+        expect(jobs.status(largeFollowUps, "tab")?.terminal).toEqual({
+            type: "done",
+            epoch: expect.any(String),
+            revision: expect.any(String),
+            alternatives: ["alt"],
+            followUpsDropped: true,
+        });
+        expect(jobs.status(largeAlternatives, "tab")?.terminal).toEqual({
+            type: "done",
+            epoch: expect.any(String),
+            revision: expect.any(String),
+            followUps: [{ clear: false, parts: ["small"] }],
+        });
+        const kept = jobs.status(longError, "tab")?.terminal;
+        expect(kept).toMatchObject({ type: "error", status: 500, reason: "failed" });
+        const cut = (kept as { message: string }).message;
+        expect(cut).toBe("x".repeat(MAX_KEPT_MESSAGE_BYTES - 1));
+        expect(Buffer.byteLength(cut)).toBeLessThanOrEqual(MAX_KEPT_MESSAGE_BYTES);
+    });
+
+    it("keeps at most 500 outcomes, the oldest out first, and drops each one 24 h after it was kept", async () => {
+        fakeClock();
+        const s = setup();
+        const { jobs, revision } = s;
+        jobs.startGc();
+        const ids: string[] = [];
+        for (let n = 0; n <= MAX_KEPT_OUTCOMES; n++) {
+            const outcome = s.run(async (job) => job.emit({ type: "done", revision: revision() }));
+            ids.push(s.create());
+            await outcome;
+            await jobs.drain();
+        }
+        await collect();
+        const keptAt = Date.now();
+        expect(jobs.status(ids[0], "tab")).toBeNull();
+        expect(jobs.status(ids[1], "tab")).toMatchObject({ state: "ended", kept: true });
+        expect(jobs.status(ids[MAX_KEPT_OUTCOMES], "tab")).toMatchObject({ state: "ended", kept: true });
+        // Kept at the GC tick that collected them: readable until 24 h after it.
+        vi.setSystemTime(keptAt + KEPT_OUTCOME_MS - 1);
+        expect(jobs.status(ids[1], "tab")).toMatchObject({ kept: true });
+        vi.setSystemTime(keptAt + KEPT_OUTCOME_MS);
+        expect(jobs.status(ids[1], "tab")).toBeNull();
+        expect(jobs.status(ids[MAX_KEPT_OUTCOMES], "tab")).toBeNull();
+    });
+
+    it("clears every kept outcome when the epoch changes, and keeps none for a job of the old epoch collected after that", async () => {
+        fakeClock();
+        const s = setup();
+        const { jobs, store, dir, revision } = s;
+        jobs.startGc();
+        const before = await endJob(s, (job) => job.emit({ type: "done", revision: revision() }));
+        await collect();
+        expect(jobs.status(before, "tab")).toMatchObject({ kept: true });
+        // Ended, still inside its grace when the data is replaced.
+        const during = await endJob(s, (job) => job.emit({ type: "done", revision: revision() }));
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        const oldEpoch = store.epoch();
+        store.replaceAll(store.readSnapshot(snapshot));
+        expect(store.epoch()).not.toBe(oldEpoch);
+        expect(jobs.status(before, "tab")).toBeNull();
+        expect(jobs.status(during, "tab")).toMatchObject({ state: "ended", epoch: oldEpoch });
+        await collect();
+        expect(jobs.status(during, "tab")).toBeNull();
     });
 });
