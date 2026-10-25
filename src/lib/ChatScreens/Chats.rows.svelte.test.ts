@@ -800,6 +800,34 @@ describe("opening row reveal", () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
+    it("waits only for unfinished images in the transcript's view, not lazy ones outside it", async () => {
+        // A tall newest message anchored at its start: images further down stay unloaded while hidden.
+        const ui = opening(messages(4));
+        vi.mocked(latest("m3").element.getBoundingClientRect).mockReturnValue(rect(100, 6000));
+        const [near, far] = ["near", "far"].map(() => {
+            const img = document.createElement("img");
+            Object.defineProperty(img, "complete", { value: false });
+            latest("m3").element.append(img);
+            return img;
+        });
+        latest("m3").settle();
+        await flushSettles();
+        const images = Observer.live.find((observer) => observer.observed.has(near))!;
+        expect(images.options.root).toBe(ui.scroller);
+        images.deliver(far, false);
+        await frame();
+        // The near image has no observation yet.
+        expect(ui.pending()).toEqual(["m3", "m2", "m1", "m0"]);
+        images.deliver(near, true);
+        await frame();
+        expect(ui.pending()).toEqual(["m3", "m2", "m1", "m0"]);
+        near.dispatchEvent(new Event("load"));
+        await frame();
+        expect(ui.pending()).toEqual([]);
+        expect(Observer.live).not.toContain(images);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("resets scrollTop and binds revealing for each opening, releasing on switch and destroy", async () => {
         const ui = opening([], 3, { suspendTrim: false, scrollTop: -90 });
         expect(ui.props.revealing).toBe(false);
