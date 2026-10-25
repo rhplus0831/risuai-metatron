@@ -96,6 +96,7 @@
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset } from "src/ts/process/files/inlays";
     import Chats from "./Chats.svelte";
+    import ContextMeter from "./ContextMeter.svelte";
     import Button from "../UI/GUI/Button.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { getAdditionalChatLoadPages, getInitialChatLoadPages } from "src/ts/chatLoadPages";
@@ -1107,6 +1108,16 @@
                         updateInputTransateMessage(false);
                     }}
                     style:height={inputHeight}></textarea>
+
+                {#if displayedChat}
+                    {#key chatKey}
+                        <ContextMeter
+                            chatRef={displayedChat}
+                            group={currentCharacter.type === "group"}
+                            height={inputHeight}
+                        />
+                    {/key}
+                {/if}
 
                 {#if stoppable}
                     <button
