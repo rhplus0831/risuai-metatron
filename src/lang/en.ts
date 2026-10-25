@@ -276,6 +276,10 @@ export const languageEnglish = {
             "When on, the server keeps each LLM request's prompt, request bodies and headers (credentials masked), and responses in its request history (`save/data/request-history.sqlite` on the server, not in backups). When off, new requests keep only a summary: time, source, model, status, duration, sizes, and the error message. Requests stored before keep their content.",
         requestHistoryLimit:
             "How many requests the server's request history keeps (10 to 10,000). Past it, the oldest requests are removed at the next request. The server also caps the history's total size.",
+        contextMeterTurnUnit:
+            "How the context meter counts the history the model still sees. Turns counts your own messages that are still in the prompt; All Messages counts the character's replies too. When the prompt no longer fits the context, the oldest messages are left out (or summarized, with memory on), so this number stops growing once a chat is long.",
+        contextMeterFixedWarn:
+            "The fixed share is the part of the prompt budget (the context size minus the reserved response) taken by everything but the chat history and memory: the prompt, description, persona, lorebook, author's note, and the like. Above this level the meter turns red, because the fixed part leaves little room for history. 10% to 95%.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -735,6 +739,9 @@ export const languageEnglish = {
     settingsSectionInput: "Input",
     settingsSectionMessageEditing: "Message editing",
     settingsSectionChatNavigation: "Chat & navigation",
+    settingsSectionContextMeter: "Context usage meter",
+    settingsSectionContextMeterDesc:
+        "A chip beside the chat input that shows how far back the model remembers and where the context went on the last reply. Not shown in group chats.",
     settingsSectionScrolling: "Scrolling",
     settingsSectionReachability: "Reachability",
     accessibilityDisplaySizesLink: "Text, icon and input sizes are in Display & Audio › Layout & sizing.",
@@ -1589,6 +1596,11 @@ export const languageEnglish = {
     newChatBinding: "New Chat Presets and Persona",
     newChatBindingInherit: "Current Chat",
     newChatBindingEmpty: "Nothing Set",
+    contextMeter: "Show Context Usage Meter",
+    contextMeterTurnUnit: "History Window Counts",
+    contextMeterTurnUnitUser: "Turns",
+    contextMeterTurnUnitMessage: "All Messages",
+    contextMeterFixedWarn: "Fixed Share Warning",
     openChat: {
         name: "Chat name",
         rename: "Rename chat",

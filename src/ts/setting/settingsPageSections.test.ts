@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
+import { CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
 import {
     accessibilitySettingsHeader,
     accessibilitySettingsItems,
@@ -21,7 +22,7 @@ import {
     translationSettingsItems,
     translationSettingsSections,
 } from "./translationSettingsData";
-import type { SettingItem, SettingSection } from "./types";
+import type { SettingContext, SettingItem, SettingSection } from "./types";
 import { getFullSettingsData } from "./utils";
 import { voiceSettingsItems } from "./voiceSettingsData";
 
@@ -133,6 +134,8 @@ const DEPENDENT_PAIRS: [string, string][] = [
     ["display.customQuotes", "display.trailingDoubleQuote"],
     ["display.customQuotes", "display.leadingSingleQuote"],
     ["display.customQuotes", "display.trailingSingleQuote"],
+    ["interaction.contextMeterEnabled", "interaction.contextMeterTurnUnit"],
+    ["interaction.contextMeterEnabled", "interaction.contextMeterFixedWarn"],
 ];
 
 const duplicates = (ids: string[]) => ids.filter((id, index) => ids.indexOf(id) !== index);
@@ -255,6 +258,43 @@ describe("settings page sections", () => {
     it("keeps the memory limit thickness directly under the toggle its condition reads", () => {
         const ids = displaySettingsSections.flatMap((section) => section.items.map((item) => item.id));
         expect(ids[ids.indexOf("display.showMemoryLimit") + 1]).toBe("display.memoryLimitThickness");
+    });
+
+    it("puts the context meter's settings in their own Interaction section, the basis settings shown only while the meter is on", () => {
+        const section = interactionSettingsSections.find((entry) => entry.id === "interaction.contextMeter")!;
+        expect(section.collapsible).toBeFalsy();
+        expect(section.items.map((item) => item.id)).toEqual([
+            "interaction.contextMeterEnabled",
+            "interaction.contextMeterTurnUnit",
+            "interaction.contextMeterFixedWarn",
+        ]);
+        const [enabled, turnUnit, fixedWarn] = section.items;
+        expect(enabled.bindKey).toBe("contextMeter");
+        expect(enabled.condition).toBeUndefined();
+        const ctx = (ui: Record<string, unknown>) => ({ settings: { ui } }) as unknown as SettingContext;
+        for (const item of [turnUnit, fixedWarn]) {
+            expect(item.condition!(ctx({ contextMeter: true })), item.id).toBe(true);
+            expect(item.condition!(ctx({ contextMeter: false })), item.id).toBe(false);
+        }
+        // Read as the meter reads it: anything but `message` counts turns.
+        expect(turnUnit.options?.segmentOptions?.map((option) => option.value)).toEqual(["user", "message"]);
+        expect(turnUnit.getValue!(ctx({ contextMeterTurnUnit: "message" }))).toBe("message");
+        for (const stored of ["user", "turn", undefined]) {
+            expect(turnUnit.getValue!(ctx({ contextMeterTurnUnit: stored })), String(stored)).toBe("user");
+        }
+        expect(fixedWarn).toMatchObject({ type: "slider", bindKey: "contextMeterFixedWarn" });
+        expect([fixedWarn.options?.min, fixedWarn.options?.max]).toEqual([
+            CONTEXT_METER_FIXED_WARN.min,
+            CONTEXT_METER_FIXED_WARN.max,
+        ]);
+        const english = languageEnglish as unknown as Record<string, unknown> & { help: Record<string, unknown> };
+        for (const item of section.items) {
+            expect(typeof english[item.labelKey!], item.id).toBe("string");
+            if (item.helpKey) expect(typeof english.help[item.helpKey], item.id).toBe("string");
+        }
+        for (const option of turnUnit.options!.segmentOptions!) {
+            expect(typeof english[option.labelKey!], String(option.value)).toBe("string");
+        }
     });
 
     it("gives every section an English heading, description, and badge for the keys it names", () => {

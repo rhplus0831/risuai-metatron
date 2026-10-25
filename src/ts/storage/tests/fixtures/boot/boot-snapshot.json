@@ -639,6 +639,9 @@
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
   "moveInsteadOfCopyOnCMPConvert": false,
+  "contextMeter": true,
+  "contextMeterTurnUnit": "user",
+  "contextMeterFixedWarn": 60,
   "formatversion": 5,
   "characterOrder": []
 }

@@ -5,6 +5,7 @@ import {
     DEFAULT_CHAT_LOAD_INITIAL_PAGES,
     normalizeChatLoadPages,
 } from "../../../../shared/chatLoadPages.ts";
+import { CONTEXT_METER_FIXED_WARN } from "../../../../shared/database.ts";
 import type { SectionResource } from "../../../../shared/resources.ts";
 import { isPlainObject, normalizeSection, plainClone, type SectionSpec } from "./shared.ts";
 
@@ -127,6 +128,9 @@ const spec: SectionSpec<"ui"> = {
     pluginDevelopMode: ["boolean"],
     memoryAlgorithmType: ["string"],
     forceProxyAsOpenAI: ["boolean"],
+    contextMeter: ["boolean", true],
+    contextMeterTurnUnit: ["string", "user"],
+    contextMeterFixedWarn: ["number", CONTEXT_METER_FIXED_WARN.default],
 };
 
 export function normalizeUi(input: unknown): SectionResource<"ui"> {
@@ -147,6 +151,14 @@ export function normalizeUi(input: unknown): SectionResource<"ui"> {
     if (!isNewChatBinding(record.newChatBinding)) {
         record.newChatBinding = DEFAULT_NEW_CHAT_BINDING;
     }
+    if (record.contextMeterTurnUnit !== "message") {
+        record.contextMeterTurnUnit = "user";
+    }
+    // The kind check already replaced a non-finite number with the default.
+    record.contextMeterFixedWarn = Math.min(
+        CONTEXT_METER_FIXED_WARN.max,
+        Math.max(CONTEXT_METER_FIXED_WARN.min, record.contextMeterFixedWarn as number),
+    );
     if (isPlainObject(record.customTextTheme)) {
         record.customTextTheme.FontColorQuote1 ??= "#8BE9FD";
         record.customTextTheme.FontColorQuote2 ??= "#FFB86C";

@@ -3,7 +3,7 @@
 // `persistence.md`). Never rename persisted keys (STRUCTURE D3).
 
 import type { NewChatBinding } from "./chatBinding.ts";
-import type { ContextReport } from "./contextReport.ts";
+import type { ContextMeterTurnUnit, ContextReport } from "./contextReport.ts";
 import type { LLMFlags, LLMFormat, LLMTokenizer } from "./llm.ts";
 import type {
     HypaModel,
@@ -30,6 +30,9 @@ import type { triggerscript } from "./triggers.ts";
 import type { TogglePreset } from "./togglePresets.ts";
 
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
+
+/** The range and default of `Database.contextMeterFixedWarn`, in percent; `normalizeUi` clamps to it. */
+export const CONTEXT_METER_FIXED_WARN = { min: 10, max: 95, default: 60 } as const;
 
 export type BlockedRealmCreator = { id: string; name: string };
 
@@ -565,6 +568,12 @@ export interface Database {
     longPressToPopupEditor?: boolean;
     disableAprilFools?: boolean;
     moveInsteadOfCopyOnCMPConvert?: boolean;
+    /** Whether the chat composer shows the context usage meter. */
+    contextMeter: boolean;
+    /** What the meter's history window counts: kept user messages (turns) or every kept message. */
+    contextMeterTurnUnit: ContextMeterTurnUnit;
+    /** The fixed share of the context, in percent, above which the meter warns (`CONTEXT_METER_FIXED_WARN`). */
+    contextMeterFixedWarn: number;
 }
 
 export interface SeparateParameters {

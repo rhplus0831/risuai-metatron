@@ -292,6 +292,9 @@ export const SECTION_FIELDS = {
         "pluginDevelopMode",
         "memoryAlgorithmType",
         "forceProxyAsOpenAI",
+        "contextMeter",
+        "contextMeterTurnUnit",
+        "contextMeterFixedWarn",
     ],
 } as const satisfies Record<SectionKind, readonly (keyof Database)[]>;
 

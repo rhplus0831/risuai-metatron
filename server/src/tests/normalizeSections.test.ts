@@ -111,17 +111,23 @@ describe("every section normalizer", () => {
                 }
                 const value = defaults[field];
                 // An enum field keeps only its own values: its valid alternate stands in for the
-                // generated string (`ui.newChatBinding`, `memoryTranslateMedia.llmTranslationTarget`;
-                // the invalid strings are covered under their sections).
+                // generated string (`ui.newChatBinding`, `ui.contextMeterTurnUnit`,
+                // `memoryTranslateMedia.llmTranslationTarget`; the invalid strings are covered under
+                // their sections). A clamped number takes a value inside its range
+                // (`ui.contextMeterFixedWarn`, 10–95).
                 const replacement =
                     valueKindOf(value) === "string"
                         ? field === "newChatBinding"
                             ? "empty"
-                            : field === "llmTranslationTarget"
-                              ? "rendered"
-                              : `changed-${field}`
+                            : field === "contextMeterTurnUnit"
+                              ? "message"
+                              : field === "llmTranslationTarget"
+                                ? "rendered"
+                                : `changed-${field}`
                         : valueKindOf(value) === "number"
-                          ? 7
+                          ? field === "contextMeterFixedWarn"
+                              ? 75
+                              : 7
                           : valueKindOf(value) === "boolean"
                             ? !value
                             : Array.isArray(value)
@@ -391,6 +397,41 @@ describe("ui", () => {
         }
         expectIdempotent(normalizeUi, { newChatBinding: "tab" });
         expectIdempotent(normalizeUi, { newChatBinding: "empty" });
+    });
+
+    it("defaults the context meter on, counting turns, warning at 60%, and replaces any other turn unit with `user`", () => {
+        expect(normalizeUi(undefined)).toMatchObject({
+            contextMeter: true,
+            contextMeterTurnUnit: "user",
+            contextMeterFixedWarn: 60,
+        });
+        expect(normalizeUi({ contextMeter: false }).contextMeter).toBe(false);
+        expect(normalizeUi({ contextMeterTurnUnit: "message" }).contextMeterTurnUnit).toBe("message");
+        expect(normalizeUi({ contextMeterTurnUnit: "user" }).contextMeterTurnUnit).toBe("user");
+        for (const value of ["", "turn", "Message", "messages", 1, true, null, {}, ["message"]]) {
+            expect(normalizeUi({ contextMeterTurnUnit: value }).contextMeterTurnUnit, JSON.stringify(value)).toBe(
+                "user",
+            );
+        }
+        expectIdempotent(normalizeUi, { contextMeterTurnUnit: "turn" });
+        expectIdempotent(normalizeUi, { contextMeterTurnUnit: "message" });
+    });
+
+    it("clamps the context meter's fixed-share warning to 10–95 and replaces a non-finite or non-number value with 60", () => {
+        const warn = (value: unknown) => normalizeUi({ contextMeterFixedWarn: value }).contextMeterFixedWarn;
+        expect(warn(10)).toBe(10);
+        expect(warn(95)).toBe(95);
+        expect(warn(42.5)).toBe(42.5);
+        expect(warn(9.9)).toBe(10);
+        expect(warn(0)).toBe(10);
+        expect(warn(-30)).toBe(10);
+        expect(warn(95.1)).toBe(95);
+        expect(warn(400)).toBe(95);
+        for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "70", null, true]) {
+            expect(warn(value), String(value)).toBe(60);
+        }
+        expectIdempotent(normalizeUi, { contextMeterFixedWarn: 400 });
+        expectIdempotent(normalizeUi, { contextMeterFixedWarn: 3 });
     });
 });
 

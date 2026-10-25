@@ -2,13 +2,14 @@
  * Interaction Settings Data
  *
  * Data-driven definition for the InteractionSettings page: how the chat input sends, how messages are
- * edited and removed, and how the menus and chat list behave. Moved from Accessibility (the `acc.`
- * items) and Advanced (the `adv.` items), keeping their ids.
+ * edited and removed, how the menus and chat list behave, and the chat's context usage meter. Moved
+ * from Accessibility (the `acc.` items) and Advanced (the `adv.` items), keeping their ids.
  */
 
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
+import { CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
 
 export const interactionSettingsItems: SettingItem[] = [
     {
@@ -140,6 +141,44 @@ export const interactionSettingsItems: SettingItem[] = [
         helpKey: "enableScrollToActiveChar",
     },
     { id: "adv.bookmark", type: "check", labelKey: "bookmark", bindKey: "enableBookmark" },
+    {
+        id: "interaction.contextMeterEnabled",
+        type: "check",
+        labelKey: "contextMeter",
+        bindKey: "contextMeter",
+        keywords: ["context", "token", "meter", "usage", "history", "window"],
+    },
+    {
+        id: "interaction.contextMeterTurnUnit",
+        type: "segmented",
+        labelKey: "contextMeterTurnUnit",
+        helpKey: "contextMeterTurnUnit",
+        bindKey: "contextMeterTurnUnit",
+        condition: (ctx) => ctx.settings.ui.contextMeter,
+        // Shown as the meter reads it: anything but `message` counts turns.
+        getValue: (ctx) => (ctx.settings.ui.contextMeterTurnUnit === "message" ? "message" : "user"),
+        options: {
+            segmentOptions: [
+                { value: "user", labelKey: "contextMeterTurnUnitUser" },
+                { value: "message", labelKey: "contextMeterTurnUnitMessage" },
+            ],
+        },
+        keywords: ["context", "turn", "message", "history", "window"],
+    },
+    {
+        id: "interaction.contextMeterFixedWarn",
+        type: "slider",
+        labelKey: "contextMeterFixedWarn",
+        helpKey: "contextMeterFixedWarn",
+        bindKey: "contextMeterFixedWarn",
+        condition: (ctx) => ctx.settings.ui.contextMeter,
+        options: {
+            min: CONTEXT_METER_FIXED_WARN.min,
+            max: CONTEXT_METER_FIXED_WARN.max,
+            customText: (value) => `${value}%`,
+        },
+        keywords: ["context", "fixed", "share", "warning", "prompt"],
+    },
 ];
 
 /** The page heading, above the sections. */
@@ -177,6 +216,16 @@ export const interactionSettingsSections: SettingSection[] = [
             "acc.newChatBinding",
             "adv.scrollToActive",
             "adv.bookmark",
+        ]),
+    },
+    {
+        id: "interaction.contextMeter",
+        labelKey: "settingsSectionContextMeter",
+        descriptionKey: "settingsSectionContextMeterDesc",
+        items: itemsById(interactionSettingsItems, [
+            "interaction.contextMeterEnabled",
+            "interaction.contextMeterTurnUnit",
+            "interaction.contextMeterFixedWarn",
         ]),
     },
 ];
