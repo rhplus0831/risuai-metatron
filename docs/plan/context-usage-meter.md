@@ -1,6 +1,6 @@
 # Context Usage Meter Plan
 
-Status: landed 1 (2eb869497), 2 (630ba6396), 3 (2febc0f44). Revised 2026-10-25 after a read-only GPT-6-Astra
+Status: landed 1 (2eb869497), 2 (630ba6396), 3 (2febc0f44), 4 (69858ee8b). Revised 2026-10-25 after a read-only GPT-6-Astra
 review of the first draft; its confirmed findings are folded in below.
 
 Slice 1 deviations later slices rely on:
@@ -48,6 +48,26 @@ Slice 3 notes for slice 4:
   section `SettingHit` is built at click time. Strings are in `language.contextUsage`.
 - No real-browser check yet (placement, narrow layout, light theme); it belongs
   to the manual check after slice 4.
+
+Slice 4 notes:
+
+- The estimate is also hidden while any memory is configured (the next send may
+  ask to run it), with a preset chain, with an incomplete binding, when the last
+  message is disabled, when `replyPrefix` names another message, and on a
+  continue whose overflow reaches the queue's last entry. The reply and the draft
+  are counted without their `<Thoughts>` block, as the server counts them.
+- The tooltip reads "18 turns kept before, 16 of them after": the next report's
+  kept count also gains the new messages (kept + 2 − n in messages for a normal
+  send), so the manual check below compares against that, not a plain drop. The
+  "may run memory" hint was not built.
+- `countTokensInScope(text, captured, signal?)` was split out of `countTokens`
+  for the job-scope counts.
+- Real-browser check done with a mock provider: kept count against the prompt,
+  popover rows plus Other against input tokens, the estimate against the next
+  report (22 + 2 − 5 = 19), the estimate hidden after an earlier edit and a model
+  switch, the turn unit, light theme, and 420 px width. Not checked in a browser:
+  group chats, memory mode, a continue, the unknown estimate state, the settings
+  link, the warning level, Firefox and Safari.
 
 Planned on 2026-10-25. Sources: the code at `49b046098` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
