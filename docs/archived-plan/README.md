@@ -42,6 +42,7 @@ git show 2e359afde:docs/plan/upstream-integration.md
 git show 2e359afde:docs/plan/combined-run.md
 git show 12fd77196:docs/plan/combine-audit-fixes.md
 git show a179640ad:docs/plan/chat-lore-overrides.md
+git show 47c534f69:docs/plan/context-usage-meter.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -85,6 +86,7 @@ it is not a current architecture guide.
 | Combined Run index                       | `2e359afde`: `docs/plan/combined-run.md`                                  | the eight plans above (one `plan-runner` run); [build/test platforms](../structure/build-test-platforms.md) for the run's checks                                                                                                                                                                                                                                                                                                                                                             |
 | Combine Audit Fixes                      | `12fd77196`: `docs/plan/combine-audit-fixes.md`                           | [scripts/triggers](../structure/scripts-triggers.md), [UI/theming](../structure/ui-theming.md), [LLM requests](../structure/llm-requests.md), [global API](../structure/global-api.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                           |
 | Chat Lore Overrides                      | `a179640ad`: `docs/plan/chat-lore-overrides.md`                           | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [plugins/MCP](../structure/plugins-mcp.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md)                                                                                         |
+| Context Usage Meter                      | `47c534f69`: `docs/plan/context-usage-meter.md`                           | [chat pipeline](../structure/chat-pipeline.md), [LLM requests](../structure/llm-requests.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [persistence](../structure/persistence.md)                                                                                                                                                                                                                                                           |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -491,6 +493,31 @@ instead of the DevTool preview). Still open: the manual check by hand in a real 
 whether auxiliary LLM requests (suggestions, memory summaries, translation, MCP AIAccess, plugin
 and WebLLM requests) should also refuse a chat with orphaned overrides; the plan limited the
 refusal to generation jobs.
+
+Context Usage Meter (a composer chip showing how the last request spent the model's context,
+shaped for RisuAI's per-send rebuild and trim, planned with the user on 2026-10-25) landed all 4
+slices on `metatron` on 2026-10-25 through the plan runner (`opus-workflow` for 1, 3, 4 and
+`opus-lite` for 2), one cherry-picked commit each: 1 the server `ContextReport` in
+`MessageGenerationInfo.context` (`shared/contextReport.ts`, counted at assembly's own sites, with
+the no-memory trim ledger, memory coverage, the lore budget from `activateLore`, and the job token
+scope) (`2eb869497`); 2 the `contextMeter`, `contextMeterTurnUnit`, and `contextMeterFixedWarn` UI
+settings in the `interaction.contextMeter` section (`630ba6396`); 3 `ContextMeter.svelte`, the
+chip and its breakdown popover (`2febc0f44`); 4 the typing-time displacement estimate with
+`jobTokenScope()` and `countTokensInScope()` (`69858ee8b`). The final checks on `47c534f69`
+passed: `pnpm check`, `check:tests`, 7053 unit tests, 56 slow tests, and 14 e2e tests in eight
+specs (`perChatSends`, `chatBinding`, `welcomeAndChatSettings`, `openChat`, `lazyChats`,
+`refusedData`, `settingsPages`, `chatLoreOverrides`). Decisions made by the slices: slice 2, not
+1, typed the three `Database` fields, because the partition check needs them in
+`shared/sections.ts` (1); section rows have no `name`, `"beyondQueue"` means the known 8-entry
+queue ran out, and memory coverage is `"covered"` only on HypaV3 evidence (1); the memory-mode
+chip leaves the memory kind to its label and the popover (3); the estimate is also hidden with any
+memory configured, a preset chain, an incomplete binding, or a disabled last message, and the
+next report's kept count is kept + 2 − n messages, not a plain drop (4). Slice 4 ran most of the
+manual check in a browser against a mock provider. Still open: the manual check for group chats,
+memory mode, a continue, the unknown estimate, the settings link, the warning level, and Firefox
+and Safari; the deferred Recalculate (it needs a preview job that writes nothing, keeping
+`previewChat("preview")`'s array contract); restoring the `showMemoryLimit` line (see found
+issues); and the memory-mode "may run memory" hint, which was not built.
 
 ## Server-Owned Data Chronology
 

@@ -42,7 +42,7 @@ Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `
 The Display settings still offer `showMemoryLimit` and `memoryLimitThickness` (`src/ts/setting/displaySettingsData.svelte.ts:294-305`), and assembly still writes `Chat.lastMemory` (`server/src/prompt/assemble.ts:1629`, `server/src/prompt/runner.ts:1286-1294`), but no chat renderer reads either: the `isLastMemory` prop was removed in `29f53d3f6` (2025-06-07, "New chat loading"). Found 2026-10-25 while planning the context usage meter.
 
 **Why it matters:** the setting does nothing, and users expect a line where the model's history starts.
-**Suggested handling:** restore the line in `Chats.svelte`, or remove the two settings. `lastMemory` is set before the final recheck (`assemble.ts:1940`), so it can be off by the entries the recheck removes; the context usage meter's report ([plan](../plan/context-usage-meter.md)) could supply the exact kept ids.
+**Suggested handling:** restore the line in `Chats.svelte`, or remove the two settings. `lastMemory` is set before the final recheck (`assemble.ts:1940`), so it can be off by the entries the recheck removes; the context usage meter's report ([archived plan](../archived-plan/README.md)) could supply the exact kept ids.
 
 ### Stale fold index at a chat switch
 
