@@ -300,14 +300,15 @@ export type ServerJobRequest = {
  * followed. `signal` aborts the job (`DELETE`), also when it fires while the job is being created,
  * and the busy job of this tab followed instead; an abort before the flush ends runs nothing. The
  * target chat is pinned from the start until the follow ends and is loaded before the job is
- * created (a failed load runs nothing).
+ * created (a failed load runs nothing). A flush refused for a generation gives the chats it waited on
+ * (`blockedChats`); a create refused for another tab's job gives the target.
  */
 export async function runServerJob(
     char: AnyClientCharacter,
     ref: ChatRef | null,
     request: ServerJobRequest,
     options: ServerJobOptions = {},
-): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
+): Promise<ServerJobResult> {
     if (!ref) {
         return { outcome: "refused", terminal: null };
     }
@@ -318,6 +319,12 @@ export async function runServerJob(
         release();
     }
 }
+
+type ServerJobResult = {
+    outcome: ServerCommandOutcome;
+    terminal: GenerationTerminalEvent | "lost" | null;
+    blockedChats?: readonly ChatRef[];
+};
 
 type ServerJobOptions = {
     onStart?: () => void;
@@ -330,7 +337,7 @@ async function runPinnedServerJob(
     ref: ChatRef,
     request: ServerJobRequest,
     options: ServerJobOptions,
-): Promise<{ outcome: ServerCommandOutcome; terminal: GenerationTerminalEvent | "lost" | null }> {
+): Promise<ServerJobResult> {
     const refused = { outcome: "refused" as const, terminal: null };
     // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
     // the chat's complete binding or not at all.
@@ -363,7 +370,7 @@ async function runPinnedServerJob(
                 if (generatingNoticeCount() === notices) {
                     alertError(language.chatGenerating);
                 }
-                return refused;
+                return { ...refused, blockedChats: error.chats };
             }
             alertError(withError(language.serverJob.saveFailed, error));
             return refused;
@@ -433,7 +440,8 @@ async function runPinnedServerJob(
             const owned = await readGenerationJob(error.jobId).catch(() => null);
             if (!owned) {
                 alertError(language.chatGenerating);
-                return refused;
+                // Another tab's job runs in this chat, with or without a lock this tab knows of yet.
+                return { ...refused, blockedChats: [ref] };
             }
             jobId = error.jobId;
             outcome = "followed";

@@ -11,6 +11,7 @@ import {
     ClaudeParameters,
 } from "../model/types";
 import { createAlertMock } from "./alertMock";
+import type { ChatRef } from "../storage/chatStore.svelte";
 import { createServerAuthMock } from "../storage/tests/serverAuthMock";
 import { createServerCommandsMock } from "../process/tests/serverCommandsMock";
 
@@ -87,7 +88,11 @@ export function createBootMock<K extends keyof BootModules>(
             flushResources: vi.fn<BootModules["resourceSync"]["flushResources"]>(),
             startResourceSync: vi.fn<BootModules["resourceSync"]["startResourceSync"]>(),
             saving: { state: false },
-            GenerationBlockedError: class extends Error {},
+            GenerationBlockedError: class extends Error {
+                constructor(readonly chats: readonly ChatRef[] = []) {
+                    super();
+                }
+            },
         },
         characterCards: {
             importCharacter: vi.fn<BootModules["characterCards"]["importCharacter"]>(),

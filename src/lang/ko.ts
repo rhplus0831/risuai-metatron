@@ -1043,6 +1043,8 @@ export const languageKorean = {
         streamGeminiThoughts: "Gemini 생각 스트리밍",
     },
     chatGenerating: "이 채팅에서 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
+    rerollRepliesNotRestored:
+        "다시 생성한 답변이 없지만, 리롤로 지운 답변을 안전하게 되돌리지 못했습니다. 이 채팅을 다른 곳에서 생성하고 있거나, 최신 채팅을 읽지 못했습니다.",
     serverJob: {
         lost: "서버 작업과의 연결이 끊겼습니다. 변경 사항을 보려면 채팅을 다시 불러와 주세요.",
         discarded: {

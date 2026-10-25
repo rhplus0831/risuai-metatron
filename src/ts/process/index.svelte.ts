@@ -16,6 +16,12 @@ type SendChatArg = ServerSendArg & {
      * may have been appended under `userMessageId`).
      */
     onServerRefused?: (ambiguous: boolean) => void;
+    /**
+     * Called when the send ended without throwing: `settled` when nothing of it writes to the chat any
+     * more (it did not run, or its job ended; not after a create without an answer or a lost follow),
+     * with the chats a flush refused for a generation waited on.
+     */
+    onEnd?: (end: { settled: boolean; blockedChats: readonly ChatRef[] }) => void;
 };
 
 /**
@@ -58,6 +64,7 @@ export async function previewChat(
 async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknown }> {
     if (arg.target && !chatEntry(arg.target)) {
         arg.onServerRefused?.(false);
+        arg.onEnd?.({ settled: true, blockedChats: [] });
         return { ok: false };
     }
     const target = arg.target ?? currentChatRef();
@@ -65,13 +72,17 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
     const release = beginLocalSend(target);
     if (!release) {
         arg.onServerRefused?.(false);
+        arg.onEnd?.({ settled: true, blockedChats: [] });
         return { ok: false };
     }
     try {
-        const { ok, result, refusal } = await sendChatOnServer(target ? { ...arg, target } : arg);
+        const { ok, result, refusal, settled, blockedChats } = await sendChatOnServer(
+            target ? { ...arg, target } : arg,
+        );
         if (refusal) {
             arg.onServerRefused?.(refusal === "ambiguous");
         }
+        arg.onEnd?.({ settled, blockedChats: blockedChats ?? [] });
         return { ok, result };
     } finally {
         release();

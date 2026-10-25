@@ -81,7 +81,7 @@ class LoreOverrideOrphanedError extends Error {
 }
 /** `flushResources` refused because a change it must save waits for a generation. */
 class BlockedError extends Error {
-    constructor() {
+    constructor(readonly chats: readonly { chaId: string; chatId: string }[] = []) {
         super("A character is still being generated; try again when it finishes");
         this.name = "GenerationBlockedError";
     }
@@ -819,8 +819,10 @@ describe("runServerJob", () => {
     // `chatGenerating`, not as a save error, and only once with the adapter's.
     it("shows chatGenerating for a flush refused for a generation unless the adapter's recovery showed it during the flush, and posts nothing", async () => {
         // Refused at once (no recovery during this flush): the send shows the notice itself.
-        stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        // The chats the flush waited on are passed on (a reroll restores its replies unless its own chat waits).
+        const other = { chaId: "c2", chatId: "k2" };
+        stubs.flush.mockRejectedValueOnce(new BlockedError([other]));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [other] });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         // The flush's conflict recovery showed it (the count moved during the flush): no second alert.
         let count = 0;
@@ -829,11 +831,11 @@ describe("runServerJob", () => {
             count += 1;
             throw new BlockedError();
         });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         // Another explicit send in the same episode (the adapter does not show it again): feedback again.
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
         expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
         expect(stubs.create).not.toHaveBeenCalled();
         expect(follows()).toHaveLength(0);
@@ -875,18 +877,19 @@ describe("runServerJob", () => {
         let count = 3;
         stubs.notices.mockImplementation(() => count);
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         count = 4;
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
         expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
     });
 
-    it("still reports another tab's busy job at the create as chatGenerating after a successful flush", async () => {
+    it("still reports another tab's busy job at the create as chatGenerating after a successful flush, naming the target as blocked", async () => {
         stubs.create.mockRejectedValueOnce(new BusyError("theirs"));
         stubs.read.mockResolvedValueOnce(null);
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        // Its job may hold no lock this tab knows of yet: a reroll must not restore into the chat.
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [ref] });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         expect(follows()).toHaveLength(0);
     });

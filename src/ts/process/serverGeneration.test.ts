@@ -8,14 +8,14 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 // `incrementStatic`; the target's `lastInteraction` is the server job's to stamp, so the tab
 // touches no character record and uploads none before the job), and the result mapping (`refused`
 // and `followed` are a definite refusal, `unknown` an ambiguous one, an error or lost terminal
-// neither; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls` under its
+// neither; `settled` unless the create got no answer or the follow was lost; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls` under its
 // generation, none for a continue; a preview's `result` comes back).
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
 
 const stubs = vi.hoisted(() => ({
-    run: vi.fn<(...args: unknown[]) => Promise<{ outcome: string; terminal: unknown }>>(),
+    run: vi.fn<(...args: unknown[]) => Promise<{ outcome: string; terminal: unknown; blockedChats?: unknown }>>(),
     findChat: vi.fn<() => unknown>(),
     /** The membership (`chatEntry`): a chat may be listed without being loaded. */
     members: new Set<string>(),
@@ -92,7 +92,7 @@ describe("sendChatOnServer", () => {
     it("posts a send with the input and its user message id after counting the send, without touching the target record", async () => {
         started(done({ messageId: "r1" }));
         const result = await send({ target: ref, input: "hi", userMessageId: "u1", continueMessageId: "ignored" });
-        expect(result).toEqual({ ok: true, outcome: "started", result: undefined });
+        expect(result).toEqual({ ok: true, outcome: "started", settled: true, result: undefined });
         const [char, target, request, options] = stubs.run.mock.calls[0];
         expect(char).toBe(stubs.db.characters[1]);
         expect(target).toEqual(ref);
@@ -130,7 +130,7 @@ describe("sendChatOnServer", () => {
             started(done({ result: ["x"] }));
             const result = await send({ target: ref, input: "typed", userMessageId: "u4", ...arg });
             expect(lastRequest()).toEqual({ kind, label: "send", context: { input: "" } });
-            expect(result).toEqual({ ok: true, outcome: "started", result: ["x"] });
+            expect(result).toEqual({ ok: true, outcome: "started", settled: true, result: ["x"] });
         }
         expect(stubs.incrementStatic).toHaveBeenCalledTimes(5);
         expect(stubs.db.characters).toEqual(seededCharacters());
@@ -143,15 +143,21 @@ describe("sendChatOnServer", () => {
         expect(stubs.run.mock.calls[0][1]).toEqual(ref);
 
         stubs.currentChatRef.mockReturnValue(null);
-        expect(await send({})).toEqual({ ok: false, outcome: "refused", refusal: "definite" });
+        expect(await send({})).toEqual({ ok: false, outcome: "refused", settled: true, refusal: "definite" });
         expect(await send({ target: { chaId: "nobody", chatId: "k" } })).toEqual({
             ok: false,
             outcome: "refused",
+            settled: true,
             refusal: "definite",
         });
         // The chat left the list meanwhile (the send checks the membership, not a loaded chat).
         stubs.members.delete("c/k");
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "refused", refusal: "definite" });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "refused",
+            settled: true,
+            refusal: "definite",
+        });
         expect(stubs.run).toHaveBeenCalledTimes(1);
         expect(stubs.incrementStatic).toHaveBeenCalledTimes(1);
     });
@@ -170,19 +176,48 @@ describe("sendChatOnServer", () => {
         });
     });
 
-    it("maps the outcomes: refused and followed are definite, unknown is ambiguous, a failed or lost job is neither", async () => {
-        stubs.run.mockResolvedValueOnce({ outcome: "refused", terminal: null });
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "refused", refusal: "definite" });
+    it("maps the outcomes: refused and followed are definite, unknown is ambiguous, a failed or lost job is neither; only an unanswered create or a lost follow is unsettled", async () => {
+        const blockedChats = [{ chaId: "c2", chatId: "k2" }];
+        stubs.run.mockResolvedValueOnce({ outcome: "refused", terminal: null, blockedChats });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "refused",
+            settled: true,
+            refusal: "definite",
+            blockedChats,
+        });
         stubs.run.mockResolvedValueOnce({ outcome: "followed", terminal: done() });
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "followed", refusal: "definite" });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "followed",
+            settled: true,
+            refusal: "definite",
+        });
+        stubs.run.mockResolvedValueOnce({ outcome: "followed", terminal: "lost" });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "followed",
+            settled: false,
+            refusal: "definite",
+        });
         stubs.run.mockResolvedValueOnce({ outcome: "unknown", terminal: null });
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "unknown", refusal: "ambiguous" });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "unknown",
+            settled: false,
+            refusal: "ambiguous",
+        });
         started({ type: "error", epoch: EPOCH, message: "boom", status: 500, reason: "failed" });
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started" });
+        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started", settled: true });
         started("lost");
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started" });
+        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started", settled: false });
         started(done({ stopped: true, messageId: "r1" }));
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started", result: undefined });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "started",
+            settled: true,
+            result: undefined,
+        });
     });
 
     it("registers a reply's alternatives under its generation, but not a continue's", async () => {

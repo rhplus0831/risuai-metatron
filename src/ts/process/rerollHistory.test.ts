@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 import * as chat from "../storage/chatStore.svelte";
 import { editChatSync } from "../storage/chatEdits";
@@ -6,7 +6,7 @@ import { characterList } from "../storage/characterStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
 import { selectCharacterAt } from "../storage/selection.svelte";
 import type { Message } from "../storage/database.svelte";
-import { createRerollHistory } from "./rerollHistory";
+import { createRerollHistory, restoreRerolledReplies } from "./rerollHistory";
 import { addRerolls, PreUnreroll, Prereroll } from "./prereroll";
 
 // The chat screen's swipe history (`rerollHistory.ts`) over the real chat module and the real
@@ -338,6 +338,242 @@ describe("createRerollHistory", () => {
         expect(history.back(ref)).toBe(true);
         commit();
         expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Alice says", "Bob says, edited"]);
+    });
+});
+
+describe("restoreRerolledReplies", () => {
+    const settled = { ran: true, settled: true, blockedChats: [] };
+    /** The screen's reroll up to its send: the replies after `anchor` go (queued, not yet saved). */
+    function removeTail(ref: chat.ChatRef, anchor: string) {
+        const removed = tail(ref, anchor);
+        editChatSync(ref, (c) => {
+            c.message = c.message.slice(0, c.message.findIndex((message) => message.chatId === anchor) + 1);
+        });
+        return removed;
+    }
+
+    it("a job that ended without a reply gets the removed replies back, saved after the anchor", async () => {
+        const ref = freshChat([m("u1", "Hi", "user"), m("r1", "First"), m("u2", "Again", "user"), m("r2", "Second")]);
+        const owner = chat.chatOwnerToken("c");
+        const removed = removeTail(ref, "u2");
+        // The job's flush saved the removal before the job failed.
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "First", "Again"]);
+
+        expect(await restoreRerolledReplies(ref, owner, "u2", removed, settled)).toBe("restored");
+        expect(ids(ref)).toEqual(["u1", "r1", "u2", "r2"]);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "First", "Again", "Second"]);
+    });
+
+    it("a group's replies come back whole and in order", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("a", "Alice says"), m("b", "Bob says")]);
+        const removed = removeTail(ref, "u");
+        commit();
+        expect(await restoreRerolledReplies(ref, chat.chatOwnerToken("c"), "u", removed, settled)).toBe("restored");
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Alice says", "Bob says"]);
+    });
+
+    it("a refusal after the removal was saved (a second flush waited on another chat) writes them back", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("r", "Reply")]);
+        const removed = removeTail(ref, "u");
+        commit();
+        const end = { ran: false, settled: true, blockedChats: [{ chaId: "c", chatId: "first" }] };
+        expect(await restoreRerolledReplies(ref, chat.chatOwnerToken("c"), "u", removed, end)).toBe("restored");
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Reply"]);
+    });
+
+    it("a refusal before the removal was saved withdraws it", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("r", "Reply")]);
+        const removed = removeTail(ref, "u");
+        const end = { ran: false, settled: true, blockedChats: [{ chaId: ref.chaId, chatId: ref.chatId }] };
+        expect(await restoreRerolledReplies(ref, chat.chatOwnerToken("c"), "u", removed, end)).toBe("restored");
+        expect(ids(ref)).toEqual(["u", "r"]);
+        // Nothing is queued: the removal never reaches the server.
+        const work = chat.takeChatWork(new Set());
+        expect(work.groups).toEqual([]);
+        chat.ackChatWork(work, [], []);
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Reply"]);
+    });
+
+    it("writes nothing while the send may still write, or for a character that was replaced", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("r", "Reply")]);
+        const removed = removeTail(ref, "u");
+        commit();
+        const owner = chat.chatOwnerToken("c");
+        // A create without an answer, or a lost follow: the job may still bring its reply.
+        expect(await restoreRerolledReplies(ref, owner, "u", removed, { ...settled, settled: false })).toBe("none");
+        expect(
+            await restoreRerolledReplies(ref, owner, "u", removed, { ran: false, settled: false, blockedChats: [] }),
+        ).toBe("none");
+        expect(await restoreRerolledReplies(ref, `${owner}-old`, "u", removed, settled)).toBe("none");
+        expect(ids(ref)).toEqual(["u"]);
+    });
+
+    it("leaves a chat that no longer ends at the anchor as it is (a reply came, or the anchor is gone)", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("r1", "Old")]);
+        const removed = removeTail(ref, "u");
+        editChatSync(ref, (c) => {
+            c.message = [...c.message, m("r2", "New")];
+        });
+        commit();
+        expect(await restoreRerolledReplies(ref, chat.chatOwnerToken("c"), "u", removed, settled)).toBe("none");
+        expect(ids(ref)).toEqual(["u", "r2"]);
+
+        const gone = freshChat([m("u", "Hi", "user"), m("r", "Reply")]);
+        const lost = removeTail(gone, "u");
+        editChatSync(gone, (c) => {
+            c.message = [];
+        });
+        commit();
+        expect(await restoreRerolledReplies(gone, chat.chatOwnerToken("c"), "u", lost, settled)).toBe("none");
+        expect(ids(gone)).toEqual([]);
+    });
+
+    it("reports unsafe and writes nothing while another generation writes into the chat", async () => {
+        const ref = freshChat([m("u1", "Hi", "user"), m("r1", "First"), m("u2", "Again", "user"), m("r2", "Second")]);
+        const owner = chat.chatOwnerToken("c");
+        const removed = removeTail(ref, "u2");
+        commit();
+        // The server refused this chat's save, or the job's create, for another tab's generation.
+        const blocked = { ran: false, settled: true, blockedChats: [{ chaId: ref.chaId, chatId: ref.chatId }] };
+        expect(await restoreRerolledReplies(ref, owner, "u2", removed, blocked)).toBe("unsafe");
+        // A lock in the chat (here a continue of an earlier reply).
+        chat.applyServerGeneration(ref, {
+            jobId: "other",
+            messageId: "r1",
+            generationId: "g-other",
+            text: "First",
+            seq: 1,
+        });
+        expect(await restoreRerolledReplies(ref, owner, "u2", removed, settled)).toBe("unsafe");
+        chat.endServerJob("other");
+        expect(ids(ref)).toEqual(["u1", "r1", "u2"]);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "First", "Again"]);
+    });
+    it("reads a chat whose job end did not apply before deciding: the reply that came is kept alone and Undo reaches the old one", async () => {
+        const history = createRerollHistory();
+        const ref = freshChat([m("u", "Hi", "user"), m("old", "Old")]);
+        const owner = chat.chatOwnerToken("c");
+        history.begin(ref, "u", tail(ref, "u"));
+        const removed = removeTail(ref, "u");
+        commit();
+        // The job's reply is stored, but a local edit kept its chat copy from applying.
+        server.store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: ref.chatId,
+                    baseRevision: server.chat("c", ref.chatId)!.revision,
+                    ops: [{ op: "append", messages: [m("new", "New")], anchor: { after: "u" } } as any],
+                },
+            ],
+        });
+        chat.setMessageText(ref, "u", "Hi, edited");
+        const stored = () => {
+            const record = server.chat("c", ref.chatId)!;
+            return { characterId: "c", id: ref.chatId, revision: record.revision, data: record.data as any };
+        };
+        expect(chat.hydrateChat(stored())).toBe(false);
+        expect(chat.isChatBehind(ref)).toBe(true);
+        expect(ids(ref)).toEqual(["u"]);
+
+        const sync = vi.fn(async () => {
+            commit();
+            chat.hydrateChat(stored());
+            return !chat.isChatBehind(ref);
+        });
+        expect(await history.restore(ref, owner, "u", removed, settled, sync)).toBe("none");
+        expect(sync).toHaveBeenCalledOnce();
+        expect(ids(ref)).toEqual(["u", "new"]);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi, edited", "New"]);
+        // The reply the read brought is in the history, so Undo Reroll brings the removed one back.
+        expect(history.back(ref)).toBe(true);
+        expect(ids(ref)).toEqual(["u", "old"]);
+        expect(history.forward(ref)).toBe(true);
+        expect(ids(ref)).toEqual(["u", "new"]);
+    });
+
+    it("does not record a later turn the read brings (another tab sent meanwhile) as the reroll's reply", async () => {
+        const history = createRerollHistory();
+        const ref = freshChat([m("u1", "Hi", "user"), m("old", "Old")]);
+        const owner = chat.chatOwnerToken("c");
+        history.begin(ref, "u1", tail(ref, "u1"));
+        const removed = removeTail(ref, "u1");
+        commit();
+        server.store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: ref.chatId,
+                    baseRevision: server.chat("c", ref.chatId)!.revision,
+                    ops: [
+                        {
+                            op: "append",
+                            messages: [m("u2", "Next", "user"), m("r2", "Answer")],
+                            anchor: { after: "u1" },
+                        } as any,
+                    ],
+                },
+            ],
+        });
+        chat.setMessageText(ref, "u1", "Hi, edited");
+        const record = server.chat("c", ref.chatId)!;
+        chat.hydrateChat({ characterId: "c", id: ref.chatId, revision: record.revision, data: record.data as any });
+        const sync = async () => {
+            commit();
+            const stored = server.chat("c", ref.chatId)!;
+            chat.hydrateChat({ characterId: "c", id: ref.chatId, revision: stored.revision, data: stored.data as any });
+            return !chat.isChatBehind(ref);
+        };
+        expect(await history.restore(ref, owner, "u1", removed, settled, sync)).toBe("none");
+        expect(ids(ref)).toEqual(["u1", "u2", "r2"]);
+        // Undo Reroll leaves the other tab's turn alone.
+        expect(history.back(ref)).toBe(false);
+        expect(ids(ref)).toEqual(["u1", "u2", "r2"]);
+    });
+
+    it("keeps the chat loaded while it is saved and read, then writes the replies back", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("old", "Old")]);
+        const owner = chat.chatOwnerToken("c");
+        const removed = removeTail(ref, "u");
+        commit();
+        // A local edit still queued: the chat is saved before the decision.
+        chat.setMessageText(ref, "u", "Hi, edited");
+        const sync = vi.fn(async () => {
+            commit();
+            // Newer chats load meanwhile and idle chats are trimmed.
+            for (let index = 0; index <= chat.MAX_LOADED_CHATS; index++) {
+                freshChat([m("x", "Other", "user")]);
+            }
+            chat.trimLoadedChats();
+            return true;
+        });
+        expect(await restoreRerolledReplies(ref, owner, "u", removed, settled, { syncChat: sync })).toBe("restored");
+        expect(ids(ref)).toEqual(["u", "old"]);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi, edited", "Old"]);
+    });
+
+    it("reports unsafe and writes nothing when the chat stays behind or its work unsaved", async () => {
+        const ref = freshChat([m("u", "Hi", "user"), m("old", "Old")]);
+        const owner = chat.chatOwnerToken("c");
+        const removed = removeTail(ref, "u");
+        commit();
+        // A local edit still queued: the job's end may not have applied.
+        chat.setMessageText(ref, "u", "Hi, edited");
+        const failed = vi.fn(async () => {
+            throw new Error("offline");
+        });
+        expect(await restoreRerolledReplies(ref, owner, "u", removed, settled, { syncChat: failed })).toBe("unsafe");
+        expect(failed).toHaveBeenCalledOnce();
+        expect(ids(ref)).toEqual(["u"]);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi, edited"]);
     });
 });
 

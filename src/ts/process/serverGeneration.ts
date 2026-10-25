@@ -29,6 +29,20 @@ export type ServerSendArg = {
 export type ServerSendRefusal = "definite" | "ambiguous";
 
 /**
+ * A server send's end. `settled`: nothing of this send writes to the chat any more (it did not run, or
+ * its job ended), false after a create without an answer or a lost follow. `blockedChats`: the chats a
+ * flush refused for a generation waited on.
+ */
+export type ServerSendResult = {
+    ok: boolean;
+    outcome: ServerCommandOutcome;
+    settled: boolean;
+    result?: unknown;
+    refusal?: ServerSendRefusal;
+    blockedChats?: readonly ChatRef[];
+};
+
+/**
  * `sendChat` as a server job (the only send path): the tab counts the send (`statics.messages`),
  * then `runServerJob` flushes, creates the job (`preview`, `previewPrompt`, `continue`, `group` for
  * a group chat, else `send`) with the input and the message ids, and follows it to its end. The
@@ -41,13 +55,11 @@ export type ServerSendRefusal = "definite" | "ambiguous";
  * loaded: `runServerJob` loads it, and it stays pinned until the reply's alternatives are read
  * here.
  */
-export async function sendChatOnServer(
-    arg: ServerSendArg,
-): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
+export async function sendChatOnServer(arg: ServerSendArg): Promise<ServerSendResult> {
     const ref = arg.target ?? currentChatRef();
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!ref || !char || !chatEntry(ref)) {
-        return { ok: false, outcome: "refused", refusal: "definite" };
+        return { ok: false, outcome: "refused", settled: true, refusal: "definite" };
     }
     const release = pinChat(ref);
     try {
@@ -61,7 +73,7 @@ async function sendPinned(
     arg: ServerSendArg,
     ref: ChatRef,
     char: NonNullable<ReturnType<typeof characterList>[number]>,
-): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
+): Promise<ServerSendResult> {
     incrementStatic("messages");
 
     const kind: GenerationKind = arg.preview
@@ -74,7 +86,7 @@ async function sendPinned(
               ? "continue"
               : "send";
     const input = kind === "preview" || kind === "previewPrompt" ? "" : (arg.input ?? "");
-    const { outcome, terminal } = await runServerJob(
+    const { outcome, terminal, blockedChats } = await runServerJob(
         char,
         ref,
         {
@@ -99,15 +111,18 @@ async function sendPinned(
                 : {}),
         },
     );
-    if (outcome === "refused" || outcome === "followed") {
+    if (outcome === "refused") {
+        return { ok: false, outcome, settled: true, refusal: "definite", ...(blockedChats ? { blockedChats } : {}) };
+    }
+    if (outcome === "followed") {
         // A followed job is this tab's other action: this send's input did not reach it.
-        return { ok: false, outcome, refusal: "definite" };
+        return { ok: false, outcome, settled: terminal !== "lost", refusal: "definite" };
     }
     if (outcome === "unknown") {
-        return { ok: false, outcome, refusal: "ambiguous" };
+        return { ok: false, outcome, settled: false, refusal: "ambiguous" };
     }
     if (!terminal || terminal === "lost" || terminal.type !== "done") {
-        return { ok: false, outcome };
+        return { ok: false, outcome, settled: terminal !== "lost" };
     }
     if (terminal.alternatives && terminal.messageId && kind !== "continue") {
         const reply = findChat(ref)?.message.find((message) => message.chatId === terminal.messageId);
@@ -116,5 +131,5 @@ async function sendPinned(
             addRerolls(generationId, terminal.alternatives, ref, terminal.messageId);
         }
     }
-    return { ok: !terminal.stopped, outcome, result: terminal.result };
+    return { ok: !terminal.stopped, outcome, settled: true, result: terminal.result };
 }

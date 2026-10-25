@@ -226,7 +226,11 @@ describe("a chat another tab announced", () => {
         // the work the job blocks.
         chat.setMessageText(refK, "b", "edited");
         chat.setMessageText(refK, "a", "mine");
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
+        // The refusal names the chat whose work waits.
+        await expect(sync.flushResources()).rejects.toMatchObject({
+            message: expect.stringMatching(/still being generated/),
+            chats: [refK],
+        });
         const reads = readsOf(fake);
         const timeouts = vi.spyOn(globalThis, "setTimeout");
         const clears = vi.spyOn(globalThis, "clearTimeout");

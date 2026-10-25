@@ -54,7 +54,6 @@
         type ChatRef,
         currentChatRef,
         findChat,
-        restoreUnsentRemoval,
         retrySelectedChatLoad,
         setChatMeta,
         setMessageText,
@@ -570,11 +569,10 @@
         editChatSync(ref, (chat) => {
             chat.message = chat.message.filter((message) => kept.has(message.chatId));
         });
-        if (!(await sendChatMain(false, ref)).ran) {
-            // The send did not run (a flush refused for another tab's generation, which
-            // `runServerJob` already alerted as `chatGenerating`, or another refusal before the
-            // save): the replies come back while their removal is still unsent.
-            restoreUnsentRemoval(ref, owner, anchor, removed);
+        // A send that brought no reply (refused, failed, or stopped before one) puts the replies back.
+        const end = await sendChatMain(false, ref);
+        if ((await rerollHistory.restore(ref, owner, anchor, removed, end)) === "unsafe") {
+            alertError(language.rerollRepliesNotRestored);
         }
     }
 
@@ -621,25 +619,28 @@
      * `serverInput`: the input a server job appends (its user message is not part of the reroll).
      * `ran`: false for a refusal or an ambiguous create (the job may exist); it does not prove no job ran.
      * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
+     * `settled`: nothing of the send writes to the chat any more (`sendChat`'s `onEnd`; false when it threw).
+     * `blockedChats`: the chats a flush refused for a generation waited on.
      */
     async function sendChatMain(
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
         serverInput: SendDraft | null = null,
-    ): Promise<{ ran: boolean; ok: boolean }> {
+    ): Promise<{ ran: boolean; ok: boolean; settled: boolean; blockedChats: readonly ChatRef[] }> {
         if (!target) {
-            return { ran: false, ok: false };
+            return { ran: false, ok: false, settled: true, blockedChats: [] };
         }
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
         let ran = true;
+        let end: { settled: boolean; blockedChats: readonly ChatRef[] } = { settled: false, blockedChats: [] };
         let releaseAbort: (() => void) | null = null;
         try {
             // Only this chat's own work refuses it; `sendChat` takes the chat's entry synchronously
             // right after this check.
             if (isChatBusy(target)) {
                 alertError(language.chatGenerating);
-                return { ran: false, ok: false };
+                return { ran: false, ok: false, settled: true, blockedChats: [] };
             }
             const { signal, release } = sendAborts.begin(target);
             releaseAbort = release;
@@ -651,9 +652,12 @@
                 onServerRefused: () => {
                     ran = false;
                 },
+                onEnd: (sendEnd) => {
+                    end = sendEnd;
+                },
             });
             if (!ran) {
-                return { ran, ok };
+                return { ran, ok, ...end };
             }
             const messages = findChat(target)?.message ?? [];
             const anchorIndex = anchor === null ? -1 : messages.findIndex((message) => message.chatId === anchor);
@@ -687,7 +691,7 @@
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
         }
-        return { ran, ok };
+        return { ran, ok, ...end };
     }
 
     function abortChat() {

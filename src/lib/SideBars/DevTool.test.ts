@@ -91,7 +91,7 @@ it("renders instruct preview with the starting chat's character and user after s
     selectCharacter("c2");
     selectChat("c2", "k2");
     flushSync();
-    complete({ ok: true, outcome: "started", result: [{ role: "user", content: "Hello." }] });
+    complete({ ok: true, outcome: "started", settled: true, result: [{ role: "user", content: "Hello." }] });
     await vi.advanceTimersByTimeAsync(0);
     flushSync();
 

@@ -1582,6 +1582,8 @@ export const languageEnglish = {
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
+    rerollRepliesNotRestored:
+        "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",
     serverJob: {
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         discarded: {

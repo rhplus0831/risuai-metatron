@@ -25,8 +25,8 @@ let process: typeof import("./index.svelte");
 let registry: typeof import("./localSends");
 
 const entries = (): Entries => [...get(registry.localSends)];
-const started: ServerResult = { ok: true, outcome: "started" };
-const refused: ServerResult = { ok: false, outcome: "refused", refusal: "definite" };
+const started: ServerResult = { ok: true, outcome: "started", settled: true };
+const refused: ServerResult = { ok: false, outcome: "refused", settled: true, refusal: "definite" };
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -62,6 +62,7 @@ describe("sendChat owns its chat's send entry", () => {
         const held: Entries = [[keyOf(expectedTarget), expectedTarget]];
         const server = deferred<ServerResult>();
         const onServerRefused = vi.fn();
+        const onEnd = vi.fn();
         const error = new Error("server send failed");
         const transitions: Entries[] = [];
         const serverObservations: Entries[] = [];
@@ -77,6 +78,7 @@ describe("sendChat owns its chat's send entry", () => {
             sending = sendChat(-1, {
                 ...(target === "explicit" ? { target: chatA } : {}),
                 onServerRefused,
+                onEnd,
             });
             expect(stubs.serverSend).toHaveBeenCalledExactlyOnceWith(
                 expect.objectContaining({ target: expectedTarget }),
@@ -104,6 +106,11 @@ describe("sendChat owns its chat's send entry", () => {
                 expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
             } else {
                 expect(onServerRefused).not.toHaveBeenCalled();
+            }
+            if (end === "throw") {
+                expect(onEnd).not.toHaveBeenCalled();
+            } else {
+                expect(onEnd).toHaveBeenCalledExactlyOnceWith({ settled: true, blockedChats: [] });
             }
         } finally {
             server.resolve(started);
@@ -221,6 +228,26 @@ describe("sendChat owns its chat's send entry", () => {
         },
     );
 
+    it("passes on whether the send settled and the chats a blocked flush waited on", async () => {
+        const { sendChat } = process;
+        const onServerRefused = vi.fn();
+        const onEnd = vi.fn();
+        const blockedChats = [chatB];
+        stubs.serverSend.mockResolvedValueOnce({ ...refused, blockedChats });
+        expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
+        expect(onEnd).toHaveBeenLastCalledWith({ settled: true, blockedChats });
+        // An unanswered create: the input may have been appended, and the job may still write.
+        stubs.serverSend.mockResolvedValueOnce({ ok: false, outcome: "unknown", settled: false, refusal: "ambiguous" });
+        expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
+        expect(onServerRefused).toHaveBeenLastCalledWith(true);
+        expect(onEnd).toHaveBeenLastCalledWith({ settled: false, blockedChats: [] });
+        // A lost follow ran but is not settled.
+        stubs.serverSend.mockResolvedValueOnce({ ok: false, outcome: "started", settled: false });
+        expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
+        expect(onServerRefused).toHaveBeenCalledTimes(2);
+        expect(onEnd).toHaveBeenLastCalledWith({ settled: false, blockedChats: [] });
+    });
+
     it("refuses a gone explicit target before taking any entry", async () => {
         const { sendChat } = process;
         const { localSends } = registry;
@@ -228,9 +255,11 @@ describe("sendChat owns its chat's send entry", () => {
         const notifications = vi.fn();
         const unsubscribe = localSends.subscribe(notifications);
         const onServerRefused = vi.fn();
+        const onEnd = vi.fn();
 
-        expect(await sendChat(-1, { target: chatA, onServerRefused })).toBe(false);
+        expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
         expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
+        expect(onEnd).toHaveBeenCalledExactlyOnceWith({ settled: true, blockedChats: [] });
         expect(stubs.serverSend).not.toHaveBeenCalled();
         expect(notifications).toHaveBeenCalledTimes(1);
         expect(entries()).toEqual([]);

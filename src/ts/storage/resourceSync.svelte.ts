@@ -3789,9 +3789,12 @@ export function beginMutationScope(): MutationScope {
     return { resource: discardSequence, chat: chatDiscardSequence() };
 }
 
-/** `flushResources` refused: a change it must save waits for a generation (this tab's or a server job's). */
+/**
+ * `flushResources` refused: a change it must save waits for a generation (this tab's or a server job's).
+ * `chats` are the chats whose changes wait (empty when only a record or a chat order waits).
+ */
 export class GenerationBlockedError extends Error {
-    constructor() {
+    constructor(readonly chats: readonly ChatRef[] = []) {
         super("A character is still being generated; try again when it finishes");
         this.name = "GenerationBlockedError";
     }
@@ -3850,11 +3853,17 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");
         }
-        if (
-            unsettledChatObligations(chatObligations).some(isChatDeferred) ||
-            [...jobBlockedRecords.keys()].some(isRecordJobBlocked)
-        ) {
-            throw new GenerationBlockedError();
+        const waiting = unsettledChatObligations(chatObligations).filter(isChatDeferred);
+        if (waiting.length > 0 || [...jobBlockedRecords.keys()].some(isRecordJobBlocked)) {
+            // A chat obligation's key is `chaId\u0000chatId`; a chat order's is the character id.
+            throw new GenerationBlockedError(
+                waiting
+                    .filter((key) => key.includes("\u0000"))
+                    .map((key) => {
+                        const [chaId, chatId] = key.split("\u0000");
+                        return { chaId, chatId };
+                    }),
+            );
         }
         if (timer) {
             clearTimeout(timer);
