@@ -200,6 +200,25 @@
             liveOverride(override).off = next === "off";
         }
     }
+    /** The entries inside a folder, nested folders' included, that are not off in this chat, in owner order. */
+    function entriesOn(folder: loreBook): loreBook[] {
+        if (!holdsOriginal(folder)) return [];
+        const members = membersOf([folder.key]);
+        return ownerLore().filter(
+            (book) => members.has(book) && book.mode !== "folder" && overrideFor(book)?.off !== true,
+        );
+    }
+    /** Turns each entry inside the folder off on its own; folder states, the folder's own included, stay. */
+    function turnOffAll(folder: loreBook) {
+        const ref = writableRef(folder);
+        if (!ref || refuseFenced(ref)) return;
+        for (const book of entriesOn(folder)) {
+            const override = overrideFor(book);
+            // An existing copy keeps its edits, as a single row's Off does.
+            if (override) liveOverride(override).off = true;
+            else pin(book, true);
+        }
+    }
     function releaseAll(folder: loreBook) {
         const ref = writableRef(folder);
         const ids = ref ? changedIds(folder) : [];
@@ -329,10 +348,12 @@
             rowState={folder ? folderState(override) : entryState(override)}
             setRowState={(next) => setRowState(book, next)}
             changed={folder ? changedIds(book).length : 0}
+            entriesOn={folder ? entriesOn(book).length : 0}
             notApplied={folder && (override?.off === true || offMembers.has(book))}
             inOffFolder={offMembers.has(book)}
             offNotice={hasOffLink(override)}
             releaseAll={() => releaseAll(book)}
+            turnOffAll={() => turnOffAll(book)}
         >
             {@render rows(node.children)}
         </LoreOverrideRow>

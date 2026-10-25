@@ -1778,6 +1778,7 @@ export const languageEnglish = {
         changed: (count: number) => `${count} changed`,
         notApplied: "not applied",
         folderOffNotice: "This folder is off in this chat",
+        turnOffAll: "Turn off every entry in this folder",
         releaseAll: "Release all overrides in this folder",
         releaseAllConfirm: (count: number) =>
             `Release ${count} override${count === 1 ? "" : "s"} in this folder? ${count === 1 ? "Its edits" : "Their edits"} will be discarded and this chat will use the original character entries again. The folder's own On/Off state stays.`,

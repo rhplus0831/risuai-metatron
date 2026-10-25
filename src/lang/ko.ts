@@ -1146,6 +1146,7 @@ export const languageKorean = {
         changed: (count: number) => `수정 ${count}`,
         notApplied: "적용 안 됨",
         folderOffNotice: "이 채팅에서 폴더가 꺼져 있습니다",
+        turnOffAll: "이 폴더의 모든 항목 끄기",
         releaseAll: "이 폴더의 덮어쓰기 모두 해제",
         releaseAllConfirm: (count: number) =>
             `이 폴더의 덮어쓰기 ${count}개를 해제할까요? 수정 내용이 사라지고 이 채팅은 원본 캐릭터 항목을 다시 사용합니다. 폴더 자체의 켜짐/꺼짐 상태는 그대로입니다.`,

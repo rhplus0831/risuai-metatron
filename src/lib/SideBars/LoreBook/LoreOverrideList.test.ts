@@ -159,6 +159,10 @@ const releaseAllButtons = () =>
     [...target.querySelectorAll<HTMLButtonElement>("button")].filter(
         (element) => element.textContent?.trim() === strings.releaseAll,
     );
+const turnOffAllButtons = () =>
+    [...target.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (element) => element.textContent?.trim() === strings.turnOffAll,
+    );
 function click(element: HTMLElement) {
     element.click();
     flushSync();
@@ -670,6 +674,62 @@ it("bulk release confirms with the count and releases the overrides inside the f
     ]);
     expect(chatWrites).toHaveBeenCalledOnce();
     expect(characterWrites).not.toHaveBeenCalled();
+});
+
+it("turns off every entry inside a folder on its own, keeping edits and leaving folder states", () => {
+    const outside = entry("Outside", { id: "shared-id" });
+    const root = entry("Folder", { id: "root", mode: "folder", key: "root" });
+    const inner = entry("Nested", { id: "inner", mode: "folder", key: "inner", folder: "root" });
+    const a = entry("A", { id: "a", folder: "root" });
+    const b = entry("B", { id: "b", folder: "inner" });
+    const c = entry("C", { id: "c", folder: "inner" });
+    const d = entry("D", { id: "shared-id", folder: "inner" });
+    const savedA = { entry: { ...a, content: "Already customized" }, off: false };
+    const savedC = { entry: c, off: true };
+    const innerOff = { entry: inner, off: true };
+    install({ globalLore: [outside, root, a, inner, b, c, d], overrides: [savedA, savedC, innerOff] });
+    render();
+    expect(turnOffAllButtons()).toHaveLength(0);
+    click(button("Folder"));
+    click(button("Nested"));
+    expect(turnOffAllButtons()).toHaveLength(2);
+    expect(row("Folder").contains(turnOffAllButtons()[0])).toBe(true);
+    expect(row("Nested").contains(turnOffAllButtons()[1])).toBe(true);
+
+    releases.push(beginLocalSend(ref)!);
+    flushSync();
+    click(turnOffAllButtons()[0]);
+    expect(alertError).toHaveBeenCalledExactlyOnceWith(language.chatGenerating);
+    expect(stored().loreOverrides).toEqual([savedA, savedC, innerOff]);
+    expect(chatWrites).not.toHaveBeenCalled();
+    releases.pop()!();
+    flushSync();
+
+    click(turnOffAllButtons()[0]);
+    const dId = originals()[6].id;
+    expect(dId).toBeTruthy();
+    expect(dId).not.toBe("shared-id");
+    expect(stored().loreOverrides).toEqual([
+        { ...savedA, off: true },
+        savedC,
+        innerOff,
+        { entry: b, off: true },
+        { entry: { ...d, id: dId }, off: true },
+    ]);
+    expect(["Folder", "Nested", "A", "B", "C", "D", "Outside"].map((name) => pressed(name))).toEqual([
+        strings.on,
+        strings.off,
+        strings.off,
+        strings.off,
+        strings.off,
+        strings.off,
+        strings.original,
+    ]);
+    expect(indicator("Folder")).toBe(strings.changed(5));
+    expect(turnOffAllButtons()).toHaveLength(0);
+    expect(chatWrites).toHaveBeenCalledOnce();
+    expect(characterWrites).toHaveBeenCalledOnce();
+    expect(alertConfirm).not.toHaveBeenCalled();
 });
 
 it("moves an on orphan atomically with a fresh id, unchanged mode and no folder; an off orphan can only be deleted", async () => {

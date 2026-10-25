@@ -21,12 +21,15 @@
         setRowState: (next: EntryState | FolderState) => void;
         /** Folder only: the overrides inside it (entries, and nested folders that are off). */
         changed?: number;
+        /** Folder only: the entries inside it that are not off. */
+        entriesOn?: number;
         /** Folder only: it or an enclosing folder is off, so the overrides inside it do not apply. */
         notApplied?: boolean;
         /** The row sits inside an off folder. */
         inOffFolder?: boolean;
         offNotice?: boolean;
         releaseAll?: () => void;
+        turnOffAll?: () => void;
         children?: Snippet;
     }
     let {
@@ -37,10 +40,12 @@
         rowState,
         setRowState,
         changed = 0,
+        entriesOn = 0,
         notApplied = false,
         inOffFolder = false,
         offNotice = false,
         releaseAll,
+        turnOffAll,
         children,
     }: Props = $props();
     const indicatorId = $props.id();
@@ -114,11 +119,21 @@
     {#if open}
         {#if folder}
             <div class="flex flex-col gap-2 mt-2 ml-2 border-l border-selected pl-2">
-                {#if changed > 0 && releaseAll}
-                    <button
-                        class="self-start rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
-                        onclick={releaseAll}>{strings.releaseAll}</button
-                    >
+                {#if (entriesOn > 0 && turnOffAll) || (changed > 0 && releaseAll)}
+                    <div class="flex flex-wrap gap-2">
+                        {#if entriesOn > 0 && turnOffAll}
+                            <button
+                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
+                                onclick={turnOffAll}>{strings.turnOffAll}</button
+                            >
+                        {/if}
+                        {#if changed > 0 && releaseAll}
+                            <button
+                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
+                                onclick={releaseAll}>{strings.releaseAll}</button
+                            >
+                        {/if}
+                    </div>
                 {/if}
                 {@render children?.()}
             </div>
