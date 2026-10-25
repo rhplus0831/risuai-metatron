@@ -381,9 +381,10 @@ function showPush(event){
 
 /**
  * Every push shows a notification (Safari ends a subscription whose pushes show none). While a window of
- * the app has the focus, the notification is silent, so it does not sound after the page's message sound
- * (`playMessage`), and it is closed once shown if the focus stayed (best effort: a browser without
- * `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own default applies.
+ * the app is in front (`windowInFront`), the notification is silent, so it does not sound after the page's
+ * message sound (`playMessage`), and it is closed once shown if the window is still in front (best effort:
+ * a browser without `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own
+ * default applies.
  */
 async function showPushNow(event){
     const push = readPush(event)
@@ -418,11 +419,16 @@ async function showPushNow(event){
     }
 }
 
-/** Whether a window of the app has the focus; a failed lookup counts as none. */
+/**
+ * Whether a window of the app is in front: focused and visible on the same window. A focused window can
+ * be hidden (an Android PWA left for another app keeps the focus), and a push for it must still sound and
+ * stay. A failed lookup counts as none.
+ */
 async function windowInFront(){
     try {
         const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-        return windows.some((client) => client.focused && new URL(client.url).origin === self.location.origin)
+        return windows.some((client) => client.focused && client.visibilityState === 'visible' &&
+            new URL(client.url).origin === self.location.origin)
     } catch {
         return false
     }

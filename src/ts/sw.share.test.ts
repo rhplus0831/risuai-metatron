@@ -307,6 +307,33 @@ describe("completion push", () => {
         expect(failing.shown[0].close).not.toHaveBeenCalled();
     });
 
+    it("sounds and keeps the push when the focused window is hidden, or focus and visibility are on different windows", async () => {
+        const tag = completionNotificationTag("c", "a");
+        // An installed Android app left for another app keeps the focus while hidden.
+        const hidden = appWindow(true);
+        hidden.visibilityState = "hidden";
+        const split = appWindow(true);
+        split.visibilityState = "hidden";
+        for (const sw of [worker([hidden]), worker([split, appWindow(false)])]) {
+            await sw.push(payload(tag));
+            expect(silentFlags(sw)).toEqual(["unset"]);
+            expect(sw.shown[0].close).not.toHaveBeenCalled();
+        }
+    });
+
+    it("keeps its silent push when the focused window is hidden while the notification is looked up", async () => {
+        const tag = completionNotificationTag("c", "a");
+        const front = appWindow(true);
+        const sw = worker([front]);
+        sw.registration.getNotifications.mockImplementationOnce(async () => {
+            front.visibilityState = "hidden";
+            return sw.shown;
+        });
+        await sw.push(payload(tag));
+        expect(silentFlags(sw)).toEqual([true]);
+        expect(sw.shown[0].close).not.toHaveBeenCalled();
+    });
+
     it("keeps a later notification of the same tag, and its own when the focus left while it was shown", async () => {
         const tag = completionNotificationTag("c", "a");
         const raced = worker([appWindow(true)]);

@@ -7,7 +7,11 @@ import path from "node:path";
 import url from "node:url";
 import webPush from "web-push";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { CompletionNotification } from "../../../shared/notifications.ts";
+import {
+    COMPLETION_NOTIFICATION_TAG,
+    completionNotificationTag,
+    type CompletionNotification,
+} from "../../../shared/notifications.ts";
 import { createPushService, MAX_PUSH_SUBSCRIPTIONS, type PushTransport } from "../push/pushService.ts";
 import { createSigner, createTestServer, json } from "./testSupport.ts";
 
@@ -705,7 +709,7 @@ describe("delivery", () => {
         return { save, push, ...fake, file: serverFile(save, "push_subscriptions.json") };
     }
 
-    it("sends the serialized notification to every subscription with the TTL, urgency, topic, timeout, and per-call VAPID details", async () => {
+    it("sends the serialized notification to every subscription with the TTL, high urgency, timeout, and per-call VAPID details, and no topic for the bare tag", async () => {
         const { push, calls, save } = delivering();
         const a = subscription();
         const b = subscription("https://updates.push.services.mozilla.com/wpush/v2/b");
@@ -719,8 +723,7 @@ describe("delivery", () => {
             expect(call.subscription.keys).toEqual((call.subscription.endpoint === a.endpoint ? a : b).keys);
             expect(call.options).toEqual({
                 TTL: 3600,
-                urgency: "normal",
-                topic: "chat-completion",
+                urgency: "high",
                 timeout: 10_000,
                 vapidDetails: {
                     subject: "mailto:ops@example.com",
@@ -729,6 +732,30 @@ describe("delivery", () => {
                 },
             });
         }
+    });
+
+    it("sends each chat's completion under that chat's own topic, within the RFC 8030 format", async () => {
+        const { push, calls } = delivering();
+        push.upsert(subscription());
+        // The last chat repeats the first; the long and unusual ids still hash to a short topic.
+        const tags = [
+            completionNotificationTag("c", "a"),
+            completionNotificationTag("c", "b"),
+            completionNotificationTag("d", "a"),
+            completionNotificationTag("a".repeat(500), "\u0000한글/?#"),
+            completionNotificationTag("c", "a"),
+        ];
+        for (const tag of tags) {
+            await push.send({ ...NOTIFICATION, tag });
+        }
+        const topics = calls.map((call) => call.options.topic);
+        expect(topics).toEqual(tags.map((tag) => tag.slice(`${COMPLETION_NOTIFICATION_TAG}:`.length)));
+        for (const topic of topics) {
+            expect(topic).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
+        }
+        expect(new Set(topics.slice(0, 4)).size).toBe(4);
+        expect(topics[4]).toBe(topics[0]);
+        expect(calls.every((call) => call.options.urgency === "high")).toBe(true);
     });
 
     it("removes a subscription the push service reports gone (404, 410), counts other failures with a sanitized label, and clears them on success", async () => {

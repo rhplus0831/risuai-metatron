@@ -61,7 +61,10 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   [plugins and MCP](plugins-mcp.md).
 - Other server services: `llm/` adapts providers and credentials;
   `translation/runner.ts` stores server-side translations ([media and auxiliary work](media-aux.md));
-  `push/pushService.ts` handles Web Push; `data/vectorCache.ts` stores embeddings;
+  `push/pushService.ts` handles Web Push (each completion to every subscription with
+  `TTL` 1 h, `urgency: "high"`, and the chat's tag hash as the RFC 8030 `topic`, so
+  a push service replaces an undelivered completion only with a later one of the
+  same chat; a tag without a valid hash gets no topic); `data/vectorCache.ts` stores embeddings;
   `diagnostics/` owns request history, diagnostic journals, reports, and support
   shares ([diagnostics](diagnostics.md)).
 - HTTP helpers: `http/{body,rateLimit,clientIp,compressedJson,staticCache,assetVerification,assetThumbnails}.ts`

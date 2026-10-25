@@ -2,7 +2,7 @@ import { createECDH, ECDH } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import webPush from "web-push";
-import type { CompletionNotification } from "../../../shared/notifications.ts";
+import { COMPLETION_NOTIFICATION_TAG, type CompletionNotification } from "../../../shared/notifications.ts";
 import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
 
 /** At most this many browsers are subscribed; registering one more drops the least recently registered. */
@@ -242,6 +242,21 @@ function errorCategory(error: unknown): { status: number | null; label: string }
     return { status, label: status === null ? "network" : `HTTP ${status}` };
 }
 
+/** RFC 8030 `Topic`: at most 32 characters of the URL-safe base64 alphabet. */
+const PUSH_TOPIC = /^[A-Za-z0-9_-]{1,32}$/;
+
+/**
+ * The push topic of a completion: its chat's tag hash (`completionNotificationTag`), so a push service
+ * that still holds one chat's undelivered completion replaces it only with a later one of the same chat.
+ * A tag without a valid hash (the bare prefix) gets no topic: `web-push` refuses an invalid one, and no
+ * topic means nothing is replaced.
+ */
+function completionTopic(tag: string): string | undefined {
+    const prefix = `${COMPLETION_NOTIFICATION_TAG}:`;
+    const hash = tag.startsWith(prefix) ? tag.slice(prefix.length) : "";
+    return PUSH_TOPIC.test(hash) ? hash : undefined;
+}
+
 /**
  * Web Push for chat completions. The subscriptions are per browser, so they are not resources:
  * `save/server/push_subscriptions.json`, beside the password (`routes/auth.ts`), out of the storage
@@ -377,6 +392,7 @@ export function createPushService(options: {
             return;
         }
         const payload = JSON.stringify(notification);
+        const topic = completionTopic(notification.tag);
         const vapidDetails = { subject: contact, publicKey: keys.publicKey, privateKey: keys.privateKey };
         // A file that could not be read is tried again, so it delivers once it can be read without
         // waiting for a registration or removal to retry it.
@@ -393,8 +409,8 @@ export function createPushService(options: {
                         payload,
                         {
                             TTL: 60 * 60,
-                            urgency: "normal",
-                            topic: "chat-completion",
+                            urgency: "high",
+                            ...(topic ? { topic } : {}),
                             timeout: SEND_TIMEOUT_MS,
                             vapidDetails,
                         },
