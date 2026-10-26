@@ -197,11 +197,12 @@ function holdChatRevision(key: string, revision: string) {
     }
 }
 
-/** Drops a chat's held revision (the chat is gone, or its state forgotten) and its acknowledged floor. */
+/** Drops a gone or forgotten chat's revision, acknowledged floor, feed locks, and read-order bookkeeping. */
 function dropChatRevision(key: string) {
     chatRevisions.delete(key);
     ackedRevisions.delete(key);
     absentChats.delete(key);
+    releaseFeedLocks(`${key}\u0000`);
 }
 
 /**
@@ -284,13 +285,25 @@ const serverWatermarks = new Map<string, { generationId: string; seq: number }>(
 const retiredGenerations = new Set<string>();
 /**
  * Messages (`messageKeyOf`) the change feed announced as locked by a generation job of any tab or
- * device (`noteRemoteStreaming`, `replaceFeedLocks`) → the generation, the chat revision of the
+ * device or an adopted whole read → the generation, the chat revision of the
  * frame or snapshot that announced it (null: none), and whether an announcement of that generation
  * said its stored text holds a streamed chunk (`seq` above 0). A lock only: no stream text, no watermark, no
  * retirement, and it never holds the save loop's reads, patches, or reloads (`isChatStreamedHere`).
  * Independent of this tab's job events: losing a follow does not release the feed lock.
+ * Whole-read snapshots replace a chat's locks only when issued after its latest feed list, the
+ * latest `hello`, and its last honored read. Reads without a stamped snapshot use revisions.
  */
 const feedLocks = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
+/** One local issue order for feed lists, `hello`, and whole-chat reads; revisions do not order locks. */
+let feedLockOrder = 0;
+let feedHelloOrder = 0;
+const feedChatOrders = new Map<string, number>();
+const feedReadOrders = new Map<string, number>();
+
+/** Capture immediately before issuing a whole-chat read and carry it on each adopted `RemoteChat`. */
+export function issueChatReadStamp(): number {
+    return ++feedLockOrder;
+}
 /**
  * Per chat: the newest job chat event whose metadata (streaming, releases) was taken, applied or
  * not; an older event's metadata is ignored. The entry's identity fences reads that reuse metadata.
@@ -1307,45 +1320,65 @@ export function markChatStale(ref: ChatRef): boolean {
  * generation, is released. The feed socket delivers these full lists in order, independently of
  * this tab's job events. The lock is by message id, so a message or chat the mirror does not hold
  * yet is locked when it arrives. `changes`: the frame's refs, whose revision
- * of the chat is the lock's (`dropFeedLocksOf`); none: null. Call after the frame's refs went to the
- * save loop. Nothing is queued, read, or discarded.
+ * of the chat is the lock's for reads without snapshots (`dropFeedLocksOf`); none: null. Each named
+ * chat advances its feed order even for an empty list, fencing snapshots of already-issued reads.
+ * Call after the frame's refs went to the save loop. Nothing is queued, read, or discarded.
  */
 export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes?: ChangeSet) {
     let moved = false;
     for (const chat of streaming) {
-        const prefix = `${keyOf(chat.characterId, chat.id)}\u0000`;
+        const key = keyOf(chat.characterId, chat.id);
+        feedChatOrders.set(key, ++feedLockOrder);
         const revision =
             changes?.chats.find((entry) => entry.characterId === chat.characterId && entry.id === chat.id)?.revision ??
             null;
-        const listed = new Map(chat.streaming.map((entry) => [entry.messageId, entry]));
-        for (const [messageKey, lock] of [...feedLocks]) {
-            if (
-                messageKey.startsWith(prefix) &&
-                listed.get(messageKey.slice(prefix.length))?.generationId !== lock.generationId
-            ) {
-                feedLocks.delete(messageKey);
-                moved = true;
-            }
-        }
-        for (const [messageId, { generationId, seq }] of listed) {
-            const messageKey = `${prefix}${messageId}`;
-            const current = feedLocks.get(messageKey);
-            const streamed = seq > 0 || (current?.generationId === generationId && current.streamed);
-            moved ||= !current || current.streamed !== streamed;
-            feedLocks.set(messageKey, { generationId, revision, streamed });
-        }
+        moved = replaceChatFeedLocks(key, revision, chat.streaming) || moved;
     }
     if (moved) {
         lockState.version += 1;
     }
 }
 
+/** Replaces one chat's locks by id, preserving streamed status only within the same generation. */
+function replaceChatFeedLocks(key: string, revision: string | null, streaming: readonly StreamingMessage[]): boolean {
+    const prefix = `${key}\u0000`;
+    const listed = new Map(streaming.map((entry) => [entry.messageId, entry]));
+    let moved = false;
+    for (const [messageKey, lock] of feedLocks) {
+        if (
+            messageKey.startsWith(prefix) &&
+            listed.get(messageKey.slice(prefix.length))?.generationId !== lock.generationId
+        ) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    for (const [messageId, { generationId, seq }] of listed) {
+        const messageKey = `${prefix}${messageId}`;
+        const current = feedLocks.get(messageKey);
+        const streamed = seq > 0 || (current?.generationId === generationId && current.streamed);
+        if (
+            current?.generationId !== generationId ||
+            current?.revision !== revision ||
+            current?.streamed !== streamed
+        ) {
+            feedLocks.set(messageKey, { generationId, revision, streamed });
+            moved = true;
+        }
+    }
+    return moved;
+}
+
 /**
  * Replaces the feed's whole lock set with a `hello` snapshot, including chats the mirror does not
- * hold. The sampled chat revisions keep locks through reconciliation reads at those revisions.
- * Only feed locks change; this tab's job events and stream state remain independent.
+ * hold. Every call fences snapshots of already-issued reads, including an empty `hello`. Sampled
+ * revisions serve only reads without stamped snapshots. This tab's job stream state is independent.
  */
 export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
+    feedHelloOrder = ++feedLockOrder;
+    // The global fence now covers every older per-chat list and honored read.
+    feedChatOrders.clear();
+    feedReadOrders.clear();
     const desired = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
     for (const chat of snapshot) {
         for (const { messageId, generationId, seq } of chat.streaming) {
@@ -1383,7 +1416,8 @@ export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
 
 /**
  * Releases every feed lock whose message key starts with `prefix` (all of them by default): the
- * character is gone. Not retired.
+ * chat or character is gone or forgotten. Clears matching per-chat ordering state, even without
+ * locks, so forgotten chats do not accumulate. Not retired.
  */
 export function releaseFeedLocks(prefix = "") {
     let moved = false;
@@ -1393,25 +1427,53 @@ export function releaseFeedLocks(prefix = "") {
             moved = true;
         }
     }
+    for (const orders of [feedChatOrders, feedReadOrders]) {
+        for (const key of orders.keys()) {
+            if (`${key}\u0000`.startsWith(prefix)) orders.delete(key);
+        }
+    }
     if (moved) {
         lockState.version += 1;
     }
 }
 
 /**
- * A chat's whole read was adopted (`revision`; null: the chat is gone): its feed locks announced at
- * an older revision (or with none) are released, since a read carries no locks and a missed release
- * frame must not keep the reply locked. A lock announced at the read's revision or later stays (the
- * read a lock frame's unfitting patch caused). Not retired: the job's next write announces a lock
- * that is still held.
+ * An adopted whole read replaces this chat's feed locks with its snapshot (including `[]`) only
+ * when its issue stamp is newer than the chat's latest feed list, the latest `hello`, and its last
+ * honored read. A suppressed snapshot leaves locks unchanged. Without a snapshot or issue stamp,
+ * the compatibility rule releases locks announced at an older revision (or with none). A gone chat
+ * always releases all its locks and ordering state. Nothing retires a generation.
  */
-function dropFeedLocksOf(key: string, revision: string | null) {
+function dropFeedLocksOf(
+    key: string,
+    revision: string | null,
+    streaming?: readonly StreamingMessage[],
+    readStamp?: number,
+) {
     const prefix = `${key}\u0000`;
+    if (revision === null) {
+        releaseFeedLocks(prefix);
+        return;
+    }
+    if (streaming !== undefined && readStamp !== undefined) {
+        if (
+            readStamp <= feedHelloOrder ||
+            readStamp <= (feedChatOrders.get(key) ?? 0) ||
+            readStamp <= (feedReadOrders.get(key) ?? 0)
+        ) {
+            return;
+        }
+        feedReadOrders.set(key, readStamp);
+        if (replaceChatFeedLocks(key, revision, streaming)) {
+            lockState.version += 1;
+        }
+        return;
+    }
     let moved = false;
     for (const [messageKey, lock] of [...feedLocks]) {
         if (
             messageKey.startsWith(prefix) &&
-            (revision === null || lock.revision === null || (compareRevision(revision, lock.revision) ?? 1) > 0)
+            (lock.revision === null || (compareRevision(revision, lock.revision) ?? 1) > 0)
         ) {
             feedLocks.delete(messageKey);
             moved = true;
@@ -3383,11 +3445,12 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
     if (item.kind === "chat") {
         const chatKey = keyOf(item.chaId, item.chatId);
         const refused = quarantined.get(chatKey);
+        const readStamp = issueChatReadStamp();
         const read = await readRefs([], { chats: [{ characterId: item.chaId, id: item.chatId }] });
         if (!canApply() || chatOwnerToken(item.chaId) !== owner || quarantined.get(chatKey) !== refused) return false;
         const server = read.chats?.find((chat) => chat.characterId === item.chaId && chat.id === item.chatId);
         if (!server) return false;
-        acceptRemoteChat(server as RemoteChat);
+        acceptRemoteChat({ ...server, readStamp } as RemoteChat);
         clearChatRefusal(chatKey);
     } else {
         const refused = quarantinedOrders.get(item.chaId);
@@ -4311,8 +4374,19 @@ function markOrderDiscarded(chaId: string, seq: number) {
     settleOrder(chaId, seq);
 }
 
-/** The server's copy of a chat (revision and data null: it is gone), for conflict recovery. */
-export type RemoteChat = { characterId: string; id: string; revision: string | null; data: Chat | null };
+/**
+ * A whole server chat read (revision and data null: gone). `streaming`, when present, is authoritative
+ * even when empty; `readStamp` is client-only, captured at issue to fence it against later feed lists,
+ * `hello`, and honored reads. Without both, adoption keeps the revision-based lock release rule.
+ */
+export type RemoteChat = {
+    characterId: string;
+    id: string;
+    revision: string | null;
+    data: Chat | null;
+    streaming?: StreamingMessage[];
+    readStamp?: number;
+};
 
 /**
  * Handles the chat part of a 409 (the whole batch was rolled back). Work that did not conflict is
@@ -4634,12 +4708,13 @@ export function acceptRemoteChat(server: RemoteChat, seq = 0) {
 /**
  * Applies a server copy without settling or discarding any work (callers establish eligibility). A
  * loaded chat takes the copy; a member that is not loaded, or a chat new to the list, takes its
- * summary only (a server copy never loads a chat).
+ * summary only (a server copy never loads a chat). Feed locks reconcile from its stamped snapshot,
+ * with the revision-based fallback only when the snapshot or stamp is absent.
  */
 function applyRemoteChat(server: RemoteChat) {
     const key = keyOf(server.characterId, server.id);
     staleChats.delete(key);
-    dropFeedLocksOf(key, server.revision);
+    dropFeedLocksOf(key, server.revision, server.streaming, server.readStamp);
     if (findCharacter(server.characterId)) {
         const ref = { chaId: server.characterId, chatId: server.id };
         if (server.revision === null || !server.data) {
@@ -5385,6 +5460,7 @@ export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undef
     }
     const notice = chatNoticeSeq(ref);
     const issued = heldChatRevision(ref);
+    const readStamp = issueChatReadStamp();
     const read = await readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }] });
     const server = read.chats?.find((chat) => chat.characterId === ref.chaId && chat.id === ref.chatId);
     if (lifetimeOf(ref.chaId) !== lifetime) {
@@ -5392,7 +5468,7 @@ export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undef
     }
     if (server && findCharacter(ref.chaId) && isMember(ref)) {
         if (isLoaded(ref)) {
-            adoptChatRead(server as RemoteChat, notice, issued);
+            adoptChatRead({ ...server, readStamp } as RemoteChat, notice, issued);
         } else {
             // Evicted during the read: loaded again as an unloaded chat is.
             return await loadUnloaded(ref, lifetime);
@@ -5444,6 +5520,7 @@ async function readUnloaded(chaId: string, ids: readonly string[], lifetime: str
         const issued = new Map(wanted.map((id) => [id, chatRevisions.get(keyOf(chaId, id)) ?? null]));
         const records = new Map<string, RemoteChat>();
         for (let start = 0; start < wanted.length; start += LOAD_CHUNK) {
+            const readStamp = issueChatReadStamp();
             const read = await readRefs([], {
                 chats: wanted.slice(start, start + LOAD_CHUNK).map((id) => ({ characterId: chaId, id })),
             });
@@ -5452,7 +5529,7 @@ async function readUnloaded(chaId: string, ids: readonly string[], lifetime: str
             }
             for (const chat of read.chats ?? []) {
                 if (chat.characterId === chaId) {
-                    records.set(chat.id, chat as RemoteChat);
+                    records.set(chat.id, { ...chat, readStamp } as RemoteChat);
                 }
             }
         }
@@ -5488,7 +5565,8 @@ async function readUnloaded(chaId: string, ids: readonly string[], lifetime: str
  * older than the held revision or than an acknowledgement of this client's edit, or an overtaken
  * deletion). A chat with local work keeps its list fields: an unloaded chat's summary is the local
  * truth of those fields, laid over the read. Its work keeps the held base revision so the server
- * can still reject edits from before a checkpoint restore.
+ * can still reject edits from before a checkpoint restore. Feed locks take the read's stamped
+ * snapshot independently of that held base, using the same ordering fence as a loaded chat.
  */
 function installRead(
     chaId: string,
@@ -5548,7 +5626,7 @@ function installRead(
     if (!busy) {
         holdChatRevision(key, server.revision);
     }
-    dropFeedLocksOf(key, server.revision);
+    dropFeedLocksOf(key, server.revision, server.streaming, server.readStamp);
     if (!busy) {
         settleNotice(key, server.revision);
     }

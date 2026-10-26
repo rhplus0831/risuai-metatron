@@ -73,6 +73,7 @@ import {
     heldChatRevision,
     heldChatRevisionsByCharacter,
     heldOrderRevision,
+    issueChatReadStamp,
     noteRemoteChat,
     adoptCharacter,
     captureChatObligations,
@@ -2738,6 +2739,7 @@ async function recoverConflictedWork(
         orders: work.orders.filter((order) => !conflictedOrders.has(order.characterId)),
     };
     let read: Awaited<ReturnType<typeof readRefs>>;
+    const readStamp = issueChatReadStamp();
     try {
         read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };
     } catch (readError) {
@@ -2749,7 +2751,7 @@ async function recoverConflictedWork(
         remainingWork,
         conflictedChats,
         conflictedOrders,
-        (read.chats ?? []) as RemoteChat[],
+        (read.chats ?? []).map((chat) => ({ ...chat, readStamp }) as RemoteChat),
         undefined,
         undefined,
         expiredChats,
@@ -2916,6 +2918,7 @@ async function reloadDeferredChats(): Promise<boolean> {
     if (released.length === 0) {
         return false;
     }
+    const readStamp = issueChatReadStamp();
     const read = await readRefs([], {
         chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
@@ -2924,7 +2927,7 @@ async function reloadDeferredChats(): Promise<boolean> {
     }
     const discardsBefore = chatDiscardSequence();
     for (const chat of read.chats ?? []) {
-        const refresh = finishDeferredReload(chat as RemoteChat);
+        const refresh = finishDeferredReload({ ...chat, readStamp } as RemoteChat);
         if (refresh) {
             hydrate.add(refresh);
         }
@@ -2971,6 +2974,7 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     // chat found gone is removed only if its held revision did not change meanwhile.
     const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
     const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, heldChatRevision(ref)]));
+    const readStamp = issueChatReadStamp();
     const read = await readRefs([], {
         chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
     });
@@ -2980,7 +2984,7 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     for (const chat of read.chats ?? []) {
         const key = `${chat.characterId}\u0000${chat.id}`;
         if (
-            finishIdleChatRefresh(chat as RemoteChat, notices.get(key) ?? 0, issued.get(key)) &&
+            finishIdleChatRefresh({ ...chat, readStamp } as RemoteChat, notices.get(key) ?? 0, issued.get(key)) &&
             chat.revision === null
         ) {
             // The chat is gone: the character's list is read again, never discarding local work.

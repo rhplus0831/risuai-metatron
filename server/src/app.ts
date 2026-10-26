@@ -799,6 +799,7 @@ export function createServerContext(options: {
     });
     registerResourceRoutes(app, {
         store: resources,
+        streaming: () => generationJobs.streamingSnapshot(),
         kinds: resourceKinds,
         auth,
         limiter: authenticatedRouteLimiter.middleware,

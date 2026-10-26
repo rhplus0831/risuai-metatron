@@ -8,6 +8,7 @@ import type {
     ChatSummary,
 } from "./chats.ts";
 import type { Database } from "./database.ts";
+import type { StreamingMessage } from "./jobs.ts";
 import type {
     COLLECTION_FIELDS,
     COLLECTION_SELECTION_FIELDS,
@@ -165,11 +166,18 @@ export type ResourceBatchConflictBody = { error: string; conflicts: BatchConflic
 /** Body of a 412: the mutation named another database epoch (a restore happened). */
 export type ResourceEpochMismatchBody = { error: "EpochMismatch"; epoch: string };
 
+/**
+ * A whole chat read with the server's current generation locks, sampled synchronously with the
+ * chat (the same per-chat list as the live-update `hello`). `[]` authoritatively means no locks;
+ * omitted means unknown (an older server). Read metadata only, never persisted in `ChatRecord.data`.
+ */
+export type ChatReadRecord = ChatRecord & { streaming?: StreamingMessage[] };
+
 export type ResourceReadKindsResult = {
     epoch: string;
     kinds: Record<string, ResourceRecord[]>;
     /** With `chats=1`: every chat and every chat order. */
-    chats?: ChatRecord[];
+    chats?: ChatReadRecord[];
     /** With `chatSummaries=1` (not with `chats=1`): every chat's summary, without messages. */
     chatSummaries?: ChatSummary[];
     /** With `chats=1` or `chatSummaries=1`: every chat order. */
@@ -180,9 +188,9 @@ export type ResourceReadRefsResult = {
     epoch: string;
     items: { kind: string; id: string; revision: string | null; data: unknown }[];
     /** The named chats; a missing one has revision and data null. */
-    chats?: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
+    chats?: (ChatReadRecord | { characterId: string; id: string; revision: null; data: null })[];
     /** The named characters' orders (null: no order) and all their chats. */
-    chatCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
+    chatCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatReadRecord[] }[];
     /** The named characters' orders (null: no order) and their chats' summaries. */
     chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
 };

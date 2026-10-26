@@ -382,6 +382,130 @@ describe("the feed's generation locks", () => {
     const locked = (b: Booted, id = "b") => b.chat.isMessageLocked(refK, id);
     const setText = (op: "setText", id: string, text: string): ChatOp => ({ op, id, text });
 
+    it.each([
+        { behavior: "keeps", streaming: [lockOf("b", "g", 1)], expectedLock: true },
+        { behavior: "releases", streaming: [], expectedLock: false },
+    ])("$behavior the reply lock according to a newer whole read's snapshot", async ({ streaming, expectedLock }) => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "waiting for provider")], [lockOf("b", "g", 1)]);
+        const announcedRevision = b.chat.heldChatRevision(refK);
+        expect(locked(b)).toBe(true);
+
+        // An unrelated write advances the chat; its frame never reaches this observer.
+        b.live.paused = true;
+        remote(b, [{ op: "meta", set: { note: "another writer" } }]);
+        if (!expectedLock) jobEnd(b);
+        b.fake.streamingForChat = (characterId, id) => (characterId === "c" && id === "k" ? streaming : undefined);
+        const readRevision = b.fake.chat("c", "k")!.revision;
+        expect(readRevision).not.toBe(announcedRevision);
+        expect(locked(b)).toBe(true);
+
+        b.sync.reconcileRemote(b.fake.store.listRevisions());
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(reads(b)).toEqual([expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(mirror(b).note).toBe("another writer");
+        expect(b.chat.heldChatRevision(refK)).toBe(readRevision);
+        expect(locked(b)).toBe(expectedLock);
+        expect(b.chat.isChatGenerating(refK)).toBe(expectedLock);
+        quiet(b);
+    });
+
+    it("recovers a lost follow by unlocking the reply from an empty whole-read snapshot at the same revision", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "last checkpoint")], [lockOf("b", "g", 1)]);
+        const revision = b.chat.heldChatRevision(refK);
+        expect(
+            b.chat.applyServerGeneration(refK, {
+                jobId: "J",
+                messageId: "b",
+                generationId: "g",
+                seq: 1,
+                text: "last checkpoint",
+            }),
+        ).toBe(true);
+        b.chat.endServerJob("J");
+        b.live.paused = true;
+        jobEnd(b); // The job ends without writing, and its release frame is missed too.
+        b.fake.streamingForChat = () => [];
+        expect(locked(b)).toBe(true);
+        expect(b.chat.isChatGenerating(refK)).toBe(true);
+
+        // `recoverJobChat` uses this stale mark and the save loop's immediate idle refresh.
+        expect(b.chat.markChatStale(refK)).toBe(true);
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toEqual([expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(mirror(b).message[1].data).toBe("last checkpoint");
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        quiet(b);
+    });
+
+    it("does not reinstall a lock from a whole-read answer delayed past the job's end frame", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "waiting for provider")], [lockOf("b", "g", 1)]);
+        b.live.paused = true;
+        remote(b, [{ op: "meta", set: { note: "sampled while running" } }]);
+        b.live.queue.length = 0;
+        b.live.paused = false;
+        b.fake.streamingForChat = () => [lockOf("b", "g", 1)];
+        let onSampled!: () => void;
+        let releaseAnswer!: () => void;
+        const sampled = new Promise<void>((resolve) => {
+            onSampled = resolve;
+        });
+        const answer = new Promise<void>((resolve) => {
+            releaseAnswer = resolve;
+        });
+        const fetch = b.fake.fetch;
+        vi.spyOn(b.fake, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/read") {
+                onSampled();
+                await answer;
+            }
+            return response;
+        });
+        b.chat.markChatStale(refK);
+        const refresh = b.sync.refreshStaleChat(refK);
+        try {
+            await sampled;
+            expect(locked(b)).toBe(true);
+            jobEnd(b); // No refs: a revision fence alone cannot reject the pending snapshot.
+            expect(locked(b)).toBe(false);
+        } finally {
+            releaseAnswer();
+            await refresh;
+        }
+        expect(mirror(b).note).toBe("sampled while running");
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        quiet(b);
+    });
+
+    it("releases a removed chat's feed locks when a collection read drops its held revision", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "last checkpoint")], [lockOf("b", "g", 1)]);
+        b.live.paused = true;
+        jobEnd(b);
+        remote(b, [{ op: "delete" }]);
+        expect(locked(b)).toBe(true);
+        expect(b.chat.heldChatRevision(refK)).not.toBeNull();
+
+        const read = await b.client.readRefs([], { chatSummaryCollections: ["c"] });
+        expect(b.chat.applyRemoteCollection(read.chatSummaryCollections![0])).toBe(true);
+        expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
+        expect(b.chat.heldChatRevision(refK)).toBeNull();
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        quiet(b);
+    });
+
     it.each(["feed", "this tab"])(
         "protects character membership during a %s job and defers recovery only for this tab's stream",
         async (owner) => {

@@ -887,7 +887,8 @@ describe("every registered kind over the resource routes", () => {
         expect(token(orderRevision).revision).toBe(2);
 
         // The read-back: the normalized metadata (`name`, `note`, `localLore`, `fmIndex`) and the
-        // messages in order, through the ref read, the collection read, and the kinds read.
+        // messages in order, through the ref read, the collection read, and the kinds read, each
+        // with the chat's (empty) generation lock list.
         const chatData = expect.objectContaining({
             id: "k",
             name: "K",
@@ -902,19 +903,23 @@ describe("every registered kind over the resource routes", () => {
         const read = (await (
             await s.json("/api/resources/read", { chats: [{ characterId: "c", id: "k" }], chatCollections: ["c"] })
         ).json()) as { chats: unknown[]; chatCollections: unknown[] };
-        expect(read.chats).toEqual([{ characterId: "c", id: "k", revision: chatRevision, data: chatData }]);
+        expect(read.chats).toEqual([
+            { characterId: "c", id: "k", revision: chatRevision, data: chatData, streaming: [] },
+        ]);
         expect(read.chatCollections).toEqual([
             {
                 characterId: "c",
                 order: { characterId: "c", revision: orderRevision, ids: ["k"] },
-                chats: [{ characterId: "c", id: "k", revision: chatRevision, data: chatData }],
+                chats: [{ characterId: "c", id: "k", revision: chatRevision, data: chatData, streaming: [] }],
             },
         ]);
         const kinds = (await (await s.request("/api/resources?kinds=characters&chats=1")).json()) as {
             chats: unknown[];
             chatOrders: unknown[];
         };
-        expect(kinds.chats).toEqual([{ characterId: "c", id: "k", revision: chatRevision, data: chatData }]);
+        expect(kinds.chats).toEqual([
+            { characterId: "c", id: "k", revision: chatRevision, data: chatData, streaming: [] },
+        ]);
         expect(kinds.chatOrders).toEqual([{ characterId: "c", revision: orderRevision, ids: ["k"] }]);
 
         // An append on the held revision advances it by one and is read back.

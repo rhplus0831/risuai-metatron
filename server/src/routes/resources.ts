@@ -1,5 +1,7 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import type { ChatStreamingSnapshot } from "../../../shared/events.ts";
 import { MAX_BOOT_BODY_BYTES, RESOURCE_BOOT_PATH, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import type { ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import {
     isValidResourceId,
@@ -33,7 +35,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * (`baseRevision`: null to create); a stale one is a 409 carrying the current revision (null when the
  * record is gone). A batch op may be a record patch instead of whole data (`patch`, with a string
  * `baseRevision`; see `ResourceBatchOperation`). The batch also carries chat groups and reorders, and the reads chats and chat
- * collections (`shared/chats.ts`). An edit of a message a generation job owns is a 409 whose entry
+ * collections (`shared/chats.ts`). With a streaming source, whole chats carry authoritative lock
+ * lists sampled in the same synchronous step as the read; summaries and missing chats do not.
+ * An edit of a message a generation job owns is a 409 whose entry
  * (or, on the single routes, whose body) carries `reason: "generating"`. Responses are never cached.
  */
 export function registerResourceRoutes(
@@ -44,9 +48,11 @@ export function registerResourceRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         maintenance: MaintenanceGate;
+        /** The same synchronous generation-lock snapshot used by the live-update `hello`. */
+        streaming?: () => ChatStreamingSnapshot[];
     },
 ) {
-    const { store, kinds, auth, limiter, maintenance } = arg;
+    const { store, kinds, auth, limiter, maintenance, streaming } = arg;
 
     const noStore: MiddlewareHandler<AppEnv> = async (c, next) => {
         await next();
@@ -71,6 +77,22 @@ export function registerResourceRoutes(
      */
     const prepare = (kind: ResourceKind, id: string, data: unknown) =>
         kind.prepareWrite ? kind.prepareWrite(data, store.get(kind, id)?.data ?? null) : data;
+
+    /** Decorates whole chats without yielding after the store read, indexing one snapshot per response. */
+    function addStreaming(read: Pick<ResourceReadRefsResult, "chats" | "chatCollections">) {
+        if (!streaming || (!read.chats && !read.chatCollections)) return;
+        const byChat = new Map(streaming().map((chat) => [`${chat.characterId}\u0000${chat.id}`, chat.streaming]));
+        for (const chat of read.chats ?? []) {
+            if (chat.revision !== null) {
+                chat.streaming = byChat.get(`${chat.characterId}\u0000${chat.id}`) ?? [];
+            }
+        }
+        for (const collection of read.chatCollections ?? []) {
+            for (const chat of collection.chats) {
+                chat.streaming = byChat.get(`${chat.characterId}\u0000${chat.id}`) ?? [];
+            }
+        }
+    }
 
     app.get("/api/resources", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -101,6 +123,7 @@ export function registerResourceRoutes(
             return c.json({ error: "chats and chatSummaries cannot be combined" }, 400);
         }
         const read = store.readKinds(selected, { chats: chats === "1", chatSummaries: chatSummaries === "1" });
+        addStreaming(read);
         for (const kind of selected) {
             if (kind.project) {
                 read.kinds[kind.name] = read.kinds[kind.name].map((record) => ({
@@ -160,6 +183,7 @@ export function registerResourceRoutes(
         }
         try {
             const read = store.readRefs(resolved, { chats: chatRefs, chatCollections, chatSummaryCollections });
+            addStreaming(read);
             return compressedJson(c, {
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: project(kinds.get(item.kind), item.data) })),

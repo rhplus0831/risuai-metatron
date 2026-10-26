@@ -140,6 +140,7 @@ describe("POST /api/resources/batch with chats", () => {
                         m("r", "streamed", "char"),
                     ],
                 },
+                streaming: [],
             },
         ]);
         expect(all.chatOrders).toEqual([{ characterId: "c", revision: r.body.chatOrders![0].revision, ids: ["k"] }]);

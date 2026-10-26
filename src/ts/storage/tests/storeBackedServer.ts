@@ -9,6 +9,7 @@ import {
     MAX_CHARX_ENTRY_BYTES,
 } from "../../../../shared/charxImport.ts";
 import type { ChatOp, ChatOrderRecord, ChatRecord, ChatSummary } from "../../../../shared/chats.ts";
+import type { StreamingMessage } from "../../../../shared/jobs.ts";
 import { parseSecretPath, writeSecret } from "../../../../shared/llmSecrets.ts";
 import {
     decodeModuleMain,
@@ -208,6 +209,13 @@ export class StoreBackedServer {
     feedEvents: ServerFeedEvent[] = [];
     /** Receives each published event as it is published (synchronously, right after the commit). */
     onFeed: ((event: ServerFeedEvent) => void) | null = null;
+    /** Whole-read lock snapshots; undefined keeps the older server's omitted-field behavior. */
+    streamingForChat?: (characterId: string, id: string) => StreamingMessage[] | undefined;
+
+    private withStreaming<T extends { characterId: string; id: string; revision: string | null }>(chat: T) {
+        const streaming = chat.revision === null ? undefined : this.streamingForChat?.(chat.characterId, chat.id);
+        return streaming === undefined ? chat : { ...chat, streaming };
+    }
 
     private constructor(
         storeModule: StoreModule,
@@ -519,7 +527,10 @@ export class StoreBackedServer {
                     data: this.project(this.kind(name), record.data),
                 }));
             }
-            return Response.json(read);
+            return Response.json({
+                ...read,
+                ...(read.chats && { chats: read.chats.map((chat) => this.withStreaming(chat)) }),
+            });
         }
         if (url.pathname === "/api/resources/revisions" && method === "GET") {
             return Response.json(this.store.listRevisions());
@@ -537,6 +548,11 @@ export class StoreBackedServer {
             return Response.json({
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: this.project(this.kind(item.kind), item.data) })),
+                chats: read.chats.map((chat) => this.withStreaming(chat)),
+                chatCollections: read.chatCollections.map((collection) => ({
+                    ...collection,
+                    chats: collection.chats.map((chat) => this.withStreaming(chat)),
+                })),
             });
         }
         if (url.pathname === "/api/resources/batch" && method === "POST") {

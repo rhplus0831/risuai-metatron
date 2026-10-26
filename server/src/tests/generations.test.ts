@@ -6,6 +6,7 @@ import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import { type CallbackResult, type GenerationEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import type { ResourceReadKindsResult, ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { MemoryControl, RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
@@ -1130,7 +1131,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await commander.closed;
     });
 
-    it("includes another tab's running job locks and the current stored revision in the feed hello, then omits them after the job ends", async () => {
+    it("lists another tab's running job locks with the stored revision in the feed hello and in every whole-chat read, then empty lists after the job ends", async () => {
         // Freeze the job's expiry clock and the socket heartbeat while the runner waits for work.
         vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
         try {
@@ -1175,7 +1176,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
                 }
             };
 
-            expect(await readHello()).toMatchObject({
+            const hello = await readHello();
+            expect(hello).toMatchObject({
                 type: "hello",
                 epoch,
                 streaming: [
@@ -1187,10 +1189,49 @@ describe("generation jobs over HTTP and WebSocket", () => {
                     },
                 ],
             });
+            if (hello.type !== "hello") throw new Error("expected hello");
+
+            const checkReads = async (streaming: (typeof hello.streaming)[number]["streaming"]) => {
+                const response = await request(
+                    "/api/resources/read",
+                    json({
+                        chats: [
+                            { characterId: "c", id: "k" },
+                            { characterId: "c", id: "missing" },
+                        ],
+                        chatCollections: ["c"],
+                        chatSummaryCollections: ["c"],
+                    }),
+                );
+                expect(response.status).toBe(200);
+                const read = (await response.json()) as ResourceReadRefsResult;
+                const allResponse = await request("/api/resources?kinds=characters&chats=1");
+                expect(allResponse.status).toBe(200);
+                const all = (await allResponse.json()) as ResourceReadKindsResult;
+                for (const chats of [read.chats, read.chatCollections![0].chats, all.chats]) {
+                    expect(chats?.find((chat) => chat.characterId === "c" && chat.id === "k")).toMatchObject({
+                        revision: stored.revision,
+                        streaming,
+                    });
+                }
+                expect(read.chats?.find((chat) => chat.id === "missing")).toEqual({
+                    characterId: "c",
+                    id: "missing",
+                    revision: null,
+                    data: null,
+                });
+                expect(read.chatSummaryCollections![0].chats[0]).not.toHaveProperty("streaming");
+                const summariesResponse = await request("/api/resources?kinds=characters&chatSummaries=1");
+                expect(summariesResponse.status).toBe(200);
+                const summaries = (await summariesResponse.json()) as ResourceReadKindsResult;
+                expect(summaries.chatSummaries![0]).not.toHaveProperty("streaming");
+            };
+            await checkReads(hello.streaming[0].streaming);
             // Ending without a final write releases ownership while the stored chat stays put.
             job.emit({ type: "done", revision: stored.revision });
             step(() => "end" as never);
             expect(await readHello()).toMatchObject({ type: "hello", epoch, streaming: [] });
+            await checkReads([]);
         } finally {
             await closeServer();
             vi.useRealTimers();

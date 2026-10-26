@@ -36,7 +36,7 @@ All source line references are for the revision above. Test commands and limitat
 | F02 | P1       | Unsaved intent exists only for the lifetime of the tab                                            | Lost drafts after page loss or reload                  |
 | F03 | P2       | Coarse conflict recovery discards unrelated and newer local edits                                 | Multi-tab/device data loss                             |
 | F04 | P2       | Incoming refreshes block outgoing saves                                                           | Save latency and increased unsaved window              |
-| F05 | P2       | A newer chat read can clear a still-active generation lock                                        | Discarded edits; possible overwrite after completion   |
+| F05 | P2       | **Fixed 2026-10-26.** A newer chat read can clear a still-active generation lock                  | Discarded edits; possible overwrite after completion   |
 | F06 | P2       | Restore/import validation and installation block the serving thread                               | Whole-server stalls and memory pressure                |
 | F07 | P2       | Read limits count references rather than resulting bytes                                          | Large allocations, latency, and response amplification |
 | F08 | P2       | Asset and backup retention lack a coordinated byte budget                                         | Disk growth and eventual write failures                |
@@ -118,6 +118,8 @@ The [resource transport](../../../src/ts/storage/resourceClient.ts#L102) and [au
 ### F05 — A newer chat read can clear a still-active generation lock
 
 **Confirmed code path; complete race conditional.**
+
+**Fixed 2026-10-26** (commit `fix(storage): let whole chat reads carry and decide the chat's feed locks`): every whole chat read (`POST /api/resources/read` `chats` and `chatCollections`, `GET /api/resources?chats=1`) carries the chat's lock list (`streaming`, the list `hello` sends, sampled in the same synchronous step as the read), and an adopted read replaces the chat's feed locks with it instead of comparing revisions, so a newer read keeps a live lock and the recovery read after a lost follow releases a missed release. Reads are stamped at issue; a feed list or `hello` that arrived during the read wins over its list, so a delayed answer cannot reinstall a released lock. Paths that drop a gone chat's revision release its feed locks. Left open from the recommendation: blocking the message after a generating conflict until the authoritative refresh and keeping the refused edit (the durable drafts plan), and the window before the job's first write (found-issues "Feed lock windows").
 
 [dropFeedLocksOf](../../../src/ts/storage/chatStore.svelte.ts#L1401) treats a newer authoritative chat revision as sufficient to drop feed locks. A revision can advance because another message or chat field changed while the original generation is still active. Whole-chat adoption calls this path ([adoption](../../../src/ts/storage/chatStore.svelte.ts#L4639)).
 
