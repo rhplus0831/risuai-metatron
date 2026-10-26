@@ -1,0 +1,45 @@
+{
+  "recordDataBytes": {
+    "presets": 1406641,
+    "modules": 7313371,
+    "plugins": 1024691,
+    "pluginStorage": 2051044
+  },
+  "moduleLoreBytes": 316691,
+  "moduleAssetsBytes": 48891
+}
+{
+  "node": "v24.21.0",
+  "counts": {
+    "characters": 300,
+    "chats": 3000,
+    "resources": 325
+  },
+  "coldRequest": 424,
+  "warmRequest": 38961,
+  "coldResponse": 51530257,
+  "coldGzip1": 2024707,
+  "warmResponse": 4327395,
+  "warmGzip1": 201657,
+  "revisionListing": 539239,
+  "revisionListingGzip1Hypothetical": 106186,
+  "summaries": 1051894,
+  "orders": 152893,
+  "summaryCollection10": 4180,
+  "oneCharacter": 128379,
+  "longChatRead": 4244437,
+  "characterPayloadTotal": 38514714,
+  "presets": 1408769,
+  "modules": 7314271,
+  "plugins": 1024770,
+  "pluginStorage": 2051123
+}
+{
+  "warmAfterOneCharacterTimestamp": 4455692,
+  "extra": 128297,
+  "oneMsgSetText": 2118,
+  "oneRemove": 62,
+  "remove100": 3923,
+  "chatReplace": 4244301,
+  "translation": 2222
+}

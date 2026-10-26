@@ -1,0 +1,9 @@
+{
+  "op": "100PatchesSingleFeedFrame",
+  "inputBytes": 6014093,
+  "applyIncludingSerializeMs": 71.131,
+  "frameBytes": 6024591,
+  "serializeMs": 14.731,
+  "patches": 100,
+  "maxPatchBytes": 60148
+}

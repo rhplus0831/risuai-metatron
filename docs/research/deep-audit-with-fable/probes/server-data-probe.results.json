@@ -1,0 +1,170 @@
+[
+  {
+    "node": "v24.21.0",
+    "sqlite": {
+      "version": "3.53.4"
+    },
+    "pragmas": {
+      "journal_mode": {
+        "journal_mode": "wal"
+      },
+      "synchronous": {
+        "synchronous": 2
+      },
+      "busy_timeout": {
+        "timeout": 5000
+      },
+      "wal_autocheckpoint": {
+        "wal_autocheckpoint": 1000
+      }
+    },
+    "compile": [
+      {
+        "compile_options": "DEFAULT_SYNCHRONOUS=2"
+      },
+      {
+        "compile_options": "DEFAULT_WAL_SYNCHRONOUS=2"
+      }
+    ]
+  },
+  {
+    "op": "seed300Characters3000Chats",
+    "ms": 797.461
+  },
+  {
+    "op": "revisions",
+    "readMs": 6.866,
+    "stringifyMs": 2.622,
+    "bytes": 538972,
+    "resources": 322,
+    "chats": 3000,
+    "orders": 300
+  },
+  {
+    "op": "revisions",
+    "readMs": 6.305,
+    "stringifyMs": 1.53,
+    "bytes": 538972,
+    "resources": 322,
+    "chats": 3000,
+    "orders": 300
+  },
+  {
+    "op": "revisions",
+    "readMs": 5.315,
+    "stringifyMs": 1.438,
+    "bytes": 538972,
+    "resources": 322,
+    "chats": 3000,
+    "orders": 300
+  },
+  {
+    "op": "reopen300Characters75MiB",
+    "ms": 759.989,
+    "writes": 0
+  },
+  {
+    "op": "replace5000x2KiB",
+    "ms": 151.315
+  },
+  {
+    "op": "checkpointPhases7Runs",
+    "timings": [
+      {
+        "writeMs": 7.558,
+        "scopeMs": 39.632,
+        "readMs": 19.008,
+        "baselineMs": 82.688,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      },
+      {
+        "writeMs": 9.994,
+        "scopeMs": 26.215,
+        "readMs": 19.823,
+        "baselineMs": 17.297,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      },
+      {
+        "writeMs": 6.985,
+        "scopeMs": 31.262,
+        "readMs": 34.387,
+        "baselineMs": 16.885,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      },
+      {
+        "writeMs": 6.928,
+        "scopeMs": 28.823,
+        "readMs": 18.666,
+        "baselineMs": 25.79,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      },
+      {
+        "writeMs": 6.849,
+        "scopeMs": 18.176,
+        "readMs": 29.665,
+        "baselineMs": 17.639,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      },
+      {
+        "writeMs": 6.851,
+        "scopeMs": 29.242,
+        "readMs": 19.105,
+        "baselineMs": 27.224,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      },
+      {
+        "writeMs": 8.572,
+        "scopeMs": 20.249,
+        "readMs": 32.112,
+        "baselineMs": 15.804,
+        "feedBytes": 33204,
+        "jobPatchBytes": 32867
+      }
+    ],
+    "medians": {
+      "writeMs": 6.985,
+      "scopeMs": 28.823,
+      "readMs": 19.823,
+      "baselineMs": 17.639
+    }
+  },
+  {
+    "op": "userCheckpointSave",
+    "ms": 87.218,
+    "messageCount": 5000
+  },
+  {
+    "op": "userCheckpointSave",
+    "ms": 71.51,
+    "messageCount": 5000
+  },
+  {
+    "op": "256KiBCharacterPatches",
+    "repeatedSameRecord": [3.632, 0.838, 0.646, 0.667, 0.828, 0.858],
+    "differentRecords": [0.803, 1.929, 2.014, 1.999, 1.905, 1.857]
+  },
+  {
+    "op": "backupTo",
+    "activeWrites": false,
+    "ms": 435.465,
+    "bytes": 313556992,
+    "ticks": 43,
+    "maxGapMs": 10.595,
+    "writeMaxMs": 0
+  },
+  {
+    "op": "backupTo",
+    "activeWrites": true,
+    "ms": 1340.27,
+    "bytes": 313556992,
+    "ticks": 133,
+    "maxGapMs": 10.683,
+    "writeMaxMs": 10.466
+  }
+]

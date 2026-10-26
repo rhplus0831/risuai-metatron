@@ -1,0 +1,1 @@
+{"label":"actual-job-socket-500-callbacks","terminal":"done","callbacks":500,"wholeChatFrames":500,"wholeChatBytes":523601000,"allFrames":1003,"ms":3488.96}
