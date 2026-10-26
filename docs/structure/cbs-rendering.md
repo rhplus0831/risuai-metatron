@@ -67,7 +67,7 @@
   - `AllCBS` is the autocomplete list, maintained by hand.
   - Used by `src/lib/UI/GUI/TextAreaInput.svelte`.
 - `gui/codearea/cbsMonaco.ts`: `registerCBSMonaco` is empty, so Monaco has no CBS language support.
-- `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which `Chat.svelte:handlePartialEditSave` handles; a translation edit goes through the awaitable `saveTranslation` prop instead when the parent passes one (`media-aux.md`, the stored path), and the draft stays when that write is refused.
+- `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which `Chat.svelte:handlePartialEditSave` handles; a translation edit goes through the awaitable `saveTranslation` prop instead when the parent passes one (`media-aux.md`, the stored path), and the draft stays when that write is refused. Escape cancels and Ctrl/Meta+Enter saves, neither while an IME composes (`src/ts/ime.ts` `isImeComposing`).
 
 ## Flows
 

@@ -4,6 +4,7 @@
     import { createEventDispatcher, onDestroy } from "svelte";
     import { language } from "src/lang";
     import { alertError } from "src/ts/alert";
+    import { isImeComposing } from "src/ts/ime";
     import {
         findAllOriginalRangesFromHtml,
         findAllOriginalRangesFromText,
@@ -485,6 +486,9 @@
     }
 
     function handleKeydown(e: KeyboardEvent) {
+        if (isImeComposing(e)) {
+            return;
+        }
         if (e.key === "Escape") {
             handleCancel();
         } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {

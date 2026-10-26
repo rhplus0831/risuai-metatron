@@ -106,7 +106,7 @@ Settings:
   2. `generateAIImage(...,'inlay')` returns a data URI.
   3. The caller must call `writeInlayImage` and insert `{{inlay::id}}`.
 - Display translation: on the rendered path `ChatBody.svelte:markParsing` switches on its chat's `autoTranslate` (the `autoTranslate` prop from `Chat.svelte`; a change restarts the row), `autoTranslateCachedOnly`, `translateBeforeHTMLFormatting`, and `legacyTranslation`, then calls `translateHTML`. While the row's message is streaming (`Chat.svelte` passes `streaming` from `isStreamingMessage`, in every streaming mode), `markParsing` renders the original without the auto-translate decision or `translateHTML`, and the translation runs once when streaming ends. On the stored path `Chat.svelte` swaps in the stored translation and `ChatBody` renders it as text.
-- Input translation: `DefaultChatScreen.updateInputTransateMessage`, when `useAutoTranslateInput`.
+- Input translation: `DefaultChatScreen` through `src/ts/process/inputTranslation.svelte.ts` `createInputTranslation` ([chat-pipeline](chat-pipeline.md)), when `useAutoTranslateInput`.
 
 ## State
 

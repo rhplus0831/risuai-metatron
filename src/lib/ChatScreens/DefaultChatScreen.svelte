@@ -92,6 +92,11 @@
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
     import { createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
+    import {
+        createInputTranslation,
+        handleMainComposerKeydown,
+        handleTranslationComposerKeydown,
+    } from "src/ts/process/inputTranslation.svelte";
     import { processMultiCommand } from "src/ts/process/command";
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset } from "src/ts/process/files/inlays";
@@ -168,6 +173,23 @@
         const ref = currentChatRef();
         return ref === null ? null : chatKeyOf(ref);
     });
+    const inputTranslation = createInputTranslation({
+        translate,
+        isExperimental: isExpTranslator,
+        enabled: () => settings.memoryTranslateMedia.useAutoTranslateInput,
+        getText: (field) => (field === "main" ? messageInput : messageInputTranslate),
+        setText: (field, text) => {
+            if (field === "main") messageInput = text;
+            else messageInputTranslate = text;
+        },
+        getChatKey: () => chatKey,
+    });
+    onDestroy(() => inputTranslation.invalidate());
+    $effect(() => {
+        if (!settings.memoryTranslateMedia.useAutoTranslateInput) {
+            inputTranslation.invalidate();
+        }
+    });
     // How many messages render from the end; load more grows it, an append at the bottom may trim it.
     let loadPages = $derived.by(() => {
         chatKey;
@@ -175,6 +197,7 @@
     });
     $effect(() => {
         chatKey;
+        inputTranslation.invalidate();
         untrack(() => {
             const ref = currentChatRef();
             if (ref && messageInput === "") {
@@ -434,6 +457,7 @@
             const commandProcessed = await processMultiCommand(messageInput);
             if (commandProcessed !== false) {
                 messageInput = "";
+                inputTranslation.invalidate();
                 return;
             }
             // Not a command: the chat may have started work meanwhile.
@@ -480,6 +504,7 @@
         }
         messageInput = "";
         messageInputTranslate = "";
+        inputTranslation.invalidate();
         rerollHistory.clear(ref);
         // The send is admitted without another await after the input is consumed.
         void sleep(10).then(updateInputSizeAll);
@@ -790,47 +815,6 @@
         updateInputSizeAll();
     });
 
-    async function updateInputTransateMessage(reverse: boolean) {
-        if (!settings.memoryTranslateMedia.useAutoTranslateInput) {
-            return;
-        }
-        if (isExpTranslator()) {
-            if (!reverse) {
-                messageInputTranslate = "";
-                return;
-            }
-            if (messageInputTranslate === "") {
-                messageInput = "";
-                return;
-            }
-            const lastMessageInputTranslate = messageInputTranslate;
-            await sleep(1500);
-            if (lastMessageInputTranslate === messageInputTranslate) {
-                translate(reverse ? messageInputTranslate : messageInput, reverse).then((translatedMessage) => {
-                    if (translatedMessage) {
-                        if (reverse) messageInput = translatedMessage;
-                        else messageInputTranslate = translatedMessage;
-                    }
-                });
-            }
-            return;
-        }
-        if (reverse && messageInputTranslate === "") {
-            messageInput = "";
-            return;
-        }
-        if (!reverse && messageInput === "") {
-            messageInputTranslate = "";
-            return;
-        }
-        translate(reverse ? messageInputTranslate : messageInput, reverse).then((translatedMessage) => {
-            if (translatedMessage) {
-                if (reverse) messageInput = translatedMessage;
-                else messageInputTranslate = translatedMessage;
-            }
-        });
-    }
-
     async function screenShot() {
         const previousWindow = loadPages;
         const capturedChat = chatKey;
@@ -1050,21 +1034,10 @@
                     class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm"
                     bind:value={messageInput}
                     bind:this={inputEle}
-                    onkeydown={(e) => {
-                        if (e.key.toLocaleLowerCase() === "enter" && !e.isComposing) {
-                            if (settings.ui.sendWithEnter && !e.shiftKey) {
-                                send();
-                                e.preventDefault();
-                            } else if (!settings.ui.sendWithEnter && e.shiftKey) {
-                                send();
-                                e.preventDefault();
-                            }
-                        }
-                        if (e.key.toLocaleLowerCase() === "m" && e.ctrlKey) {
-                            reroll();
-                            e.preventDefault();
-                        }
-                    }}
+                    oncompositionstart={() => inputTranslation.compositionStart("main")}
+                    oncompositionend={() => inputTranslation.compositionEnd("main")}
+                    onkeydown={(e) =>
+                        handleMainComposerKeydown(e, { sendWithEnter: settings.ui.sendWithEnter, send, reroll })}
                     onpaste={(e) => {
                         const items = e.clipboardData?.items;
                         if (!items) {
@@ -1106,7 +1079,7 @@
                     }}
                     oninput={() => {
                         updateInputSizeAll();
-                        updateInputTransateMessage(false);
+                        inputTranslation.run(false);
                     }}
                     style:height={inputHeight}></textarea>
 
@@ -1397,21 +1370,17 @@
                         class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow ml-4 mr-2 border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full"
                         bind:value={messageInputTranslate}
                         bind:this={inputTranslateEle}
-                        onkeydown={(e) => {
-                            if (e.key.toLocaleLowerCase() === "enter" && !e.shiftKey) {
-                                if (settings.ui.sendWithEnter) {
-                                    send();
-                                    e.preventDefault();
-                                }
-                            }
-                            if (e.key.toLocaleLowerCase() === "m" && e.ctrlKey) {
-                                reroll();
-                                e.preventDefault();
-                            }
-                        }}
+                        oncompositionstart={() => inputTranslation.compositionStart("translation")}
+                        oncompositionend={() => inputTranslation.compositionEnd("translation")}
+                        onkeydown={(e) =>
+                            handleTranslationComposerKeydown(e, {
+                                sendWithEnter: settings.ui.sendWithEnter,
+                                send,
+                                reroll,
+                            })}
                         oninput={() => {
                             updateInputSizeAll();
-                            updateInputTransateMessage(true);
+                            inputTranslation.run(true);
                         }}
                         placeholder={language.enterMessageForTranslateToEnglish}
                         style:height={inputTranslateHeight}></textarea>

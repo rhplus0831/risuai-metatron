@@ -51,8 +51,8 @@ path; P3 is smaller.
 | ---- | -------- | ------- | ----------------------------------------------------------------------------------------- | ----------------------------- |
 | TJ01 | P1       | jobs    | Trigger reconciliation replaces `scriptstate` whole after per-key setters merged          | Server/client data loss       |
 | CE01 | P1       | client  | WaveSpeed LoRA effect republishes a mount-time draft after a remote record replacement    | Client/server data loss       |
-| CE02 | P1       | client  | Composer translation writes results without request, draft, chat, or destroy guards       | Client/server data loss       |
-| CE03 | P1       | client  | Translation composer Enter ignores `isComposing`                                          | Effects vs. environment (IME) |
+| CE02 | P1 fixed | client  | Composer translation writes results without request, draft, chat, or destroy guards       | Client/server data loss       |
+| CE03 | P1 fixed | client  | Translation composer Enter ignores `isComposing`                                          | Effects vs. environment (IME) |
 | SD01 | P2       | server  | A streaming checkpoint rereads the transcript twice and rebuilds the owner baseline       | Server performance            |
 | TJ04 | P2       | jobs    | Every script callback barrier hydrates the whole chat                                     | Excessive traffic             |
 | TJ02 | P2       | jobs    | Transform inputs have no revision fence; the cache omits history and viewport             | Server/client correctness     |
@@ -153,6 +153,13 @@ remote records; a clean editor adopts without dirtying, a dirty one preserves it
 
 **Confirmed missing ownership. P1 (loss depends on completion order).**
 
+**Fixed 2026-10-26** (Deep Audit Fixes plan): `src/ts/process/inputTranslation.svelte.ts` `createInputTranslation` owns
+the runs (newest run wins; source text, destination text, and chat key captured before the await and checked after it
+and after the experimental debounce; invalidated on a consumed send or command, a chat switch, toggle off, and
+destroy). A result that arrives while the destination composes is dropped rather than deferred: deferring would
+overwrite the text the IME just committed, and a later input starts a new run. Tests:
+`src/ts/process/inputTranslation.test.ts`.
+
 `updateInputTransateMessage` awaits `translate(...)` and then assigns `messageInput` or `messageInputTranslate`
 with no check that the source text, chat, or component is still the same
 ([DefaultChatScreen.svelte:806](../../../src/lib/ChatScreens/DefaultChatScreen.svelte#L806),
@@ -169,6 +176,12 @@ destination is composing.
 ### CE03 — Enter in the translation composer sends during IME composition
 
 **Confirmed handler gap; IME outcome conditional. P1.**
+
+**Fixed 2026-10-26** (Deep Audit Fixes plan): `src/ts/ime.ts` `isImeComposing` (`isComposing`, or `keyCode` 229 for
+Safari's commit key) guards the whole keydown handler of both composers (Enter send and Ctrl+M reroll) and the partial
+editor (Escape, Ctrl/Meta+Enter); tests in `src/ts/process/inputTranslation.test.ts` and
+`src/lib/ChatScreens/tests/PartialEditControllerIme.test.ts`. Device checks on Android Korean and desktop Japanese
+are still pending.
 
 The main composer guards `!e.isComposing`
 ([DefaultChatScreen.svelte:1054](../../../src/lib/ChatScreens/DefaultChatScreen.svelte#L1054)); the translation
