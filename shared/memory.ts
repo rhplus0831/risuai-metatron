@@ -101,6 +101,8 @@ export interface HypaV3Settings {
     reSummarizationPrompt: string;
     memoryTokensRatio: number;
     extraSummarizationRatio: number;
+    /** The share of the context a background summary keeps free: summaries are made above `C × (1 − h)`; in [0, 1). */
+    lookaheadHeadroomRatio: number;
     maxChatsPerSummary: number;
     recentMemoryRatio: number;
     similarMemoryRatio: number;

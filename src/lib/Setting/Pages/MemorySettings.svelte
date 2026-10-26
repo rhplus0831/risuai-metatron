@@ -424,6 +424,18 @@
             bind:value={settings.extraSummarizationRatio}
         />
         <span class="text-textcolor"
+            >{language.hypaV3Settings.lookaheadHeadroomRatioLabel}
+            <Help key="hypaV3LookaheadHeadroomRatio" /></span
+        >
+        <SliderInput
+            marginBottom
+            min={0}
+            max={0.99}
+            step={0.01}
+            fixed={2}
+            bind:value={settings.lookaheadHeadroomRatio}
+        />
+        <span class="text-textcolor"
             >{language.hypaV3Settings.maxChatsPerSummaryLabel} <Help key="hypaV3MaxChatsPerSummary" /></span
         >
         <NumberInput marginBottom size="sm" min={1} bind:value={settings.maxChatsPerSummary} />

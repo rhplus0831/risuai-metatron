@@ -44,6 +44,9 @@ describe("createHypaV3Preset limits", () => {
         ["gapConfirmTokens", 2.5, 10000],
         ["gapConfirmTokens", Number.NaN, 10000],
         ["gapConfirmTokens", Number.POSITIVE_INFINITY, 10000],
+        ["lookaheadHeadroomRatio", -0.01, 0.15],
+        ["lookaheadHeadroomRatio", 1, 0.15],
+        ["lookaheadHeadroomRatio", Number.NaN, 0.15],
         ["memoryTokensRatio", Number.NaN, 0.2],
         ["summarizationRequestsPerMinute", Number.NEGATIVE_INFINITY, 20],
     ] as const)("defaults %s = %s to %s", (key, value, expected) => {
@@ -56,7 +59,9 @@ describe("createHypaV3Preset limits", () => {
             maxChatsPerSummary: 1,
             queryChatCount: 20,
             gapConfirmTokens: 0,
+            lookaheadHeadroomRatio: 0,
         });
+        expect(settings.lookaheadHeadroomRatio).toBe(0);
         expect(settings.maxChatsPerSummary).toBe(1);
         expect(settings.queryChatCount).toBe(20);
         expect(settings.gapConfirmTokens).toBe(0);

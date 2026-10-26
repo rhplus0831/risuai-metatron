@@ -523,6 +523,22 @@ describe("the popover", () => {
         expect(opened.querySelector("[data-context-meter-next-lookahead]")!.textContent).toBe(
             language.contextUsage.lookaheadPassed,
         );
+        expect(opened.querySelector("[data-context-meter-prepared]")).toBeNull();
+        chip()!.click();
+        flushSync();
+
+        // Summaries ready for messages still sent raw: their line, and the next point is where they come in.
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ sections, memory: { ...memory, prepared: 3 } }) },
+        });
+        flushSync();
+        opened = await openPanel();
+        expect(opened.querySelector("[data-context-meter-prepared]")!.textContent).toBe(
+            language.contextUsage.preparedSummaries(3),
+        );
+        expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(
+            language.contextUsage.preparedIn("70"),
+        );
     });
 
     it("sits above the chip when there is room, below it otherwise, and stays below alerts", async () => {

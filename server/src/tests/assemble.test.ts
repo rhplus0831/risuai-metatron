@@ -1463,7 +1463,7 @@ describe("the context report", () => {
         });
     });
 
-    it("HypaV3 counts a greeting its summary covers (a null memo) and reports the lookahead point of an input job", async () => {
+    it("HypaV3 defers a stored summary while the prompt fits, counts the greeting it covers (a null memo), and reports the lookahead point of an input job", async () => {
         const inputJob: AssemblyMemoryJob = {
             ...selectOnlyJob,
             preview: false,
@@ -1483,22 +1483,26 @@ describe("the context report", () => {
         });
         chat.hypaV3Data = { summaries: [{ text: "S", chatMemos: [null as never, "m1"], isImportant: false }] };
         const { report, texts } = await run();
+        // A context of 400: 181 counted with the empty card (48) fits, so the summary of the greeting
+        // and m1 waits and the prompt keeps them raw.
         expect(texts).toEqual([
-            "<Past Events Summary>\nS\n</Past Events Summary>",
-            ...["b", "c", "d", "e"].map((letter) => letter.repeat(20)),
+            "<Past Events Summary>\n\n</Past Events Summary>",
+            "Hi!",
+            ...["a", "b", "c", "d", "e"].map((letter) => letter.repeat(20)),
         ]);
-        // A context of 400 and a budget of 80: 181 counted less the summarized greeting and m1 (29)
-        // is 152, which may grow past 400 − 80 before the next send summarizes. A lookahead counts
-        // 232 and asks once its first window (m2 alone before the three-message tail, 23) leaves
-        // its target, 400 × 0.85, reached: at 363.
+        // The 181 may grow past 400 − 48 before the summary comes in. A lookahead starts at the stored
+        // coverage: 181 less the greeting and m1 (29) with the budget of 80 is 232, and it asks once its
+        // first window (m2 alone before the three-message tail, 23) leaves its target, 400 × 0.85,
+        // reached: at 363.
         expect(report.memory).toEqual({
             kind: "hypaV3",
-            tokens: 49,
+            tokens: 48,
             budget: 80,
             coverage: "covered",
-            summarized: 2,
-            reserved: 80,
-            summarizeIn: 400 - 80 - 152 + 1,
+            summarized: 0,
+            prepared: 2,
+            reserved: 48,
+            summarizeIn: 400 - 48 - 181 + 1,
             lookaheadIn: 340 + 23 - 232,
         });
 
@@ -1515,7 +1519,7 @@ describe("the context report", () => {
         });
         blocked.chat.hypaV3Data = structuredClone(chat.hypaV3Data);
         const blockedReport = (await blocked.run()).report;
-        expect(blockedReport.memory).toMatchObject({ summarized: 2, summarizeIn: 400 - 80 - 152 + 1 });
+        expect(blockedReport.memory).toMatchObject({ prepared: 2, summarizeIn: 400 - 48 - 181 + 1 });
         expect(blockedReport.memory!.lookaheadIn).toBeUndefined();
     });
 
@@ -1617,59 +1621,103 @@ describe("the context report", () => {
         expect(report.input + report.maxResponse).toBeLessThanOrEqual(220);
     });
 
-    it.each(["standard", "experimental"])(
-        "a blocking HypaV3 step (%s) whose plan reaches the protected tail over the context selects the real card instead of failing",
-        async (implementation) => {
-            const blockingJob: AssemblyMemoryJob = {
-                ...selectOnlyJob,
-                preview: false,
-                input: true,
-                blockingReason: () => "requestTrigger",
-                acquireWriter: async () => ({ release() {} }),
-            };
-            const preset = createHypaV3Preset(
-                "Half",
-                {
-                    memoryTokensRatio: 0.5,
-                    similarMemoryRatio: 0,
-                    useExperimentalImpl: implementation === "experimental",
-                },
-                "hypa-half",
-            );
-            const { run, chat } = contextAssembly({
-                hypaV3: true,
-                maxContext: 200,
-                memoryJob: blockingJob,
-                template: [{ type: "memory" }, CHAT_CARD],
-                db: { hypaV3Presets: [preset], hypaV3PresetId: preset.id },
-                messages: fiveMessages,
-            });
-            chat.hypaV3Data = { summaries: [{ text: "S", chatMemos: ["m1", "m2"], isImportant: false }] };
-            const { report, texts } = await run();
-            // 181 incoming (`maxResponse` 10 and 50 kept) less the summarized prefix (6 + 23 + 23) is 129;
-            // with the full budget 100 the plan holds 229 > 200 with only the tail (m3–m5) left. The real
-            // card (`<Past Events Summary>\nS\n</Past Events Summary>`, 46 + 3) makes it 178, which fits.
-            expect(texts).toEqual([
-                "<Past Events Summary>\nS\n</Past Events Summary>",
-                "c".repeat(20),
-                "d".repeat(20),
-                "e".repeat(20),
-            ]);
-            expect(report.input).toBe(49 + 3 * 23);
-            // The stored summary covers m1 and m2, not the greeting; with a summary the next send
-            // reserves the full budget, and its 229 is still over the context.
-            expect(report.history.total - report.history.kept).toBe(3);
-            expect(report.memory).toEqual({
-                kind: "hypaV3",
-                tokens: 49,
-                budget: 100,
-                coverage: "covered",
-                summarized: 2,
-                reserved: 100,
-                summarizeIn: 0,
-            });
-        },
-    );
+    /** A blocking step with half the context for memory and a stored summary of m1 and m2. */
+    const halfBudgetBlocking = async (implementation: "standard" | "experimental", maxContext = 200) => {
+        const blockingJob: AssemblyMemoryJob = {
+            ...selectOnlyJob,
+            preview: false,
+            input: true,
+            blockingReason: () => "requestTrigger",
+            acquireWriter: async () => ({ release() {} }),
+        };
+        const preset = createHypaV3Preset(
+            "Half",
+            {
+                memoryTokensRatio: 0.5,
+                similarMemoryRatio: 0,
+                useExperimentalImpl: implementation === "experimental",
+            },
+            "hypa-half",
+        );
+        const { run, chat } = contextAssembly({
+            hypaV3: true,
+            maxContext,
+            memoryJob: blockingJob,
+            template: [{ type: "memory" }, CHAT_CARD],
+            db: { hypaV3Presets: [preset], hypaV3PresetId: preset.id },
+            messages: fiveMessages,
+        });
+        chat.hypaV3Data = { summaries: [{ text: "S", chatMemos: ["m1", "m2"], isImportant: false }] };
+        return run();
+    };
+
+    it("a blocking HypaV3 step (standard) whose plan reaches the protected tail over the context selects the real card instead of failing", async () => {
+        const { report, texts } = await halfBudgetBlocking("standard");
+        // 181 incoming (`maxResponse` 10 and 50 kept) with the empty card (48) is over 200, so the
+        // stored summary comes in: less the summarized prefix (6 + 23 + 23) it is 129; with the full
+        // budget 100 the plan holds 229 > 200 with only the tail (m3–m5) left. The real card
+        // (`<Past Events Summary>\nS\n</Past Events Summary>`, 46 + 3) makes it 178, which fits.
+        expect(texts).toEqual([
+            "<Past Events Summary>\nS\n</Past Events Summary>",
+            "c".repeat(20),
+            "d".repeat(20),
+            "e".repeat(20),
+        ]);
+        expect(report.input).toBe(49 + 3 * 23);
+        // The stored summary covers m1 and m2, not the greeting; with a summary the next send
+        // reserves the full budget, and its 229 is still over the context.
+        expect(report.history.total - report.history.kept).toBe(3);
+        expect(report.memory).toEqual({
+            kind: "hypaV3",
+            tokens: 49,
+            budget: 100,
+            coverage: "covered",
+            summarized: 2,
+            reserved: 100,
+            summarizeIn: 0,
+        });
+    });
+
+    it("a blocking HypaV3 step (experimental) whose plan reaches the protected tail over the context selects the real card instead of failing", async () => {
+        const { report, texts } = await halfBudgetBlocking("experimental", 180);
+        // 181 is over 180 without a card, so the stored summary comes in: less the summarized prefix
+        // (6 + 23 + 23) it is 129; with the full budget 90 the plan holds 219 > 180 with only the tail
+        // (m3–m5) left. The real card (46 + 3) makes it 178, which fits.
+        expect(texts).toEqual([
+            "<Past Events Summary>\nS\n</Past Events Summary>",
+            "c".repeat(20),
+            "d".repeat(20),
+            "e".repeat(20),
+        ]);
+        expect(report.input).toBe(49 + 3 * 23);
+        expect(report.history.total - report.history.kept).toBe(3);
+        expect(report.memory).toEqual({
+            kind: "hypaV3",
+            tokens: 49,
+            budget: 90,
+            coverage: "covered",
+            summarized: 2,
+            reserved: 90,
+            summarizeIn: 0,
+        });
+    });
+
+    it("an experimental HypaV3 step holds no card while no summary is in: a stored summary waits while the raw history fits", async () => {
+        const { report, texts } = await halfBudgetBlocking("experimental");
+        // 181 fits in 200 without a card, so the summary of m1 and m2 is deferred and nothing is cut.
+        expect(texts).toEqual(["Hi!", ...["a", "b", "c", "d", "e"].map((letter) => letter.repeat(20))]);
+        expect(report.history.total - report.history.kept).toBe(0);
+        expect(report.memory).toEqual({
+            kind: "hypaV3",
+            tokens: 0,
+            budget: 100,
+            coverage: "covered",
+            summarized: 0,
+            prepared: 2,
+            reserved: 0,
+            summarizeIn: 200 - 181 + 1,
+        });
+    });
 
     it("HypaV2 plans with its legacy count; the final recheck frees the response budget, dropping older history but never its last two chats", async () => {
         // `maxResponse` 300 of 1000 and an allocation of 10: HypaV2's own count (incoming less 300,

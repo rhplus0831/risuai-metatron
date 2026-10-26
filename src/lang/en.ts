@@ -331,6 +331,10 @@ export const languageEnglish = {
             "The fraction of the max context size allocated to the long-term memory block {{slot}} in the prompt.",
         hypaV3ExtraSummarizationRatio:
             "Lowers the threshold at which summarization stops. At 0, summarization stops as soon as tokens fall below the max context. Higher values cause more summarization before stopping.",
+        hypaV3LookaheadHeadroomRatio:
+            "With background summaries, how far ahead of the max context they are made: a summary is prepared once the count the background planner keeps passes the max context less this share of it. " +
+            "That count already holds the whole memory budget, so even at 0 a summary can be prepared before a send needs it. " +
+            "A prepared summary takes the place of its messages only when the prompt reaches the max context, as without background summaries.",
         hypaV3MaxChatsPerSummary: "Maximum number of chat messages to include when creating a single summary.",
         hypaV3RecentMemoryRatio:
             "The fraction of memory tokens allocated to recent memory. Automatically filled with the most recently created summaries until the allocated tokens are full.",
@@ -1696,6 +1700,9 @@ export const languageEnglish = {
         memoryLine: (kind: string, tokens: string) => `${kind} memory: ${tokens} tokens sent.`,
         summarizeIn: (tokens: string) => `About ${tokens} more tokens of history and the next summary starts.`,
         summarizeNow: "The next send summarizes.",
+        preparedSummaries: (count: number) =>
+            `Summaries are ready for ${count === 1 ? "1 message" : `${count} messages`} still sent in full; they take their place once the prompt fills the context.`,
+        preparedIn: (tokens: string) => `About ${tokens} more tokens of history and the ready summaries come in.`,
         lookaheadIn: (tokens: string) => `About ${tokens} more tokens and a background summary starts.`,
         lookaheadPassed: "Past the background summary point.",
         legendReserved: "Memory reserve (unused)",
@@ -2115,6 +2122,7 @@ export const languageEnglish = {
         maxMemoryTokensRatioError: "Unable to calculate Max Memory Tokens Ratio",
         memoryTokensRatioLabel: "Memory Tokens Ratio",
         extraSummarizationRatioLabel: "Extra Summarization Ratio",
+        lookaheadHeadroomRatioLabel: "Background Summary Headroom Ratio",
         maxChatsPerSummaryLabel: "Max Messages Per Summary",
         queryChatCountLabel: "Query Chat Count",
         gapConfirmTokensLabel: "Ask Before Summarizing Over (Tokens)",

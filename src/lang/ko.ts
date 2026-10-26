@@ -261,6 +261,10 @@ export const languageKorean = {
         hypaV3MemoryTokensRatio: "프롬프트의 최대 컨텍스트 크기에서 장기기억 블록 {{slot}}에 할당되는 비율입니다.",
         hypaV3ExtraSummarizationRatio:
             "요약이 멈추는 기준을 낮추는 비율입니다. 0이면 최대 컨텍스트 이하가 되었을 때 요약을 멈추고, 높을수록 더 많이 요약을 진행한 뒤 멈춥니다.",
+        hypaV3LookaheadHeadroomRatio:
+            "백그라운드 요약을 최대 컨텍스트보다 얼마나 앞서 만들지 정하는 비율입니다. 백그라운드 계획이 세는 토큰 수가 최대 컨텍스트에서 이 비율만큼 뺀 지점을 넘으면 요약을 미리 만들어 둡니다. " +
+            "이 토큰 수에는 메모리 예산 전체가 이미 들어 있어서, 0이어도 전송에 필요해지기 전에 요약을 만들 수 있습니다. " +
+            "미리 만든 요약은 백그라운드 요약을 쓰지 않을 때와 같이 프롬프트가 최대 컨텍스트에 닿을 때 비로소 해당 메시지를 대신합니다.",
         hypaV3MaxChatsPerSummary: "하나의 요약본을 만들 때 포함할 최대 채팅 메시지 수입니다.",
         hypaV3QueryChatCount:
             "유사도 검색의 쿼리로 사용되는 최근 채팅 메시지 수입니다. 값이 높을수록 더 많은 분량의 채팅으로 유사도를 판별합니다.",
@@ -1144,6 +1148,9 @@ export const languageKorean = {
         memoryLine: (kind: string, tokens: string) => `${kind} 메모리: ${tokens} 토큰 전송`,
         summarizeIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 다음 요약이 시작됩니다.`,
         summarizeNow: "다음 전송에서 요약이 시작됩니다.",
+        preparedSummaries: (count: number) =>
+            `원문 그대로 보내는 메시지 ${count}개의 요약이 준비되어 있습니다. 프롬프트가 컨텍스트를 채우면 요약이 이 메시지를 대신합니다.`,
+        preparedIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 준비된 요약이 사용됩니다.`,
         lookaheadIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 백그라운드 사전 요약이 시작됩니다.`,
         lookaheadPassed: "백그라운드 사전 요약 지점은 이미 지났습니다.",
         legendReserved: "메모리 예약 (미사용)",
@@ -2005,6 +2012,7 @@ export const languageKorean = {
         maxMemoryTokensRatioError: "최대 메모리 토큰 비율을 계산할 수 없습니다",
         memoryTokensRatioLabel: "메모리 토큰 비율",
         extraSummarizationRatioLabel: "추가 요약 비율",
+        lookaheadHeadroomRatioLabel: "백그라운드 사전 요약 여유 비율",
         maxChatsPerSummaryLabel: "요약본당 최대 메시지 수",
         queryChatCountLabel: "쿼리 채팅 수",
         gapConfirmTokensLabel: "요약 전 확인 기준 (토큰)",

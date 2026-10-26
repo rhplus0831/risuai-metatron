@@ -161,6 +161,14 @@ export interface HypaV3Prepared {
      * legacy memo lookup, which can also match examples.
      */
     readonly coverageAhead: boolean;
+    /** How many of `data.summaries`, from the first, the prompt uses: all unless the preparation defers. */
+    readonly appliedSummaries: number;
+    /**
+     * The stored coverage: the cursor after the last stored summary's last message (`startIdx` when
+     * nothing is deferred) and the `tokenizeChat` total of the history from `startIdx` to it, which the
+     * prompt keeps raw while its summaries are deferred.
+     */
+    readonly coverage: { readonly startIdx: number; readonly deferredTokens: number };
     readonly ledger: HypaV3Ledger;
 }
 
@@ -179,17 +187,21 @@ export interface HypaV3PrepareOptions {
      * true: the legacy correction subtracts it, letting the prompt fill the whole context.
      */
     responseCorrection?: boolean;
+    /**
+     * True: the prompt uses a stored summary in place of its messages only once the original rules
+     * would have summarized them (`deferredStepCount`), so summaries made ahead of need wait for the
+     * prompt to reach the context. Default false: every stored summary is in.
+     */
+    deferStored?: boolean;
 }
-
-/** The share of the context a lookahead plan keeps free: it plans from `C × (1 − h)`. */
-export const HYPAV3_LOOKAHEAD_HEADROOM = 0.15;
 
 export interface HypaV3PlanOptions {
     /**
-     * Plan the summaries the next sends will need before the prompt reaches the context: trigger
-     * above `C × (1 − h)`, target `max(0, C × (1 − h − extraSummarizationRatio))`, with the full
-     * memory budget counted as a planning cost even without stored summaries. The capacity checks
-     * stay at `C`, and only the protected tail left is a normal stop even over `C`.
+     * Plan the summaries the next sends will need before the prompt reaches the context: from the
+     * stored coverage, trigger above `C × (1 − h)` (`lookaheadHeadroomRatio`), target
+     * `max(0, C × (1 − h − extraSummarizationRatio))`, with the full memory budget counted as a
+     * planning cost even without stored summaries. The capacity checks stay at `C`, and only the
+     * protected tail left is a normal stop even over `C`.
      */
     lookahead?: boolean;
 }
@@ -448,6 +460,7 @@ export async function prepareHypaV3(
     let startIdx = 0;
     let prefixTokens = 0;
     let coverageAhead = false;
+    let lastChatIndex = -1;
 
     if (data.summaries.length > 0) {
         const lastSummary = data.summaries.at(-1)!;
@@ -457,10 +470,9 @@ export async function prepareHypaV3(
                 ? chats.findIndex((chat) => isHistoryEntry(chat) && chat.memo === lastMemo)
                 : -1;
         coverageAhead = lastHistoryIndex === -1;
-        const lastChatIndex =
-            options === undefined ? chats.findIndex((chat) => chat.memo === lastMemo) : lastHistoryIndex;
+        lastChatIndex = options === undefined ? chats.findIndex((chat) => chat.memo === lastMemo) : lastHistoryIndex;
 
-        if (lastChatIndex !== -1) {
+        if (lastChatIndex !== -1 && !options?.deferStored) {
             startIdx = lastChatIndex + 1;
 
             // Exclude tokens from summarized chats
@@ -479,31 +491,37 @@ export async function prepareHypaV3(
         content: wrapWithXml(memoryPromptTag, ""),
     });
     const memoryTokens = Math.floor(maxContextTokens * settings.memoryTokensRatio);
-    let reservation: HypaV3Ledger["reservation"];
-    let availableMemoryTokens: number;
+    const count = currentTokens + prefixTokens;
 
-    if (implementation === "standard") {
-        const shouldReserveEmptyMemoryTokens =
-            data.summaries.length === 0 && currentTokens + emptyMemoryTokens <= maxContextTokens;
-        availableMemoryTokens = shouldReserveEmptyMemoryTokens ? 0 : memoryTokens - emptyMemoryTokens;
-        reservation = shouldReserveEmptyMemoryTokens
-            ? { kind: "emptyCard", tokens: emptyMemoryTokens }
-            : { kind: "fullBudget", tokens: memoryTokens };
-    } else {
-        const shouldReserveMemoryTokens = data.summaries.length > 0 || currentTokens > maxContextTokens;
-        availableMemoryTokens = shouldReserveMemoryTokens ? memoryTokens - emptyMemoryTokens : 0;
-        reservation = shouldReserveMemoryTokens
-            ? { kind: "fullBudget", tokens: memoryTokens }
-            : { kind: "none", tokens: 0 };
-    }
+    /** The step whose prompt starts at `cursor` with `applied` summaries in. */
+    const preparedAt = (
+        cursor: { startIdx: number; prefixTokens: number; appliedSummaries: number },
+        coverage: HypaV3Prepared["coverage"],
+    ): HypaV3Prepared => {
+        let currentTokens = count - cursor.prefixTokens;
+        let reservation: HypaV3Ledger["reservation"];
+        let availableMemoryTokens: number;
 
-    if (reservation.kind !== "none") {
-        currentTokens += reservation.tokens;
-    }
+        if (implementation === "standard") {
+            const shouldReserveEmptyMemoryTokens =
+                cursor.appliedSummaries === 0 && currentTokens + emptyMemoryTokens <= maxContextTokens;
+            availableMemoryTokens = shouldReserveEmptyMemoryTokens ? 0 : memoryTokens - emptyMemoryTokens;
+            reservation = shouldReserveEmptyMemoryTokens
+                ? { kind: "emptyCard", tokens: emptyMemoryTokens }
+                : { kind: "fullBudget", tokens: memoryTokens };
+        } else {
+            const shouldReserveMemoryTokens = cursor.appliedSummaries > 0 || currentTokens > maxContextTokens;
+            availableMemoryTokens = shouldReserveMemoryTokens ? memoryTokens - emptyMemoryTokens : 0;
+            reservation = shouldReserveMemoryTokens
+                ? { kind: "fullBudget", tokens: memoryTokens }
+                : { kind: "none", tokens: 0 };
+        }
 
-    return {
-        ok: true,
-        prepared: {
+        if (reservation.kind !== "none") {
+            currentTokens += reservation.tokens;
+        }
+
+        return {
             implementation,
             settings,
             chats,
@@ -511,20 +529,207 @@ export async function prepareHypaV3(
             tokenizer,
             snapshot,
             data,
-            startIdx,
+            startIdx: cursor.startIdx,
             coverageAhead,
+            appliedSummaries: cursor.appliedSummaries,
+            coverage,
             ledger: {
                 incoming,
                 responseCorrection,
-                prefixTokens,
+                prefixTokens: cursor.prefixTokens,
                 emptyMemoryTokens,
                 memoryTokens,
                 reservation,
                 availableMemoryTokens,
                 current: currentTokens,
             },
-        },
+        };
     };
+
+    if (lastChatIndex === -1 || !options?.deferStored) {
+        return {
+            ok: true,
+            prepared: preparedAt(
+                { startIdx, prefixTokens, appliedSummaries: data.summaries.length },
+                { startIdx, deferredTokens: 0 },
+            ),
+        };
+    }
+
+    // Deferred: the history the stored summaries cover stays raw until the original rules take it.
+    const coverageIdx = lastChatIndex + 1;
+    const fits =
+        implementation === "standard" ? count + emptyMemoryTokens <= maxContextTokens : count <= maxContextTokens;
+    if (fits) {
+        // The count only grows with the history: a history that fits with no summary in never took one.
+        let coveredTokens = 0;
+        for (const chat of chats.slice(0, coverageIdx)) {
+            coveredTokens += await tokenizer.tokenizeChat(chat);
+        }
+        return {
+            ok: true,
+            prepared: preparedAt(
+                { startIdx: 0, prefixTokens: 0, appliedSummaries: 0 },
+                { startIdx: coverageIdx, deferredTokens: coveredTokens },
+            ),
+        };
+    }
+
+    const prefix = [0];
+    for (const chat of chats) {
+        prefix.push(prefix.at(-1)! + (await tokenizer.tokenizeChat(chat)));
+    }
+    const steps = deferredSteps(chats, data.summaries, settings, implementation);
+    const at = (taken: number) => (taken > 0 ? steps[taken - 1] : { end: 0, summaries: 0, tokenOnly: false });
+    const preparedTaking = (taken: number) =>
+        preparedAt(
+            { startIdx: at(taken).end, prefixTokens: prefix[at(taken).end], appliedSummaries: at(taken).summaries },
+            { startIdx: coverageIdx, deferredTokens: prefix[coverageIdx] - prefix[at(taken).end] },
+        );
+    let taken = deferredStepCount({
+        steps,
+        prefix,
+        count,
+        maxContextTokens,
+        settings,
+        implementation,
+        emptyMemoryTokens,
+    });
+    let prepared = preparedTaking(taken);
+    // Stored summaries are never summarized again: while the ordinary plan would request a summary,
+    // the next stored one comes in (its window can differ from the plan's, or reach into the tail).
+    while (taken < steps.length && (await planHypaV3Summaries(prepared)).llmCalls > 0) {
+        do {
+            taken++;
+        } while (steps[taken - 1].tokenOnly);
+        prepared = preparedTaking(taken);
+    }
+    return { ok: true, prepared };
+}
+
+/** One window of a deferred replay: its end, the stored summaries in once it is taken, and whether it has none of its own. */
+interface DeferredStep {
+    readonly end: number;
+    readonly summaries: number;
+    readonly tokenOnly: boolean;
+}
+
+/**
+ * The windows the stored summaries stand for, in order: each summary ends after its last message,
+ * never before the previous window, and a summary whose messages are already behind the previous
+ * window (a merge of summaries that were not next to each other, a summary whose messages are gone)
+ * comes in with that window. Standard's windows of `maxChatsPerSummary` entries with nothing to
+ * summarize (examples, the new-chat marker) before a summary are steps of their own, as its scan
+ * takes them without a summary.
+ */
+function deferredSteps(
+    chats: readonly OpenAIChat[],
+    summaries: readonly Summary[],
+    settings: Readonly<HypaV3Settings>,
+    implementation: HypaV3Implementation,
+): DeferredStep[] {
+    const indexOf = new Map<string | undefined, number>();
+    for (const [index, chat] of chats.entries()) {
+        if (isHistoryEntry(chat) && !indexOf.has(chat.memo)) {
+            indexOf.set(chat.memo, index);
+        }
+    }
+    const steps: DeferredStep[] = [];
+    let end = 0;
+    for (const [index, summary] of summaries.entries()) {
+        const found = [...summary.chatMemos].flatMap((memo) => {
+            const at = indexOf.get(memo);
+            return at === undefined ? [] : [at];
+        });
+        const last = summary.chatMemos.size > 0 ? indexOf.get([...summary.chatMemos].at(-1)) : undefined;
+        const summaryEnd = Math.max(end, last === undefined ? end : last + 1);
+        if (steps.length > 0 && summaryEnd <= end) {
+            steps[steps.length - 1] = { end, summaries: index + 1, tokenOnly: false };
+            continue;
+        }
+        if (implementation === "standard") {
+            const first = found.length > 0 ? Math.max(end, Math.min(...found)) : summaryEnd;
+            const size = settings.maxChatsPerSummary;
+            while (
+                end + size <= first &&
+                !chats.slice(end, end + size).some((chat) => shouldSummarizeChat(chat, settings))
+            ) {
+                end += size;
+                steps.push({ end, summaries: index, tokenOnly: true });
+            }
+        }
+        end = summaryEnd;
+        steps.push({ end, summaries: index + 1, tokenOnly: false });
+    }
+    return steps;
+}
+
+/**
+ * How many of the deferred steps a step takes: the original rules replayed over the history as it
+ * grew, one message at a time, with the steps as the windows and the rest of the prompt as it is now.
+ * At each length the count (the history from the cursor, the rest, and the reservation) over `C`
+ * takes windows in order until it is at the target `C × (1 − extraSummarizationRatio)`, the next one
+ * would take it under the target while it fits, or the next one reaches into the protected
+ * `queryChatCount` tail of that length. A window without a summary is taken again at each length, as
+ * the original rules keep only summaries, so the count is the steps up to the last summary taken.
+ */
+function deferredStepCount(arg: {
+    steps: readonly DeferredStep[];
+    /** `prefix[i]`: the `tokenizeChat` total of the history's first `i` entries. */
+    prefix: readonly number[];
+    /** The step's count after the response correction, the whole history in. */
+    count: number;
+    maxContextTokens: number;
+    settings: Readonly<HypaV3Settings>;
+    implementation: HypaV3Implementation;
+    emptyMemoryTokens: number;
+}): number {
+    const { steps, prefix, maxContextTokens, settings, emptyMemoryTokens } = arg;
+    const length = prefix.length - 1;
+    const rest = arg.count - prefix[length];
+    const memoryTokens = Math.floor(maxContextTokens * settings.memoryTokensRatio);
+    const targetTokens = maxContextTokens * (1 - settings.extraSummarizationRatio);
+    const endAt = (taken: number) => (taken > 0 ? steps[taken - 1].end : 0);
+    let committed = 0;
+    // The count of the first `at` entries with the committed steps taken and each main's reservation.
+    const countAt = (at: number) => {
+        const raw = rest + prefix[at];
+        const reserved =
+            committed > 0 && steps[committed - 1].summaries > 0
+                ? memoryTokens
+                : arg.implementation === "standard"
+                  ? raw + emptyMemoryTokens <= maxContextTokens
+                      ? emptyMemoryTokens
+                      : memoryTokens
+                  : raw > maxContextTokens
+                    ? memoryTokens
+                    : 0;
+        return raw - prefix[endAt(committed)] + reserved;
+    };
+
+    for (let at = 1; at <= length && committed < steps.length; at++) {
+        let currentTokens = countAt(at);
+        if (currentTokens <= maxContextTokens) {
+            continue;
+        }
+        let taken = committed;
+        while (
+            taken < steps.length &&
+            currentTokens > targetTokens &&
+            steps[taken].end <= at - settings.queryChatCount
+        ) {
+            const windowTokens = prefix[steps[taken].end] - prefix[endAt(taken)];
+            if (currentTokens <= maxContextTokens && currentTokens - windowTokens < targetTokens) {
+                break;
+            }
+            currentTokens -= windowTokens;
+            taken++;
+            if (!steps[taken - 1].tokenOnly) {
+                committed = taken;
+            }
+        }
+    }
+    return committed;
 }
 
 /**
@@ -534,12 +739,15 @@ export async function prepareHypaV3(
 export interface HypaV3Forecast {
     /** What its count holds for the memory card: the full budget once there are summaries, else the empty card (standard) or nothing. */
     readonly reserved: number;
-    /** The fewest added tokens with which an ordinary plan summarizes (0: it already does). */
+    /**
+     * The fewest added tokens with which an ordinary plan summarizes or, with deferred summaries, the
+     * next one comes in (0: it already does).
+     */
     readonly summarizeIn: number;
     /**
      * The fewest added tokens with which a lookahead plan asks for a summary (0: it already does),
-     * the first window it would summarize as it is now; null when no window from the cursor before the
-     * protected tail has a message to summarize.
+     * the first window it would summarize as it is now; null when no window from the cursor (the
+     * stored coverage while summaries are deferred) before the protected tail has a message to summarize.
      */
     readonly lookaheadIn: number | null;
 }
@@ -547,7 +755,7 @@ export interface HypaV3Forecast {
 /**
  * The forecast after a step of `prepared` that left the summarized-prefix cursor at `cursor`,
  * `currentTokens` (its count less the windows accepted, with the reservation), and `summaryCount`
- * summaries. It counts in the ledger's own terms: history the selection trimmed without summarizing
+ * summaries in the prompt (`appliedHypaV3Summaries`). It counts in the ledger's own terms: history the selection trimmed without summarizing
  * stays in, and nothing formatting adds after the step is counted. Both stop rules of
  * `planHypaV3Summaries` are strict, and standard reserves the empty card only while it fits (else
  * the full budget, even when that is smaller).
@@ -571,8 +779,12 @@ export async function forecastHypaV3(
 
     // A lookahead plan asks once it accepts its first window with a message to summarize: past
     // `C × (1 − h)`, and either that window leaves the target reached or the window starts over `C`.
+    // It starts at the stored coverage, the history of deferred summaries counted as summarized.
+    const headroom = settings.lookaheadHeadroomRatio;
+    const deferred = after.cursor < prepared.coverage.startIdx;
+    const coveredEntries = deferred ? entries - prepared.coverage.deferredTokens : entries;
     let before = 0;
-    let startIdx = after.cursor;
+    let startIdx = deferred ? prepared.coverage.startIdx : after.cursor;
     let lookaheadIn: number | null = null;
     while (true) {
         // At the protected tail (or with nothing to scan) the window is empty.
@@ -581,15 +793,12 @@ export async function forecastHypaV3(
             break;
         }
         if (window.included.length > 0) {
-            const target = Math.max(
-                0,
-                maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM - settings.extraSummarizationRatio),
-            );
+            const target = Math.max(0, maxContextTokens * (1 - headroom - settings.extraSummarizationRatio));
             const asksAt = Math.max(
-                Math.floor(maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM)) + 1,
+                Math.floor(maxContextTokens * (1 - headroom)) + 1,
                 Math.min(Math.ceil(target) + before + window.tokens, maxContextTokens + before + 1),
             );
-            lookaheadIn = Math.max(0, asksAt - (entries + ledger.memoryTokens));
+            lookaheadIn = Math.max(0, asksAt - (coveredEntries + ledger.memoryTokens));
             break;
         }
         before += window.tokens;
@@ -674,10 +883,14 @@ export async function planHypaV3Summaries(
 ): Promise<HypaV3Plan> {
     const { settings, chats, maxContextTokens, ledger } = prepared;
     const lookahead = options.lookahead === true;
+    const headroom = settings.lookaheadHeadroomRatio;
     const windows: HypaV3PlannedWindow[] = [];
-    // A lookahead plan counts the full memory budget in place of the ledger's reservation.
-    let currentTokens = lookahead ? ledger.current - ledger.reservation.tokens + ledger.memoryTokens : ledger.current;
-    let startIdx = prepared.startIdx;
+    // A lookahead plan starts at the stored coverage (the deferred history counted as summarized) and
+    // counts the full memory budget in place of the ledger's reservation.
+    let currentTokens = lookahead
+        ? ledger.current - prepared.coverage.deferredTokens - ledger.reservation.tokens + ledger.memoryTokens
+        : ledger.current;
+    let startIdx = lookahead ? prepared.coverage.startIdx : prepared.startIdx;
 
     const finish = (stopReason: HypaV3StopReason, error?: string): HypaV3Plan => ({
         windows,
@@ -689,10 +902,10 @@ export async function planHypaV3Summaries(
 
     // If summarization is needed
     const summarizationMode = lookahead
-        ? currentTokens > maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM)
+        ? currentTokens > maxContextTokens * (1 - headroom)
         : currentTokens > maxContextTokens;
     const targetTokens = lookahead
-        ? Math.max(0, maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM - settings.extraSummarizationRatio))
+        ? Math.max(0, maxContextTokens * (1 - headroom - settings.extraSummarizationRatio))
         : maxContextTokens * (1 - settings.extraSummarizationRatio);
 
     if (!summarizationMode) {
@@ -1222,6 +1435,15 @@ export async function selectHypaV3(
     return selectStandard(host, prepared, execution, options);
 }
 
+/**
+ * The summaries of an execution the prompt uses: the prepared step's applied ones and every new one
+ * (a step makes summaries only once every stored one is in).
+ */
+export function appliedHypaV3Summaries(prepared: HypaV3Prepared, execution: HypaV3ExecutionResult): Summary[] {
+    const added = execution.data.summaries.length - prepared.data.summaries.length;
+    return execution.data.summaries.slice(0, prepared.appliedSummaries + added);
+}
+
 /** Whether a prompt entry is chat history: not an example message nor a new-chat marker. */
 function isHistoryEntry(chat: OpenAIChat): boolean {
     return !(
@@ -1309,9 +1531,19 @@ async function selectStandard(
     const startIdx = execution.cursor;
     let currentTokens = execution.currentTokens;
     let availableMemoryTokens = prepared.ledger.availableMemoryTokens;
+    // Deferred summaries stay out of the selection; the returned memory keeps them.
+    const summaries = appliedHypaV3Summaries(prepared, execution);
 
     // Early return if no summaries
-    if (data.summaries.length === 0) {
+    if (summaries.length === 0) {
+        if (data.summaries.length > 0) {
+            data.metrics = {
+                lastImportantSummaries: [],
+                lastRecentSummaries: [],
+                lastSimilarSummaries: [],
+                lastRandomSummaries: [],
+            };
+        }
         // Generate final memory prompt
         const memory = wrapWithXml(memoryPromptTag, "");
 
@@ -1356,7 +1588,7 @@ async function selectStandard(
 
     // Select important summaries
     {
-        for (const summary of data.summaries) {
+        for (const summary of summaries) {
             if (summary.isImportant) {
                 const summaryTokens = await tokenizer.tokenizeChat({
                     role: "system",
@@ -1383,7 +1615,7 @@ async function selectStandard(
 
     if (settings.recentMemoryRatio > 0) {
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
+        const unusedSummaries = summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Add one by one from the end
         for (let i = unusedSummaries.length - 1; i >= 0; i--) {
@@ -1418,7 +1650,7 @@ async function selectStandard(
         }
 
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
+        const unusedSummaries = summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Dynamically generate summary chunks
         const summaryChunks: SummaryChunk[] = [];
@@ -1551,9 +1783,7 @@ async function selectStandard(
         reservedRandomMemoryTokens += unusedRecentTokens + unusedSimilarTokens;
 
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries
-            .filter((e) => !selectedSummaries.includes(e))
-            .sort(() => host.random() - 0.5); // Random shuffle
+        const unusedSummaries = summaries.filter((e) => !selectedSummaries.includes(e)).sort(() => host.random() - 0.5); // Random shuffle
 
         for (const summary of unusedSummaries) {
             const summaryTokens = await tokenizer.tokenizeChat({
@@ -1648,9 +1878,19 @@ async function selectExperimental(
     const startIdx = execution.cursor;
     let currentTokens = execution.currentTokens;
     let availableMemoryTokens = prepared.ledger.availableMemoryTokens;
+    // Deferred summaries stay out of the selection; the returned memory keeps them.
+    const summaries = appliedHypaV3Summaries(prepared, execution);
 
     // Early return if no summaries
-    if (data.summaries.length === 0) {
+    if (summaries.length === 0) {
+        if (data.summaries.length > 0) {
+            data.metrics = {
+                lastImportantSummaries: [],
+                lastRecentSummaries: [],
+                lastSimilarSummaries: [],
+                lastRandomSummaries: [],
+            };
+        }
         if (options?.trimUncovered) {
             // No card: the reservation is released.
             const trimmed = await trimUncoveredHistory(
@@ -1684,7 +1924,7 @@ async function selectExperimental(
 
     // Select important summaries
     {
-        for (const summary of data.summaries) {
+        for (const summary of summaries) {
             if (summary.isImportant) {
                 const summaryTokens = await tokenizer.tokenizeChat({
                     role: "system",
@@ -1711,7 +1951,7 @@ async function selectExperimental(
 
     if (settings.recentMemoryRatio > 0) {
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
+        const unusedSummaries = summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Add one by one from the end
         for (let i = unusedSummaries.length - 1; i >= 0; i--) {
@@ -1746,7 +1986,7 @@ async function selectExperimental(
         }
 
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries.filter((e) => !selectedSummaries.includes(e));
+        const unusedSummaries = summaries.filter((e) => !selectedSummaries.includes(e));
 
         // Dynamically generate embedding texts
         const ebdTexts: EmbeddingText<Summary>[] = [];
@@ -1892,9 +2132,7 @@ async function selectExperimental(
         reservedRandomMemoryTokens += unusedRecentTokens + unusedSimilarTokens;
 
         // Target only summaries that haven't been selected yet
-        const unusedSummaries = data.summaries
-            .filter((e) => !selectedSummaries.includes(e))
-            .sort(() => host.random() - 0.5); // Random shuffle
+        const unusedSummaries = summaries.filter((e) => !selectedSummaries.includes(e)).sort(() => host.random() - 0.5); // Random shuffle
 
         for (const summary of unusedSummaries) {
             const summaryTokens = await tokenizer.tokenizeChat({

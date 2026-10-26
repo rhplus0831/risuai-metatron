@@ -43,6 +43,7 @@ import { hanuraiMemory } from "./memory/hanurai.ts";
 import type { MemoryHost, MemoryTokenizer } from "./memory/host.ts";
 import { hypaMemoryV2 } from "./memory/hypav2.ts";
 import {
+    appliedHypaV3Summaries,
     createHypaV3SourceValidator,
     emptyHypaV3Execution,
     executeHypaV3Plan,
@@ -404,13 +405,20 @@ type HypaV3StepResult =
            */
           coverage: "covered" | "gap" | "unknown";
           /**
-           * For the context meter: the message ids the summaries cover (the greeting's is
-           * `undefined`), how far the next send is from summarizing, and whether a background
-           * lookahead runs.
+           * For the context meter: the message ids the summaries in the prompt cover and those the
+           * deferred ones cover (the greeting's is `undefined`), how far the next send is from
+           * summarizing, and whether a background lookahead runs.
            */
-          meter: { summarizedMemos: ReadonlySet<string | undefined>; forecast: HypaV3Forecast; lookahead: boolean };
+          meter: HypaV3Meter;
           memoryTask?: { input: MemoryTaskInput; due: boolean };
       };
+
+type HypaV3Meter = {
+    summarizedMemos: ReadonlySet<string | undefined>;
+    preparedMemos: ReadonlySet<string | undefined>;
+    forecast: HypaV3Forecast;
+    lookahead: boolean;
+};
 
 /** `hypaMemoryV3`'s error wrapping: the job's own end first, then the algorithm's prefix. */
 function rethrowHypaV3(memory: MemoryHost, error: unknown): never {
@@ -489,9 +497,12 @@ async function hypaV3Step(
         error: error ?? "[HypaV3] The memory step failed",
     });
     // With a task service the summarized-prefix cursor is looked up among history entries only (the
-    // legacy lookup can match an example's missing memo for the greeting's) and the response budget
-    // stays reserved, as the task's preparation keeps it; without one, as before.
-    const prepareOptions: HypaV3PrepareOptions | undefined = job?.tasks ? { responseCorrection: false } : undefined;
+    // legacy lookup can match an example's missing memo for the greeting's), the response budget
+    // stays reserved, as the task's preparation keeps it, and the summaries the tasks make ahead of
+    // need wait until the original rules would summarize their messages; without one, as before.
+    const prepareOptions: HypaV3PrepareOptions | undefined = job?.tasks
+        ? { responseCorrection: false, deferStored: true }
+        : undefined;
     const prepare = async (room: Chat) =>
         part(() => prepareHypaV3(memory, chats, currentTokens, maxContextTokens, room, tokenizer, prepareOptions));
     /** The chat as stored now (a lease holder's read of the memory the task may have written). */
@@ -579,12 +590,20 @@ async function hypaV3Step(
         }
         const count = protect && selection.trim ? selection.trim.protected.count : 0;
         // Preparation reads a stored `null` memo (the greeting's) as `undefined`.
-        const summaries: readonly { chatMemos: Iterable<string | undefined> }[] =
-            selection.memory?.summaries ?? prepared.data.summaries;
+        const summaries: readonly { chatMemos: Iterable<string | undefined> }[] = appliedHypaV3Summaries(
+            prepared,
+            execution,
+        );
         const summarizedMemos = new Set<string | undefined>();
         for (const summary of summaries) {
             for (const memo of summary.chatMemos) {
                 summarizedMemos.add(memo);
+            }
+        }
+        const preparedMemos = new Set<string | undefined>();
+        for (const summary of execution.data.summaries.slice(summaries.length)) {
+            for (const memo of summary.chatMemos) {
+                preparedMemos.add(memo);
             }
         }
         return {
@@ -595,6 +614,7 @@ async function hypaV3Step(
             coverage: (selection.trim?.gap.tokens ?? 0) > 0 ? "gap" : prepared.coverageAhead ? "unknown" : "covered",
             meter: {
                 summarizedMemos,
+                preparedMemos,
                 forecast: await part(() =>
                     forecastHypaV3(prepared, {
                         cursor: execution.cursor,
@@ -2258,7 +2278,7 @@ type MemoryRun = {
     coverage: "covered" | "gap" | "unknown";
     budget?: number;
     /** HypaV3's meter data (`HypaV3StepResult`). */
-    meter?: { summarizedMemos: ReadonlySet<string | undefined>; forecast: HypaV3Forecast; lookahead: boolean };
+    meter?: HypaV3Meter;
 };
 
 /** What a prompt entry carries: history-side sources, memory, or a part with no source (`untraced`). */
@@ -2581,6 +2601,15 @@ function buildContextReport(arg: {
                         (source.kind === "greeting" || source.id !== undefined) &&
                         meter.summarizedMemos.has(source.id),
                 ).length;
+            }
+            const prepared = arg.historySources.filter(
+                (source) =>
+                    kept.has(source) &&
+                    (source.kind === "greeting" || source.id !== undefined) &&
+                    meter.preparedMemos.has(source.id),
+            ).length;
+            if (prepared > 0) {
+                report.memory.prepared = prepared;
             }
             report.memory.reserved = meter.forecast.reserved;
             report.memory.summarizeIn = meter.forecast.summarizeIn;

@@ -4,9 +4,9 @@ import type { HypaV3Preset, HypaV3Settings } from "./memory.ts";
 /**
  * A HypaV3 preset with every setting filled: own, known keys of `existingSettings` with the right
  * type are kept. Numbers must also be finite, `maxChatsPerSummary` and `queryChatCount` must be
- * integers >= 1, and `gapConfirmTokens` an integer >= 0. Invalid values take their defaults. `id` is
- * kept when it is a valid record id, otherwise a new one is assigned (a copy or an import passes none,
- * so it gets a fresh id).
+ * integers >= 1, `gapConfirmTokens` an integer >= 0, and `lookaheadHeadroomRatio` in [0, 1). Invalid
+ * values take their defaults. `id` is kept when it is a valid record id, otherwise a new one is assigned
+ * (a copy or an import passes none, so it gets a fresh id).
  */
 export function createHypaV3Preset(name = "New Preset", existingSettings = {}, id?: unknown): HypaV3Preset {
     const settings: HypaV3Settings = {
@@ -15,6 +15,7 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
         reSummarizationPrompt: "",
         memoryTokensRatio: 0.2,
         extraSummarizationRatio: 0,
+        lookaheadHeadroomRatio: 0.15,
         maxChatsPerSummary: 6,
         recentMemoryRatio: 0.4,
         similarMemoryRatio: 0.4,
@@ -50,6 +51,9 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
                         continue;
                     }
                     if (key === "gapConfirmTokens" && (!Number.isInteger(value) || value < 0)) {
+                        continue;
+                    }
+                    if (key === "lookaheadHeadroomRatio" && (value < 0 || value >= 1)) {
                         continue;
                     }
                 }

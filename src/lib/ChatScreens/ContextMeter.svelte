@@ -412,6 +412,7 @@
             tokens: memory.tokens,
             reserved: memory.reserved,
             summarizeIn: memory.summarizeIn,
+            prepared: memory.prepared ?? 0,
             lookaheadIn: settings.ui.contextMeterLookahead ? memory.lookaheadIn : undefined,
         };
     });
@@ -850,10 +851,19 @@
                                         >
                                     {/if}
                                     {#if hypa}
+                                        {#if hypa.prepared > 0}
+                                            <span
+                                                class="text-xs text-textcolor2 tabular-nums"
+                                                data-context-meter-prepared
+                                                >{language.contextUsage.preparedSummaries(hypa.prepared)}</span
+                                            >
+                                        {/if}
                                         <span class="text-xs text-textcolor2 tabular-nums" data-context-meter-next
-                                            >{hypa.summarizeIn > 0
-                                                ? language.contextUsage.summarizeIn(fmt(hypa.summarizeIn))
-                                                : language.contextUsage.summarizeNow}</span
+                                            >{hypa.summarizeIn <= 0
+                                                ? language.contextUsage.summarizeNow
+                                                : hypa.prepared > 0
+                                                  ? language.contextUsage.preparedIn(fmt(hypa.summarizeIn))
+                                                  : language.contextUsage.summarizeIn(fmt(hypa.summarizeIn))}</span
                                         >
                                         {#if hypa.lookaheadIn !== undefined}
                                             <span

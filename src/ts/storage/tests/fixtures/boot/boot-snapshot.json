@@ -476,6 +476,7 @@
         "reSummarizationPrompt": "",
         "memoryTokensRatio": 0.2,
         "extraSummarizationRatio": 0,
+        "lookaheadHeadroomRatio": 0.15,
         "maxChatsPerSummary": 6,
         "recentMemoryRatio": 0.4,
         "similarMemoryRatio": 0.4,

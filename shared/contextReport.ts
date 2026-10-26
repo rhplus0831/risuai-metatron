@@ -100,6 +100,11 @@ export type ContextReport = {
          * `history.total − history.kept`); absent when the memory card did not reach the prompt.
          */
         summarized?: number;
+        /**
+         * HypaV3: how many of the history messages kept raw a stored summary covers that the prompt
+         * defers until it reaches the context (at most `history.kept`); absent when there are none.
+         */
+        prepared?: number;
         /** HypaV3: what the next send's count holds for the memory card (the full budget once there are summaries). */
         reserved?: number;
         /**
@@ -265,6 +270,10 @@ export function parseContextReport(value: unknown): ContextReport | null {
                 (!isCount(memory.summarized) ||
                     !Number.isInteger(memory.summarized) ||
                     memory.summarized > (history.total as number) - (history.kept as number))) ||
+            (memory.prepared !== undefined &&
+                (!isCount(memory.prepared) ||
+                    !Number.isInteger(memory.prepared) ||
+                    memory.prepared > (history.kept as number))) ||
             (memory.reserved !== undefined && !isCount(memory.reserved)) ||
             (memory.summarizeIn !== undefined && !isCount(memory.summarizeIn)) ||
             (memory.lookaheadIn !== undefined && !isCount(memory.lookaheadIn))
