@@ -47,7 +47,9 @@ vi.mock("./jobChannel", () => ({
     endJobChannel: stubs.endJobChannel,
 }));
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: vi.fn() }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: vi.fn() }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),
+);
 
 type Transport = typeof import("./generationJobs");
 

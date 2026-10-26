@@ -163,7 +163,11 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     watchForRestore: stubs.restored,
 }));
 vi.mock("../util", () => ({ sleep: (ms: number) => stubs.sleep(ms) }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => stubs.record(input),
+    }),
+);
 
 type Module = typeof import("./serverCommands");
 let commands: Module;

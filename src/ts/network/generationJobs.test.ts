@@ -67,7 +67,11 @@ vi.mock("./jobChannel", () => ({
 }));
 // A job's `preset` event applies the preset through the preset actions module.
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => stubs.record(input),
+    }),
+);
 
 type Transport = typeof import("./generationJobs");
 type Client = typeof import("../storage/resourceClient");

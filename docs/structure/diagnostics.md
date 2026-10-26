@@ -259,6 +259,10 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `dismissedByPage`; `src/ts/process/serverCommands.test.ts` and
   `src/ts/storage/tests/resourceSyncDiagnostics.test.ts` the `notice` events (a latched reload notice
   already on screen records none).
+- `src/ts/diagnostics/tests/collectorMock.ts` `createCollectorMock(overrides)`: every export of
+  `collector.ts` as a `vi.fn()` that records nothing, with defaults that `satisfies` the module's
+  type, so a new or reshaped export fails `pnpm check`. Every test that mocks the collector loads it
+  inside its hoisted `vi.mock` factory and passes its own handles as overrides (STRUCTURE V7).
 - `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.test.ts` and
   `src/lib/Others/RequestLogs/ServerRequestHistory.test.ts`: mounted report controls,
   displayed-report actions, support share/update/withdraw and retry state.

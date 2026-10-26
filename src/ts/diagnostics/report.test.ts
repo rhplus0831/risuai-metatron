@@ -24,9 +24,11 @@ const { deps } = vi.hoisted(() => ({
 vi.mock("../storage/serverAuth", () => ({
     authFetch: (...args: Parameters<typeof deps.authFetch>) => deps.authFetch(...args),
 }));
-vi.mock("./collector", () => ({
-    clientDiagnosticEvents: () => deps.events,
-}));
+vi.mock("./collector", async () =>
+    (await import("./tests/collectorMock")).createCollectorMock({
+        clientDiagnosticEvents: () => deps.events as DiagnosticEvent[],
+    }),
+);
 vi.mock("./workerRecords", () => ({
     readWorkerRecords: (...args: unknown[]) => deps.readWorkerRecords(...(args as [])),
 }));

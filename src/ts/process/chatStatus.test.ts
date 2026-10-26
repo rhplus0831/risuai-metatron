@@ -73,7 +73,9 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     watchForRestore: vi.fn(),
 }));
 vi.mock("../util", () => ({ sleep: async () => {} }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: vi.fn() }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),
+);
 // A command job's follow-ups reach the real `runMultisend` and `sendChat`; only the server send and
 // the command module's unrelated services (TTS, the parser, lore) are stand-ins.
 vi.mock("./serverGeneration", () => ({

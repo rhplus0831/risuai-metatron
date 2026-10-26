@@ -31,7 +31,11 @@ vi.mock("../storage/serverAuth", async () =>
 );
 vi.mock("../router/router.svelte", () => ({ openRoute: deps.openRoute }));
 vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => deps.record(input) }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => deps.record(input),
+    }),
+);
 
 const PROMPT_DISMISSED = "risu-push-prompt-dismissed";
 const BROWSER_OFF = "risu-push-browser-off";

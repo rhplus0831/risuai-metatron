@@ -50,7 +50,9 @@ vi.mock("../storage/chatStore.svelte", () => ({
     findChat: () => (mocks.held.loaded ? { id: "k" } : undefined),
     heldChatRevision: () => mocks.held.revision,
 }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: mocks.record }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({ recordClientEvent: mocks.record }),
+);
 
 class FakeSocket {
     static instances: FakeSocket[] = [];

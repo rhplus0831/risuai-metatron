@@ -3,7 +3,6 @@ import { v4 } from "uuid";
 import type { character, groupChat } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-// Before `../stores.svelte`: its module effects read `selectedCharacter()` while this module is still loading.
 import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
 import { CharacterShapeError, normalizeCharacter, supaMemoryOnCount } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";

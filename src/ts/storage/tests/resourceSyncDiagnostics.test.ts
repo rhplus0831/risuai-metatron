@@ -60,13 +60,15 @@ vi.mock("../../process/modules", () => ({
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
-vi.mock("../../diagnostics/collector", () => ({
-    recordClientEvent: (input: unknown) => {
-        diagnostics.onRecord?.(input);
-        diagnostics.calls.push(input);
-    },
-    flushClientDiagnostics: () => diagnostics.calls.push("flush"),
-}));
+vi.mock("../../diagnostics/collector", async () =>
+    (await import("../../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => {
+            diagnostics.onRecord?.(input);
+            diagnostics.calls.push(input);
+        },
+        flushClientDiagnostics: () => diagnostics.calls.push("flush"),
+    }),
+);
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
