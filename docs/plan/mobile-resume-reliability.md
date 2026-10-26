@@ -1,6 +1,6 @@
 # Mobile Resume Reliability Plan
 
-Status: in progress. Landed: 1 (7b01303e3), 2 (d7b3a7a34).
+Status: in progress. Landed: 1 (7b01303e3), 2 (d7b3a7a34), 3 (7d558b5e5).
 
 - 2026-10-26: first draft.
 - Same day: a read-only GPT-6-Astra review. Its confirmed findings are folded in
