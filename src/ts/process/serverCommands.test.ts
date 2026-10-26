@@ -7,7 +7,8 @@ import { warmModules } from "../storage/tests/mutationStoresHarness";
 // The tab's side of a server Lua button (`serverCommands.ts`) over a stubbed transport: one
 // lifecycle per job shared by every caller (a button, a busy job of this tab, the boot resume), the
 // bounded reattach after a socket closed without the terminal (growing waits, a failed status read
-// retried, an attach that does not open in time given up), the end read from the job's status (the
+// retried, an opened socket the transport replaced on the page's return attached again at once and
+// not counted), the end read from the job's status (the
 // server's kept outcome of a collected job, or the last ended status when the attaches run out), a
 // job the server no longer knows (gone: no lost alert, the chat read again, then the `endedAway`
 // toast) told from a server that stays unreachable (lost), the chat read again after a lost or gone
@@ -1187,29 +1188,35 @@ describe("the end read from the job's status, and the chat read after the follow
         expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
     });
 
-    it("gives up an attach whose socket does not open within 10 s and reads the status; an attach that opened is left alone", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        try {
-            const tick = () => vi.advanceTimersByTimeAsync(0);
-            stubs.read.mockResolvedValue(status);
-            const end = commands.followJobToEnd("j", ref);
-            await tick();
-            expect(follows()).toHaveLength(1);
-            await vi.advanceTimersByTimeAsync(9_999);
-            expect(stubs.read).not.toHaveBeenCalled();
-            await vi.advanceTimersByTimeAsync(1);
-            await tick();
-            expect(stubs.read).toHaveBeenCalledTimes(1);
-            expect(follows()).toHaveLength(2);
-            follows()[1].open();
-            await vi.advanceTimersByTimeAsync(60_000);
-            expect(follows()).toHaveLength(2);
-            expect(stubs.read).toHaveBeenCalledTimes(1);
-            endWith(follows()[1], done);
-            expect(await end).toEqual(done);
-        } finally {
-            vi.useRealTimers();
+    it("attaches again at once, not counting the attach, after the transport replaced an opened socket on the page's return (`resumed`); a close the transport gave up counts and waits", async () => {
+        stubs.read.mockResolvedValue(status);
+        const end = commands.followJobToEnd("j", ref);
+        await flush();
+        expect(follows()).toHaveLength(1);
+        // Four replaced sockets: a status read each, no wait, nothing of the budget spent.
+        for (let replaced = 0; replaced < 4; replaced += 1) {
+            follows().at(-1)!.resume();
+            await flush();
+            await flush();
+            expect(follows()).toHaveLength(2 + replaced);
         }
+        expect(stubs.read).toHaveBeenCalledTimes(4);
+        expect(sleeps()).toEqual([]);
+        expect(links().filter((link) => (link as { phase: string }).phase === "reattach")).toEqual(
+            Array(4).fill({ kind: "jobLink", phase: "reattach", jobId: "j", attempt: 0 }),
+        );
+        // Five closes the transport gave up spend the whole budget with the growing waits: lost.
+        for (let attach = 0; attach < 5; attach += 1) {
+            follows().at(-1)!.end(null);
+            await flush();
+            await flush();
+        }
+        expect(await end).toBe("lost");
+        expect(follows()).toHaveLength(9);
+        expect(stubs.read).toHaveBeenCalledTimes(9);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
+        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
     });
 
     it("reports an unreachable server as lost and reads the chat once more at the next `online` or visible, once, unless the stale mark is gone by then", async () => {

@@ -398,6 +398,15 @@ describe("projectDiagnosticEvent", () => {
         expect(projectDiagnosticEvent({ at: AT, kind: "jobLink", code: 1000 })).toHaveProperty("code", 1000);
     });
 
+    it("jobLink and feed: the socket liveness phases (a silent socket, one not open in time, one replaced on the page's return) are kept on both kinds", () => {
+        for (const phase of ["stale", "connectTimeout", "resumeReconnect"]) {
+            const link = { at: AT, kind: "jobLink", phase, jobId: ID };
+            expect(projectDiagnosticEvent(link), phase).toEqual(link);
+            const feed = { at: AT, kind: "feed", phase, attempt: 2 };
+            expect(projectDiagnosticEvent(feed), phase).toEqual(feed);
+        }
+    });
+
     it("feed, sync, serviceWorker, page: the phases by their lists, counts, a close code; `repeat` and `lastAt` on every kind", () => {
         const feed = { at: AT, kind: "feed", phase: "disconnected", attempt: 0, code: 1006 };
         expect(projectDiagnosticEvent(feed)).toEqual(feed);

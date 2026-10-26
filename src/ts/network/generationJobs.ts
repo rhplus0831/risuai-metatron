@@ -23,6 +23,7 @@ import { authFetch, getNodeServerProxyAuth } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { applyHydration, applyPatchHydration, flushResources } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
+import { watchResume, watchSocket } from "./socketLiveness";
 import { recordClientEvent } from "../diagnostics/collector";
 import { dropJobStage, setJobStage } from "../process/jobStages";
 
@@ -431,8 +432,12 @@ export type GenerationFollow = {
     /** Sends a JSON message to the job (the `job-channel` answers); false while the socket is not open. */
     send(message: unknown): boolean;
     close(): void;
-    /** Resolves when the socket closes, with the terminal event if one arrived. */
-    closed: Promise<{ terminal: GenerationTerminalEvent | null }>;
+    /**
+     * Resolves when the socket closes, with the terminal event if one arrived. `resumed`: the follow
+     * gave up a socket that had opened because the page came back (`watchResume`), not because the
+     * link failed.
+     */
+    closed: Promise<{ terminal: GenerationTerminalEvent | null; resumed?: boolean }>;
     /** True once the socket opened; false when the follow settled before it opened. */
     opened: Promise<boolean>;
 };
@@ -440,7 +445,11 @@ export type GenerationFollow = {
 /**
  * Follows a job over its socket: on every attach the server sends the job chat and the records it
  * changed (fresh), the chosen preset, the current reply with its text, and the result if the job
- * ended. Events of another epoch than the loaded one are dropped, as are pings.
+ * ended. Events of another epoch than the loaded one are dropped, as are pings. The follow gives its
+ * socket up, as its own `close()` would (the job is not released), when it has not opened within
+ * 10 s of the follow's start (authentication included), when it has had no frame (pings included)
+ * for 45 s while the page is visible, and when the page comes back (`socketLiveness.ts`); a terminal
+ * that arrived stands. The caller attaches again.
  */
 /** The newest follow of each job: a newer follow cancels the older one (its socket, events, and sends). */
 const currentFollows = new Map<string, { cancel(): void }>();
@@ -459,17 +468,21 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
     let cancelled = false;
     let terminal: GenerationTerminalEvent | null = null;
     // Settles on the socket's close or on cancellation, whichever comes first (even before auth).
-    let resolveClosed!: (value: { terminal: GenerationTerminalEvent | null }) => void;
-    const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
+    let resolveClosed!: (value: { terminal: GenerationTerminalEvent | null; resumed?: boolean }) => void;
+    const closed = new Promise<{ terminal: GenerationTerminalEvent | null; resumed?: boolean }>((resolve) => {
         resolveClosed = resolve;
     });
+    let wasOpened = false;
+    let resumed = false;
     let resolveOpened!: (value: boolean) => void;
     const opened = new Promise<boolean>((resolve) => {
         resolveOpened = resolve;
     });
     const finish = () => {
+        watch.stop();
+        stopResume();
         resolveOpened(false);
-        resolveClosed({ terminal });
+        resolveClosed(resumed ? { terminal, resumed } : { terminal });
     };
     const handle = {
         cancel() {
@@ -479,6 +492,20 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             finish();
         },
     };
+    /** Gives the socket up (as `close()`), unless the follow ended or its terminal already arrived. */
+    const abandon = (phase: "connectTimeout" | "stale" | "resumeReconnect") => {
+        if (cancelled || terminal) {
+            return;
+        }
+        recordClientEvent({ kind: "jobLink", phase, jobId });
+        resumed = phase === "resumeReconnect" && wasOpened;
+        follow.close();
+    };
+    const watch = watchSocket({
+        onConnectTimeout: () => abandon("connectTimeout"),
+        onStale: () => abandon("stale"),
+    });
+    const stopResume = watchResume(() => abandon("resumeReconnect"));
     // A newer follow of the job supersedes this one at once (its events, sends, and connection).
     currentFollows.get(jobId)?.cancel();
     currentFollows.set(jobId, handle);
@@ -495,10 +522,10 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             `&attach=${stamp}`;
         const socket = new WebSocket(url);
         ws = socket;
-        let wasOpened = false;
         socket.onopen = () => {
-            wasOpened = true;
             if (!cancelled) {
+                wasOpened = true;
+                watch.opened();
                 resolveOpened(true);
                 recordClientEvent({ kind: "jobLink", phase: "attach", jobId });
             }
@@ -507,6 +534,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             if (cancelled) {
                 return;
             }
+            watch.frame();
             let event: GenerationEvent;
             try {
                 event = JSON.parse(String(message.data)) as GenerationEvent;

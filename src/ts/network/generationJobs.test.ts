@@ -1,12 +1,13 @@
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 
 // The client transport of server generation jobs (`generationJobs.ts`): the tab's identity and
 // saved jobs, the create/status/abort requests and their errors (a status read's deadline), the
 // owner socket's lifetime (cancellation before and after authentication, `opened`, supersession,
-// stamps, event filtering), the event
+// stamps, event filtering), its liveness (`socketLiveness.ts`, real: the connect timeout, the
+// watchdog, the page's return, a terminal that stands), the event
 // dispatcher's wiring, and the resume after a reload. The chat module, the save adapter, and the
 // channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create body's `hooks`) are
 // stubbed here; the hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
@@ -127,6 +128,14 @@ function deferred<T = void>() {
 let transport: Transport;
 let client: Client;
 
+/** The follows a test started: each owns a connect timer and a resume subscription, so the test's end closes them. */
+const startedFollows: ReturnType<Transport["followGenerationJob"]>[] = [];
+const startFollow: Transport["followGenerationJob"] = (jobId, onEvent) => {
+    const follow = transport.followGenerationJob(jobId, onEvent);
+    startedFollows.push(follow);
+    return follow;
+};
+
 beforeEach(async () => {
     vi.resetModules();
     stubs.auth.length = 0;
@@ -142,6 +151,9 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    for (const follow of startedFollows.splice(0)) {
+        follow.close();
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -292,7 +304,7 @@ describe("the requests", () => {
     });
 
     it("bounds a status read to its deadline (the request and its body): past it the request is aborted and the read fails as one without an answer; an answer in time leaves no timer", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         let signal: AbortSignal | null | undefined;
         stubs.fetch.mockImplementationOnce((_path, init) => {
             signal = init?.signal;
@@ -364,14 +376,15 @@ describe("following a job", () => {
     it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
         const { jobStages } = await import("../process/jobStages");
         const ref = { chaId: "c", chatId: "k" };
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const dispatch = vi.fn((event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
             transport.applyGenerationEvent("j1", ref, event),
         );
-        const follow = transport.followGenerationJob("j1", dispatch);
+        const follow = startFollow("j1", dispatch);
         try {
             stubs.auth[0].resolve("jwt");
-            await vi.runAllTimersAsync();
+            // Not every timer: the follow's connect timeout would give the socket up before it opens.
+            await vi.advanceTimersByTimeAsync(0);
             const [socket] = FakeSocket.instances;
             socket.open();
 
@@ -394,7 +407,7 @@ describe("following a job", () => {
 
     it("connects with a fresh JWT, the client id, and an increasing attach stamp; delivers events of this epoch and closes on the terminal", async () => {
         const seen: unknown[] = [];
-        const follow = transport.followGenerationJob("j1", (event) => seen.push(event));
+        const follow = startFollow("j1", (event) => seen.push(event));
         expect(FakeSocket.instances).toHaveLength(0);
         expect(follow.send({ x: 1 })).toBe(false);
         stubs.auth[0].resolve("jwt-1");
@@ -422,7 +435,7 @@ describe("following a job", () => {
         await expect(follow.closed).resolves.toEqual({ terminal: { type: "done", epoch: EPOCH, revision: null } });
         expect(follow.send({ late: true })).toBe(false);
         // Another follow's stamp is higher.
-        const next = transport.followGenerationJob("j1", () => {});
+        const next = startFollow("j1", () => {});
         stubs.auth[1].resolve("jwt-2");
         await flush();
         expect(FakeSocket.instances[1].stamp).toBeGreaterThan(socket.stamp);
@@ -430,7 +443,7 @@ describe("following a job", () => {
     });
 
     it("settles `closed` when cancelled before authentication, and never builds a socket afterwards", async () => {
-        const follow = transport.followGenerationJob("j1", () => {});
+        const follow = startFollow("j1", () => {});
         expect(await settled(follow.closed)).toBe("pending");
         follow.close();
         await expect(follow.closed).resolves.toEqual({ terminal: null });
@@ -439,11 +452,11 @@ describe("following a job", () => {
         expect(FakeSocket.instances).toHaveLength(0);
         // A rejected authentication after cancellation is handled too; one that fails on its own
         // ends the follow with no socket.
-        const second = transport.followGenerationJob("j2", () => {});
+        const second = startFollow("j2", () => {});
         second.close();
         stubs.auth[1].reject(new Error("no auth"));
         await flush();
-        const third = transport.followGenerationJob("j3", () => {});
+        const third = startFollow("j3", () => {});
         stubs.auth[2].reject(new Error("no auth"));
         await expect(third.closed).resolves.toEqual({ terminal: null });
         expect(FakeSocket.instances).toHaveLength(0);
@@ -451,7 +464,7 @@ describe("following a job", () => {
     });
 
     it("settles `opened` true once the socket opens, and false when the follow ends before that: cancelled before authentication, closed while connecting, a failed authentication, or a socket the server closed unopened", async () => {
-        const open = transport.followGenerationJob("j1", () => {});
+        const open = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         expect(await settled(open.opened)).toBe("pending");
@@ -462,14 +475,14 @@ describe("following a job", () => {
         await open.closed;
         await expect(open.opened).resolves.toBe(true);
 
-        const early = transport.followGenerationJob("j2", () => {});
+        const early = startFollow("j2", () => {});
         early.close();
         expect(await settled(early.opened)).toBe("settled");
         await expect(early.opened).resolves.toBe(false);
         stubs.auth[1].resolve("jwt");
         await flush();
 
-        const connecting = transport.followGenerationJob("j3", () => {});
+        const connecting = startFollow("j3", () => {});
         stubs.auth[2].resolve("jwt");
         await flush();
         expect(await settled(connecting.opened)).toBe("pending");
@@ -477,11 +490,11 @@ describe("following a job", () => {
         await expect(connecting.opened).resolves.toBe(false);
         await expect(connecting.closed).resolves.toEqual({ terminal: null });
 
-        const unauthenticated = transport.followGenerationJob("j4", () => {});
+        const unauthenticated = startFollow("j4", () => {});
         stubs.auth[3].reject(new Error("no auth"));
         await expect(unauthenticated.opened).resolves.toBe(false);
 
-        const refused = transport.followGenerationJob("j5", () => {});
+        const refused = startFollow("j5", () => {});
         stubs.auth[4].resolve("jwt");
         await flush();
         FakeSocket.instances.at(-1)!.onclose!({ code: 1006 });
@@ -492,8 +505,8 @@ describe("following a job", () => {
     it("lets a newer follow of the job supersede an older one, whichever authenticates first, with one usable stream", async () => {
         const seenA: unknown[] = [];
         const seenB: unknown[] = [];
-        const a = transport.followGenerationJob("j1", (event) => seenA.push(event));
-        const b = transport.followGenerationJob("j1", (event) => seenB.push(event));
+        const a = startFollow("j1", (event) => seenA.push(event));
+        const b = startFollow("j1", (event) => seenB.push(event));
         // Superseding settles the older follow at once, even before its authentication.
         await expect(a.closed).resolves.toEqual({ terminal: null });
         // The newer one authenticates first, then the older one: only the newer builds a socket.
@@ -512,7 +525,7 @@ describe("following a job", () => {
         expect(b.send({})).toBe(true);
         // A third follow supersedes the open one: its socket is closed and its queued message ignored.
         const seenC: unknown[] = [];
-        const c = transport.followGenerationJob("j1", (event) => seenC.push(event));
+        const c = startFollow("j1", (event) => seenC.push(event));
         expect(socketB.closeCalls).toBe(1);
         socketB.message({ type: "progress", epoch: EPOCH, payload: "late for b" });
         expect(seenB).toHaveLength(1);
@@ -533,12 +546,12 @@ describe("following a job", () => {
     });
 
     it("cancels a socket that is still connecting when superseded", async () => {
-        const a = transport.followGenerationJob("j1", () => {});
+        const a = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt-a");
         await flush();
         const socketA = FakeSocket.instances[0];
         expect(socketA.readyState).toBe(FakeSocket.CONNECTING);
-        transport.followGenerationJob("j1", () => {});
+        startFollow("j1", () => {});
         expect(socketA.closeCalls).toBe(1);
         await expect(a.closed).resolves.toEqual({ terminal: null });
     });
@@ -569,7 +582,7 @@ describe("the event dispatcher and the resume", () => {
     });
 
     it("drops only the released job's presentation stage, including a job resumed from saved generations", async () => {
-        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         transport.rememberGenerationJob(ref, "resumed");
         stubs.fetch.mockResolvedValueOnce(
@@ -887,7 +900,7 @@ describe("the event dispatcher and the resume", () => {
         };
 
         beforeEach(() => {
-            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
             stubs.isChatStale.mockReturnValue(true);
             stubs.applyPatchHydration.mockReturnValue("busy");
         });
@@ -1019,12 +1032,13 @@ describe("the event dispatcher and the resume", () => {
         });
 
         it("ends when the follow closes (a superseded or closed socket): its waiting try is dropped and nothing more is asked through it", async () => {
-            const follow = transport.followGenerationJob("j1", () => {});
+            const follow = startFollow("j1", () => {});
             stubs.flushResources.mockRejectedValueOnce(new Error("offline"));
             transport.applyGenerationEvent("j1", ref, patch, follow);
             await microtasks();
             expect(stubs.flushResources).toHaveBeenCalledTimes(1);
-            expect(vi.getTimerCount()).toBe(1);
+            // The recovery's wait, beside the follow's own connect timeout.
+            expect(vi.getTimerCount()).toBe(2);
             follow.close();
             await follow.closed;
             await microtasks();
@@ -1037,7 +1051,7 @@ describe("the event dispatcher and the resume", () => {
             await microtasks();
             expect(stubs.flushResources).toHaveBeenCalledTimes(1);
             // A new follow of the same job recovers on its own.
-            const next = transport.followGenerationJob("j1", () => {});
+            const next = startFollow("j1", () => {});
             stubs.applyPatchHydration.mockReturnValue("busy");
             transport.applyGenerationEvent("j1", ref, patch, next);
             await microtasks();
@@ -1197,11 +1211,192 @@ describe("the event dispatcher and the resume", () => {
     });
 });
 
+// The follow's liveness (`socketLiveness.ts`, the real module, under fake timers): a socket that does
+// not open in time or goes silent is given up as the caller's `close()` would (the job stays live,
+// its channel open), the page's return replaces an opened socket (`closed` carries `resumed`), and
+// a terminal that arrived stands.
+describe("the follow's liveness", () => {
+    const ref = { chaId: "c", chatId: "k" };
+    const links = () => stubs.record.mock.calls.map(([input]) => input);
+    const tick = () => vi.advanceTimersByTimeAsync(0);
+    /** Whether a promise settled, without a timer (`settled` waits on a faked one). */
+    const state = async <T>(promise: Promise<T>) =>
+        Promise.race([promise.then(() => "settled" as const), microtasks().then(() => "pending" as const)]);
+    /** What a released job would show: its end told to the chat module and the channel. */
+    const released = () => stubs.endServerJob.mock.calls.length + stubs.endJobChannel.mock.calls.length;
+    let visibility: MockInstance<() => DocumentVisibilityState>;
+    const show = (value: "visible" | "hidden") => {
+        visibility.mockReturnValue(value);
+        document.dispatchEvent(new Event("visibilitychange"));
+    };
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+        visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    });
+
+    it("gives up a socket not open within 10 s of the follow's start, authentication included (`connectTimeout`): `closed` settles without a terminal, the job is not released, a late authentication builds no socket, and one that opened in time is left alone", async () => {
+        transport.rememberGenerationJob(ref, "j1");
+        const unauthenticated = startFollow("j1", () => {});
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(await state(unauthenticated.closed)).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(unauthenticated.closed).resolves.toEqual({ terminal: null });
+        await expect(unauthenticated.opened).resolves.toBe(false);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "connectTimeout", jobId: "j1" }]);
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        expect(FakeSocket.instances).toHaveLength(0);
+        expect(released()).toBe(0);
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+
+        // Authenticated at 5 s and still connecting at 10 s: closed, and its own close is no `attachFailed`.
+        const connecting = startFollow("j2", () => {});
+        await vi.advanceTimersByTimeAsync(5_000);
+        stubs.auth[1].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(socket.closeCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(socket.closeCalls).toBe(1);
+        await expect(connecting.closed).resolves.toEqual({ terminal: null });
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "connectTimeout", jobId: "j1" },
+            { kind: "jobLink", phase: "connectTimeout", jobId: "j2" },
+        ]);
+
+        const opened = startFollow("j3", () => {});
+        stubs.auth[2].resolve("jwt");
+        await tick();
+        FakeSocket.instances[1].open();
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(await state(opened.closed)).toBe("pending");
+        expect(FakeSocket.instances[1].closeCalls).toBe(0);
+    });
+
+    it("gives up an opened socket with no frame for 45 s while the page is visible (`stale`): pings keep it alive, a hidden page is not checked, the job is not released", async () => {
+        transport.rememberGenerationJob(ref, "j1");
+        const follow = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        // The server's pings, every 15 s, for a minute: alive.
+        for (let ping = 0; ping < 4; ping += 1) {
+            await vi.advanceTimersByTimeAsync(15_000);
+            socket.message({ type: "ping", ts: ping });
+        }
+        // Then silence: 40 s of it visible (the checks at 15 and 30 s pass), 20 s hidden (not checked),
+        // shown again after a short absence (no return): the next check sees 75 s and gives it up.
+        await vi.advanceTimersByTimeAsync(40_000);
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(socket.closeCalls).toBe(0);
+        show("visible");
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(socket.closeCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(socket.closeCalls).toBe(1);
+        await expect(follow.closed).resolves.toEqual({ terminal: null });
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "stale", jobId: "j1" },
+        ]);
+        expect(released()).toBe(0);
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+    });
+
+    it("gives an opened socket up when the page comes back (`resumeReconnect`), `closed` carrying `resumed`; a socket that had not opened closes without it; a follow started after the trigger is left alone", async () => {
+        transport.rememberGenerationJob(ref, "j1");
+        const opened = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        FakeSocket.instances[0].open();
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(30_000);
+        const connecting = startFollow("j2", () => {});
+        stubs.auth[1].resolve("jwt");
+        await tick();
+        show("visible");
+        await vi.advanceTimersByTimeAsync(249);
+        expect(await state(opened.closed)).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(opened.closed).resolves.toEqual({ terminal: null, resumed: true });
+        await expect(connecting.closed).resolves.toEqual({ terminal: null });
+        expect(FakeSocket.instances.map((socket) => socket.closeCalls)).toEqual([1, 1]);
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "resumeReconnect", jobId: "j1" },
+            { kind: "jobLink", phase: "resumeReconnect", jobId: "j2" },
+        ]);
+        expect(released()).toBe(0);
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+
+        // The caller's next attach, started inside the return's window, is not given up by it.
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(100);
+        const next = startFollow("j1", () => {});
+        await vi.advanceTimersByTimeAsync(150);
+        expect(await state(next.closed)).toBe("pending");
+        expect(links()).toHaveLength(3);
+    });
+
+    it("leaves a socket that fell silent while the page was away to the page's return when the stale check runs inside the return's window: `closed` carries `resumed`, no `stale`", async () => {
+        const follow = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        socket.message({ type: "ping", ts: 0 });
+        await vi.advanceTimersByTimeAsync(5_000);
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(54_900);
+        // Shown again 100 ms before the check that finds 60 s of silence: a thawed page's overdue check.
+        show("visible");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await state(follow.closed)).toBe("pending");
+        expect(socket.closeCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(150);
+        await expect(follow.closed).resolves.toEqual({ terminal: null, resumed: true });
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "resumeReconnect", jobId: "j1" },
+        ]);
+    });
+
+    it("leaves a follow whose terminal arrived alone: neither the page's return nor the silence after it gives the socket up before its close, and `closed` carries the terminal", async () => {
+        const follow = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        // The close handshake after the terminal never ends (a frozen link).
+        socket.close = () => {
+            socket.closeCalls += 1;
+        };
+        const done = { type: "done", epoch: EPOCH, revision: null };
+        socket.message(done);
+        expect(socket.closeCalls).toBe(1);
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(await state(follow.closed)).toBe("pending");
+        expect(socket.closeCalls).toBe(1);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
+        socket.onclose!({ code: 1000 });
+        await expect(follow.closed).resolves.toEqual({ terminal: done });
+    });
+});
+
 describe("the job link's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
     it("records `attach` once when the socket opens, and `detach` with the close code when it closes before the job's end", async () => {
-        const follow = transport.followGenerationJob("j1", () => {});
+        const follow = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         const [socket] = FakeSocket.instances;
@@ -1217,7 +1412,7 @@ describe("the job link's diagnostics", () => {
     });
 
     it("records no detach for the close after the terminal, the caller's close, or a superseding follow", async () => {
-        const first = transport.followGenerationJob("j1", () => {});
+        const first = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         const a = FakeSocket.instances[0];
@@ -1227,7 +1422,7 @@ describe("the job link's diagnostics", () => {
         await flush();
         expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
 
-        const second = transport.followGenerationJob("j1", () => {});
+        const second = startFollow("j1", () => {});
         stubs.auth[1].resolve("jwt");
         await flush();
         FakeSocket.instances[1].open();
@@ -1237,11 +1432,11 @@ describe("the job link's diagnostics", () => {
         expect(links()).toHaveLength(2);
         expect(links()[1]).toEqual({ kind: "jobLink", phase: "attach", jobId: "j1" });
 
-        const third = transport.followGenerationJob("j1", () => {});
+        const third = startFollow("j1", () => {});
         stubs.auth[2].resolve("jwt");
         await flush();
         FakeSocket.instances[2].open();
-        const fourth = transport.followGenerationJob("j1", () => {});
+        const fourth = startFollow("j1", () => {});
         await third.closed;
         await flush();
         expect(links()).toHaveLength(3);
@@ -1252,13 +1447,13 @@ describe("the job link's diagnostics", () => {
     });
 
     it("records `attachFailed` for a close before the socket opened (with the code) and for a failed authentication (without), never after a cancel", async () => {
-        const first = transport.followGenerationJob("j1", () => {});
+        const first = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         FakeSocket.instances[0].onclose!({ code: 1006 });
         await first.closed;
         expect(links()).toEqual([{ kind: "jobLink", phase: "attachFailed", jobId: "j1", code: 1006 }]);
-        const second = transport.followGenerationJob("j2", () => {});
+        const second = startFollow("j2", () => {});
         stubs.auth[1].reject(new Error("no auth"));
         await second.closed;
         await flush();
@@ -1266,7 +1461,7 @@ describe("the job link's diagnostics", () => {
             { kind: "jobLink", phase: "attachFailed", jobId: "j1", code: 1006 },
             { kind: "jobLink", phase: "attachFailed", jobId: "j2" },
         ]);
-        const third = transport.followGenerationJob("j3", () => {});
+        const third = startFollow("j3", () => {});
         third.close();
         stubs.auth[2].reject(new Error("no auth"));
         await flush();

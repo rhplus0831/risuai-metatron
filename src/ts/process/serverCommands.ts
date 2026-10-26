@@ -59,7 +59,7 @@ import { chatLoreOverrideRefusalText } from "./loreOverrides";
  */
 const MAX_ATTACHES = 5;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
-/** The longest a status read, an attach's opening, or the chat's read after a lost follow may take. */
+/** The longest a status read or the chat's read after a lost follow may take. */
 const STEP_DEADLINE_MS = 10_000;
 
 /** The wait before retry `attempt` (1-based). */
@@ -379,30 +379,38 @@ async function discover(jobId: string): Promise<ChatRef | "gone" | "lost"> {
 }
 
 /**
- * One follow of a job to its end through at most `MAX_ATTACHES` attaches. An attach whose socket
- * does not open within `STEP_DEADLINE_MS` is given up. After every close without the terminal the
- * job's status is read (bounded the same way): a failed read attaches again (the server may be out of
- * reach), a job the server does not know is `"gone"`, its kept outcome is the end, and a job still
- * running or ended but still live is attached again. When the attaches run out, or the job is no
- * longer known after an ended status was read, the terminal of the last ended status read is the
- * end, if there was one; `"lost"` (or `"gone"`) otherwise.
+ * One follow of a job to its end through at most `MAX_ATTACHES` attaches. The transport gives up an
+ * attach whose socket does not open within 10 s, or that goes silent (`followGenerationJob`). An
+ * opened socket the transport replaced because the page came back (`resumed`) is not counted and
+ * the next attach does not wait: only failed links spend the budget. After every close without the
+ * terminal the job's status is read (bounded by `STEP_DEADLINE_MS`): a failed read attaches again
+ * (the server may be out of reach), a job the server does not know is `"gone"`, its kept outcome is
+ * the end, and a job still running or ended but still live is attached again. When the attaches run
+ * out, or the job is no longer known after an ended status was read, the terminal of the last ended
+ * status read is the end, if there was one; `"lost"` (or `"gone"`) otherwise.
  */
 async function followOnce(jobId: string, ref: ChatRef): Promise<FollowEnd> {
     let known: GenerationTerminalEvent | null = null;
-    for (let attach = 0; attach < MAX_ATTACHES; attach++) {
-        if (attach > 0) {
-            await sleep(retryDelay(attach));
+    // Attaches counted against the budget, and whether the last socket was replaced on the page's return.
+    let attach = 0;
+    let resumed = false;
+    while (attach < MAX_ATTACHES) {
+        if (attach > 0 || resumed) {
+            if (!resumed) {
+                await sleep(retryDelay(attach));
+            }
             recordClientEvent({ kind: "jobLink", phase: "reattach", jobId, attempt: attach });
         }
         const follow: GenerationFollow = followGenerationJob(jobId, (event) =>
             applyGenerationEvent(jobId, ref, event, follow),
         );
-        const deadline = setTimeout(() => follow.close(), STEP_DEADLINE_MS);
-        void follow.opened.then(() => clearTimeout(deadline));
-        const { terminal } = await follow.closed;
-        clearTimeout(deadline);
-        if (terminal) {
-            return { terminal, applied: true, kept: false };
+        const closed = await follow.closed;
+        if (closed.terminal) {
+            return { terminal: closed.terminal, applied: true, kept: false };
+        }
+        resumed = closed.resumed === true;
+        if (!resumed) {
+            attach += 1;
         }
         let status;
         try {

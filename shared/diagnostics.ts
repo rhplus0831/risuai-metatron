@@ -80,7 +80,8 @@ export type RuntimeOrigin = (typeof RUNTIME_ORIGINS)[number];
  * A tab's follow of a server job: its socket opened, closed before the end, or never opened; a retry;
  * the end of the follow without the job's end (the server could not be reached); a saved job followed
  * again after a reload; the end read from the server's kept outcome of a collected job; a job the
- * server no longer knows; the job's chat read again after a lost or gone follow.
+ * server no longer knows; the job's chat read again after a lost or gone follow; a socket given up
+ * because it had no frame for too long, did not open in time, or the page came back.
  */
 export const JOB_LINK_PHASES = [
     "attach",
@@ -92,10 +93,24 @@ export const JOB_LINK_PHASES = [
     "kept",
     "gone",
     "recovered",
+    "stale",
+    "connectTimeout",
+    "resumeReconnect",
 ] as const;
 
-/** The live-update socket: a `hello` of the loaded epoch, a close of a socket that was open, a connection that never opened. */
-export const FEED_PHASES = ["connected", "disconnected", "connectFailed"] as const;
+/**
+ * The live-update socket: a `hello` of the loaded epoch, a close of a socket that was open, a
+ * connection that never opened; a connection given up because it had no frame for too long or did
+ * not open in time, and one replaced because the page came back.
+ */
+export const FEED_PHASES = [
+    "connected",
+    "disconnected",
+    "connectFailed",
+    "stale",
+    "connectTimeout",
+    "resumeReconnect",
+] as const;
 
 /** The save loop: a 409 it recovers from, a reload of the page (after a restore, or a service worker that did not initialize). */
 export const SYNC_PHASES = ["conflict", "reload"] as const;

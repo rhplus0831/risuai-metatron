@@ -90,7 +90,11 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `jobLink` phases: `attach`, `detach`, `attachFailed`, `reattach`, `resume`; `lost`
   (the server stayed unreachable), `gone` (the server no longer knows the job), `kept`
   (the end came from the server's kept outcome of a collected job), and `recovered`
-  (the chat read after a lost or gone follow took).
+  (the chat read after a lost or gone follow took); `stale` (no frame for 45 s while
+  visible), `connectTimeout` (not open within 10 s), and `resumeReconnect` (an attach
+  replaced because the page came back). `feed` phases: `connected` (a `hello` of the
+  loaded epoch), `disconnected`, `connectFailed`, and the same `stale`, `connectTimeout`,
+  and `resumeReconnect`.
 - `src/ts/diagnostics/report.ts`, `shared/diagnosticsReport.ts`, and
   `DiagnosticsPanel.svelte`: Settings → Advanced → Developer & diagnostics. Read the server for
   at most 10 s; failure still gives the browser report. Merge checked events by time

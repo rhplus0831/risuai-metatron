@@ -44,13 +44,16 @@ export class ChatLoreOverrideOrphanedError extends Error {
 
 /**
  * A `GenerationFollow` a test settles: `open()` resolves `opened` true (the socket opened), `end`
- * closes it with the terminal given (null: closed before the job's end), and `close()` is the
- * caller's close (closed without a terminal), as the real follow settles them.
+ * closes it with the terminal given (null: closed before the job's end), `resume()` closes it as the
+ * transport does when it gives an opened socket up on the page's return (`resumed`), and `close()`
+ * is the caller's close (closed without a terminal), as the real follow settles them. It never times
+ * out or watches the page on its own: the test drives every settlement.
  */
 export function createFollowStub(jobId: string) {
-    let settleClosed!: (value: { terminal: GenerationTerminalEvent | null }) => void;
+    type Closed = { terminal: GenerationTerminalEvent | null; resumed?: boolean };
+    let settleClosed!: (value: Closed) => void;
     let settleOpened!: (value: boolean) => void;
-    const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
+    const closed = new Promise<Closed>((resolve) => {
         settleClosed = resolve;
     });
     const opened = new Promise<boolean>((resolve) => {
@@ -64,6 +67,10 @@ export function createFollowStub(jobId: string) {
         jobId,
         open: () => settleOpened(true),
         end,
+        resume: () => {
+            settleOpened(false);
+            settleClosed({ terminal: null, resumed: true });
+        },
         follow: {
             send: () => true,
             close: () => end(null),

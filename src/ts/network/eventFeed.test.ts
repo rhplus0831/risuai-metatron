@@ -1,10 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
 // The client of the live-update socket (`eventFeed.ts`): a freshly signed JWT on every connection
 // (they live five minutes), `hello` of the loaded epoch → the revision listing → `reconcileRemote`,
 // `change` of the loaded epoch → `noteRemoteChanges`, another epoch (or an `epoch` frame) → the
-// epoch-mismatch halt, malformed frames ignored, reconnect with backoff, and a failed reconcile
-// closing the socket so the reconnect reconciles again. The save loop behind it is in
+// epoch-mismatch halt, malformed frames ignored, reconnect with backoff, a failed reconcile
+// closing the socket so the reconnect reconciles again, and the connection generation with the
+// liveness helpers (`socketLiveness.ts`, real): a silent or never-opening connection abandoned
+// without its `close`, the page's return replacing the connection, late results of a replaced
+// connection doing nothing. The save loop behind it is in
 // `src/ts/storage/tests/resourceSyncLive.test.ts`.
 
 const mocks = vi.hoisted(() => {
@@ -53,6 +56,8 @@ class FakeSocket {
     static instances: FakeSocket[] = [];
     readonly url: string;
     closed = false;
+    /** A socket whose `close()` fires no `close` event (a dead link: the event comes late, or never). */
+    silent = false;
     private listeners = new Map<string, ((event: any) => void)[]>();
     constructor(url: string) {
         this.url = url;
@@ -61,12 +66,17 @@ class FakeSocket {
     addEventListener(type: string, listener: (event: any) => void) {
         this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
     }
+    open() {
+        this.emit("open", {});
+    }
     close() {
         if (this.closed) {
             return;
         }
         this.closed = true;
-        this.emit("close", {});
+        if (!this.silent) {
+            this.emit("close", {});
+        }
     }
     emit(type: string, event: any) {
         for (const listener of this.listeners.get(type) ?? []) {
@@ -83,7 +93,7 @@ const change = { resources: [{ kind: "ui", id: "main", revision: "E1:1:2" }], ch
 let feed: typeof import("./eventFeed");
 
 beforeEach(async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.resetModules();
     FakeSocket.instances = [];
     mocks.epoch.current = "E1";
@@ -511,5 +521,229 @@ describe("the memory task frames", () => {
         expect(mocks.reconcileRemote).toHaveBeenCalledTimes(2);
         expect(fencedAtReconcile).toBe(false);
         expect(tasks.memoryTaskFenced(ref)).toBe(false);
+    });
+
+    it("resets the module for an epoch mismatch of a replaced connection's listing too: the data was replaced, whichever connection read it", async () => {
+        const tasks = await import("../process/memoryTasks.svelte");
+        const ws = await started();
+        let fail!: (error: unknown) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise((_, reject) => (fail = reject)));
+        ws.frame({
+            type: "hello",
+            epoch: "E1",
+            memoryTasks: [{ characterId: "c", chatId: "k", status: status("running") }],
+        });
+        expect(tasks.memoryTaskStatus(ref)?.state).toBe("running");
+        // The page comes back: the connection is replaced while its listing is still pending.
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(250);
+        expect(ws.closed).toBe(true);
+        fail(new mocks.EpochMismatch("restored"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(tasks.memoryTaskStatus(ref)).toBeNull();
+        // Any other failure of a replaced listing is dropped: the current socket stays, nothing is logged.
+        const next = FakeSocket.instances.at(-1)!;
+        let failNext!: (error: unknown) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise((_, reject) => (failNext = reject)));
+        next.frame({ type: "hello", epoch: "E1", memoryTasks: [] });
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(250);
+        expect(next.closed).toBe(true);
+        failNext(new Error("offline"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(FakeSocket.instances.at(-1)!.closed).toBe(false);
+        expect(console.error).not.toHaveBeenCalled();
+    });
+});
+
+// The connection generation and the liveness helpers (`socketLiveness.ts`, the real module, under
+// fake timers): a connection that goes silent or does not open in time is abandoned without its
+// `close` and reconnected with the backoff; the page's return replaces the connection at once; and
+// every late result of a replaced connection (its authentication, listing, `close`) does nothing.
+describe("the connection's liveness and the resume reconnect", () => {
+    const feedEvents = () => mocks.record.mock.calls.map(([input]) => input);
+    let visibility: MockInstance<() => DocumentVisibilityState>;
+    const show = (state: "visible" | "hidden") => {
+        visibility.mockReturnValue(state);
+        document.dispatchEvent(new Event("visibilitychange"));
+    };
+
+    beforeEach(() => {
+        // The longest jitter: every wait is (just under) its full delay.
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    });
+
+    it("abandons a socket silent for 45 s while the page is visible without waiting for its `close` (`stale`, the reconnect with the backoff); pings keep it alive; a hidden page is not checked", async () => {
+        const ws = await started();
+        ws.open();
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        // The server's pings, every 15 s, for a minute: alive.
+        for (let ping = 0; ping < 4; ping += 1) {
+            await vi.advanceTimersByTimeAsync(15_000);
+            ws.frame({ type: "ping", ts: ping });
+        }
+        expect(FakeSocket.instances).toHaveLength(1);
+        // Then silence: the checks 15 and 30 s after the last ping pass, the one at 45 s abandons.
+        ws.silent = true;
+        await vi.advanceTimersByTimeAsync(44_999);
+        expect(ws.closed).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(ws.closed).toBe(true);
+        expect(feedEvents()).toEqual([
+            { kind: "feed", phase: "connected", attempt: 0 },
+            { kind: "feed", phase: "stale", attempt: 0 },
+        ]);
+        // No `close` of the dead socket came, and the reconnect (1 s at attempt 0) comes anyway.
+        expect(FakeSocket.instances).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(FakeSocket.instances).toHaveLength(2);
+        // The dead socket's late `close` is nothing: no event, no second reconnect.
+        ws.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(FakeSocket.instances).toHaveLength(2);
+        expect(feedEvents()).toHaveLength(2);
+
+        // Hidden: not checked. Shown again after a short absence (no return): the next check sees it all.
+        const next = FakeSocket.instances[1];
+        next.open();
+        next.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(40_000);
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(next.closed).toBe(false);
+        show("visible");
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(next.closed).toBe(true);
+        expect(feedEvents().at(-1)).toEqual({ kind: "feed", phase: "stale", attempt: 1 });
+    });
+
+    it("abandons a connection not open within 10 s of its start, authentication included (`connectTimeout`), and a delayed authentication of the abandoned connection builds no socket", async () => {
+        const auth = (await import("../storage/serverAuth")).getNodeServerProxyAuth as ReturnType<typeof vi.fn>;
+        let answer!: (token: string) => void;
+        auth.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        feed.startEventFeed();
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(feedEvents()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(feedEvents()).toEqual([{ kind: "feed", phase: "connectTimeout", attempt: 0 }]);
+        expect(FakeSocket.instances).toHaveLength(0);
+        // The retry (1 s) signs its own token; the first connection's token, arriving later, builds nothing.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(FakeSocket.instances).toHaveLength(1);
+        answer("jwt-late");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(FakeSocket.instances).toHaveLength(1);
+        // A socket built but not open in time is closed and abandoned the same way; its own `close` records nothing.
+        const ws = FakeSocket.instances[0];
+        await vi.advanceTimersByTimeAsync(9_998);
+        expect(ws.closed).toBe(false);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(ws.closed).toBe(true);
+        expect(feedEvents()).toEqual([
+            { kind: "feed", phase: "connectTimeout", attempt: 0 },
+            { kind: "feed", phase: "connectTimeout", attempt: 1 },
+        ]);
+        // The backoff doubled (2 s), and a connection that opens in time is watched no further for that.
+        await vi.advanceTimersByTimeAsync(1_997);
+        expect(FakeSocket.instances).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(3);
+        expect(FakeSocket.instances).toHaveLength(2);
+        const opened = FakeSocket.instances[1];
+        opened.open();
+        opened.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(opened.closed).toBe(false);
+        expect(feedEvents()).toHaveLength(3);
+        expect(feedEvents()[2]).toEqual({ kind: "feed", phase: "connected", attempt: 2 });
+    });
+
+    it("replaces the connection at once when the page comes back (visible after 30 s hidden, `resume`, `online`; overlapping triggers build one socket), during a retry's wait too, without resetting the backoff", async () => {
+        const ws = await started();
+        ws.open();
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(30_000);
+        ws.silent = true;
+        show("visible");
+        document.dispatchEvent(new Event("resume"));
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(249);
+        expect(FakeSocket.instances).toHaveLength(1);
+        expect(ws.closed).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(FakeSocket.instances).toHaveLength(2);
+        expect(ws.closed).toBe(true);
+        expect(feedEvents()).toEqual([
+            { kind: "feed", phase: "connected", attempt: 0 },
+            { kind: "feed", phase: "resumeReconnect", attempt: 0 },
+        ]);
+        const second = FakeSocket.instances[1];
+        second.open();
+        second.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
+        expect(mocks.reconcileRemote).toHaveBeenCalledTimes(2);
+        // A shorter absence is not a return.
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(29_999);
+        show("visible");
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(FakeSocket.instances).toHaveLength(2);
+
+        // The socket drops (a 1 s retry is pending); `online` connects now, and the retry never fires.
+        second.close();
+        await vi.advanceTimersByTimeAsync(100);
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(250);
+        expect(FakeSocket.instances).toHaveLength(3);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(FakeSocket.instances).toHaveLength(3);
+        expect(feedEvents().slice(2)).toEqual([
+            { kind: "feed", phase: "connected", attempt: 0 },
+            { kind: "feed", phase: "disconnected", attempt: 0, code: undefined },
+            { kind: "feed", phase: "resumeReconnect", attempt: 1 },
+        ]);
+        // The resume did not reset the backoff: the next drop waits the second delay (2 s).
+        FakeSocket.instances[2].close();
+        await vi.advanceTimersByTimeAsync(1_998);
+        expect(FakeSocket.instances).toHaveLength(3);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(4);
+    });
+
+    it("lets a replaced connection's late results do nothing: its listing neither reconciles nor resets the backoff, and its `close` records nothing and schedules no reconnect", async () => {
+        const ws = await started();
+        ws.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        const second = FakeSocket.instances[1];
+        second.open();
+        let answer!: (value: unknown) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        second.frame({ type: "hello", epoch: "E1" });
+        second.silent = true;
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(250);
+        expect(FakeSocket.instances).toHaveLength(3);
+        expect(second.closed).toBe(true);
+        answer(listing);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+        second.emit("close", { code: 1006 });
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(FakeSocket.instances).toHaveLength(3);
+        expect(feedEvents()).toEqual([
+            { kind: "feed", phase: "connectFailed", attempt: 0, code: undefined },
+            { kind: "feed", phase: "connected", attempt: 1 },
+            { kind: "feed", phase: "resumeReconnect", attempt: 1 },
+        ]);
+        // The backoff still stands at its second delay: the third socket's drop waits 2 s.
+        FakeSocket.instances[2].close();
+        await vi.advanceTimersByTimeAsync(1_998);
+        expect(FakeSocket.instances).toHaveLength(3);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(4);
     });
 });
