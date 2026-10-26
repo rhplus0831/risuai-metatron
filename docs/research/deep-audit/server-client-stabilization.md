@@ -45,7 +45,7 @@ All source line references are for the revision above. Test commands and limitat
 | F11 | P2       | **Fixed 2026-10-26.** Suggestion translation effects can apply results to another chat            | Incorrect suggestion labels and wasted work            |
 | F12 | P2       | Rendered streaming repeatedly processes the growing message                                       | Mobile/slow-device responsiveness                      |
 | F13 | P2       | Asset fallback retains original blobs and bypasses thumbnails                                     | Browser memory and bandwidth in fallback environments  |
-| F14 | P3       | PWA foreground reconciliation rewrites unchanged push subscriptions                               | Repeated requests and durable disk writes              |
+| F14 | P3       | **Fixed 2026-10-26.** PWA foreground reconciliation rewrites unchanged push subscriptions         | Repeated requests and durable disk writes              |
 | F15 | P2       | An unanswered job-create request has no durable idempotent identity                               | A retry can generate an additional reply               |
 | F16 | P2       | Command follow-up work ends up owned by the page again                                            | Remaining work disappears after reload/failure         |
 | F17 | P2       | Streamed request bodies are buffered before general-route authentication                          | Unnecessary pre-authentication memory and work         |
@@ -249,6 +249,8 @@ The [push settings effect](../../../src/lib/Others/PushPrompt.svelte#L24), boot 
 **Existing protection:** permission, availability, setting and opt-out gates; one start per tab; serialization/locking. Serialization does not deduplicate repeated successful reconciliations. The browser's `getSubscription()` is a local API call; the PUT is the relevant application request.
 
 **Recommendation:** deduplicate reconciliation in flight and suppress unchanged registration for a bounded interval keyed by server public key and subscription identity. Make unchanged registration a server no-op unless an intentional last-seen refresh interval elapsed. Preserve recovery after server key rotation and subscription deletion.
+
+**Fixed 2026-10-26** (commit `fix(server): compress the revision listing, bound vector eviction, and stop rewriting unchanged push registrations`): `reconcilePush` skips the PUT while this browser's last successful registration (localStorage `risu-push-registered`: endpoint, keys, server key, time) matches and is under 24 h old (`PUSH_REGISTRATION_REFRESH_MS`), and reconciliations still waiting for the push queue fold into one (an enable or a disable ends the fold); an enable click always registers, and a failed PUT, a disable, an unsubscribe, or the server removal of that endpoint clears the stamp. The server's `register` answers an unchanged healthy entry refreshed under 24 h ago without writing the file or moving its stamp. A new endpoint or a new server key registers at once. Accepted bound: the client cannot see the server's list, so a subscription the server dropped (a delivery 404/410, the 50-entry cap) while the browser keeps the same endpoint and keys is registered again at the first sync after the stamp is 24 h old, or at once by turning the browser off and on; an already-open page still sees a server key rotation only after a reload (unchanged).
 
 ### F15 — An unanswered job-create request has no durable idempotent identity
 

@@ -3,11 +3,15 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import webPush from "web-push";
 import type { PUSH_DROP_REASONS, PUSH_SERVICES } from "../../../shared/diagnostics.ts";
-import { COMPLETION_NOTIFICATION_TAG, type CompletionNotification } from "../../../shared/notifications.ts";
+import {
+    COMPLETION_NOTIFICATION_TAG,
+    PUSH_REGISTRATION_REFRESH_MS,
+    type CompletionNotification,
+} from "../../../shared/notifications.ts";
 import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 
-/** At most this many browsers are subscribed; registering one more drops the least recently registered. */
+/** At most this many browsers are subscribed; registering one more drops the least recently refreshed. */
 export const MAX_PUSH_SUBSCRIPTIONS = 50;
 /** Completions waiting behind the one being delivered; a completion past this is dropped (a later one of its chat replaces its notice anyway). */
 const MAX_PENDING_SENDS = 4;
@@ -49,7 +53,7 @@ export type PushRegistration = "ok" | "invalid" | "disabled" | "unsaved";
 export type PushService = {
     /** The VAPID public key browsers subscribe with, or null when push is disabled. */
     publicKey(): string | null;
-    /** Stores a browser's `PushSubscription.toJSON()`. Nothing changes unless the file was written. */
+    /** Stores a browser's `PushSubscription.toJSON()`; an unchanged, healthy registration within the refresh interval writes nothing. */
     register(subscription: unknown): PushRegistration;
     /** `register(...) === "ok"`. */
     upsert(subscription: unknown): boolean;
@@ -302,9 +306,11 @@ export function createPushService(options: {
     transport?: PushTransport;
     /** The diagnostics journal. */
     diagnostics?: DiagnosticsRecorder;
+    now?: () => number;
 }): PushService {
     const env = options.env ?? process.env;
     const transport = options.transport ?? webPush;
+    const now = options.now ?? Date.now;
     const serverDir = path.join(options.savePath, "server");
     mkdirDurableSync(serverDir);
     const subscriptionsFile = path.join(serverDir, SUBSCRIPTIONS_FILE);
@@ -366,6 +372,9 @@ export function createPushService(options: {
                         ...parsed,
                         failureCount:
                             isPlainObject(row) && Number.isInteger(row.failureCount) ? (row.failureCount as number) : 0,
+                        ...(isPlainObject(row) && typeof row.lastError === "string"
+                            ? { lastError: row.lastError }
+                            : {}),
                         updatedAt: isPlainObject(row) && Number.isFinite(row.updatedAt) ? (row.updatedAt as number) : 0,
                     });
                 }
@@ -509,11 +518,23 @@ export function createPushService(options: {
         if (!known()) {
             return "unsaved";
         }
+        const at = now();
+        const existing = list().find((entry) => entry.endpoint === parsed.endpoint);
+        if (
+            existing &&
+            existing.keys.p256dh === parsed.keys.p256dh &&
+            existing.keys.auth === parsed.keys.auth &&
+            existing.expirationTime === parsed.expirationTime &&
+            existing.failureCount === 0 &&
+            existing.lastError === undefined &&
+            at - existing.updatedAt >= 0 &&
+            at - existing.updatedAt < PUSH_REGISTRATION_REFRESH_MS &&
+            !diskUncertain
+        ) {
+            return "ok";
+        }
         const others = list().filter((entry) => entry.endpoint !== parsed.endpoint);
-        const next = [{ ...parsed, failureCount: 0, updatedAt: Date.now() }, ...others].slice(
-            0,
-            MAX_PUSH_SUBSCRIPTIONS,
-        );
+        const next = [{ ...parsed, failureCount: 0, updatedAt: at }, ...others].slice(0, MAX_PUSH_SUBSCRIPTIONS);
         return commit(next) ? "ok" : "unsaved";
     }
 

@@ -11,6 +11,7 @@ import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import {
     COMPLETION_NOTIFICATION_TAG,
     completionNotificationTag,
+    PUSH_REGISTRATION_REFRESH_MS,
     type CompletionNotification,
 } from "../../../shared/notifications.ts";
 import { createPushService, MAX_PUSH_SUBSCRIPTIONS, type PushTransport } from "../push/pushService.ts";
@@ -229,6 +230,103 @@ describe("the VAPID keys", () => {
 });
 
 describe("the subscriptions", () => {
+    it("does not write or refresh a healthy identical registration until it is 24 hours old", () => {
+        const save = savePath();
+        const started = 1_900_000_000_000;
+        let now = started;
+        const options = { savePath: save, env: {}, transport: fakeTransport().transport, now: () => now };
+        let push = createPushService(options);
+        const sub = subscription();
+        const file = serverFile(save, "push_subscriptions.json");
+        expect(PUSH_REGISTRATION_REFRESH_MS).toBe(24 * 60 * 60 * 1_000);
+        expect(push.register(sub)).toBe("ok");
+        const original = readFileSync(file, "utf8");
+        expect(readJson(file).subscriptions[0].updatedAt).toBe(started);
+        push.close();
+        push = createPushService(options);
+        const write = vi.spyOn(fs, "writeFileSync");
+        try {
+            now = started + 24 * 60 * 60 * 1_000 - 1;
+            expect(push.register(sub)).toBe("ok");
+            expect(write).not.toHaveBeenCalled();
+            expect(readFileSync(file, "utf8")).toBe(original);
+            now++;
+            expect(push.register(sub)).toBe("ok");
+            expect(write).toHaveBeenCalledOnce();
+            expect(readJson(file).subscriptions).toEqual([{ ...sub, failureCount: 0, updatedAt: now }]);
+        } finally {
+            write.mockRestore();
+            push.close();
+        }
+    });
+
+    it("rewrites changed subscription fields and resets unhealthy registrations even within 24 hours", () => {
+        const save = savePath();
+        const started = 1_900_000_000_000;
+        const options = { savePath: save, env: {}, transport: fakeTransport().transport, now: () => started + 1 };
+        // Create the key and directory through the service before seeding persisted registrations.
+        createPushService(options).close();
+        const sub = subscription();
+        const otherKeys = subscription().keys;
+        const file = serverFile(save, "push_subscriptions.json");
+        for (const [label, stored, incoming] of [
+            ["p256dh", {}, { ...sub, keys: { ...sub.keys, p256dh: otherKeys.p256dh } }],
+            ["auth", {}, { ...sub, keys: { ...sub.keys, auth: otherKeys.auth } }],
+            ["expirationTime", {}, { ...sub, expirationTime: started + 60_000 }],
+            ["failureCount", { failureCount: 1 }, sub],
+            ["lastError", { lastError: "HTTP 500" }, sub],
+        ] as const) {
+            writeFileSync(
+                file,
+                JSON.stringify({
+                    version: 1,
+                    subscriptions: [{ ...sub, updatedAt: started, failureCount: 0, ...stored }],
+                }),
+            );
+            const push = createPushService(options);
+            const write = vi.spyOn(fs, "writeFileSync");
+            try {
+                expect(push.register(incoming), label).toBe("ok");
+                expect(write, label).toHaveBeenCalledOnce();
+                expect(readJson(file).subscriptions, label).toEqual([
+                    { ...incoming, failureCount: 0, updatedAt: started + 1 },
+                ]);
+            } finally {
+                write.mockRestore();
+                push.close();
+            }
+        }
+    });
+
+    it("stores a recent identical subscription again after delivery removal or DELETE", async () => {
+        const save = savePath();
+        let now = 1_900_000_000_000;
+        let status = 410;
+        const { transport } = fakeTransport(() => httpError(status));
+        const push = createPushService({ savePath: save, env: {}, transport, now: () => now });
+        const sub = subscription();
+        const file = serverFile(save, "push_subscriptions.json");
+        try {
+            expect(push.register(sub)).toBe("ok");
+            for (const removal of [404, 410, "DELETE"] as const) {
+                if (removal === "DELETE") {
+                    expect(push.remove(sub.endpoint)).toBe(true);
+                } else {
+                    status = removal;
+                    await push.send(NOTIFICATION);
+                }
+                expect(readJson(file).subscriptions, String(removal)).toEqual([]);
+                now++;
+                expect(push.register(sub), String(removal)).toBe("ok");
+                expect(readJson(file).subscriptions, String(removal)).toEqual([
+                    { ...sub, failureCount: 0, updatedAt: now },
+                ]);
+            }
+        } finally {
+            push.close();
+        }
+    });
+
     it("rewrites a removal after a failed commit whose rename already landed", () => {
         const save = savePath();
         const push = createPushService({ savePath: save, env: {}, transport: fakeTransport().transport });

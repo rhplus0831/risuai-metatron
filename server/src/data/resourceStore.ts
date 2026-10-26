@@ -2335,7 +2335,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * compatibility rule in `docs/structure/persistence.md`).
  */
 function initialize(db: DatabaseSync, file: string): string {
-    db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`);
+    db.exec(
+        `PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`,
+    );
     const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     if (version === 0) {
         db.exec("BEGIN IMMEDIATE");

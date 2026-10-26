@@ -3,9 +3,11 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
+import { createRequestHistory } from "../data/requestHistory.ts";
+import { createVectorCache } from "../data/vectorCache.ts";
 import {
     createResourceStore,
     ResourceBatchConflictError,
@@ -46,6 +48,39 @@ const conflictWith = (fn: () => unknown, current: string | null, label: string) 
     expect(error, label).toBeInstanceOf(ResourceConflictError);
     expect((error as ResourceConflictError).current, label).toBe(current);
 };
+
+describe("connection durability", () => {
+    it("explicitly selects FULL durability for resources while history and vectors use NORMAL", () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-durability-"));
+        dirs.push(dir);
+        const exec = DatabaseSync.prototype.exec;
+        for (const [name, initial, expected, create] of [
+            ["resources", "NORMAL", 2, (file: string) => createResourceStore({ file, kinds })],
+            ["history", "FULL", 1, (file: string) => createRequestHistory({ file })],
+            ["vectors", "FULL", 1, (file: string) => createVectorCache({ file })],
+        ] as const) {
+            let connection: DatabaseSync | undefined;
+            const spy = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+                this: DatabaseSync,
+                sql: string,
+            ) {
+                if (!connection) {
+                    connection = this;
+                    exec.call(this, `PRAGMA synchronous = ${initial}`);
+                }
+                return exec.call(this, sql);
+            });
+            let store: { close(): void } | undefined;
+            try {
+                store = create(path.join(dir, `${name}.sqlite`));
+                expect(connection?.prepare("PRAGMA synchronous").get(), name).toEqual({ synchronous: expected });
+            } finally {
+                spy.mockRestore();
+                store?.close();
+            }
+        }
+    });
+});
 
 describe("revision tokens", () => {
     it("carries the epoch, incarnation, and write count, and refuses tokens from another epoch or incarnation", () => {

@@ -259,6 +259,8 @@ describe("subscription serialization", () => {
             syncSent.resolve();
             return finishSync.promise;
         });
+        // A sync that must register again (its registration is not fresh), so it holds the lock on its PUT.
+        localStorage.removeItem("risu-push-registered");
         const sync = syncing.reconcilePush();
         await syncSent.promise;
 
@@ -329,6 +331,158 @@ describe("subscription serialization", () => {
         expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2);
         expect(state(module)).toMatchObject({ subscribed: true, optedOut: false, error: null });
     });
+});
+
+describe("registration refresh", () => {
+    const REGISTERED = "risu-push-registered";
+    const DAY = 24 * 60 * 60 * 1_000;
+    const START = 1_900_000_000_000;
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.setSystemTime(START);
+    });
+
+    it("reuses a successful registration across reloads for less than 24 hours and always PUTs on an enable click", async () => {
+        FakeNotification.permission = "granted";
+        await boot();
+        expect(calls("PUT")).toHaveLength(1);
+        const stamp = localStorage.getItem(REGISTERED);
+        expect(JSON.parse(stamp!)).toEqual({
+            endpoint: current!.endpoint,
+            p256dh: "p",
+            auth: "a",
+            serverKey: KEY,
+            at: START,
+        });
+        vi.resetModules();
+        const module = await boot();
+        vi.setSystemTime(START + DAY - 1);
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(1);
+        expect(localStorage.getItem(REGISTERED)).toBe(stamp);
+        expect(state(module).subscribed).toBe(true);
+        vi.setSystemTime(START + DAY);
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(2);
+        expect(JSON.parse(localStorage.getItem(REGISTERED)!).at).toBe(START + DAY);
+        await expect(module.enablePushOnThisBrowser()).resolves.toBe(true);
+        expect(calls("PUT")).toHaveLength(3);
+    });
+
+    it("registers changed endpoints, subscription keys, and server keys despite a fresh stamp", async () => {
+        FakeNotification.permission = "granted";
+        let module = await boot();
+        const endpoint = "https://fcm.googleapis.com/fcm/send/replacement";
+        current = fakeSubscription(endpoint, KEY_BYTES);
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(2);
+        for (const [index, keys] of [
+            { p256dh: "new-p", auth: "a" },
+            { p256dh: "new-p", auth: "new-a" },
+        ].entries()) {
+            current.toJSON = () => ({ endpoint, expirationTime: null, keys });
+            await module.reconcilePush();
+            expect(calls("PUT")).toHaveLength(3 + index);
+            expect(calls("PUT").at(-1)?.body).toEqual({ subscription: { endpoint, expirationTime: null, keys } });
+        }
+        // A reload learns a new server key; the browser already has a subscription for it.
+        // Keep the endpoint and subscription keys equal so only serverKey invalidates the stamp.
+        server.publicKey = base64url(OLD_KEY_BYTES);
+        current.options = fakeSubscription(endpoint, OLD_KEY_BYTES).options;
+        vi.resetModules();
+        module = await boot();
+        expect(calls("PUT")).toHaveLength(5);
+        expect(calls("DELETE")).toHaveLength(0);
+        expect(JSON.parse(localStorage.getItem(REGISTERED)!).serverKey).toBe(server.publicKey);
+        expect(state(module).subscribed).toBe(true);
+    });
+
+    it("clears registration evidence after a failed PUT or disable so reconciliation registers again", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        server.put = 503;
+        await expect(module.enablePushOnThisBrowser()).resolves.toBe(false);
+        expect(calls("PUT")).toHaveLength(2);
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+        server.put = 204;
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(3);
+        expect(localStorage.getItem(REGISTERED)).not.toBeNull();
+        server.delete = 503;
+        await module.disablePushOnThisBrowser();
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+        // Another tab removes the browser opt-out. The fake browser kept the same subscription.
+        localStorage.removeItem(BROWSER_OFF);
+        server.delete = 204;
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(4);
+        expect(state(module).subscribed).toBe(true);
+    });
+
+    it("folds reconciliations waiting for the push lock into one run even when its PUT fails", async () => {
+        const module = await boot();
+        FakeNotification.permission = "granted";
+        server.put = 503;
+        const entered = deferred();
+        const release = deferred();
+        Object.defineProperty(navigator, "locks", {
+            configurable: true,
+            value: {
+                request: async (_name: string, task: () => Promise<unknown>) => {
+                    entered.resolve();
+                    await release.promise;
+                    return task();
+                },
+            },
+        });
+        const first = module.reconcilePush();
+        await entered.promise;
+        const rest = [module.reconcilePush(), module.reconcilePush()];
+        release.resolve();
+        await Promise.all([first, ...rest]);
+        expect(calls("PUT")).toHaveLength(1);
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+    });
+
+    it.each(["enable", "disable"] as const)(
+        "keeps a reconciliation queued after %s separate from one queued before it",
+        async (action) => {
+            const module = await boot();
+            FakeNotification.permission = "granted";
+            server.put = 503;
+            server.delete = 503;
+            const fetch = deps.authFetch.getMockImplementation()!;
+            deps.authFetch.mockImplementation(async (path, init) => {
+                const response = await fetch(path, init);
+                if (init?.method === "DELETE") {
+                    server.delete = 204;
+                }
+                return response;
+            });
+            const entered = deferred();
+            const release = deferred();
+            Object.defineProperty(navigator, "locks", {
+                configurable: true,
+                value: {
+                    request: async (_name: string, task: () => Promise<unknown>) => {
+                        entered.resolve();
+                        await release.promise;
+                        return task();
+                    },
+                },
+            });
+            const before = module.reconcilePush();
+            await entered.promise;
+            const change = action === "enable" ? module.enablePushOnThisBrowser() : module.disablePushOnThisBrowser();
+            const after = module.reconcilePush();
+            release.resolve();
+            await Promise.all([before, change, after]);
+            expect(requests.filter(({ method }) => method !== "GET").map(({ method }) => method)).toEqual(
+                action === "enable" ? ["PUT", "PUT", "PUT"] : ["PUT", "DELETE", "DELETE"],
+            );
+            expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
+        },
+    );
 });
 
 describe("startPushNotifications", () => {

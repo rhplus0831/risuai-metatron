@@ -266,7 +266,7 @@ export function registerResourceRoutes(
         if (denied) {
             return denied;
         }
-        return c.json(store.listRevisions());
+        return compressedJson(c, store.listRevisions());
     });
 
     app.get("/api/resources/:kind", limiter, async (c) => {

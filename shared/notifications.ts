@@ -13,6 +13,8 @@ export const COMPLETION_NOTIFICATION_TAG = "risuai-chat-completion";
 export const PUSH_KEY_PATH = "/api/push/key";
 /** `PUT { subscription }` registers this browser; `DELETE { endpoint }` removes it. */
 export const PUSH_SUBSCRIPTION_PATH = "/api/push/subscription";
+/** An unchanged push registration is refreshed after this interval on both the client and server. */
+export const PUSH_REGISTRATION_REFRESH_MS = 24 * 60 * 60 * 1000;
 export const COMPLETION_NOTIFICATION_TITLE = "Risuai";
 export const NOTIFICATION_ICON = "/logo_192.png";
 /** `{name}` in the default sentence is cut to this many graphemes (plus `…`). */

@@ -58,12 +58,12 @@ path; P3 is smaller.
 | TJ02 | P2       | jobs    | Transform inputs have no revision fence; the cache omits history and viewport             | Server/client correctness     |
 | TJ03 | P2       | jobs    | A transform miss loads 23 kinds plus the whole chat; coarse keys invalidate every row     | Server performance            |
 | ST01 | P2       | traffic | Patches stop at large nested fields; ordinary plugins and plugin storage have no ids      | Excessive traffic             |
-| ST03 | P2       | traffic | Every reconnect downloads the complete, uncompressed revision listing                     | Excessive traffic             |
+| ST03 | P2       | traffic | Fixed 2026-10-26 (compression line): reconnects downloaded the listing uncompressed       | Excessive traffic             |
 | ST04 | P2       | traffic | Feed fallbacks expand a small change into a summary collection or a whole chat            | Excessive traffic             |
 | ST05 | P2       | traffic | A remounted completed row still needs a transform round trip, cache hit or not            | Structural latency            |
 | ST02 | P2       | traffic | Boot hydrates characters whole on a miss; `lastInteraction` invalidates the cached record | Structural traffic            |
 | SD03 | P2       | server  | Feed patches are capped per record, not per frame or per socket send                      | Server performance            |
-| SD02 | P2       | server  | Vector cache eviction deletes thousands of rows in separate autocommits                   | Server performance            |
+| SD02 | P2       | server  | Fixed 2026-10-26: vector cache eviction deleted thousands of rows in separate autocommits | Server performance            |
 | SD04 | P2       | server  | User checkpoints rescan and rehash the unchanged chat; pruning sweeps the global table    | Server performance            |
 | TJ05 | P2       | jobs    | Transform snapshot accounting excludes the retained scope                                 | Server memory                 |
 | TJ06 | P2       | jobs    | A lost plugin-provider callback holds the chat and the client's lane for up to 30 min     | Server/client (mobile)        |
@@ -330,6 +330,13 @@ counts the next frame. Preserve publication order and the lock relationship if f
 ([server-data-aux-probe.results.json](probes/server-data-aux-probe.results.json)). Recommendation: batch deletes in
 one transaction with a bounded budget per call.
 
+**Fixed 2026-10-26** (Deep Audit Fixes plan, commit `fix(server): compress the revision listing, bound vector eviction, and stop rewriting unchanged push registrations`): each `set` evicts at most 256 rows (the
+`trimRowsPerSet` option) in the same transaction as its insert and continues toward 90% on later inserts; a vector
+that still cannot fit after the budget is not stored, so no write ends above the bound; startup trims an over-bound
+file to 90% in batches before serving. Re-measured with the same shape (21,845 float64 vectors of 1,536 dimensions,
+just under 256 MiB; Node 24.21.0): before, one insert deleted 2,186 rows in **265 ms**; after, each insert deleted at
+most 256 rows in **20–28 ms**, the cache reached 90% after nine inserts, and later inserts took **0.4 ms**.
+
 ### SD04 — User checkpoints rescan the unchanged chat; pruning sweeps the global page table
 
 **Measured and confirmed. P2.**
@@ -420,6 +427,12 @@ Unchanged revisions trigger no reads, so an unchanged resume does not reread cha
 
 Recommendation: compress the listing now; then an epoch-scoped change cursor with bounded replay and tombstones, and
 an explicit full-reconcile fallback; a listing digest can answer "nothing changed" cheaply.
+
+**Compression fixed 2026-10-26** (Deep Audit Fixes plan, commit `fix(server): compress the revision listing, bound vector eviction, and stop rewriting unchanged push registrations`): the route answers through
+`compressedJson`. Measured through the real route with the probe's shape (300 characters, 3,000 chats, 322 records;
+Node 24.21.0): **538,972 bytes** before for every `Accept-Encoding`; after, **81,504 bytes** with zstd (Chromium's
+`gzip, deflate, br, zstd`), **106,189 bytes** with gzip (`gzip, deflate, br`), and 538,972 bytes for identity. The
+change cursor and a listing digest stay open (Boot bytes plan).
 
 ### ST04 — Feed fallbacks expand a small change into a collection or a whole chat
 
@@ -548,7 +561,8 @@ explicit tracked read, is the exception.
   `synchronous`; the inspected Node 24.21.0 / SQLite 3.53.4 build defaults to FULL (compile options
   `DEFAULT_SYNCHRONOUS=2`, `DEFAULT_WAL_SYNCHRONOUS=2`). No acknowledged write returns before its sync. Setting the
   mode explicitly would remove the dependency on the build default. Request history and the vector cache choose
-  NORMAL on purpose.
+  NORMAL on purpose. **Set explicitly 2026-10-26** (commit `fix(server): compress the revision listing, bound vector eviction, and stop rewriting unchanged push registrations`): the resource store connection runs
+  `PRAGMA synchronous = FULL`, pinned in `resourceStore.test.ts`.
 - **Feed reconnect window.** `hello` is built and the socket registered synchronously before the client can request
   the listing ([events.ts:116](../../../server/src/routes/events.ts#L116)); commits after attachment arrive on the feed,
   commits before are in the listing; revision comparisons suppress older updates and patches need the exact base. No

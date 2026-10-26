@@ -3,6 +3,7 @@ import {
     isCompletionNotificationTag,
     NOTIFICATION_ICON,
     PUSH_KEY_PATH,
+    PUSH_REGISTRATION_REFRESH_MS,
     PUSH_SUBSCRIPTION_PATH,
 } from "../../../shared/notifications.ts";
 import { language } from "../../lang";
@@ -37,7 +38,7 @@ export type PushAvailability =
 export type PushBrowserState = {
     availability: PushAvailability;
     permission: NotificationPermission | "unsupported";
-    /** The server holds this browser's current subscription. */
+    /** This browser's current subscription was registered within the refresh interval. */
     subscribed: boolean;
     /** This browser was turned off in the settings: no automatic subscription. */
     optedOut: boolean;
@@ -55,7 +56,55 @@ const OPTED_OUT_KEY = "risu-push-browser-off";
 const PENDING_REMOVAL_KEY = "risu-push-pending-removal";
 /** Set when the browser kept its subscription at a disable: unsubscribed again on the next sync. */
 const PENDING_UNSUBSCRIBE_KEY = "risu-push-pending-unsubscribe";
+const REGISTERED_KEY = "risu-push-registered";
 const REGISTRATION_TIMEOUT_MS = 10_000;
+
+type RegistrationStamp = {
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    serverKey: string;
+    at: number;
+};
+
+/** Registration evidence is read fresh inside the push lock; it never uses the per-tab flag overrides. */
+function readRegistrationStamp(): RegistrationStamp | null {
+    try {
+        const value: unknown = JSON.parse(localStorage.getItem(REGISTERED_KEY) ?? "null");
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            return null;
+        }
+        const stamp = value as Partial<RegistrationStamp>;
+        if (
+            typeof stamp.endpoint !== "string" ||
+            !stamp.endpoint ||
+            typeof stamp.p256dh !== "string" ||
+            !stamp.p256dh ||
+            typeof stamp.auth !== "string" ||
+            !stamp.auth ||
+            typeof stamp.serverKey !== "string" ||
+            !stamp.serverKey ||
+            typeof stamp.at !== "number" ||
+            !Number.isFinite(stamp.at)
+        ) {
+            return null;
+        }
+        return stamp as RegistrationStamp;
+    } catch {
+        return null;
+    }
+}
+
+/** Called only inside the push lock. A failed storage write leaves no in-memory evidence to reuse. */
+function writeRegistrationStamp(stamp: RegistrationStamp | null) {
+    try {
+        if (stamp === null) {
+            localStorage.removeItem(REGISTERED_KEY);
+        } else {
+            localStorage.setItem(REGISTERED_KEY, JSON.stringify(stamp));
+        }
+    } catch {}
+}
 
 /**
  * A flag whose storage write failed (blocked storage, a full quota) is kept here for this page and
@@ -143,6 +192,8 @@ let started = false;
 let serverKey: string | null = null;
 /** Enable, disable, and sync run one at a time, across tabs when Web Locks are available. */
 let queue: Promise<unknown> = Promise.resolve();
+/** The last contiguous reconciliation, only while it is waiting for the queue or Web Lock. */
+let queuedReconcile: Promise<void> | null = null;
 
 function serial<T>(task: () => Promise<T>): Promise<T> {
     const locked = async (): Promise<T> => (navigator.locks ? navigator.locks.request("risu-push", task) : task());
@@ -213,6 +264,9 @@ async function removeOnServer(endpoint: string): Promise<void> {
     if (!response.ok) {
         throw new Error(language.pushNotifications.removalFailed(response.status));
     }
+    if (readRegistrationStamp()?.endpoint === endpoint) {
+        writeRegistrationStamp(null);
+    }
 }
 
 /** Retries a removal that failed before (a disable while the server was away). */
@@ -257,9 +311,12 @@ async function flushPendingUnsubscribe(optedOut: boolean) {
         if (readStored(OPTED_OUT_KEY) !== "1" || !readStored(PENDING_UNSUBSCRIBE_KEY)) {
             return;
         }
-        if (subscription && !(await unsubscribed(subscription))) {
-            update({ error: language.pushNotifications.unsubscribeFailed });
-            return;
+        if (subscription) {
+            writeRegistrationStamp(null);
+            if (!(await unsubscribed(subscription))) {
+                update({ error: language.pushNotifications.unsubscribeFailed });
+                return;
+            }
         }
         writeStored(PENDING_UNSUBSCRIBE_KEY, null);
     } catch {}
@@ -270,7 +327,7 @@ async function flushPendingUnsubscribe(optedOut: boolean) {
  * old server key) first. Needs the permission granted; creating a subscription may need a click on
  * some browsers, so a failure here is reported, not fatal.
  */
-async function ensureSubscribed(): Promise<void> {
+async function ensureSubscribed(force: boolean): Promise<void> {
     const key = await loadServerKey();
     if (!key) {
         update({ subscribed: false });
@@ -282,6 +339,7 @@ async function ensureSubscribed(): Promise<void> {
     }
     let subscription = await registration.pushManager.getSubscription();
     if (subscription && !sameKey(subscription, key)) {
+        writeRegistrationStamp(null);
         const stale = subscription.endpoint;
         const removed = await unsubscribed(subscription);
         await removeOnServer(stale).catch(() => writeStored(PENDING_REMOVAL_KEY, stale));
@@ -295,13 +353,40 @@ async function ensureSubscribed(): Promise<void> {
         userVisibleOnly: true,
         applicationServerKey: decodeKey(key),
     });
-    const response = await authFetch(PUSH_SUBSCRIPTION_PATH, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ subscription: subscription.toJSON() }),
-    });
-    if (!response.ok) {
-        throw new Error(language.pushNotifications.registrationRefused(response.status));
+    const serialized = subscription.toJSON();
+    const endpoint = serialized.endpoint;
+    const p256dh = serialized.keys?.p256dh;
+    const auth = serialized.keys?.auth;
+    const identity = endpoint && p256dh && auth ? { endpoint, p256dh, auth, serverKey: key } : null;
+    const stamp = readRegistrationStamp();
+    const age = stamp ? Date.now() - stamp.at : -1;
+    if (
+        !force &&
+        identity &&
+        stamp &&
+        stamp.endpoint === identity.endpoint &&
+        stamp.p256dh === identity.p256dh &&
+        stamp.auth === identity.auth &&
+        stamp.serverKey === identity.serverKey &&
+        age >= 0 &&
+        age < PUSH_REGISTRATION_REFRESH_MS
+    ) {
+        update({ subscribed: true, error: null });
+        return;
+    }
+    try {
+        const response = await authFetch(PUSH_SUBSCRIPTION_PATH, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ subscription: serialized }),
+        });
+        if (!response.ok) {
+            throw new Error(language.pushNotifications.registrationRefused(response.status));
+        }
+        writeRegistrationStamp(identity ? { ...identity, at: Date.now() } : null);
+    } catch (error) {
+        writeRegistrationStamp(null);
+        throw error;
     }
     update({ subscribed: true, error: null });
 }
@@ -319,7 +404,16 @@ export function reconcilePush(): Promise<void> {
     if (!started) {
         return Promise.resolve();
     }
-    return serial(async () => {
+    if (queuedReconcile) {
+        return queuedReconcile;
+    }
+    const releaseFold = () => {
+        if (queuedReconcile === run) {
+            queuedReconcile = null;
+        }
+    };
+    const run: Promise<void> = serial(async () => {
+        releaseFold();
         const permission = currentPermission();
         let optedOut = readStored(OPTED_OUT_KEY) === "1";
         update({ permission, optedOut, promptDismissed: readStored(PROMPT_DISMISSED_KEY) === "1" });
@@ -342,11 +436,15 @@ export function reconcilePush(): Promise<void> {
             return;
         }
         try {
-            await ensureSubscribed();
+            await ensureSubscribed(false);
         } catch (error) {
             update({ subscribed: false, error: describe(error) });
         }
     });
+    queuedReconcile = run;
+    // Also release a lock request that failed before the task could start.
+    void run.then(releaseFold, releaseFold);
+    return run;
 }
 
 /**
@@ -365,6 +463,7 @@ export function enablePushOnThisBrowser(): Promise<boolean> {
         Notification.permission === "default"
             ? Notification.requestPermission()
             : Promise.resolve(Notification.permission);
+    queuedReconcile = null;
     return serial(async () => {
         update({ busy: true, promptDismissed: true, error: null });
         try {
@@ -379,7 +478,7 @@ export function enablePushOnThisBrowser(): Promise<boolean> {
             if (get(pushBrowserState).availability !== "ok") {
                 return false;
             }
-            await ensureSubscribed();
+            await ensureSubscribed(true);
             return get(pushBrowserState).subscribed;
         } catch (error) {
             update({ subscribed: false, error: describe(error) });
@@ -395,7 +494,9 @@ export function enablePushOnThisBrowser(): Promise<boolean> {
  * its subscription is reported in `error` and unsubscribed again at the next sync.
  */
 export function disablePushOnThisBrowser(): Promise<void> {
+    queuedReconcile = null;
     return serial(async () => {
+        writeRegistrationStamp(null);
         writeStored(OPTED_OUT_KEY, "1");
         update({ busy: true, optedOut: true, error: null });
         try {

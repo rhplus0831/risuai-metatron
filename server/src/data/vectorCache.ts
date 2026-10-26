@@ -21,9 +21,11 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
  * numbers) is stored as float64 and comes back as a `number[]`, so a dot product is the one the
  * provider's numbers give.
  *
- * The size bound is on the vector bytes (`maxBytes`, 256 MiB by default): when a write passes it, the
- * rows used longest ago are removed until 90% of it is left. The file itself (pages, the index, the
- * WAL) is larger than that sum. A vector over `MAX_ENTRY_BYTES` is not stored.
+ * The size bound is on the vector bytes (`maxBytes`, 256 MiB by default). A write that would exceed
+ * it starts eviction toward 90%: each set removes at most 256 rows used longest ago in the same
+ * transaction as its insert, continuing on later sets until the target is reached. An insert that
+ * still cannot fit is skipped. Startup trims to 90% in bounded transactions before serving. The file
+ * itself (pages, the index, the WAL) is larger than that sum. A vector over `MAX_ENTRY_BYTES` is not stored.
  */
 export type CachedVector = number[] | Float32Array;
 
@@ -57,6 +59,8 @@ export const MAX_ENTRY_BYTES = 1024 * 1024;
 const TOUCH_AFTER_MS = 60 * 1000;
 /** A failed emptying is tried again no sooner than this. */
 const CLEAR_RETRY_MS = 1000;
+/** The maximum number of rows evicted in one write transaction. */
+const TRIM_ROWS_PER_SET = 256;
 
 const KIND_FLOAT32 = 0;
 const KIND_FLOAT64 = 1;
@@ -66,8 +70,18 @@ export function vectorCacheKey(key: string): string {
     return createHash("sha256").update(Buffer.from(key, "utf16le")).digest("hex");
 }
 
-export function createVectorCache(options: { file: string; maxBytes?: number; now?: () => number }): VectorCache {
+export function createVectorCache(options: {
+    file: string;
+    maxBytes?: number;
+    now?: () => number;
+    trimRowsPerSet?: number;
+}): VectorCache {
     const maxBytes = options.maxBytes ?? VECTOR_CACHE_MAX_BYTES;
+    const trimRowsPerSet =
+        Number.isSafeInteger(options.trimRowsPerSet) && options.trimRowsPerSet! > 0
+            ? options.trimRowsPerSet!
+            : TRIM_ROWS_PER_SET;
+    const trimTarget = maxBytes * 0.9;
     const now = options.now ?? Date.now;
     let db: DatabaseSync | null = null;
     let statements: {
@@ -83,6 +97,7 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
         setEpoch: StatementSync;
     } | null = null;
     let totalBytes = 0;
+    let trimming = false;
     let generation = 0;
     let warned = false;
     /** The rows must be removed before anything is served or stored (a clear that has not succeeded yet). */
@@ -118,7 +133,7 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
             put: db.prepare(
                 "INSERT OR REPLACE INTO vectors (key, kind, vector, bytes, used_at) VALUES (?, ?, ?, ?, ?)",
             ),
-            oldest: db.prepare("SELECT key, bytes FROM vectors ORDER BY used_at ASC LIMIT 256"),
+            oldest: db.prepare("SELECT key, bytes FROM vectors ORDER BY used_at ASC LIMIT ?"),
             remove: db.prepare("DELETE FROM vectors WHERE key = ?"),
             clear: db.prepare("DELETE FROM vectors"),
             count: db.prepare("SELECT COUNT(*) AS rows, COALESCE(SUM(bytes), 0) AS bytes FROM vectors"),
@@ -126,7 +141,7 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
             setEpoch: db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('epoch', ?)"),
         };
         totalBytes = Number((statements.count.get() as { bytes: number }).bytes);
-        trim();
+        trimAtStartup();
     } catch (error) {
         warn(error);
         try {
@@ -163,6 +178,7 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
                 throw error;
             }
             totalBytes = 0;
+            trimming = false;
             dirty = false;
             return true;
         } catch (error) {
@@ -172,24 +188,40 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
         }
     }
 
-    /** Removes the rows used longest ago until the vector bytes are within 90% of the bound. */
-    function trim(): void {
-        if (!statements || totalBytes <= maxBytes) {
+    /** Before serving, a lowered bound is reached in transactions of at most the row budget each. */
+    function trimAtStartup(): void {
+        if (!db || !statements || totalBytes <= maxBytes) {
             return;
         }
-        const target = maxBytes * 0.9;
-        while (totalBytes > target) {
-            const rows = statements.oldest.all() as { key: string; bytes: number }[];
-            if (rows.length === 0) {
-                totalBytes = 0;
-                return;
-            }
-            for (const row of rows) {
-                statements.remove.run(row.key);
-                totalBytes -= Number(row.bytes);
-                if (totalBytes <= target) {
-                    break;
+        while (totalBytes > trimTarget) {
+            let nextBytes = totalBytes;
+            let deletedRows = 0;
+            db.exec("BEGIN IMMEDIATE");
+            try {
+                const rows = statements.oldest.all(trimRowsPerSet) as { key: string; bytes: number }[];
+                if (rows.length === 0) {
+                    nextBytes = 0;
                 }
+                for (const row of rows) {
+                    const { changes } = statements.remove.run(row.key);
+                    if (Number(changes) > 0) {
+                        deletedRows++;
+                        nextBytes -= Number(row.bytes);
+                    }
+                    if (nextBytes <= trimTarget) {
+                        break;
+                    }
+                }
+                db.exec("COMMIT");
+            } catch (error) {
+                try {
+                    db.exec("ROLLBACK");
+                } catch {}
+                throw error;
+            }
+            totalBytes = nextBytes;
+            if (deletedRows === 0) {
+                return;
             }
         }
     }
@@ -223,7 +255,7 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
             }
         },
         set(key, vector, writeGeneration) {
-            if (!statements || writeGeneration !== generation || !usable()) {
+            if (!db || !statements || writeGeneration !== generation) {
                 return;
             }
             try {
@@ -234,11 +266,49 @@ export function createVectorCache(options: { file: string; maxBytes?: number; no
                 if (bytes.byteLength === 0 || bytes.byteLength > MAX_ENTRY_BYTES) {
                     return;
                 }
+                if (!usable()) {
+                    return;
+                }
                 const hashed = vectorCacheKey(key);
-                const previous = statements.bytesOf.get(hashed) as { bytes: number } | undefined;
-                statements.put.run(hashed, kind, bytes, bytes.byteLength, now());
-                totalBytes += bytes.byteLength - Number(previous?.bytes ?? 0);
-                trim();
+                let nextBytes = totalBytes;
+                let nextTrimming = trimming;
+                db.exec("BEGIN IMMEDIATE");
+                try {
+                    const previous = statements.bytesOf.get(hashed) as { bytes: number } | undefined;
+                    let projectedBytes = nextBytes + bytes.byteLength - Number(previous?.bytes ?? 0);
+                    nextTrimming ||= projectedBytes > maxBytes;
+                    if (nextTrimming && projectedBytes > trimTarget) {
+                        const rows = statements.oldest.all(trimRowsPerSet) as { key: string; bytes: number }[];
+                        if (rows.length === 0) {
+                            nextBytes = 0;
+                        }
+                        for (const row of rows) {
+                            statements.remove.run(row.key);
+                            nextBytes -= Number(row.bytes);
+                            // Replacing an evicted row no longer subtracts its old bytes from the insert.
+                            if (row.key !== hashed) {
+                                projectedBytes -= Number(row.bytes);
+                            }
+                            if (projectedBytes <= trimTarget) {
+                                break;
+                            }
+                        }
+                    }
+                    const replaced = statements.bytesOf.get(hashed) as { bytes: number } | undefined;
+                    const insertedBytes = nextBytes + bytes.byteLength - Number(replaced?.bytes ?? 0);
+                    if (insertedBytes <= maxBytes) {
+                        statements.put.run(hashed, kind, bytes, bytes.byteLength, now());
+                        nextBytes = insertedBytes;
+                    }
+                    db.exec("COMMIT");
+                } catch (error) {
+                    try {
+                        db.exec("ROLLBACK");
+                    } catch {}
+                    throw error;
+                }
+                totalBytes = nextBytes;
+                trimming = nextTrimming && totalBytes > trimTarget;
             } catch (error) {
                 warn(error);
             }
