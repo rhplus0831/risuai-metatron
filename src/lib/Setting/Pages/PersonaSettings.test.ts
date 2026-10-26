@@ -41,6 +41,7 @@ import type { Database } from "src/ts/storage/database.svelte";
 import { selectCharacter, selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activePersona, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { popUpEditorStore } from "src/ts/stores.svelte";
 import PersonaSettings from "./PersonaSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -52,7 +53,7 @@ function render() {
     document.body.appendChild(target);
     mounted.push(mount(PersonaSettings, { target }));
     flushSync();
-    // The checkbox in the large-portrait label (the persona note toggle above it is one too).
+    // The checkbox in the large-portrait label.
     const largePortrait = () =>
         [...target.querySelectorAll("label")]
             .find((label) => label.textContent?.includes(language.largePortrait))!
@@ -87,6 +88,38 @@ afterEach(async () => {
 });
 
 describe("PersonaSettings", () => {
+    it("opens the note popup as plaintext and the description popup as markdown", async () => {
+        vi.useFakeTimers();
+        const previousPopup = { ...popUpEditorStore };
+        try {
+            const note = "# Personal note\nKeep this as written.";
+            const description = "**Persona description**";
+            activePersona.note = note;
+            activePersona.personaPrompt = description;
+            settings.ui.longPressToPopupEditor = true;
+            const { target } = render();
+            const noteInput = target.querySelector<HTMLTextAreaElement>(
+                `textarea[placeholder="${language.personaNotePlaceholder}"]`,
+            )!;
+            const descriptionInput = [...target.querySelectorAll("textarea")].find((input) =>
+                input.placeholder.startsWith("Put the description of this persona here."),
+            )!;
+
+            noteInput.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: note, language: "plaintext" });
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+
+            descriptionInput.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: description, language: "markdown" });
+        } finally {
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+            Object.assign(popUpEditorStore, previousPopup);
+            vi.useRealTimers();
+        }
+    });
+
     it("the name input and the large-portrait checkbox write the selected persona and follow a selection change", () => {
         const { largePortrait, nameInput } = render();
         expect(nameInput().value).toBe("Bob");

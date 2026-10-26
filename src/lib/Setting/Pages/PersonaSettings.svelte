@@ -206,6 +206,7 @@
             height="20"
             margin="bottom"
             bind:value={activePersona.note}
+            popupLanguage="plaintext"
             placeholder={language.personaNotePlaceholder}
         />
         <span class="text-sm text-textcolor2">{language.description}</span>

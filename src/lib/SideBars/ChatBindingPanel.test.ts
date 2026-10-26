@@ -168,10 +168,14 @@ describe("ChatBindingPanel", () => {
         flushSync();
         expect(noteBlock()?.textContent?.trim()).toBe("Bob's memo");
 
-        settings.personas.splice(1, 1);
+        chatBindingPatch(refK, { personaId: null });
         flushSync();
         expect(noteBlock()).toBeNull();
-        chatBindingPatch(refK, { personaId: null });
+
+        chatBindingPatch(refK, { personaId: "u2" });
+        flushSync();
+        expect(noteBlock()?.textContent?.trim()).toBe("Bob's memo");
+        settings.personas.splice(1, 1);
         flushSync();
         expect(noteBlock()).toBeNull();
     });

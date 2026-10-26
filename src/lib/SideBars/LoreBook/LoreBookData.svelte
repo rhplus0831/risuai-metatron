@@ -64,7 +64,7 @@
     const offIds = $derived(offOverrideIds(selectedCharacter()?.globalLore ?? [], selectedChat()?.loreOverrides ?? []));
 
     function isLocallyActivated(book: loreBook) {
-        return book.id ? selectedChat()?.localLore.some((e) => e.id === book.id) : false;
+        return book.id ? selectedChat()?.localLore.some((e) => e.mode === "child" && e.id === book.id) : false;
     }
     function activateLocally(book: loreBook) {
         if (!book.id) {
@@ -87,8 +87,8 @@
     function deactivateLocally(book: loreBook) {
         if (!book.id) return;
         const draft = useLocalLoreDraft();
-        if (draft.value.some((e) => e.id === book.id)) {
-            draft.value = draft.value.filter((e) => e.id !== book.id);
+        if (draft.value.some((e) => e.mode === "child" && e.id === book.id)) {
+            draft.value = draft.value.filter((e) => e.mode !== "child" || e.id !== book.id);
         }
     }
     function toggleLocalActive(check: boolean, book: loreBook) {
