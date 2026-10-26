@@ -230,6 +230,11 @@ partial mock over `importOriginal` needs no factory. Every other client test tha
 all handwritten stores mocks use it. `src/ts/tests/bootMocks.ts` `createBootMock(module, overrides)`
 supplies typed boot service defaults to both bootstrap suites; keep the `vi.mock` registrations
 in each test file and load the factory inside them so Vitest hoisting remains local.
+`src/ts/network/tests/generationJobsMock.ts` `createGenerationJobsMock(overrides)` covers the
+job transport (with `createFollowStub(jobId)` for a controllable follow, and the error classes in
+the real shape); new tests that mock `network/generationJobs` use it.
+`src/ts/diagnostics/tests/collectorMock.ts` `createCollectorMock(overrides)` covers the
+diagnostics collector.
 
 `pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate) reads
 `vitest.config.ts` and `playwright.config.ts` as source and applies their patterns with each

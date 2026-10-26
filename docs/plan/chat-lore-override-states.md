@@ -1,8 +1,9 @@
 # Chat Lore Override States Plan
 
-Status: slices landed: 1 (e497efaa8), 2 (37902a9d5). Revised 2026-10-25 after a read-only GPT-6-Astra
-review of the first draft and a follow-up discussion with the user; the confirmed
-findings and the user's answers are folded in below.
+Status: all slices landed: 1 (e497efaa8), 2 (37902a9d5). Manual checks pending (see Verification).
+Revised 2026-10-25 after a read-only GPT-6-Astra review of the first draft and a
+follow-up discussion with the user; the confirmed findings and the user's answers are
+folded in below.
 
 Planned on 2026-10-25. Sources: the code at `d7c387b36` (anchors below are from
 that commit; re-verify before editing) and the design discussion with the user
@@ -123,7 +124,10 @@ Polish the chat lore override section that landed with the Chat Lore Overrides p
   `offOverrideIds`, and orphan matching already ignore a later override with a matched
   id. The client never creates duplicates; data loaded before this change may still
   hold them until its next metadata write, so client code that removes an override
-  removes every override with the id.
+  removes every override with the id. Orphans are the exception (owner's choice,
+  2026-10-26): orphan delete and move act on the selected override object only, so a
+  legacy duplicate stays as its own orphan row until it is handled too or the next
+  metadata write collapses it.
 - **Membership follows the owner's current folder keys.** `mergeOwnerLore` finds the
   off folders (owner `mode: "folder"` entries matched by a first-per-id override with
   `off: true`) and takes their **owner** keys; the frozen copy's key is never used.
