@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { BookAlertIcon } from "@lucide/svelte";
+    import { BookAlertIcon, ChevronUpIcon, GaugeIcon } from "@lucide/svelte";
     import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
@@ -25,18 +25,18 @@
     import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
     import Portal from "../UI/GUI/Portal.svelte";
 
-    // The composer's context chip: how the last request spent the model's context, read from the open
+    // The composer's context line: how the last request spent the model's context, read from the open
     // chat's latest `generationInfo.context` (`shared/contextReport.ts`). The prompt is rebuilt and
-    // trimmed every send, so the chip shows the history window, or the share of the prompt budget while
-    // all eligible history fits; the popover breaks the last request down. While the user types, the
-    // chip estimates how many older messages the send would push out (`displacement`).
+    // trimmed every send, so the line shows the history window kept and the share of the prompt budget
+    // used; the popover breaks the last request down. While the user types, the line estimates how many
+    // older messages the send would push out (`displacement`).
 
     interface Props {
         /** The displayed chat; the mount is keyed by it, so a chat switch starts closed. */
         chatRef: ChatRef;
         /** The selected character is a group: the meter is not shown. */
         group: boolean;
-        /** The composer row's height, matched like the send and menu buttons. */
+        /** The composer row's height: the line above it moves as it grows, so an open popover follows. */
         height: string;
         /** The composer text (shared across chats), for the displacement estimate. */
         draft?: string;
@@ -344,12 +344,13 @@
         }
         if (source.kind === "legacy") {
             const percent = percentOf(source.input, source.maxContext);
-            return { text: `${percent}%`, note: "", summary: language.contextUsage.legacySummary(percent) };
+            return { parts: [`${percent}%`], summary: language.contextUsage.legacySummary(percent) };
         }
         const r = source.report;
         const kept = turnCount(r, unit).kept;
         const keptText = unit === "user" ? language.contextUsage.turns(kept) : language.contextUsage.messages(kept);
-        let result: { text: string; note: string; summary: string };
+        const percent = percentOf(r.input, promptBudget);
+        let result: { parts: string[]; summary: string };
         if (r.memory) {
             const coverage =
                 r.memory.coverage === "covered"
@@ -358,17 +359,16 @@
                       ? language.contextUsage.gap
                       : language.contextUsage.memoryOn;
             result = {
-                text: keptText,
-                note: coverage,
+                parts: [keptText, coverage, `${percent}%`],
                 summary: language.contextUsage.memorySummary(keptText, memoryName, coverage),
             };
         } else if (r.history.kept >= r.history.total) {
-            const percent = percentOf(r.input, promptBudget);
-            result = { text: `${percent}%`, note: "", summary: language.contextUsage.fullSummary(percent) };
+            result = { parts: [keptText, `${percent}%`], summary: language.contextUsage.fullSummary(percent) };
         } else {
-            result = { text: keptText, note: "", summary: language.contextUsage.trimmedSummary(keptText) };
+            result = { parts: [keptText, `${percent}%`], summary: language.contextUsage.trimmedSummary(keptText) };
         }
         if (fixedOver) {
+            result.parts.push(language.contextUsage.fixedPart(Math.round(fixed)));
             result.summary += `; ${language.contextUsage.fixedWarnSummary}`;
         }
         if (loreWarn) {
@@ -464,7 +464,7 @@
         }
     });
 
-    // The composer grows with its text, moving the chip.
+    // The composer grows with its text, moving the line above it.
     $effect(() => {
         void height;
         if (untrack(() => open)) {
@@ -549,40 +549,45 @@
 />
 
 {#if chip}
-    <button
-        type="button"
-        bind:this={trigger}
-        class="peer-focus:border-textcolor flex items-center gap-1 border-y border-darkborderc px-2 text-sm whitespace-nowrap max-w-36 min-w-0 shrink-0 hover:bg-selected transition-colors context-meter-chip"
-        class:text-textcolor2={!fixedOver}
-        class:text-danger-500={fixedOver}
-        style:height
-        aria-label={chipTitle}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        title={chipTitle}
-        onfocusout={onFocusOut}
-        onclick={() => {
-            if (open) {
-                close(false);
-            } else {
-                void show();
-            }
-        }}
-    >
-        {#if loreWarn}
-            <span class="shrink-0 text-danger-500" data-context-meter-lore-warn>
-                <BookAlertIcon size={14} aria-hidden="true" />
+    <!-- A line of its own above the composer row, right-aligned with the menu button. -->
+    <div class="mr-2 mb-1 ml-4 flex min-w-0 justify-end context-meter">
+        <button
+            type="button"
+            bind:this={trigger}
+            class="flex max-w-full min-w-0 items-center gap-1 rounded-sm px-1 text-xs leading-5 whitespace-nowrap hover:underline context-meter-chip"
+            class:text-textcolor2={!fixedOver}
+            class:text-danger-500={fixedOver}
+            aria-label={chipTitle}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            aria-controls={open ? panelId : undefined}
+            title={chipTitle}
+            onfocusout={onFocusOut}
+            onclick={() => {
+                if (open) {
+                    close(false);
+                } else {
+                    void show();
+                }
+            }}
+        >
+            {#if loreWarn}
+                <span class="shrink-0 text-danger-500" data-context-meter-lore-warn>
+                    <BookAlertIcon size={13} aria-hidden="true" />
+                </span>
+            {:else}
+                <span class="shrink-0" aria-hidden="true"><GaugeIcon size={13} /></span>
+            {/if}
+            <span class="min-w-0 truncate">{chip.parts.join(" · ")}</span>
+            {#if estimate?.suffix}
+                <span class="shrink-0">· {language.contextUsage.estimateLead}</span>
+                <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
+            {/if}
+            <span class="shrink-0 transition-transform" class:rotate-180={open} aria-hidden="true">
+                <ChevronUpIcon size={12} />
             </span>
-        {/if}
-        <span class="min-w-0 truncate">{chip.text}</span>
-        {#if estimate?.suffix}
-            <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
-        {/if}
-        {#if chip.note}
-            <span class="hidden sm:inline truncate min-w-0 text-xs">· {chip.note}</span>
-        {/if}
-    </button>
+        </button>
+    </div>
 {/if}
 
 {#if open && source}

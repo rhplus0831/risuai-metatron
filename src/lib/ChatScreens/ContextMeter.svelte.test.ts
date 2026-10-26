@@ -170,10 +170,10 @@ afterEach(async () => {
 });
 
 describe("the chip", () => {
-    it("shows the share of the prompt budget while all eligible history was kept", () => {
+    it("shows the kept count and the share of the prompt budget while all eligible history was kept", () => {
         install([reply("m1", { inputTokens: 600, maxContext: 1000, context: report() })]);
         render();
-        expect(chipText()).toBe("75%");
+        expect(chipText()).toBe("3 turns · 75%");
         expect(chip()!.classList.contains("text-danger-500")).toBe(false);
         expect(chip()!.getAttribute("aria-label")).toBe(
             language.contextUsage.chipLabel(language.contextUsage.fullSummary(75)),
@@ -183,10 +183,10 @@ describe("the chip", () => {
     it("shows the kept count in the turn unit once history was trimmed, and follows the unit setting", () => {
         install([reply("m1", { context: trimmed() })]);
         render();
-        expect(chipText()).toBe("2 turns");
+        expect(chipText()).toBe("2 turns · 75%");
         settings.ui.contextMeterTurnUnit = "message";
         flushSync();
-        expect(chipText()).toBe("4 messages");
+        expect(chipText()).toBe("4 messages · 75%");
     });
 
     it("with memory, shows the kept count and the coverage, and names the memory kind in its label", () => {
@@ -202,7 +202,7 @@ describe("the chip", () => {
                 generationInfo: { context: trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage } }) },
             });
             flushSync();
-            expect(chipText(), coverage).toBe(`2 turns · ${note}`);
+            expect(chipText(), coverage).toBe(`2 turns · ${note} · 75%`);
             expect(chip()!.getAttribute("aria-label"), coverage).toContain(`2 turns, HypaV3 ${note}`);
         }
     });
@@ -217,8 +217,10 @@ describe("the chip", () => {
         render();
         expect(chip()!.classList.contains("text-danger-500")).toBe(false);
         expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.fixedWarnSummary);
+        expect(chipText()).toBe("3 turns · 73%");
         settings.ui.contextMeterFixedWarn = 59;
         flushSync();
+        expect(chipText()).toBe("3 turns · 73% · fixed 60%");
         expect(chip()!.classList.contains("text-danger-500")).toBe(true);
         expect(chip()!.classList.contains("text-textcolor2")).toBe(false);
         expect(chip()!.getAttribute("aria-label")).toContain(language.contextUsage.fixedWarnSummary);
@@ -243,7 +245,7 @@ describe("the chip", () => {
             reply("m2", { inputTokens: 300, maxContext: 1000 }),
         ]);
         render();
-        expect(chipText()).toBe("2 turns");
+        expect(chipText()).toBe("2 turns · 75%");
     });
 
     it("rejects negative legacy input and needs a positive context size", () => {
@@ -311,7 +313,7 @@ describe("the popover", () => {
     it("reads a zero prompt budget as 100% and says so", async () => {
         install([reply("m1", { context: report({ maxContext: 1000, maxResponse: 1000, input: 600 }) })]);
         render();
-        expect(chipText()).toBe("100%");
+        expect(chipText()).toBe("3 turns · 100% · fixed 100%");
         const opened = await openPanel();
         expect(opened.textContent).toContain(language.contextUsage.noBudget);
         // No percent column without a budget.
@@ -469,7 +471,7 @@ describe("the popover", () => {
         removeMessages(ref, ["m2"]);
         await settle();
         // The older report is the source now: the chip and the open popover follow it.
-        expect(chipText()).toBe("75%");
+        expect(chipText()).toBe("3 turns · 75%");
         opened = panel()!;
         expect(opened).not.toBeNull();
         expect(opened.querySelector("[data-context-meter-omitted]")).toBeNull();

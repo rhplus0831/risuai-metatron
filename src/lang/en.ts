@@ -743,7 +743,7 @@ export const languageEnglish = {
     settingsSectionChatNavigation: "Chat & navigation",
     settingsSectionContextMeter: "Context usage meter",
     settingsSectionContextMeterDesc:
-        "A chip beside the chat input that shows how far back the model remembers and where the context went on the last reply. Not shown in group chats.",
+        "A line above the chat input that shows how far back the model remembers and where the context went on the last reply. Not shown in group chats.",
     settingsSectionScrolling: "Scrolling",
     settingsSectionReachability: "Reachability",
     accessibilityDisplaySizesLink: "Text, icon and input sizes are in Display & Audio › Layout & sizing.",
@@ -1637,6 +1637,7 @@ export const languageEnglish = {
             `the last request kept ${kept}, ${memory} ${coverage}`,
         legacySummary: (percent: number) => `${percent}% of the context`,
         fixedWarnSummary: "the fixed part crowds out the history",
+        fixedPart: (percent: number) => `fixed ${percent}%`,
         loreWarnSummary: (count: number) =>
             `the lorebook budget left out ${count === 1 ? "1 entry" : `${count} entries`}`,
         input: (input: string, maxContext: string) => `${input} of ${maxContext} tokens`,
@@ -1676,7 +1677,7 @@ export const languageEnglish = {
         loreRejectedMore: (count: number) => `and ${count === 1 ? "1 more entry" : `${count} more entries`}`,
         loreWarnOff: "Don't warn in this chat",
         loreWarnOn: "Warn in this chat again",
-        loreWarnOffNote: "The chip does not warn of left-out lore in this chat.",
+        loreWarnOffNote: "The meter does not warn of left-out lore in this chat.",
         memoryKinds: {
             hypaV3: "HypaV3",
             hypaV2: "HypaV2",
@@ -1698,6 +1699,7 @@ export const languageEnglish = {
         legacyNote: "No breakdown for this reply: it was generated before the meter, or its report could not be read.",
         estimateTitle: "If you send this draft",
         estimateSuffix: (count: number) => `≈ −${count}`,
+        estimateLead: "if sent",
         estimateBeyondSuffix: (count: number) => (count > 0 ? `≈ −${count}+` : "≈ −?"),
         estimateDrops: (dropped: string, kept: string, left: number) =>
             `About ${dropped} of the earlier history would be pushed out (${kept} kept before, ${left} of them after).`,
