@@ -1,8 +1,8 @@
 # Deep Audit Fixes Plan
 
-Status: in progress; landed: 1 (44426ad50), 2 (2171bcb5c). Planned 2026-10-26; same day the user
-decided the two open questions: the memory limit line is restored (Slice 7), and whole chat
-reads carry the server's lock snapshot (Slice 8).
+Status: in progress; landed: 1 (44426ad50), 2 (2171bcb5c), 6 (cef9e9330). Planned 2026-10-26; same
+day the user decided the two open questions: the memory limit line is restored (Slice 7), and
+whole chat reads carry the server's lock snapshot (Slice 8).
 
 Sources: the two audits of 2026-10-26, the
 [server/client stabilization audit](../research/deep-audit/server-client-stabilization.md)
