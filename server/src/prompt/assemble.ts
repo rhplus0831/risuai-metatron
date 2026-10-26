@@ -57,8 +57,8 @@ import {
     type HypaV3SelectOptions,
     type HypaV3Selection,
     hypaV3SourceHash,
-    hypaV3Thresholds,
-    type HypaV3Thresholds,
+    forecastHypaV3,
+    type HypaV3Forecast,
     planHypaV3Summaries,
     prepareHypaV3,
     selectHypaV3,
@@ -385,8 +385,6 @@ function systemizeChat(chat: OpenAIChat[]) {
 const clone = <T>(value: T): T => structuredClone(value);
 
 /** A summary write the stored value refused (a reset, a moved cursor, a damaged value). */
-/** The count assembly adds to `maxResponse` before any entry, for unexpected errors. */
-const COUNT_ALLOWANCE = 50;
 const HYPAV3_WRITE_SKIPPED = "[HypaV3] The memory data changed during the summary; this summary is not saved";
 /** The retryable end of a summarization whose source messages changed (D15). */
 const HYPAV3_SOURCE_CHANGED =
@@ -407,9 +405,10 @@ type HypaV3StepResult =
           coverage: "covered" | "gap" | "unknown";
           /**
            * For the context meter: the message ids the summaries cover (the greeting's is
-           * `undefined`), the next send's summarize points, and whether a background lookahead runs.
+           * `undefined`), how far the next send is from summarizing, and whether a background
+           * lookahead runs.
            */
-          meter: { summarizedMemos: ReadonlySet<string | undefined>; thresholds: HypaV3Thresholds; lookahead: boolean };
+          meter: { summarizedMemos: ReadonlySet<string | undefined>; forecast: HypaV3Forecast; lookahead: boolean };
           memoryTask?: { input: MemoryTaskInput; due: boolean };
       };
 
@@ -568,12 +567,13 @@ async function hypaV3Step(
     /** Whether the next sends need summaries: a lookahead plan of `prepared` with a summary request. */
     const dueFrom = async (prepared: HypaV3Prepared) =>
         input ? (await part(() => planHypaV3Summaries(prepared, { lookahead: true }))).llmCalls > 0 : false;
-    const finish = (
+    const finish = async (
         prepared: HypaV3Prepared,
+        execution: HypaV3ExecutionResult,
         selection: HypaV3Selection,
         protect: boolean,
         due: boolean,
-    ): HypaV3StepResult => {
+    ): Promise<HypaV3StepResult> => {
         if (selection.error) {
             return failed(selection.error);
         }
@@ -595,7 +595,13 @@ async function hypaV3Step(
             coverage: (selection.trim?.gap.tokens ?? 0) > 0 ? "gap" : prepared.coverageAhead ? "unknown" : "covered",
             meter: {
                 summarizedMemos,
-                thresholds: hypaV3Thresholds(prepared, summaries.length, host.db.maxResponse + COUNT_ALLOWANCE),
+                forecast: await part(() =>
+                    forecastHypaV3(prepared, {
+                        cursor: execution.cursor,
+                        currentTokens: execution.currentTokens,
+                        summaryCount: summaries.length,
+                    }),
+                ),
                 // A task refuses a blocking chat and an input whose stored coverage is ahead of it.
                 lookahead: input !== null && blockingReason === null && !prepared.coverageAhead,
             },
@@ -610,11 +616,12 @@ async function hypaV3Step(
             return { ok: false as const, error: outcome.result.error };
         }
         const prepared = outcome.prepared;
-        const selection = await select(prepared, emptyHypaV3Execution(prepared), {
+        const execution = emptyHypaV3Execution(prepared);
+        const selection = await select(prepared, execution, {
             trimUncovered: { tooMuchToken: TOO_MUCH_TOKEN },
             ...(correction !== undefined ? { correction } : {}),
         });
-        return { ok: true as const, prepared, selection };
+        return { ok: true as const, prepared, execution, selection };
     };
     /** After a refused save (D16): select only from the memory stored now, without asking. */
     const recover = async (correction?: string): Promise<HypaV3StepResult> => {
@@ -626,7 +633,7 @@ async function hypaV3Step(
             return failed(result.selection.error);
         }
         writeSelection(result.prepared.snapshot, result.selection.memory);
-        return finish(result.prepared, result.selection, true, await dueFrom(result.prepared));
+        return finish(result.prepared, result.execution, result.selection, true, await dueFrom(result.prepared));
     };
     /** Releases in order, each even when an earlier one throws. */
     const releaseAll = (...steps: (() => void)[]) => {
@@ -685,7 +692,7 @@ async function hypaV3Step(
                 return failed(selection.error);
             }
             writeSelection(execution.baseline, selection.memory);
-            return finish(prepared, selection, trimTail, false);
+            return await finish(prepared, execution, selection, trimTail, false);
         } finally {
             releaseAll(
                 () => lease?.release(),
@@ -756,7 +763,7 @@ async function hypaV3Step(
                 const after = await prepare({ ...room, hypaV3Data: execution.baseline ?? undefined });
                 due = after.ok ? await dueFrom(after.prepared) : false;
             }
-            return finish(prepared, selection, true, due);
+            return await finish(prepared, execution, selection, true, due);
         } finally {
             releaseAll(
                 () => control?.release(),
@@ -772,7 +779,7 @@ async function hypaV3Step(
         if (!result.ok) {
             return failed(result.error);
         }
-        const { prepared, selection } = result;
+        const { prepared, execution, selection } = result;
         if (selection.error) {
             return failed(selection.error);
         }
@@ -786,7 +793,7 @@ async function hypaV3Step(
             }
         }
         writeSelection(prepared.snapshot, selection.memory);
-        return finish(prepared, selection, true, await dueFrom(prepared));
+        return finish(prepared, execution, selection, true, await dueFrom(prepared));
     };
 
     if (!job?.tasks) {
@@ -1096,7 +1103,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     let currentTokens = db.maxResponse;
     let supaMemoryCardUsed = false;
-    currentTokens += COUNT_ALLOWANCE;
+    // for unexpected error
+    currentTokens += 50;
 
     const positionParser = (text: string, loc: string) => {
         if (injectionLorePosSet.has(loc)) {
@@ -2250,7 +2258,7 @@ type MemoryRun = {
     coverage: "covered" | "gap" | "unknown";
     budget?: number;
     /** HypaV3's meter data (`HypaV3StepResult`). */
-    meter?: { summarizedMemos: ReadonlySet<string | undefined>; thresholds: HypaV3Thresholds; lookahead: boolean };
+    meter?: { summarizedMemos: ReadonlySet<string | undefined>; forecast: HypaV3Forecast; lookahead: boolean };
 };
 
 /** What a prompt entry carries: history-side sources, memory, or a part with no source (`untraced`). */
@@ -2574,10 +2582,10 @@ function buildContextReport(arg: {
                         meter.summarizedMemos.has(source.id),
                 ).length;
             }
-            report.memory.reserved = meter.thresholds.reserved;
-            report.memory.summarizeAt = meter.thresholds.summarizeAt;
-            if (meter.lookahead) {
-                report.memory.lookaheadAt = meter.thresholds.lookaheadAt;
+            report.memory.reserved = meter.forecast.reserved;
+            report.memory.summarizeIn = meter.forecast.summarizeIn;
+            if (meter.lookahead && meter.forecast.lookaheadIn !== null) {
+                report.memory.lookaheadIn = meter.forecast.lookaheadIn;
             }
         }
     }

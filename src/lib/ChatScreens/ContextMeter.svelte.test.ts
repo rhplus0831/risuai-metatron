@@ -444,8 +444,8 @@ describe("the popover", () => {
     });
 
     it("places HypaV3's reserve and summarize points on the bar and splits the history left out", async () => {
-        // Budget 800; the memory card's 50 tokens sit at the start of its 200-token reserve, the
-        // summarize point is 800 − 200, and the prompt without the card counts 600 − 50.
+        // Budget 800; the memory card's 50 tokens sit at the start of its 200-token reserve, and the
+        // summarize points sit the server's counts past the other sections' 530 tokens.
         const memory = {
             kind: "hypaV3" as const,
             tokens: 50,
@@ -453,8 +453,8 @@ describe("the popover", () => {
             coverage: "gap" as const,
             summarized: 1,
             reserved: 200,
-            summarizeAt: 600,
-            lookaheadAt: 450,
+            summarizeIn: 70,
+            lookaheadIn: 20,
         };
         const sections: ContextReport["sections"] = [
             { kind: "main", tokens: 100 },
@@ -470,7 +470,7 @@ describe("the popover", () => {
         expect(bar.querySelector(".h-3")!.children.length).toBe(6);
         expect(bar.querySelector<HTMLElement>("[data-context-meter-reserve]")!.style.width).toBe("18.75%");
         expect(bar.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("75%");
-        expect(bar.querySelector<HTMLElement>("[data-context-meter-lookahead]")!.style.left).toBe("56.25%");
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-lookahead]")!.style.left).toBe("68.75%");
         const tags = [...opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]")].map((tag) => [
             tag.getAttribute("data-tone"),
             tag.textContent,
@@ -480,10 +480,10 @@ describe("the popover", () => {
             ["warn", language.contextUsage.omittedUnsummarized(1)],
         ]);
         expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(
-            language.contextUsage.summarizeIn("50"),
+            language.contextUsage.summarizeIn("70"),
         );
         expect(opened.querySelector("[data-context-meter-next-lookahead]")!.textContent).toBe(
-            language.contextUsage.lookaheadPassed,
+            language.contextUsage.lookaheadIn("20"),
         );
         // The split replaces the coverage sentence.
         expect(opened.textContent).not.toContain(language.contextUsage.coverageGap);
@@ -493,10 +493,13 @@ describe("the popover", () => {
         // The setting hides the lookahead marker, its legend entry, and its line.
         settings.ui.contextMeterLookahead = false;
         patchMessage(ref, "m1", {
-            generationInfo: { context: trimmed({ sections, memory: { ...memory, summarized: 2, summarizeAt: 550 } }) },
+            generationInfo: {
+                context: trimmed({ sections, memory: { ...memory, summarized: 2, summarizeIn: 0, lookaheadIn: 0 } }),
+            },
         });
         flushSync();
         opened = await openPanel();
+        expect(opened.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("66.25%");
         expect(opened.querySelector("[data-context-meter-lookahead]")).toBeNull();
         expect(opened.querySelector("[data-context-meter-next-lookahead]")).toBeNull();
         expect(opened.textContent).not.toContain(language.contextUsage.legendLookahead);
@@ -504,6 +507,22 @@ describe("the popover", () => {
         expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(language.contextUsage.summarizeNow);
         // Every message left out is summarized: one tag.
         expect(opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]").length).toBe(1);
+        chip()!.click();
+        flushSync();
+
+        // A point past the bar's end stays on it; a lookahead count of 0 is passed.
+        settings.ui.contextMeterLookahead = true;
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: trimmed({ sections, memory: { ...memory, summarizeIn: 5000, lookaheadIn: 0 } }),
+            },
+        });
+        flushSync();
+        opened = await openPanel();
+        expect(opened.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("100%");
+        expect(opened.querySelector("[data-context-meter-next-lookahead]")!.textContent).toBe(
+            language.contextUsage.lookaheadPassed,
+        );
     });
 
     it("sits above the chip when there is room, below it otherwise, and stays below alerts", async () => {

@@ -400,29 +400,27 @@
             }));
     });
     // HypaV3's reserve and summarize points. The reserve sits at the end of the bar with the memory
-    // sent at its start, so the summarize point (the budget less the reserve) lines up with it.
+    // sent at its start. The server counts how far the history can grow in the summarizer's own count
+    // (which keeps history trimmed without a summary and skips what formatting adds), so each point
+    // sits that far past the bar's entries rather than at a fixed place.
     const hypa = $derived.by(() => {
         const memory = report?.memory;
-        if (!report || memory?.kind !== "hypaV3" || memory.reserved === undefined || memory.summarizeAt === undefined) {
+        if (!report || memory?.kind !== "hypaV3" || memory.reserved === undefined || memory.summarizeIn === undefined) {
             return null;
         }
         return {
             tokens: memory.tokens,
             reserved: memory.reserved,
-            summarizeAt: memory.summarizeAt,
-            lookaheadAt: settings.ui.contextMeterLookahead ? memory.lookaheadAt : undefined,
-            // The prompt without the memory card, as the summarize points count it.
-            entries: Math.max(0, report.input - memory.tokens),
+            summarizeIn: memory.summarizeIn,
+            lookaheadIn: settings.ui.contextMeterLookahead ? memory.lookaheadIn : undefined,
         };
     });
     const barRows = $derived(hypa ? rows.filter((row) => row.kind !== "memory") : rows);
+    const barEntries = $derived(barRows.reduce((sum, row) => sum + row.tokens, 0));
     const memoryColor = $derived(rows.find((row) => row.kind === "memory")?.color ?? "bg-secondary-500");
-    const barScale = $derived(
-        Math.max(
-            promptBudget,
-            barRows.reduce((sum, row) => sum + row.tokens, 0) + (hypa ? Math.max(hypa.reserved, hypa.tokens) : 0),
-        ),
-    );
+    const barScale = $derived(Math.max(promptBudget, barEntries + (hypa ? Math.max(hypa.reserved, hypa.tokens) : 0)));
+    /** A summarize point `tokens` past the bar's entries (on the bar: `widthOf` clamps). */
+    const pointAt = (tokens: number) => widthOf(barEntries + tokens, barScale);
     /** The history and memory block's lines for the left-out history. */
     const omitted = $derived.by(() => {
         if (!report || report.history.total <= report.history.kept) {
@@ -708,14 +706,14 @@
                             <div
                                 class="absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 bg-secondary-500"
                                 data-context-meter-summarize
-                                style:left="{widthOf(hypa.summarizeAt, barScale)}%"
+                                style:left="{pointAt(hypa.summarizeIn)}%"
                                 aria-hidden="true"
                             ></div>
-                            {#if hypa.lookaheadAt !== undefined}
+                            {#if hypa.lookaheadIn !== undefined}
                                 <div
                                     class="absolute -top-1 -bottom-1 -translate-x-1/2 border-l border-dashed border-textcolor2"
                                     data-context-meter-lookahead
-                                    style:left="{widthOf(hypa.lookaheadAt, barScale)}%"
+                                    style:left="{pointAt(hypa.lookaheadIn)}%"
                                     aria-hidden="true"
                                 ></div>
                             {/if}
@@ -731,7 +729,7 @@
                                 ><span class="h-2.5 w-0.5 bg-secondary-500"></span>{language.contextUsage
                                     .legendSummarize}</span
                             >
-                            {#if hypa.lookaheadAt !== undefined}
+                            {#if hypa.lookaheadIn !== undefined}
                                 <span class="flex items-center gap-1"
                                     ><span class="h-2.5 border-l border-dashed border-textcolor2"></span>{language
                                         .contextUsage.legendLookahead}</span
@@ -852,19 +850,17 @@
                                         >
                                     {/if}
                                     {#if hypa}
-                                        {@const room = hypa.summarizeAt - hypa.entries}
                                         <span class="text-xs text-textcolor2 tabular-nums" data-context-meter-next
-                                            >{room > 0
-                                                ? language.contextUsage.summarizeIn(fmt(room))
+                                            >{hypa.summarizeIn > 0
+                                                ? language.contextUsage.summarizeIn(fmt(hypa.summarizeIn))
                                                 : language.contextUsage.summarizeNow}</span
                                         >
-                                        {#if hypa.lookaheadAt !== undefined}
-                                            {@const ahead = hypa.lookaheadAt - hypa.entries}
+                                        {#if hypa.lookaheadIn !== undefined}
                                             <span
                                                 class="text-xs text-textcolor2 tabular-nums"
                                                 data-context-meter-next-lookahead
-                                                >{ahead > 0
-                                                    ? language.contextUsage.lookaheadIn(fmt(ahead))
+                                                >{hypa.lookaheadIn > 0
+                                                    ? language.contextUsage.lookaheadIn(fmt(hypa.lookaheadIn))
                                                     : language.contextUsage.lookaheadPassed}</span
                                             >
                                         {/if}

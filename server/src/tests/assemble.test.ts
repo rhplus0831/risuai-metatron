@@ -621,6 +621,10 @@ describe("the context report", () => {
         memoryJob?: AssemblyMemoryJob;
         /** The memory host's embeddings; the default fails on any use. */
         embeddings?: MemoryHost["embeddings"];
+        /** The memory host's summary requests; the default fails on any use. */
+        request?: MemoryHost["request"];
+        /** Apply memory writes to the chat; the default drops them. */
+        storeMemory?: boolean;
     };
     const CHAT_CARD: PromptItem = { type: "chat", rangeStart: 0, rangeEnd: "end" };
     const plain = (type2: "main" | "globalNote" | "normal", text: string): PromptItem => ({
@@ -727,9 +731,11 @@ describe("the context report", () => {
         const memory: MemoryHost = {
             db,
             tokenize: async (text) => text.length,
-            request: async () => {
-                throw new Error("No summary request runs in these tests");
-            },
+            request:
+                options.request ??
+                (async () => {
+                    throw new Error("No summary request runs in these tests");
+                }),
             completions: async () => {
                 throw new Error("No completion runs in these tests");
             },
@@ -773,7 +779,12 @@ describe("the context report", () => {
             setLastMemory() {},
             memoryTrim: { enabled: () => false, confirm: async () => "trim" },
             memory,
-            writeMemory() {},
+            writeMemory(build) {
+                const patch = options.storeMemory ? build(chat) : null;
+                if (patch) {
+                    Object.assign(chat, patch);
+                }
+            },
             endMemoryProgress() {},
             stage() {},
             captionImage: async () => {
@@ -1318,8 +1329,9 @@ describe("the context report", () => {
             { chatId: "u1", data: "hello" },
             { chatId: "c1", data: "yo", role: "char" },
         ];
-        // Without a task service the legacy count frees the response budget, so the next send
-        // summarizes past 400 less assembly's allowance (50) and the empty card it reserves (48).
+        // Without a task service the legacy count frees the response budget: the 79 counted
+        // (`maxResponse` 10, assembly's allowance 50, the history 19) less 10 may grow past 400 less
+        // the empty card it reserves (48) before the next send summarizes.
         const memoryBlock = (tokens: number, coverage: "covered" | "unknown") => ({
             kind: "hypaV3" as const,
             tokens,
@@ -1327,7 +1339,7 @@ describe("the context report", () => {
             coverage,
             ...(coverage === "covered" ? { summarized: 0 } : {}),
             reserved: 48,
-            summarizeAt: 400 - 50 - 48,
+            summarizeIn: 400 - 48 - (79 - 10) + 1,
         });
         // No memory card: the empty summary card travels in the history, wrapped (23 + 45 + 24).
         const inline = contextAssembly({ messages, hypaV3: true });
@@ -1436,8 +1448,8 @@ describe("the context report", () => {
             adjustment: 0,
             attributionExact: true,
             history: { total: 6, kept: 4, totalUser: 3, keptUser: 2, droppedTokens: 29 },
-            // No summary covers the two entries left out; the next send summarizes past 200 less
-            // `maxResponse`, assembly's allowance, and the empty card. A preview builds no task
+            // No summary covers the two entries left out. The summarizer still counts them (181 is
+            // past 200 less the empty card), so the next send summarizes. A preview builds no task
             // input: no lookahead point.
             memory: {
                 kind: "hypaV3",
@@ -1446,7 +1458,7 @@ describe("the context report", () => {
                 coverage: "gap",
                 summarized: 0,
                 reserved: 48,
-                summarizeAt: 200 - 10 - 50 - 48,
+                summarizeIn: 0,
             },
         });
     });
@@ -1475,9 +1487,10 @@ describe("the context report", () => {
             "<Past Events Summary>\nS\n</Past Events Summary>",
             ...["b", "c", "d", "e"].map((letter) => letter.repeat(20)),
         ]);
-        // A context of 400 and a budget of 80: the next send summarizes past 400 − 10 − 50 − 80 (the
-        // count start is `maxResponse` and assembly's allowance), and a lookahead plans past
-        // floor(400 × 0.85) − 10 − 50 − 80.
+        // A context of 400 and a budget of 80: 181 counted less the summarized greeting and m1 (29)
+        // is 152, which may grow past 400 − 80 before the next send summarizes. A lookahead counts
+        // 232 and asks once its first window (m2 alone before the three-message tail, 23) leaves
+        // its target, 400 × 0.85, reached: at 363.
         expect(report.memory).toEqual({
             kind: "hypaV3",
             tokens: 49,
@@ -1485,8 +1498,8 @@ describe("the context report", () => {
             coverage: "covered",
             summarized: 2,
             reserved: 80,
-            summarizeAt: 260,
-            lookaheadAt: 200,
+            summarizeIn: 400 - 80 - 152 + 1,
+            lookaheadIn: 340 + 23 - 232,
         });
 
         // A chat whose summaries must run inside the job: a task would refuse it, so no lookahead point.
@@ -1502,8 +1515,8 @@ describe("the context report", () => {
         });
         blocked.chat.hypaV3Data = structuredClone(chat.hypaV3Data);
         const blockedReport = (await blocked.run()).report;
-        expect(blockedReport.memory).toMatchObject({ summarized: 2, summarizeAt: 260 });
-        expect(blockedReport.memory!.lookaheadAt).toBeUndefined();
+        expect(blockedReport.memory).toMatchObject({ summarized: 2, summarizeIn: 400 - 80 - 152 + 1 });
+        expect(blockedReport.memory!.lookaheadIn).toBeUndefined();
     });
 
     it("HypaV3 never counts a legacy message without an id as covered by the greeting's empty memo", async () => {
@@ -1520,6 +1533,56 @@ describe("the context report", () => {
         const { report } = await run();
         expect(report.history).toMatchObject({ total: 3, kept: 0 });
         expect(report.memory!.summarized).toBe(1);
+    });
+
+    it("HypaV3's summarize count is the summarizer's, not the formatted prompt's", async () => {
+        // A short chat range and a late depth prompt change the prompt the report describes, not the
+        // 181 the step counts (`maxResponse` 10, the allowance 50, the greeting 6, five messages 115).
+        const assembled = (options: Partial<Options>) =>
+            contextAssembly({
+                hypaV3: true,
+                memoryJob: selectOnlyJob,
+                template: [{ type: "memory" }, CHAT_CARD],
+                messages: fiveMessages,
+                ...options,
+            }).run();
+        const whole = (await assembled({})).report;
+        const ranged = (
+            await assembled({ template: [{ type: "memory" }, { type: "chat", rangeStart: -1, rangeEnd: "end" }] })
+        ).report;
+        const depth = (await assembled({ character: { depth_prompt: { depth: 0, prompt: "d".repeat(100) } } })).report;
+        expect(ranged.input).toBeLessThan(whole.input);
+        expect(depth.input).toBeGreaterThan(whole.input);
+        for (const report of [whole, ranged, depth]) {
+            expect(report.memory).toMatchObject({ reserved: 48, summarizeIn: 400 - 48 - 181 + 1 });
+        }
+    });
+
+    it("a blocking HypaV3 step's summarize count starts after the windows it summarized", async () => {
+        const assembly = contextAssembly({
+            hypaV3: true,
+            maxContext: 220,
+            memoryJob: {
+                ...selectOnlyJob,
+                preview: false,
+                input: true,
+                blockingReason: () => "requestTrigger",
+                acquireWriter: async () => ({ release() {} }),
+                // The window's sources are checked against the chat as stored.
+                readSource: () => ({ messages: chat.message, fmIndex: chat.fmIndex, greeting: "Hi!" }),
+            },
+            template: [{ type: "memory" }, CHAT_CARD],
+            messages: fiveMessages,
+            request: async () => ({ type: "success", result: "Sum" }),
+            storeMemory: true,
+        });
+        const { chat } = assembly;
+        const { report } = await assembly.run();
+        // 181 counted with the empty card (48) is over 220, so the full budget (44) is held (225):
+        // the one window before the three-message tail (the greeting, m1, and m2: 52) brings it to
+        // 173. The next send counts the 129 entries after it, which may grow to 220 − 44.
+        expect(chat.hypaV3Data?.summaries).toHaveLength(1);
+        expect(report.memory).toMatchObject({ summarized: 3, reserved: 44, summarizeIn: 220 - 44 - (181 - 52) + 1 });
     });
 
     it("a select-only HypaV3 step keeps the response budget free: it trims history the whole context would hold", async () => {
@@ -1548,7 +1611,8 @@ describe("the context report", () => {
             coverage: "gap",
             summarized: 0,
             reserved: 48,
-            summarizeAt: 220 - 10 - 50 - 48,
+            // The history trimmed without a summary still counts: the next send summarizes.
+            summarizeIn: 0,
         });
         expect(report.input + report.maxResponse).toBeLessThanOrEqual(220);
     });
@@ -1593,7 +1657,7 @@ describe("the context report", () => {
             ]);
             expect(report.input).toBe(49 + 3 * 23);
             // The stored summary covers m1 and m2, not the greeting; with a summary the next send
-            // reserves the full budget.
+            // reserves the full budget, and its 229 is still over the context.
             expect(report.history.total - report.history.kept).toBe(3);
             expect(report.memory).toEqual({
                 kind: "hypaV3",
@@ -1602,7 +1666,7 @@ describe("the context report", () => {
                 coverage: "covered",
                 summarized: 2,
                 reserved: 100,
-                summarizeAt: 200 - 10 - 50 - 100,
+                summarizeIn: 0,
             });
         },
     );

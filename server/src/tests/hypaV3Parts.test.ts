@@ -21,7 +21,7 @@ import {
     executeHypaV3Plan,
     HYPAV3_LOOKAHEAD_HEADROOM,
     hypaV3SourceHash,
-    hypaV3Thresholds,
+    forecastHypaV3,
     type HypaV3Checkpoint,
     type HypaV3CurrentSource,
     type HypaV3EntrySource,
@@ -1608,45 +1608,131 @@ describe("prepare options and lookahead planning", () => {
         expect(kept.plan.windows.length).toBeGreaterThan(0);
     });
 
-    it("hypaV3Thresholds are the planner's trigger points in the entries' own count", async () => {
-        // A context of 1000, `maxResponse` 50 (the count start), the empty card 10, a budget of 200.
-        const scenario = (incoming: number, preset: Partial<typeof EXPERIMENTAL_PRESET> = {}) =>
-            flatScenario(`v3-thresholds-${incoming}`, incoming, {
+    it("forecastHypaV3 counts the added tokens at which an ordinary plan summarizes and a lookahead plan asks", async () => {
+        // A context of 1000, `maxResponse` 50, the empty card 10, a budget of 200, 10-token messages
+        // in two-message windows, a two-message tail; the lookahead triggers past 850, its target 850.
+        type Options = { prepare?: HypaV3PrepareOptions; room?: Scenario["room"]; chats?: OpenAIChat[] };
+        type Preset = NonNullable<Scenario["preset"]>;
+        const at = async (incoming: number, preset: Preset, options: Options = {}) => {
+            const s = flatScenario(`v3-forecast-${incoming}`, incoming, {
                 preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2, ...preset },
-                chats: makeChats(20),
+                chats: options.chats ?? makeChats(20),
+                room: options.room ?? {},
                 maxContextTokens: 1000,
             });
-        // Past the summarize point the flat chats cannot reach the target: any stop but notNeeded.
-        const stops = async (incoming: number, options: Parameters<typeof setUp>[1] = {}) => {
-            const s = scenario(incoming);
             const host = { ...hostOf(s, createWorld(s)), signal: new AbortController().signal, fence() {} };
-            const outcome = await prepareHypaV3(host, structuredClone(s.chats), incoming, 1000, s.room as never, flat, {
-                ...options.prepare,
-            });
+            const outcome = await prepareHypaV3(
+                host,
+                structuredClone(s.chats),
+                incoming,
+                1000,
+                structuredClone(s.room) as never,
+                flat,
+                options.prepare,
+            );
             if (!outcome.ok) throw new Error(outcome.result.error);
-            return (await planHypaV3Summaries(outcome.prepared, { lookahead: options.lookahead })).stopReason;
+            const prepared = outcome.prepared;
+            const ordinary = await planHypaV3Summaries(prepared);
+            const lookahead = await planHypaV3Summaries(prepared, { lookahead: true });
+            const execution = emptyHypaV3Execution(prepared);
+            const forecast = await forecastHypaV3(prepared, {
+                cursor: execution.cursor,
+                currentTokens: execution.currentTokens,
+                summaryCount: prepared.data.summaries.length,
+            });
+            return { prepared, ordinary, lookahead, forecast };
         };
-
-        // Legacy correction: the entries may fill the context less the empty card (990), and a
-        // lookahead asks past 850 less the full budget (650).
-        const legacy = await setUp(scenario(700));
-        expect(hypaV3Thresholds(legacy.prepared, 0, 50)).toEqual({ reserved: 10, summarizeAt: 990, lookaheadAt: 650 });
-        expect(await stops(50 + 990)).toBe("notNeeded");
-        expect(await stops(50 + 991)).not.toBe("notNeeded");
-        expect(await stops(50 + 650, { lookahead: true })).toBe("notNeeded");
-        expect(await stops(50 + 651, { lookahead: true })).not.toBe("notNeeded");
-
-        // Kept response budget: the count start stays in, so both points move down by it.
+        /** The forecast at `incoming`, checked against plans one token short of each point and at it. */
+        const checked = async (incoming: number, preset: Preset, options: Options = {}) => {
+            const { forecast } = await at(incoming, preset, options);
+            if (forecast.summarizeIn > 0) {
+                expect((await at(incoming + forecast.summarizeIn - 1, preset, options)).ordinary.stopReason).toBe(
+                    "notNeeded",
+                );
+            }
+            expect((await at(incoming + forecast.summarizeIn, preset, options)).ordinary.stopReason).not.toBe(
+                "notNeeded",
+            );
+            if (forecast.lookaheadIn !== null) {
+                if (forecast.lookaheadIn > 0) {
+                    const short = await at(incoming + forecast.lookaheadIn - 1, preset, options);
+                    expect(short.lookahead.llmCalls).toBe(0);
+                }
+                expect((await at(incoming + forecast.lookaheadIn, preset, options)).lookahead.llmCalls).toBeGreaterThan(
+                    0,
+                );
+            }
+            return forecast;
+        };
         const keep = { prepare: { responseCorrection: false } } as const;
-        const kept = await setUp(scenario(700), keep);
-        expect(hypaV3Thresholds(kept.prepared, 0, 50)).toEqual({ reserved: 10, summarizeAt: 940, lookaheadAt: 600 });
-        expect(await stops(50 + 940, keep)).toBe("notNeeded");
-        expect(await stops(50 + 941, keep)).not.toBe("notNeeded");
 
-        // With summaries the full budget is held; experimental holds nothing without them.
-        expect(hypaV3Thresholds(kept.prepared, 1, 50)).toMatchObject({ reserved: 200, summarizeAt: 750 });
-        const experimental = await setUp(scenario(700, { useExperimentalImpl: true }), keep);
-        expect(hypaV3Thresholds(experimental.prepared, 0, 50)).toMatchObject({ reserved: 0, summarizeAt: 950 });
+        // Legacy correction: 700 − 50 = 650 entries may grow to 990 with the empty card held; the
+        // lookahead counts the full budget (850) and asks once its first 20-token window leaves 850.
+        expect(await checked(700, {})).toEqual({ reserved: 10, summarizeIn: 341, lookaheadIn: 20 });
+        // An extra ratio lowers the target (350): the trigger past 850 decides.
+        expect(await checked(700, { extraSummarizationRatio: 0.5 })).toMatchObject({ lookaheadIn: 1 });
+        // Kept response budget: 700 entries, 900 with the full budget, so the lookahead asks already.
+        expect(await checked(700, {}, keep)).toEqual({ reserved: 10, summarizeIn: 291, lookaheadIn: 0 });
+        // A zero budget: the empty card does not fit past 990, and the full budget held then is 0.
+        expect(await checked(700, { memoryTokensRatio: 0 }, keep)).toEqual({
+            reserved: 10,
+            summarizeIn: 301,
+            lookaheadIn: 170,
+        });
+        // Experimental holds nothing without summaries.
+        expect(await checked(700, { useExperimentalImpl: true }, keep)).toMatchObject({
+            reserved: 0,
+            summarizeIn: 301,
+        });
+        // A summary of m0 and m1: the 20-token prefix is out and the full budget held (880, past
+        // 850): the lookahead asks already.
+        const summarized = { hypaV3Data: { summaries: [stored(["m0", "m1"], "s")] } };
+        expect(await checked(700, {}, { ...keep, room: summarized })).toEqual({
+            reserved: 200,
+            summarizeIn: 121,
+            lookaheadIn: 0,
+        });
+        // A first window with nothing to summarize only moves the cursor: the second one decides.
+        const blank = makeChats(20).map((chat, i) => (i < 2 ? { ...chat, content: " " } : chat));
+        expect((await checked(600, {}, { ...keep, chats: blank })).lookaheadIn).toBe(890 - 800);
+        // A window larger than the room above the target is accepted only over the context.
+        expect((await checked(600, { maxChatsPerSummary: 18 }, keep)).lookaheadIn).toBe(1001 - 800);
+        // Only the protected tail: nothing to ask for.
+        expect((await at(600, {}, { ...keep, chats: makeChats(2) })).forecast.lookaheadIn).toBeNull();
+    });
+
+    it("forecastHypaV3 after an execution matches a step prepared on what it saved", async () => {
+        // 1000 entries with the empty card are over 1000, so the 50-token budget is held (1050):
+        // three windows summarize six messages to 990.
+        const s = flatScenario("v3-forecast-after", 1000, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.05 },
+            chats: makeChats(20),
+            maxContextTokens: 1000,
+        });
+        const { host, prepared, plan } = await setUp(s, { prepare: { responseCorrection: false } });
+        expect(plan.windows.length).toBeGreaterThan(0);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const execution = await executeHypaV3Plan(host, prepared, plan, { checkpoint });
+        expect(execution.endReason).toBe("complete");
+        const forecast = await forecastHypaV3(prepared, {
+            cursor: execution.cursor,
+            currentTokens: execution.currentTokens,
+            summaryCount: execution.data.summaries.length,
+        });
+        const again = await setUp(
+            { ...s, room: { hypaV3Data: store.value } },
+            { prepare: { responseCorrection: false } },
+        );
+        const fresh = emptyHypaV3Execution(again.prepared);
+        expect(forecast).toEqual(
+            await forecastHypaV3(again.prepared, {
+                cursor: fresh.cursor,
+                currentTokens: fresh.currentTokens,
+                summaryCount: again.prepared.data.summaries.length,
+            }),
+        );
+        expect(execution.cursor).toBe(6);
+        expect(forecast).toEqual({ reserved: 50, summarizeIn: 11, lookaheadIn: 0 });
     });
 });
 

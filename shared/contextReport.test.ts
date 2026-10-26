@@ -84,7 +84,7 @@ describe("parseContextReport", () => {
         expect(parseContextReport(changed((copy) => delete copy.trim.replyPrefix))).not.toBeNull();
         expect(parseContextReport(changed((copy) => delete copy.memory.budget))).not.toBeNull();
         // HypaV3's meter fields; `summarized` up to the 4 messages left out (12 − 8).
-        const meter = { summarized: 4, reserved: 200, summarizeAt: 600, lookaheadAt: 450 };
+        const meter = { summarized: 4, reserved: 200, summarizeIn: 600, lookaheadIn: 450 };
         expect(parseContextReport(changed((copy) => Object.assign(copy.memory, meter)))).not.toBeNull();
         // Only `adjustment` is signed.
         expect(parseContextReport(changed((copy) => (copy.adjustment = -640)))).not.toBeNull();
@@ -174,8 +174,8 @@ describe("parseContextReport", () => {
         expect(parseContextReport(changed((copy) => (copy.memory.summarized = 5)))).toBeNull();
         expect(parseContextReport(changed((copy) => (copy.memory.summarized = 1.5)))).toBeNull();
         expect(parseContextReport(changed((copy) => (copy.memory.reserved = -1)))).toBeNull();
-        expect(parseContextReport(changed((copy) => (copy.memory.summarizeAt = "600")))).toBeNull();
-        expect(parseContextReport(changed((copy) => (copy.memory.lookaheadAt = Number.NaN)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.summarizeIn = "600")))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.lookaheadIn = Number.NaN)))).toBeNull();
     });
 });
 

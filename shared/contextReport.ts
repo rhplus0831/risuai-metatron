@@ -103,12 +103,16 @@ export type ContextReport = {
         /** HypaV3: what the next send's count holds for the memory card (the full budget once there are summaries). */
         reserved?: number;
         /**
-         * HypaV3: the count of the prompt without the memory card (`input − memory.tokens`, as
-         * assembly counts it before formatting) over which the next send summarizes.
+         * HypaV3: the fewest tokens the history can grow by before the next send summarizes (0: it
+         * does already), in the summarizer's own count: history trimmed without a summary stays in,
+         * and what formatting adds after the memory step is not counted.
          */
-        summarizeAt?: number;
-        /** HypaV3 with background summaries: the same count over which one is asked for. */
-        lookaheadAt?: number;
+        summarizeIn?: number;
+        /**
+         * HypaV3 with background summaries: the same for asking one, with the first summary window
+         * as it is now; absent when no window has a message to summarize yet.
+         */
+        lookaheadIn?: number;
     };
     lore: {
         /** The budget pass total, before @@inject_lore edits; not the emitted lore tokens. */
@@ -262,8 +266,8 @@ export function parseContextReport(value: unknown): ContextReport | null {
                     !Number.isInteger(memory.summarized) ||
                     memory.summarized > (history.total as number) - (history.kept as number))) ||
             (memory.reserved !== undefined && !isCount(memory.reserved)) ||
-            (memory.summarizeAt !== undefined && !isCount(memory.summarizeAt)) ||
-            (memory.lookaheadAt !== undefined && !isCount(memory.lookaheadAt))
+            (memory.summarizeIn !== undefined && !isCount(memory.summarizeIn)) ||
+            (memory.lookaheadIn !== undefined && !isCount(memory.lookaheadIn))
         ) {
             return null;
         }

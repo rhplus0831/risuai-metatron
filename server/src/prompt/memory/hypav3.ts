@@ -527,36 +527,75 @@ export async function prepareHypaV3(
     };
 }
 
-/** Where the next send's V3 step summarizes, for the context meter. */
-export interface HypaV3Thresholds {
+/**
+ * How far the next send's V3 step is from summarizing, for the context meter: the tokens the history
+ * can still grow (as the next send counts it) before that step summarizes.
+ */
+export interface HypaV3Forecast {
     /** What its count holds for the memory card: the full budget once there are summaries, else the empty card (standard) or nothing. */
     readonly reserved: number;
-    /** The count of the prompt's entries (the memory card left out) over which it summarizes. */
-    readonly summarizeAt: number;
-    /** The same count over which a lookahead plan asks for a background summary. */
-    readonly lookaheadAt: number;
+    /** The fewest added tokens with which an ordinary plan summarizes (0: it already does). */
+    readonly summarizeIn: number;
+    /**
+     * The fewest added tokens with which a lookahead plan asks for a summary (0: it already does),
+     * the first window it would summarize as it is now; null when no window from the cursor before the
+     * protected tail has a message to summarize.
+     */
+    readonly lookaheadIn: number | null;
 }
 
 /**
- * The summarize points of the send after a step of `prepared` that left `summaryCount` summaries,
- * in the count of the prompt's entries: `countStart` is the count the caller passed before any entry
- * (assembly starts from `maxResponse` plus its allowance). Both stop rules of `planHypaV3Summaries` are strict, so a
- * count at a point does not summarize. Standard reserves the empty card only while it fits, which
- * is the same point.
+ * The forecast after a step of `prepared` that left the summarized-prefix cursor at `cursor`,
+ * `currentTokens` (its count less the windows accepted, with the reservation), and `summaryCount`
+ * summaries. It counts in the ledger's own terms: history the selection trimmed without summarizing
+ * stays in, and nothing formatting adds after the step is counted. Both stop rules of
+ * `planHypaV3Summaries` are strict, and standard reserves the empty card only while it fits (else
+ * the full budget, even when that is smaller).
  */
-export function hypaV3Thresholds(prepared: HypaV3Prepared, summaryCount: number, countStart: number): HypaV3Thresholds {
-    const { ledger, maxContextTokens } = prepared;
-    const reserved =
-        summaryCount > 0 ? ledger.memoryTokens : prepared.implementation === "standard" ? ledger.emptyMemoryTokens : 0;
-    const base = countStart - ledger.responseCorrection;
-    return {
-        reserved,
-        summarizeAt: Math.max(0, maxContextTokens - base - reserved),
-        lookaheadAt: Math.max(
-            0,
-            Math.floor(maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM)) - base - ledger.memoryTokens,
-        ),
-    };
+export async function forecastHypaV3(
+    prepared: HypaV3Prepared,
+    after: { readonly cursor: number; readonly currentTokens: number; readonly summaryCount: number },
+): Promise<HypaV3Forecast> {
+    const { ledger, maxContextTokens, settings } = prepared;
+    const standard = prepared.implementation === "standard";
+    // The count without the memory card.
+    const entries = after.currentTokens - ledger.reservation.tokens;
+    const summarized = after.summaryCount > 0;
+    const reserved = summarized ? ledger.memoryTokens : standard ? ledger.emptyMemoryTokens : 0;
+    const triggerReserve = summarized
+        ? ledger.memoryTokens
+        : standard
+          ? Math.min(ledger.emptyMemoryTokens, ledger.memoryTokens)
+          : 0;
+    const summarizeIn = Math.max(0, maxContextTokens - triggerReserve - entries + 1);
+
+    // A lookahead plan asks once it accepts its first window with a message to summarize: past
+    // `C × (1 − h)`, and either that window leaves the target reached or the window starts over `C`.
+    let before = 0;
+    let startIdx = after.cursor;
+    let lookaheadIn: number | null = null;
+    while (true) {
+        // At the protected tail (or with nothing to scan) the window is empty.
+        const window = await scanHypaV3Window(prepared, startIdx);
+        if (window.scanEnd <= startIdx) {
+            break;
+        }
+        if (window.included.length > 0) {
+            const target = Math.max(
+                0,
+                maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM - settings.extraSummarizationRatio),
+            );
+            const asksAt = Math.max(
+                Math.floor(maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM)) + 1,
+                Math.min(Math.ceil(target) + before + window.tokens, maxContextTokens + before + 1),
+            );
+            lookaheadIn = Math.max(0, asksAt - (entries + ledger.memoryTokens));
+            break;
+        }
+        before += window.tokens;
+        startIdx = window.scanEnd;
+    }
+    return { reserved, summarizeIn, lookaheadIn };
 }
 
 /** Whether a scanned message goes into its window's summary. */
@@ -581,6 +620,50 @@ function shouldSummarizeChat(chat: OpenAIChat, settings: Readonly<HypaV3Settings
 }
 
 /**
+ * The window that starts at `startIdx`: standard scans `maxChatsPerSummary` messages, experimental
+ * until it has that many to summarize, both before the protected tail. Tokenizes every scanned message.
+ */
+async function scanHypaV3Window(
+    prepared: HypaV3Prepared,
+    startIdx: number,
+): Promise<{ scanEnd: number; included: OpenAIChat[]; tokens: number }> {
+    const { settings, chats, tokenizer } = prepared;
+    const included: OpenAIChat[] = [];
+    let tokens = 0;
+    let scanEnd: number;
+
+    if (prepared.implementation === "standard") {
+        scanEnd = Math.min(startIdx + settings.maxChatsPerSummary, chats.length - settings.queryChatCount);
+
+        for (let i = startIdx; i < scanEnd; i++) {
+            const chat = chats[i];
+            tokens += await tokenizer.tokenizeChat(chat);
+
+            if (shouldSummarizeChat(chat, settings)) {
+                included.push(chat);
+            }
+        }
+    } else {
+        let currentIndex = startIdx;
+
+        while (included.length < settings.maxChatsPerSummary && currentIndex < chats.length - settings.queryChatCount) {
+            const chat = chats[currentIndex];
+            tokens += await tokenizer.tokenizeChat(chat);
+
+            if (shouldSummarizeChat(chat, settings)) {
+                included.push(chat);
+            }
+
+            currentIndex++;
+        }
+
+        scanEnd = currentIndex;
+    }
+
+    return { scanEnd, included, tokens };
+}
+
+/**
  * The summary windows of a prepared step, without summarizing: the window scan of each main
  * (standard scans `maxChatsPerSummary` messages, experimental until it has that many to summarize)
  * with its stop rules. Tokenizes every scanned message, as the mains do.
@@ -589,7 +672,7 @@ export async function planHypaV3Summaries(
     prepared: HypaV3Prepared,
     options: HypaV3PlanOptions = {},
 ): Promise<HypaV3Plan> {
-    const { settings, chats, maxContextTokens, tokenizer, ledger } = prepared;
+    const { settings, chats, maxContextTokens, ledger } = prepared;
     const lookahead = options.lookahead === true;
     const windows: HypaV3PlannedWindow[] = [];
     // A lookahead plan counts the full memory budget in place of the ledger's reservation.
@@ -632,40 +715,7 @@ export async function planHypaV3Summaries(
             );
         }
 
-        const included: OpenAIChat[] = [];
-        let toSummarizeTokens = 0;
-        let scanEnd: number;
-
-        if (prepared.implementation === "standard") {
-            scanEnd = Math.min(startIdx + settings.maxChatsPerSummary, chats.length - settings.queryChatCount);
-
-            for (let i = startIdx; i < scanEnd; i++) {
-                const chat = chats[i];
-                toSummarizeTokens += await tokenizer.tokenizeChat(chat);
-
-                if (shouldSummarizeChat(chat, settings)) {
-                    included.push(chat);
-                }
-            }
-        } else {
-            let currentIndex = startIdx;
-
-            while (
-                included.length < settings.maxChatsPerSummary &&
-                currentIndex < chats.length - settings.queryChatCount
-            ) {
-                const chat = chats[currentIndex];
-                toSummarizeTokens += await tokenizer.tokenizeChat(chat);
-
-                if (shouldSummarizeChat(chat, settings)) {
-                    included.push(chat);
-                }
-
-                currentIndex++;
-            }
-
-            scanEnd = currentIndex;
-        }
+        const { scanEnd, included, tokens: toSummarizeTokens } = await scanHypaV3Window(prepared, startIdx);
 
         if (scanEnd <= startIdx) {
             return finish(
