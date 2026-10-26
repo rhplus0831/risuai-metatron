@@ -282,6 +282,8 @@ export const languageEnglish = {
             "How the context meter counts the history the model still sees. Turns counts your own messages that are still in the prompt; All Messages counts the character's replies too. When the prompt no longer fits the context, the oldest messages are left out (or summarized, with memory on), so this number stops growing once a chat is long.",
         contextMeterFixedWarn:
             "The fixed share is the part of the prompt budget (the context size minus the reserved response) taken by everything but the chat history and memory: the prompt, description, persona, lorebook, author's note, and the like. Above this level the meter turns red, because the fixed part leaves little room for history. 10% to 95%.",
+        contextMeterLookahead:
+            "With HypaV3 summarizing in the background, the meter's bar marks with a dashed line where the next send asks for a background summary, ahead of the point where it must summarize.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -1620,6 +1622,7 @@ export const languageEnglish = {
     contextMeterTurnUnitUser: "Turns",
     contextMeterTurnUnitMessage: "All Messages",
     contextMeterFixedWarn: "Fixed Share Warning",
+    contextMeterLookahead: "Mark the Background Summary Point",
     contextUsage: {
         title: "Context usage",
         close: "Close",
@@ -1641,14 +1644,14 @@ export const languageEnglish = {
         loreWarnSummary: (count: number) =>
             `the lorebook budget left out ${count === 1 ? "1 entry" : `${count} entries`}`,
         input: (input: string, maxContext: string) => `${input} of ${maxContext} tokens`,
-        replyBudget: (tokens: string) =>
-            `Reply budget: ${tokens} tokens. The prompt budget is the context size minus it.`,
+        promptBudget: (budget: string, maxContext: string, reply: string) =>
+            `Prompt budget ${budget} (context ${maxContext} − reply ${reply})`,
         tokens: (tokens: string) => `${tokens} tokens`,
         noBudget: "No prompt budget: the reply budget takes the whole context.",
         other: "Other",
         otherHelp:
             "The difference between the counted input and the sections above; positive or negative (merges, trimming, continue text).",
-        approximate: "The breakdown is approximate: the prompt was rewritten or an entry could not be traced.",
+        approximate: "≈ The breakdown is approximate: the prompt was rewritten or an entry could not be traced.",
         sections: {
             main: "Main prompt",
             globalNote: "Global note",
@@ -1666,10 +1669,15 @@ export const languageEnglish = {
             triggers: "Trigger additions",
             history: "Chat history",
         },
-        historyIncluded: (kept: number, total: number, keptUser: number, totalUser: number) =>
-            `The last request included ${kept} of ${total} messages (${keptUser} of ${totalUser} of your turns; the greeting counts as a message).`,
+        historyKept: (kept: number, total: number, unit: "user" | "message") =>
+            unit === "user" ? `${kept} of ${total} turns sent` : `${kept} of ${total} messages sent`,
+        historyKeptOther: (kept: number, total: number, unit: "user" | "message") =>
+            unit === "user" ? `your turns ${kept} of ${total}` : `messages ${kept} of ${total}`,
+        greetingCounted: "the greeting counts as a message",
         historyOmitted: (count: number, tokens: string) =>
-            `${count === 1 ? "1 message" : `${count} messages`} omitted from the raw history (${tokens} tokens): trimmed, summarized, or removed while formatting.`,
+            `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
+        omittedSummarized: (count: number) => `summarized into memory: ${count}`,
+        omittedUnsummarized: (count: number) => `left out unsummarized: ${count}`,
         loreBudget: "Lorebook activation budget",
         loreBudgetHelp: "Tokens of the activated entries before injection edits, not the lore tokens finally sent.",
         loreRejected: (count: number, tokens: string) =>
@@ -1686,6 +1694,13 @@ export const languageEnglish = {
         },
         memoryBudget: (kind: string) => `${kind} memory budget`,
         memoryLine: (kind: string, tokens: string) => `${kind} memory: ${tokens} tokens sent.`,
+        summarizeIn: (tokens: string) => `About ${tokens} more tokens of history and the next summary starts.`,
+        summarizeNow: "The next send summarizes.",
+        lookaheadIn: (tokens: string) => `About ${tokens} more tokens and a background summary starts.`,
+        lookaheadPassed: "Past the background summary point.",
+        legendReserved: "Memory reserve (unused)",
+        legendSummarize: "Summarizes past here",
+        legendLookahead: "Background summary",
         coverageCovered: "The memory covers the history left out.",
         coverageGap: "Some history left out is not covered by the memory.",
         coverageUnknown: "Whether the memory covers the history left out is unknown.",

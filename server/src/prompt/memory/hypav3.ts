@@ -527,6 +527,38 @@ export async function prepareHypaV3(
     };
 }
 
+/** Where the next send's V3 step summarizes, for the context meter. */
+export interface HypaV3Thresholds {
+    /** What its count holds for the memory card: the full budget once there are summaries, else the empty card (standard) or nothing. */
+    readonly reserved: number;
+    /** The count of the prompt's entries (the memory card left out) over which it summarizes. */
+    readonly summarizeAt: number;
+    /** The same count over which a lookahead plan asks for a background summary. */
+    readonly lookaheadAt: number;
+}
+
+/**
+ * The summarize points of the send after a step of `prepared` that left `summaryCount` summaries,
+ * in the count of the prompt's entries: `countStart` is the count the caller passed before any entry
+ * (assembly starts from `maxResponse` plus its allowance). Both stop rules of `planHypaV3Summaries` are strict, so a
+ * count at a point does not summarize. Standard reserves the empty card only while it fits, which
+ * is the same point.
+ */
+export function hypaV3Thresholds(prepared: HypaV3Prepared, summaryCount: number, countStart: number): HypaV3Thresholds {
+    const { ledger, maxContextTokens } = prepared;
+    const reserved =
+        summaryCount > 0 ? ledger.memoryTokens : prepared.implementation === "standard" ? ledger.emptyMemoryTokens : 0;
+    const base = countStart - ledger.responseCorrection;
+    return {
+        reserved,
+        summarizeAt: Math.max(0, maxContextTokens - base - reserved),
+        lookaheadAt: Math.max(
+            0,
+            Math.floor(maxContextTokens * (1 - HYPAV3_LOOKAHEAD_HEADROOM)) - base - ledger.memoryTokens,
+        ),
+    };
+}
+
 /** Whether a scanned message goes into its window's summary. */
 function shouldSummarizeChat(chat: OpenAIChat, settings: Readonly<HypaV3Settings>): boolean {
     if (chat.name === "example_user" || chat.name === "example_assistant" || chat.memo === "NewChatExample") {

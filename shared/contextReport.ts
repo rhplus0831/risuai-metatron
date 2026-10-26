@@ -95,6 +95,20 @@ export type ContextReport = {
         budget?: number;
         /** "gap" when HypaV3 left uncovered history; "unknown" when it cannot tell. */
         coverage: "covered" | "gap" | "unknown";
+        /**
+         * HypaV3: how many of the history messages left out a stored summary covers (at most
+         * `history.total − history.kept`); absent when the memory card did not reach the prompt.
+         */
+        summarized?: number;
+        /** HypaV3: what the next send's count holds for the memory card (the full budget once there are summaries). */
+        reserved?: number;
+        /**
+         * HypaV3: the count of the prompt without the memory card (`input − memory.tokens`, as
+         * assembly counts it before formatting) over which the next send summarizes.
+         */
+        summarizeAt?: number;
+        /** HypaV3 with background summaries: the same count over which one is asked for. */
+        lookaheadAt?: number;
     };
     lore: {
         /** The budget pass total, before @@inject_lore edits; not the emitted lore tokens. */
@@ -242,7 +256,14 @@ export function parseContextReport(value: unknown): ContextReport | null {
             !oneOf(MEMORY_KINDS, memory.kind) ||
             !isCount(memory.tokens) ||
             !oneOf(COVERAGES, memory.coverage) ||
-            (memory.budget !== undefined && !isCount(memory.budget))
+            (memory.budget !== undefined && !isCount(memory.budget)) ||
+            (memory.summarized !== undefined &&
+                (!isCount(memory.summarized) ||
+                    !Number.isInteger(memory.summarized) ||
+                    memory.summarized > (history.total as number) - (history.kept as number))) ||
+            (memory.reserved !== undefined && !isCount(memory.reserved)) ||
+            (memory.summarizeAt !== undefined && !isCount(memory.summarizeAt)) ||
+            (memory.lookaheadAt !== undefined && !isCount(memory.lookaheadAt))
         ) {
             return null;
         }

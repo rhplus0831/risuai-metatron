@@ -225,6 +225,8 @@ export const languageKorean = {
             "대화 기록 집계 방식을 설정합니다. '턴'은 내 메시지만, '모든 메시지'는 캐릭터 응답까지 포함합니다. 컨텍스트가 가득 차면 오래된 대화부터 순차적으로 제외(또는 요약)되므로, 일정 분량 이후에는 숫자가 더 증가하지 않습니다.",
         contextMeterFixedWarn:
             "고정 영역(시스템 프롬프트, 캐릭터 설명, 페르소나, 로어북 등)이 프롬프트 예산에서 차지하는 경고 기준(10%~95%)을 설정합니다. 이 기준을 초과하면 대화 기록이 들어갈 공간이 부족해 미터가 빨간색으로 표시됩니다.",
+        contextMeterLookahead:
+            "HypaV3가 백그라운드에서 요약할 때, 다음 전송이 미리 요약을 요청하는 지점을 미터 막대에 점선으로 표시합니다. 이 지점은 반드시 요약해야 하는 지점보다 앞에 있습니다.",
         comfyWorkflow:
             "Comfy UI의 API 워크플로우를 입력하세요. Comfy UI에서 'Workflow > Export (API)' 버튼을 눌러 API 워크플로우를 가져올 수 있습니다. 워크플로우 텍스트에 {{risu_prompt}}를 넣어야 하며, {{risu_prompt}}는 Risu에서 제공하는 프롬프트로 대체됩니다.",
         automaticCachePoint: "채팅이 끝난 후 캐싱 포인트가 존재하지 않으면 자동으로 생성합니다.",
@@ -1080,6 +1082,7 @@ export const languageKorean = {
     contextMeterTurnUnitUser: "턴 (내 메시지만)",
     contextMeterTurnUnitMessage: "모든 메시지",
     contextMeterFixedWarn: "고정 영역 경고 기준",
+    contextMeterLookahead: "백그라운드 사전 요약 지점 표시",
     contextUsage: {
         title: "컨텍스트 사용량",
         close: "닫기",
@@ -1090,24 +1093,21 @@ export const languageKorean = {
         gap: "누락 발생",
         memoryOn: "메모리 활성화",
         chipLabel: (summary: string) => `컨텍스트 사용량: ${summary} (마지막 응답 기준). 상세 보기.`,
-        fullSummary: (percent: number) =>
-            `모든 대화 기록 포함 (프롬프트 예산의 ${percent}%)`,
+        fullSummary: (percent: number) => `모든 대화 기록 포함 (프롬프트 예산의 ${percent}%)`,
         trimmedSummary: (kept: string) => `최근 ${kept} 포함`,
-        memorySummary: (kept: string, memory: string, coverage: string) =>
-            `최근 ${kept} 포함 (${memory}, ${coverage})`,
+        memorySummary: (kept: string, memory: string, coverage: string) => `최근 ${kept} 포함 (${memory}, ${coverage})`,
         legacySummary: (percent: number) => `컨텍스트의 ${percent}% 사용`,
         fixedWarnSummary: "고정 영역 과다로 대화 기록 공간 부족",
         fixedPart: (percent: number) => `고정 ${percent}%`,
         loreWarnSummary: (count: number) => `예산 초과로 로어북 ${count}개 제외`,
         input: (input: string, maxContext: string) => `${input} / ${maxContext} 토큰`,
-        replyBudget: (tokens: string) =>
-            `응답 예산: ${tokens} 토큰 (프롬프트 예산 = 전체 컨텍스트 - 응답 예산)`,
+        promptBudget: (budget: string, maxContext: string, reply: string) =>
+            `프롬프트 예산 ${budget} (전체 ${maxContext} − 응답 ${reply})`,
         tokens: (tokens: string) => `${tokens} 토큰`,
         noBudget: "프롬프트 예산 없음: 응답 예산이 컨텍스트 전체를 차지합니다.",
         other: "기타",
-        otherHelp:
-            "토큰 계산 오차 (텍스트 병합, 트리밍, 후처리 등으로 인한 차이)",
-        approximate: "근사치입니다 (프롬프트 재작성 또는 미추적 항목 포함)",
+        otherHelp: "토큰 계산 오차 (텍스트 병합, 트리밍, 후처리 등으로 인한 차이)",
+        approximate: "≈ 내역은 근사치입니다. 프롬프트가 수정됐거나 추적하지 못한 항목이 있습니다.",
         sections: {
             main: "메인 프롬프트",
             globalNote: "글로벌 노트",
@@ -1125,10 +1125,14 @@ export const languageKorean = {
             triggers: "트리거 항목",
             history: "대화 기록",
         },
-        historyIncluded: (kept: number, total: number, keptUser: number, totalUser: number) =>
-            `대화 기록 포함: ${total}개 중 ${kept}개 (내 턴: ${totalUser}개 중 ${keptUser}개 / 첫 메시지 포함)`,
-        historyOmitted: (count: number, tokens: string) =>
-            `제외된 메시지: ${count}개 (${tokens} 토큰) — 잘림, 요약 또는 서식 처리로 제외됨`,
+        historyKept: (kept: number, total: number, unit: "user" | "message") =>
+            `${kept} / ${total} ${unit === "user" ? "턴" : "메시지"} 전송`,
+        historyKeptOther: (kept: number, total: number, unit: "user" | "message") =>
+            `${unit === "user" ? "내 턴" : "메시지"} ${kept} / ${total}`,
+        greetingCounted: "인사말도 메시지 1개로 셈",
+        historyOmitted: (count: number, tokens: string) => `제외된 메시지 ${count}개 · ${tokens} 토큰`,
+        omittedSummarized: (count: number) => `메모리로 요약 ${count}개`,
+        omittedUnsummarized: (count: number) => `요약 없이 잘림 ${count}개`,
         loreBudget: "로어북 토큰 예산",
         loreBudgetHelp: "활성화된 로어북의 원본 토큰 수입니다 (최종 전송량과 다를 수 있음).",
         loreRejected: (count: number, tokens: string) => `예산 초과로 로어북 ${count}개 제외 (${tokens} 토큰)`,
@@ -1138,9 +1142,16 @@ export const languageKorean = {
         loreWarnOffNote: "이 채팅에서는 로어북 제외 경고를 표시하지 않습니다.",
         memoryBudget: (kind: string) => `${kind} 메모리 예산`,
         memoryLine: (kind: string, tokens: string) => `${kind} 메모리: ${tokens} 토큰 전송`,
-        coverageCovered: "누락된 기록이 메모리에 모두 반영되었습니다.",
-        coverageGap: "누락된 기록 중 일부가 메모리에 반영되지 않았습니다.",
-        coverageUnknown: "메모리 반영 여부를 확인할 수 없습니다.",
+        summarizeIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 다음 요약이 시작됩니다.`,
+        summarizeNow: "다음 전송에서 요약이 시작됩니다.",
+        lookaheadIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 백그라운드 사전 요약이 시작됩니다.`,
+        lookaheadPassed: "백그라운드 사전 요약 지점은 이미 지났습니다.",
+        legendReserved: "메모리 예약 (미사용)",
+        legendSummarize: "요약 시작",
+        legendLookahead: "백그라운드 사전 요약",
+        coverageCovered: "제외된 기록은 모두 메모리에 요약되어 있습니다.",
+        coverageGap: "제외된 기록 중 일부는 메모리에 요약되지 않았습니다.",
+        coverageUnknown: "제외된 기록이 메모리에 요약됐는지 확인할 수 없습니다.",
         fixedShare: (percent: number) => `고정 영역: 프롬프트 예산의 ${percent}%`,
         fixedShareHelp: "대화 기록과 메모리를 제외한 시스템 프롬프트, 캐릭터 설명 등의 합계입니다.",
         fixedShareOver: (warn: number) => `경고 기준(${warn}%) 초과: 대화 기록 공간이 매우 부족합니다.`,
@@ -1155,8 +1166,7 @@ export const languageKorean = {
             `이전 기록 약 ${dropped} 밀려남 (기존 ${kept} 중 ${left} 유지)`,
         estimateNoTurns: (dropped: string) => `약 ${dropped} 밀려남 (내 턴 제외)`,
         estimateFits: "밀려나는 기록 없음",
-        estimateBeyond: (dropped: string) =>
-            `최소 ${dropped} 이상 밀려남 (추적 범위 초과)`,
+        estimateBeyond: (dropped: string) => `최소 ${dropped} 이상 밀려남 (추적 범위 초과)`,
         estimateBeyondUnknown: "추적 범위를 초과하여 밀려날 기록을 계산할 수 없습니다.",
         estimateNote:
             "예상치 안내: 실제 전송 시 로어북 트리거, 스크립트/CBS, 이미지, 이름 주입 및 서식 처리 등에 따라 오차가 발생할 수 있습니다.",

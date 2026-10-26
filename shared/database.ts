@@ -576,6 +576,8 @@ export interface Database {
     contextMeterTurnUnit: ContextMeterTurnUnit;
     /** The fixed share of the context, in percent, above which the meter warns (`CONTEXT_METER_FIXED_WARN`). */
     contextMeterFixedWarn: number;
+    /** Whether the meter marks where HypaV3 asks for a background summary. */
+    contextMeterLookahead: boolean;
 }
 
 export interface SeparateParameters {

@@ -1318,11 +1318,16 @@ describe("the context report", () => {
             { chatId: "u1", data: "hello" },
             { chatId: "c1", data: "yo", role: "char" },
         ];
+        // Without a task service the legacy count frees the response budget, so the next send
+        // summarizes past 400 less assembly's allowance (50) and the empty card it reserves (48).
         const memoryBlock = (tokens: number, coverage: "covered" | "unknown") => ({
             kind: "hypaV3" as const,
             tokens,
             budget: 80, // floor(400 × 0.2)
             coverage,
+            ...(coverage === "covered" ? { summarized: 0 } : {}),
+            reserved: 48,
+            summarizeAt: 400 - 50 - 48,
         });
         // No memory card: the empty summary card travels in the history, wrapped (23 + 45 + 24).
         const inline = contextAssembly({ messages, hypaV3: true });
@@ -1431,8 +1436,90 @@ describe("the context report", () => {
             adjustment: 0,
             attributionExact: true,
             history: { total: 6, kept: 4, totalUser: 3, keptUser: 2, droppedTokens: 29 },
-            memory: { kind: "hypaV3", tokens: 95, budget: 40, coverage: "gap" },
+            // No summary covers the two entries left out; the next send summarizes past 200 less
+            // `maxResponse`, assembly's allowance, and the empty card. A preview builds no task
+            // input: no lookahead point.
+            memory: {
+                kind: "hypaV3",
+                tokens: 95,
+                budget: 40,
+                coverage: "gap",
+                summarized: 0,
+                reserved: 48,
+                summarizeAt: 200 - 10 - 50 - 48,
+            },
         });
+    });
+
+    it("HypaV3 counts a greeting its summary covers (a null memo) and reports the lookahead point of an input job", async () => {
+        const inputJob: AssemblyMemoryJob = {
+            ...selectOnlyJob,
+            preview: false,
+            input: true,
+            // A task input needs the history's source generation.
+            sourceGeneration: () => 1,
+            confirmGap: async () => {
+                throw new Error("Nothing uncovered is left out");
+            },
+            taskInput: (part) => part as never,
+        };
+        const { run, chat } = contextAssembly({
+            hypaV3: true,
+            memoryJob: inputJob,
+            template: [{ type: "memory" }, CHAT_CARD],
+            messages: fiveMessages,
+        });
+        chat.hypaV3Data = { summaries: [{ text: "S", chatMemos: [null as never, "m1"], isImportant: false }] };
+        const { report, texts } = await run();
+        expect(texts).toEqual([
+            "<Past Events Summary>\nS\n</Past Events Summary>",
+            ...["b", "c", "d", "e"].map((letter) => letter.repeat(20)),
+        ]);
+        // A context of 400 and a budget of 80: the next send summarizes past 400 − 10 − 50 − 80 (the
+        // count start is `maxResponse` and assembly's allowance), and a lookahead plans past
+        // floor(400 × 0.85) − 10 − 50 − 80.
+        expect(report.memory).toEqual({
+            kind: "hypaV3",
+            tokens: 49,
+            budget: 80,
+            coverage: "covered",
+            summarized: 2,
+            reserved: 80,
+            summarizeAt: 260,
+            lookaheadAt: 200,
+        });
+
+        // A chat whose summaries must run inside the job: a task would refuse it, so no lookahead point.
+        const blocked = contextAssembly({
+            hypaV3: true,
+            memoryJob: {
+                ...inputJob,
+                blockingReason: () => "requestTrigger",
+                acquireWriter: async () => ({ release() {} }),
+            },
+            template: [{ type: "memory" }, CHAT_CARD],
+            messages: fiveMessages,
+        });
+        blocked.chat.hypaV3Data = structuredClone(chat.hypaV3Data);
+        const blockedReport = (await blocked.run()).report;
+        expect(blockedReport.memory).toMatchObject({ summarized: 2, summarizeAt: 260 });
+        expect(blockedReport.memory!.lookaheadAt).toBeUndefined();
+    });
+
+    it("HypaV3 never counts a legacy message without an id as covered by the greeting's empty memo", async () => {
+        const { run, chat } = contextAssembly({
+            hypaV3: true,
+            template: [{ type: "memory" }],
+            messages: [
+                { chatId: undefined as never, data: "legacy not summarized" },
+                { chatId: "t", data: "tail", role: "char" },
+            ],
+        });
+        // A summary of the greeting alone; the memory card is the whole prompt.
+        chat.hypaV3Data = { summaries: [{ text: "greeting only", chatMemos: [null as never], isImportant: false }] };
+        const { report } = await run();
+        expect(report.history).toMatchObject({ total: 3, kept: 0 });
+        expect(report.memory!.summarized).toBe(1);
     });
 
     it("a select-only HypaV3 step keeps the response budget free: it trims history the whole context would hold", async () => {
@@ -1454,7 +1541,15 @@ describe("the context report", () => {
             "e".repeat(20),
         ]);
         expect(report.history).toEqual({ total: 6, kept: 4, totalUser: 3, keptUser: 2, droppedTokens: 29 });
-        expect(report.memory).toEqual({ kind: "hypaV3", tokens: 95, budget: 44, coverage: "gap" });
+        expect(report.memory).toEqual({
+            kind: "hypaV3",
+            tokens: 95,
+            budget: 44,
+            coverage: "gap",
+            summarized: 0,
+            reserved: 48,
+            summarizeAt: 220 - 10 - 50 - 48,
+        });
         expect(report.input + report.maxResponse).toBeLessThanOrEqual(220);
     });
 
@@ -1497,7 +1592,18 @@ describe("the context report", () => {
                 "e".repeat(20),
             ]);
             expect(report.input).toBe(49 + 3 * 23);
-            expect(report.memory).toEqual({ kind: "hypaV3", tokens: 49, budget: 100, coverage: "covered" });
+            // The stored summary covers m1 and m2, not the greeting; with a summary the next send
+            // reserves the full budget.
+            expect(report.history.total - report.history.kept).toBe(3);
+            expect(report.memory).toEqual({
+                kind: "hypaV3",
+                tokens: 49,
+                budget: 100,
+                coverage: "covered",
+                summarized: 2,
+                reserved: 100,
+                summarizeAt: 200 - 10 - 50 - 100,
+            });
         },
     );
 

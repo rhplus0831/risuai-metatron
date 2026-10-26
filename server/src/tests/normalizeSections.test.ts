@@ -399,12 +399,14 @@ describe("ui", () => {
         expectIdempotent(normalizeUi, { newChatBinding: "empty" });
     });
 
-    it("defaults the context meter on, counting turns, warning at 60%, and replaces any other turn unit with `user`", () => {
+    it("defaults the context meter on, counting turns, warning at 60%, marking the lookahead point, and replaces any other turn unit with `user`", () => {
         expect(normalizeUi(undefined)).toMatchObject({
             contextMeter: true,
             contextMeterTurnUnit: "user",
             contextMeterFixedWarn: 60,
+            contextMeterLookahead: true,
         });
+        expect(normalizeUi({ contextMeterLookahead: false }).contextMeterLookahead).toBe(false);
         expect(normalizeUi({ contextMeter: false }).contextMeter).toBe(false);
         expect(normalizeUi({ contextMeterTurnUnit: "message" }).contextMeterTurnUnit).toBe("message");
         expect(normalizeUi({ contextMeterTurnUnit: "user" }).contextMeterTurnUnit).toBe("user");

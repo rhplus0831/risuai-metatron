@@ -88,10 +88,11 @@ function install(messages: FixtureMessage[]) {
             },
         ],
     } as any);
-    // The fixture installs no defaults: the three meter settings are set as the server's normalization would.
+    // The fixture installs no defaults: the meter settings are set as the server's normalization would.
     settings.ui.contextMeter = true;
     settings.ui.contextMeterTurnUnit = "user";
     settings.ui.contextMeterFixedWarn = 60;
+    settings.ui.contextMeterLookahead = true;
 }
 
 const CHIP = { x: 500, y: 700, left: 500, right: 600, top: 700, bottom: 744, width: 100, height: 44 };
@@ -292,7 +293,10 @@ describe("the popover", () => {
         ]);
         // The bar has one segment per section, none for Other.
         expect(opened.querySelector('[aria-hidden="true"].h-3')!.children.length).toBe(3);
-        expect(opened.textContent).toContain(language.contextUsage.replyBudget("200"));
+        expect(opened.textContent).toContain(
+            language.contextUsage.promptBudget((800).toLocaleString(), (1000).toLocaleString(), (200).toLocaleString()),
+        );
+        expect(opened.querySelector("[data-context-meter-reserve]")).toBeNull();
         expect(opened.textContent).not.toContain(language.contextUsage.approximate);
         expect(opened.querySelector("[data-context-meter-omitted]")).toBeNull();
         expect(opened.querySelector("[data-context-meter-lore]")).toBeNull();
@@ -307,7 +311,15 @@ describe("the popover", () => {
         expect(opened.querySelector("[data-context-meter-omitted]")!.textContent).toBe(
             language.contextUsage.historyOmitted(2, "300"),
         );
-        expect(opened.textContent).toContain(language.contextUsage.historyIncluded(4, 6, 2, 3));
+        // Without memory the report gives no reason for what it left out: no tag.
+        expect(opened.querySelector("[data-context-meter-omitted-tags]")).toBeNull();
+        // The setting's unit leads; the other follows with the greeting's note.
+        expect(opened.querySelector("[data-context-meter-kept]")!.textContent).toBe(
+            language.contextUsage.historyKept(2, 3, "user"),
+        );
+        expect(opened.querySelector("[data-context-meter-history]")!.textContent).toContain(
+            `${language.contextUsage.historyKeptOther(4, 6, "message")} · ${language.contextUsage.greetingCounted}`,
+        );
     });
 
     it("reads a zero prompt budget as 100% and says so", async () => {
@@ -429,6 +441,69 @@ describe("the popover", () => {
         expect(memory.textContent).toContain("300 / 500");
         expect(memory.textContent).not.toContain(language.contextUsage.memoryLine("HypaV3", "300"));
         expect(memory.textContent).toContain(language.contextUsage.coverageCovered);
+    });
+
+    it("places HypaV3's reserve and summarize points on the bar and splits the history left out", async () => {
+        // Budget 800; the memory card's 50 tokens sit at the start of its 200-token reserve, the
+        // summarize point is 800 − 200, and the prompt without the card counts 600 − 50.
+        const memory = {
+            kind: "hypaV3" as const,
+            tokens: 50,
+            budget: 200,
+            coverage: "gap" as const,
+            summarized: 1,
+            reserved: 200,
+            summarizeAt: 600,
+            lookaheadAt: 450,
+        };
+        const sections: ContextReport["sections"] = [
+            { kind: "main", tokens: 100 },
+            { kind: "history", tokens: 400 },
+            { kind: "description", tokens: 30 },
+            { kind: "memory", tokens: 50 },
+        ];
+        install([reply("m1", { context: trimmed({ sections, memory }) })]);
+        render();
+        let opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        // Three sections, the spacer, the memory sent, and the unused reserve.
+        expect(bar.querySelector(".h-3")!.children.length).toBe(6);
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-reserve]")!.style.width).toBe("18.75%");
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("75%");
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-lookahead]")!.style.left).toBe("56.25%");
+        const tags = [...opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]")].map((tag) => [
+            tag.getAttribute("data-tone"),
+            tag.textContent,
+        ]);
+        expect(tags).toEqual([
+            ["memory", language.contextUsage.omittedSummarized(1)],
+            ["warn", language.contextUsage.omittedUnsummarized(1)],
+        ]);
+        expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(
+            language.contextUsage.summarizeIn("50"),
+        );
+        expect(opened.querySelector("[data-context-meter-next-lookahead]")!.textContent).toBe(
+            language.contextUsage.lookaheadPassed,
+        );
+        // The split replaces the coverage sentence.
+        expect(opened.textContent).not.toContain(language.contextUsage.coverageGap);
+        chip()!.click();
+        flushSync();
+
+        // The setting hides the lookahead marker, its legend entry, and its line.
+        settings.ui.contextMeterLookahead = false;
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ sections, memory: { ...memory, summarized: 2, summarizeAt: 550 } }) },
+        });
+        flushSync();
+        opened = await openPanel();
+        expect(opened.querySelector("[data-context-meter-lookahead]")).toBeNull();
+        expect(opened.querySelector("[data-context-meter-next-lookahead]")).toBeNull();
+        expect(opened.textContent).not.toContain(language.contextUsage.legendLookahead);
+        expect(opened.textContent).toContain(language.contextUsage.legendSummarize);
+        expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(language.contextUsage.summarizeNow);
+        // Every message left out is summarized: one tag.
+        expect(opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]").length).toBe(1);
     });
 
     it("sits above the chip when there is room, below it otherwise, and stays below alerts", async () => {

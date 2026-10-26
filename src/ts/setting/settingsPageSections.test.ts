@@ -136,6 +136,7 @@ const DEPENDENT_PAIRS: [string, string][] = [
     ["display.customQuotes", "display.trailingSingleQuote"],
     ["interaction.contextMeterEnabled", "interaction.contextMeterTurnUnit"],
     ["interaction.contextMeterEnabled", "interaction.contextMeterFixedWarn"],
+    ["interaction.contextMeterEnabled", "interaction.contextMeterLookahead"],
 ];
 
 const duplicates = (ids: string[]) => ids.filter((id, index) => ids.indexOf(id) !== index);
@@ -267,12 +268,14 @@ describe("settings page sections", () => {
             "interaction.contextMeterEnabled",
             "interaction.contextMeterTurnUnit",
             "interaction.contextMeterFixedWarn",
+            "interaction.contextMeterLookahead",
         ]);
-        const [enabled, turnUnit, fixedWarn] = section.items;
+        const [enabled, turnUnit, fixedWarn, lookahead] = section.items;
         expect(enabled.bindKey).toBe("contextMeter");
         expect(enabled.condition).toBeUndefined();
         const ctx = (ui: Record<string, unknown>) => ({ settings: { ui } }) as unknown as SettingContext;
-        for (const item of [turnUnit, fixedWarn]) {
+        expect(lookahead).toMatchObject({ type: "check", bindKey: "contextMeterLookahead" });
+        for (const item of [turnUnit, fixedWarn, lookahead]) {
             expect(item.condition!(ctx({ contextMeter: true })), item.id).toBe(true);
             expect(item.condition!(ctx({ contextMeter: false })), item.id).toBe(false);
         }

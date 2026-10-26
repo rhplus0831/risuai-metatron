@@ -179,6 +179,15 @@ export const interactionSettingsItems: SettingItem[] = [
         },
         keywords: ["context", "fixed", "share", "warning", "prompt"],
     },
+    {
+        id: "interaction.contextMeterLookahead",
+        type: "check",
+        labelKey: "contextMeterLookahead",
+        helpKey: "contextMeterLookahead",
+        bindKey: "contextMeterLookahead",
+        condition: (ctx) => ctx.settings.ui.contextMeter,
+        keywords: ["context", "memory", "hypa", "summary", "background", "lookahead"],
+    },
 ];
 
 /** The page heading, above the sections. */
@@ -226,6 +235,7 @@ export const interactionSettingsSections: SettingSection[] = [
             "interaction.contextMeterEnabled",
             "interaction.contextMeterTurnUnit",
             "interaction.contextMeterFixedWarn",
+            "interaction.contextMeterLookahead",
         ]),
     },
 ];

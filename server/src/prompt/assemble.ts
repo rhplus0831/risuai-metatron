@@ -57,6 +57,8 @@ import {
     type HypaV3SelectOptions,
     type HypaV3Selection,
     hypaV3SourceHash,
+    hypaV3Thresholds,
+    type HypaV3Thresholds,
     planHypaV3Summaries,
     prepareHypaV3,
     selectHypaV3,
@@ -383,6 +385,8 @@ function systemizeChat(chat: OpenAIChat[]) {
 const clone = <T>(value: T): T => structuredClone(value);
 
 /** A summary write the stored value refused (a reset, a moved cursor, a damaged value). */
+/** The count assembly adds to `maxResponse` before any entry, for unexpected errors. */
+const COUNT_ALLOWANCE = 50;
 const HYPAV3_WRITE_SKIPPED = "[HypaV3] The memory data changed during the summary; this summary is not saved";
 /** The retryable end of a summarization whose source messages changed (D15). */
 const HYPAV3_SOURCE_CHANGED =
@@ -401,6 +405,11 @@ type HypaV3StepResult =
            * dropped uncovered history, "unknown" when the stored summaries end past the history.
            */
           coverage: "covered" | "gap" | "unknown";
+          /**
+           * For the context meter: the message ids the summaries cover (the greeting's is
+           * `undefined`), the next send's summarize points, and whether a background lookahead runs.
+           */
+          meter: { summarizedMemos: ReadonlySet<string | undefined>; thresholds: HypaV3Thresholds; lookahead: boolean };
           memoryTask?: { input: MemoryTaskInput; due: boolean };
       };
 
@@ -465,6 +474,8 @@ async function hypaV3Step(
                   sourceGeneration: arg.sourceGeneration,
               })
             : null;
+    // Why an input job's summaries must run inside it; a task refuses such a chat (`memoryTasks.ts`).
+    const blockingReason = job?.tasks && !job.preview && job.input ? job.blockingReason() : null;
     const validate = job && arg.sources ? createHypaV3SourceValidator(arg.sources, () => job.readSource()) : undefined;
 
     const part = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -567,12 +578,27 @@ async function hypaV3Step(
             return failed(selection.error);
         }
         const count = protect && selection.trim ? selection.trim.protected.count : 0;
+        // Preparation reads a stored `null` memo (the greeting's) as `undefined`.
+        const summaries: readonly { chatMemos: Iterable<string | undefined> }[] =
+            selection.memory?.summaries ?? prepared.data.summaries;
+        const summarizedMemos = new Set<string | undefined>();
+        for (const summary of summaries) {
+            for (const memo of summary.chatMemos) {
+                summarizedMemos.add(memo);
+            }
+        }
         return {
             type: "done",
             chats: selection.chats,
             currentTokens: selection.currentTokens,
             protectedEntries: count > 0 ? selection.chats.slice(-count) : [],
             coverage: (selection.trim?.gap.tokens ?? 0) > 0 ? "gap" : prepared.coverageAhead ? "unknown" : "covered",
+            meter: {
+                summarizedMemos,
+                thresholds: hypaV3Thresholds(prepared, summaries.length, host.db.maxResponse + COUNT_ALLOWANCE),
+                // A task refuses a blocking chat and an input whose stored coverage is ahead of it.
+                lookahead: input !== null && blockingReason === null && !prepared.coverageAhead,
+            },
             ...(input ? { memoryTask: { input, due } } : {}),
         };
     };
@@ -769,8 +795,7 @@ async function hypaV3Step(
     if (job.preview) {
         return selectOnlyStep(job);
     }
-    const reason = job.input ? job.blockingReason() : null;
-    return reason ? blocking(reason) : selectOnlyStep(job);
+    return blockingReason ? blocking(blockingReason) : selectOnlyStep(job);
 }
 
 export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): Promise<AssembledPrompt> {
@@ -1071,8 +1096,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     let currentTokens = db.maxResponse;
     let supaMemoryCardUsed = false;
-    // for unexpected error
-    currentTokens += 50;
+    currentTokens += COUNT_ALLOWANCE;
 
     const positionParser = (text: string, loc: string) => {
         if (injectionLorePosSet.has(loc)) {
@@ -1593,11 +1617,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     const protectedEntries = new Set<OpenAIChat>();
     let memoryTask: { input: MemoryTaskInput; due: boolean } | undefined;
     /** The memory branch that ran, for the report. */
-    let memoryRun: {
-        kind: NonNullable<ContextReport["memory"]>["kind"];
-        coverage: "covered" | "gap" | "unknown";
-        budget?: number;
-    } | null = null;
+    let memoryRun: MemoryRun | null = null;
     /** The no-memory trim ledger after the trim loop: its headroom and the entries it would drop next. */
     let trimLedger: { headroom: number; next: OpenAIChat[] } | null = null;
     if (useMemory) {
@@ -1698,6 +1718,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     kind: "hypaV3",
                     coverage: step.coverage,
                     budget: Math.floor(maxContextTokens * getCurrentHypaV3Preset(memory).settings.memoryTokensRatio),
+                    meter: step.meter,
                 };
 
                 currentChat = host.chat();
@@ -2223,6 +2244,15 @@ type ContextSource = {
     id?: string;
 };
 
+/** The memory branch that ran, for the context report. */
+type MemoryRun = {
+    kind: NonNullable<ContextReport["memory"]>["kind"];
+    coverage: "covered" | "gap" | "unknown";
+    budget?: number;
+    /** HypaV3's meter data (`HypaV3StepResult`). */
+    meter?: { summarizedMemos: ReadonlySet<string | undefined>; thresholds: HypaV3Thresholds; lookahead: boolean };
+};
+
 /** What a prompt entry carries: history-side sources, memory, or a part with no source (`untraced`). */
 type EntryProvenance = { sources: ContextSource[]; memory: boolean; untraced: boolean };
 
@@ -2434,11 +2464,7 @@ function buildContextReport(arg: {
     messageSourceById: ReadonlyMap<string, ContextSource>;
     marker: OpenAIChat | null;
     trimLedger: { headroom: number; next: readonly OpenAIChat[] } | null;
-    memoryRun: {
-        kind: NonNullable<ContextReport["memory"]>["kind"];
-        coverage: "covered" | "gap" | "unknown";
-        budget?: number;
-    } | null;
+    memoryRun: MemoryRun | null;
     hadMemoryEntries: boolean;
     lore: LoreActivation;
     tokenScope: string;
@@ -2536,6 +2562,24 @@ function buildContextReport(arg: {
             coverage:
                 lostMemory || (arg.memoryRun.coverage === "covered" && lostAfter) ? "unknown" : arg.memoryRun.coverage,
         };
+        const meter = arg.memoryRun.meter;
+        if (meter) {
+            // A summary lost from the prompt covers nothing it left out.
+            if (!lostMemory) {
+                // The greeting's memo is `undefined`; a legacy message without an id matches nothing.
+                report.memory.summarized = arg.historySources.filter(
+                    (source) =>
+                        !kept.has(source) &&
+                        (source.kind === "greeting" || source.id !== undefined) &&
+                        meter.summarizedMemos.has(source.id),
+                ).length;
+            }
+            report.memory.reserved = meter.thresholds.reserved;
+            report.memory.summarizeAt = meter.thresholds.summarizeAt;
+            if (meter.lookahead) {
+                report.memory.lookaheadAt = meter.thresholds.lookaheadAt;
+            }
+        }
     }
     return report;
 }

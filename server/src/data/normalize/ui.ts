@@ -132,6 +132,7 @@ const spec: SectionSpec<"ui"> = {
     contextMeter: ["boolean", true],
     contextMeterTurnUnit: ["string", "user"],
     contextMeterFixedWarn: ["number", CONTEXT_METER_FIXED_WARN.default],
+    contextMeterLookahead: ["boolean", true],
 };
 
 export function normalizeUi(input: unknown): SectionResource<"ui"> {

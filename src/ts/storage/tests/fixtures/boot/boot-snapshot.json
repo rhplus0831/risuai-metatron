@@ -643,6 +643,7 @@
   "contextMeter": true,
   "contextMeterTurnUnit": "user",
   "contextMeterFixedWarn": 60,
+  "contextMeterLookahead": true,
   "formatversion": 5,
   "characterOrder": []
 }

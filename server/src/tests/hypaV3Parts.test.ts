@@ -21,6 +21,7 @@ import {
     executeHypaV3Plan,
     HYPAV3_LOOKAHEAD_HEADROOM,
     hypaV3SourceHash,
+    hypaV3Thresholds,
     type HypaV3Checkpoint,
     type HypaV3CurrentSource,
     type HypaV3EntrySource,
@@ -1605,6 +1606,47 @@ describe("prepare options and lookahead planning", () => {
         expect(kept.prepared.ledger.reservation).toEqual({ kind: "fullBudget", tokens: 20 });
         expect(kept.prepared.ledger.current).toBe(1040);
         expect(kept.plan.windows.length).toBeGreaterThan(0);
+    });
+
+    it("hypaV3Thresholds are the planner's trigger points in the entries' own count", async () => {
+        // A context of 1000, `maxResponse` 50 (the count start), the empty card 10, a budget of 200.
+        const scenario = (incoming: number, preset: Partial<typeof EXPERIMENTAL_PRESET> = {}) =>
+            flatScenario(`v3-thresholds-${incoming}`, incoming, {
+                preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2, ...preset },
+                chats: makeChats(20),
+                maxContextTokens: 1000,
+            });
+        // Past the summarize point the flat chats cannot reach the target: any stop but notNeeded.
+        const stops = async (incoming: number, options: Parameters<typeof setUp>[1] = {}) => {
+            const s = scenario(incoming);
+            const host = { ...hostOf(s, createWorld(s)), signal: new AbortController().signal, fence() {} };
+            const outcome = await prepareHypaV3(host, structuredClone(s.chats), incoming, 1000, s.room as never, flat, {
+                ...options.prepare,
+            });
+            if (!outcome.ok) throw new Error(outcome.result.error);
+            return (await planHypaV3Summaries(outcome.prepared, { lookahead: options.lookahead })).stopReason;
+        };
+
+        // Legacy correction: the entries may fill the context less the empty card (990), and a
+        // lookahead asks past 850 less the full budget (650).
+        const legacy = await setUp(scenario(700));
+        expect(hypaV3Thresholds(legacy.prepared, 0, 50)).toEqual({ reserved: 10, summarizeAt: 990, lookaheadAt: 650 });
+        expect(await stops(50 + 990)).toBe("notNeeded");
+        expect(await stops(50 + 991)).not.toBe("notNeeded");
+        expect(await stops(50 + 650, { lookahead: true })).toBe("notNeeded");
+        expect(await stops(50 + 651, { lookahead: true })).not.toBe("notNeeded");
+
+        // Kept response budget: the count start stays in, so both points move down by it.
+        const keep = { prepare: { responseCorrection: false } } as const;
+        const kept = await setUp(scenario(700), keep);
+        expect(hypaV3Thresholds(kept.prepared, 0, 50)).toEqual({ reserved: 10, summarizeAt: 940, lookaheadAt: 600 });
+        expect(await stops(50 + 940, keep)).toBe("notNeeded");
+        expect(await stops(50 + 941, keep)).not.toBe("notNeeded");
+
+        // With summaries the full budget is held; experimental holds nothing without them.
+        expect(hypaV3Thresholds(kept.prepared, 1, 50)).toMatchObject({ reserved: 200, summarizeAt: 750 });
+        const experimental = await setUp(scenario(700, { useExperimentalImpl: true }), keep);
+        expect(hypaV3Thresholds(experimental.prepared, 0, 50)).toMatchObject({ reserved: 0, summarizeAt: 950 });
     });
 });
 
