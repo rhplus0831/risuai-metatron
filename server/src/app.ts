@@ -392,6 +392,7 @@ export function createServerContext(options: {
     const push = createPushService({
         savePath,
         ...(options.pushTransport ? { transport: options.pushTransport } : {}),
+        diagnostics,
     });
     // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
     // the script workers; a context whose resource kinds have no characters (tests) has none.

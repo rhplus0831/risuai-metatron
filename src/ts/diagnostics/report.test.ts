@@ -1,19 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DiagnosticEvent } from "../../../shared/diagnostics.ts";
 import { canonicalDiagnosticReport } from "../../../shared/diagnosticsReport.ts";
 import versionData from "../../../version.json";
 
 // The Diagnostics panel's report module (`report.ts`). The browser and OS families (never the user agent);
 // the read of the server's diagnostics (`authFetch`, `ok` checked, every failure and a wait past 10 s a
 // null, the fetch aborted); the report built from the tab's side with `Server: unavailable` when the server
-// did not answer (the browser-only fallback), and `Server: current` when it did; and the save
-// (`POST /api/diagnostics/report` as `text/plain`, the answer mapped to a fixed failure kind, the whole
-// save bounded with `network` when nothing was sent, `timeout` after a dispatch, never retried).
+// did not answer (the browser-only fallback), and `Server: current` when it did; the service worker's
+// push records (`readWorkerRecords`, read beside the server) merged into the browser's events by time
+// before the newest are kept, a failed read as one omitted event; and the save (`POST
+// /api/diagnostics/report` as `text/plain`, the answer mapped to a fixed failure kind, the whole save
+// bounded with `network` when nothing was sent, `timeout` after a dispatch, never retried).
 
 const { deps } = vi.hoisted(() => ({
     deps: {
         authFetch:
             vi.fn<(path: string, init: RequestInit, options?: { beforeDispatch?: () => void }) => Promise<Response>>(),
         events: [] as unknown[],
+        /** `readWorkerRecords`: the worker's projected records and whether the read failed. */
+        readWorkerRecords: vi.fn<() => Promise<{ events: DiagnosticEvent[]; failed: boolean }>>(),
     },
 }));
 vi.mock("../storage/serverAuth", () => ({
@@ -21,6 +26,9 @@ vi.mock("../storage/serverAuth", () => ({
 }));
 vi.mock("./collector", () => ({
     clientDiagnosticEvents: () => deps.events,
+}));
+vi.mock("./workerRecords", () => ({
+    readWorkerRecords: (...args: unknown[]) => deps.readWorkerRecords(...(args as [])),
 }));
 
 import { browserFamily, createDiagnosticReport, osFamily, readServerDiagnostics, saveDiagnosticReport } from "./report";
@@ -61,6 +69,7 @@ let onLine = true;
 beforeEach(() => {
     deps.authFetch.mockReset();
     deps.events = [];
+    deps.readWorkerRecords.mockReset().mockResolvedValue({ events: [], failed: false });
     Object.defineProperty(navigator, "userAgent", { get: () => userAgent, configurable: true });
     Object.defineProperty(navigator, "onLine", { get: () => onLine, configurable: true });
     userAgent = CHROME_WINDOWS;
@@ -229,6 +238,61 @@ describe("createDiagnosticReport", () => {
         const stale = await createDiagnosticReport();
         expect(lines(stale)[8]).toBe("Server: unavailable");
         expect(stale).not.toContain("lifecycle");
+    });
+
+    it("merges the worker's push records into the browser's events by time before the newest 300 are kept (this tab's first at an equal time), reads them beside the server with the module's own wait, and counts a failed read as one omitted event", async () => {
+        deps.authFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        deps.events = Array.from({ length: 200 }, (_, i) => ({ at: AT + 2 * i, kind: "page", phase: "visible" }));
+        const worker = Array.from({ length: 200 }, (_, i) => ({
+            at: AT + 2 * i + (i === 0 ? 0 : 1),
+            kind: "push" as const,
+            phase: "shown",
+            inFront: false,
+            focusedHidden: false,
+        }));
+        deps.readWorkerRecords.mockResolvedValueOnce({ events: worker, failed: false });
+        const text = await createDiagnosticReport();
+        expect(deps.readWorkerRecords).toHaveBeenCalledWith();
+        expect(lines(text)[9]).toBe("Omitted events: 100");
+        const events = lines(text).slice(11);
+        expect(events).toHaveLength(300);
+        // The 100 oldest of the merged list are left out: the tab's first 50 and the worker's first 50.
+        expect(events[0]).toBe(`${new Date(AT + 100).toISOString()} browser page {"phase":"visible"}`);
+        expect(events[1]).toBe(
+            `${new Date(AT + 101).toISOString()} browser push {"phase":"shown","inFront":false,"focusedHidden":false}`,
+        );
+        expect(events.at(-1)).toBe(
+            `${new Date(AT + 399).toISOString()} browser push {"phase":"shown","inFront":false,"focusedHidden":false}`,
+        );
+        expect(canonicalDiagnosticReport(text)).toBe(text);
+
+        deps.authFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        deps.events = [{ at: AT, kind: "page", phase: "boot" }];
+        deps.readWorkerRecords.mockResolvedValueOnce({
+            events: [{ at: AT, kind: "push", phase: "received", inFront: true, focusedHidden: false }],
+            failed: false,
+        });
+        const equal = await createDiagnosticReport();
+        expect(lines(equal).slice(11)).toEqual([
+            `${new Date(AT).toISOString()} browser page {"phase":"boot"}`,
+            `${new Date(AT).toISOString()} browser push {"phase":"received","inFront":true,"focusedHidden":false}`,
+        ]);
+
+        deps.authFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        deps.readWorkerRecords.mockResolvedValueOnce({ events: [], failed: true });
+        const failed = await createDiagnosticReport();
+        expect(lines(failed)[9]).toBe("Omitted events: 1");
+        expect(lines(failed).slice(11)).toEqual([`${new Date(AT).toISOString()} browser page {"phase":"boot"}`]);
+        expect(canonicalDiagnosticReport(failed)).toBe(failed);
+
+        // Both reads start at once: the worker's does not wait for the server's answer.
+        vi.useFakeTimers();
+        deps.authFetch.mockImplementationOnce(never);
+        deps.readWorkerRecords.mockClear();
+        const pending = createDiagnosticReport();
+        expect(deps.readWorkerRecords).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(lines(await pending)[8]).toBe("Server: unavailable");
     });
 });
 

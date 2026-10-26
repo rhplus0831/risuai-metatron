@@ -64,7 +64,9 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   `push/pushService.ts` handles Web Push (each completion to every subscription with
   `TTL` 1 h, `urgency: "high"`, and the chat's tag hash as the RFC 8030 `topic`, so
   a push service replaces an undelivered completion only with a later one of the
-  same chat; a tag without a valid hash gets no topic); `data/vectorCache.ts` stores embeddings;
+  same chat; a tag without a valid hash gets no topic; each outcome, with the job id the runner
+  passes beside the notification, is a content-free `push` diagnostic event, see
+  [diagnostics](diagnostics.md)); `data/vectorCache.ts` stores embeddings;
   `diagnostics/` owns request history, diagnostic journals, reports, and support
   shares ([diagnostics](diagnostics.md)).
 - HTTP helpers: `http/{body,rateLimit,clientIp,compressedJson,staticCache,assetVerification,assetThumbnails}.ts`

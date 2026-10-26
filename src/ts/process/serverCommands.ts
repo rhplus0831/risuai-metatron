@@ -278,6 +278,7 @@ async function recoverJobChat(ref: ChatRef, jobId: string, after: "lost" | "gone
         }
         if (after === "gone") {
             alertToast(language.serverJob.endedAway);
+            recordClientEvent({ kind: "notice", notice: "serverJobEndedAway" });
         }
     };
     const refresh = () =>
@@ -444,6 +445,7 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<FollowEnd> {
 function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     if (end === "lost") {
         alertError(language.serverJob.lost);
+        recordClientEvent({ kind: "notice", notice: "serverJobLost" });
     } else if (end.type === "error" && end.reason === "maintenance") {
         // The debug info's time is the end's, not the alert's (the restore watch may take minutes).
         const at = Date.now();

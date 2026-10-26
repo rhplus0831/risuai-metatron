@@ -12,7 +12,8 @@ import { languageEnglish } from "../../lang/en";
 // refusing a subscription, the browser opt-out with the server removal retried at the next sync, the
 // tab's notification (suppressed while subscribed or while the page is in front with the focus, the
 // worker's `showNotification`, the page's `Notification` fallback with the click opening the chat),
-// the foreground cleanup of the tagged notifications, and the worker's `risu-open-route` message. A
+// the foreground cleanup of the tagged notifications (with its `push` `dismissedByPage` event counting
+// what it closed), and the worker's `risu-open-route` message. A
 // browser unsubscribe that rejects or resolves `false` (at a disable, and for an older key's
 // subscription) is reported in `error` and retried at the next sync, dropped by a re-enable, and
 // repaired when another tab turns this browser on mid-retry; the failure details follow the selected
@@ -22,12 +23,15 @@ const deps = vi.hoisted(() => ({
     authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
     openRoute: vi.fn<(path: string) => boolean>(() => true),
     settings: { ui: { notification: true } },
+    /** `recordClientEvent`: the diagnostics of the foreground cleanup. */
+    record: vi.fn<(input: unknown) => void>(),
 }));
 vi.mock("../storage/serverAuth", async () =>
     (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: deps.authFetch }),
 );
 vi.mock("../router/router.svelte", () => ({ openRoute: deps.openRoute }));
 vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
+vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => deps.record(input) }));
 
 const PROMPT_DISMISSED = "risu-push-prompt-dismissed";
 const BROWSER_OFF = "risu-push-browser-off";
@@ -189,6 +193,7 @@ beforeEach(() => {
     server.delete = 204;
     deps.settings.ui.notification = true;
     deps.openRoute.mockClear().mockReturnValue(true);
+    deps.record.mockClear();
     registration.pushManager.getSubscription.mockClear();
     registration.pushManager.subscribe.mockClear();
     registration.showNotification.mockClear();
@@ -832,7 +837,7 @@ describe("showCompletionNotification", () => {
 });
 
 describe("the page shown and the worker's messages", () => {
-    it("closes every page fallback completion notice on foreground dismissal, including repeated tags, and leaves other notices open", async () => {
+    it("closes every page fallback completion notice on foreground dismissal, including repeated tags, leaves other notices open, and records how many it closed (nothing when none)", async () => {
         FakeNotification.permission = "granted";
         delete (navigator as unknown as Record<string, unknown>).serviceWorker;
         visibility = "hidden";
@@ -848,10 +853,14 @@ describe("the page shown and the worker's messages", () => {
         await settle();
         for (const notice of created.slice(0, 4)) expect(notice.close).toHaveBeenCalledTimes(1);
         expect(created[4].close).not.toHaveBeenCalled();
+        expect(deps.record.mock.calls.map(([input]) => input)).toEqual([
+            { kind: "push", phase: "dismissedByPage", count: 4 },
+        ]);
         showPage();
         await settle();
         for (const notice of created.slice(0, 4)) expect(notice.close).toHaveBeenCalledTimes(1);
         expect(created[4].close).not.toHaveBeenCalled();
+        expect(deps.record).toHaveBeenCalledTimes(1);
     });
 
     it("closes the tagged notifications when the page is shown", async () => {
@@ -870,7 +879,7 @@ describe("the page shown and the worker's messages", () => {
         expect(later.close).toHaveBeenCalledTimes(1);
     });
 
-    it("closes every chat's completion notifications and the bare prefix, and leaves other notifications", async () => {
+    it("closes every chat's completion notifications and the bare prefix, leaves other notifications, and counts the worker's and the page's together, never their tags", async () => {
         const chatA = { tag: `${TAG}:a1`, close: vi.fn() };
         const chatB = { tag: `${TAG}:b2`, close: vi.fn() };
         const older = { tag: TAG, close: vi.fn() };
@@ -883,6 +892,10 @@ describe("the page shown and the worker's messages", () => {
         }
         expect(other.close).not.toHaveBeenCalled();
         expect(untagged.close).not.toHaveBeenCalled();
+        expect(deps.record.mock.calls.map(([input]) => input)).toEqual([
+            { kind: "push", phase: "dismissedByPage", count: 3 },
+        ]);
+        expect(JSON.stringify(deps.record.mock.calls)).not.toMatch(/a1|b2|another/);
     });
 
     it("opens the chat of a `risu-open-route` message and answers the worker; other messages are ignored", async () => {

@@ -1,5 +1,6 @@
 import isEqual from "lodash/isEqual";
 import { tick, untrack } from "svelte";
+import { get } from "svelte/store";
 import type { ChatOrderRecord, ChatSummary } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS, type StreamingMessage } from "../../../shared/jobs.ts";
 import {
@@ -39,7 +40,7 @@ import {
     type SecretEntryMap,
     type SecretPath,
 } from "../../../shared/llmSecrets.ts";
-import { alertError, alertNormal, alertReloadNotice, alertTerminal } from "../alert";
+import { alertError, alertNormal, alertReloadNotice, alertTerminal, reloadNotice } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
 import { PLUGIN_STORAGE_KEY, SAFE_LOCAL_PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -2083,9 +2084,16 @@ function acceptRemote(item: RemoteItem, removeAbsentSingleton = false) {
     }
 }
 
-/** Shows the reload notice; one already on screen is kept (it latches until dismissed). */
+/**
+ * Shows the reload notice; one already on screen is kept (it latches until dismissed). Only a notice
+ * this call put on screen is a `notice` event.
+ */
 function showReloadedNotice() {
+    const shown = get(reloadNotice) === null;
     alertReloadNotice(language.resourceReloaded);
+    if (shown) {
+        recordClientEvent({ kind: "notice", notice: "resourceReloaded" });
+    }
 }
 
 /** A record's own fields in a null-prototype dictionary (no client-only character keys), or null when it is not an object. */

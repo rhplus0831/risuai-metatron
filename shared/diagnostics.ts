@@ -13,9 +13,10 @@ export { isProviderCode, PROVIDER_CODE_PATTERN };
  * provider error code, a route template from `ROUTE_TEMPLATES`, a catalog model id, or an
  * application stack frame.
  *
- * The server writes `http`, `job`, `request`, `runtime`, and `lifecycle`; the browser's collector
- * (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, and the browser kinds `jobLink`,
- * `feed`, `sync`, `serviceWorker`, `page`, and `bootCache`.
+ * The server writes `http`, `job`, `request`, `runtime`, `lifecycle`, and its `push` phases; the
+ * browser's collector (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, the browser kinds
+ * `jobLink`, `feed`, `sync`, `serviceWorker`, `page`, `bootCache`, and `notice`, and the browser's
+ * `push` phases (the page's own, and the service worker's records the report reads).
  */
 export const DIAGNOSTIC_EVENT_KINDS = [
     "http",
@@ -29,6 +30,8 @@ export const DIAGNOSTIC_EVENT_KINDS = [
     "serviceWorker",
     "page",
     "bootCache",
+    "push",
+    "notice",
 ] as const;
 
 /** `GET`: the server's ring and state (`server/src/routes/diagnostics.ts`). */
@@ -125,7 +128,49 @@ export const SERVICE_WORKER_PHASES = [
     "controllerChange",
 ] as const;
 
-export const PAGE_PHASES = ["boot", "visible", "hidden", "online", "offline"] as const;
+/** The page: its boot, visibility, network state, and the Page Lifecycle's `freeze` and `resume`. */
+export const PAGE_PHASES = ["boot", "visible", "hidden", "online", "offline", "freeze", "resume"] as const;
+
+/**
+ * Web Push, the server's side (`server/src/push/pushService.ts`), one event per subscription a
+ * completion was sent to: the push service took it (which is not that the phone showed it), refused it
+ * (`status` when it answered), or reported the subscription gone (404, 410: removed); or the server
+ * sent nothing (`dropped`, with its `reason`).
+ */
+export const SERVER_PUSH_PHASES = ["accepted", "failed", "removed", "dropped"] as const;
+
+/**
+ * Web Push, the browser's side. The service worker's records (`public/sw.js`): a push arrived, its
+ * notification was shown with the platform's defaults or with `silent`, closed because a window was
+ * still in front, could not be shown, or was clicked. The page's: its notification state (`browserState`: the permission, whether
+ * this browser holds a subscription, whether it runs as an installed app), and the completion
+ * notifications it closed on becoming visible (`dismissedByPage`, with their `count`).
+ */
+export const BROWSER_PUSH_PHASES = [
+    "received",
+    "shown",
+    "shownSilent",
+    "closedInFront",
+    "showFailed",
+    "clicked",
+    "browserState",
+    "dismissedByPage",
+] as const;
+
+/**
+ * Why the server sent a completion to no one: it is shutting down, push is off (no VAPID keys), too many
+ * completions are waiting, no browser is subscribed, or the subscriptions file could not be read.
+ */
+export const PUSH_DROP_REASONS = ["closed", "noKeys", "queueFull", "noSubscriptions", "unreadable"] as const;
+
+/** The push service of a subscription, from its endpoint's host (never the endpoint). */
+export const PUSH_SERVICES = ["fcm", "apple", "mozilla", "windows", "other"] as const;
+
+/** The notification permission, or `unsupported` without the Notification API. */
+export const PUSH_PERMISSIONS = ["granted", "denied", "default", "unsupported"] as const;
+
+/** The notices whose showing is recorded (`notice` events): which alert the user saw. */
+export const NOTICES = ["serverJobLost", "serverJobEndedAway", "resourceReloaded"] as const;
 
 /**
  * The boot cache (`src/ts/storage/bootCache.ts`): the boot fell back to the plain read, a cache write
@@ -500,6 +545,22 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         records: count,
         items: count,
     },
+    push: {
+        phase: oneOf([...SERVER_PUSH_PHASES, ...BROWSER_PUSH_PHASES]),
+        service: oneOf(PUSH_SERVICES),
+        jobId: uuid,
+        status: httpStatus,
+        reason: oneOf(PUSH_DROP_REASONS),
+        inFront: bool,
+        focusedHidden: bool,
+        permission: oneOf(PUSH_PERMISSIONS),
+        subscribed: bool,
+        standalone: bool,
+        count,
+    },
+    notice: {
+        notice: oneOf(NOTICES),
+    },
 };
 
 /** Every kind's: how many identical events this one stands for and when the last was (the browser's collector folds repeats). */
@@ -563,19 +624,45 @@ const BROWSER_KINDS: ReadonlySet<string> = new Set([
     "serviceWorker",
     "page",
     "bootCache",
+    "push",
+    "notice",
 ]);
 const BROWSER_RUNTIME_ORIGINS: ReadonlySet<unknown> = new Set(["error", "unhandledrejection"]);
-const SERVER_KINDS: ReadonlySet<string> = new Set(["http", "job", "request", "runtime", "lifecycle"]);
+const SERVER_KINDS: ReadonlySet<string> = new Set(["http", "job", "request", "runtime", "lifecycle", "push"]);
+
+/** A `push` event's phases and fields of each side; the other side's fields are dropped. */
+const PUSH_SIDES = {
+    server: { phases: new Set<unknown>(SERVER_PUSH_PHASES), fields: ["service", "jobId", "status", "reason"] },
+    browser: {
+        phases: new Set<unknown>(BROWSER_PUSH_PHASES),
+        fields: ["inFront", "focusedHidden", "permission", "subscribed", "standalone", "count"],
+    },
+};
+
+/** `event` (a projected `push`) as `side` writes it: null for the other side's phase (or none), else without the other side's fields. */
+function pushOfSide(event: DiagnosticEvent, side: "server" | "browser"): DiagnosticEvent | null {
+    if (!PUSH_SIDES[side].phases.has(event.phase)) {
+        return null;
+    }
+    for (const field of PUSH_SIDES[side === "server" ? "browser" : "server"].fields) {
+        delete event[field];
+    }
+    return event;
+}
 
 /**
  * The browser's projection: `projectDiagnosticEvent`, then only the browser's kinds and runtime
- * origins, without a server-only field (a `runtime` event's `jobId`). The collector records and
- * restores with it; the report reads the browser's events with it.
+ * origins, without a server-only field (a `runtime` event's `jobId`), and a `push` only of the
+ * browser's phases, without the server's fields. The collector records and restores with it; the
+ * report reads the browser's events (the service worker's records included) with it.
  */
 export function projectBrowserEvent(input: unknown): DiagnosticEvent | null {
     const event = projectDiagnosticEvent(input);
     if (!event || !BROWSER_KINDS.has(event.kind)) {
         return null;
+    }
+    if (event.kind === "push") {
+        return pushOfSide(event, "browser");
     }
     if (event.kind === "runtime") {
         if (!BROWSER_RUNTIME_ORIGINS.has(event.origin)) {
@@ -586,11 +673,17 @@ export function projectBrowserEvent(input: unknown): DiagnosticEvent | null {
     return event;
 }
 
-/** The server's projection: `projectDiagnosticEvent`, then only the server's kinds and runtime origins. */
+/**
+ * The server's projection: `projectDiagnosticEvent`, then only the server's kinds and runtime origins,
+ * and a `push` only of the server's phases, without the browser's fields.
+ */
 export function projectServerEvent(input: unknown): DiagnosticEvent | null {
     const event = projectDiagnosticEvent(input);
     if (!event || !SERVER_KINDS.has(event.kind)) {
         return null;
+    }
+    if (event.kind === "push") {
+        return pushOfSide(event, "server");
     }
     if (event.kind === "runtime" && BROWSER_RUNTIME_ORIGINS.has(event.origin)) {
         return null;

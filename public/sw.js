@@ -299,6 +299,14 @@ const NOTIFICATION_LOGO = '/logo_192.png'
 // The tag prefix (`shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`); a push names its chat's tag
 // (the prefix, `:`, a hash of the chat), so each chat keeps its own notice.
 const COMPLETION_TAG = 'risuai-chat-completion'
+// The worker's content-free push records (`shared/diagnostics.ts` `BROWSER_PUSH_PHASES`), which the
+// page's diagnostic report reads (`src/ts/diagnostics/workerRecords.ts`, same names): fixed phases and
+// booleans only, never a payload, title, body, route, endpoint, or error text. The newest 100 are kept.
+const PUSH_RECORDS_DB = 'risu-sw-diagnostics'
+const PUSH_RECORDS_STORE = 'records'
+const MAX_PUSH_RECORDS = 100
+/** A write that has not completed by then is given up (a blocked or slow database). */
+const PUSH_RECORDS_WAIT_MS = 2000
 
 self.addEventListener('install', (event) => {
     event.waitUntil(self.skipWaiting())
@@ -327,7 +335,10 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
     event.notification.close()
-    event.waitUntil(openFromNotification(safeRoute(event.notification.data && event.notification.data.url)))
+    const record = pushRecord('clicked')
+    const opened = openFromNotification(safeRoute(event.notification.data && event.notification.data.url))
+    // Recorded after the window work, whatever its outcome (which stays the event's).
+    event.waitUntil(opened.finally(() => appendPushRecords([record])))
 })
 
 /** A same-origin chat route or `/`: nothing from a payload is opened unchecked. */
@@ -374,21 +385,35 @@ let pushCount = 0
 let pushQueue = Promise.resolve()
 
 function showPush(event){
-    const shown = pushQueue.then(() => showPushNow(event))
+    // Stamped on arrival, so the time from the server's `accepted` does not include this queue.
+    const records = [pushRecord('received')]
+    const shown = pushQueue.then(() => showPushNow(event, records))
     pushQueue = shown.catch(() => {})
-    return shown
+    // Written once the display settled, outside the queue: a slow or failed write delays neither this
+    // notification nor the next push's. The display's rejection stays the event's.
+    return shown.then(
+        () => appendPushRecords(records),
+        (error) => appendPushRecords(records).then(() => { throw error }),
+    )
 }
 
 /**
  * Every push shows a notification (Safari ends a subscription whose pushes show none). While a window of
- * the app is in front (`windowInFront`), the notification is silent, so it does not sound after the page's
- * message sound (`playMessage`), and it is closed once shown if the window is still in front (best effort:
- * a browser without `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own
+ * the app is in front (`windowState`'s `inFront`), the notification is silent, so it does not sound
+ * after the page's message sound (`playMessage`), and it is closed once shown if the window is still in
+ * front (best effort: a browser without `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own
  * default applies.
+ *
+ * `records` (its `received` first) gets this push's records: the window state the display was decided
+ * by, then `shown` or `shownSilent`, `showFailed` when neither show worked, and `closedInFront` when the
+ * second check closed it.
  */
-async function showPushNow(event){
+async function showPushNow(event, records){
     const push = readPush(event)
-    const inFront = await windowInFront()
+    const state = await windowState()
+    records[0].inFront = state.inFront
+    records[0].focusedHidden = state.focusedHidden
+    const inFront = state.inFront
     const quiet = inFront ? { silent: true } : {}
     const data = { url: push.url, push: ++pushCount }
     const options = {
@@ -403,16 +428,28 @@ async function showPushNow(event){
         await self.registration.showNotification(push.title, options)
     } catch {
         // A browser that rejects an option (a badge, an icon it cannot load): the text alone.
-        await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, ...quiet, data })
+        try {
+            await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, ...quiet, data })
+        } catch (error) {
+            records.push(pushRecord('showFailed', state))
+            throw error
+        }
     }
+    records.push(pushRecord(inFront ? 'shownSilent' : 'shown', state))
     if(inFront){
         try {
             const listed = await self.registration.getNotifications({ tag: push.tag })
-            if(await windowInFront()){
+            const again = await windowState()
+            if(again.inFront){
+                let closed = false
                 for(const notification of listed){
                     if(notification.data && notification.data.push === data.push){
                         notification.close()
+                        closed = true
                     }
+                }
+                if(closed){
+                    records.push(pushRecord('closedInFront', again))
                 }
             }
         } catch {}
@@ -420,18 +457,109 @@ async function showPushNow(event){
 }
 
 /**
- * Whether a window of the app is in front: focused and visible on the same window. A focused window can
- * be hidden (an Android PWA left for another app keeps the focus), and a push for it must still sound and
- * stay. A failed lookup counts as none.
+ * Whether a window of the app is in front (`inFront`): focused and visible on the same window. A focused
+ * window can be hidden (an Android PWA left for another app keeps the focus), and a push for it must still
+ * sound and stay; `focusedHidden` says such a window was there. A failed lookup counts as no window.
  */
-async function windowInFront(){
+async function windowState(){
     try {
-        const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-        return windows.some((client) => client.focused && client.visibilityState === 'visible' &&
-            new URL(client.url).origin === self.location.origin)
+        const windows = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+            .filter((client) => new URL(client.url).origin === self.location.origin)
+        return {
+            inFront: windows.some((client) => client.focused && client.visibilityState === 'visible'),
+            focusedHidden: windows.some((client) => client.focused && client.visibilityState !== 'visible'),
+        }
     } catch {
-        return false
+        return { inFront: false, focusedHidden: false }
     }
+}
+
+/** A push record of `phase`, stamped now, with the window state when given. */
+function pushRecord(phase, state){
+    const record = { at: Date.now(), kind: 'push', phase }
+    if(state){
+        record.inFront = state.inFront === true
+        record.focusedHidden = state.focusedHidden === true
+    }
+    return record
+}
+
+/**
+ * Appends `records` to the record store and prunes it to the newest 100, in one transaction. Never
+ * rejects: no IndexedDB, a failed or blocked open, a failed transaction, or one not done within 2 s is
+ * skipped (a connection that opens after that is closed, and an abandoned transaction is aborted).
+ */
+function appendPushRecords(records){
+    return new Promise((resolve) => {
+        let db = null
+        let transaction = null
+        let settled = false
+        let timer = null
+        const finish = () => {
+            if(settled){
+                return
+            }
+            settled = true
+            clearTimeout(timer)
+            if(transaction){
+                try {
+                    transaction.abort()
+                } catch {}
+            }
+            if(db){
+                try {
+                    db.close()
+                } catch {}
+            }
+            resolve()
+        }
+        let request
+        try {
+            request = indexedDB.open(PUSH_RECORDS_DB, 1)
+        } catch {
+            finish()
+            return
+        }
+        timer = setTimeout(finish, PUSH_RECORDS_WAIT_MS)
+        request.onupgradeneeded = () => {
+            try {
+                request.result.createObjectStore(PUSH_RECORDS_STORE, { autoIncrement: true })
+            } catch {}
+        }
+        request.onerror = () => finish()
+        request.onblocked = () => finish()
+        request.onsuccess = () => {
+            if(settled){
+                request.result.close()
+                return
+            }
+            db = request.result
+            try {
+                transaction = db.transaction(PUSH_RECORDS_STORE, 'readwrite')
+                const store = transaction.objectStore(PUSH_RECORDS_STORE)
+                for(const record of records){
+                    store.add(record)
+                }
+                const keys = store.getAllKeys()
+                keys.onsuccess = () => {
+                    const all = keys.result
+                    if(all.length > MAX_PUSH_RECORDS){
+                        store.delete(IDBKeyRange.upperBound(all[all.length - MAX_PUSH_RECORDS - 1]))
+                    }
+                }
+                transaction.oncomplete = () => {
+                    transaction = null
+                    finish()
+                }
+                transaction.onabort = () => {
+                    transaction = null
+                    finish()
+                }
+            } catch {
+                finish()
+            }
+        }
+    })
 }
 
 /**

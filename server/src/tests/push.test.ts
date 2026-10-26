@@ -7,6 +7,7 @@ import path from "node:path";
 import url from "node:url";
 import webPush from "web-push";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import {
     COMPLETION_NOTIFICATION_TAG,
     completionNotificationTag,
@@ -28,8 +29,10 @@ vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof 
 // the subscription, other failures counted with a sanitized label, a success clearing them, the
 // sends one at a time with a bounded queue, `close`, never a rejection), and the routes
 // (authenticated before the body, `no-store`, 400/503, the 16 KiB cap that the global limiter leaves
-// to the route, DELETE idempotent). The `it.fails` cases pin intended behavior the implementation
-// does not meet yet: they turn green once fixed.
+// to the route, DELETE idempotent), and the content-free `push` diagnostic events (one per
+// subscription's transport outcome, named by its push service and the job, or one `dropped` with its
+// reason; a throwing recorder changes nothing). The `it.fails` cases pin intended behavior the
+// implementation does not meet yet: they turn green once fixed.
 
 const ALLOWED = "https://fcm.googleapis.com/fcm/send/";
 let counter = 0;
@@ -883,6 +886,192 @@ describe("delivery", () => {
         });
         await push.send(NOTIFICATION);
         expect(calls).toHaveLength(0);
+    });
+});
+
+describe("the push diagnostics", () => {
+    const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
+    /** A recorder that keeps every event it is handed. */
+    function recorder() {
+        const events: DiagnosticEventInput[] = [];
+        return { events, diagnostics: { record: (input: DiagnosticEventInput) => void events.push(input) } };
+    }
+    function delivering(answer?: (call: Call) => unknown, env: NodeJS.ProcessEnv = {}) {
+        const save = savePath();
+        const fake = fakeTransport(answer);
+        const { events, diagnostics } = recorder();
+        const push = createPushService({ savePath: save, env, transport: fake.transport, diagnostics });
+        return { save, push, events, ...fake, file: serverFile(save, "push_subscriptions.json") };
+    }
+    const byPhase = (events: DiagnosticEventInput[], phase: string) => events.filter((event) => event.phase === phase);
+
+    it("records one event per subscription a completion was sent to: `accepted`, `failed` with the status the service answered (none for a network failure), `removed` for 404 and 410, each named by its push service and the job, never by its endpoint, and the job never enters the payload", async () => {
+        let failures: Record<string, unknown> = {};
+        const { push, calls, events } = delivering((call) => failures[call.subscription.endpoint]);
+        const fcm = subscription();
+        const android = subscription("https://android.googleapis.com/gcm/send/a");
+        const mozilla = subscription("https://updates.push.services.mozilla.com/wpush/v2/m");
+        const apple = subscription("https://web.push.apple.com/alice-secret");
+        const windows = subscription("https://db5p.notify.windows.com/w/?token=x");
+        for (const sub of [fcm, android, mozilla, apple, windows]) {
+            push.upsert(sub);
+        }
+        failures = {
+            [android.endpoint]: httpError(410),
+            [mozilla.endpoint]: httpError(404),
+            [apple.endpoint]: httpError(500),
+            [windows.endpoint]: new Error("ECONNRESET https://secret.example/token"),
+        };
+        await push.send(NOTIFICATION, { jobId: JOB });
+        expect(calls).toHaveLength(5);
+        const sorted = [...events].sort((a, b) => String(a.service).localeCompare(String(b.service)));
+        expect(sorted).toEqual([
+            { kind: "push", phase: "failed", service: "apple", jobId: JOB, status: 500 },
+            { kind: "push", phase: "removed", service: "fcm", jobId: JOB },
+            { kind: "push", phase: "accepted", service: "fcm", jobId: JOB },
+            { kind: "push", phase: "removed", service: "mozilla", jobId: JOB },
+            { kind: "push", phase: "failed", service: "windows", jobId: JOB, status: null },
+        ]);
+        expect(JSON.stringify(events)).not.toMatch(/googleapis|mozilla\.com|apple\.com|windows\.com|secret|token|Ann/);
+        for (const call of calls) {
+            expect(call.payload).not.toContain(JOB);
+            expect(JSON.stringify(call.options)).not.toContain(JOB);
+        }
+        // A host outside the known services is `other`; a send without a job has no job id.
+        const { push: extra, events: extraEvents } = delivering(undefined, {
+            RISU_WEB_PUSH_ALLOWED_HOSTS: "push.example.org",
+        });
+        extra.upsert(subscription("https://push.example.org/sub/1"));
+        await extra.send(NOTIFICATION);
+        expect(extraEvents).toEqual([{ kind: "push", phase: "accepted", service: "other", jobId: undefined }]);
+    });
+
+    it("records one `dropped` with its reason when nothing is sent: push off (`noKeys`), no subscriptions, an unreadable file, a full queue, and a closed service (also for a send queued before the close)", async () => {
+        const off = delivering(undefined, { RISU_WEB_PUSH_VAPID_PUBLIC_KEY: "lonely" });
+        await off.push.send(NOTIFICATION, { jobId: JOB });
+        expect(off.events).toEqual([{ kind: "push", phase: "dropped", reason: "noKeys", jobId: JOB }]);
+        expect(off.calls).toHaveLength(0);
+
+        const empty = delivering();
+        await empty.push.send(NOTIFICATION, { jobId: JOB });
+        expect(empty.events).toEqual([{ kind: "push", phase: "dropped", reason: "noSubscriptions", jobId: JOB }]);
+
+        const save = savePath();
+        const file = serverFile(save, "push_subscriptions.json");
+        mkdirSync(file, { recursive: true });
+        const { events: unreadableEvents, diagnostics } = recorder();
+        const unreadable = createPushService({
+            savePath: save,
+            env: {},
+            transport: fakeTransport().transport,
+            diagnostics,
+        });
+        await unreadable.send(NOTIFICATION, { jobId: JOB });
+        expect(unreadableEvents).toEqual([{ kind: "push", phase: "dropped", reason: "unreadable", jobId: JOB }]);
+
+        const gates: (() => void)[] = [];
+        const { events: queued, diagnostics: queueRecorder } = recorder();
+        const slow = createPushService({
+            savePath: savePath(),
+            env: {},
+            transport: {
+                sendNotification: vi.fn(async () => {
+                    await new Promise<void>((resolve) => gates.push(resolve));
+                    return { statusCode: 201, body: "", headers: {} };
+                }) as unknown as PushTransport["sendNotification"],
+            },
+            diagnostics: queueRecorder,
+        });
+        slow.upsert(subscription());
+        const sends = Array.from({ length: 8 }, () => slow.send(NOTIFICATION, { jobId: JOB }));
+        // The sends past the queue are dropped at once, each with its own event.
+        const full = byPhase(queued, "dropped");
+        expect(full.length).toBeGreaterThan(0);
+        expect(full).toEqual(full.map(() => ({ kind: "push", phase: "dropped", reason: "queueFull", jobId: JOB })));
+        // The service closes while the first delivery is in flight: the ones queued behind it are dropped as closed.
+        while (gates.length === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        slow.close();
+        while (gates.length > 0) {
+            gates.shift()!();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        await Promise.all(sends);
+        expect(byPhase(queued, "accepted")).toEqual([{ kind: "push", phase: "accepted", service: "fcm", jobId: JOB }]);
+        const closed = queued.filter((event) => event.reason === "closed");
+        expect(closed.length).toBe(8 - 1 - full.length);
+        await slow.send(NOTIFICATION, { jobId: JOB });
+        expect(queued.filter((event) => event.reason === "closed")).toHaveLength(closed.length + 1);
+        expect(queued).toHaveLength(8 + 1);
+    });
+
+    it("records the transport's outcome of a subscription registered again with new keys meanwhile, whose entry the outcome no longer touches", async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let inFlight!: () => void;
+        const started = new Promise<void>((resolve) => {
+            inFlight = resolve;
+        });
+        const save = savePath();
+        const { events, diagnostics } = recorder();
+        const transport: PushTransport = {
+            sendNotification: vi.fn(async () => {
+                inFlight();
+                await gate;
+                throw httpError(410);
+            }) as unknown as PushTransport["sendNotification"],
+        };
+        const push = createPushService({ savePath: save, env: {}, transport, diagnostics });
+        const sub = subscription();
+        push.upsert(sub);
+        const sending = push.send(NOTIFICATION, { jobId: JOB });
+        await started;
+        const renewed = { ...sub, keys: subscription().keys };
+        push.upsert(renewed);
+        release();
+        await sending;
+        expect(events).toEqual([{ kind: "push", phase: "removed", service: "fcm", jobId: JOB }]);
+        expect(readJson(serverFile(save, "push_subscriptions.json")).subscriptions).toEqual([
+            expect.objectContaining({ endpoint: sub.endpoint, keys: renewed.keys, failureCount: 0 }),
+        ]);
+    });
+
+    it("delivers, removes, and counts exactly as without a recorder when the recorder throws, and the send still resolves", async () => {
+        let failures: Record<string, unknown> = {};
+        const save = savePath();
+        const { calls, transport } = fakeTransport((call) => failures[call.subscription.endpoint]);
+        const throwing = {
+            record: vi.fn(() => {
+                throw new Error("journal closed");
+            }),
+        };
+        const push = createPushService({ savePath: save, env: {}, transport, diagnostics: throwing });
+        const gone = subscription();
+        const flaky = subscription();
+        const fine = subscription();
+        for (const sub of [gone, flaky, fine]) {
+            push.upsert(sub);
+        }
+        failures = { [gone.endpoint]: httpError(410), [flaky.endpoint]: httpError(500) };
+        await expect(push.send(NOTIFICATION, { jobId: JOB })).resolves.toBeUndefined();
+        expect(throwing.record).toHaveBeenCalledTimes(3);
+        expect(calls.map((call) => call.subscription.endpoint).sort()).toEqual(
+            [gone.endpoint, flaky.endpoint, fine.endpoint].sort(),
+        );
+        const stored = readJson(serverFile(save, "push_subscriptions.json")).subscriptions as any[];
+        expect(stored.map((row) => row.endpoint).sort()).toEqual([flaky.endpoint, fine.endpoint].sort());
+        expect(stored.find((row) => row.endpoint === flaky.endpoint)).toMatchObject({
+            failureCount: 1,
+            lastError: "HTTP 500",
+        });
+        expect(stored.find((row) => row.endpoint === fine.endpoint)).toMatchObject({ failureCount: 0 });
+        // A dropped send is as quiet.
+        push.close();
+        await expect(push.send(NOTIFICATION)).resolves.toBeUndefined();
+        expect(throwing.record).toHaveBeenCalledTimes(4);
     });
 });
 

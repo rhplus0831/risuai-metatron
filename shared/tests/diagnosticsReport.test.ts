@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { type DiagnosticsState, projectBrowserEvent, projectServerEvent } from "../diagnostics.ts";
+import {
+    BROWSER_PUSH_PHASES,
+    type DiagnosticsState,
+    NOTICES,
+    projectBrowserEvent,
+    projectServerEvent,
+    SERVER_PUSH_PHASES,
+} from "../diagnostics.ts";
 import {
     buildDiagnosticReport,
     canonicalDiagnosticReport,
@@ -416,6 +423,85 @@ describe("buildDiagnosticReport: the v1 text", () => {
         const longest = Math.max(...events.map((line) => bytes(line) + 1));
         expect(bytes(text) + longest).toBeGreaterThan(MAX_DIAGNOSTIC_REPORT_BYTES);
         expect(canonicalDiagnosticReport(text)).toBe(text);
+    });
+    it("round-trips the push and notice kinds byte for byte: each server push phase as a server line with its service, job, status, or reason, each browser push phase and notice as a browser line without the server's fields, a phase of the other side dropped, and at an equal time the server's line first", () => {
+        const serverPush = SERVER_PUSH_PHASES.map((phase, i) => ({
+            at: AT + i,
+            kind: "push",
+            phase,
+            service: "fcm",
+            jobId: JOB,
+            ...(phase === "failed" ? { status: 500 } : {}),
+            ...(phase === "dropped" ? { reason: "noSubscriptions" } : {}),
+            // Never the server's: the browser's fields and the endpoint.
+            inFront: true,
+            endpoint: "https://fcm.googleapis.com/fcm/send/alice-secret-token",
+        }));
+        const workerPush = BROWSER_PUSH_PHASES.slice(0, 6).map((phase, i) => ({
+            at: AT + i,
+            kind: "push",
+            phase,
+            inFront: i % 2 === 0,
+            focusedHidden: i === 1,
+            // Never the browser's: the server's fields and a payload.
+            service: "fcm",
+            jobId: JOB,
+            status: 201,
+            title: PRIVATE,
+            url: "/chat/alice/k",
+        }));
+        const text = buildDiagnosticReport(
+            input({
+                server: {
+                    state: state(),
+                    events: [...serverPush, { at: AT + 10, kind: "push", phase: "received", inFront: false }],
+                },
+                browser: [
+                    ...workerPush,
+                    {
+                        at: AT + 20,
+                        kind: "push",
+                        phase: "browserState",
+                        permission: "granted",
+                        subscribed: true,
+                        standalone: false,
+                    },
+                    { at: AT + 21, kind: "push", phase: "dismissedByPage", count: 2 },
+                    { at: AT + 22, kind: "push", phase: "accepted", service: "fcm", jobId: JOB },
+                    { at: AT + 23, kind: "push", count: 1 },
+                    ...NOTICES.map((notice, i) => ({ at: AT + 30 + i, kind: "notice", notice, message: PRIVATE })),
+                    { at: AT + 40, kind: "notice", notice: "Alice's chat was reloaded" },
+                    { at: AT + 41, kind: "page", phase: "freeze" },
+                    { at: AT + 42, kind: "page", phase: "resume" },
+                ],
+            }),
+        );
+        expect(eventLines(text)).toEqual([
+            `${ISO(AT)} server push {"phase":"accepted","service":"fcm","jobId":"${JOB}"}`,
+            `${ISO(AT)} browser push {"phase":"received","inFront":true,"focusedHidden":false}`,
+            `${ISO(AT + 1)} server push {"phase":"failed","service":"fcm","jobId":"${JOB}","status":500}`,
+            `${ISO(AT + 1)} browser push {"phase":"shown","inFront":false,"focusedHidden":true}`,
+            `${ISO(AT + 2)} server push {"phase":"removed","service":"fcm","jobId":"${JOB}"}`,
+            `${ISO(AT + 2)} browser push {"phase":"shownSilent","inFront":true,"focusedHidden":false}`,
+            `${ISO(AT + 3)} server push {"phase":"dropped","service":"fcm","jobId":"${JOB}","reason":"noSubscriptions"}`,
+            `${ISO(AT + 3)} browser push {"phase":"closedInFront","inFront":false,"focusedHidden":false}`,
+            `${ISO(AT + 4)} browser push {"phase":"showFailed","inFront":true,"focusedHidden":false}`,
+            `${ISO(AT + 5)} browser push {"phase":"clicked","inFront":false,"focusedHidden":false}`,
+            `${ISO(AT + 20)} browser push {"phase":"browserState","permission":"granted","subscribed":true,"standalone":false}`,
+            `${ISO(AT + 21)} browser push {"phase":"dismissedByPage","count":2}`,
+            `${ISO(AT + 30)} browser notice {"notice":"serverJobLost"}`,
+            `${ISO(AT + 31)} browser notice {"notice":"serverJobEndedAway"}`,
+            `${ISO(AT + 32)} browser notice {"notice":"resourceReloaded"}`,
+            `${ISO(AT + 40)} browser notice {}`,
+            `${ISO(AT + 41)} browser page {"phase":"freeze"}`,
+            `${ISO(AT + 42)} browser page {"phase":"resume"}`,
+        ]);
+        expect(text).not.toMatch(/alice|googleapis|Private|chat\//);
+        expect(canonicalDiagnosticReport(text)).toBe(text);
+        // A line of a push on the wrong side is not canonical.
+        const swapped = text.replace(` server push {"phase":"accepted"`, ` browser push {"phase":"accepted"`);
+        expect(swapped).not.toBe(text);
+        expect(canonicalDiagnosticReport(swapped)).toBeNull();
     });
 });
 

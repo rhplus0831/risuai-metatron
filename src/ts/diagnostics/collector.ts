@@ -22,7 +22,8 @@ import {
  * - `startDiagnosticsCollector` (first in `src/boot.ts`, before the app's modules load) restores the
  *   stored ring, then watches this window only (a plugin's iframe is another realm): same-origin API
  *   fetches that fail (`window.fetch`, wrapped), uncaught errors and rejections, visibility, online
- *   state, and the service worker's controller. The other hooks call `recordClientEvent` where their
+ *   state, the Page Lifecycle's `freeze` and `resume`, the service worker's controller, and this
+ *   browser's notification state (`push` `browserState`, at the start and whenever the page is shown). The other hooks call `recordClientEvent` where their
  *   event happens (job follows, the live-update socket, the save loop, the service worker setup).
  * - The mirror is written at most a second after an event (a pending write is not postponed), when
  *   the page is hidden or left, and before the app reloads the page (`flushClientDiagnostics`); the
@@ -41,6 +42,8 @@ const MAX_STACK_CHARS = 64 * 1024;
 /** How far back, in events and in time, an identical event is folded into an earlier one. */
 const FOLD_EVENTS = 16;
 const FOLD_MS = 10 * 60_000;
+/** How long the push subscription lookup may take before `browserState` leaves `subscribed` unknown. */
+const SUBSCRIPTION_WAIT_MS = 2000;
 
 let ring: DiagnosticEvent[] = [];
 let started = false;
@@ -230,6 +233,62 @@ export function browserStack(error: unknown): string[] {
     }
 }
 
+/**
+ * Whether this browser holds a push subscription (not whether the server knows it): false without a
+ * service worker, a registration, or a push manager; null (unknown) when the lookup failed or took over
+ * 2 s. Settled at once when no lookup was needed. Never throws or rejects.
+ */
+function subscribedState(): boolean | null | Promise<boolean | null> {
+    let container: ServiceWorkerContainer | undefined;
+    try {
+        container = navigator.serviceWorker as ServiceWorkerContainer | undefined;
+    } catch {
+        return null;
+    }
+    if (!container || typeof container.getRegistration !== "function") {
+        return false;
+    }
+    const worker = container;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lookup = (async () => {
+        const registration = await worker.getRegistration();
+        const manager = registration?.pushManager;
+        return manager ? (await manager.getSubscription()) !== null : false;
+    })().catch(() => null);
+    const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), SUBSCRIPTION_WAIT_MS);
+    });
+    return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Records this browser's notification state (`push` `browserState`): the permission (`unsupported`
+ * without the Notification API), whether it holds a push subscription, and whether it runs as an
+ * installed app (`display-mode: standalone`). A value that could not be read is left out (unknown), so
+ * it is never mistaken for false. Recorded once the subscription lookup settles. Never throws.
+ */
+function recordBrowserState() {
+    try {
+        const state: DiagnosticEventInput = { kind: "push", phase: "browserState" };
+        try {
+            state.permission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+        } catch {}
+        try {
+            if (typeof window.matchMedia === "function") {
+                state.standalone = window.matchMedia("(display-mode: standalone)").matches;
+            }
+        } catch {}
+        const record = (subscribed: boolean | null) =>
+            recordClientEvent(subscribed === null ? state : { ...state, subscribed });
+        const subscribed = subscribedState();
+        if (subscribed instanceof Promise) {
+            void subscribed.then(record);
+        } else {
+            record(subscribed);
+        }
+    } catch {}
+}
+
 function recordError(origin: "error" | "unhandledrejection", error: unknown) {
     recordClientEvent({ kind: "runtime", origin, name: errorName(error), stack: browserStack(error) });
 }
@@ -354,6 +413,7 @@ export function startDiagnosticsCollector(): void {
         ring = [...restore(), ...ring].slice(-RING_SIZE);
     } catch {}
     recordClientEvent({ kind: "page", phase: "boot" });
+    recordBrowserState();
     try {
         wrapFetch();
     } catch {}
@@ -375,8 +435,16 @@ export function startDiagnosticsCollector(): void {
         recordClientEvent({ kind: "page", phase: hidden ? "hidden" : "visible" });
         if (hidden) {
             flushClientDiagnostics();
+        } else {
+            recordBrowserState();
         }
     });
+    // Page Lifecycle (Chromium): a frozen page runs nothing until it resumes, and may be discarded meanwhile.
+    listen(document, "freeze", () => {
+        recordClientEvent({ kind: "page", phase: "freeze" });
+        flushClientDiagnostics();
+    });
+    listen(document, "resume", () => recordClientEvent({ kind: "page", phase: "resume" }));
     listen(window, "pagehide", () => flushClientDiagnostics());
     listen(window, "online", () => recordClientEvent({ kind: "page", phase: "online" }));
     listen(window, "offline", () => recordClientEvent({ kind: "page", phase: "offline" }));

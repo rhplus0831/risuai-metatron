@@ -6,6 +6,7 @@ import {
     PUSH_SUBSCRIPTION_PATH,
 } from "../../../shared/notifications.ts";
 import { language } from "../../lang";
+import { recordClientEvent } from "../diagnostics/collector";
 import { openRoute } from "../router/router.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { settings } from "../storage/settingsViews.svelte";
@@ -428,14 +429,17 @@ const fallbackNotifications = new Map<string, Set<Notification>>();
 
 /**
  * Closes this browser's completion notifications of every chat (the page is in front, so they are
- * read): each chat has its own tag, so they are listed whole and picked by the tag's prefix.
+ * read): each chat has its own tag, so they are listed whole and picked by the tag's prefix. When it
+ * closed any, a `push` `dismissedByPage` event records how many.
  */
 async function dismissCompletionNotifications() {
+    let count = 0;
     for (const [tag, notices] of fallbackNotifications) {
         if (isCompletionNotificationTag(tag)) {
             fallbackNotifications.delete(tag);
             for (const notification of notices) {
                 notification.close();
+                count++;
             }
         }
     }
@@ -445,9 +449,13 @@ async function dismissCompletionNotifications() {
         for (const notification of shown ?? []) {
             if (isCompletionNotificationTag(notification.tag)) {
                 notification.close();
+                count++;
             }
         }
     } catch {}
+    if (count > 0) {
+        recordClientEvent({ kind: "push", phase: "dismissedByPage", count });
+    }
 }
 
 /**

@@ -2,10 +2,12 @@
 
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 import { COMPLETION_NOTIFICATION_TAG, completionNotificationTag } from "../../shared/notifications.ts";
 
-// Exercise the installed PWA's HTTP contract, including the manifest that sends the POST.
+// Exercise the installed PWA's HTTP contract, including the manifest that sends the POST, and the
+// worker's content-free push records (IndexedDB `risu-sw-diagnostics`, over `fake-indexeddb`).
 const origin = "https://installed.example:8443";
 const source = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
 const manifest = JSON.parse(readFileSync(new URL("../../public/manifest.json", import.meta.url), "utf8"));
@@ -19,7 +21,18 @@ type FakeWindow = {
     postMessage: ReturnType<typeof vi.fn>;
 };
 
-function worker(windows: FakeWindow[] = []) {
+/**
+ * What the worker's context gets beyond the fixed globals: an IndexedDB factory (none: the worker has
+ * no `indexedDB`, as the tests without records run), a clock, and timers under the test's control.
+ */
+type WorkerGlobals = {
+    indexedDB?: unknown;
+    Date?: typeof Date;
+    setTimeout?: (fn: () => void, ms: number) => unknown;
+    clearTimeout?: (id: unknown) => void;
+};
+
+function worker(windows: FakeWindow[] = [], globals: WorkerGlobals = {}) {
     const entries = new Map<string, Response>();
     const cacheKey = (url: Request | URL | string) => (url instanceof Request ? url.url : String(url));
     const cache = {
@@ -67,6 +80,10 @@ function worker(windows: FakeWindow[] = []) {
         MessageChannel,
         setTimeout,
         clearTimeout,
+        ...(globals.indexedDB !== undefined ? { indexedDB: globals.indexedDB, IDBKeyRange } : {}),
+        ...(globals.Date ? { Date: globals.Date } : {}),
+        ...(globals.setTimeout ? { setTimeout: globals.setTimeout } : {}),
+        ...(globals.clearTimeout ? { clearTimeout: globals.clearTimeout } : {}),
     });
     const dispatch = async (request: Request): Promise<Response> => {
         const respondWith = vi.fn();
@@ -85,21 +102,29 @@ function worker(windows: FakeWindow[] = []) {
         expect(waitUntil).toHaveBeenCalledTimes(1);
         await waitUntil.mock.calls[0][0];
     };
-    /** A click on a completion notification; resolves when the worker's `waitUntil` work is done. */
-    const click = async (url: string) => {
+    /** A click on a completion notification; the worker's `waitUntil` promise. */
+    const clicked = (url: string): Promise<unknown> => {
         const waitUntil = vi.fn();
         listeners.get("notificationclick")!({ notification: { close: vi.fn(), data: { url } }, waitUntil });
         expect(waitUntil).toHaveBeenCalledTimes(1);
-        await waitUntil.mock.calls[0][0];
+        return waitUntil.mock.calls[0][0];
     };
-    /** A push with `payload` as its JSON data; resolves when the worker's `waitUntil` work is done. */
-    const push = async (payload: unknown) => {
+    /** A click on a completion notification; resolves when the worker's `waitUntil` work is done. */
+    const click = async (url: string) => {
+        await clicked(url);
+    };
+    /** A push with `payload` as its JSON data; the worker's `waitUntil` promise. */
+    const pushed = (payload: unknown): Promise<unknown> => {
         const waitUntil = vi.fn();
         listeners.get("push")!({ data: { json: () => payload }, waitUntil });
         expect(waitUntil).toHaveBeenCalledTimes(1);
-        await waitUntil.mock.calls[0][0];
+        return waitUntil.mock.calls[0][0];
     };
-    return { entries, open, dispatch, post, activate, clients, click, push, registration, shown };
+    /** A push with `payload` as its JSON data; resolves when the worker's `waitUntil` work is done. */
+    const push = async (payload: unknown) => {
+        await pushed(payload);
+    };
+    return { entries, open, dispatch, post, activate, clients, click, clicked, push, pushed, registration, shown };
 }
 
 function redirected(response: Response, path: string) {
@@ -397,5 +422,289 @@ describe("completion push", () => {
         const tag = completionNotificationTag("c", "a");
         await sw.push(payload(tag));
         expect(shownTags(sw)).toEqual([tag, tag]);
+    });
+});
+
+describe("push records", () => {
+    const RECORDS_DB = "risu-sw-diagnostics";
+    const T0 = Date.UTC(2026, 9, 13, 10, 15);
+    const payload = (tag = completionNotificationTag("c", "a")) => ({
+        title: "Risuai",
+        body: "Done.",
+        url: "/chat/c/a",
+        tag,
+    });
+    const appWindow = (focused: boolean, visibilityState = "visible"): FakeWindow => ({
+        url: origin + "/chat/c/a",
+        focused,
+        visibilityState,
+        focus: vi.fn(async () => {}),
+        navigate: vi.fn(async () => null),
+        postMessage: vi.fn(),
+    });
+    /** A clock the test moves. */
+    function clock(start = T0) {
+        let now = start;
+        class TestDate extends Date {
+            static now() {
+                return now;
+            }
+        }
+        return { Date: TestDate as unknown as typeof Date, set: (at: number) => (now = at) };
+    }
+    /** Timers the test fires. */
+    function timers() {
+        const pending = new Map<number, { fn: () => void; ms: number }>();
+        let next = 1;
+        return {
+            pending,
+            setTimeout: (fn: () => void, ms: number) => {
+                pending.set(next, { fn, ms });
+                return next++;
+            },
+            clearTimeout: (id: unknown) => void pending.delete(id as number),
+            /** Fires every pending timer of `ms`. */
+            fire(ms: number) {
+                for (const [id, timer] of [...pending]) {
+                    if (timer.ms === ms) {
+                        pending.delete(id);
+                        timer.fn();
+                    }
+                }
+            },
+        };
+    }
+    /** Every record in the store, in key order; none, without creating the database, while the worker has not. */
+    async function stored(indexedDB: IDBFactory): Promise<Record<string, unknown>[]> {
+        if (!(await indexedDB.databases()).some((database) => database.name === RECORDS_DB)) {
+            return [];
+        }
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open(RECORDS_DB, 1);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+        try {
+            if (!db.objectStoreNames.contains("records")) {
+                return [];
+            }
+            return await new Promise((resolve, reject) => {
+                const read = db.transaction("records", "readonly").objectStore("records").getAll();
+                read.onsuccess = () => resolve(read.result as Record<string, unknown>[]);
+                read.onerror = () => reject(read.error);
+            });
+        } finally {
+            db.close();
+        }
+    }
+    /** The store as an earlier worker left it. */
+    async function seeded(indexedDB: IDBFactory, rows: unknown[]) {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open(RECORDS_DB, 1);
+            request.onupgradeneeded = () => request.result.createObjectStore("records", { autoIncrement: true });
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+        await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction("records", "readwrite");
+            for (const row of rows) tx.objectStore("records").add(row);
+            tx.oncomplete = () => resolve();
+            tx.onabort = () => reject(tx.error);
+        });
+        db.close();
+    }
+    /** Lets every settled promise chain run (no timer fires). */
+    const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    it("records each push's arrival and outcome with the window state it saw, and a click, as fixed phases and booleans only, nothing of the payload", async () => {
+        const indexedDB = new IDBFactory();
+        const time = clock();
+        const front = appWindow(false);
+        const sw = worker([front], { indexedDB, Date: time.Date });
+        await sw.push(payload());
+        time.set(T0 + 1000);
+        front.focused = true;
+        await sw.push(payload());
+        time.set(T0 + 2000);
+        front.visibilityState = "hidden";
+        await sw.push(payload());
+        time.set(T0 + 3000);
+        sw.clients.openWindow.mockRejectedValueOnce(new TypeError("not allowed"));
+        front.focused = false;
+        await sw.click("/chat/c/a");
+        const records = await stored(indexedDB);
+        expect(records).toEqual([
+            { at: T0, kind: "push", phase: "received", inFront: false, focusedHidden: false },
+            { at: T0, kind: "push", phase: "shown", inFront: false, focusedHidden: false },
+            { at: T0 + 1000, kind: "push", phase: "received", inFront: true, focusedHidden: false },
+            { at: T0 + 1000, kind: "push", phase: "shownSilent", inFront: true, focusedHidden: false },
+            { at: T0 + 1000, kind: "push", phase: "closedInFront", inFront: true, focusedHidden: false },
+            { at: T0 + 2000, kind: "push", phase: "received", inFront: false, focusedHidden: true },
+            { at: T0 + 2000, kind: "push", phase: "shown", inFront: false, focusedHidden: true },
+            { at: T0 + 3000, kind: "push", phase: "clicked" },
+        ]);
+        expect(JSON.stringify(records)).not.toMatch(/Risuai|Done|chat|completion|not allowed/);
+        expect(sw.registration.showNotification).toHaveBeenCalledTimes(3);
+    });
+
+    it("records `closedInFront` only when the second check still found the window in front, and `shown` after a text-only retry", async () => {
+        const indexedDB = new IDBFactory();
+        const front = appWindow(true);
+        const sw = worker([front], { indexedDB, Date: clock().Date });
+        sw.registration.getNotifications.mockImplementationOnce(async () => {
+            front.focused = false;
+            return sw.shown;
+        });
+        await sw.push(payload());
+        sw.registration.showNotification.mockRejectedValueOnce(new TypeError("bad icon"));
+        await sw.push(payload());
+        // A later push of the chat replaced this one before the lookup: nothing of its own to close.
+        front.focused = true;
+        sw.registration.getNotifications.mockImplementationOnce(async () => {
+            sw.shown.splice(0, sw.shown.length, { tag: payload().tag, data: { push: 99 }, close: vi.fn() });
+            return sw.shown;
+        });
+        await sw.push(payload());
+        expect((await stored(indexedDB)).map((record) => record.phase)).toEqual([
+            "received",
+            "shownSilent",
+            "received",
+            "shown",
+            "received",
+            "shownSilent",
+        ]);
+    });
+
+    it("stamps `received` when the push arrives, not when its turn in the display queue comes, and writes a push's records only once its display settled", async () => {
+        const indexedDB = new IDBFactory();
+        const time = clock();
+        const sw = worker([appWindow(true)], { indexedDB, Date: time.Date });
+        let listed!: () => void;
+        sw.registration.getNotifications.mockImplementationOnce(
+            () => new Promise((resolve) => (listed = () => resolve([...sw.shown]))),
+        );
+        const first = sw.pushed(payload());
+        await drain();
+        expect(listed).toBeDefined();
+        time.set(T0 + 500);
+        const second = sw.pushed(payload());
+        await drain();
+        expect(sw.registration.showNotification).toHaveBeenCalledTimes(1);
+        expect(await stored(indexedDB)).toEqual([]);
+        time.set(T0 + 4000);
+        listed();
+        await Promise.all([first, second]);
+        const records = await stored(indexedDB);
+        expect(records.map((record) => [record.phase, record.at])).toEqual([
+            ["received", T0],
+            ["shownSilent", T0],
+            ["closedInFront", T0 + 4000],
+            ["received", T0 + 500],
+            ["shownSilent", T0 + 4000],
+            ["closedInFront", T0 + 4000],
+        ]);
+    });
+
+    it("records `showFailed` when neither show worked, and the push still rejects with the display's error", async () => {
+        const indexedDB = new IDBFactory();
+        const sw = worker([appWindow(true, "hidden")], { indexedDB, Date: clock().Date });
+        sw.registration.showNotification
+            .mockRejectedValueOnce(new TypeError("bad icon"))
+            .mockRejectedValueOnce(new TypeError("still bad"));
+        await expect(sw.push(payload())).rejects.toThrow("still bad");
+        expect(await stored(indexedDB)).toEqual([
+            { at: T0, kind: "push", phase: "received", inFront: false, focusedHidden: true },
+            { at: T0, kind: "push", phase: "showFailed", inFront: false, focusedHidden: true },
+        ]);
+        // The failure does not stop the next push.
+        await sw.push(payload());
+        expect((await stored(indexedDB)).map((record) => record.phase)).toEqual([
+            "received",
+            "showFailed",
+            "received",
+            "shown",
+        ]);
+    });
+
+    it("keeps the newest 100 records, pruning the oldest in the same write as the new ones", async () => {
+        const indexedDB = new IDBFactory();
+        await seeded(
+            indexedDB,
+            Array.from({ length: 99 }, (_, i) => ({ at: i, kind: "push", phase: "shown" })),
+        );
+        const sw = worker([], { indexedDB, Date: clock().Date });
+        await sw.push(payload());
+        const records = await stored(indexedDB);
+        expect(records).toHaveLength(100);
+        expect(records[0]).toEqual({ at: 1, kind: "push", phase: "shown" });
+        expect(records.slice(-2).map((record) => record.phase)).toEqual(["received", "shown"]);
+        await sw.push(payload());
+        const again = await stored(indexedDB);
+        expect(again).toHaveLength(100);
+        expect(again[0]).toEqual({ at: 3, kind: "push", phase: "shown" });
+    });
+
+    it("shows the notification and settles the push when the record store cannot be opened or its open fails", async () => {
+        for (const indexedDB of [
+            {
+                open() {
+                    throw new DOMException("denied", "SecurityError");
+                },
+            },
+            {
+                open() {
+                    const request: { onerror?: () => void; error: unknown } = { error: new Error("quota") };
+                    queueMicrotask(() => request.onerror?.());
+                    return request;
+                },
+            },
+        ]) {
+            const sw = worker([], { indexedDB, Date: clock().Date });
+            await expect(sw.push(payload())).resolves.toBeUndefined();
+            expect(sw.registration.showNotification).toHaveBeenCalledTimes(1);
+            await expect(sw.click("/chat/c/a")).resolves.toBeUndefined();
+        }
+    });
+
+    it("never lets a store that does not answer delay the notification or the next push: the write is given up after 2 s, and a connection that opens later is closed unused", async () => {
+        const pending: { onsuccess?: () => void; result?: unknown }[] = [];
+        const indexedDB = {
+            open() {
+                const request = {};
+                pending.push(request);
+                return request;
+            },
+        };
+        const timer = timers();
+        const sw = worker([], { indexedDB, Date: clock().Date, ...timer });
+        let settled = 0;
+        const first = sw.pushed(payload()).then(() => settled++);
+        const second = sw.pushed(payload()).then(() => settled++);
+        await drain();
+        expect(sw.registration.showNotification).toHaveBeenCalledTimes(2);
+        expect(settled).toBe(0);
+        expect([...timer.pending.values()].map((entry) => entry.ms)).toEqual([2000, 2000]);
+        timer.fire(2000);
+        await Promise.all([first, second]);
+        expect(settled).toBe(2);
+        const late = { close: vi.fn(), transaction: vi.fn() };
+        for (const request of pending) {
+            request.result = late;
+            request.onsuccess!();
+        }
+        expect(late.close).toHaveBeenCalledTimes(2);
+        expect(late.transaction).not.toHaveBeenCalled();
+    });
+
+    it("records a click when it happens, also when no window could be opened, and leaves that failure the event's", async () => {
+        const indexedDB = new IDBFactory();
+        const time = clock();
+        const sw = worker([], { indexedDB, Date: time.Date });
+        sw.clients.openWindow.mockImplementation(async () => {
+            time.set(T0 + 9000);
+            throw new TypeError("not allowed");
+        });
+        await expect(sw.clicked("/chat/c/a")).rejects.toThrow("not allowed");
+        expect(await stored(indexedDB)).toEqual([{ at: T0, kind: "push", phase: "clicked" }]);
     });
 });

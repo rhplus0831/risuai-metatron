@@ -783,7 +783,7 @@ async function runSpeaker(arg: {
                     tag: notification.tag,
                 },
             });
-            deps.push?.send(notification).catch((error) => console.error("[Push]", error));
+            deps.push?.send(notification, { jobId: job.id }).catch((error) => console.error("[Push]", error));
         } catch (error) {
             console.error("[Push] The completion notification failed", error);
         }

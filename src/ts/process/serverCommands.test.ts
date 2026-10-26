@@ -280,7 +280,7 @@ describe("followJobToEnd", () => {
         expect(stubs.release).not.toHaveBeenCalled();
     });
 
-    it("releases a job the server no longer knows (or of another epoch) as gone: no lost alert, the chat marked stale and read again, then the `endedAway` toast; the caller gets `lost`; an aborted end is not alerted", async () => {
+    it("releases a job the server no longer knows (or of another epoch) as gone: no lost alert, the chat marked stale and read again, then the `endedAway` toast with its `notice` event; the caller gets `lost`; an aborted end is not alerted", async () => {
         stubs.read.mockResolvedValueOnce(null);
         const gone = commands.followJobToEnd("j", ref);
         await flush();
@@ -295,6 +295,7 @@ describe("followJobToEnd", () => {
         expect(stubs.record.mock.calls.map(([input]) => input)).toEqual([
             { kind: "jobLink", phase: "gone", jobId: "j" },
             { kind: "jobLink", phase: "recovered", jobId: "j" },
+            { kind: "notice", notice: "serverJobEndedAway" },
         ]);
         // Read before the toast: the toast tells of a chat already reloaded.
         expect(stubs.refresh.mock.invocationCallOrder[0]).toBeLessThan(stubs.alertToast.mock.invocationCallOrder[0]);
@@ -1457,7 +1458,7 @@ describe("the job's chat", () => {
 describe("the follow's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
-    it("records `reattach` with its attempt before every attach after the first, `lost` once when the attaches run out, and `recovered` when the chat's read after it took", async () => {
+    it("records `reattach` with its attempt before every attach after the first, `lost` once when the attaches run out with the `serverJobLost` notice it alerts, and `recovered` when the chat's read after it took", async () => {
         stubs.read.mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
@@ -1472,8 +1473,10 @@ describe("the follow's diagnostics", () => {
             { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 3 },
             { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 4 },
             { kind: "jobLink", phase: "lost", jobId: "j" },
+            { kind: "notice", notice: "serverJobLost" },
             { kind: "jobLink", phase: "recovered", jobId: "j" },
         ]);
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
     });
 
     it("records `gone` once for a job the server does not know at boot, `lost` for a chat that cannot be loaded, and nothing for a job that ends", async () => {
@@ -1485,7 +1488,10 @@ describe("the follow's diagnostics", () => {
         // A chat that could not be loaded is not held: nothing is marked or read again.
         stubs.markStale.mockReturnValueOnce(false);
         expect(await commands.followJobToEnd("unloaded", ref)).toBe("lost");
-        expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "unloaded" }]);
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "lost", jobId: "unloaded" },
+            { kind: "notice", notice: "serverJobLost" },
+        ]);
         expect(stubs.refresh).not.toHaveBeenCalled();
         stubs.record.mockClear();
         stubs.load.mockResolvedValue({});

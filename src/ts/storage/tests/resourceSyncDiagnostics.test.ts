@@ -7,8 +7,9 @@ import { materialize } from "./serverKinds";
 
 // The save adapter's diagnostics over a stubbed collector. A 409 records one `sync conflict` with
 // counts by category (records, chats, orders; `generating` the subset a job blocked) before the
-// recovery's first read, with no id; a restore's reload records `sync reload restore` and flushes
-// the mirror right before `location.reload()`.
+// recovery's first read, with no id, and a `notice resourceReloaded` only when the recovery's reload
+// notice went on screen (a latched notice already shown records none); a restore's reload records
+// `sync reload restore` and flushes the mirror right before `location.reload()`.
 
 const { server, alerts, diagnostics } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -17,10 +18,19 @@ const { server, alerts, diagnostics } = vi.hoisted(() => ({
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         terminal: vi.fn(async () => undefined),
+        /** The reload notice's latch: on screen until dismissed, as `alert.ts` keeps it. */
+        reloadShown: false,
     },
     /** What the adapter asked of the collector and the page, in order; `onRecord` runs before each event is kept. */
-    diagnostics: { calls: [] as unknown[], onRecord: null as (() => void) | null },
+    diagnostics: { calls: [] as unknown[], onRecord: null as ((input: unknown) => void) | null },
 }));
+/** `alert.ts`'s `reloadNotice` store over the latch. */
+const reloadNotice = {
+    subscribe(run: (value: string | null) => void) {
+        run(alerts.reloadShown ? "reloaded" : null);
+        return () => {};
+    },
+};
 
 vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -29,7 +39,11 @@ vi.mock("../../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
         alertNormal: alerts.normal,
-        alertReloadNotice: alerts.normal,
+        alertReloadNotice: (msg: string) => {
+            alerts.normal(msg);
+            alerts.reloadShown = true;
+        },
+        reloadNotice,
         alertNormalWait: alerts.normalWait,
         alertTerminal: alerts.terminal,
     }),
@@ -48,7 +62,7 @@ vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: stri
 vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../../diagnostics/collector", () => ({
     recordClientEvent: (input: unknown) => {
-        diagnostics.onRecord?.();
+        diagnostics.onRecord?.(input);
         diagnostics.calls.push(input);
     },
     flushClientDiagnostics: () => diagnostics.calls.push("flush"),
@@ -84,6 +98,7 @@ async function boot() {
     fake.requests.length = 0;
     diagnostics.calls.length = 0;
     diagnostics.onRecord = null;
+    alerts.reloadShown = false;
     return { fake, sync, settings };
 }
 
@@ -104,15 +119,41 @@ afterEach(() => {
 });
 
 describe("the save adapter's diagnostics", () => {
-    it("records one `sync conflict` with the counts by category for a 409 another tab caused, without the record's id", async () => {
+    it("records one `sync conflict` with the counts by category for a 409 another tab caused, without the record's id, then the reload notice it put on screen", async () => {
         const { fake, sync, settings } = await boot();
         fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: "remote user" });
         settings.ui.theme = "local user";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["ui/main"]);
-        expect(events()).toEqual([{ kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 0, generating: 0 }]);
+        expect(events()).toEqual([
+            { kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 0, generating: 0 },
+            { kind: "notice", notice: "resourceReloaded" },
+        ]);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         await sync.flushResources();
-        expect(events()).toHaveLength(1);
+        expect(events()).toHaveLength(2);
+    });
+
+    it("records `notice resourceReloaded` only for a notice this recovery put on screen: none while the latched notice is still shown, one again after it was dismissed", async () => {
+        const { fake, sync, settings } = await boot();
+        const conflict = async (theme: string) => {
+            fake.set("ui", "main", { ...fake.data<Record<string, unknown>>("ui", "main")!, theme: `remote ${theme}` });
+            settings.ui.theme = `local ${theme}`;
+            expect((await sync.flushResources()).discarded).toEqual(["ui/main"]);
+        };
+        await conflict("first");
+        expect(alerts.reloadShown).toBe(true);
+        await conflict("second");
+        expect(alerts.normal).toHaveBeenCalledTimes(2);
+        expect(events()).toEqual([
+            { kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 0, generating: 0 },
+            { kind: "notice", notice: "resourceReloaded" },
+            { kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 0, generating: 0 },
+        ]);
+        // Dismissed: the next recovery's notice is on screen again.
+        alerts.reloadShown = false;
+        await conflict("third");
+        expect(events().filter((event) => (event as { kind: string }).kind === "notice")).toHaveLength(2);
     });
 
     it("counts every conflict of the 409 by category, the generating ones as a subset, before the recovery's first read", async () => {
@@ -135,8 +176,10 @@ describe("the save adapter's diagnostics", () => {
         settings.ui.theme = "local";
         const reads = () => fake.requests.filter((request) => request.path === "/api/resources/read").length;
         let readsAtRecord = -1;
-        diagnostics.onRecord = () => {
-            readsAtRecord = reads();
+        diagnostics.onRecord = (input) => {
+            if ((input as { phase?: string }).phase === "conflict") {
+                readsAtRecord = reads();
+            }
         };
         await sync.flushResources().catch(() => {});
         const conflicts = events().filter((event) => (event as { phase?: string }).phase === "conflict");

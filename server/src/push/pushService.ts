@@ -2,8 +2,10 @@ import { createECDH, ECDH } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import webPush from "web-push";
+import type { PUSH_DROP_REASONS, PUSH_SERVICES } from "../../../shared/diagnostics.ts";
 import { COMPLETION_NOTIFICATION_TAG, type CompletionNotification } from "../../../shared/notifications.ts";
 import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
+import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 
 /** At most this many browsers are subscribed; registering one more drops the least recently registered. */
 export const MAX_PUSH_SUBSCRIPTIONS = 50;
@@ -53,8 +55,11 @@ export type PushService = {
     upsert(subscription: unknown): boolean;
     /** Removes an endpoint (also in its noncanonical spelling); false only when the file could not be written. */
     remove(endpoint: unknown): boolean;
-    /** Sends to every subscription in the background. Never rejects; resolves once delivered or dropped. */
-    send(notification: CompletionNotification): Promise<void>;
+    /**
+     * Sends to every subscription in the background. Never rejects; resolves once delivered or dropped.
+     * `context.jobId` (the job that completed) goes only into the diagnostic events, never the payload.
+     */
+    send(notification: CompletionNotification, context?: { jobId?: string }): Promise<void>;
     /** Shutdown: later sends are dropped. */
     close(): void;
 };
@@ -242,6 +247,29 @@ function errorCategory(error: unknown): { status: number | null; label: string }
     return { status, label: status === null ? "network" : `HTTP ${status}` };
 }
 
+/** The push service of a stored endpoint, from its host, as a diagnostic event names it (never the endpoint). */
+function pushServiceOf(endpoint: string): (typeof PUSH_SERVICES)[number] {
+    let host: string;
+    try {
+        host = new URL(endpoint).hostname.toLowerCase();
+    } catch {
+        return "other";
+    }
+    if (host === "fcm.googleapis.com" || host === "android.googleapis.com") {
+        return "fcm";
+    }
+    if (host === "push.apple.com" || host.endsWith(".push.apple.com")) {
+        return "apple";
+    }
+    if (host === "mozilla.com" || host.endsWith(".mozilla.com")) {
+        return "mozilla";
+    }
+    if (host.endsWith(".notify.windows.com")) {
+        return "windows";
+    }
+    return "other";
+}
+
 /** RFC 8030 `Topic`: at most 32 characters of the URL-safe base64 alphabet. */
 const PUSH_TOPIC = /^[A-Za-z0-9_-]{1,32}$/;
 
@@ -262,12 +290,18 @@ function completionTopic(tag: string): string | undefined {
  * `save/server/push_subscriptions.json`, beside the password (`routes/auth.ts`), out of the storage
  * routes, backups, and snapshots. Completions are delivered one at a time (each to every subscription
  * in parallel); a subscription the push service reports gone (404, 410) is removed.
+ *
+ * Each completion leaves content-free `push` events in `diagnostics`: one per subscription it was sent
+ * to (`accepted`, `failed`, `removed`, with the push service and the job), or one `dropped` with the
+ * reason nothing was sent. A recorder that throws never changes delivery.
  */
 export function createPushService(options: {
     savePath: string;
     env?: NodeJS.ProcessEnv;
     /** Tests inject one; the default is `web-push`. */
     transport?: PushTransport;
+    /** The diagnostics journal. */
+    diagnostics?: DiagnosticsRecorder;
 }): PushService {
     const env = options.env ?? process.env;
     const transport = options.transport ?? webPush;
@@ -300,6 +334,10 @@ export function createPushService(options: {
     let closed = false;
     let queue: Promise<void> = Promise.resolve();
     let pending = 0;
+
+    function dropped(reason: (typeof PUSH_DROP_REASONS)[number], jobId: string | undefined) {
+        recordSafely(options.diagnostics, { kind: "push", phase: "dropped", reason, jobId });
+    }
 
     /** The stored subscriptions, read once; invalid entries (a host no longer allowed) are left out. */
     function list(): StoredSubscription[] {
@@ -387,8 +425,9 @@ export function createPushService(options: {
         );
     }
 
-    async function deliver(notification: CompletionNotification) {
+    async function deliver(notification: CompletionNotification, jobId: string | undefined) {
         if (!keys) {
+            dropped("noKeys", jobId);
             return;
         }
         const payload = JSON.stringify(notification);
@@ -400,9 +439,14 @@ export function createPushService(options: {
             known();
         }
         const targets = list().map((entry) => ({ ...entry, keys: { ...entry.keys } }));
+        if (targets.length === 0) {
+            dropped(unreadable ? "unreadable" : "noSubscriptions", jobId);
+            return;
+        }
         let changed = false;
         await Promise.all(
             targets.map(async (target) => {
+                const service = pushServiceOf(target.endpoint);
                 try {
                     await transport.sendNotification(
                         { endpoint: target.endpoint, keys: target.keys, expirationTime: target.expirationTime },
@@ -415,6 +459,9 @@ export function createPushService(options: {
                             vapidDetails,
                         },
                     );
+                    // The transport's outcome is recorded even when the subscription was removed or
+                    // registered again meanwhile.
+                    recordSafely(options.diagnostics, { kind: "push", phase: "accepted", service, jobId });
                     const entry = current(target);
                     if (entry && (entry.failureCount !== 0 || entry.lastError !== undefined)) {
                         entry.failureCount = 0;
@@ -423,6 +470,12 @@ export function createPushService(options: {
                     }
                 } catch (error) {
                     const { status, label } = errorCategory(error);
+                    recordSafely(
+                        options.diagnostics,
+                        status === 404 || status === 410
+                            ? { kind: "push", phase: "removed", service, jobId }
+                            : { kind: "push", phase: "failed", service, jobId, status },
+                    );
                     const entry = current(target);
                     if (!entry) {
                         return;
@@ -480,13 +533,15 @@ export function createPushService(options: {
             const after = before.filter((entry) => entry.endpoint !== href);
             return (after.length === before.length && !diskUncertain) || commit(after);
         },
-        send(notification) {
+        send(notification, context) {
+            const jobId = context?.jobId;
             if (closed || !keys || pending >= MAX_PENDING_SENDS) {
+                dropped(closed ? "closed" : !keys ? "noKeys" : "queueFull", jobId);
                 return Promise.resolve();
             }
             pending += 1;
             const run = queue
-                .then(() => (closed ? undefined : deliver(notification)))
+                .then(() => (closed ? dropped("closed", jobId) : deliver(notification, jobId)))
                 .catch((error) => console.error("[Push] Sending failed", error))
                 .finally(() => {
                     pending -= 1;

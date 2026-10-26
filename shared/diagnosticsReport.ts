@@ -40,8 +40,10 @@ import {
  * ```
  *
  * Lines end with LF, the text with one. Events are merged by time (a stable sort; the server's first
- * at an equal time). Each source keeps its newest 300 events, and the oldest events are left out
- * while the text passes 1 MiB; `Omitted events` counts both. Times are four-digit-year ISO times.
+ * at an equal time). The browser's events include the service worker's push records, which the tab
+ * merged into its list (`src/ts/diagnostics/report.ts`), so they are `browser` lines. Each source keeps
+ * its newest 300 events, and the oldest events are left out while the text passes 1 MiB; `Omitted
+ * events` counts both. Times are four-digit-year ISO times.
  *
  * v1 is frozen: a later change may add a kind, a field, or an enumeration value, never remove or
  * narrow one, so a report an older tab built still passes. An incompatible change is v2. A model id

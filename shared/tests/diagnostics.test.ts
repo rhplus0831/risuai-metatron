@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     apiRouteTemplate,
     APP_FRAME,
+    BROWSER_PUSH_PHASES,
     CLIENT_FRAME,
     CUSTOM_MODEL,
     DIAGNOSTIC_EVENT_KINDS,
@@ -17,10 +18,18 @@ import {
     isStackFrame,
     LIFECYCLE_PHASES,
     MAX_STACK_FRAMES,
+    NOTICES,
+    PAGE_PHASES,
+    projectBrowserEvent,
     projectDiagnosticEvent,
+    projectServerEvent,
+    PUSH_DROP_REASONS,
+    PUSH_PERMISSIONS,
+    PUSH_SERVICES,
     ROUTE_TEMPLATES,
     RUNTIME_ORIGINS,
     sanitizeStack,
+    SERVER_PUSH_PHASES,
     UNKNOWN_ERROR_NAME,
 } from "../diagnostics.ts";
 import { BASE_LLM_MODELS } from "../llm/models.ts";
@@ -70,6 +79,8 @@ describe("projectDiagnosticEvent", () => {
             "serviceWorker",
             "page",
             "bootCache",
+            "push",
+            "notice",
         ]);
     });
 
@@ -505,6 +516,184 @@ describe("projectDiagnosticEvent", () => {
         expect(
             projectDiagnosticEvent({ at: AT, kind: "lifecycle", phase: "restored", replaced: "yes", epoch: "e1" }),
         ).toEqual({ at: AT, kind: "lifecycle" });
+    });
+
+    it("push: a phase of either side, the service, drop reason, and permission by their lists, the job id as a UUID only, a status 100–599, the window and notification states as booleans, a count; never an endpoint, a URL, a title, a body, or an error", () => {
+        const server = { at: AT, kind: "push", phase: "failed", service: "fcm", jobId: ID, status: 503 };
+        expect(projectDiagnosticEvent(server)).toEqual(server);
+        const dropped = { at: AT, kind: "push", phase: "dropped", reason: "queueFull", jobId: ID };
+        expect(projectDiagnosticEvent(dropped)).toEqual(dropped);
+        const worker = { at: AT, kind: "push", phase: "closedInFront", inFront: true, focusedHidden: false };
+        expect(projectDiagnosticEvent(worker)).toEqual(worker);
+        const page = {
+            at: AT,
+            kind: "push",
+            phase: "browserState",
+            permission: "granted",
+            subscribed: true,
+            standalone: false,
+        };
+        expect(projectDiagnosticEvent(page)).toEqual(page);
+        const dismissed = { at: AT, kind: "push", phase: "dismissedByPage", count: 2 };
+        expect(projectDiagnosticEvent(dismissed)).toEqual(dismissed);
+        for (const phase of [...SERVER_PUSH_PHASES, ...BROWSER_PUSH_PHASES]) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", phase }), phase).toEqual({
+                at: AT,
+                kind: "push",
+                phase,
+            });
+        }
+        for (const service of PUSH_SERVICES) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", service })).toHaveProperty("service", service);
+        }
+        for (const reason of PUSH_DROP_REASONS) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", reason })).toHaveProperty("reason", reason);
+        }
+        for (const permission of PUSH_PERMISSIONS) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", permission })).toHaveProperty(
+                "permission",
+                permission,
+            );
+        }
+        expect(SERVER_PUSH_PHASES).toEqual(["accepted", "failed", "removed", "dropped"]);
+        expect(BROWSER_PUSH_PHASES).toEqual([
+            "received",
+            "shown",
+            "shownSilent",
+            "closedInFront",
+            "showFailed",
+            "clicked",
+            "browserState",
+            "dismissedByPage",
+        ]);
+        expect(PUSH_DROP_REASONS).toEqual(["closed", "noKeys", "queueFull", "noSubscriptions", "unreadable"]);
+        expect(PUSH_SERVICES).toEqual(["fcm", "apple", "mozilla", "windows", "other"]);
+        expect(PUSH_PERMISSIONS).toEqual(["granted", "denied", "default", "unsupported"]);
+        // What a bug or a hostile store would put beside the fixed values: none of it is kept.
+        const endpoint = "https://fcm.googleapis.com/fcm/send/alice-secret-token";
+        expect(
+            projectDiagnosticEvent({
+                at: AT,
+                kind: "push",
+                phase: "sent",
+                service: endpoint,
+                jobId: "alice-private-chat",
+                status: 99,
+                reason: "ECONNRESET https://secret.example/token",
+                inFront: "yes",
+                focusedHidden: 1,
+                permission: "prompt",
+                subscribed: "true",
+                standalone: null,
+                count: -1,
+                endpoint,
+                url: "/chat/alice/k",
+                title: "Alice",
+                body: "Private Character said hello",
+                tag: "risuai-chat-completion:abc",
+                error: "TypeError: bad icon",
+                message: "secret",
+            }),
+        ).toEqual({ at: AT, kind: "push" });
+        // The relaxed generation id of a `job` event is not a push's job id: the journal keeps the push event as given.
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", jobId: "j1" })).toEqual({ at: AT, kind: "push" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", jobId: ID.toUpperCase() })).toEqual({
+            at: AT,
+            kind: "push",
+        });
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", status: 100 })).toHaveProperty("status", 100);
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", status: 599 })).toHaveProperty("status", 599);
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", status: 600 })).toEqual({ at: AT, kind: "push" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", count: 0 })).toHaveProperty("count", 0);
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", count: 1.5 })).toEqual({ at: AT, kind: "push" });
+    });
+
+    it("notice: the notice by its list only; page: the Page Lifecycle's `freeze` and `resume` beside the visibility and network phases", () => {
+        expect(NOTICES).toEqual(["serverJobLost", "serverJobEndedAway", "resourceReloaded"]);
+        for (const notice of NOTICES) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "notice", notice })).toEqual({
+                at: AT,
+                kind: "notice",
+                notice,
+            });
+        }
+        expect(
+            projectDiagnosticEvent({ at: AT, kind: "notice", notice: "Alice's chat was reloaded", message: "secret" }),
+        ).toEqual({ at: AT, kind: "notice" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "notice", notice: 1 })).toEqual({ at: AT, kind: "notice" });
+        expect(PAGE_PHASES).toEqual(["boot", "visible", "hidden", "online", "offline", "freeze", "resume"]);
+        for (const phase of PAGE_PHASES) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "page", phase }), phase).toEqual({
+                at: AT,
+                kind: "page",
+                phase,
+            });
+        }
+    });
+
+    it("projects a push for one side only: the browser keeps the browser's phases and fields and drops the server's, the server the reverse, neither a push without a phase; `notice` is the browser's alone; nothing of a payload or a subscription survives either", () => {
+        const both = {
+            at: AT,
+            kind: "push",
+            service: "apple",
+            jobId: ID,
+            status: 410,
+            reason: "closed",
+            inFront: true,
+            focusedHidden: true,
+            permission: "denied",
+            subscribed: false,
+            standalone: true,
+            count: 3,
+        };
+        for (const phase of SERVER_PUSH_PHASES) {
+            expect(projectServerEvent({ ...both, phase }), phase).toEqual({
+                at: AT,
+                kind: "push",
+                phase,
+                service: "apple",
+                jobId: ID,
+                status: 410,
+                reason: "closed",
+            });
+            expect(projectBrowserEvent({ ...both, phase }), phase).toBeNull();
+        }
+        for (const phase of BROWSER_PUSH_PHASES) {
+            expect(projectBrowserEvent({ ...both, phase }), phase).toEqual({
+                at: AT,
+                kind: "push",
+                phase,
+                inFront: true,
+                focusedHidden: true,
+                permission: "denied",
+                subscribed: false,
+                standalone: true,
+                count: 3,
+            });
+            expect(projectServerEvent({ ...both, phase }), phase).toBeNull();
+        }
+        expect(projectBrowserEvent({ at: AT, kind: "push", count: 1 })).toBeNull();
+        expect(projectServerEvent({ at: AT, kind: "push", service: "fcm" })).toBeNull();
+        expect(projectBrowserEvent({ at: AT, kind: "push", phase: "sent" })).toBeNull();
+        expect(projectServerEvent({ at: AT, kind: "push", phase: "sent" })).toBeNull();
+        expect(projectBrowserEvent({ at: AT, kind: "notice", notice: "resourceReloaded" })).toEqual({
+            at: AT,
+            kind: "notice",
+            notice: "resourceReloaded",
+        });
+        expect(projectServerEvent({ at: AT, kind: "notice", notice: "resourceReloaded" })).toBeNull();
+        const hostile = {
+            ...both,
+            endpoint: "https://web.push.apple.com/alice-secret-token",
+            url: "/chat/alice/k",
+            title: "Alice",
+            body: "Private Character said hello",
+            tag: "risuai-chat-completion:abc",
+            error: "TypeError: bad icon",
+        };
+        const forbidden = /alice|apple\.com|Private|completion|TypeError|chat\//;
+        expect(JSON.stringify(projectBrowserEvent({ ...hostile, phase: "received" }))).not.toMatch(forbidden);
+        expect(JSON.stringify(projectServerEvent({ ...hostile, phase: "accepted" }))).not.toMatch(forbidden);
     });
 });
 

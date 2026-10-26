@@ -7,14 +7,24 @@ import type { DiagnosticEvent } from "../../../shared/diagnostics.ts";
 // synchronous flushes, the writer cut to what the restore reads, every storage failure survived); the
 // `window.fetch` wrapper (the original first with the same arguments, the same response and rejection, an
 // unhandled rejection still unhandled, bodies untouched, only same-origin API failures as content-free
-// events, aborts skipped, timeouts named); the window's error and rejection listeners; and the browser
-// stack formats (V8, Gecko, WebKit) against this origin.
+// events, aborts skipped, timeouts named); the window's error and rejection listeners; this browser's
+// notification state (`push` `browserState` at the start and on each return to the foreground, a value
+// that cannot be read left out); the Page Lifecycle's `freeze` and `resume`; and the browser stack
+// formats (V8, Gecko, WebKit) against this origin.
 
 type Collector = typeof import("./collector");
 
 const ORIGIN = "http://localhost:3000";
 const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const AT = 1_700_000_000_000;
+/** This browser's notification state as the test environment answers it: no Notification API, no worker, not installed. */
+const BROWSER_STATE = {
+    kind: "push",
+    phase: "browserState",
+    permission: "unsupported",
+    subscribed: false,
+    standalone: false,
+};
 
 let collector: Collector;
 let originalFetch: typeof fetch;
@@ -76,10 +86,39 @@ describe("projectClientEvent", () => {
         expect(projectClientEvent({ at: AT, kind: "script" })).toBeNull();
         expect(projectClientEvent(null)).toBeNull();
         expect(projectClientEvent({ kind: "page", phase: "boot" })).toBeNull();
-        for (const kind of ["http", "runtime", "jobLink", "feed", "sync", "serviceWorker", "page", "bootCache"]) {
+        for (const kind of [
+            "http",
+            "runtime",
+            "jobLink",
+            "feed",
+            "sync",
+            "serviceWorker",
+            "page",
+            "bootCache",
+            "notice",
+        ]) {
             const event = projectClientEvent({ at: AT, kind, ...(kind === "runtime" ? { origin: "error" } : {}) });
             expect(event?.kind, kind).toBe(kind);
         }
+        // A push only of the browser's phases, without the server's fields.
+        expect(
+            projectClientEvent({
+                at: AT,
+                kind: "push",
+                phase: "shown",
+                inFront: true,
+                focusedHidden: false,
+                jobId: JOB,
+                service: "fcm",
+            }),
+        ).toEqual({ at: AT, kind: "push", phase: "shown", inFront: true, focusedHidden: false });
+        expect(projectClientEvent({ at: AT, kind: "push", phase: "accepted", service: "fcm", jobId: JOB })).toBeNull();
+        expect(projectClientEvent({ at: AT, kind: "push", count: 1 })).toBeNull();
+        expect(projectClientEvent({ at: AT, kind: "notice", notice: "serverJobLost", message: "secret" })).toEqual({
+            at: AT,
+            kind: "notice",
+            notice: "serverJobLost",
+        });
         // The server's runtime origins are not the tab's; a runtime `jobId` is the server's field.
         for (const origin of ["uncaughtException", "unhandledRejection", "serverError", "generation.release"]) {
             expect(projectClientEvent({ at: AT, kind: "runtime", origin }), origin).toBeNull();
@@ -345,7 +384,8 @@ describe("the ring", () => {
             });
         }
         const events = collector.clientDiagnosticEvents();
-        expect(events).toHaveLength(22);
+        // The 18 before the start, the start's state, the second boot, and the two folded entries.
+        expect(events).toHaveLength(22 + 1);
         expect(events.at(-2)).toMatchObject({ kind: "http", status: 409, repeat: 160, lastAt: AT + 159 * 5000 });
         expect(events.at(-1)).toMatchObject({ kind: "sync", phase: "conflict", repeat: 160 });
         expect(events[0]).toMatchObject({ kind: "page", phase: "offline" });
@@ -381,6 +421,7 @@ describe("the sessionStorage mirror", () => {
         setVisibility("hidden");
         expect(projected(stored()!)).toEqual([
             { kind: "page", phase: "boot" },
+            BROWSER_STATE,
             { kind: "page", phase: "hidden" },
         ]);
         setVisibility("visible");
@@ -393,9 +434,31 @@ describe("the sessionStorage mirror", () => {
             { kind: "page", phase: "offline" },
             { kind: "page", phase: "online" },
         ]);
-        expect(stored()).toHaveLength(2);
+        // The state read again on `visible`, unchanged, folded into the start's.
+        expect(projected(ofKind("push"))).toEqual([{ ...BROWSER_STATE, repeat: 2 }]);
+        expect(stored()).toHaveLength(3);
         window.dispatchEvent(new Event("pagehide"));
-        expect(stored()).toHaveLength(5);
+        expect(stored()).toHaveLength(6);
+    });
+
+    it("records the Page Lifecycle's `freeze`, flushing the mirror before the page is frozen, and `resume`", () => {
+        collector.startDiagnosticsCollector();
+        collector.recordClientEvent({ kind: "feed", phase: "connected", attempt: 0 });
+        expect(stored()).toBeNull();
+        document.dispatchEvent(new Event("freeze"));
+        expect(projected(stored()!)).toEqual([
+            { kind: "page", phase: "boot" },
+            BROWSER_STATE,
+            { kind: "feed", phase: "connected", attempt: 0 },
+            { kind: "page", phase: "freeze" },
+        ]);
+        document.dispatchEvent(new Event("resume"));
+        expect(projected(ofKind("page"))).toEqual([
+            { kind: "page", phase: "boot" },
+            { kind: "page", phase: "freeze" },
+            { kind: "page", phase: "resume" },
+        ]);
+        expect(stored()).toHaveLength(4);
     });
 
     it("restores the stored ring before this page's events, each entry projected again (a hostile entry dropped), the newest 300 kept", async () => {
@@ -428,9 +491,10 @@ describe("the sessionStorage mirror", () => {
         const events = collector.clientDiagnosticEvents();
         expect(events).toHaveLength(300);
         // The newest 300 of the stored entries are the last 300 http ones; then this page's.
-        expect(events[0]).toEqual({ at: AT + 100 + 12, kind: "http", method: "GET", route: "?", status: 112 });
-        expect(events.at(-2)).toEqual({ at: expect.any(Number), kind: "page", phase: "online" });
-        expect(events.at(-1)).toEqual({ at: expect.any(Number), kind: "page", phase: "boot" });
+        expect(events[0]).toEqual({ at: AT + 100 + 13, kind: "http", method: "GET", route: "?", status: 113 });
+        expect(events.at(-3)).toEqual({ at: expect.any(Number), kind: "page", phase: "online" });
+        expect(events.at(-2)).toEqual({ at: expect.any(Number), kind: "page", phase: "boot" });
+        expect(events.at(-1)).toEqual({ at: expect.any(Number), ...BROWSER_STATE });
         expect(JSON.stringify(events)).not.toMatch(/Alice|alice|private/);
 
         // Without the overflow, the hostile entries are dropped on their own and the fields re-projected.
@@ -445,6 +509,7 @@ describe("the sessionStorage mirror", () => {
             { at: AT + 5, kind: "jobLink", phase: "attach" },
             { at: AT + 6, kind: "page", phase: "hidden" },
             { at: expect.any(Number), kind: "page", phase: "boot" },
+            { at: expect.any(Number), ...BROWSER_STATE },
         ]);
     });
 
@@ -456,6 +521,7 @@ describe("the sessionStorage mirror", () => {
             fresh.startDiagnosticsCollector();
             expect(projected(fresh.clientDiagnosticEvents()), raw.slice(0, 20)).toEqual([
                 { kind: "page", phase: "boot" },
+                BROWSER_STATE,
             ]);
         }
     });
@@ -476,6 +542,7 @@ describe("the sessionStorage mirror", () => {
         window.dispatchEvent(new Event("pagehide"));
         expect(projected(collector.clientDiagnosticEvents())).toEqual([
             { kind: "page", phase: "boot" },
+            BROWSER_STATE,
             { kind: "page", phase: "online" },
         ]);
 
@@ -492,6 +559,7 @@ describe("the sessionStorage mirror", () => {
         expect(() => second.flushClientDiagnostics()).not.toThrow();
         expect(projected(second.clientDiagnosticEvents())).toEqual([
             { kind: "page", phase: "boot" },
+            BROWSER_STATE,
             { kind: "page", phase: "offline" },
         ]);
 
@@ -500,7 +568,7 @@ describe("the sessionStorage mirror", () => {
         const third: Collector = await import("./collector");
         expect(() => third.startDiagnosticsCollector()).not.toThrow();
         expect(() => third.flushClientDiagnostics()).not.toThrow();
-        expect(third.clientDiagnosticEvents()).toHaveLength(1);
+        expect(projected(third.clientDiagnosticEvents())).toEqual([{ kind: "page", phase: "boot" }, BROWSER_STATE]);
     });
 
     it("leaves the oldest events out of the mirror until it fits what the restore reads, so a fresh page restores the newest", async () => {
@@ -527,7 +595,8 @@ describe("the sessionStorage mirror", () => {
         vi.resetModules();
         const fresh: Collector = await import("./collector");
         fresh.startDiagnosticsCollector();
-        expect(fresh.clientDiagnosticEvents()).toHaveLength(kept.length + 1);
+        // The restored entries, then this page's boot and its notification state.
+        expect(fresh.clientDiagnosticEvents()).toHaveLength(kept.length + 2);
         expect(fresh.clientDiagnosticEvents()[0]).toEqual(kept[0]);
     });
 });
@@ -841,10 +910,131 @@ describe("the window's error and rejection listeners", () => {
         try {
             const fresh: Collector = await import("./collector");
             expect(() => fresh.startDiagnosticsCollector()).not.toThrow();
-            expect(fresh.clientDiagnosticEvents()).toHaveLength(1);
+            // The subscription could not be looked up: left out, not false.
+            expect(projected(fresh.clientDiagnosticEvents())).toEqual([
+                { kind: "page", phase: "boot" },
+                { kind: "push", phase: "browserState", permission: "unsupported", standalone: false },
+            ]);
         } finally {
             delete (navigator as { serviceWorker?: unknown }).serviceWorker;
         }
+    });
+});
+
+describe("this browser's notification state", () => {
+    /** A service worker container whose one registration holds `subscription` (a push manager answers it). */
+    function containerWith(registration: unknown) {
+        const container = new EventTarget() as EventTarget & { getRegistration: ReturnType<typeof vi.fn> };
+        container.getRegistration = vi.fn(async () => registration);
+        Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: container });
+        return container;
+    }
+    const pushManager = (subscription: unknown) => ({
+        pushManager: { getSubscription: vi.fn(async () => subscription) },
+    });
+    afterEach(() => {
+        delete (navigator as { serviceWorker?: unknown }).serviceWorker;
+    });
+
+    it("records the permission, whether this browser holds a push subscription (once the lookup settled), and whether it runs installed, at the start and again on each return to the foreground", async () => {
+        vi.stubGlobal("Notification", { permission: "granted" });
+        let standalone = true;
+        vi.spyOn(window, "matchMedia").mockImplementation(
+            (query: string) => ({ matches: query === "(display-mode: standalone)" && standalone }) as MediaQueryList,
+        );
+        const container = containerWith(pushManager({ endpoint: "https://fcm.googleapis.com/fcm/send/secret" }));
+        collector.startDiagnosticsCollector();
+        // Not before the lookup answered.
+        expect(ofKind("push")).toEqual([]);
+        await flush();
+        expect(projected(ofKind("push"))).toEqual([
+            { kind: "push", phase: "browserState", permission: "granted", subscribed: true, standalone: true },
+        ]);
+        expect(window.matchMedia).toHaveBeenCalledWith("(display-mode: standalone)");
+        setVisibility("hidden");
+        (Notification as unknown as { permission: string }).permission = "denied";
+        container.getRegistration.mockResolvedValue(pushManager(null));
+        standalone = false;
+        setVisibility("visible");
+        await flush();
+        expect(projected(ofKind("push"))).toEqual([
+            { kind: "push", phase: "browserState", permission: "granted", subscribed: true, standalone: true },
+            { kind: "push", phase: "browserState", permission: "denied", subscribed: false, standalone: false },
+        ]);
+        expect(JSON.stringify(collector.clientDiagnosticEvents())).not.toContain("secret");
+    });
+
+    it("answers `subscribed: false` without a registration or a push manager, and leaves out what cannot be read: the permission of a throwing API, an installed state without `matchMedia`, a subscription whose lookup failed", async () => {
+        vi.stubGlobal("Notification", {
+            get permission(): string {
+                throw new DOMException("denied", "SecurityError");
+            },
+        });
+        vi.spyOn(window, "matchMedia").mockImplementation(() => {
+            throw new TypeError("no media");
+        });
+        containerWith(undefined);
+        collector.startDiagnosticsCollector();
+        await flush();
+        expect(projected(ofKind("push"))).toEqual([{ kind: "push", phase: "browserState", subscribed: false }]);
+
+        vi.resetModules();
+        vi.stubGlobal("Notification", { permission: "default" });
+        vi.stubGlobal("matchMedia", undefined);
+        containerWith({});
+        const noManager: Collector = await import("./collector");
+        noManager.startDiagnosticsCollector();
+        await flush();
+        expect(projected(noManager.clientDiagnosticEvents().filter((event) => event.kind === "push"))).toEqual([
+            { kind: "push", phase: "browserState", permission: "default", subscribed: false },
+        ]);
+
+        vi.resetModules();
+        const container = containerWith(undefined);
+        container.getRegistration.mockRejectedValue(new DOMException("gone", "InvalidStateError"));
+        const failing: Collector = await import("./collector");
+        failing.startDiagnosticsCollector();
+        await flush();
+        expect(projected(failing.clientDiagnosticEvents().filter((event) => event.kind === "push"))).toEqual([
+            { kind: "push", phase: "browserState", permission: "default" },
+        ]);
+    });
+
+    it("records the state without `subscribed` when the lookup takes over 2 s, once, and ignores the answer that comes later", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        vi.setSystemTime(AT);
+        vi.stubGlobal("Notification", { permission: "granted" });
+        let answer!: (registration: unknown) => void;
+        const container = containerWith(undefined);
+        container.getRegistration.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+        collector.startDiagnosticsCollector();
+        await vi.advanceTimersByTimeAsync(1999);
+        expect(ofKind("push")).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        // Stamped when it is recorded, at the end of the wait.
+        expect(ofKind("push")).toEqual([
+            { at: AT + 2000, kind: "push", phase: "browserState", permission: "granted", standalone: false },
+        ]);
+        answer(pushManager({}));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(ofKind("push")).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(vi.getTimerCount()).toBe(0);
+
+        // A lookup that answers in time leaves no wait behind: only the mirror's pending write remains.
+        vi.resetModules();
+        sessionStorage.clear();
+        container.getRegistration.mockResolvedValue(pushManager({}));
+        const fresh: Collector = await import("./collector");
+        fresh.startDiagnosticsCollector();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(projected(fresh.clientDiagnosticEvents().filter((event) => event.kind === "push"))).toEqual([
+            { kind: "push", phase: "browserState", permission: "granted", subscribed: true, standalone: false },
+        ]);
+        expect(vi.getTimerCount()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(stored()).toHaveLength(2);
+        expect(vi.getTimerCount()).toBe(0);
     });
 });
 
