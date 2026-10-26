@@ -44,6 +44,7 @@ git show 12fd77196:docs/plan/combine-audit-fixes.md
 git show a179640ad:docs/plan/chat-lore-overrides.md
 git show 47c534f69:docs/plan/context-usage-meter.md
 git show ca5b656fa:docs/plan/deep-audit-fixes.md
+git show 1fc70e547:docs/plan/chat-lore-override-states.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -89,6 +90,7 @@ it is not a current architecture guide.
 | Chat Lore Overrides                      | `a179640ad`: `docs/plan/chat-lore-overrides.md`                           | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [plugins/MCP](../structure/plugins-mcp.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md)                                                                                         |
 | Context Usage Meter                      | `47c534f69`: `docs/plan/context-usage-meter.md`                           | [chat pipeline](../structure/chat-pipeline.md), [LLM requests](../structure/llm-requests.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [persistence](../structure/persistence.md)                                                                                                                                                                                                                                                           |
 | Deep Audit Fixes                         | `ca5b656fa`: `docs/plan/deep-audit-fixes.md`                              | [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [characters/modules](../structure/characters-modules.md), [diagnostics](../structure/diagnostics.md), [global API](../structure/global-api.md)                                                                                                             |
+| Chat Lore Override States                | `1fc70e547`: `docs/plan/chat-lore-override-states.md`                     | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md)                                                                                                                                                                                               |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -556,6 +558,28 @@ mounted `DefaultChatScreen` tests for the bookmark jump and translation invalida
 plan's **Deferred** table, which groups the remaining audit findings into the follow-up plans it
 names (durable drafts, job protocol, display evaluation, per-event server work, dictionary ids,
 boot bytes, server byte budgets, retention, token counting, rendering).
+
+Chat Lore Override States (polish of the Chat Lore Overrides editor: a short state control in
+place of the long "Override in this chat" checkbox, and a folder that can be turned off for one
+chat) landed both slices on `dev` on 2026-10-25: 1 an off folder override removes every entry
+inside it in `mergeOwnerLore` (membership by the owner's current non-empty folder keys, never the
+frozen copy's; nested folders until nothing changes, so cycles end), `offOverrideIds` takes the
+owner lore and includes those members so child links to them stay inactive, and
+`normalizeChatMeta` keeps only the first override per entry id (`e497efaa8`); 2 the editor's
+Original / Override / Off segment per entry and On / Off per folder (one `off: true` folder
+override that never touches member overrides), the folder's override indicator and confirmed bulk
+release, a release that confirms only for an edited copy and rechecks owner and send fence after
+any dialog, and `SegmentedControl`'s group label, `aria-describedby`, `aria-pressed`, and margin
+flag (`37902a9d5`). Decision recorded at retirement (the owner, 2026-10-26): orphan delete and
+move act on the selected override object only, while every other removal drops every override
+with the id; a legacy duplicate orphan stays as its own row until it is handled or the next
+metadata write collapses it. Out of scope by the plan: module lore, a marker in the character tab
+for overridden entries, an off control for chat-local lore, refreshing an off copy from its
+original when it is turned back on, and duplicate owner ids. Still open: the manual checks (in
+the narrowest sidebar a long entry name stays readable beside the control in English and Korean;
+turn a folder off, add an entry to it in the character tab, send, and confirm the new entry is
+absent from the prompt; turn the folder back on and confirm an edited member's override applies
+again while an off member stays off).
 
 ## Server-Owned Data Chronology
 
