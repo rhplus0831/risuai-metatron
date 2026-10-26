@@ -45,6 +45,7 @@ git show a179640ad:docs/plan/chat-lore-overrides.md
 git show 47c534f69:docs/plan/context-usage-meter.md
 git show ca5b656fa:docs/plan/deep-audit-fixes.md
 git show 1fc70e547:docs/plan/chat-lore-override-states.md
+git show ae289ecf5:docs/plan/mobile-resume-reliability.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -91,6 +92,7 @@ it is not a current architecture guide.
 | Context Usage Meter                      | `47c534f69`: `docs/plan/context-usage-meter.md`                           | [chat pipeline](../structure/chat-pipeline.md), [LLM requests](../structure/llm-requests.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [persistence](../structure/persistence.md)                                                                                                                                                                                                                                                           |
 | Deep Audit Fixes                         | `ca5b656fa`: `docs/plan/deep-audit-fixes.md`                              | [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [characters/modules](../structure/characters-modules.md), [diagnostics](../structure/diagnostics.md), [global API](../structure/global-api.md)                                                                                                             |
 | Chat Lore Override States                | `1fc70e547`: `docs/plan/chat-lore-override-states.md`                     | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md)                                                                                                                                                                                               |
+| Mobile Resume Reliability                | `ae289ecf5`: `docs/plan/mobile-resume-reliability.md`                     | [global API](../structure/global-api.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [build/test/platforms](../structure/build-test-platforms.md), [server](../structure/self-host-server.md), [diagnostics](../structure/diagnostics.md)                                                                                                                                                                                                   |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -580,6 +582,37 @@ the narrowest sidebar a long entry name stays readable beside the control in Eng
 turn a folder off, add an entry to it in the character tab, send, and confirm the new entry is
 absent from the prompt; turn the folder back on and confirm an edited member's override applies
 again while an off member stays off).
+
+Mobile Resume Reliability (the user's Android PWA reports: a completion push that sometimes never
+shows, an alert on return after which the chat may stay stale until another chat is opened, and
+no way to see why on the phone) landed all 4 slices on `dev` on 2026-10-26, one commit each: 1 the
+service worker counts a window in front only when one window is both focused and visible, and
+completions go out with `urgency: "high"` and a per-chat Web Push `topic` from the tag hash
+(`7b01303e3`); 2 the server keeps a trimmed outcome record of each collected job (24 h, at most
+500, cleared on an epoch change) that `status()` answers as `ended` for its own client only, and
+the client reads the status after every close without a terminal, backs attaches off 1/2/4/8 s
+with 10 s deadlines, tells a gone job (the chat read again, then the neutral
+`serverJob.endedAway` toast) from an unreachable server (`serverJob.lost`), and marks the chat
+stale and reads it after every lost or gone follow, with one retry at the next visible/`online`
+(`d7b3a7a34`); 3 `src/ts/network/socketLiveness.ts` gives the feed and job sockets a 10 s connect
+timeout, a 45 s no-frame watchdog while visible, and one folded resume reconnect (visible after
+30 s hidden, Page Lifecycle `resume`, `online`), with one connection generation in `eventFeed.ts`
+and resumed attaches not counted against the attach budget (`7d558b5e5`); 4 content-free `push`
+(server, worker, and page phases) and `notice` events, `page` `freeze`/`resume` phases, and the
+worker's newest 100 push records in IndexedDB `risu-sw-diagnostics`, merged into the report
+(`303e4efbb`). Decisions: the user's message-count comparison was not used, because a reroll, a
+continue, a reply already streaming, or a command job is a success without a new message; a kept
+outcome shows no notice (`done`) or the usual error alert (`error`), and only a job the server no
+longer knows gets the toast. Set aside by the plan (each needs its own design if the diagnostics
+ever show it): browser-dependent callbacks (Lua questions, plugin, provider, and tab MCP
+callbacks) expiring while the page is away; keeping the browser's diagnostics across an Android
+process kill; a feed whose `listRevisions` hangs while pings keep arriving, and settling a job
+follow's terminal before its `close`; the completion push sent before the post-reply
+emotion/image work and final write; push on job errors (a product decision); and the earlier Web
+Push leftovers. Still open: the four Android PWA scenarios (lock the screen right after sending;
+switch to another app for 5+ min; airplane mode during the reply; force-stop and reopen), each
+followed by Settings → Advanced → Developer & diagnostics → Save to server; the plan's
+**Verification** section maps each event to the cause it shows (H1–H7).
 
 ## Server-Owned Data Chronology
 
