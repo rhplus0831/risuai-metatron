@@ -6,9 +6,6 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
 
 Active planning and implementation: [Chat Lore Override States](chat-lore-override-states.md)
 
-All slices landed, browser and device checks pending: [Deep Audit Fixes](deep-audit-fixes.md) (the bounded findings of
-the two 2026-10-26 audits, the found-issues list, and the memory leftovers, in nine slices)
-
 All slices landed, device check pending: [Mobile Resume Reliability](mobile-resume-reliability.md)
 
 When a plan is completed or retired, remove its file and active link and record it

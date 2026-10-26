@@ -43,6 +43,7 @@ git show 2e359afde:docs/plan/combined-run.md
 git show 12fd77196:docs/plan/combine-audit-fixes.md
 git show a179640ad:docs/plan/chat-lore-overrides.md
 git show 47c534f69:docs/plan/context-usage-meter.md
+git show ca5b656fa:docs/plan/deep-audit-fixes.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -87,6 +88,7 @@ it is not a current architecture guide.
 | Combine Audit Fixes                      | `12fd77196`: `docs/plan/combine-audit-fixes.md`                           | [scripts/triggers](../structure/scripts-triggers.md), [UI/theming](../structure/ui-theming.md), [LLM requests](../structure/llm-requests.md), [global API](../structure/global-api.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                           |
 | Chat Lore Overrides                      | `a179640ad`: `docs/plan/chat-lore-overrides.md`                           | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [plugins/MCP](../structure/plugins-mcp.md), [backup sync hub](../structure/backup-sync-hub.md), [UI/theming](../structure/ui-theming.md)                                                                                         |
 | Context Usage Meter                      | `47c534f69`: `docs/plan/context-usage-meter.md`                           | [chat pipeline](../structure/chat-pipeline.md), [LLM requests](../structure/llm-requests.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [persistence](../structure/persistence.md)                                                                                                                                                                                                                                                           |
+| Deep Audit Fixes                         | `ca5b656fa`: `docs/plan/deep-audit-fixes.md`                              | [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [characters/modules](../structure/characters-modules.md), [diagnostics](../structure/diagnostics.md), [global API](../structure/global-api.md)                                                                                                             |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -518,6 +520,42 @@ memory mode, a continue, the unknown estimate, the settings link, the warning le
 and Safari; the deferred Recalculate (it needs a preview job that writes nothing, keeping
 `previewChat("preview")`'s array contract); restoring the `showMemoryLimit` line (see found
 issues); and the memory-mode "may run memory" hint, which was not built.
+
+Deep Audit Fixes (the bounded, confirmed findings of the two 2026-10-26 audits,
+[server/client stabilization](../research/deep-audit/server-client-stabilization.md) and
+[server migration](../research/deep-audit-with-fable/server-migration-audit.md), plus the
+found-issues list and the agents' memory leftovers) landed all 9 slices on `dev` on 2026-10-26
+through the plan runner (`delegate-implementation` for every slice, Codex implementers and
+challengers), one cherry-picked commit each: 1 trigger results merge `scriptstate` and the other
+map fields by key, no "Invalid return" without a request trigger, the empty-history `lastChat`
+guard, and the overlapping-range token recount (`44426ad50`); 2 input translation runs owned by a
+token (`inputTranslation.svelte.ts`) and the IME guard for composer and partial-editor shortcuts
+(`src/ts/ime.ts`) (`2171bcb5c`); 3 the LoRA editor publishes only on edits and shows a conflict
+notice, suggestion translation and four presentation effects drop stale results, and the bookmark
+jump runs through `runMessageJump` (`d16a90ac9`); 4 lorebook local activation matches only child
+links and the persona note popup is plaintext (`95d3f8f47`); 5 the compressed revision listing,
+bounded vector eviction, explicit `synchronous = FULL`, and push registrations not rewritten
+within 24 h (`ae2f9569a`); 6 `flushResources` reports `refused`, checked by send admission, the
+three backup exports, and callback readiness (`cef9e9330`); 7 a chat counts as viewed only while
+shown, the fold index is derived for its own chat (`src/ts/chatFold.svelte.ts`), failed display
+transforms retry, and the `showMemoryLimit` line is restored (`223e1fea3`); 8 whole chat reads
+carry the chat's lock snapshot, fenced by a client read stamp (`e73996a67`); 9 the typed
+`createCollectorMock` and the server guide's auth and kept-outcome text (`4a3d064d3`). The final
+checks on `ca5b656fa` passed: `pnpm check`, `check:tests`, 7274 unit and slow tests, and 30 e2e
+tests in fourteen specs. Decisions made by the slices: a refused chat order no longer holds every
+flush (6); a trigger that drops a whole map removes only its baseline keys (1); a translation
+result arriving while the destination composes is dropped, not deferred (2); a LoRA draft counts
+as saved only after a later save cycle sees the `secrets` revision move (3); the vector cache skips
+an insert that cannot fit within the 256-row budget (5); a browser whose subscription the server
+dropped (the 50-entry cap) while its endpoint and keys stay the same re-registers within 24 h, not
+at once, since the client cannot see the server's list (5, accepted by the orchestrator); failed
+transforms also retry on a 5–60 s backoff while visible (7). Still open: the device and browser
+checks (Android Korean and desktop Japanese IME, the two-tab LoRA alternation, a real-browser push
+run, the failed-transform row after a phone wakes, and the memory limit line on screen); the
+mounted `DefaultChatScreen` tests for the bookmark jump and translation invalidation; and the
+plan's **Deferred** table, which groups the remaining audit findings into the follow-up plans it
+names (durable drafts, job protocol, display evaluation, per-event server work, dictionary ids,
+boot bytes, server byte budgets, retention, token counting, rendering).
 
 ## Server-Owned Data Chronology
 
