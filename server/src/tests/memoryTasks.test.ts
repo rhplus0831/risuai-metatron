@@ -731,6 +731,16 @@ describe("a hand-off's run", () => {
         (await t.provider.request(0)).answer("Summary 1");
         expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
     });
+
+    it("plans with the response budget reserved: a count due only with `maxResponse` kept is summarized", async () => {
+        const t = harness();
+        // 700 + the full budget 200 = 900 is over the lookahead's 850; without `maxResponse` (100)
+        // it would be 800, and nothing would be due.
+        handOff(t, "k1", { entries: 2, currentTokens: 700 });
+        const terminal = t.nextTerminal("k1");
+        (await t.provider.request(0)).answer("Summary 1");
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+    });
 });
 
 describe("the queue", () => {

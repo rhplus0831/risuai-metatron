@@ -159,6 +159,7 @@ Not in `sendChat`:
 
   Lua edit triggers skip `editprocess`. The `request` trigger runs on the server job's requests only; the tab's own requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
 
+- The prompt budget is `maxContext − maxResponse`: `assemblePrompt` counts from `maxResponse + 50`, and its no-memory trim, the HypaV3 step (`responseCorrection: false`, [memory](memory.md)), and the final token recheck after formatting (removable entries first, then the too-many-tokens error) all keep the response budget free, as the context meter's percentages assume. SupaMemory and Hanurai count from the same total; HypaV2 keeps its legacy subtraction, so for it the recheck is what frees the response budget, with its last two chats protected.
 - A new `PromptItem` type needs handling in both template switches of the server's `assemblePrompt`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate` (`shared/presets.ts`).
 - Lore matching (`shared/lore/activation.ts`):
   - Only the last `scanDepth` messages are scanned.

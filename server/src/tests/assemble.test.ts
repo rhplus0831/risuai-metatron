@@ -16,6 +16,8 @@ import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
 import { type RequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
+import type { CachedVector } from "../data/vectorCache.ts";
+import { createEmbeddings } from "../prompt/embeddings.ts";
 import type { MemoryHost } from "../prompt/memory/host.ts";
 import {
     normalizePreset,
@@ -617,6 +619,8 @@ describe("the context report", () => {
         editRequest?: (formated: OpenAIChat[]) => OpenAIChat[];
         hypaV3?: boolean;
         memoryJob?: AssemblyMemoryJob;
+        /** The memory host's embeddings; the default fails on any use. */
+        embeddings?: MemoryHost["embeddings"];
     };
     const CHAT_CARD: PromptItem = { type: "chat", rangeStart: 0, rangeEnd: "end" };
     const plain = (type2: "main" | "globalNote" | "normal", text: string): PromptItem => ({
@@ -732,7 +736,7 @@ describe("the context report", () => {
             summarizer: async () => {
                 throw new Error("No summarizer runs in these tests");
             },
-            embeddings: { db: {} } as unknown as MemoryHost["embeddings"],
+            embeddings: options.embeddings ?? ({ db: {} } as unknown as MemoryHost["embeddings"]),
             regex: async () => {
                 throw new Error("No regex runs in these tests");
             },
@@ -989,9 +993,11 @@ describe("the context report", () => {
         });
     });
 
-    it.each([720, 660])(
+    it.each([760, 720, 660])(
         "counts every removed occurrence of overlapping history and keeps the entries that fit in %i tokens",
-        async (maxContext) => {
+        async (promptBudget) => {
+            // The recheck keeps the response budget (`maxResponse` 10) free.
+            const maxContext = promptBudget + 10;
             const depth = "d".repeat(650);
             const { run, host } = contextAssembly({
                 template: [CHAT_CARD, { type: "chat", rangeStart: 1, rangeEnd: 2 }],
@@ -1372,38 +1378,42 @@ describe("the context report", () => {
         });
     });
 
+    /** A preview's memory side with a task service: the HypaV3 step selects only. */
+    const selectOnlyJob: AssemblyMemoryJob = {
+        preview: true,
+        input: false,
+        tasks: true,
+        sourceGeneration: () => undefined,
+        readSource: () => null,
+        blockingReason: () => null,
+        confirmGap: async () => {
+            throw new Error("A preview asks no gap question");
+        },
+        markStopped() {},
+        acquireWriter: async () => {
+            throw new Error("A select-only step takes no writer lease");
+        },
+        openRun: () => ({ update() {}, close() {}, registerStop: () => null }),
+        taskInput: () => null,
+    };
+    /** Five 20-character messages after the greeting (23 tokens each). */
+    const fiveMessages = Array.from({ length: 5 }, (_, i) => ({
+        chatId: `m${i + 1}`,
+        data: String.fromCharCode(97 + i).repeat(20),
+        role: (i % 2 ? "char" : "user") as Message["role"],
+    }));
+
     it("HypaV3 reports a gap when a select-only step trims uncovered history", async () => {
-        const previewJob: AssemblyMemoryJob = {
-            preview: true,
-            input: false,
-            tasks: true,
-            sourceGeneration: () => undefined,
-            readSource: () => null,
-            blockingReason: () => null,
-            confirmGap: async () => {
-                throw new Error("A preview asks no gap question");
-            },
-            markStopped() {},
-            acquireWriter: async () => {
-                throw new Error("A select-only step takes no writer lease");
-            },
-            openRun: () => ({ update() {}, close() {}, registerStop: () => null }),
-            taskInput: () => null,
-        };
         const { run, chat } = contextAssembly({
             hypaV3: true,
             maxContext: 200,
-            memoryJob: previewJob,
-            messages: Array.from({ length: 5 }, (_, i) => ({
-                chatId: `m${i + 1}`,
-                data: String.fromCharCode(97 + i).repeat(20),
-                role: i % 2 ? "char" : "user",
-            })),
+            memoryJob: selectOnlyJob,
+            messages: fiveMessages,
         });
         const { report, texts } = await run();
-        // The ledger reaches the selection at 181 − 10 + 40 (the full memory budget, as the empty
-        // card does not fit) = 211; the trim runs from 211 − 40 + 48 = 219 and drops the greeting
-        // (6) and m1 (23) to 190, never the last three history entries.
+        // The ledger keeps the response budget: it reaches the selection at 181 + 40 (the full
+        // memory budget, as the empty card does not fit) = 221; the trim runs from 221 − 40 + 48 =
+        // 229 and drops the greeting (6) and m1 (23) to 200, never the last three history entries.
         expect(texts).toEqual([
             `<Previous Conversation>${EMPTY_SUMMARY_CARD}</Previous Conversation>`,
             "b".repeat(20),
@@ -1423,6 +1433,132 @@ describe("the context report", () => {
             history: { total: 6, kept: 4, totalUser: 3, keptUser: 2, droppedTokens: 29 },
             memory: { kind: "hypaV3", tokens: 95, budget: 40, coverage: "gap" },
         });
+    });
+
+    it("a select-only HypaV3 step keeps the response budget free: it trims history the whole context would hold", async () => {
+        const { run } = contextAssembly({
+            hypaV3: true,
+            maxContext: 220,
+            memoryJob: selectOnlyJob,
+            messages: fiveMessages,
+        });
+        const { report, texts } = await run();
+        // 181 counted with `maxResponse` 10 and the empty card (48) is 229 > 220, so the full budget
+        // (44) is held; the trim runs from 229 and drops the greeting (6) and m1 (23) to 200. Without
+        // the response budget the ledger (219 with the card, before formatting) would fit whole.
+        expect(texts).toEqual([
+            `<Previous Conversation>${EMPTY_SUMMARY_CARD}</Previous Conversation>`,
+            "b".repeat(20),
+            "c".repeat(20),
+            "d".repeat(20),
+            "e".repeat(20),
+        ]);
+        expect(report.history).toEqual({ total: 6, kept: 4, totalUser: 3, keptUser: 2, droppedTokens: 29 });
+        expect(report.memory).toEqual({ kind: "hypaV3", tokens: 95, budget: 44, coverage: "gap" });
+        expect(report.input + report.maxResponse).toBeLessThanOrEqual(220);
+    });
+
+    it.each(["standard", "experimental"])(
+        "a blocking HypaV3 step (%s) whose plan reaches the protected tail over the context selects the real card instead of failing",
+        async (implementation) => {
+            const blockingJob: AssemblyMemoryJob = {
+                ...selectOnlyJob,
+                preview: false,
+                input: true,
+                blockingReason: () => "requestTrigger",
+                acquireWriter: async () => ({ release() {} }),
+            };
+            const preset = createHypaV3Preset(
+                "Half",
+                {
+                    memoryTokensRatio: 0.5,
+                    similarMemoryRatio: 0,
+                    useExperimentalImpl: implementation === "experimental",
+                },
+                "hypa-half",
+            );
+            const { run, chat } = contextAssembly({
+                hypaV3: true,
+                maxContext: 200,
+                memoryJob: blockingJob,
+                template: [{ type: "memory" }, CHAT_CARD],
+                db: { hypaV3Presets: [preset], hypaV3PresetId: preset.id },
+                messages: fiveMessages,
+            });
+            chat.hypaV3Data = { summaries: [{ text: "S", chatMemos: ["m1", "m2"], isImportant: false }] };
+            const { report, texts } = await run();
+            // 181 incoming (`maxResponse` 10 and 50 kept) less the summarized prefix (6 + 23 + 23) is 129;
+            // with the full budget 100 the plan holds 229 > 200 with only the tail (m3–m5) left. The real
+            // card (`<Past Events Summary>\nS\n</Past Events Summary>`, 46 + 3) makes it 178, which fits.
+            expect(texts).toEqual([
+                "<Past Events Summary>\nS\n</Past Events Summary>",
+                "c".repeat(20),
+                "d".repeat(20),
+                "e".repeat(20),
+            ]);
+            expect(report.input).toBe(49 + 3 * 23);
+            expect(report.memory).toEqual({ kind: "hypaV3", tokens: 49, budget: 100, coverage: "covered" });
+        },
+    );
+
+    it("HypaV2 plans with its legacy count; the final recheck frees the response budget, dropping older history but never its last two chats", async () => {
+        // `maxResponse` 300 of 1000 and an allocation of 10: HypaV2's own count (incoming less 300,
+        // plus 10) fits, so it summarizes nothing; the formatted prompt is its card wrapped (137), the
+        // greeting (6), m1–m3 (23 each), and m4.
+        // HypaV2 always searches its chunks with the last chats: one local vector per text.
+        const vectors = new Map<string, CachedVector>();
+        const embeddings = createEmbeddings({
+            cache: {
+                get: (key) => vectors.get(key) ?? null,
+                set: (key, vector) => vectors.set(key, vector),
+                generation: () => 0,
+                sync: () => {},
+                clear: () => {},
+                close: () => {},
+                stats: () => ({ bytes: 0, rows: 0 }),
+            },
+            transformers: {
+                runEmbedding: async (texts) => texts.map(() => new Float32Array([1, 0, 0, 0])),
+                runSummarizer: async () => "",
+                runImageCaption: async () => "",
+                runTextGeneration: async () => "",
+                dispose: async () => {},
+            },
+            fetchImpl: (async () => {
+                throw new Error("No embedding request leaves these tests");
+            }) as typeof fetch,
+        }).forJob({ db: { hypaModel: "MiniLM" } as never, supaMemoryKey: "", signal: new AbortController().signal });
+        const v2 = (last: number) =>
+            contextAssembly({
+                embeddings,
+                maxContext: 1000,
+                character: { supaMemory: true },
+                db: { maxResponse: 300, hypav2: true, hypaAllocatedTokens: 10, hypaChunkSize: 3000 },
+                messages: [
+                    ...fiveMessages.slice(0, 3),
+                    { chatId: "m4", data: "z".repeat(last), role: "user" as Message["role"] },
+                ],
+            });
+        // m4 500 (503): 715 is over the 700 budget; the greeting and m1 go (686).
+        const fits = await v2(500).run();
+        expect(fits.texts).toEqual([
+            "<Previous Conversation><Past Events Summary></Past Events Summary>\n<Past Events Details></Past Events Details></Previous Conversation>",
+            "b".repeat(20),
+            "c".repeat(20),
+            "z".repeat(500),
+        ]);
+        expect(fits.generationInfo.inputTokens).toBe(686);
+        // m4 700 (703): after the greeting, m1, and m2 the prompt is still 863; m3 and m4 stay, so the
+        // send ends with the too-many-tokens error instead of a prompt without the user's message.
+        const over = v2(700);
+        const result = await assemblePrompt(over.host, {
+            chatAdditonalTokens: 3,
+            continue: false,
+            generationId: "counting",
+            stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+        });
+        expect(result).toMatchObject({ type: "error", error: expect.stringContaining("At token rechecking") });
+        expect(result).toMatchObject({ error: expect.stringContaining("Required Tokens: 1163") });
     });
 
     it("the runner's token scope is the job scope's identity, which never uses a plugin tokenizer", () => {

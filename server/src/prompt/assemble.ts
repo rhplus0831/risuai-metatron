@@ -53,6 +53,7 @@ import {
     type HypaV3ExecutionHooks,
     type HypaV3ExecutionResult,
     type HypaV3Prepared,
+    type HypaV3PrepareOptions,
     type HypaV3SelectOptions,
     type HypaV3Selection,
     hypaV3SourceHash,
@@ -478,8 +479,9 @@ async function hypaV3Step(
         error: error ?? "[HypaV3] The memory step failed",
     });
     // With a task service the summarized-prefix cursor is looked up among history entries only (the
-    // legacy lookup can match an example's missing memo for the greeting's); without one, as before.
-    const prepareOptions = job?.tasks ? {} : undefined;
+    // legacy lookup can match an example's missing memo for the greeting's) and the response budget
+    // stays reserved, as the task's preparation keeps it; without one, as before.
+    const prepareOptions: HypaV3PrepareOptions | undefined = job?.tasks ? { responseCorrection: false } : undefined;
     const prepare = async (room: Chat) =>
         part(() => prepareHypaV3(memory, chats, currentTokens, maxContextTokens, room, tokenizer, prepareOptions));
     /** The chat as stored now (a lease holder's read of the memory the task may have written). */
@@ -626,8 +628,12 @@ async function hypaV3Step(
             }
             const prepared = outcome.prepared;
             const plan = await part(() => planHypaV3Summaries(prepared));
+            // The plan counts the full memory budget, which the summaries selected may not fill, so with
+            // the response budget kept a plan that reaches the protected tail over the context runs its
+            // windows and the selection trims the rest with the real card, as an initial run does.
+            const trimTail = job?.tasks === true && plan.stopReason === "cannotSummarizeFurther";
             // The experimental implementation reports a planning error before summarizing anything.
-            if (plan.error !== undefined && prepared.implementation === "experimental") {
+            if (plan.error !== undefined && !trimTail && prepared.implementation === "experimental") {
                 return failed(plan.error);
             }
             const execution = await part(() => executeHypaV3Plan(memory, prepared, plan, hooks(run)));
@@ -641,15 +647,19 @@ async function hypaV3Step(
                     return await recover();
             }
             // The standard implementation reports it after summarizing the windows before it.
-            if (plan.error !== undefined) {
+            if (plan.error !== undefined && !trimTail) {
                 return failed(plan.error);
             }
-            const selection = await select(prepared, execution);
+            const selection = await select(
+                prepared,
+                execution,
+                trimTail ? { trimUncovered: { tooMuchToken: TOO_MUCH_TOKEN } } : undefined,
+            );
             if (selection.error) {
                 return failed(selection.error);
             }
             writeSelection(execution.baseline, selection.memory);
-            return finish(prepared, selection, false, false);
+            return finish(prepared, selection, trimTail, false);
         } finally {
             releaseAll(
                 () => lease?.release(),
@@ -1637,6 +1647,13 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 }
                 chats = sp.chats;
                 currentTokens = sp.currentTokens;
+                // HypaV2 plans with its legacy count, so the final recheck frees the response budget;
+                // the last two chats it always keeps stay: the recheck errors before dropping them.
+                for (const entry of chats.slice(-2)) {
+                    if (entry.memo !== "supaMemory") {
+                        protectedEntries.add(entry);
+                    }
+                }
                 memoryRun = { kind: "hypaV2", coverage: "unknown" };
                 if (sp.memory) {
                     const data = sp.memory;
@@ -2092,18 +2109,22 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         inputTokens += tokens;
         recheckTokens.set(chat, tokens);
     }
-    if (inputTokens > maxContextTokens) {
+    // The prompt keeps the response budget free, as every count before formatting does except
+    // HypaV2's legacy one, for which this recheck frees it (its last two chats are protected).
+    const promptBudget = maxContextTokens - db.maxResponse;
+    if (inputTokens > promptBudget) {
         const keptEntry = (chat: OpenAIChat) => chat.content !== "" || (chat.multimodals?.length ?? 0) > 0;
         // Overlapping ranges can share an entry: clearing it removes every occurrence from the prompt.
         const keptTokens = () =>
             formated.reduce((sum, chat) => sum + (keptEntry(chat) ? recheckTokens.get(chat)! : 0), 0);
         inputTokens = keptTokens();
         let pointer = 0;
-        while (inputTokens > maxContextTokens) {
+        while (inputTokens > promptBudget) {
             if (pointer >= formated.length) {
                 return {
                     type: "error",
-                    error: TOO_MUCH_TOKEN + "\n\nAt token rechecking. Required Tokens: " + inputTokens,
+                    error:
+                        TOO_MUCH_TOKEN + "\n\nAt token rechecking. Required Tokens: " + (inputTokens + db.maxResponse),
                 };
             }
             if (formated[pointer].removable && keptEntry(formated[pointer])) {

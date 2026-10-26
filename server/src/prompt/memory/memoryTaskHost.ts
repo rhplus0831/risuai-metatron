@@ -64,8 +64,8 @@ export type MemoryTaskHostDeps = {
  *   effective preset and model preset ids, the admitted persona, `presetChain` semantics only when
  *   `input.effective.fromChain`, and `speakerChaId: input.speakerId` (so the request projection names
  *   a group speaker as the job's runner does); it checks the admission binding itself. The host never
- *   changes the scope. `host.db` is the scope's `db` with `maxResponse` from `input.maxResponse`, so the
- *   response correction matches the job's captured `currentTokens`.
+ *   changes the scope. `host.db` is the scope's `db` with `maxResponse` from `input.maxResponse`, the
+ *   response budget the job's captured `currentTokens` includes (the task keeps it reserved).
  * - Counting: the tokenizer is the runner's `ChatTokenCounter` rebuilt from `input.tokenPolicy`
  *   (`memoryTokenPolicy`), with the Google key of the fresh scope (the policy carries no credential).
  *   Plain-text `tokenize` and the requests' own counting use the same captured scope, so a Plugin main

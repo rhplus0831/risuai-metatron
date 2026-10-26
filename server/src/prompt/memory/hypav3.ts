@@ -116,7 +116,7 @@ export type HypaV3Implementation = "standard" | "experimental";
 export interface HypaV3Ledger {
     /** The count passed in. */
     readonly incoming: number;
-    /** `db.maxResponse`, subtracted once. */
+    /** `db.maxResponse`, subtracted once; 0 with `responseCorrection: false`. */
     readonly responseCorrection: number;
     /** The summarized prefix's `tokenizeChat` total, subtracted once. */
     readonly prefixTokens: number;
@@ -173,6 +173,12 @@ export interface HypaV3PrepareOptions {
      * be older than the stored summaries never removes one). Default true.
      */
     cleanup?: boolean;
+    /**
+     * False: the incoming count keeps `maxResponse`, so the step summarizes, selects, and trims
+     * within `maxContextTokens − maxResponse`, the prompt budget the rest of the prompt keeps. Default
+     * true: the legacy correction subtracts it, letting the prompt fill the whole context.
+     */
+    responseCorrection?: boolean;
 }
 
 /** The share of the context a lookahead plan keeps free: it plans from `C × (1 − h)`. */
@@ -421,7 +427,8 @@ export async function prepareHypaV3(
     }
 
     // Initial token correction
-    currentTokens -= db.maxResponse;
+    const responseCorrection = options?.responseCorrection === false ? 0 : db.maxResponse;
+    currentTokens -= responseCorrection;
 
     const snapshot = structuredClone(room.hypaV3Data);
 
@@ -508,7 +515,7 @@ export async function prepareHypaV3(
             coverageAhead,
             ledger: {
                 incoming,
-                responseCorrection: db.maxResponse,
+                responseCorrection,
                 prefixTokens,
                 emptyMemoryTokens,
                 memoryTokens,

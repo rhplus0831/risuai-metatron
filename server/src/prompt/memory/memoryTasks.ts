@@ -717,7 +717,7 @@ export function createMemoryTasks(deps: {
                 input.maxContext,
                 room,
                 built.tokenizer,
-                { cleanup: false },
+                { cleanup: false, responseCorrection: false },
             );
             live(task);
             if (!outcome.ok) {

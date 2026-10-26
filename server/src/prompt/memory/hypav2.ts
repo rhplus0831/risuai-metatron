@@ -299,6 +299,7 @@ export async function hypaMemoryV2(
     // Subtract maxResponse from currentTokens to fix the token calculation issue.
     // This is not a fundamental solution but rather a temporary fix.
     // It is designed to minimize impact on other code.
+    // The job's final token recheck keeps the response budget free afterwards.
     currentTokens -= db.maxResponse;
 
     if (room.hypaV2Data) {

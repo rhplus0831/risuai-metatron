@@ -1585,6 +1585,27 @@ describe("prepare options and lookahead planning", () => {
         expect(plain.stopReason).toBe("cannotSummarizeFurther");
         expect(plain.error).toMatch(/^\[HypaV3\] Cannot summarize further/);
     });
+
+    it("`responseCorrection: false` keeps `maxResponse` in the count: a prompt that fits only without it is summarized", async () => {
+        // A context of 1000, `maxResponse` 50, the empty card 10, a budget of 20.
+        const base = flatScenario("v3-response-budget", 1020, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.02 },
+            chats: makeChats(20),
+            maxContextTokens: 1000,
+        });
+        // The legacy correction: 1020 − 50 + 10 = 980 fits, with the empty card held.
+        const legacy = await setUp(base);
+        expect(legacy.prepared.ledger.responseCorrection).toBe(50);
+        expect(legacy.prepared.ledger.reservation.kind).toBe("emptyCard");
+        expect(legacy.prepared.ledger.current).toBe(980);
+        expect(legacy.plan.stopReason).toBe("notNeeded");
+        // Kept: 1020 + 10 is over, so the full budget is held (1040) and windows are planned.
+        const kept = await setUp(base, { prepare: { responseCorrection: false } });
+        expect(kept.prepared.ledger.responseCorrection).toBe(0);
+        expect(kept.prepared.ledger.reservation).toEqual({ kind: "fullBudget", tokens: 20 });
+        expect(kept.prepared.ledger.current).toBe(1040);
+        expect(kept.plan.windows.length).toBeGreaterThan(0);
+    });
 });
 
 describe("warming the summaries' vectors", () => {
