@@ -238,7 +238,7 @@ describe("provider permission", () => {
         confirm.mockResolvedValueOnce(false);
         const { plugin, name, func } = await registerProvider();
         const send = vi.fn(() => true);
-        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
         const jobId = `job-${plugin.name}`;
 
         try {

@@ -468,7 +468,7 @@ describe("lost acknowledgement", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         const landed = fake.get("ui", "main")!.revision;
         settings.ui.theme = "typed after the lost answer";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe("typed after the lost answer");
         expect(settings.ui.theme).toBe("typed after the lost answer");
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -493,7 +493,7 @@ describe("lost acknowledgement", () => {
         settings.ui.theme = "never landed";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         settings.ui.theme = "typed after the failure";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe("typed after the failure");
         expect(alerts.normal).not.toHaveBeenCalled();
         // The failed request, its resend (it lands), then the newer text.
@@ -512,7 +512,7 @@ describe("lost acknowledgement", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         expect(fake.data("ui", "main").theme).toBe("lost");
         settings.ui.theme = saved;
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe(saved);
         expect(settings.ui.theme).toBe(saved);
         expect(sync.heldRecordRevision("ui", "main")).toBe(fake.get("ui", "main")!.revision);
@@ -528,7 +528,7 @@ describe("lost acknowledgement", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         expect(fake.get("characters", "c")).not.toBeNull();
         characterStore.removeCharacter("c");
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.get("characters", "c")).toBeNull();
         expect(alerts.normal).not.toHaveBeenCalled();
     });

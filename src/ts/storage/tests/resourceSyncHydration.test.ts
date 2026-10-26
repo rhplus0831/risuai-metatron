@@ -993,8 +993,8 @@ describe("a refusal for a generating message", () => {
         expect(chat.isChatStale(refK)).toBe(false);
         expect(unloadWarning()).toBe(false);
         // A flush under a scope begun before the refusal still reports the discard.
-        await expect(sync.flushResources({ scope })).resolves.toEqual({ discarded: ["chats/c/k"] });
-        await expect(sync.flushResources()).resolves.toEqual({ discarded: [] });
+        await expect(sync.flushResources({ scope })).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(alerts.normal).toHaveBeenCalledTimes(2);
     });
@@ -1110,7 +1110,7 @@ describe("a refusal for a generating message", () => {
         // Deleted again, with no job in the way: the deletion lands with its chats.
         expect(characterStore.removeCharacter("c")).toBe(true);
         await tick();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.record("characters", "c")).toBeNull();
         expect(fake.chat("c", "k")).toBeNull();
         expect(unloadWarning()).toBe(false);
@@ -1226,7 +1226,7 @@ describe("a refused edit of the locked message is dropped", () => {
         lockB(fake);
         chat.setMessageText(refK, "b", "edited");
         const scope = sync.beginMutationScope();
-        await expect(sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"] });
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(fake.batchCount()).toBe(1);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(alerts.normal.mock.calls.map(([value]) => value).sort()).toEqual(["generating", "reloaded"]);
@@ -1242,7 +1242,7 @@ describe("a refused edit of the locked message is dropped", () => {
         expect(chat.isChatStale(refK)).toBe(false);
         expect(mirrorChat()!.message.map((entry) => [entry.chatId, entry.data])).toEqual(serverRows(fake));
         expect(fake.batchCount()).toBe(1);
-        await expect(sync.flushResources({ scope })).resolves.toEqual({ discarded: ["chats/c/k"] });
+        await expect(sync.flushResources({ scope })).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
         // After the job: its final reply stands, no edit lands over it.
         ownerWrite(fake, "b", "FINAL");
         fake.lock!.endJob("T");
@@ -1284,7 +1284,7 @@ describe("a refused edit of the locked message is dropped", () => {
         await vi.advanceTimersByTimeAsync(2000);
         expect(text("b")).toBe("FINAL");
         expect(chat.hasUnsavedChatWork()).toBe(false);
-        await expect(sync.flushResources()).resolves.toEqual({ discarded: [] });
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
     });
 
     it("an owner whose follow of its own job was lost: the lock released locally, its edit of the generating reply is refused and dropped, and the final reply wins", async () => {
@@ -1297,7 +1297,7 @@ describe("a refused edit of the locked message is dropped", () => {
         expect(locked("b")).toBe(false);
         await vi.advanceTimersByTimeAsync(1000);
         chat.setMessageText(refK, "b", "edited");
-        await expect(sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"] });
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(alerts.normal.mock.calls.map(([value]) => value).sort()).toEqual(["generating", "reloaded"]);
         ownerWrite(fake, "b", "FINAL");
@@ -1360,7 +1360,7 @@ describe("a refused edit of the locked message is dropped", () => {
             await vi.advanceTimersByTimeAsync(6000);
             expect(fake.batchCount()).toBe(batches);
             expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "D", "E"]);
-            await expect(sync.flushResources()).resolves.toEqual({ discarded: [] });
+            await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
         });
 
         it("a single removal of a locked reply is dropped by the save (nothing pending to withdraw): the rollback restores nothing and the chat's read brings the reply back", async () => {
@@ -1370,7 +1370,7 @@ describe("a refused edit of the locked message is dropped", () => {
             const owner = chat.chatOwnerToken("c");
             const removed = removeTail("d");
             expect(ids()).toEqual(["a", "b", "c", "d"]);
-            await expect(sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"] });
+            await expect(sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
             expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "D", "E"]);
             expect(chat.restoreUnsentRemoval(refK, owner, "d", removed)).toBe(false);
             expect(ids()).toEqual(["a", "b", "c", "d"]);
@@ -2349,12 +2349,12 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
             times: 1,
             match: (path) => path === "/api/resources/batch",
         };
-        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(chat.isChatStale(refK)).toBe(false);
         // The character is deleted (acknowledged), then added again under its id with a chat `k`.
         expect(characterStore.removeCharacter("c")).toBe(true);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.record("characters", "c")).toBeNull();
         expect(fake.chat("c", "k")).toBeNull();
         characterStore.addCharacter({
@@ -2362,7 +2362,7 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
             name: "C again",
             chats: [{ id: "k", name: "K again", note: "", localLore: [], message: [m("x", "X")] }],
         });
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.texts("c", "k")).toEqual(["X"]);
         const created = fake.chat("c", "k")!.revision;
         expect(chat.heldChatRevision(refK)).toBe(created);
@@ -2444,7 +2444,7 @@ describe("a recovery's list read that finds its character gone", () => {
         // The null answer is older than the held revision: nothing is removed, and `c` stays listed.
         // The conflicting reorder still waits for a list read, so the same flush reads the list again
         // and takes the server's (the old chats are gone there); its sent order differs: reported.
-        expect(await flushing).toEqual({ discarded: ["chats/c"] });
+        expect(await flushing).toEqual({ discarded: ["chats/c"], refused: [] });
         expect(readCount(fake)).toBe(2);
         expect(character()?.name).toBe("Again");
         const ids = character()!.chats.map((entry: Chat) => entry.id);
@@ -2452,7 +2452,7 @@ describe("a recovery's list read that finds its character gone", () => {
         expect(ids).not.toContain("k");
         expect(fake.order("c")!.ids).toEqual(ids);
         expect(alerts.normal.mock.calls).toEqual([["reloaded"]]);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(readCount(fake)).toBe(2);
     });
 
@@ -2469,7 +2469,7 @@ describe("a recovery's list read that finds its character gone", () => {
         // The held revision did not move, the chats' lifetime did: that answer is not applied. The
         // conflicting reorder still waits for a list read, so the same flush reads again on the new
         // lifetime, with nothing moved: the server's deletion removes the replacement and reports it.
-        expect(await flushing).toEqual({ discarded: ["characters/c", "chats/c/n", "chats/c"] });
+        expect(await flushing).toEqual({ discarded: ["characters/c", "chats/c/n", "chats/c"], refused: [] });
         expect(readCount(fake)).toBe(2);
         expect(character()).toBeUndefined();
         expect(characters().map((entry: any) => entry.chaId)).toEqual([]);

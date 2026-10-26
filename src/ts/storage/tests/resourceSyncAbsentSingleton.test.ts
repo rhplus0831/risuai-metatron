@@ -119,7 +119,7 @@ it("adopts the first remote creation from the live update and updates it with th
     expect(h.fake.batchCount()).toBe(0);
 
     h.storage.setPluginStorageItem("newLocalSetting", "local value");
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.fake.record("pluginStorage", "main")!.data).toEqual({
         _pluginStorage: { remoteSetting: "saved elsewhere", newLocalSetting: "local value" },
     });

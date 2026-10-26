@@ -1594,6 +1594,8 @@ export const languageEnglish = {
             trigger: "A conflict discarded local changes; the trigger did not run",
         },
         saveFailed: "Local changes could not be saved: {0}",
+        refusedDraft:
+            "This chat has local changes the server refused. Choose Retry or Discard in the refused-changes banner first.",
         chatLoadFailed: "The chat could not be loaded: {0}",
         chatNotSaved: "This chat is not saved on the server yet",
     },
@@ -2489,6 +2491,8 @@ export const languageEnglish = {
         "⚠️⚠️ FINAL WARNING ⚠️⚠️\n\nThis backup saves only character profile images and does NOT save most other assets!\n\nWhat will be saved:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\nWhat will NOT be saved:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other media files\n\n⚠️ Proceed ONLY if you don't need character assets in your backup file! ⚠️\n\nAre you really sure you want to proceed with partial backup?",
     backupDiscardedChanges:
         "While your latest changes were being saved for this backup, another tab or device changed some of the same data. Its version was kept and is in the backup; those changes of yours were replaced and are not in it.",
+    backupRefusedChanges:
+        "The server refused local changes to the following items. This archive holds the server's copy and does not contain those local changes:",
     savePartialLocalBackup: "Save Partial Backup Locally (Excluding Character Assets)",
     pluginProviderNotFound: "Unknown Plugin detected. Please change the model or enable the corresponding plugin.",
     pluginProviderPermissionDenied:

@@ -208,7 +208,7 @@ describe("feed patches through the tab save adapter", () => {
         expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
         expect(b.chat.isChatBehind(refK)).toBe(false);
         await vi.advanceTimersByTimeAsync(1000);
-        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
         quiet(b);
     });
@@ -259,7 +259,7 @@ describe("feed patches through the tab save adapter", () => {
                 expect(reads(b)).toEqual([]);
                 b.chat.endServerJob("J");
             }
-            expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+            expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
             await vi.advanceTimersByTimeAsync(1200);
             expect(reads(b)).toHaveLength(1);
             if (state === "summary only") {
@@ -299,7 +299,7 @@ describe("feed patches through the tab save adapter", () => {
         expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
         expect(b.chat.isChatBehind(refK)).toBe(false);
         await vi.advanceTimersByTimeAsync(1000);
-        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
         quiet(b);
     });
@@ -418,7 +418,7 @@ describe("the feed's generation locks", () => {
                 },
             ]);
             b.chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "queued on the deleted sibling" });
-            expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"] });
+            expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"], refused: [] });
             const recoveryReads = () => reads(b).filter((body) => body.chatSummaryCollections?.includes("c"));
             expect(recoveryReads()).toHaveLength(owner === "feed" ? 1 : 0);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(owner === "feed" ? ["k"] : ["k", "j"]);
@@ -427,7 +427,7 @@ describe("the feed's generation locks", () => {
             b.chat.endServerJob("J");
             // Ending this tab's follow does not release the independent feed lock.
             expect(b.chat.isCharacterGenerating("c")).toBe(true);
-            expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+            expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             expect(recoveryReads()).toHaveLength(1);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["k"]);
             b.live.paused = false;
@@ -473,7 +473,7 @@ describe("the feed's generation locks", () => {
         quiet(b);
         // Unlocked: an edit goes out as usual.
         b.chat.setMessageText(refK, "b", "edited after");
-        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
         expect(b.fake.texts("c", "k")).toEqual(["A", "edited after", "C"]);
     });
 
@@ -484,7 +484,7 @@ describe("the feed's generation locks", () => {
         jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
         // No lock here yet: the edit is accepted locally and refused by the server (409 `generating`).
         b.chat.setMessageText(refK, "b", "edited");
-        await expect(b.sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"] });
+        await expect(b.sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(b.fake.texts("c", "k")).toEqual(["A", "one", "C"]);
         expect(alerts.normal.mock.calls.map(([value]) => value).sort()).toEqual(["generating", "reloaded"]);
         expect(b.chat.hasUnsavedChatWork()).toBe(false);

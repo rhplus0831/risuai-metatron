@@ -6,8 +6,8 @@ import type { BackupArchiveManifest } from "../../../shared/resources.ts";
 // missing-asset report names what the database referenced, a failed or cancelled download cancels
 // the response and aborts the writer, and a restore posts the file and reloads.
 
-const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExport, hooks, persisted } = vi.hoisted(
-    () => ({
+const { alerts, flush, refused, writer, requests, exportResponse, upstream, upstreamExport, hooks, persisted } =
+    vi.hoisted(() => ({
         alerts: {
             alertError: vi.fn(),
             alertNormal: vi.fn(),
@@ -17,7 +17,8 @@ const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExpor
             alertUpstreamImportReport: vi.fn(async () => true),
             alertStore: { set: vi.fn() },
         },
-        flush: vi.fn(async () => ({ discarded: [] as string[] })),
+        flush: vi.fn(async () => ({ discarded: [] as string[], refused: [] as string[] })),
+        refused: vi.fn<(typeof import("../storage/resourceSync.svelte"))["refusedItems"]>(() => []),
         /** The upstream import routes' answers (`upstreamBackupClient.ts`), set per test. */
         upstream: {
             prepare: null as (() => Response | Promise<Response>) | null,
@@ -45,12 +46,12 @@ const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExpor
         },
         requests: [] as { path: string; init: RequestInit }[],
         exportResponse: { current: null as (() => Response) | null },
-    }),
-);
+    }));
 
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(alerts));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: flush,
+    refusedItems: refused,
     beforeRestoreReload: (fn: () => void) => {
         hooks.current = fn;
         return () => {
@@ -70,6 +71,11 @@ vi.mock("src/lang", () => ({
         partialBackupFirstConfirm: "first?",
         partialBackupSecondConfirm: "second?",
         backupDiscardedChanges: "changes replaced",
+        backupRefusedChanges: "Refused local changes were left out of the backup.",
+        refusedData: {
+            chatLabel: (chatName: string, characterName: string) => `${characterName} / ${chatName}`,
+            orderLabel: (name: string) => `Chat order: ${name}`,
+        },
         upstreamExport: {
             includeKeys: "Include API keys?",
             preparing: "Preparing...",
@@ -169,7 +175,7 @@ vi.mock("../storage/serverAuth", () => ({
 }));
 
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
-import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "../storage/tests/installFlatDatabase";
 import {
     LoadLocalBackup,
     readFirstRecordName,
@@ -279,6 +285,7 @@ const written = () => {
 };
 
 beforeEach(() => {
+    refused.mockReset().mockReturnValue([]);
     requests.length = 0;
     writer.chunks.length = 0;
     writer.names.length = 0;
@@ -303,6 +310,68 @@ afterEach(() => {
     vi.clearAllMocks();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("backups with refused local drafts", () => {
+    it.each([
+        ["SaveLocalBackup", SaveLocalBackup],
+        ["SavePartialLocalBackup", SavePartialLocalBackup],
+        ["SaveUpstreamLocalBackup", SaveUpstreamLocalBackup],
+    ])("%s writes the archive and names every refused chat in its success alert or report", async (name, save) => {
+        const { language } = await import("src/lang");
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "alice",
+                    name: "Alice",
+                    type: "character",
+                    chats: [{ id: "k", name: "Morning", message: [] }],
+                },
+                { chaId: "group", name: "Group", type: "group", chats: [{ id: "j", name: "Evening", message: [] }] },
+            ],
+        });
+        refused.mockReturnValue([
+            { kind: "chat", key: "chats\u0000alice\u0000k", chaId: "alice", chatId: "k", reason: "invalid chat" },
+            { kind: "chat", key: "chats\u0000group\u0000j", chaId: "group", chatId: "j", reason: "invalid chat" },
+            { kind: "order", key: "chatOrder\u0000group", chaId: "group", reason: "invalid order" },
+        ]);
+        flush.mockResolvedValueOnce({ discarded: [], refused: ["chats/alice/k", "chats/group/j", "chats/group"] });
+        const bytes =
+            name === "SaveUpstreamLocalBackup"
+                ? record("database.risudat", new Uint8Array([1, 2, 3]))
+                : archive({
+                      partial: name === "SavePartialLocalBackup",
+                      missing: name === "SavePartialLocalBackup" ? ["assets/missing.png"] : [],
+                  });
+        const stream = streamed(bytes, 7);
+        exportResponse.current = stream.response;
+        upstreamExport.prepare = () =>
+            Response.json({
+                token: "0b9c4f1e-2d3a-4b5c-8d6e-7f8091a2b3c4",
+                report: { counts: { characters: 2, chats: 2, assets: 0 }, converted: [], excluded: [], missing: [] },
+            });
+        upstreamExport.download = stream.response;
+
+        await save();
+
+        expect(written()).toEqual(bytes);
+        expect(writer.close).toHaveBeenCalledTimes(1);
+        expect(writer.abort).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        const report =
+            name === "SaveUpstreamLocalBackup"
+                ? alerts.alertConfirm.mock.calls[1]?.[0]
+                : name === "SavePartialLocalBackup"
+                  ? alerts.alertMd.mock.calls[0]?.[0]
+                  : alerts.alertNormal.mock.calls[0]?.[0];
+        expect(report).toContain(language.backupRefusedChanges);
+        expect(report).toContain("Alice / Morning");
+        expect(report).toContain("Group / Evening");
+        expect(report).toContain("Chat order: Group");
+        if (name === "SaveUpstreamLocalBackup") {
+            expect(alerts.alertNormal).toHaveBeenCalledWith(language.upstreamExport.success);
+        }
+    });
 });
 
 describe("SaveLocalBackup", () => {
@@ -337,7 +406,7 @@ describe("SaveLocalBackup", () => {
     });
 
     it("says so in the success alert when the pre-backup flush discarded a change (its `discarded` list)", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["characters/alice", "chats/alice/k"] });
+        flush.mockResolvedValueOnce({ discarded: ["characters/alice", "chats/alice/k"], refused: [] });
         exportResponse.current = streamed(
             archive({ assets: ["assets/alice.png", "assets/happy.png", "assets/group.png", "assets/icon.png"] }),
             1024,
@@ -349,7 +418,7 @@ describe("SaveLocalBackup", () => {
     });
 
     it("puts the discard ahead of the missing-asset report", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["presets/main"] });
+        flush.mockResolvedValueOnce({ discarded: ["presets/main"], refused: [] });
         exportResponse.current = streamed(archive({ assets: ["assets/alice.png", "assets/icon.png"] }), 1024).response;
         await SaveLocalBackup();
         expect(alerts.alertNormal).not.toHaveBeenCalled();
@@ -429,7 +498,7 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
         const order: string[] = [];
         flush.mockImplementationOnce(async () => {
             order.push("flush");
-            return { discarded: [] };
+            return { discarded: [], refused: [] };
         });
         const file = download();
         let prepareBody: Record<string, unknown> | null = null;
@@ -488,7 +557,7 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
     });
 
     it("sends a yes to the keys question as includeSecrets, and names the flush's discarded changes in the report", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["presets/main"] });
+        flush.mockResolvedValueOnce({ discarded: ["presets/main"], refused: [] });
         let prepareBody: Record<string, unknown> | null = null;
         upstreamExport.prepare = (body) => {
             prepareBody = body;
@@ -595,7 +664,7 @@ describe("SavePartialLocalBackup", () => {
     });
 
     it("says so in the success alert when the pre-backup flush discarded a change", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["characters/alice"] });
+        flush.mockResolvedValueOnce({ discarded: ["characters/alice"], refused: [] });
         exportResponse.current = streamed(archive({ partial: true, assets: ["assets/alice.png"] }), 32).response;
         await SavePartialLocalBackup();
         expect(alerts.alertNormal).toHaveBeenCalledWith("Success\n\nchanges replaced");

@@ -122,7 +122,7 @@ beforeEach(() => {
     deps.request.mockResolvedValue({ type: "success", result: "a quiet garden" });
     deps.auxFetchJson.mockResolvedValue(imagen);
     CharEmotion.set(structuredClone(original));
-    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.stubGlobal("fetch", deps.fetch);
 });

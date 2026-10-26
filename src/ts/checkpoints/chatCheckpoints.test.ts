@@ -190,6 +190,7 @@ describe("chat checkpoints over the server store", () => {
 
             expect(await olderTab.sync.flushResources()).toEqual({
                 discarded: restored ? [`chats/${ref.chaId}/${ref.chatId}`] : [],
+                refused: [],
             });
             expect(server.resources.batchBodies()[0].chats[0]).toMatchObject({ ...address, baseRevision });
             expect(server.resources.chat(ref.chaId, ref.chatId)!.data.fmIndex).toBe(restored ? 1 : 3);

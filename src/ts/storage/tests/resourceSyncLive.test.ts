@@ -262,7 +262,7 @@ describe("records another writer committed", () => {
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
         noNotice();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
     });
 
     it("applies another writer's character update raw, without a write; the element and a retained nested wrapper then write into the applied copy on its revision", async () => {
@@ -1107,7 +1107,7 @@ describe("field patches another writer committed", () => {
         expect(fake.batchCount()).toBe(batches);
         expect(changed).toEqual([]);
         noNotice();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         // The untouched subtree's wrapper still writes into the same record, on the stamped revision.
         entry.content = "edited after the stamp";
         await tick();
@@ -1118,7 +1118,7 @@ describe("field patches another writer committed", () => {
             lastInteraction: 1234,
             globalLore: [{ key: "k", content: "edited after the stamp" }],
         });
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1138,7 +1138,7 @@ describe("field patches another writer committed", () => {
         await settle(fake);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1212,7 +1212,7 @@ describe("field patches another writer committed", () => {
         expect(reads(fake)).toBe(expectedReads);
         expect(sync.heldRecordRevision("characters", "d")).toBe(current().revision);
         expect(character("d").lastInteraction).toBe(77);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
@@ -1226,7 +1226,7 @@ describe("field patches another writer committed", () => {
         // The stamp lands before this tab's debounced save.
         patchCharacter(fake, "d", { set: { lastInteraction: 777 } });
         expect(character("d").lastInteraction).toBeUndefined();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.record("characters", "d")!.data).toMatchObject({ desc: "mine", lastInteraction: 777 });
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 777 });
         expect(sync.heldRecordRevision("characters", "d")).toBe(fake.record("characters", "d")!.revision);
@@ -1253,7 +1253,7 @@ describe("field patches another writer committed", () => {
         expect(fake.record("characters", "d")!.data).toMatchObject({ desc: "mine", lastInteraction: 55 });
         expect(fake.batchCount()).toBe(1);
         expect(reads(fake)).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1279,7 +1279,7 @@ describe("field patches another writer committed", () => {
         expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
         expect(reads(fake)).toBe(0);
         expect(fake.batchCount()).toBe(1);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1296,7 +1296,7 @@ describe("field patches another writer committed", () => {
         expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 });
@@ -1379,7 +1379,7 @@ describe("the character order another writer replaced", () => {
         checkCharOrder();
         expect(plainOrder(settings)).toEqual(replaced);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1409,7 +1409,7 @@ describe("the character order another writer replaced", () => {
         expect(characters().map((entry) => entry.chaId)).toEqual(["c", "d", "e"]);
         expect(plainOrder(settings)).toEqual(patched);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1422,7 +1422,7 @@ describe("the character order another writer replaced", () => {
         expect(serverOrder(fake)).toEqual(["c", "d"]);
         expect(orderWrites(fake)).toEqual([["c", "d"]]);
         expect(fake.batchCount()).toBe(1);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1442,7 +1442,7 @@ describe("the character order another writer replaced", () => {
         expect(characters().map((entry) => entry.chaId)).toEqual(["c"]);
         expect(plainOrder(settings)).toEqual(["c"]);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1462,7 +1462,7 @@ describe("the character order another writer replaced", () => {
         expect(character("d").trashTime).toBe(1);
         expect(plainOrder(settings)).toEqual(["c"]);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1492,7 +1492,7 @@ describe("the character order another writer replaced", () => {
         await settleRepair(fake);
         expect(character("d").trashTime).toBe(1);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1517,7 +1517,7 @@ describe("the character order another writer replaced", () => {
         for (const write of writes) {
             expect(write[0]).toEqual(folder);
         }
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 });

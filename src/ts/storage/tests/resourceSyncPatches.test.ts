@@ -197,7 +197,7 @@ async function boot(prepare?: (fake: StoreBackedServer) => void) {
         const before = { batches: fake.batchCount(), all: fake.requests.length };
         await vi.advanceTimersByTimeAsync(5000);
         expect({ batches: fake.batchCount(), all: fake.requests.length }, "nothing follows").toEqual(before);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount(), "a flush sends nothing more").toBe(before.batches);
     };
     const noNotice = () => {
@@ -678,7 +678,7 @@ describe("lost acknowledgements", () => {
         expect(record("characters", "c").name).toBe("lost");
         expect(Object.keys(record("characters", "c")).at(-1)).not.toBe("desc");
         // The retry: a stale base (409), read back, recognized as this tab's own write.
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.heldRecordRevision("characters", "c")).toBe(revision("characters", "c"));
         expect(element.name).toBe("lost");
@@ -696,7 +696,7 @@ describe("lost acknowledgements", () => {
         element.name = "lost";
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         element.personality = "typed while the answer was lost";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(record("characters", "c")).toMatchObject({
             name: "lost",
             personality: "typed while the answer was lost",
@@ -724,7 +724,7 @@ describe("lost acknowledgements", () => {
         ]);
         expect(Object.keys(record("modules")[1])).toEqual(["id", "name", "extra"]);
         expect(Object.keys(plain(settings.modules[1]))).toEqual(["extra", "id", "name"]);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.heldRecordRevision("modules", "main")).toBe(revision("modules"));
         agree("modules");
@@ -745,7 +745,7 @@ describe("lost acknowledgements", () => {
         expect(landed).not.toBe(base);
         element.name = "typed after the lost answer";
         // (The retry backoff runs on the real clock: the flush runs the cycle now.)
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(ops()).toEqual([
             expect.objectContaining({ baseRevision: base, patch: { set: { name: "lost" }, remove: [] } }),
             expect.objectContaining({
@@ -769,7 +769,7 @@ describe("lost acknowledgements", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         const landed = revision("characters", "c");
         element.name = saved;
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(ops().at(-1)).toEqual(
             expect.objectContaining({ baseRevision: landed, patch: { set: { name: saved }, remove: [] } }),
@@ -791,7 +791,7 @@ describe("lost acknowledgements", () => {
         live.paused = false;
         flushFeed();
         expect(element.name).toBe(saved);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(element.name).toBe(saved);
         expect(record("characters", "c").name).toBe(saved);
         agree("characters", "c");
@@ -925,7 +925,7 @@ describe("modules item patches another tab committed", () => {
         const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
         expect(plain(settings.modules[1]).name).toBe("m2");
         expect(changed).toEqual([]);
-        expect(await sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3"]);
         expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3"]);
@@ -963,7 +963,7 @@ describe("modules item patches another tab committed", () => {
         // The patch waits: this tab has an unsent change of the record.
         expect(plain(settings.modules[1]).name).toBe("m2");
         expect(changed).toEqual([]);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
         expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
         expect(record("modules")[0].additionalAssets).toHaveLength(LARGE);
@@ -1027,7 +1027,7 @@ describe("modules item patches another tab committed", () => {
         collectionStore.addModule(module("m4", { lorebook: [] }));
         await tick();
         const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         // No waiting patch: the conflict read the record back, then merged the same way.
         expect(reads()).toBe(1);
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
@@ -1384,7 +1384,7 @@ describe("patches of the other mirrored records", () => {
             publish("characters", "c", { set: { lastInteraction: 123 } });
             publish("statics", "main", { set: { messages: 7 } });
             expect(h.character().lastInteraction).not.toBe(123);
-            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             expect(h.record("characters", "c")).toMatchObject({ desc: "local", lastInteraction: 123 });
             expect(h.record("statics")).toEqual({ messages: 9, imports: 0 });
             expect(h.reads()).toBe(0);
@@ -1393,7 +1393,7 @@ describe("patches of the other mirrored records", () => {
             h.settings.modules[1].name = "mine";
             publish("modules", "main", { changes: [{ id: "m2", set: { name: "theirs" } }] });
             expect(h.settings.modules[1].name).toBe("mine");
-            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
             expect(h.settings.modules[1].name).toBe("theirs");
             expect(alerts.normal).toHaveBeenCalledWith("reloaded");
             expect(h.reads()).toBe(0);
@@ -1407,7 +1407,7 @@ describe("patches of the other mirrored records", () => {
                 const row = h.fake.record("modules", "main")!;
                 h.sync.applyHydration({ kind: "modules", id: "main", ...row });
             }
-            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             expect(h.record("modules")[1].name).toBe("ack lost");
             expect(h.reads()).toBe(0);
             expect(alerts.normal).not.toHaveBeenCalled();
@@ -1444,7 +1444,7 @@ describe("patches of the other mirrored records", () => {
                     chatOrders: [],
                 });
             } else h.patchModules({ changes: [{ id: "m2", set: { name: "latest remote" } }] });
-            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
             expect(h.reads()).toBe(1);
             expect(h.settings.modules[1].name).toBe(mode === "wrong base" ? "first remote" : "latest remote");
             expect(h.sync.heldRecordRevision("modules", "main")).toBe(h.revision("modules"));

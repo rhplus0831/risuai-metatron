@@ -30,29 +30,31 @@ All source line references are for the revision above. Test commands and limitat
 
 ## Prioritized findings
 
-| ID  | Priority | Finding                                                                     | Primary impact                                         |
-| --- | -------- | --------------------------------------------------------------------------- | ------------------------------------------------------ |
-| F01 | P1       | Persistent chat refusals are missing from subsequent flush readiness checks | Backup omission; generation on an older transcript     |
-| F02 | P1       | Unsaved intent exists only for the lifetime of the tab                      | Lost drafts after page loss or reload                  |
-| F03 | P2       | Coarse conflict recovery discards unrelated and newer local edits           | Multi-tab/device data loss                             |
-| F04 | P2       | Incoming refreshes block outgoing saves                                     | Save latency and increased unsaved window              |
-| F05 | P2       | A newer chat read can clear a still-active generation lock                  | Discarded edits; possible overwrite after completion   |
-| F06 | P2       | Restore/import validation and installation block the serving thread         | Whole-server stalls and memory pressure                |
-| F07 | P2       | Read limits count references rather than resulting bytes                    | Large allocations, latency, and response amplification |
-| F08 | P2       | Asset and backup retention lack a coordinated byte budget                   | Disk growth and eventual write failures                |
-| F09 | P2       | Abortable UI token counters bypass request batching                         | Bursty requests and duplicate count work               |
-| F10 | P2       | A Google count batch can become many sequential provider calls              | Slow counters and excessive upstream requests          |
-| F11 | P2       | Suggestion translation effects can apply results to another chat            | Incorrect suggestion labels and wasted work            |
-| F12 | P2       | Rendered streaming repeatedly processes the growing message                 | Mobile/slow-device responsiveness                      |
-| F13 | P2       | Asset fallback retains original blobs and bypasses thumbnails               | Browser memory and bandwidth in fallback environments  |
-| F14 | P3       | PWA foreground reconciliation rewrites unchanged push subscriptions         | Repeated requests and durable disk writes              |
-| F15 | P2       | An unanswered job-create request has no durable idempotent identity         | A retry can generate an additional reply               |
-| F16 | P2       | Command follow-up work ends up owned by the page again                      | Remaining work disappears after reload/failure         |
-| F17 | P2       | Streamed request bodies are buffered before general-route authentication    | Unnecessary pre-authentication memory and work         |
+| ID  | Priority | Finding                                                                                           | Primary impact                                         |
+| --- | -------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| F01 | P1       | **Fixed 2026-10-26.** Persistent chat refusals are missing from subsequent flush readiness checks | Backup omission; generation on an older transcript     |
+| F02 | P1       | Unsaved intent exists only for the lifetime of the tab                                            | Lost drafts after page loss or reload                  |
+| F03 | P2       | Coarse conflict recovery discards unrelated and newer local edits                                 | Multi-tab/device data loss                             |
+| F04 | P2       | Incoming refreshes block outgoing saves                                                           | Save latency and increased unsaved window              |
+| F05 | P2       | A newer chat read can clear a still-active generation lock                                        | Discarded edits; possible overwrite after completion   |
+| F06 | P2       | Restore/import validation and installation block the serving thread                               | Whole-server stalls and memory pressure                |
+| F07 | P2       | Read limits count references rather than resulting bytes                                          | Large allocations, latency, and response amplification |
+| F08 | P2       | Asset and backup retention lack a coordinated byte budget                                         | Disk growth and eventual write failures                |
+| F09 | P2       | Abortable UI token counters bypass request batching                                               | Bursty requests and duplicate count work               |
+| F10 | P2       | A Google count batch can become many sequential provider calls                                    | Slow counters and excessive upstream requests          |
+| F11 | P2       | Suggestion translation effects can apply results to another chat                                  | Incorrect suggestion labels and wasted work            |
+| F12 | P2       | Rendered streaming repeatedly processes the growing message                                       | Mobile/slow-device responsiveness                      |
+| F13 | P2       | Asset fallback retains original blobs and bypasses thumbnails                                     | Browser memory and bandwidth in fallback environments  |
+| F14 | P3       | PWA foreground reconciliation rewrites unchanged push subscriptions                               | Repeated requests and durable disk writes              |
+| F15 | P2       | An unanswered job-create request has no durable idempotent identity                               | A retry can generate an additional reply               |
+| F16 | P2       | Command follow-up work ends up owned by the page again                                            | Remaining work disappears after reload/failure         |
+| F17 | P2       | Streamed request bodies are buffered before general-route authentication                          | Unnecessary pre-authentication memory and work         |
 
 ### F01 — Persistent chat refusals are missing from subsequent flush readiness checks
 
 **Confirmed; highest-priority cross-boundary defect.**
+
+**Fixed 2026-10-26** (commit `fix(storage): report still-refused drafts from the save barrier`): `flushResources` resolves with `refused` (every key still refused when it resolves) beside `discarded`; a refused chat order no longer makes the flush wait and is reported there too. Server job admission refuses a job whose chat or character order is refused (`serverJob.refusedDraft`), both backup exports name the refused items and say the archive lacks them, and the callback barrier does not count a locally refused chat as held at an equal revision. Left open from the recommendation: the recovery export of local drafts (deferred with F02).
 
 `quarantineChat` retains refused operations and the local draft, removes pending work, and records a discard event. `flushResources` rejects refused resource records, but its chat discard result describes events since that call or mutation scope. It does not describe every chat that remains refused. A later flush can therefore return an empty discard list while the chat is still unsaved.
 

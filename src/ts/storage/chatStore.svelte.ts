@@ -5759,7 +5759,7 @@ export function finishDeferredReload(server: RemoteChat): string | null {
     return null;
 }
 
-/** What `flushResources` waits for: every chat and order with work queued or in flight now. */
+/** Work tracked by `flushResources`; a refused order is skipped while checking settlement. */
 export function captureChatObligations(): { chats: Map<string, number>; orders: Map<string, number> } {
     const chats = new Map<string, number>();
     for (const key of new Set([...pending.keys(), ...inflight.keys()])) {
@@ -5783,7 +5783,7 @@ export function unsettledChatObligations(obligations: ReturnType<typeof captureC
         }
     }
     for (const [chaId, seq] of obligations.orders) {
-        if ((ordersSettled.get(chaId) ?? 0) < seq) {
+        if (!isOrderQuarantined(chaId) && (ordersSettled.get(chaId) ?? 0) < seq) {
             open.push(chaId);
         }
     }

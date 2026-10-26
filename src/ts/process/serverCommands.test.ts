@@ -41,7 +41,8 @@ const stubs = vi.hoisted(() => ({
     alertToast: vi.fn(),
     /** `sleep`: immediate, its requested waits recorded. */
     sleep: vi.fn<(ms: number) => Promise<void>>(async () => {}),
-    flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
+    flush: vi.fn<() => Promise<{ discarded: string[]; refused: string[] }>>(),
+    refused: vi.fn<(typeof import("../storage/resourceSync.svelte"))["refusedItems"]>(() => []),
     /** `refreshStaleChat`: the pre-send read of a chat this tab knows is behind; true once it is current. */
     refresh: vi.fn<(ref: unknown) => Promise<boolean>>(),
     /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
@@ -102,6 +103,7 @@ vi.mock("src/lang", () => ({
             saveFailed: "save failed: {0}",
             chatLoadFailed: "load failed: {0}",
             chatNotSaved: "not saved",
+            refusedDraft: "the server still refuses this local draft",
         },
         chatBinding: {
             refused: "cannot send",
@@ -154,6 +156,7 @@ vi.mock("../storage/chatStore.svelte", () => ({
 vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: stubs.flush,
+    refusedItems: stubs.refused,
     refreshStaleChat: stubs.refresh,
     GenerationBlockedError: BlockedError,
     generatingNoticeCount: stubs.notices,
@@ -208,7 +211,8 @@ beforeEach(async () => {
     stubs.pin.mockReset().mockImplementation(() => vi.fn());
     stubs.entry.mockReset().mockReturnValue({ ...BOUND });
     stubs.loadChat.mockReset().mockResolvedValue({});
-    stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
+    stubs.refused.mockReset().mockReturnValue([]);
     stubs.refresh.mockReset().mockResolvedValue(true);
     stubs.notices.mockReset().mockReturnValue(0);
     stubs.restored.mockReset().mockResolvedValue(false);
@@ -534,7 +538,7 @@ describe("runServerButton", () => {
 
     it("runs nothing for a group, a discarding or rejected flush, a chat gone meanwhile, or an unsaved chat", async () => {
         await commands.runServerButton({ chaId: "g", type: "group" } as never, "go", ref);
-        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
         await commands.runServerButton(char, "go", ref);
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         await commands.runServerButton(char, "go", ref);
@@ -622,7 +626,7 @@ describe("runServerManualTrigger", () => {
         outcomes.push(
             await commands.runServerManualTrigger({ chaId: "g", type: "group" } as never, "greet", ref, { onStart }),
         );
-        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
@@ -666,6 +670,68 @@ describe("runServerJob", () => {
         options: Parameters<Module["runServerJob"]>[3] = {},
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
+
+    it("blocks send, button, and trigger jobs for refused targets or orders while allowing healthy chats", async () => {
+        vi.useFakeTimers();
+        try {
+            const { language } = await import("src/lang");
+            const refusals = [
+                { kind: "chat", chaId: "c", chatId: "k", key: "chats\u0000c\u0000k", reason: "invalid chat" },
+                { kind: "order", chaId: "c", key: "chatOrder\u0000c", reason: "invalid order" },
+            ] satisfies ReturnType<typeof stubs.refused>;
+            // An unexpected create answers immediately, so a missing guard fails without waiting
+            // for a job terminal that a refused caller should never need.
+            stubs.create.mockRejectedValue(new RequestError(400, "unexpected job creation"));
+            for (const item of refusals) {
+                const key = item.kind === "chat" ? "chats/c/k" : "chats/c";
+                for (const source of ["inventory", "flush"] as const) {
+                    stubs.refused.mockReturnValue(source === "inventory" ? [item] : []);
+                    stubs.flush.mockResolvedValue({ discarded: [], refused: source === "flush" ? [key] : [] });
+                    stubs.alertError.mockClear();
+                    expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+                    expect(await commands.runServerButton(char, "go", ref)).toBe("refused");
+                    expect(await commands.runServerManualTrigger(char, "greet", ref)).toBe("refused");
+                    expect(stubs.create).not.toHaveBeenCalled();
+                    expect(stubs.alertError.mock.calls).toEqual([
+                        [language.serverJob.refusedDraft],
+                        [language.serverJob.refusedDraft],
+                        [language.serverJob.refusedDraft],
+                    ]);
+                }
+            }
+
+            stubs.alertError.mockClear();
+            for (const item of refusals) {
+                // A sibling chat is healthy despite k's refusal; an order refusal belongs only
+                // to its character, even when another character uses the same chat id.
+                const healthy = item.kind === "chat" ? { chaId: "c", chatId: "j" } : { chaId: "other", chatId: "k" };
+                stubs.refused.mockReturnValue([item]);
+                stubs.flush.mockResolvedValue({
+                    discarded: [],
+                    refused: [item.kind === "chat" ? "chats/c/k" : "chats/c"],
+                });
+                stubs.create.mockReset().mockResolvedValue(`job-${item.kind}`);
+                stubs.follows.length = 0;
+                const run = commands.runServerJob({ chaId: healthy.chaId, type: "character" } as never, healthy, {
+                    kind: "send",
+                    label: "send",
+                    context: { input: "hi" },
+                });
+                await vi.waitFor(() => expect(follows()).toHaveLength(1));
+                expect(stubs.create).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        context: expect.objectContaining({ characterId: healthy.chaId, chatId: healthy.chatId }),
+                    }),
+                );
+                endWith(follows()[0], done);
+                expect(await run).toEqual({ outcome: "started", terminal: done });
+            }
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        } finally {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
 
     it("posts the kind with the caller's context fields and no command, and reports `started` with the terminal", async () => {
         stubs.create.mockResolvedValue("j");
@@ -853,7 +919,7 @@ describe("runServerJob", () => {
         const controller = new AbortController();
         stubs.flush.mockImplementationOnce(async () => {
             controller.abort();
-            return { discarded: [] };
+            return { discarded: [], refused: [] };
         });
         expect(await send({ input: "hi" }, { signal: controller.signal })).toEqual({
             outcome: "refused",
@@ -904,7 +970,7 @@ describe("runServerJob", () => {
     });
 
     it("shows a send's refusals as `language.serverJob` entries, the error's text in their `{0}` taken literally", async () => {
-        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
         expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
         stubs.flush.mockRejectedValueOnce(new Error("quota $& {0} $1"));
         expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });

@@ -185,7 +185,7 @@ async function boot() {
         const before = { batches: fake.batchCount(), all: fake.requests.length };
         await vi.advanceTimersByTimeAsync(5000);
         expect({ batches: fake.batchCount(), all: fake.requests.length }, "nothing follows").toEqual(before);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount(), "a flush sends nothing more").toBe(before.batches);
     };
     const noNotice = () => {
@@ -497,7 +497,7 @@ describe("canonical character text", () => {
         expect(fake.batchBodies()[0].ops[0]).not.toHaveProperty("data");
         element.personality = "typed during the save";
         fake.releaseBatch!();
-        expect(await flushing).toEqual({ discarded: [] });
+        expect(await flushing).toEqual({ discarded: [], refused: [] });
         expect(record("c")).toMatchObject({ desc: "", personality: "" });
         await settle();
         expect(fake.batchCount()).toBe(2);
@@ -522,7 +522,7 @@ describe("canonical character text", () => {
         live.paused = true;
         fake.set("characters", "c", { ...record("c"), lastInteraction: 5000 });
         character("c").personality = "mine";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         live.paused = false;
         await settle();
         expect(record("c")).toMatchObject({ personality: "mine", lastInteraction: 5000, desc: "" });
@@ -703,7 +703,7 @@ describe("chat defaults on the client", () => {
         await vi.advanceTimersByTimeAsync(1500);
         expect(fake.batchCount()).toBe(1);
         // The retry finds the chat the lost answer created and takes it as acknowledged.
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         await settle();
         const groups = chatGroups(fake).filter((group: any) => group.chatId === created.id);
         expect(groups.length).toBeLessThanOrEqual(2);

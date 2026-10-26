@@ -5,7 +5,9 @@ import { language } from "src/lang";
 import { type BackupArchiveManifest, RESOURCE_KIND } from "../../../shared/resources.ts";
 import { selectPartialBackupAssets } from "../../../shared/backups.ts";
 import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
-import { flushResources } from "../storage/resourceSync.svelte";
+import { flushResources, refusedItems } from "../storage/resourceSync.svelte";
+import { findCharacter } from "../storage/characterStore.svelte";
+import { chatEntry } from "../storage/chatStore.svelte";
 import type { UpstreamExportCounts, UpstreamExportReport } from "../../../shared/upstreamExportReport.ts";
 
 /**
@@ -104,18 +106,19 @@ function tryReadManifest(head: Uint8Array): BackupArchiveManifest | null {
 }
 
 /**
- * Saves every change, asks the server for an archive, and streams it to a file. Returns the manifest
- * with the keys whose local edits the pre-backup flush replaced (`flushResources`' `discarded`): the
- * archive holds the other writer's version of those, so the success report says so.
+ * Flushes changes, asks the server for an archive, and streams it to a file. Returns the manifest
+ * with the flush's discarded and refused keys: the archive holds the server's copy of those,
+ * so the success report says which local changes it lacks.
  */
 async function downloadArchive(
     label: string,
     partial?: true | string[],
-): Promise<{ manifest: BackupArchiveManifest; discarded: string[] } | null> {
+): Promise<{ manifest: BackupArchiveManifest; discarded: string[]; refused: string[] } | null> {
     alertWait(`${label}...`);
     let discarded: string[];
+    let refused: string[];
     try {
-        ({ discarded } = await flushResources());
+        ({ discarded, refused } = await flushResources());
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return null;
@@ -138,7 +141,7 @@ async function downloadArchive(
             }
         }
     });
-    return saved && read.manifest ? { manifest: read.manifest, discarded } : null;
+    return saved && read.manifest ? { manifest: read.manifest, discarded, refused } : null;
 }
 
 /**
@@ -184,14 +187,45 @@ async function streamToFile(
     }
 }
 
-/** The backup's result: success, the assets it skipped, and whether its pre-backup flush discarded a change. */
-function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intro: string, discarded: string[]) {
-    const discardNote = discarded.length > 0 ? language.backupDiscardedChanges : "";
+/** Names refused chats and orders from the flush; unmatched keys stay as report keys. */
+function backupRefusedNote(refused: string[]): string {
+    if (refused.length === 0) return "";
+    const labels = new Map<string, string>();
+    for (const item of refusedItems()) {
+        if (item.kind === "chat" || item.kind === "order") {
+            const characterName = findCharacter(item.chaId)?.name || item.chaId;
+            if (item.kind === "order") {
+                labels.set(`chats/${item.chaId}`, language.refusedData.orderLabel(characterName));
+            } else {
+                const entry = chatEntry(item);
+                labels.set(
+                    `chats/${item.chaId}/${item.chatId}`,
+                    entry
+                        ? language.refusedData.chatLabel(entry.name || item.chatId, characterName)
+                        : language.refusedData.deletedChat(characterName, item.chatId),
+                );
+            }
+        }
+    }
+    return [language.backupRefusedChanges, ...refused.map((key) => `- ${labels.get(key) ?? key}`)].join("\n");
+}
+
+/** The backup's result: success, skipped assets, and local changes discarded or refused at its flush. */
+function reportMissing(
+    missing: string[],
+    assetMap: Map<string, AssetInfo>,
+    intro: string,
+    discarded: string[],
+    refused: string[],
+) {
+    const saveNote = [discarded.length > 0 ? language.backupDiscardedChanges : "", backupRefusedNote(refused)]
+        .filter(Boolean)
+        .join("\n\n");
     if (missing.length === 0) {
-        alertNormal(discardNote ? `Success\n\n${discardNote}` : "Success");
+        alertNormal(saveNote ? `Success\n\n${saveNote}` : "Success");
         return;
     }
-    let message = discardNote ? `${discardNote}\n\n${intro}` : intro;
+    let message = saveNote ? `${saveNote}\n\n${intro}` : intro;
     for (const key of missing) {
         const assetInfo = assetMap.get(key);
         if (assetInfo) {
@@ -246,6 +280,7 @@ export async function SaveLocalBackup() {
             assetMap,
             "Backup Successful, but the following assets were missing and skipped:\n\n",
             result.discarded,
+            result.refused,
         );
     } catch (error) {
         console.error(error);
@@ -288,6 +323,7 @@ export async function SavePartialLocalBackup() {
             assetMap,
             "Partial backup successful, but the following profile images were missing and skipped:\n\n",
             result.discarded,
+            result.refused,
         );
     } catch (error) {
         console.error(error);
@@ -299,7 +335,7 @@ export async function SavePartialLocalBackup() {
 const UPSTREAM_EXPORT_MISSING_SHOWN = 20;
 
 /** The RisuAI-compatible backup's report (`shared/upstreamExportReport.ts`) as plain text, ending in the download question. */
-function upstreamExportReportText(report: UpstreamExportReport, discarded: string[]): string {
+function upstreamExportReportText(report: UpstreamExportReport, discarded: string[], refused: string[]): string {
     const text = language.upstreamExport;
     const lines: string[] = [text.intro, ""];
     for (const key of Object.keys(text.counts) as (keyof UpstreamExportCounts)[]) {
@@ -335,6 +371,9 @@ function upstreamExportReportText(report: UpstreamExportReport, discarded: strin
     if (discarded.length > 0) {
         lines.push("", language.backupDiscardedChanges);
     }
+    if (refused.length > 0) {
+        lines.push("", backupRefusedNote(refused));
+    }
     lines.push("", text.downloadQuestion);
     return lines.join("\n");
 }
@@ -357,8 +396,9 @@ export async function SaveUpstreamLocalBackup() {
     const includeSecrets = await alertConfirm(language.upstreamExport.includeKeys);
     alertWait(language.upstreamExport.preparing);
     let discarded: string[];
+    let refused: string[];
     try {
-        ({ discarded } = await flushResources());
+        ({ discarded, refused } = await flushResources());
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return;
@@ -378,7 +418,7 @@ export async function SaveUpstreamLocalBackup() {
         alertError(failureText(error));
         return;
     }
-    if (!(await alertConfirm(upstreamExportReportText(prepared.report, discarded)))) {
+    if (!(await alertConfirm(upstreamExportReportText(prepared.report, discarded, refused)))) {
         void client.cancelUpstreamExport(prepared.token);
         return;
     }

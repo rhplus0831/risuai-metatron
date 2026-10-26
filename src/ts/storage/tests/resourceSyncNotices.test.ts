@@ -337,7 +337,7 @@ describe("a chat another tab announced", () => {
         expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["local", "B", "R1"]);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(chat.hasUnsavedChatWork()).toBe(false);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
     });
 });
 

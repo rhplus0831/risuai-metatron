@@ -28,7 +28,7 @@ type FixtureChat = { id: string; message?: { chatId: string }[] };
 const deps = vi.hoisted(() => ({
     /** The alert queue of the test running (`stores.alertStore` reaches it through a proxy). */
     alertQueue: null as unknown as AlertQueue,
-    flush: vi.fn<(options?: { scope?: unknown }) => Promise<{ discarded: string[] }>>(),
+    flush: vi.fn<(options?: { scope?: unknown }) => Promise<{ discarded: string[]; refused: string[] }>>(),
     applyHydration: vi.fn<(record: unknown) => boolean>(),
     heldChat: vi.fn<(ref: { chaId: string; chatId: string }) => string | null>(),
     heldRecord: vi.fn<(kind: string, id: string) => string | null>(),
@@ -90,6 +90,7 @@ vi.mock("../storage/chatStore.svelte", () => {
         // The speaker's pin and load before each output listener: the fixture's chats are all held
         // here, so a load answers them at once.
         pinChats: () => () => {},
+        refusedChatItems: () => [],
         loadChats: async (chaId: string) => owner(chaId)?.chats ?? [],
         chatList: (chaId: string) =>
             (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
@@ -287,7 +288,7 @@ beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "debug").mockImplementation(() => {});
-    deps.flush.mockReset().mockResolvedValue({ discarded: [] });
+    deps.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
     deps.applyHydration.mockReset().mockReturnValue(true);
     deps.heldChat.mockReset().mockReturnValue(rev(1, 1));
     deps.heldRecord.mockReset().mockReturnValue(rev(1, 1));
@@ -800,7 +801,7 @@ describe("callbacks", () => {
         send(callback("f1"));
         await pump();
         expect(tx.answers[0]).toEqual(failed("barrier", /Local changes could not be saved: quarantined/));
-        deps.flush.mockResolvedValueOnce({ discarded: ["characters/c"] });
+        deps.flush.mockResolvedValueOnce({ discarded: ["characters/c"], refused: [] });
         send(callback("f2"));
         await pump();
         expect(tx.answers[1]).toEqual(
@@ -904,14 +905,16 @@ describe("callbacks", () => {
         await pump();
         expect(tx.answers[2]).toEqual(failed("hook", "undefined"));
         behavior = () => "fine";
-        deps.flush.mockResolvedValueOnce({ discarded: [] }).mockResolvedValueOnce({ discarded: ["chats/c/k"] });
+        deps.flush
+            .mockResolvedValueOnce({ discarded: [], refused: [] })
+            .mockResolvedValueOnce({ discarded: ["chats/c/k"], refused: [] });
         send(callback("h4"));
         await pump();
         expect(tx.answers[3]).toEqual(failed("barrier", /discarded changes the callback made/, ["chats/c/k"]));
         behavior = () => {
             throw new Error("thrown, but the barrier wins");
         };
-        deps.flush.mockResolvedValueOnce({ discarded: [] }).mockRejectedValueOnce(new Error("halted"));
+        deps.flush.mockResolvedValueOnce({ discarded: [], refused: [] }).mockRejectedValueOnce(new Error("halted"));
         send(callback("h5"));
         await pump();
         expect(tx.answers[4]).toEqual(failed("barrier", /could not be saved: halted/));
@@ -1002,13 +1005,13 @@ describe("callbacks", () => {
     });
 
     it("starts nothing after a cancel: not a tool behind a pending pre-flush, not the next hook of a set; the result is kept but not sent", async () => {
-        const flushing = deferred<{ discarded: string[] }>();
+        const flushing = deferred<{ discarded: string[]; refused: string[] }>();
         deps.flush.mockReturnValueOnce(flushing.promise);
         const tool = vi.fn(async () => []);
         deps.mcps.set("plugin:x", { callTool: tool });
         send(callback("m", "mcpTool", { identifier: "plugin:x", tool: "t", args: {} }));
         send(cancel("m"));
-        flushing.resolve({ discarded: [] });
+        flushing.resolve({ discarded: [], refused: [] });
         await pump();
         expect(tool).not.toHaveBeenCalled();
         expect(tx.answers).toEqual([]);

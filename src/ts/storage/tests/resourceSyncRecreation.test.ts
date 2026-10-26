@@ -195,7 +195,7 @@ it.each([false, true])(
         } finally {
             answerCreate();
         }
-        expect(await flush).toEqual({ discarded: [] });
+        expect(await flush).toEqual({ discarded: [], refused: [] });
         const groups = h.fake.batchBodies().flatMap((body) => body.chats ?? []);
         expect(groups[0]).toMatchObject({ chatId: "k", baseRevision: oldRevision, ops: [{ op: "delete" }] });
         if (deleteAgain) {
@@ -224,7 +224,7 @@ it("a same-id recreation saves the replacement's chats with its fields in one ba
     expect(h.characterStore.addCharacter(replacement([chatOf("new-chat", "Replacement transcript")]))).toBe("c");
     expect(h.chat.chatList("c").map((entry) => entry.id)).toEqual(["new-chat"]);
 
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.stored()).toEqual({
         ids: ["new-chat"],
         texts: { "new-chat": "Replacement transcript" },
@@ -256,7 +256,7 @@ it("a reused chat id takes the replacement's content, a dropped one is deleted, 
         replacement([chatOf("extra", "Extra transcript"), chatOf("k", "Rewritten transcript")]),
     );
 
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.stored()).toEqual({
         ids: ["extra", "k"],
         texts: { extra: "Extra transcript", k: "Rewritten transcript" },
@@ -282,7 +282,7 @@ it("an unsent edit of an old chat is dropped with it: nothing of the old transcr
     h.characterStore.removeCharacter("c");
     h.characterStore.addCharacter(replacement([chatOf("new-chat", "Replacement transcript")]));
 
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.stored().texts).toEqual({ "new-chat": "Replacement transcript" });
     expect(h.sentGroups().filter(([id]) => id === "k")).toEqual([["k", ["delete"]]]);
 });
@@ -298,8 +298,8 @@ it("a reused chat id whose old delete is in flight is created once that delete s
     h.characterStore.removeCharacter("c");
     h.characterStore.addCharacter(replacement([chatOf("k", "Replacement transcript")]));
     h.fake.releaseBatch!();
-    expect(await deleting).toEqual({ discarded: [] });
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await deleting).toEqual({ discarded: [], refused: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.stored()).toEqual({ ids: ["k"], texts: { k: "Replacement transcript" }, name: "Replacement" });
     expect(h.sentGroups().filter(([id]) => id === "k")).toEqual([
         ["k", ["delete"]],
@@ -314,7 +314,7 @@ it("a removed id placed back through replaceCharacterAt saves its chats the same
         "c",
     );
 
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.stored()).toEqual({
         ids: ["new-chat"],
         texts: { "new-chat": "Replacement transcript" },
@@ -325,10 +325,10 @@ it("a removed id placed back through replaceCharacterAt saves its chats the same
 it("control: a fresh id and a deletion flushed first still save their replacement transcripts", async () => {
     const h = await boot();
     h.characterStore.removeCharacter("c");
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.fake.record("characters", "c")).toBeNull();
     h.characterStore.addCharacter(replacement([chatOf("new-chat", "Replacement transcript")]));
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.stored()).toEqual({
         ids: ["new-chat"],
         texts: { "new-chat": "Replacement transcript" },
@@ -336,7 +336,7 @@ it("control: a fresh id and a deletion flushed first still save their replacemen
     });
 
     h.characterStore.addCharacter({ chaId: "fresh", name: "Fresh", chats: [chatOf("f", "Fresh transcript")] });
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     const fresh = h.fake.store.readRefs([], { chatCollections: ["fresh"] }).chatCollections[0];
     expect(fresh.chats.map((entry) => entry.data.message[0].data)).toEqual(["Fresh transcript"]);
 });
@@ -369,7 +369,7 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
         h.characterStore.addCharacter(
             replacement([chatOf("k", "Rewritten transcript"), chatOf("new-chat", "Replacement transcript")]),
         );
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.stored()).toEqual({
             ids: ["k", "new-chat"],
             texts: { k: "Rewritten transcript", "new-chat": "Replacement transcript" },
@@ -417,7 +417,7 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
             ["j", ["delete"]],
             ["k", ["replace"]],
         ]);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.fake.batchCount()).toBe(1);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
@@ -437,7 +437,7 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
             replacement([chatOf("k", "Rewritten transcript"), chatOf("new-chat", "Replacement transcript")]),
         );
         h.fake.releaseBatch!();
-        expect(await deleting).toEqual({ discarded: [] });
+        expect(await deleting).toEqual({ discarded: [], refused: [] });
         expect(h.stored()).toEqual({
             ids: ["k", "new-chat"],
             texts: { k: "Rewritten transcript", "new-chat": "Replacement transcript" },
@@ -472,7 +472,7 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
         expect(alerts.error).not.toHaveBeenCalled();
         // A later reorder is based on the order the creates gave the character.
         h.chat.reorderChats("c", ["new-chat", "k"]);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.stored().ids).toEqual(["new-chat", "k"]);
 
         const again = await boot(h.fake);
@@ -487,7 +487,7 @@ describe("a chat quarantined before its character's deletion", () => {
         await h.chat.ensureChatLoaded(refK);
         h.chat.setMessageText(refK, "k-message", "edited");
         h.fake.failNext = { status: 400, body: { error: "chats[0] is refused" }, times: 1, match: batchPath };
-        expect(await h.sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
         expect(alerts.error).toHaveBeenCalledTimes(1);
         alerts.error.mockClear();
         h.fake.requests.length = 0;
@@ -497,11 +497,11 @@ describe("a chat quarantined before its character's deletion", () => {
         const h = await boot();
         await quarantineK(h);
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.fake.record("characters", "c")).toBeNull();
 
         h.characterStore.addCharacter(replacement([chatOf("k", "Rewritten transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.stored()).toEqual({ ids: ["k"], texts: { k: "Rewritten transcript" }, name: "Replacement" });
         expect(h.sentGroups().filter(([id]) => id === "k")).toEqual([["k", ["create"]]]);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
@@ -519,7 +519,7 @@ describe("a chat quarantined before its character's deletion", () => {
             replacement([chatOf("k", "Rewritten transcript"), chatOf("new-chat", "Replacement transcript")]),
         );
         h.fake.releaseBatch!();
-        expect(await deleting).toEqual({ discarded: [] });
+        expect(await deleting).toEqual({ discarded: [], refused: [] });
         expect(h.stored()).toEqual({
             ids: ["k", "new-chat"],
             texts: { k: "Rewritten transcript", "new-chat": "Replacement transcript" },

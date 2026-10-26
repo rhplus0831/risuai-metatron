@@ -560,7 +560,7 @@ describe("the flush barrier around a merge", () => {
         expect(fake.data("characters", "a").desc).toBe("base");
         mirror("a").personality = "typed during the write";
         fake.releaseBatch!();
-        expect(await flushing).toEqual({ discarded: [] });
+        expect(await flushing).toEqual({ discarded: [], refused: [] });
         expect(fake.data("characters", "a")).toMatchObject({ desc: "local", lastInteraction: 200 });
         // The edit made during the write was not acknowledged by it (the server still holds the default);
         // the next flush saves it.
@@ -627,8 +627,8 @@ describe("the flush barrier around a merge", () => {
         remote("characters", "a", (data) => (data.lastInteraction = 200));
         mirror("a").desc = "local";
         const [first, second] = await Promise.all([sync.flushResources(), sync.flushResources()]);
-        expect(first).toEqual({ discarded: [] });
-        expect(second).toEqual({ discarded: [] });
+        expect(first).toEqual({ discarded: [], refused: [] });
+        expect(second).toEqual({ discarded: [], refused: [] });
         expect(fake.data("characters", "a").desc).toBe("local");
     });
 

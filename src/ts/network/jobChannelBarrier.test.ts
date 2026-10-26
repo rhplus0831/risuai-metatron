@@ -234,6 +234,26 @@ async function prepareFloorRefresh() {
 }
 
 describe("the callback barrier over the real stores", () => {
+    it("fails a refused chat receipt before the hook even when its revision equals the held revision", async () => {
+        const b = await boot();
+        b.chat.setChatMeta(refK, { fmIndex: "invalid" as any });
+        await b.sync.flushResources();
+        expect(b.sync.refusedItems()).toEqual([expect.objectContaining({ kind: "chat", chaId: "c", chatId: "k" })]);
+        // The refusal alert has settled; the callback's flush has no new discard to report.
+        const hook = vi.fn((text: string) => `${text}!`);
+        b.hooks.editoutput.add(hook);
+        const callback = b.callbackEvent("refused-receipt");
+        expect(b.chat.heldChatRevision(refK)).toBe(callback.revisions[0].revision);
+        b.apply(callback);
+
+        expect(await b.answerReceived).toMatchObject({
+            id: "refused-receipt",
+            outcome: "failed",
+            failure: "barrier",
+        });
+        expect(hook).not.toHaveBeenCalled();
+    });
+
     it("refreshes past an acknowledged floor so the hook sees the job checkpoint and the user's edit with its stream intact", async () => {
         const b = await prepareFloorRefresh();
         const hook = vi.fn((text: string) => {

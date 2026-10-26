@@ -3826,11 +3826,13 @@ function showGeneratingNotice() {
 }
 
 /**
- * Saves everything that was changed before this call. Resolves once it is on the server, with the
- * keys whose local edits a conflict replaced since the call (with `scope`, since the scope began);
+ * Settles changes queued before this call. Reports keys discarded since the call (with `scope`,
+ * since the scope began), and every key still refused locally when the flush resolves;
  * rejects when saving fails or when a character that must be saved is still being generated.
  */
-export async function flushResources(options: { scope?: MutationScope } = {}): Promise<{ discarded: string[] }> {
+export async function flushResources(
+    options: { scope?: MutationScope } = {},
+): Promise<{ discarded: string[]; refused: string[] }> {
     await tick();
     const refused = quarantineReason();
     if (refused) {
@@ -3896,6 +3898,13 @@ export async function flushResources(options: { scope?: MutationScope } = {}): P
                 .map(([key]) => key.replace("\u0000", "/")),
             ...chatDiscardsSince(firstChatDiscard).map((key) => `chats/${key}`),
         ],
+        refused: refusedItems().map((item) =>
+            item.kind === "chat"
+                ? `chats/${item.chaId}/${item.chatId}`
+                : item.kind === "order"
+                  ? `chats/${item.chaId}`
+                  : `${item.resourceKind}/${item.id}`,
+        ),
     };
 }
 

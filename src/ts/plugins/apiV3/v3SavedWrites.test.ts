@@ -231,7 +231,7 @@ describe("plugin storage writes sent without the watcher", () => {
         });
         await api._setPluginStorage("k", 2);
         await api.getLocalPluginStorage().setItem("mine", "m");
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         await settled();
         expect(storage()).toEqual({
             _pluginStorage: { k: 2, remote: true },

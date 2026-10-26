@@ -154,7 +154,7 @@ beforeEach(async () => {
     harness.fetch.mockReset();
     harness.internal.list.mockClear();
     harness.internal.call.mockClear();
-    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
     await executePluginV3({ name: `mcp-context-${++serial}`, version: "3.0", script: "" } as never);
     api = harness.api!;
 });

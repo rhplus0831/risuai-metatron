@@ -199,7 +199,7 @@ describe("pluginWorkIdle", () => {
         const name = `channel-provider-${plugin.name}`;
         api.addProvider(name, func);
         const send = vi.fn(() => true);
-        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
         const jobId = `job-${plugin.name}`;
         try {
             handleChannelEvent(

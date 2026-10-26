@@ -56,6 +56,7 @@ import {
     loadChats,
     pinChats,
     prepareChatHydrationRefresh,
+    refusedChatItems,
     selectedChatId,
     withChatsCopy,
 } from "../storage/chatStore.svelte";
@@ -96,7 +97,8 @@ import {
  * - A callback runs behind the barrier: pending local work is flushed, the newest hydration of every
  *   record the server listed is applied again. A chat copy refused only by the acknowledged floor
  *   gets one fenced whole read, retaining valid job streaming metadata. Each record must be held at
- *   least as new as listed; otherwise the answer is `failed`/`barrier`. The hook set runs under the
+ *   least as new as listed, and a chat must not be refused locally; otherwise the answer is
+ *   `failed`/`barrier`. The hook set runs under the
  *   job's targets (`invokeHook`), then its changes are flushed in a mutation scope (also when it threw): a
  *   discarded key or a rejected flush is `failed`/`barrier`.
  * - Each request's state is kept in memory: a duplicate delivery never runs a callback twice (the
@@ -541,8 +543,16 @@ class CallbackFailed extends Error {
 
 const cancelledByServer = () => new CallbackFailed("protocol", "The server cancelled this callback");
 
-/** Whether this client holds `receipt`'s record at its revision or a newer one. */
+/** Whether this client holds `receipt`'s revision or newer, without a refused local chat draft. */
 function holds(receipt: HydrationReceipt): boolean {
+    if (
+        receipt.kind === "chats" &&
+        refusedChatItems().some(
+            (item) => item.kind === "chat" && item.chaId === receipt.characterId && item.chatId === receipt.id,
+        )
+    ) {
+        return false;
+    }
     const held =
         receipt.kind === "chats"
             ? heldChatRevision({ chaId: receipt.characterId ?? "", chatId: receipt.id })

@@ -131,7 +131,7 @@ describe("delta replies in the real tab mirror", () => {
         expect(b.text()).toBe("A😀");
         expect(b.socket.sent).toEqual([]);
         expect(b.chat.isChatBehind(refK)).toBe(false);
-        expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
     });
 
@@ -179,7 +179,7 @@ describe("delta replies in the real tab mirror", () => {
         expect(b.text()).toBe("current😀!");
         b.socket.message(b.chunk(99, 0, "miss again", 100));
         expect(b.socket.sent).toEqual([{ type: "resyncReply" }, { type: "resyncReply" }]);
-        expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
     });
 

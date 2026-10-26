@@ -328,7 +328,7 @@ describe("server copies of presets and personas", () => {
         retainedPersona.name = "after";
         retainedScheme.bgcolor = "#abcdef";
         alerts.normal.mockClear();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(record("presets").map((preset: any) => [preset.id, preset.name])).toEqual([[p1, "after"]]);
         expect(record("personas").map((persona: any) => [persona.id, persona.name])).toEqual([["pa", "after"]]);
         expect(record("ui")).toMatchObject({
@@ -364,7 +364,7 @@ describe("server copies of presets and personas", () => {
         expect(fake.batchCount()).toBe(0);
         settings.presets[0].name = "after hydration";
         settings.personas[0].name = "after hydration";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(
             opsOf(fake)
                 .map((op: any) => op.kind)

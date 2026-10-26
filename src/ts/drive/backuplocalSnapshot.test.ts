@@ -32,7 +32,7 @@ type Support = {
 let support: Support;
 
 const mocks = vi.hoisted(() => ({
-    flush: vi.fn(async () => ({ discarded: [] as string[] })),
+    flush: vi.fn(async () => ({ discarded: [] as string[], refused: [] as string[] })),
     authFetch: vi.fn(),
     inventory: { current: null as any },
     writer: { chunks: [] as Uint8Array[] },
@@ -46,7 +46,11 @@ const mocks = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: () => mocks.flush() }));
+vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: () => mocks.flush(), refusedItems: () => [] }));
+// The refused-change labels' readers: the rune stores do not load in the node environment, and
+// these backups have no refused changes to name.
+vi.mock("../storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));
+vi.mock("../storage/chatStore.svelte", () => ({ chatEntry: () => undefined }));
 vi.mock("../storage/snapshots.svelte", () => ({ buildBackupInventory: () => mocks.inventory.current }));
 vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init: RequestInit) => mocks.authFetch(path, init),
@@ -133,7 +137,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-    mocks.flush.mockReset().mockResolvedValue({ discarded: [] });
+    mocks.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
     mocks.authFetch.mockReset();
     mocks.writer.chunks.length = 0;
     mocks.inventory.current = null;
@@ -153,7 +157,7 @@ describe("SavePartialLocalBackup over the real export route", () => {
                 data: alice("assets/new.png"),
             });
             expect(response.status).toBe(200);
-            return { discarded: [] };
+            return { discarded: [], refused: [] };
         });
 
         await SavePartialLocalBackup();

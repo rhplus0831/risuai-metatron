@@ -43,6 +43,7 @@ import {
     flushResources,
     GenerationBlockedError,
     generatingNoticeCount,
+    refusedItems,
     refreshStaleChat,
     watchForRestore,
 } from "../storage/resourceSync.svelte";
@@ -556,10 +557,27 @@ async function runPinnedServerJob(
     // old revision. A change made while that read was in flight is saved and the read tried once
     // more; a chat still behind then goes as it is, and the server refuses its old revision.
     for (let attempt = 0; attempt < 2; attempt++) {
+        if (
+            refusedItems().some(
+                (item) =>
+                    (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
+                    (item.kind === "order" && item.chaId === ref.chaId),
+            )
+        ) {
+            alertError(language.serverJob.refusedDraft);
+            return refused;
+        }
         try {
-            const { discarded } = await flushResources();
+            const { discarded, refused: refusedKeys } = await flushResources();
             if (discarded.length > 0) {
                 alertError(language.serverJob.discarded[request.label]);
+                return refused;
+            }
+            if (
+                refusedKeys.includes(`chats/${ref.chaId}/${ref.chatId}`) ||
+                refusedKeys.includes(`chats/${ref.chaId}`)
+            ) {
+                alertError(language.serverJob.refusedDraft);
                 return refused;
             }
         } catch (error) {
