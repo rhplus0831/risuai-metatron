@@ -1,5 +1,6 @@
 import { settings } from "./storage/settingsViews.svelte";
 import { filterBlockedRealmCards, isRealmCreatorBlocked } from "./realmBlocking";
+import { ensureRealmTerms } from "./realmTerms";
 import { writable, type Writable } from "svelte/store";
 import {
     alertCardExport,
@@ -528,6 +529,9 @@ export const getRealmInfo = async (realmPath: string) => {
     // Replaced, not pushed: a consumed link parameter is no history entry.
     window.history.replaceState(window.history.state, "", url.toString());
 
+    if (!(await ensureRealmTerms())) {
+        return;
+    }
     try {
         const info = await fetchRealmInfo(realmPath);
         if (!canAccessRealmCreator(info.creator)) {
@@ -1972,6 +1976,9 @@ export async function getRisuHub(arg: {
     nsfw: boolean;
     sort: string;
 }): Promise<hubType[]> {
+    if (!(await ensureRealmTerms())) {
+        return [];
+    }
     try {
         arg.search += " __shared";
         const stringArg = `search==${arg.search}&&page==${arg.page}&&nsfw==${arg.nsfw}&&sort==${arg.sort}&&web==other`;
@@ -2003,6 +2010,9 @@ export async function downloadRisuHub(
     } = {},
 ) {
     try {
+        if (!(await ensureRealmTerms())) {
+            return;
+        }
         if ((settings.ui.blockedRealmCreators ?? []).length > 0) {
             let creator = arg.creator;
             if (!creator) {

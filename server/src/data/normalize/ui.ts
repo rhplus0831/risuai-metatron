@@ -63,6 +63,7 @@ const spec: SectionSpec<"ui"> = {
     botSettingAtStart: ["boolean"],
     hideRealm: ["boolean"],
     blockedRealmCreators: ["array", []],
+    realmTermsAccepted: ["string", ""],
     colorScheme: ["object", defaultColorScheme],
     colorSchemeName: ["string", "default"],
     customColorScheme: ["object", defaultColorScheme],

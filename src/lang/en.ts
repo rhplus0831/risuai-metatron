@@ -1399,6 +1399,14 @@ export const languageEnglish = {
     blockedRealmCreators: "Blocked RisuRealm Creators",
     noBlockedRealmCreators: "No RisuRealm creators are blocked.",
     unblockRealmCreator: "Unblock",
+    realmTerms: {
+        title: "RisuRealm Terms",
+        body: "RisuRealm is a service run by RisuAI. To browse or download from RisuRealm, you need to accept RisuAI's Terms of Service and Privacy Policy.\n\nThis app itself is not a RisuAI service; these terms apply only to using RisuRealm.",
+        termsOfService: "Terms of Service",
+        privacyPolicy: "Privacy Policy",
+        accept: "Accept",
+        decline: "Do not Accept",
+    },
     upstreamImport: {
         title: "Restore a RisuAI backup",
         intro: "This is a backup from RisuAI (or from this app before its server storage). It was read and converted; nothing has been replaced yet.",

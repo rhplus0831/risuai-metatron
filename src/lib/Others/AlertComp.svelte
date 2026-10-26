@@ -33,7 +33,8 @@
     import { ChevronRightIcon, User } from "@lucide/svelte";
     import { isCharacterHasAssets } from "src/ts/characterCards";
     import TextInput from "../UI/GUI/TextInput.svelte";
-    import { aiLawApplies } from "src/ts/globalApi.svelte";
+    import { aiLawApplies, openURL } from "src/ts/globalApi.svelte";
+    import { REALM_PRIVACY_URL, REALM_TERMS_URL } from "src/ts/realmTerms";
     import Button from "../UI/GUI/Button.svelte";
     import { XIcon, CopyIcon, CheckIcon } from "@lucide/svelte";
     import RequestLogsPopup from "./RequestLogs/RequestLogsPopup.svelte";
@@ -298,6 +299,8 @@
                 <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">Confirm</h2>
             {:else if $alertStore.type === "pluginconfirm"}
                 <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">Plugin Import</h2>
+            {:else if $alertStore.type === "realmTerms"}
+                <h2 class="text-green-700 mt-0 mb-2 max-w-full">{language.realmTerms.title}</h2>
             {:else if $alertStore.type === "selectChar"}
                 <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">Select</h2>
             {:else if $alertStore.type === "input"}
@@ -331,6 +334,18 @@
                         </ul>
                     {/if}
                     <p class="confirm-message">{confirmMessage}</p>
+                </div>
+            {:else if $alertStore.type === "realmTerms"}
+                <div class="text-textcolor whitespace-pre-wrap">{language.realmTerms.body}</div>
+                <div class="flex flex-wrap gap-4 mt-4">
+                    <button
+                        class="text-green-600 hover:text-green-500 transition-colors duration-200"
+                        onclick={() => openURL(REALM_TERMS_URL)}>{language.realmTerms.termsOfService}</button
+                    >
+                    <button
+                        class="text-green-600 hover:text-green-500 transition-colors duration-200"
+                        onclick={() => openURL(REALM_PRIVACY_URL)}>{language.realmTerms.privacyPolicy}</button
+                    >
                 </div>
             {:else if $alertStore.type !== "select" && $alertStore.type !== "requestdata" && $alertStore.type !== "addchar" && $alertStore.type !== "hypaV2" && $alertStore.type !== "chatOptions"}
                 <span class="text-gray-300 whitespace-pre-wrap">{$alertStore.msg}</span>
@@ -424,6 +439,22 @@
                         onclick={() => {
                             alertStore.answer("no");
                         }}>NO</Button
+                    >
+                </div>
+            {:else if $alertStore.type === "realmTerms"}
+                <div class="flex gap-2 w-full">
+                    <Button
+                        className="mt-4 grow"
+                        onclick={() => {
+                            alertStore.answer("yes");
+                        }}>{language.realmTerms.accept}</Button
+                    >
+                    <Button
+                        styled="outlined"
+                        className="mt-4 grow"
+                        onclick={() => {
+                            alertStore.answer("no");
+                        }}>{language.realmTerms.decline}</Button
                     >
                 </div>
             {:else if $alertStore.type === "select"}

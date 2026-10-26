@@ -1446,6 +1446,14 @@ export const languageKorean = {
     blockedRealmCreators: "차단한 RisuRealm 제작자",
     noBlockedRealmCreators: "차단한 RisuRealm 제작자가 없습니다.",
     unblockRealmCreator: "차단 해제",
+    realmTerms: {
+        title: "RisuRealm 약관",
+        body: "RisuRealm은 RisuAI가 운영하는 서비스입니다. RisuRealm을 둘러보거나 내려받으려면 RisuAI의 이용약관과 개인정보처리방침에 동의해야 합니다.\n\n이 앱 자체는 RisuAI의 서비스가 아니며, 이 약관은 RisuRealm 이용에만 적용됩니다.",
+        termsOfService: "이용약관",
+        privacyPolicy: "개인정보처리방침",
+        accept: "동의",
+        decline: "동의하지 않음",
+    },
     upstreamImport: {
         title: "RisuAI 백업 복원",
         intro: "RisuAI(또는 서버 저장소 이전의 이 앱)에서 만든 백업입니다. 읽고 변환했으며, 아직 아무것도 바꾸지 않았습니다.",

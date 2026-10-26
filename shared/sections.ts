@@ -227,6 +227,7 @@ export const SECTION_FIELDS = {
         "botSettingAtStart",
         "hideRealm",
         "blockedRealmCreators",
+        "realmTermsAccepted",
         "colorScheme",
         "colorSchemeName",
         "customColorScheme",

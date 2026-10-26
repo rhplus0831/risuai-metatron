@@ -310,6 +310,7 @@
   "assetWidth": -1,
   "animationSpeed": 0.4,
   "blockedRealmCreators": [],
+  "realmTermsAccepted": "",
   "colorScheme": {
     "bgcolor": "#282a36",
     "darkbg": "#21222c",

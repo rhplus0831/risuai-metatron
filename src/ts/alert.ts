@@ -41,7 +41,8 @@ export interface alertData {
         | "progress"
         | "pluginconfirm"
         | "requestlogs"
-        | "upstreamImportReport";
+        | "upstreamImportReport"
+        | "realmTerms";
     msg: string;
     submsg?: string;
     datalist?: [string, string][];
@@ -343,6 +344,19 @@ export async function alertPluginConfirm(msg: string) {
     const result = await openDialog({
         type: "pluginconfirm",
         msg: msg,
+    });
+
+    return result === "yes";
+}
+
+/**
+ * The RisuRealm terms dialog (`realmTerms.ts` `ensureRealmTerms`): RisuAI's Terms of Service and
+ * Privacy Policy with Accept and Decline. Resolves true only for Accept; any other close declines.
+ */
+export async function alertRealmTerms() {
+    const result = await openDialog({
+        type: "realmTerms",
+        msg: "",
     });
 
     return result === "yes";

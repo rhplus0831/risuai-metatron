@@ -21,6 +21,7 @@ import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
  * module's fields merged, the asset keys as stored; PNG: the stored image key without a `saveAsset`,
  * an off-spec card converted; legacy JSON: the hub import with its portrait through `/hub-proxy`),
  * counts the import once for a binary answer, and alerts each failure once with the Realm texts.
+ * The RisuRealm terms start accepted; "RisuRealm terms" covers asking for them.
  */
 
 const { server, alerts } = vi.hoisted(() => {
@@ -33,6 +34,7 @@ const { server, alerts } = vi.hoisted(() => {
         clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         confirm: vi.fn(async () => true),
         input: vi.fn(async () => ""),
+        realmTerms: vi.fn(async () => false),
         store: { set: vi.fn(), subscribe: vi.fn() },
     };
     return { server: { current: null as any }, alerts };
@@ -50,6 +52,7 @@ vi.mock("./alert", async () =>
         alertStore: alerts.store,
         alertInput: alerts.input,
         alertClear: alerts.clear,
+        alertRealmTerms: alerts.realmTerms,
     }),
 );
 vi.mock("./parser/parser.svelte", () => ({
@@ -130,6 +133,10 @@ async function boot() {
     const util = await import("./util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     const cards = await import("./characterCards");
+    const terms = await import("./realmTerms");
+    booted.settings.ui.realmTermsAccepted = terms.REALM_TERMS_VERSION;
+    // Saved now, so a test that fails every server request has no pending settings write.
+    await booted.sync.flushResources();
     const modules = await import("./process/modules");
     const realFetch = booted.fake.fetch.bind(booted.fake);
     const fetch = vi.spyOn(booted.fake, "fetch");
@@ -171,6 +178,7 @@ async function boot() {
     const b = {
         ...booted,
         cards,
+        terms,
         modules,
         util,
         saveAsset,
@@ -343,6 +351,71 @@ describe("Realm creator blocking", () => {
         } finally {
             unsubscribe();
         }
+    });
+});
+
+describe("RisuRealm terms", () => {
+    const listing = (b: Awaited<ReturnType<typeof boot>>) =>
+        b.cards.getRisuHub({ search: "", page: 0, nsfw: false, sort: "download" });
+
+    it("asks before the first listing when another version was accepted, stores this one, and asks no more", async () => {
+        const b = await boot();
+        b.settings.ui.realmTermsAccepted = "2000-01-01";
+        alerts.realmTerms.mockResolvedValueOnce(true);
+        b.globalFetch.mockImplementation(async () => Response.json([]));
+
+        await listing(b);
+        await listing(b);
+
+        expect(alerts.realmTerms).toHaveBeenCalledOnce();
+        expect(b.globalFetch).toHaveBeenCalledTimes(2);
+        await b.sync.flushResources();
+        expect(b.record("ui").realmTermsAccepted).toBe(b.terms.REALM_TERMS_VERSION);
+    });
+
+    it("sends nothing to Realm for a listing, a download, or a deep link while declined", async () => {
+        const b = await boot();
+        b.settings.ui.realmTermsAccepted = "";
+        b.settings.ui.blockedRealmCreators = [{ id: "creator-a", name: "Creator A" }];
+        b.answer(line(charxPrepared(cardV3("Declined"))), line(charxCommitted()));
+        const before = b.ids();
+        const opened: unknown[] = [];
+        const unsubscribe = b.cards.showRealmInfoStore.subscribe((value) => opened.push(value));
+        try {
+            expect(await listing(b)).toEqual([]);
+            await b.cards.downloadRisuHub("declined-card");
+            await b.cards.getRealmInfo("declined-card");
+
+            expect(alerts.realmTerms).toHaveBeenCalledTimes(3);
+            expect(b.globalFetch).not.toHaveBeenCalled();
+            expect(b.downloads()).toEqual([]);
+            expect(b.ids()).toEqual(before);
+            expect(opened).toEqual([null]);
+            expect(b.settings.ui.realmTermsAccepted).toBe("");
+            expect(alerts.wait).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it("shows one dialog to concurrent callers and lets both through on Accept", async () => {
+        const b = await boot();
+        b.settings.ui.realmTermsAccepted = "";
+        let accept!: (accepted: boolean) => void;
+        alerts.realmTerms.mockReturnValueOnce(new Promise<boolean>((resolve) => (accept = resolve)));
+        b.globalFetch.mockImplementation(async () => Response.json([]));
+
+        const first = listing(b);
+        const second = listing(b);
+        await Promise.resolve();
+        expect(alerts.realmTerms).toHaveBeenCalledOnce();
+        expect(b.globalFetch).not.toHaveBeenCalled();
+        accept(true);
+        await Promise.all([first, second]);
+
+        expect(alerts.realmTerms).toHaveBeenCalledOnce();
+        expect(b.globalFetch).toHaveBeenCalledTimes(2);
     });
 });
 

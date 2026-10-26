@@ -256,6 +256,8 @@ export interface Database {
     NAIsettings: NAISettings;
     hideRealm: boolean;
     blockedRealmCreators: BlockedRealmCreator[];
+    /** The RisuRealm terms version the user accepted (`realmTerms.ts` `REALM_TERMS_VERSION`); "" when none. */
+    realmTermsAccepted: string;
     colorScheme: ColorScheme;
     colorSchemeName: string;
     customColorScheme: ColorScheme;

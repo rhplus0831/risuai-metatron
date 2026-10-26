@@ -8,6 +8,8 @@
     import RealmBlockedCreators from "./RealmBlockedCreators.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { filterBlockedRealmCards } from "src/ts/realmBlocking";
+    import { ensureRealmTerms } from "src/ts/realmTerms";
+    import { OpenRealmStore } from "src/ts/stores.svelte";
 
     let openedData: null | hubType = $state(null);
 
@@ -41,7 +43,14 @@
         return getHub();
     }
 
-    getHub();
+    // Nothing is fetched from Realm before its terms are accepted; declining leaves the Realm screen.
+    ensureRealmTerms().then((accepted) => {
+        if (accepted) {
+            getHub();
+        } else {
+            OpenRealmStore.set(false);
+        }
+    });
 </script>
 
 <div class="w-full flex justify-center mt-4 mb-2">
