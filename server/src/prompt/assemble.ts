@@ -1756,7 +1756,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     const memories: OpenAIChat[] = [];
 
-    if (!promptTemplate) {
+    if (!promptTemplate && chats.length > 0) {
         unformated.lastChat.push(chats[chats.length - 1]);
         chats.splice(chats.length - 1, 1);
     }
@@ -2093,6 +2093,11 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         recheckTokens.set(chat, tokens);
     }
     if (inputTokens > maxContextTokens) {
+        const keptEntry = (chat: OpenAIChat) => chat.content !== "" || (chat.multimodals?.length ?? 0) > 0;
+        // Overlapping ranges can share an entry: clearing it removes every occurrence from the prompt.
+        const keptTokens = () =>
+            formated.reduce((sum, chat) => sum + (keptEntry(chat) ? recheckTokens.get(chat)! : 0), 0);
+        inputTokens = keptTokens();
         let pointer = 0;
         while (inputTokens > maxContextTokens) {
             if (pointer >= formated.length) {
@@ -2101,14 +2106,14 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     error: TOO_MUCH_TOKEN + "\n\nAt token rechecking. Required Tokens: " + inputTokens,
                 };
             }
-            if (formated[pointer].removable) {
+            if (formated[pointer].removable && keptEntry(formated[pointer])) {
                 const provenance = provenanceOf(formated[pointer]);
                 if (!provenance || provenance.untraced) {
                     attributionExact = false;
                 }
-                inputTokens -= await tokenizeChat(formated[pointer]);
                 formated[pointer].content = "";
                 delete formated[pointer].multimodals;
+                inputTokens = keptTokens();
             }
             pointer++;
         }

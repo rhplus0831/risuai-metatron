@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { ChatOp, MessageAnchor, MessageGeneration } from "../../../shared/chats.ts";
+import {
+    CHAT_META_MERGE_KEYS,
+    type ChatOp,
+    type MessageAnchor,
+    type MessageGeneration,
+} from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "./generationJobs.ts";
@@ -24,17 +29,27 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
 
 const json = (value: unknown) => JSON.stringify(value);
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+    if (typeof value !== "object" || value === null) {
+        return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
 /**
- * `applyChatResult` of `src/ts/storage/chatStore.svelte.ts` as one job write: what a trigger
- * changed in its copy of the job's chat (`result`) against the copy it started from (`baseline`),
- * onto the chat as stored now. Messages the trigger removed are removed (one op), added ones are
- * inserted after their predecessor, changed message fields are merged into the stored message,
- * changed chat fields are set or removed; changes made meanwhile by others are kept. A reorder of
- * surviving messages replaces the whole chat, but only when the chat has not changed since the
- * baseline and no message of it is being generated; otherwise the order change is dropped with a
- * warning and the rest applies. Every op goes in one group on the stored revision, so the write is
- * atomic: a change to a message another generation owns fails it whole (the client throws before
- * any write), and the job ends with that error. A gone chat applies nothing.
+ * `applyChatResult` of `src/ts/storage/chatStore.svelte.ts` as one job write: what a trigger changed in its
+ * copy of the job's chat (`result`) against the copy it started from (`baseline`), onto the chat as stored
+ * now. Messages the trigger removed are removed (one op), added ones are inserted after their predecessor,
+ * changed message fields are merged into the stored message, changed map fields (`CHAT_META_MERGE_KEYS`) are
+ * merged entry by entry against the baseline: entries the trigger changed or added are written, entries it
+ * removed (or the whole field, when it dropped a map) are removed, entries it left unchanged keep the stored
+ * values, so entries another writer saved meanwhile are kept; other chat fields and non-map values are set or
+ * removed whole. A reorder of surviving messages replaces the whole chat, but only when the chat has not
+ * changed since the baseline and no message of it is being generated; otherwise the order change is dropped
+ * with a warning and the rest applies. Every op goes in one group on the stored revision, so the write is
+ * atomic: a change to a message another generation owns fails it whole (the client throws before any write),
+ * and the job ends with that error. A gone chat applies nothing.
  */
 export function applyTriggerChat(
     deps: { job: RunningJob; store: ResourceStore; scope: JobScope; lock: MessageGuard },
@@ -166,15 +181,49 @@ export function applyTriggerChat(
 
     const set: Record<string, unknown> = {};
     const unset: string[] = [];
+    const merge: Record<string, Record<string, unknown>> = Object.create(null);
+    const mergeUnset: Record<string, string[]> = Object.create(null);
     const baseFields = baseline.chat as unknown as Record<string, unknown>;
     const nextFields = next as unknown as Record<string, unknown>;
     const currentFields = current as unknown as Record<string, unknown>;
     for (const key of new Set([...Object.keys(baseFields), ...Object.keys(nextFields)])) {
+        if (nonMetaKeys.has(key)) {
+            continue;
+        }
+        const before = baseFields[key];
+        const after = nextFields[key];
+        const stored = currentFields[key];
         if (
-            nonMetaKeys.has(key) ||
-            json(baseFields[key]) === json(nextFields[key]) ||
-            json(currentFields[key]) === json(nextFields[key])
+            CHAT_META_MERGE_KEYS.includes(key) &&
+            (before === undefined || isPlainRecord(before)) &&
+            (isPlainRecord(after) || (after === undefined && isPlainRecord(before)))
         ) {
+            const was = isPlainRecord(before) ? before : {};
+            const copy = isPlainRecord(after) ? after : {};
+            const currentMap = isPlainRecord(stored) ? stored : {};
+            const entries: Record<string, unknown> = Object.create(null);
+            for (const id of Object.keys(copy)) {
+                const value = copy[id];
+                if (
+                    value !== undefined &&
+                    (!Object.hasOwn(was, id) || json(was[id]) !== json(value)) &&
+                    (!Object.hasOwn(currentMap, id) || json(currentMap[id]) !== json(value))
+                ) {
+                    entries[id] = value;
+                }
+            }
+            const removals = Object.keys(was).filter(
+                (id) => (!Object.hasOwn(copy, id) || copy[id] === undefined) && Object.hasOwn(currentMap, id),
+            );
+            if (Object.keys(entries).length > 0) {
+                merge[key] = entries;
+            }
+            if (removals.length > 0) {
+                mergeUnset[key] = removals;
+            }
+            continue;
+        }
+        if (json(before) === json(after) || json(stored) === json(after)) {
             continue;
         }
         if (Object.hasOwn(nextFields, key) && nextFields[key] !== undefined) {
@@ -183,11 +232,18 @@ export function applyTriggerChat(
             unset.push(key);
         }
     }
-    if (Object.keys(set).length > 0 || unset.length > 0) {
+    if (
+        Object.keys(set).length > 0 ||
+        unset.length > 0 ||
+        Object.keys(merge).length > 0 ||
+        Object.keys(mergeUnset).length > 0
+    ) {
         ops.push({
             op: "meta",
             ...(Object.keys(set).length > 0 ? { set } : {}),
             ...(unset.length > 0 ? { unset } : {}),
+            ...(Object.keys(merge).length > 0 ? { merge } : {}),
+            ...(Object.keys(mergeUnset).length > 0 ? { mergeUnset } : {}),
         });
     }
     write(ops);

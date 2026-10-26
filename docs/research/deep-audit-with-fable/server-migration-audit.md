@@ -49,7 +49,7 @@ path; P3 is smaller.
 
 | ID   | Priority | Area    | Finding                                                                                   | Example point                 |
 | ---- | -------- | ------- | ----------------------------------------------------------------------------------------- | ----------------------------- |
-| TJ01 | P1       | jobs    | Trigger reconciliation replaces `scriptstate` whole after per-key setters merged          | Server/client data loss       |
+| TJ01 | P1       | jobs    | Fixed 2026-10-26: trigger reconciliation set `scriptstate` whole over per-key merges      | Server/client data loss       |
 | CE01 | P1       | client  | WaveSpeed LoRA effect republishes a mount-time draft after a remote record replacement    | Client/server data loss       |
 | CE02 | P1 fixed | client  | Composer translation writes results without request, draft, chat, or destroy guards       | Client/server data loss       |
 | CE03 | P1 fixed | client  | Translation composer Enter ignores `isComposing`                                          | Effects vs. environment (IME) |
@@ -107,6 +107,15 @@ copies, not to ordinary reply writes.
 Recommendation: reconcile `scriptstate` (and any other dictionary field) by key against the baseline, with explicit
 deletion semantics and a same-key policy, and skip keys the incremental flush already persisted. Validation: extend
 the recorded test to require `$b` preserved, with a `runOnCopy` paused between a setter and completion.
+
+**Fixed 2026-10-26.** `applyTriggerChat` now reconciles the map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`,
+`GLGlobalVariables`, `toolCalls`) entry by entry with `meta.merge`/`mergeUnset`: entries the copy changed or added are
+written (the trigger's final value wins), entries it removed are removed (a dropped map removes the baseline's entries),
+and entries it left unchanged or that are already stored with its value are not named. Probe re-run after the fix
+(`trigger-disjoint-variable-loss`): the stored map after the trigger completes is now
+`{"$a":"1","$v":"1","$b":"saved-by-another-tab"}` (was `{"$a":"1","$v":"1"}`; `probes/transform-jobs-probe.output.txt`
+keeps the run at `ff7cb9d20`). Regression tests: `chatResult.test.ts` (map entries against the baseline, a variable
+written meanwhile) and `chatMetadataCoalescing.test.ts` (a variable saved during the trigger run).
 
 ### TJ02 — A mixed-revision transform result survives the save that should correct it
 

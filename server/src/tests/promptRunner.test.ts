@@ -1129,6 +1129,37 @@ describe("a send", () => {
         SLOW,
     );
 
+    it("sends unchanged prompt messages without request-trigger errors when the character and modules have no triggers", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            triggerscript: [],
+            messages: [{ role: "user", data: "question", chatId: "u1" }],
+        });
+        const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+        await patchPreset("presets", presetId, {
+            promptSettings: { ...preset.promptSettings, trimStartNewChat: true },
+        });
+        await patchProviders({ useStreaming: false });
+        const error = vi.mocked(console.error);
+        error.mockClear();
+        const before = bodies.length;
+        try {
+            const { terminal } = await job("send", chaId);
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(bodies.slice(before).map((body) => body.messages)).toEqual([
+                [
+                    { role: "system", content: "Main Ann\n\nDesc of Ann" },
+                    { role: "assistant", content: "Hi from Ann" },
+                    { role: "user", content: "question" },
+                ],
+            ]);
+            expect(error).not.toHaveBeenCalled();
+        } finally {
+            await patchPreset("presets", presetId, { promptSettings: preset.promptSettings });
+            await patchProviders({ useStreaming: true });
+        }
+    });
+
     it(
         "the request trigger's effect limit ends the job before any provider call",
         async () => {

@@ -797,7 +797,12 @@ describe("the context report", () => {
             expect(parseContextReport(JSON.parse(JSON.stringify(report)))).toEqual(report);
             expect(report.input).toBe(result.generationInfo.inputTokens);
             expect(report.input).toBe(report.adjustment + report.sections.reduce((sum, row) => sum + row.tokens, 0));
-            return { report, formated: result.formated, texts: result.formated.map((entry) => entry.content) };
+            return {
+                report,
+                generationInfo: result.generationInfo,
+                formated: result.formated,
+                texts: result.formated.map((entry) => entry.content),
+            };
         };
         return { run, chat, counts, host };
     }
@@ -983,6 +988,28 @@ describe("the context report", () => {
             },
         });
     });
+
+    it.each([720, 660])(
+        "counts every removed occurrence of overlapping history and keeps the entries that fit in %i tokens",
+        async (maxContext) => {
+            const depth = "d".repeat(650);
+            const { run, host } = contextAssembly({
+                template: [CHAT_CARD, { type: "chat", rangeStart: 1, rangeEnd: 2 }],
+                messages: [
+                    { chatId: "old", data: "x".repeat(50) },
+                    { chatId: "kept", data: "keep" },
+                ],
+                maxContext,
+                character: { depth_prompt: { depth: 0, prompt: depth } },
+            });
+            // Before rechecking: greeting 6 + old 53 + kept 7 + depth 653 + old again 53 = 772.
+            // Clearing the greeting and shared old entry removes 6 + 2 * 53, leaving exactly 660.
+            const { generationInfo, formated, texts } = await run();
+            expect(texts).toEqual(["keep", depth]);
+            expect(generationInfo.inputTokens).toBe(660);
+            expect(generationInfo.inputTokens).toBe(await host.tokenizer.tokenizeChats(formated));
+        },
+    );
 
     it("sendChatAsSystem: one merged entry keeps every source; a recheck removal of it drops them all", async () => {
         const messages: Entry[] = [
@@ -1217,6 +1244,20 @@ describe("the context report", () => {
                 perMessage: 3,
             },
         });
+    });
+
+    it("assembles without a template when a history reset leaves no greeting, marker, examples, or eligible messages", async () => {
+        const { run } = contextAssembly({
+            template: null,
+            examples: "",
+            character: { utilityBot: false },
+            promptSettings: { trimStartNewChat: true },
+            messages: [{ chatId: "reset", data: "discard this and the greeting", disabled: "allBefore" }],
+            db: { mainPrompt: "MAIN" },
+        });
+
+        const { texts } = await run();
+        expect(texts).toEqual(["MAIN"]);
     });
 
     it("a continue records its target as the reply prefix and leaves that message out of the digest", async () => {

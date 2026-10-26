@@ -433,7 +433,7 @@ export function createRunSetup(
     });
 
     // `requestChatData`'s `request` trigger: the chat owner's (none for a group), in display mode on
-    // the chat as it is now, before every attempt; an invalid result keeps the messages.
+    // the chat as it is now, before every attempt; absent display data keeps the messages unchanged.
     bindings.setRequestTrigger(async (formated: OpenAIChat[]) => {
         const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
         if (!owner || owner.type === "group" || !services.chatExists()) {
@@ -456,7 +456,10 @@ export function createRunSetup(
             throw error;
         }
         services.fence(nativeCtx);
-        const got = JSON.parse(result?.displayData ?? "null");
+        if (result?.displayData === undefined) {
+            return formated;
+        }
+        const got = JSON.parse(result.displayData);
         if (!got || !Array.isArray(got)) {
             throw new Error("Invalid return");
         }

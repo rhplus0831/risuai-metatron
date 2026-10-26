@@ -482,7 +482,7 @@ describe("chat metadata coalescing", () => {
         expect(frozen.bindings.services.parse("{{getvar::display}}/{{getvar::live}}", null)).toBe("only/null");
     });
 
-    it("keeps the trigger result's whole-map replay after a concurrent key arrives", async () => {
+    it("keeps a variable another writer saved during the trigger run beside the trigger's own", async () => {
         const h = setup();
         const parse = h.services.parse;
         vi.spyOn(h.services, "parse").mockImplementation((text, ...args) => {
@@ -501,7 +501,7 @@ describe("chat metadata coalescing", () => {
             "manual",
             { manualName: "go" },
         );
-        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $x: "own" });
+        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $x: "own", $concurrent: "tab" });
         expect(h.stored().data.note).toBe("after");
     });
 
