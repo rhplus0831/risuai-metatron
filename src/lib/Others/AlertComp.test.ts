@@ -12,6 +12,8 @@ import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { assembleChats, findChat, selectChat, setChatMeta, setChatWorkListener } from "src/ts/storage/chatStore.svelte";
 import SideChatList from "src/lib/SideBars/SideChatList.svelte";
 import AlertComp from "./AlertComp.svelte";
+import { language } from "src/lang";
+import * as sourcemap from "src/ts/sourcemap";
 
 const dialogs: AlertDialog[] = [];
 let component: ReturnType<typeof mount> | undefined;
@@ -323,4 +325,54 @@ describe("alert dialog focus and keyboard answers", () => {
         await hideAlert();
         expect(document.activeElement).toBe(composer);
     });
+});
+
+describe("stack trace translation ownership", () => {
+    it.each(["translated", "unavailable", "rejected"] as const)(
+        "keeps an earlier error's %s trace result out of a later error across a wait status",
+        async (outcome) => {
+            const pending: {
+                trace: string;
+                resolve: (result: sourcemap.StackTraceTranslationResult) => void;
+                reject: (error: Error) => void;
+            }[] = [];
+            vi.spyOn(sourcemap, "translateStackTrace").mockImplementation(
+                (trace) => new Promise((resolve, reject) => pending.push({ trace, resolve, reject })),
+            );
+            const first = open({ type: "error", msg: "Error A", stackTrace: "raw trace A" });
+            await showAlert();
+            expect(pending.map(({ trace }) => trace)).toEqual(["raw trace A"]);
+            first.cancel();
+            alertStore.set({ type: "wait", msg: "Waiting between errors" });
+            flushSync();
+            expect(target.textContent).toContain("Waiting between errors");
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            open({ type: "error", msg: "Error B", stackTrace: "raw trace B" });
+            flushSync();
+            expect(pending.map(({ trace }) => trace)).toEqual(["raw trace A", "raw trace B"]);
+            [...target.querySelectorAll("button")]
+                .find((button) => button.textContent?.trim() === language.showErrorDetails)!
+                .click();
+            flushSync();
+            const details = () => target.querySelector("pre")!.textContent!;
+            expect(details()).toContain(language.translating);
+
+            if (outcome === "rejected") pending[0].reject(new Error("A's map failed"));
+            else pending[0].resolve({ didTranslate: outcome === "translated", stackTrace: "translated trace A" });
+            await tick();
+            flushSync();
+            expect.soft(details()).toContain("raw trace B");
+            expect.soft(details()).not.toContain("translated trace A");
+            expect.soft(details()).not.toContain(language.stackTraceTranslationFailed);
+            expect.soft(details()).toContain(language.translating);
+            expect(pending.map(({ trace }) => trace)).toEqual(["raw trace A", "raw trace B"]);
+
+            pending[1].resolve({ didTranslate: true, stackTrace: "translated trace B" });
+            await tick();
+            flushSync();
+            expect(details()).toContain("translated trace B");
+            expect(details()).not.toContain(language.translating);
+            expect(details()).not.toContain(language.stackTraceTranslationFailed);
+        },
+    );
 });

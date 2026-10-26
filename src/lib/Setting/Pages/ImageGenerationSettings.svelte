@@ -12,7 +12,10 @@
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import { getCharImage } from "src/ts/characters";
     import { alertError, alertNormal } from "src/ts/alert";
-    import { onMount } from "svelte";
+    import { onMount, untrack } from "svelte";
+    import { heldRecordRevision, saving } from "src/ts/storage/resourceSync.svelte";
+    import { SECTION_KIND } from "../../../../shared/sections.ts";
+    import { SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
 
@@ -38,16 +41,55 @@
     let wavespeedModels = $state<WavespeedModel[]>([]);
     let isWavespeedLoading = $state(false);
     let wavespeedSearchQuery = $state("");
-    // The rows start from the saved LoRAs (padded to three), so the sync effect below does not clear
-    // them when the page mounts. A malformed saved value starts blank rows, as before.
-    const storedLoras: unknown = settings.secrets.wavespeedImage?.loras;
-    const savedLoras = (Array.isArray(storedLoras) ? storedLoras : [])
-        .filter((item): item is LoraItem => typeof item?.path === "string" && item.path.trim() !== "")
-        .map(({ path, scale }) => ({ path, scale: typeof scale === "number" ? scale : 1.0 }));
-    let wavespeedLoras = $state<LoraItem[]>([
-        ...savedLoras,
-        ...Array.from({ length: Math.max(0, 3 - savedLoras.length) }, () => ({ path: "", scale: 1.0 })),
-    ]);
+    function normalizeLoras(value: unknown): LoraItem[] {
+        return (Array.isArray(value) ? value : [])
+            .filter((item): item is LoraItem => typeof item?.path === "string" && item.path.trim() !== "")
+            .map(({ path, scale }) => ({ path, scale: typeof scale === "number" ? scale : 1.0 }));
+    }
+
+    function padLoras(loras: LoraItem[]): LoraItem[] {
+        return [
+            ...loras.map((lora) => ({ ...lora })),
+            ...Array.from({ length: Math.max(0, 3 - loras.length) }, () => ({ path: "", scale: 1.0 })),
+        ];
+    }
+
+    function sameLoras(a: LoraItem[], b: LoraItem[]): boolean {
+        return a.length === b.length && a.every((lora, i) => lora.path === b[i].path && lora.scale === b[i].scale);
+    }
+
+    let loraBase = normalizeLoras(settings.secrets.wavespeedImage?.loras);
+    let wavespeedLoras = $state<LoraItem[]>(padLoras(loraBase));
+    let lastPublishedLoras: LoraItem[] | null = null;
+    let publishedLoraRevision: string | null | undefined;
+    let loraConflict = $state(false);
+
+    function publishLoras() {
+        if (!settings.secrets.wavespeedImage) return;
+        lastPublishedLoras = normalizeLoras(wavespeedLoras);
+        publishedLoraRevision = saving.state
+            ? undefined
+            : heldRecordRevision(SECTION_KIND.secrets, SINGLETON_RESOURCE_ID);
+        settings.secrets.wavespeedImage.loras = lastPublishedLoras;
+        loraConflict = false;
+    }
+
+    function editLora(lora: LoraItem, change: Partial<LoraItem>) {
+        if (!wavespeedLoras.includes(lora)) return;
+        Object.assign(lora, change);
+        publishLoras();
+    }
+
+    function adoptLoras(loras: LoraItem[]) {
+        wavespeedLoras = padLoras(loras);
+        loraBase = loras;
+        lastPublishedLoras = null;
+        loraConflict = false;
+    }
+
+    function loadSavedLoras() {
+        adoptLoras(normalizeLoras(settings.secrets.wavespeedImage?.loras));
+    }
 
     /**
      * Fetch models from WaveSpeed API dynamically
@@ -131,7 +173,8 @@
 
         // Reset loras if model doesn't support them
         if (!selectedModel?.supportsLoras) {
-            settings.secrets.wavespeedImage.loras = undefined;
+            adoptLoras([]);
+            publishLoras();
         }
     }
 
@@ -158,16 +201,36 @@
         });
     }
 
-    $effect(() => {
-        // Sync loras to DB, filtering out empty URLs
-        if (settings.secrets.wavespeedImage) {
-            settings.secrets.wavespeedImage.loras = wavespeedLoras
-                .filter((item) => item.path && item.path.trim() !== "")
-                .map((item) => ({
-                    path: item.path,
-                    scale: item.scale,
-                }));
-        }
+    $effect.pre(() => {
+        const incoming = normalizeLoras(settings.secrets.wavespeedImage?.loras);
+        const isSaving = saving.state;
+        untrack(() => {
+            if (lastPublishedLoras !== null && sameLoras(incoming, lastPublishedLoras)) {
+                // A publish during a save uses that batch's final revision as its baseline.
+                if (isSaving) return;
+                const heldRevision = heldRecordRevision(SECTION_KIND.secrets, SINGLETON_RESOURCE_ID);
+                if (publishedLoraRevision === undefined) {
+                    publishedLoraRevision = heldRevision;
+                } else if (heldRevision !== publishedLoraRevision) {
+                    loraBase = lastPublishedLoras;
+                    lastPublishedLoras = null;
+                    loraConflict = false;
+                }
+                return;
+            }
+            const draft = normalizeLoras(wavespeedLoras);
+            if (sameLoras(incoming, draft)) {
+                loraBase = incoming;
+                lastPublishedLoras = null;
+                loraConflict = false;
+            } else if (!sameLoras(incoming, loraBase)) {
+                if (sameLoras(draft, loraBase)) {
+                    adoptLoras(incoming);
+                } else {
+                    loraConflict = true;
+                }
+            }
+        });
     });
     // End wavespeed
 </script>
@@ -926,16 +989,31 @@
     </SelectInput>
 
     <span class="text-textcolor mt-4">LoRAs</span>
+    {#if loraConflict}
+        <div class="text-draculared text-sm my-2" role="status">
+            <p>{language.wavespeedLoraConflict}</p>
+            <button class="bg-darkbutton text-textcolor rounded-md px-3 py-2 mt-2" onclick={loadSavedLoras}>
+                {language.wavespeedLoraUseSaved}
+            </button>
+        </div>
+    {/if}
     {#if wavespeedModels.find((m) => m.model_id === settings.secrets.wavespeedImage.model)?.supportsLoras}
-        {#each wavespeedLoras as lora, index}
+        {#each wavespeedLoras as lora, index (lora)}
             <TextInput
                 size="sm"
                 marginBottom
                 marginTop
                 placeholder={`LoRA ${index + 1} URL (optional)`}
-                bind:value={lora.path}
+                bind:value={() => lora.path, (path) => editLora(lora, { path })}
             />
-            <SliderInput marginBottom min={0} max={4} step={0.1} fixed={1} bind:value={lora.scale} />
+            <SliderInput
+                marginBottom
+                min={0}
+                max={4}
+                step={0.1}
+                fixed={1}
+                bind:value={() => lora.scale, (scale) => editLora(lora, { scale })}
+            />
         {/each}
         <span class="text-textcolor2 text-xs mb-2 block">
             Only .safetensors files are supported. Use owner/model-name (Hugging Face) or direct URL (Civitai).

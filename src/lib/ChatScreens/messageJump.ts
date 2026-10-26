@@ -5,7 +5,7 @@
  * message by its id: the index is never kept across an await.
  */
 
-/** Rows rendered past the target, as `scrollToMessage` loads them (the context above it). */
+/** Rows rendered past the target when jumping to a message (the context above it). */
 export const MESSAGE_JUMP_MARGIN = 5;
 /** How many times the jump re-plans after the chat changed under it before it gives up. */
 export const MESSAGE_JUMP_ROUNDS = 5;
@@ -145,7 +145,7 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
             continue;
         }
         deps.scrollTo(settled);
-        // Once more after the last layout adjustments, as `scrollToMessage` does.
+        // Once more after a tick to account for the last layout adjustments.
         if (!(await settle(deps.tick()))) {
             return "stopped";
         }

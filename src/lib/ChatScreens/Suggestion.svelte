@@ -241,18 +241,30 @@
         }
     });
 
-    const translateSuggest = async (toggle, messages) => {
-        if (toggle && messages && messages.length > 0) {
-            suggestMessagesTranslated = [];
-            for (let i = 0; i < suggestMessages.length; i++) {
-                let msg = suggestMessages[i];
-                let translated = await translate(msg, false);
-                suggestMessagesTranslated[i] = translated;
-            }
+    let translationRun = 0;
+    const translateSuggest = async (toggle: boolean, messages: readonly string[] | undefined) => {
+        const run = ++translationRun;
+        const snapshot = [...(messages ?? [])];
+        const ref = currentChatRef();
+        const chatKey = ref ? chatKeyOf(ref) : null;
+        const isCurrent = () => {
+            const current = currentChatRef();
+            return translationRun === run && (current ? chatKeyOf(current) : null) === chatKey;
+        };
+        suggestMessagesTranslated = [];
+        if (!toggle || snapshot.length === 0 || chatKey === null) return;
+
+        const translated: string[] = [];
+        for (const message of snapshot) {
+            const result = await translate(message, false);
+            if (!isCurrent()) return;
+            translated.push(result);
         }
+        if (isCurrent()) suggestMessagesTranslated = translated;
     };
 
     onDestroy(() => {
+        translationRun += 1;
         cancelSuggestionRequest();
         unsub();
     });
@@ -294,7 +306,10 @@
         }
     });
     $effect.pre(() => {
-        translateSuggest(toggleTranslate, suggestMessages);
+        void translateSuggest(toggleTranslate, suggestMessages);
+        return () => {
+            translationRun += 1;
+        };
     });
 </script>
 

@@ -139,10 +139,10 @@
     let chatsInstance: any = $state();
     let revealing = $state(false);
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
-    // Running jumps to a message (the bookmark's by index, a search hit's by id): trimming waits for them.
+    // Running jumps to a message: trimming waits for them.
     let scrollingToMessage = $state(0);
     const isScrollingToMessage = $derived(scrollingToMessage > 0);
-    /** The chat scroller (`.default-chat-screen`): a search jump looks its row and images up under it. */
+    /** The chat scroller (`.default-chat-screen`): jumps look their rows and images up under it. */
     let chatScroller: HTMLElement | undefined = $state();
     let takingScreenshot = $state(false);
     // The chat rows' shared stylesheets: one per distinct CSS, after the rows.
@@ -220,74 +220,33 @@
             void tick().then(() => chatsInstance?.scrollToLatestMessage());
         }
     });
+    let pendingBookmark: Pick<MessageJump, "ref" | "messageId"> | null = null;
     $effect(() => {
-        if (ScrollToMessageStore.value !== -1) {
-            const index = ScrollToMessageStore.value;
+        const index = ScrollToMessageStore.value;
+        if (index !== -1) {
             ScrollToMessageStore.value = -1;
-            scrollToMessage(index);
+            untrack(() => {
+                stopOwnedJump();
+                const ref = currentChatRef();
+                const messageId = messages[index]?.chatId;
+                pendingBookmark = ref && messageId ? { ref, messageId } : null;
+            });
         }
+        const ref = currentChatRef();
+        const shown = chatShown;
+        const chats = chatsInstance;
+        const scroller = chatScroller;
+        const jump = pendingBookmark;
+        if (!jump) return;
+        if (!shown || ref?.chaId !== jump.ref.chaId || ref.chatId !== jump.ref.chatId) {
+            pendingBookmark = null;
+            return;
+        }
+        // Keep the captured id while a bookmark opened from the closed chat waits for its transcript.
+        if (!chats || !scroller) return;
+        pendingBookmark = null;
+        untrack(() => void scrollToMessageId(jump));
     });
-
-    async function scrollToMessage(index: number) {
-        // Forces the loading of past messages not rendered on the screen
-        scrollingToMessage += 1;
-        try {
-            const totalMessages = messages.length;
-            const neededLoadPages = totalMessages - index + 5;
-
-            if (loadPages < neededLoadPages) {
-                loadPages = neededLoadPages;
-                await tick();
-            }
-
-            let element: Element | null = null;
-            // Poll for element existence (max 5 seconds)
-            for (let i = 0; i < 50; i++) {
-                element = document.querySelector(`[data-chat-index="${index}"]`);
-                if (element) break;
-                await sleep(100);
-            }
-
-            const preIndex = Math.max(0, index - 3);
-            const preElement = document.querySelector(`[data-chat-index="${preIndex}"]`);
-            if (preElement) {
-                preElement.scrollIntoView({ behavior: "instant", block: "start" });
-            } else {
-                element?.scrollIntoView({ behavior: "instant", block: "start" });
-            }
-            await sleep(50);
-
-            if (element) {
-                // Wait for images to load to prevent layout shift
-                const chatContainer = document.querySelector(".default-chat-screen");
-                if (chatContainer) {
-                    const images = Array.from(chatContainer.querySelectorAll("img"));
-                    const promises = images.map((img) => {
-                        if (img.complete) return Promise.resolve();
-                        return new Promise((resolve) => {
-                            img.onload = () => resolve(null);
-                            img.onerror = () => resolve(null);
-                        });
-                    });
-                    // Wait for all images or timeout after 4 seconds
-                    await Promise.race([Promise.all(promises), sleep(4000)]);
-                }
-
-                element.scrollIntoView({ behavior: "instant", block: "start" });
-
-                // Small delay and scroll again to ensure position is correct after any final layout adjustments
-                await sleep(50);
-                element.scrollIntoView({ behavior: "instant", block: "start" });
-
-                element.classList.add("ring-2", "ring-blue-500");
-                setTimeout(() => {
-                    element.classList.remove("ring-2", "ring-blue-500");
-                }, 2000);
-            }
-        } finally {
-            scrollingToMessage -= 1;
-        }
-    }
 
     // A search hit's jump (`src/ts/messageSearch.svelte.ts`): claimed once its chat is selected,
     // loaded and shown, before any await, so it runs once.
@@ -316,13 +275,26 @@
     });
 
     let destroyed = false;
-    /** The token of the jump this screen runs, cancelled when the screen goes away. */
-    let ownedJump: number | null = null;
+    /** Bookmark and search jumps share one owner, including a way to release pending waits. */
+    let ownedJump: { stop(): void; isCurrent(): boolean } | null = null;
+    function stopOwnedJump() {
+        pendingBookmark = null;
+        const previous = ownedJump;
+        ownedJump = null;
+        previous?.stop();
+    }
     onDestroy(() => {
         destroyed = true;
-        if (ownedJump !== null) {
-            cancelMessageJump(ownedJump);
-        }
+        stopOwnedJump();
+    });
+    $effect.pre(() => {
+        chatKey;
+        chatShown;
+        chatsInstance;
+        chatScroller;
+        untrack(() => {
+            if (ownedJump && !ownedJump.isCurrent()) stopOwnedJump();
+        });
     });
 
     /** Waits until the scroller's images loaded or failed, at most 4 s or until `stopped`. */
@@ -357,32 +329,44 @@
     }
 
     /**
-     * Runs a claimed search jump (`messageJump.ts`): it owns the screen by its token and stops once the
-     * token is replaced, its chat is no longer the selected and shown one, or the transcript was
-     * replaced; the message is found by id in the selected chat after every await.
+     * Runs a bookmark or claimed search jump. A newer jump, a chat switch, or a replaced transcript
+     * stops it; the message is found by id in the selected chat after every await.
      */
-    async function scrollToMessageId(jump: MessageJump) {
+    async function scrollToMessageId(jump: Pick<MessageJump, "ref" | "messageId"> & { token?: number }) {
         const { token, ref, messageId } = jump;
+        stopOwnedJump();
         const chats = chatsInstance;
         const scroller = chatScroller;
         if (!chats || !scroller) {
-            cancelMessageJump(token);
+            if (token !== undefined) cancelMessageJump(token);
             return;
         }
-        ownedJump = token;
-        scrollingToMessage += 1;
-        const stopped = messageJumpStopped(token);
-        const isCurrent = () => {
-            const now = untrack(() => currentChatRef());
-            return (
-                !destroyed &&
-                isMessageJumpCurrent(token) &&
-                now?.chaId === ref.chaId &&
-                now.chatId === ref.chatId &&
-                untrack(() => chatShown && chatsInstance === chats && chatScroller === scroller) &&
-                scroller.isConnected
-            );
+        let stop!: () => void;
+        const localStopped = new Promise<void>((resolve) => {
+            stop = resolve;
+        });
+        const owner = {
+            stop: () => {
+                stop();
+                if (token !== undefined) cancelMessageJump(token);
+            },
+            isCurrent: () => {
+                const now = untrack(() => currentChatRef());
+                return (
+                    !destroyed &&
+                    ownedJump === owner &&
+                    (token === undefined || isMessageJumpCurrent(token)) &&
+                    now?.chaId === ref.chaId &&
+                    now.chatId === ref.chatId &&
+                    untrack(() => chatShown && chatsInstance === chats && chatScroller === scroller) &&
+                    scroller.isConnected
+                );
+            },
         };
+        ownedJump = owner;
+        scrollingToMessage += 1;
+        const stopped = token === undefined ? localStopped : Promise.race([localStopped, messageJumpStopped(token)]);
+        const isCurrent = owner.isCurrent;
         try {
             const outcome = await runMessageJump(messageId, {
                 isCurrent,
@@ -411,19 +395,22 @@
                     }, 2000);
                 },
             });
-            if (outcome === "stopped" || !isCurrent()) {
-                cancelMessageJump(token);
-            } else {
-                completeMessageJump(token);
-                if (outcome === "gone") {
-                    alertNormal(language.messageSearch.messageGone);
+            if (token !== undefined) {
+                if (outcome === "stopped" || !isCurrent()) {
+                    cancelMessageJump(token);
+                } else {
+                    completeMessageJump(token);
+                    if (outcome === "gone") {
+                        alertNormal(language.messageSearch.messageGone);
+                    }
                 }
             }
         } catch (error) {
-            cancelMessageJump(token);
-            console.error("[MessageSearch] The jump to the message failed", error);
+            if (token !== undefined) cancelMessageJump(token);
+            console.error("The jump to the message failed", error);
         } finally {
-            if (ownedJump === token) {
+            owner.stop();
+            if (ownedJump === owner) {
                 ownedJump = null;
             }
             scrollingToMessage -= 1;

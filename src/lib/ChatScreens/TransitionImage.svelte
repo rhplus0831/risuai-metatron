@@ -12,8 +12,12 @@
 
     let { src = [], classType }: Props = $props();
 
+    let sourceRun = 0;
     async function processSrc(src: string[] | Promise<string[]>) {
-        const resultSrc = await src;
+        const run = ++sourceRun;
+        const resolved = await src;
+        if (run !== sourceRun) return;
+        const resultSrc = [...resolved];
 
         let styl = styleType;
         if (resultSrc.length > 1) {
@@ -42,7 +46,10 @@
     }
 
     $effect.pre(() => {
-        processSrc(src);
+        void processSrc(src);
+        return () => {
+            sourceRun += 1;
+        };
     });
 </script>
 

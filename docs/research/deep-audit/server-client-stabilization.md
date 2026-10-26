@@ -42,7 +42,7 @@ All source line references are for the revision above. Test commands and limitat
 | F08 | P2       | Asset and backup retention lack a coordinated byte budget                                         | Disk growth and eventual write failures                |
 | F09 | P2       | Abortable UI token counters bypass request batching                                               | Bursty requests and duplicate count work               |
 | F10 | P2       | A Google count batch can become many sequential provider calls                                    | Slow counters and excessive upstream requests          |
-| F11 | P2       | Suggestion translation effects can apply results to another chat                                  | Incorrect suggestion labels and wasted work            |
+| F11 | P2       | **Fixed 2026-10-26.** Suggestion translation effects can apply results to another chat            | Incorrect suggestion labels and wasted work            |
 | F12 | P2       | Rendered streaming repeatedly processes the growing message                                       | Mobile/slow-device responsiveness                      |
 | F13 | P2       | Asset fallback retains original blobs and bypasses thumbnails                                     | Browser memory and bandwidth in fallback environments  |
 | F14 | P3       | PWA foreground reconciliation rewrites unchanged push subscriptions                               | Repeated requests and durable disk writes              |
@@ -203,6 +203,8 @@ For N distinct cold-cache texts in one request, latency includes approximately t
 **Recommendation:** separate interactive estimates from exact provider budgeting. Cache counts per message/content hash and tokenizer identity, and compute exact prompt-level counts where the provider's semantics permit it. If exact independent counts remain necessary, use bounded parallelism within the existing global limit rather than an unbounded `Promise.all`. Do not concatenate texts naively: tokenization boundaries and per-message overhead must remain correct.
 
 ### F11 — Suggestion translation effects can apply results to another chat
+
+**Fixed 2026-10-26** (commit `fix(ui): stop the LoRA editor republishing a stale draft and drop stale async results`): `translateSuggest` translates a copy of the list taken at its start, checks after every translation that its run is current and the same chat is selected, and shows the whole result only then; the effect's cleanup and unmount end the run.
 
 **Confirmed missing async ownership guard; timing scenario conditional.**
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from "svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { getCustomBackground, getEmotion } from "../../ts/util";
@@ -28,14 +29,15 @@
         (settings.ui.textScreenRounded ? "border-radius: 2rem; padding: 1rem;" : "") +
         (settings.ui.textScreenBorder ? `border: 0.3rem solid ${settings.ui.textScreenBorder};` : "");
     let bgImg = $state("");
-    let lastBg = $state("");
     $effect.pre(() => {
-        (async () => {
-            if (settings.ui.customBackground !== lastBg) {
-                lastBg = settings.ui.customBackground;
-                bgImg = await getCustomBackground(settings.ui.customBackground);
-            }
-        })();
+        const background = settings.ui.customBackground;
+        let current = true;
+        void untrack(() => getCustomBackground(background)).then((result) => {
+            if (current) bgImg = result;
+        });
+        return () => {
+            current = false;
+        };
     });
 </script>
 

@@ -24,7 +24,7 @@ export interface SettingJump {
     reason?: SettingUnavailableReason;
 }
 
-/** How long the row's highlight ring stays (as the chat's `scrollToMessage`). */
+/** How long the row's highlight ring stays (as in the chat's message jump). */
 export const SETTING_HIGHLIGHT_MS = 2000;
 const HIGHLIGHT_CLASSES = ["ring-2", "ring-primary-500"];
 

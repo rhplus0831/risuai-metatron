@@ -969,6 +969,9 @@ export const languageEnglish = {
     noActivePromptPresets: "No active prompt presets",
     noArchivedPromptPresets: "No archived prompt presets",
     imageGeneration: "Image Generation",
+    wavespeedLoraConflict:
+        "Another tab or device changed these LoRAs. Your rows are kept here; your next edit saves them over that change.",
+    wavespeedLoraUseSaved: "Load the saved LoRAs",
     provider: "Provider",
     key: "Key",
     noData: "No Data",

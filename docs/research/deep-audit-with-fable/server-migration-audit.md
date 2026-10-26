@@ -50,7 +50,7 @@ path; P3 is smaller.
 | ID   | Priority | Area    | Finding                                                                                   | Example point                 |
 | ---- | -------- | ------- | ----------------------------------------------------------------------------------------- | ----------------------------- |
 | TJ01 | P1       | jobs    | Fixed 2026-10-26: trigger reconciliation set `scriptstate` whole over per-key merges      | Server/client data loss       |
-| CE01 | P1       | client  | WaveSpeed LoRA effect republishes a mount-time draft after a remote record replacement    | Client/server data loss       |
+| CE01 | P1 fixed | client  | WaveSpeed LoRA effect republishes a mount-time draft after a remote record replacement    | Client/server data loss       |
 | CE02 | P1 fixed | client  | Composer translation writes results without request, draft, chat, or destroy guards       | Client/server data loss       |
 | CE03 | P1 fixed | client  | Translation composer Enter ignores `isComposing`                                          | Effects vs. environment (IME) |
 | SD01 | P2       | server  | A streaming checkpoint rereads the transcript twice and rebuilds the owner baseline       | Server performance            |
@@ -75,7 +75,7 @@ path; P3 is smaller.
 | ST07 | P2 cond. | traffic | A plugin's default `getDatabase()` loads the chat library one character at a time         | Excessive traffic (plugins)   |
 | SD06 | P2 cond. | server  | Diagnostic and auxiliary disk writes run synchronously on the serving thread              | Server performance            |
 | SD05 | P3       | server  | Startup renormalizes every resource record; full writes serialize whole values twice      | Server performance            |
-| CE08 | P3       | client  | Portrait, background, error-trace, and bookmark-jump effects publish without owner checks | Effects, stale results        |
+| CE08 | P3 fixed | client  | Portrait, background, error-trace, and bookmark-jump effects publish without owner checks | Effects, stale results        |
 
 ## Data loss and correctness
 
@@ -143,6 +143,14 @@ post-save result. Do not solve this by flushing all resources before every row r
 ### CE01 — The WaveSpeed LoRA effect republishes an old draft after a remote replacement
 
 **Confirmed mechanism. P1 (two-tab alternation derived, not executed).**
+
+**Fixed 2026-10-26** (Deep Audit Fixes plan, commit `fix(ui): stop the LoRA editor republishing a stale draft and drop stale async results`): the publishing effect is gone. The LoRA rows are an
+editing copy saved only by an explicit edit (path, scale, the reset for a model without LoRA support), never on mount.
+A copy without unsaved edits follows the incoming value without saving; one whose save is not yet acknowledged (a later
+save cycle ended with the `secrets` revision changed) keeps its rows when a different value arrives, saves nothing, and
+shows `wavespeedLoraConflict` with a button that loads the saved LoRAs; the next edit saves the rows over that change.
+Tests: `src/lib/Setting/Pages/ImageGenerationSettings.test.ts`. The two-tab alternation in a real browser is still
+pending.
 
 `ImageGenerationSettings.svelte` reads the saved LoRAs once at mount into a local `$state` draft
 ([:43](../../../src/lib/Setting/Pages/ImageGenerationSettings.svelte#L43)) and runs an effect that writes
@@ -508,6 +516,11 @@ Recommendation: a token-relevant projection with explicit expansion dependencies
 shared batching layer (with F09).
 
 ### CE08 — Presentation effects without owner checks
+
+**Fixed 2026-10-26** (Deep Audit Fixes plan, commit `fix(ui): stop the LoRA editor republishing a stale draft and drop stale async results`): `TransitionImage` and the chat background drop a result
+whose effect run was superseded or cleaned up; `AlertComp` drops a trace translation, its failure, and its end of
+loading once the shown alert changed; the bookmark jump names its message by id when it starts and runs through
+`runMessageJump` under one screen-owned jump shared with search jumps (a newer jump, a chat switch, or destroy stops it).
 
 **Confirmed. P3.** `TransitionImage.svelte:44` awaits `src` and publishes without a token (old portrait or emotion
 can replace the current); `ChatScreen.svelte:32` awaits the background asset; `AlertComp.svelte:185` can publish

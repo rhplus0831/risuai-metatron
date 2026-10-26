@@ -22,7 +22,7 @@
 
 <script lang="ts">
     import { findChat, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
-    import { untrack } from "svelte";
+    import { onDestroy, untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { alertRequestLogs, type alertData } from "../../ts/alert";
     import { jobDebugInfo } from "../../ts/diagnostics/jobDebugInfo";
@@ -64,6 +64,10 @@
     let translatedStackTrace = $state("");
     let stackTraceTranslationFailed = $state(false);
     let isTranslating = $state(false);
+    let traceRun = 0;
+    onDestroy(() => {
+        traceRun += 1;
+    });
     let osLabel = $state(getFallbackOSLabel());
     const displayedStackTrace = $derived(translatedStackTrace || $alertStore.stackTrace || "");
     const risuVersion = versionData.version;
@@ -135,6 +139,7 @@
     }
 
     $effect.pre(() => {
+        traceRun += 1;
         showDetails = false;
         translatedStackTrace = "";
         stackTraceTranslationFailed = false;
@@ -234,19 +239,24 @@
 
     async function loadTranslatedTrace() {
         if (isTranslating || translatedStackTrace || stackTraceTranslationFailed || !$alertStore.stackTrace) return;
+        const run = ++traceRun;
+        const stackTrace = $alertStore.stackTrace;
         isTranslating = true;
         try {
-            const result = await translateStackTrace($alertStore.stackTrace);
+            const result = await translateStackTrace(stackTrace);
+            if (run !== traceRun) return;
             if (result.didTranslate) {
                 translatedStackTrace = result.stackTrace;
             } else {
                 stackTraceTranslationFailed = true;
             }
         } catch (e) {
-            console.error("Failed to translate stack trace:", e);
-            stackTraceTranslationFailed = true;
+            if (run === traceRun) {
+                console.error("Failed to translate stack trace:", e);
+                stackTraceTranslationFailed = true;
+            }
         } finally {
-            isTranslating = false;
+            if (run === traceRun) isTranslating = false;
         }
     }
 

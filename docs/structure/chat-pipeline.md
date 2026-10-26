@@ -172,7 +172,7 @@ Not in `sendChat`:
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce role rules: Gemma has no system role, and Mistral requires alternating roles.
-- A suggestion result is applied only while its request token and the captured character and chat ids still match (`Suggestion.svelte`), never by the old chat index.
+- A suggestion result is applied only while its request token and the captured character and chat ids still match (`Suggestion.svelte`), never by the old chat index. The suggestions' display translation translates a copy of the list taken when it starts and shows the whole result only while its run is current and the same chat is selected; a newer list, toggle, chat, or unmount ends it.
 
 ## Recipes
 

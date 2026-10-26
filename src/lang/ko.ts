@@ -901,6 +901,9 @@ export const languageKorean = {
     noActivePromptPresets: "활성화된 프롬프트 프리셋이 없습니다",
     noArchivedPromptPresets: "보관된 프롬프트 프리셋이 없습니다",
     imageGeneration: "이미지 생성",
+    wavespeedLoraConflict:
+        "다른 탭이나 기기에서 이 LoRA를 변경했습니다. 여기 입력한 행은 유지되며, 다음에 편집하면 그 변경을 덮어써서 저장합니다.",
+    wavespeedLoraUseSaved: "저장된 LoRA 불러오기",
     provider: "공급자",
     key: "키",
     noData: "데이터 없음",
