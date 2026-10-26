@@ -196,17 +196,19 @@ describe("createDiagnosticReport", () => {
         ];
         onLine = false;
         const text = await createDiagnosticReport();
-        expect(lines(text).slice(0, 7)).toEqual([
+        expect(lines(text).slice(0, 8)).toEqual([
             "Metatron diagnostic report v1",
             `Version: ${versionData.version}`,
+            // Vitest defines no build, so the tab's build id is unknown.
+            "Build: unknown",
             "Browser: Chrome",
             "OS: Windows",
             "Online: false",
             `Viewport: ${window.innerWidth} x ${window.innerHeight}`,
             expect.stringMatching(/^Exported: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
         ]);
-        expect(lines(text).slice(8, 11)).toEqual(["Server: unavailable", "Omitted events: 0", ""]);
-        expect(lines(text).slice(11)).toEqual([
+        expect(lines(text).slice(9, 12)).toEqual(["Server: unavailable", "Omitted events: 0", ""]);
+        expect(lines(text).slice(12)).toEqual([
             `${new Date(AT).toISOString()} browser page {"phase":"boot"}`,
             `${new Date(AT + 1).toISOString()} browser jobLink {"phase":"detach","jobId":"${JOB}","code":1006}`,
             `${new Date(AT + 3).toISOString()} browser page {"phase":"visible"}`,
@@ -225,10 +227,10 @@ describe("createDiagnosticReport", () => {
         );
         deps.events = [{ at: AT, kind: "page", phase: "boot" }];
         const text = await createDiagnosticReport();
-        expect(lines(text).slice(2, 4)).toEqual(["Browser: Safari", "OS: macOS"]);
-        expect(lines(text)[8]).toBe("Server: current");
-        expect(lines(text)[9]).toBe(`Server state: ${JSON.stringify(state())}`);
-        expect(lines(text).slice(12)).toEqual([
+        expect(lines(text).slice(3, 5)).toEqual(["Browser: Safari", "OS: macOS"]);
+        expect(lines(text)[9]).toBe("Server: current");
+        expect(lines(text)[10]).toBe(`Server state: ${JSON.stringify(state())}`);
+        expect(lines(text).slice(13)).toEqual([
             `${new Date(AT - 1).toISOString()} server lifecycle {"phase":"boot"}`,
             `${new Date(AT).toISOString()} browser page {"phase":"boot"}`,
         ]);
@@ -238,7 +240,7 @@ describe("createDiagnosticReport", () => {
             json({ state: { version: 2 }, events: [{ at: AT - 1, kind: "lifecycle", phase: "boot" }] }),
         );
         const stale = await createDiagnosticReport();
-        expect(lines(stale)[8]).toBe("Server: unavailable");
+        expect(lines(stale)[9]).toBe("Server: unavailable");
         expect(stale).not.toContain("lifecycle");
     });
 
@@ -255,8 +257,8 @@ describe("createDiagnosticReport", () => {
         deps.readWorkerRecords.mockResolvedValueOnce({ events: worker, failed: false });
         const text = await createDiagnosticReport();
         expect(deps.readWorkerRecords).toHaveBeenCalledWith();
-        expect(lines(text)[9]).toBe("Omitted events: 100");
-        const events = lines(text).slice(11);
+        expect(lines(text)[10]).toBe("Omitted events: 100");
+        const events = lines(text).slice(12);
         expect(events).toHaveLength(300);
         // The 100 oldest of the merged list are left out: the tab's first 50 and the worker's first 50.
         expect(events[0]).toBe(`${new Date(AT + 100).toISOString()} browser page {"phase":"visible"}`);
@@ -275,7 +277,7 @@ describe("createDiagnosticReport", () => {
             failed: false,
         });
         const equal = await createDiagnosticReport();
-        expect(lines(equal).slice(11)).toEqual([
+        expect(lines(equal).slice(12)).toEqual([
             `${new Date(AT).toISOString()} browser page {"phase":"boot"}`,
             `${new Date(AT).toISOString()} browser push {"phase":"received","inFront":true,"focusedHidden":false}`,
         ]);
@@ -283,8 +285,8 @@ describe("createDiagnosticReport", () => {
         deps.authFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
         deps.readWorkerRecords.mockResolvedValueOnce({ events: [], failed: true });
         const failed = await createDiagnosticReport();
-        expect(lines(failed)[9]).toBe("Omitted events: 1");
-        expect(lines(failed).slice(11)).toEqual([`${new Date(AT).toISOString()} browser page {"phase":"boot"}`]);
+        expect(lines(failed)[10]).toBe("Omitted events: 1");
+        expect(lines(failed).slice(12)).toEqual([`${new Date(AT).toISOString()} browser page {"phase":"boot"}`]);
         expect(canonicalDiagnosticReport(failed)).toBe(failed);
 
         // Both reads start at once: the worker's does not wait for the server's answer.
@@ -294,7 +296,7 @@ describe("createDiagnosticReport", () => {
         const pending = createDiagnosticReport();
         expect(deps.readWorkerRecords).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(10_000);
-        expect(lines(await pending)[8]).toBe("Server: unavailable");
+        expect(lines(await pending)[9]).toBe("Server: unavailable");
     });
 });
 

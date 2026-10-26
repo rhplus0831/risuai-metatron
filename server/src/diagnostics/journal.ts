@@ -26,6 +26,7 @@ import {
     projectDiagnosticEvent,
     projectServerEvent,
 } from "../../../shared/diagnostics.ts";
+import { BUILD_ID_PATTERN } from "../../../shared/buildInfo.ts";
 import { MAX_DIAGNOSTIC_REPORT_BYTES, REPORT_FILE_PATTERN } from "../../../shared/diagnosticsReport.ts";
 import {
     type RequestHistoryShareEntry,
@@ -62,6 +63,8 @@ const NONBLOCK = constants.O_NONBLOCK ?? 0;
 /** What `state.json` reports besides the journal's own fields; each source is read on its own. */
 export type DiagnosticsStateSources = {
     appVersion?: () => unknown;
+    /** The server's build id (`shared/buildInfo.ts` `formatBuildId`). */
+    appBuild?: () => unknown;
     settings?: () => { requestHistoryContent: unknown; requestHistoryLimit: unknown };
     history?: () => { rows: unknown; bytes: unknown };
     workers?: () => Record<string, unknown>;
@@ -891,6 +894,7 @@ export function createDiagnosticsJournal(options: {
 
     function state(): DiagnosticsState {
         const version = section(sources.appVersion);
+        const build = section(sources.appBuild);
         const settings = section(sources.settings);
         const history = section(sources.history);
         const workers = section(sources.workers);
@@ -898,7 +902,10 @@ export function createDiagnosticsJournal(options: {
         return {
             version: 1,
             writtenAt: new Date(now()).toISOString(),
-            app: { version: typeof version === "string" && APP_VERSION.test(version) ? version : null },
+            app: {
+                version: typeof version === "string" && APP_VERSION.test(version) ? version : null,
+                build: typeof build === "string" && BUILD_ID_PATTERN.test(build) ? build : null,
+            },
             node: process.versions.node,
             platform: process.platform,
             arch: process.arch,

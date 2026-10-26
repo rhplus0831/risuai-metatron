@@ -1350,8 +1350,6 @@ export const languageChineseTraditional = {
     stackTraceTranslationFailed: "無法翻譯堆疊追蹤。以下顯示原始的混淆版堆疊追蹤",
     apply: "套用",
     add: "加入",
-    nightlyWarning:
-        "## 測試版\n\n您目前使用的是測試版。此版本僅供測試，可能包含尚未修正的問題。**測試版不提供個別問題排除支援**",
     generatedByAIDisclaimer: "此內容由 AI 生成，可能包含不準確資訊或偏見",
     aiGenerationWarning: "內容將由 AI 生成，可能包含不準確資訊或偏見",
     duplicatePluginFoundUpdateIt: "已安裝相同外掛。要更新現有外掛嗎？",

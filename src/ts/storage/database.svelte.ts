@@ -3,7 +3,7 @@ import { defaultAIN, defaultOoba, presetTemplate } from "../../../shared/presets
 import { defaultSdData } from "../../../shared/characters.ts";
 
 //APP_VERSION_POINT is to locate the app version in the database file for version bumping
-export let appVer = "2026.8.250"; //<APP_VERSION_POINT>
+export let appVer = "2026.10.220"; //<APP_VERSION_POINT>
 export let appSubVer = "";
 
 export type * from "../../../shared/database.ts";

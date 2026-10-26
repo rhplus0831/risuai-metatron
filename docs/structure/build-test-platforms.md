@@ -8,10 +8,11 @@
   - the test inventory,
   - the PWA service worker and manifest,
   - the userscript bridge,
-  - version bumping,
+  - the compatibility version and the build id,
   - repo dotfiles.
 - Paths:
   - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `vitest.setup.test.ts`, `vitest.lucideImports.ts`, `vitest.lucideImports.test.ts`, `vitest.testNetwork.ts`, `vitest.testNetwork.test.ts`, `vitest.testNetwork.node.test.ts`, `playwright.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
+  - Build id: `shared/buildInfo.ts` (`BuildInfo`, `formatBuildId`), `server/src/buildInfo.ts` (`resolveBuildInfo`, `readServerBuildInfo`), `src/ts/buildInfo.ts` (`buildInfo`, `buildId`)
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.prettierrc.json`, `.prettierignore`, `.vscode/`
   - PWA files: `public/sw.js`, `public/manifest.json`, `public/logo_{16,32,192,256,512}.png`
   - `util/risuUserscript.user.js`
@@ -58,7 +59,7 @@ Config files:
   - Dev server defaults to port 5174 with `strictPort`, listening on `0.0.0.0` (`util/agentDev.mjs` passes `--host`/`--port`). `cacheDir` is `RISU_VITE_CACHE_DIR` when set, else Vite's `node_modules/.vite`. The watcher ignores the server storage (`save/`, `save-agent/`, its lock, and its staging and previous copies). It injects `globalThis.__NODE__ = true` (plugin `risu-node-flag`, `apply: "serve"`, so `dist/index.html` never carries it) and proxies the server routes (`/api`, `/proxy`, `/proxy2`, `/hub-proxy`, with WS) to `RISU_DEV_SERVER` (default `http://localhost:6001`). See `self-host-server.md` for the dev caveats.
   - `envPrefix` is Vite's default (`VITE_`). `build.minify` is `oxc`.
   - Alias `src` → `/src`. Workers are built as `es`.
-  - Neither `define` nor `manualChunks` is set.
+  - `define` sets only `__RISU_BUILD__` (the `BuildInfo` of `resolveBuildInfo`, read through `src/ts/buildInfo.ts`; Vitest leaves it undefined, so tests see an unknown build). The build-only plugin `risu-build-info` writes the same object to `dist/build-info.json`. `manualChunks` is not set.
 - `util/requireHuman.mjs`: the human gate. `requireHuman(command)` prints a notice (what to run as an agent, how to set `HUMAN` as a person) and exits with 1 unless `CI`, `HUMAN`, or `AGENT_TEST` is set; it exits instead of throwing so the caller shows no stack trace. `vitest.config.ts` calls it at load, which covers `pnpm test`, `pnpm test:slow`, `pnpm test:all`, and a direct `vitest` (every run loads the config once in the main process; the Vitest VS Code extension loads it too, so that editor needs `HUMAN` in its environment). `pnpm test:e2e` runs the file's command-line form (`node util/requireHuman.mjs "<command>"`) before Playwright; agents run the specs with `pnpm --silent test:agent --e2e` instead. `util/agentTest.mjs` sets `AGENT_TEST=1` for the run it supervises. Agents must use the wrapper and must not set `HUMAN` or `AGENT_TEST` themselves to bypass this convention.
 - `vitest.config.ts`: `requireHuman("vitest")` at load (see above), Svelte plugin (`configFile: false`: there is no `svelte.config.js`, and the lookup would log a line on every run), the test-only `lucideImports` plugin, `src` alias, browser resolve conditions, `happy-dom`, setup file `vitest.setup.ts`, default include pattern, `e2e/**` excluded (Vitest's default include also matches the Playwright `*.spec.ts` files), and `.claude/**` excluded (Claude Code worktrees under `.claude/worktrees/` are checkouts of other branches, so a run in the main checkout would collect their tests too).
 - `util/agentTest.mjs` (`pnpm --silent test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [vitest args]`): `pnpm test` for agents, and the only entry point that runs tests without `CI` or `HUMAN` (the child gets `AGENT_TEST=1`; `test:overload` goes through it). It runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`; `--tags-filter=slow` is `pnpm test:slow`; an explicit `--tags-filter` replaces the default; other arguments, such as a file filter, pass through) with `util/agentTestReporter.ts` and caches the result in `node_modules/.cache/agent-test/<args hash>.json`. The key is the working tree's `git write-tree` id, taken from a copy of the real index with every change staged (untracked files included, `.gitignore` honored, so unchanged files keep their stat cache), plus the Node and Vitest versions and the arguments. On a hit it prints a `[agent-test] cached result ...` line, the stored stdout, and exits with the stored code; failures are cached too, since the same tree gives the same result, and `--force` runs anyway and replaces the entry. Stderr of the run (Node warnings, worker-thread traces from passing tests) is held back: a passing run only reports its line count, a failing run prints the last 60 lines after the report, `--verbose` prints all of it. Outside git it runs without the cache. An interrupted run caches nothing. `pnpm --silent test:agent` also drops pnpm's own banner lines. `--slow-tests` (or `--slow-tests=<ms>`; default 1000 ms) makes the reporter also list the passed tests that took longer than that, as a warning that never changes the exit code; the wrapper consumes the flag (Vitest never sees it) and hands the threshold to the reporter in `RISU_REPORT_SLOW_TESTS_MS`. The flag is part of the cache key like any argument; a cached replay shows the stored run's durations, and `--force` measures again. `test:overload` passes it through. When a run fails, the wrapper runs each failed file again alone, one at a time and with the same arguments minus the file filters (`parseCLI` from `vitest/node` finds them), after the full run; the reporter's output is held until then (it prints nothing while tests run anyway). A file whose run alone passes counts as passed: its full-run failures are listed in a `FLAKY <n> tests failed in the full run and passed when their files ran again alone (load-sensitive: a warning, not a failure; ...)` block with each test's first error line, appended to `node_modules/.cache/agent-test/flaky.jsonl` (one JSON line per test: time, tree, arguments, name, message), and its counts come from the run alone. A file that fails again shows the failures of its run alone after a `RERUN <file> failed again when run alone` line, instead of its full-run failures. The summary line then counts the merged result and ends with `<n> failed files rerun alone in <s>s`, and the exit code is 0 only when every rerun passed. Nothing is rerun when more than 5 files failed (`MAX_RERUN_FILES`: taken as a real break, and a `[agent-test] not rerun: ...` line says so), when the run had unhandled errors (they belong to no file), or when the run was interrupted or wrote no results. `--no-rerun` turns the rerun off (`test:overload` passes it, since a failure under its overload is what it looks for); whether the rerun is on is part of the cache key. The reporter hands the wrapper its per-file results in a temporary JSON file named by `RISU_REPORT_RESULTS_FILE`.
@@ -96,7 +97,7 @@ Config files:
 
 Environment variables:
 
-- `VITE_RISU_NIGHTLY_BUILD`, `VITE_RISU_BUILD_TIME`.
+- `RISU_BUILD_COMMIT`, `RISU_BUILD_DATE` (`YYYY-MM-DD`), `RISU_BUILD_DIRTY` (`true`): the build id without git, as in the Docker build (`Dockerfile` build arguments); otherwise `resolveBuildInfo` asks git.
 - `util/agentDev.mjs`: `RISU_AGENT_DEV_HOST` (default `127.0.0.1`; `tailscale`), `RISU_AGENT_DEV_PORT` (Vite; 6418 agent, 5174 human), `RISU_AGENT_API_PORT` (server; 6419 agent, 6001 human), `RISU_AGENT_DEV_AUTH_BYPASS` (`TRUE` agent, `FALSE` human), `RISU_AGENT_DATA_MODE` (`clone`, `keep`, `fresh`), `RISU_SAVE_DIR`, `RISU_VITE_CACHE_DIR`. It sets the server's `PORT`, `RISU_HOST`, `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS` and Vite's `RISU_DEV_SERVER` and `RISU_VITE_CACHE_DIR`.
 - `CI`, `HUMAN`, `AGENT_TEST`: any one of them opens the human gate on the plain test commands (`util/requireHuman.mjs`). `CI` comes from the CI service, `HUMAN` from a person's shell, `AGENT_TEST` from `util/agentTest.mjs`.
 
@@ -119,7 +120,8 @@ Web:
 
 ## State
 
-- Version: `version.json` and `src/ts/storage/database.svelte.ts` `appVer` (marked `APP_VERSION_POINT`). `getVersionString` appends `appSubVer` or the nightly label.
+- Compatibility version: `version.json` and `src/ts/storage/database.svelte.ts` `appVer` (marked `APP_VERSION_POINT`), the upstream RisuAI release the [upstream ledger](../research/upstream-ledger.md) has triaged through. CBS `{{metadata::version}}` and `{{metadata::majorver}}`, card exports, the boot cache, and the server's `serverAppVersion` read it. `getVersionString` appends `appSubVer` when set.
+- Build id: `2026.10.26 · a9fa6f8c5` (committer date, nine hex digits of the commit, `-dirty` when `git status` lists a change), or `unknown`. The home menu (`MainMenu.svelte`) shows it above the compatibility version and copies both with the full commit on a click; the diagnostics report and `state.json` carry it.
 
 ## Coupling
 
@@ -128,7 +130,8 @@ Web:
 
 ## Invariants
 
-- Bump the version in both places. `package.json` `version` is not the app version.
+- Change the compatibility version in both places, only when the upstream ledger's triaged release moves. `package.json` `version` is not the app version.
+- The build id never needs a manual bump. Builds without `.git` (Docker) need `RISU_BUILD_COMMIT`, or the id is `unknown`; without `RISU_BUILD_DATE` it is the hash alone, and only `RISU_BUILD_DIRTY=true` marks it dirty.
 - The service worker paths (`/sw/register` and `/sw/img` with hex paths, fallback `/sw/check`, `/sw/share/*`) and Cache Storage `risuCache` are a contract with three consumers. Activation cleanup removes only `/sw/img/` entries: a pending share file must survive a worker update.
 - The asset signer only reads the page's key: abort any IndexedDB upgrade so an absent database stays absent, never create the `node` store, and close every opened connection (including a late success after a blocked open). Cache only successful tokens, not keys or missing-key results; retain the destination/method/origin/client-id gate and the single 401 retry.
 
@@ -141,7 +144,7 @@ Web:
   - Replace the worker with a chat open by registering the script under another URL for the same scope (Playwright does not route the worker's update check). Shown images keep loading, `/sw/img/` entries are deleted, and direct mode returns.
   - An SVG asset opened as a page runs no script under the CSP sandbox; an asset `<img>` in a frame with the plugin sandbox (no `allow-same-origin`) fails.
   - A screenshot and copy-to-HTML inline the images without a 401.
-- Release: bump `version.json` and `appVer`.
+- Release: nothing to bump; the build id comes from the commit. After an upstream intake, set `version.json` and `appVer` to the triaged upstream release.
 - Add a slow test: first try to make it fast (a test-only option for the limit, as
   `createScriptWorkerPool`'s `syncHostTimeoutMs` and `sleepCaps`). Tag it `slow` only when the cost
   is the subject: a real wall-clock limit, a real production limit, cold loads of every tokenizer, or

@@ -1331,13 +1331,11 @@ export function getLanguageCodes() {
     return languageCodes;
 }
 
+/** The upstream RisuAI version this build is compatible with (`appVer`), with `appSubVer` when set. */
 export function getVersionString(): string {
     let versionString = appVer;
     if (appSubVer) {
         versionString += "-" + appSubVer;
-    }
-    if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE") {
-        versionString = "Nightly Build " + import.meta.env.VITE_RISU_BUILD_TIME;
     }
     return versionString;
 }

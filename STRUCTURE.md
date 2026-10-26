@@ -149,8 +149,11 @@ UI:
 
 Release:
 
-- R1. Update both `version.json` and `appVer` (`APP_VERSION_POINT`) in
-  `src/ts/storage/database.svelte.ts`. `package.json`'s version is unused.
+- R1. `version.json` and `appVer` (`APP_VERSION_POINT`) in `src/ts/storage/database.svelte.ts`
+  are the compatibility version: the upstream RisuAI release the ledger has triaged through
+  ([upstream ledger](docs/research/upstream-ledger.md)). Change both together, and only then.
+  What people see is the build id (`shared/buildInfo.ts`), taken from git at build time.
+  `package.json`'s version is unused.
 
 ## Choose By Task
 

@@ -1,3 +1,4 @@
+import { BUILD_ID_PATTERN } from "./buildInfo.ts";
 import {
     type DiagnosticEvent,
     type DiagnosticsState,
@@ -26,6 +27,7 @@ import {
  * ```
  * Metatron diagnostic report v1
  * Version: <app version or unknown>
+ * Build: <build id or unknown>         (only when the tab gave one)
  * Browser: <Chrome | Edge | Firefox | Safari | Other>
  * OS: <Android | iOS | Windows | macOS | Linux | Other>
  * Online: <true | false>
@@ -69,6 +71,8 @@ export const REPORT_FILE_PATTERN = /^\d{8}T\d{9}Z-[0-9a-f]{8}\.txt$/;
 export type DiagnosticReportInput = {
     meta: {
         version: unknown;
+        /** The tab's build id (`shared/buildInfo.ts`); a report without the key has no `Build` line. */
+        build?: unknown;
         browser: unknown;
         os: unknown;
         online: unknown;
@@ -193,6 +197,10 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
         writtenAt,
         app: {
             version: typeof app?.version === "string" && APP_VERSION.test(app.version) ? app.version : null,
+            // v1 grows: only a state that has the build gets it back, as with `shared` below.
+            ...(app && Object.hasOwn(app, "build")
+                ? { build: typeof app.build === "string" && BUILD_ID_PATTERN.test(app.build) ? app.build : null }
+                : {}),
         },
         node: typeof state.node === "string" && NODE_VERSION.test(state.node) ? state.node : UNKNOWN,
         platform: PLATFORMS.includes(state.platform as string) ? (state.platform as string) : OTHER,
@@ -261,6 +269,10 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     const head = [
         DIAGNOSTIC_REPORT_HEADER,
         `Version: ${typeof meta.version === "string" && APP_VERSION.test(meta.version) ? meta.version : UNKNOWN}`,
+        // v1 grows: a report an older tab built has no build line and stays canonical.
+        ...(Object.hasOwn(meta, "build")
+            ? [`Build: ${typeof meta.build === "string" && BUILD_ID_PATTERN.test(meta.build) ? meta.build : UNKNOWN}`]
+            : []),
         `Browser: ${(BROWSER_FAMILIES as readonly unknown[]).includes(meta.browser) ? meta.browser : "Other"}`,
         `OS: ${(OS_FAMILIES as readonly unknown[]).includes(meta.os) ? meta.os : "Other"}`,
         `Online: ${meta.online === true}`,
@@ -302,6 +314,7 @@ function parseDiagnosticReport(text: string): DiagnosticReportInput | null {
         return null;
     }
     const version = labeled("Version: ");
+    const build = lines[next]?.startsWith("Build: ") ? labeled("Build: ") : undefined;
     const browser = labeled("Browser: ");
     const os = labeled("OS: ");
     const online = labeled("Online: ");
@@ -351,6 +364,7 @@ function parseDiagnosticReport(text: string): DiagnosticReportInput | null {
     return {
         meta: {
             version,
+            ...(build === undefined ? {} : { build }),
             browser,
             os,
             online: online === "true",

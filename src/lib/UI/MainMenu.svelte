@@ -14,6 +14,8 @@
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
     import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
     import { getVersionString, openPinnedChat } from "src/ts/globalApi.svelte";
+    import { buildId, buildInfo } from "src/ts/buildInfo";
+    import { alertNormal } from "src/ts/alert";
     import { language } from "src/lang";
     import { changeChar, getCharImage } from "src/ts/characters";
     import { onMount } from "svelte";
@@ -22,6 +24,15 @@
     import { collectPinnedChats, HOME_PINNED_CHAT_COLLAPSED_LIMIT } from "../SideBars/pinnedChats";
     import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
     import { chatStatusLabel, refusedChatKeys, resolveChatStatus, type ChatStatus } from "../SideBars/chatStatus";
+
+    const compatVersion = getVersionString();
+
+    // The full commit goes with the copy, so a bug report names the exact build.
+    async function copyVersion() {
+        const commit = buildInfo.commit ? ` (${buildInfo.commit})` : "";
+        await navigator.clipboard.writeText(`Metatron ${buildId}${commit}, RisuAI ${compatVersion}`);
+        alertNormal(language.clipboardSuccess);
+    }
 
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
@@ -71,7 +82,15 @@
 <div class="h-full w-full flex flex-col overflow-y-auto items-center">
     {#if !$OpenRealmStore}
         <Title />
-        <h3 class="text-textcolor2 mt-1">Version {getVersionString()}</h3>
+        <button
+            type="button"
+            class="mt-1 flex flex-col items-center text-textcolor2 hover:text-textcolor"
+            title={language.versionCopy}
+            onclick={copyVersion}
+        >
+            <span class="text-lg font-bold">{language.versionLabel.replace("{{build}}", buildId)}</span>
+            <span class="text-xs">{language.versionBasedOn.replace("{{version}}", compatVersion)}</span>
+        </button>
     {/if}
     <div class="w-full flex p-4 pb-8 flex-col text-textcolor max-w-4xl">
         {#if !$OpenRealmStore}

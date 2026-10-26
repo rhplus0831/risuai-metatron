@@ -1033,3 +1033,51 @@ describe("the side projections and the file name pattern", () => {
         expect(REPORT_FILE_PATTERN.test("../20261013T101500123Z-0123abcd.txt")).toBe(false);
     });
 });
+
+describe("the build id", () => {
+    const BUILD = "2026.10.26 · a9fa6f8c5-dirty";
+
+    it("is a `Build:` line after `Version:` only when the tab gave one, checked by its shape, else `unknown`", () => {
+        const lines = linesOf(buildDiagnosticReport(input({ meta: meta({ build: BUILD }) })));
+        expect(lines.slice(1, 4)).toEqual(["Version: 2026.8.250", `Build: ${BUILD}`, "Browser: Chrome"]);
+        for (const build of [null, `${BUILD} ${PRIVATE}`, "a9fa6f8", 42]) {
+            expect(linesOf(buildDiagnosticReport(input({ meta: meta({ build }) })))[2]).toBe("Build: unknown");
+        }
+        expect(buildDiagnosticReport(input())).not.toContain("Build: ");
+    });
+
+    it("passes the server's check with and without the line, and a changed or moved line is refused", () => {
+        const withBuild = buildDiagnosticReport(input({ meta: meta({ build: BUILD }) }));
+        expect(canonicalDiagnosticReport(withBuild)).toBe(withBuild);
+        const unknown = buildDiagnosticReport(input({ meta: meta({ build: "x" }) }));
+        expect(canonicalDiagnosticReport(unknown)).toBe(unknown);
+        const older = buildDiagnosticReport(input());
+        expect(canonicalDiagnosticReport(older)).toBe(older);
+
+        expect(canonicalDiagnosticReport(withBuild.replace(`Build: ${BUILD}`, `Build: ${PRIVATE}`))).toBeNull();
+        expect(canonicalDiagnosticReport(withBuild.replace(`Build: ${BUILD}`, "Build: "))).toBeNull();
+        const lines = linesOf(withBuild);
+        [lines[2], lines[3]] = [lines[3], lines[2]];
+        expect(canonicalDiagnosticReport(`${lines.join("\n")}\n`)).toBeNull();
+    });
+
+    it("is the server state's `app.build` only when the state owns the key, checked by its shape or null", () => {
+        expect(projectDiagnosticsState(state())!.app).toEqual({ version: "2026.8.250" });
+        expect(projectDiagnosticsState(state({ app: { version: "2026.8.250", build: BUILD } }))!.app).toEqual({
+            version: "2026.8.250",
+            build: BUILD,
+        });
+        for (const build of [null, PRIVATE, `${BUILD}\n`]) {
+            expect(projectDiagnosticsState(state({ app: { version: "2026.8.250", build } }))!.app).toEqual({
+                version: "2026.8.250",
+                build: null,
+            });
+        }
+        const report = buildDiagnosticReport(
+            input({ server: { state: state({ app: { version: "2026.8.250", build: BUILD } }), events: [] } }),
+        );
+        expect(report).toContain(`"app":{"version":"2026.8.250","build":"${BUILD}"}`);
+        expect(canonicalDiagnosticReport(report)).toBe(report);
+        expect(canonicalDiagnosticReport(report.replace(`"build":"${BUILD}"`, `"build":"${PRIVATE}"`))).toBeNull();
+    });
+});

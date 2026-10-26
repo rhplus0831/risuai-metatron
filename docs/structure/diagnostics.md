@@ -124,8 +124,8 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   the worker's push records (`src/ts/diagnostics/workerRecords.ts` `readWorkerRecords`, read for at most
   1 s without creating the database, each projected), sorted by time before the per-source cut; a
   failed or slow read counts as one omitted event, no IndexedDB as none. Merge checked events by time
-  (newest 300 per source, oldest omitted beyond 1 MiB); include app version,
-  browser/OS family rather than user agent, online/viewport/export time, checked
+  (newest 300 per source, oldest omitted beyond 1 MiB); include app version, the
+  tab's build id (`Build:`, a line an older tab's report lacks), browser/OS family rather than user agent, online/viewport/export time, checked
   server state, and omission counts. Copy/Download/Save act on the report shown.
   Save's 30 s bound covers authentication and dispatch; it never retries.
 - `src/lib/Others/RequestLogs/RequestLogsPopup.svelte`: Server history and This tab
@@ -166,7 +166,8 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `save/diagnostics/`. `events/<UTC day>.jsonl` is capped by
   `RISU_DIAGNOSTICS_MAX_BYTES` (default 64 MiB), pruning oldest days, current day
   included when it alone exceeds the cap. The in-memory ring keeps 300 events.
-- `state.json` is replaced atomically: checked version/runtime, uptime, history
+- `state.json` is replaced atomically: checked version and build id (`app.build`, from
+  `server/src/buildInfo.ts` `readServerBuildInfo`)/runtime, uptime, history
   settings/stats, journal bytes/failures, worker counters, live jobs, and last 20
   non-owner-abort failures. Writes occur at creation, every 10 minutes, within 5 s
   of an error, on fatal fault, and after admitted work drains at disposal.

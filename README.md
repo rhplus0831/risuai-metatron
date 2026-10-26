@@ -82,8 +82,13 @@ You can also run Risuai using Docker. This method is particularly useful for web
 1. Build the image from the repository root:
 
    ```
-   docker build -t risuai .
+   docker build -t risuai \
+     --build-arg RISU_BUILD_COMMIT=$(git rev-parse HEAD) \
+     --build-arg RISU_BUILD_DATE=$(git log -1 --format=%cs) \
+     --build-arg RISU_BUILD_DIRTY=$(test -z "$(git status --porcelain)" || echo true) .
    ```
+
+   The build arguments give the version shown in the app (the image has no `.git`); without them it shows `unknown`.
 
 2. Run the container, keeping saved data in the `risuai-save` volume:
 

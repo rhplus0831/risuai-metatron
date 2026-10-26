@@ -1250,8 +1250,6 @@ export const languageChinese = {
     translate: "翻译代码地址",
     apply: "应用",
     add: "追加",
-    nightlyWarning:
-        "## Nightly Builds\n\n您正在连接到软件的每夜构建版本。此版本用于测试，很可能包含错误。**在此版本中，即使您遇到问题，我们也不支持直接解决它们。**",
     generatedByAIDisclaimer: "此内容由 AI 生成，可能包含不准确信息或偏见。",
     aiGenerationWarning: "内容将由 AI 生成，可能包含不准确信息或偏见。",
     bookmark: "书签",

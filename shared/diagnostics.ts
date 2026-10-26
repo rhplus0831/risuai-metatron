@@ -699,7 +699,11 @@ export function projectServerEvent(input: unknown): DiagnosticEvent | null {
 export type DiagnosticsState = {
     version: 1;
     writtenAt: string;
-    app: { version: string | null };
+    /**
+     * `build` is the server's build id (`shared/buildInfo.ts` `formatBuildId`), null when unknown.
+     * Optional: a state from before this field existed (a report an older tab built) has none.
+     */
+    app: { version: string | null; build?: string | null };
     node: string;
     platform: string;
     arch: string;

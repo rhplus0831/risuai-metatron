@@ -52,6 +52,7 @@
     import { translateStackTrace } from "../../ts/sourcemap";
     import { getDetailedOSLabel, getFallbackOSLabel, getRisuEnvironmentLabel } from "src/ts/platform";
     import versionData from "../../../version.json";
+    import { buildId } from "src/ts/buildInfo";
 
     const currentCharacter = $derived(selectedCharacter());
     const hypaV2Ref = $derived($alertStore.type === "hypaV2" ? $alertStore.chatRef : undefined);
@@ -77,6 +78,7 @@
     const stackTraceCodeBlock = $derived.by(() => {
         const lines = [
             `Risu version: ${risuVersion}`,
+            `Risu build: ${buildId}`,
             `OS: ${osLabel}`,
             `User-Agent: ${userAgent}`,
             `Risu environment: ${risuEnvironment}`,

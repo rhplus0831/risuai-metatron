@@ -1320,8 +1320,6 @@ export const languageSpanish = {
     translate: "Traducir dirección de código",
     apply: "Aplicar",
     add: "Agregar",
-    nightlyWarning:
-        "## Builds Nightly\n\nTe estás conectando a una build nightly del software. Esta versión está destinada a pruebas y muy probablemente contiene errores. **En esta versión, incluso si encuentras problemas, no admitimos resolverlos directamente.**",
     generatedByAIDisclaimer: "Este contenido fue generado por IA y puede contener inexactitudes o sesgos.",
     aiGenerationWarning: "El contenido será generado por IA y puede contener inexactitudes o sesgos.",
     loadMore: "Cargar más",

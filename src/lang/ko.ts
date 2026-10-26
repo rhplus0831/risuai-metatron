@@ -2144,8 +2144,9 @@ export const languageKorean = {
     translate: "코드 주소 번역하기",
     apply: "적용",
     add: "추가",
-    nightlyWarning:
-        "## 나이틀리 빌드\n\n나이틀리 빌드에 연결하려고 합니다. 이 버전은 테스트용이며 버그가 포함되어 있을 수 있습니다. **이 버전에서는 버그 등 문제가 발생하더라도 직접적으로 해결하는 것을 지원하지 않습니다.**",
+    versionLabel: "버전 {{build}}",
+    versionBasedOn: "RisuAI {{version}} 기반",
+    versionCopy: "버전 복사",
     nodeServerRequiredTitle: "Risuai 자체 호스팅 서버가 필요합니다",
     nodeServerRequiredDesc:
         "Risuai는 자체 호스팅 서버를 통해서만 실행됩니다.\n`pnpm runserver` 또는 Docker로 서버를 시작한 뒤, 서버의 루트 주소(예: http://localhost:6001/)로 접속하세요.",

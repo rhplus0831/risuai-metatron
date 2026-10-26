@@ -1,6 +1,7 @@
 import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH } from "../../../shared/diagnostics.ts";
 import { buildDiagnosticReport, REPORT_FILE_PATTERN } from "../../../shared/diagnosticsReport.ts";
 import versionData from "../../../version.json";
+import { buildId } from "../buildInfo";
 import { authFetch } from "../storage/serverAuth";
 import { clientDiagnosticEvents } from "./collector";
 import { readWorkerRecords } from "./workerRecords";
@@ -107,6 +108,7 @@ export async function createDiagnosticReport(): Promise<string> {
     return buildDiagnosticReport({
         meta: {
             version: versionData.version,
+            build: buildId,
             browser: browserFamily(userAgent),
             os: osFamily(userAgent),
             online: typeof navigator === "undefined" ? false : navigator.onLine,

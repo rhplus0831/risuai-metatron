@@ -8,7 +8,7 @@ import { loadSelection } from "./storage/selection.svelte";
 import { startRouter } from "./router/router.svelte";
 import { botMakerMode, loadedStore, LoadingStatusState } from "./stores.svelte";
 import { loadPluginsForBoot } from "./plugins/plugins.svelte";
-import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
+import { alertError, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
@@ -116,13 +116,6 @@ export async function loadData() {
             updateHeightMode();
             updateErrorHandling();
             updateGuisize();
-            if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE" && !readLocalFlag("nightlyWarned")) {
-                alertMd(language.nightlyWarning);
-                await waitAlert();
-                try {
-                    localStorage.setItem("nightlyWarned", "true");
-                } catch {}
-            }
 
             // Saving starts before plugins load, so the browser-local import below can save.
             startResourceSync();
@@ -184,15 +177,6 @@ export async function loadData() {
             latchSafeBootFailure("the boot failed");
             alertError(bootErrorWithSafeBootHint(error));
         }
-    }
-}
-
-/** A `localStorage` flag, false when the storage is unavailable (a blocked store must not stop the boot). */
-function readLocalFlag(key: string): boolean {
-    try {
-        return localStorage.getItem(key) !== null;
-    } catch {
-        return false;
     }
 }
 
@@ -445,11 +429,12 @@ function maintainCharacters() {
 }
 
 /**
- * Removes localStorage flags left behind by the removed Risu Account sync, ToS popup and nightly hub switch.
+ * Removes localStorage flags left behind by the removed Risu Account sync, ToS popup, nightly hub switch and
+ * nightly build warning.
  * The `risuaiAccountCached` IndexedDB is kept on purpose: it may hold a former sync user's latest database copy.
  */
 function cleanLegacyAccountData() {
-    for (const key of ["accountst", "dosync", "fallbackRisuToken", "tos2", "tos4", "hub"]) {
+    for (const key of ["accountst", "dosync", "fallbackRisuToken", "tos2", "tos4", "hub", "nightlyWarned"]) {
         try {
             localStorage.removeItem(key);
         } catch (error) {}

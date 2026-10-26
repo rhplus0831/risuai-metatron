@@ -503,6 +503,7 @@ describe("state.json", () => {
         const { dir, journal } = openJournal({
             sources: {
                 appVersion: () => "2.0.1-beta+3",
+                appBuild: () => "2026.10.26 · a9fa6f8c5",
                 settings: () => ({ requestHistoryContent: false, requestHistoryLimit: 250 }),
                 history: () => ({ rows: 3, bytes: 4096 }),
                 workers: () => ({ workers: 2, busy: 1, queued: 0, spawned: 5, terminated: 3, secret: "x" }),
@@ -516,7 +517,7 @@ describe("state.json", () => {
         expect(state).toEqual({
             version: 1,
             writtenAt: new Date(DAY_ONE).toISOString(),
-            app: { version: "2.0.1-beta+3" },
+            app: { version: "2.0.1-beta+3", build: "2026.10.26 · a9fa6f8c5" },
             node: process.versions.node,
             platform: process.platform,
             arch: process.arch,
@@ -542,6 +543,7 @@ describe("state.json", () => {
         const odd = openJournal({
             sources: {
                 appVersion: () => "1.0 (Alice's build with a long free text in it)",
+                appBuild: () => "a9fa6f8c5 (Alice's build)",
                 settings: () => {
                     throw new Error("closed");
                 },
@@ -553,7 +555,7 @@ describe("state.json", () => {
             },
         });
         expect(odd.journal.state()).toMatchObject({
-            app: { version: null },
+            app: { version: null, build: null },
             settings: null,
             history: { rows: null, bytes: null },
             workers: { workers: null, busy: null, queued: null, spawned: null, terminated: null },
@@ -561,7 +563,7 @@ describe("state.json", () => {
         });
         const none = openJournal();
         expect(none.journal.state()).toMatchObject({
-            app: { version: null },
+            app: { version: null, build: null },
             settings: null,
             history: null,
             workers: null,
@@ -999,6 +1001,16 @@ describe("the server context", () => {
             }
         }
     };
+
+    it("reports the build of the client it serves (`dist/build-info.json`), read again after a build replaced it", () => {
+        const s = createTestServer();
+        cleanups.push(() => s.close());
+        const file = path.join(path.dirname(s.savePath), "dist", "build-info.json");
+        writeFileSync(file, JSON.stringify({ commit: "a".repeat(40), date: "2026-10-25", dirty: false }));
+        expect(s.context.diagnostics.state().app).toMatchObject({ build: "2026.10.25 · aaaaaaaaa" });
+        writeFileSync(file, JSON.stringify({ commit: "b".repeat(40), date: "2026-10-26", dirty: true }));
+        expect(s.context.diagnostics.state().app).toMatchObject({ build: "2026.10.26 · bbbbbbbbb-dirty" });
+    });
 
     it("creates `save/diagnostics/` with `events/` and `state.json` at creation, records `boot` first, and two contexts never share a folder", async () => {
         const a = createTestServer({ password: "pw" });

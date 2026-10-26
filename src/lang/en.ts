@@ -2435,8 +2435,9 @@ export const languageEnglish = {
     stackTraceTranslationFailed: "Stack trace translation failed. Showing original obfuscated stack trace below.",
     apply: "Apply",
     add: "Add",
-    nightlyWarning:
-        "## Nightly Builds\n\nYou are connecting to a nightly build of the software. This version is meant for testing and most likely contains bugs. **In this version, even if you encounter issues, we do not support resolving them directly.**",
+    versionLabel: "Version {{build}}",
+    versionBasedOn: "Based on RisuAI {{version}}",
+    versionCopy: "Copy the version",
     nodeServerRequiredTitle: "Risuai self-host server required",
     nodeServerRequiredDesc:
         "Risuai runs only through its self-host server.\nStart the server with `pnpm runserver` or Docker, then open the server's root URL (for example http://localhost:6001/).",

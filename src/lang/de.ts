@@ -1333,8 +1333,6 @@ export const languageGerman = {
     translate: "Code-Adresse übersetzen",
     apply: "Anwenden",
     add: "Hinzufügen",
-    nightlyWarning:
-        "## Nightly Builds\n\nSie verbinden sich mit einem Nightly Build der Software. Diese Version ist zu Testzwecken gedacht und enthält höchstwahrscheinlich Fehler. **In dieser Version unterstützen wir die Lösung von Problemen nicht direkt, auch wenn Sie auf Probleme stoßen.**",
     generatedByAIDisclaimer:
         "Dieser Inhalt wurde von einer KI generiert und kann Ungenauigkeiten oder Verzerrungen enthalten.",
     aiGenerationWarning:

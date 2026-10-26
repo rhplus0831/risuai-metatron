@@ -3,6 +3,8 @@ import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import wasm from "vite-plugin-wasm";
 import strip from "@rollup/plugin-strip";
 import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath } from "node:url";
+import { resolveBuildInfo } from "./server/src/buildInfo.ts";
 
 // The dev server stands in for the self-host server's index route and forwards its API routes to a
 // running `pnpm runserver`. Set RISU_DEV_SERVER when the server uses HTTPS or another port.
@@ -13,8 +15,13 @@ const cacheDir = process.env.RISU_VITE_CACHE_DIR || undefined;
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command, mode }) => {
+    // The build id the menu and the diagnostics show (`shared/buildInfo.ts`), resolved once per start.
+    const buildInfo = resolveBuildInfo(fileURLToPath(new URL(".", import.meta.url)));
     return {
         cacheDir,
+        define: {
+            __RISU_BUILD__: JSON.stringify(buildInfo),
+        },
         plugins: [
             svelte({
                 preprocess: vitePreprocess(),
@@ -31,6 +38,18 @@ export default defineConfig(({ command, mode }) => {
                       include: "**/*.(mjs|js|svelte|ts)",
                   })
                 : null,
+            {
+                // The server reads it to report the build it serves (`server/src/buildInfo.ts`).
+                name: "risu-build-info",
+                apply: "build",
+                generateBundle() {
+                    this.emitFile({
+                        type: "asset",
+                        fileName: "build-info.json",
+                        source: `${JSON.stringify(buildInfo)}\n`,
+                    });
+                },
+            },
             {
                 name: "risu-node-flag",
                 apply: "serve",

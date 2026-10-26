@@ -96,6 +96,8 @@ import { registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
 import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
+import { type BuildInfo, formatBuildId } from "../../shared/buildInfo.ts";
+import { readServerBuildInfo, resolveBuildInfo } from "./buildInfo.ts";
 import type { AppEnv } from "./types.ts";
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -207,6 +209,8 @@ export function createServerContext(options: {
     const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed });
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     let appVersion: string | null | undefined;
+    // The checkout's build, asked of git once, for a server without `dist/build-info.json`.
+    let checkoutBuild: BuildInfo | undefined;
     // The diagnostics folder: content-free events and `state.json`, which the developer pulls over
     // sftp. Its state sources are read only after the context is built (the boot state below, the
     // timers, an error event).
@@ -222,6 +226,10 @@ export function createServerContext(options: {
                 }
                 return appVersion;
             },
+            appBuild: () =>
+                formatBuildId(
+                    readServerBuildInfo(options.rootDir, () => (checkoutBuild ??= resolveBuildInfo(options.rootDir))),
+                ),
             settings: () => {
                 const providers = readProviders();
                 return {

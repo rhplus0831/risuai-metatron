@@ -1308,8 +1308,6 @@ export const languageVietnamese = {
     translate: "Dịch địa chỉ mã",
     apply: "Áp dụng",
     add: "Thêm",
-    nightlyWarning:
-        "## Bản dựng Nightly\n\nBạn đang kết nối với bản dựng Nightly của phần mềm. Phiên bản này dùng để thử nghiệm và rất có thể có lỗi. **Trong phiên bản này, ngay cả khi bạn gặp sự cố, chúng tôi không hỗ trợ giải quyết trực tiếp.**",
     generatedByAIDisclaimer: "Nội dung này được tạo bởi AI và có thể chứa thông tin không chính xác hoặc thiên kiến.",
     aiGenerationWarning: "Nội dung sẽ được tạo bởi AI và có thể chứa thông tin không chính xác hoặc thiên kiến.",
     noRequestLogs: "Không có nhật ký yêu cầu nào.",
