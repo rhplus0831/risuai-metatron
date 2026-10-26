@@ -19,15 +19,7 @@ import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertS
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import {
-    chatEntry,
-    chatList,
-    currentChatRef,
-    ensureChat,
-    selectChat,
-    selectedChat,
-    type ChatRef,
-} from "./storage/chatStore.svelte";
+import { chatEntry, chatList, currentChatRef, ensureChat, selectChat, type ChatRef } from "./storage/chatStore.svelte";
 import { selectCharacter, setChatOpen } from "./storage/selection.svelte";
 import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import {
@@ -45,6 +37,7 @@ import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { getNodeServerProxyAuth } from "./storage/serverAuth";
+export { chatFoldedState, chatFoldedStateMessageIndex, foldChatToMessage } from "./chatFold.svelte";
 
 interface fetchLog {
     body: string;
@@ -1488,71 +1481,6 @@ export function aiWatermarkingLawApplies(): boolean {
     //lets now assume it is false for now,
     //becuase very few countries have it for now
     return false;
-}
-
-export const chatFoldedState = $state<{
-    data: null | {
-        targetCharacterId: string;
-        targetChatId: string;
-        targetMessageId: string;
-    };
-}>({
-    data: null,
-});
-
-//Since its exported, we cannot use $derived here
-export let chatFoldedStateMessageIndex = $state({
-    index: -1,
-});
-
-$effect.root(() => {
-    $effect(() => {
-        if (!chatFoldedState.data) {
-            return;
-        }
-        const ref = currentChatRef();
-        if (chatFoldedState.data.targetCharacterId !== ref?.chaId) {
-            chatFoldedState.data = null;
-        } else if (chatFoldedState.data.targetChatId !== ref.chatId) {
-            chatFoldedState.data = null;
-        }
-    });
-
-    $effect(() => {
-        if (chatFoldedState.data === null) {
-            chatFoldedStateMessageIndex.index = -1;
-            return;
-        }
-        const chat = selectedChat();
-        const messageIndex = (chat?.message ?? []).findIndex((v) => {
-            return chatFoldedState.data?.targetMessageId === v.chatId;
-        });
-        if (messageIndex === -1) {
-            console.warn("Target message for folding id" + chatFoldedState.data?.targetMessageId + " not found");
-            chatFoldedStateMessageIndex.index = -1;
-            return;
-        }
-        chatFoldedStateMessageIndex.index = messageIndex;
-    });
-});
-
-export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
-    let targetMessageId = "";
-    if (typeof targetMessageIdOrIndex === "number") {
-        const message = selectedChat()?.message[targetMessageIdOrIndex];
-        targetMessageId = message?.chatId;
-    } else {
-        targetMessageId = targetMessageIdOrIndex;
-    }
-    const ref = currentChatRef();
-    if (!ref) {
-        return;
-    }
-    chatFoldedState.data = {
-        targetCharacterId: ref.chaId,
-        targetChatId: ref.chatId,
-        targetMessageId: targetMessageId,
-    };
 }
 
 /** Selects a chat of the selected character by id or by its index in the list (per tab), and opens it. */

@@ -113,10 +113,11 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   used; `closedInFront` carries the second check's) and `focusedHidden` (some window focused but not
   visible), and `clicked`. The projection keeps a side's phases and fields only: a browser `push` has no
   `service`, `jobId`, `status`, or `reason`, a server one none of the browser's fields.
-- `notice` events (`notice` `serverJobLost` | `serverJobEndedAway` | `resourceReloaded`) are recorded
-  where those alerts are shown: `serverCommands.ts` `reportEnd` and `recoverJobChat`, and
-  `resourceSync.svelte.ts` `showReloadedNotice` (only when the latched notice was not already on
-  screen).
+- `notice` events (`notice` `serverJobLost` | `serverJobEndedAway` | `resourceReloaded` |
+  `transformFailed`) are recorded where those alerts are shown: `serverCommands.ts` `reportEnd` and
+  `recoverJobChat`, and `resourceSync.svelte.ts` `showReloadedNotice` (only when the latched notice
+  was not already on screen); `transformFailed` by `parser/transformClient.ts` `serverProcessScript`
+  for each failed `editdisplay` target (the collector folds repeats).
 - `src/ts/diagnostics/report.ts`, `shared/diagnosticsReport.ts`, and
   `DiagnosticsPanel.svelte`: Settings → Advanced → Developer & diagnostics. Read the server for
   at most 10 s; failure still gives the browser report. The browser's list is this tab's ring plus

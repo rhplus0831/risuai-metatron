@@ -28,8 +28,7 @@ export const sideBarStore = writable(window.innerWidth > 1024);
 export const CurrentTriggerIdStore = writable<string | null>(null);
 export const CharEmotion = writable({} as { [key: string]: [string, string, number][] });
 export const ViewBoxsize = writable({ width: 12 * 16, height: 12 * 16 }); // Default width and height in pixels
-export const settingsOpen = writable(false);
-export const gridOpenStore = writable(false);
+export { settingsOpen, gridOpenStore } from "./screenVisibility";
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
 /**

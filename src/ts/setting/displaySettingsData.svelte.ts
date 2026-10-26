@@ -294,6 +294,7 @@ export const displaySettingsItems: SettingItem[] = [
         id: "display.showMemoryLimit",
         type: "check",
         labelKey: "showMemoryLimit",
+        helpKey: "showMemoryLimit",
         bindKey: "showMemoryLimit",
         keywords: ["memory", "limit"],
     },

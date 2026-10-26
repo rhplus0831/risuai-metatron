@@ -37,6 +37,10 @@
     } from "@lucide/svelte";
     import { rerenderMessage } from "src/ts/parser/transformClient";
     import {
+        displayTransformMessageKey,
+        displayTransformRetryRound,
+    } from "src/ts/parser/displayTransformRecovery.svelte";
+    import {
         aiLawApplies,
         changeChatTo,
         foldChatToMessage,
@@ -149,7 +153,7 @@
         message?: string;
         name?: string;
         largePortrait?: boolean;
-        isLastMemory: boolean;
+        isLastMemory?: boolean;
         img?: string | Promise<string>;
         idx?: number;
         /** The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. */
@@ -208,6 +212,13 @@
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
     let displayedChat = $derived(chatRef);
+    let memoryBoundary = $derived(
+        isLastMemory ??
+            (settings.ui.showMemoryLimit &&
+                !!messageId &&
+                !!displayedChat &&
+                findChat(displayedChat)?.lastMemory === messageId),
+    );
     let streaming = $derived(streamingOverride ?? isStreamingMessage(displayedChat, messageId));
     /**
      * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
@@ -318,6 +329,21 @@
             });
         }
         wasLocked = now;
+    });
+
+    // Each mounted row retries in place once per round that includes its message.
+    let seenRetryRound = untrack(() => displayTransformRetryRound.version);
+    $effect(() => {
+        const { version, keys } = displayTransformRetryRound;
+        if (seenRetryRound === version) return;
+        seenRetryRound = version;
+        untrack(() => {
+            const ref = displayedChat;
+            if (ref && messageId && keys.has(displayTransformMessageKey(ref, messageId))) {
+                rerenderMessage(ref, messageId);
+                chatBodyRevision += 1;
+            }
+        });
     });
 
     /** The chat this message belongs to, captured before any await (a later chat switch cannot redirect a write). */
@@ -1906,7 +1932,7 @@
     class:chat-row-pending={pendingReveal}
     data-chat-index={idx}
     data-chat-id={currentChat?.message?.[idx]?.chatId ?? ""}
-    style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
+    style={memoryBoundary ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
     onclickcapture={handleButtonTriggerWithin}
     onsubmitcapture={handleFormTriggerWithin}
 >

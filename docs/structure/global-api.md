@@ -142,7 +142,7 @@ Alerts:
 
 - Asset logical keys (`storage/assetClient.ts`): `assets/*` only (the database is in the server resources).
 - `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed. Every insertion through `writeFetchLog` keeps the newest entries within the count and text budgets above (the newest entry alone may exceed the text budget), repairing an already oversized list too. `getFetchData` still finds an entry by `chatId`, and `addFetchLog` still returns 0. `appendFetchLog(entry)` adds an entry the server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes appear in the tab's request log.
-- `chatFoldedState.data` is `{charId, chatId, messageId}`.
+- `chatFoldedState.data` is `{targetCharacterId, targetChatId, targetMessageId}` (`src/ts/chatFold.svelte.ts`, re-exported here). `chatFoldedStateMessageIndex.index` is derived synchronously: the target message's index while the fold targets the selected chat, else -1, so a reader that runs before the switch effect clears `data` never sees another chat's fold.
 
 ## Coupling
 

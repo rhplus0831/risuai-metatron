@@ -69,7 +69,7 @@ path; P3 is smaller.
 | TJ06 | P2       | jobs    | A lost plugin-provider callback holds the chat and the client's lane for up to 30 min     | Server/client (mobile)        |
 | CE04 | P2       | client  | Every stream update searches the whole loaded history before frame coalescing             | Effects, slow devices         |
 | CE05 | P2       | client  | Lore and memory drafts serialize and copy the whole field on every edit                   | Effects, large fields         |
-| CE06 | P2       | client  | Chat "visibility" ignores the settings layer and page visibility                          | Effects vs. environment (PWA) |
+| CE06 | P2 fixed | client  | Chat "visibility" ignores the settings layer and page visibility                          | Effects vs. environment (PWA) |
 | CE07 | P2       | client  | Prompt token counters track whole template metadata but miss CBS expansion inputs         | Effects, avoidable requests   |
 | ST06 | P2       | traffic | Content-addressed uploads do not ask whether the server already has the bytes             | Structural traffic            |
 | ST07 | P2 cond. | traffic | A plugin's default `getDatabase()` loads the chat library one character at a time         | Excessive traffic (plugins)   |
@@ -215,6 +215,10 @@ still sends. Device-check Android Korean and desktop Japanese separately.
 ### CE06 — A chat counts as "viewed" behind settings or in a hidden PWA
 
 **Confirmed state-model omission. P2.**
+
+**Fixed 2026-10-26** (Deep Audit Fixes plan): `visibleChatKey()` also requires a loaded chat, closed settings and grid
+(`src/ts/screenVisibility.ts`), and a visible page (`src/ts/pageVisibility.svelte.ts`), so such a reply keeps its unseen
+and recovery marks until the transcript is shown (`chatStatus.test.ts`).
 
 `visibleChatKey()` is `(chatOpen || playground) && screen === …`
 ([chatStatus.svelte.ts:76](../../../src/ts/process/chatStatus.svelte.ts#L76)); neither `settingsOpen`,

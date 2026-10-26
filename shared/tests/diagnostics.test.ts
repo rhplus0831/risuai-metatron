@@ -609,7 +609,7 @@ describe("projectDiagnosticEvent", () => {
     });
 
     it("notice: the notice by its list only; page: the Page Lifecycle's `freeze` and `resume` beside the visibility and network phases", () => {
-        expect(NOTICES).toEqual(["serverJobLost", "serverJobEndedAway", "resourceReloaded"]);
+        expect(NOTICES).toEqual(["serverJobLost", "serverJobEndedAway", "resourceReloaded", "transformFailed"]);
         for (const notice of NOTICES) {
             expect(projectDiagnosticEvent({ at: AT, kind: "notice", notice })).toEqual({
                 at: AT,

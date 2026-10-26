@@ -169,8 +169,8 @@ export const PUSH_SERVICES = ["fcm", "apple", "mozilla", "windows", "other"] as 
 /** The notification permission, or `unsupported` without the Notification API. */
 export const PUSH_PERMISSIONS = ["granted", "denied", "default", "unsupported"] as const;
 
-/** The notices whose showing is recorded (`notice` events): which alert the user saw. */
-export const NOTICES = ["serverJobLost", "serverJobEndedAway", "resourceReloaded"] as const;
+/** Content-free notices for user alerts and failed display transforms (`notice` events). */
+export const NOTICES = ["serverJobLost", "serverJobEndedAway", "resourceReloaded", "transformFailed"] as const;
 
 /**
  * The boot cache (`src/ts/storage/bootCache.ts`): the boot fell back to the plain read, a cache write

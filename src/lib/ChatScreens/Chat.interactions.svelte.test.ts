@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import type { TransformRequest } from "../../../shared/transform.ts";
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/serverCommands", async () =>
@@ -16,6 +17,11 @@ vi.mock("src/ts/translator/translator", async (importOriginal) => ({
 
 import { language } from "src/lang";
 import { doingAlert } from "src/ts/alert";
+import { chatFoldedStateMessageIndex, foldChatToMessage } from "src/ts/globalApi.svelte";
+import { displaySettingsItems } from "src/ts/setting/displaySettingsData.svelte";
+import { captureTransform, rerenderMessage, serverProcessScript } from "src/ts/parser/transformClient";
+import * as serverAuth from "src/ts/storage/serverAuth";
+import * as diagnostics from "src/ts/diagnostics/collector";
 import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
 import { runServerButton, runServerJob, runServerManualTrigger } from "src/ts/process/serverCommands";
 import { characterList } from "src/ts/storage/characterStore.svelte";
@@ -24,6 +30,7 @@ import {
     createChat,
     findChat,
     selectChat,
+    seedChats,
     setChatMeta,
     setMessageText,
     setMessageTranslation,
@@ -67,7 +74,7 @@ async function settle(ms = 0) {
     flushSync();
 }
 
-function renderChat(message = markup) {
+function renderChat(message = markup, row: { messageId?: string; idx?: number } = {}) {
     const element = target();
     const instance = mount(Chat, {
         target: element,
@@ -80,6 +87,7 @@ function renderChat(message = markup) {
             name: "Owner",
             character: createSimpleCharacter(characterList().find((character) => character.chaId === ref.chaId)),
             isLastMemory: false,
+            ...row,
         },
     });
     mounted.push(instance);
@@ -134,6 +142,7 @@ beforeEach(() => {
     openPresetList.set(false);
     openModelPresetList.set(false);
     openPersonaList.set(false);
+    seedChats([], []);
     installFlatDatabaseWithChats({
         characters: [ref, otherRef].map((address) => ({
             chaId: address.chaId,
@@ -156,7 +165,8 @@ beforeEach(() => {
                 },
             ],
         })),
-        personas: [],
+        personas: [{ id: "persona", name: "User", personaPrompt: "", icon: "" }],
+        botPresets: [{ id: "preset", name: "Preset" }],
         translator: "",
         theme: "standard",
         zoomsize: 100,
@@ -178,10 +188,81 @@ afterEach(async () => {
     setStreamingState(ref, null);
     document.body.replaceChildren();
     vi.restoreAllMocks();
+    // Resets the page-visibility mirror and drains pending display transform retries between tests.
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("online"));
+    flushSync();
+    vi.clearAllTimers();
     vi.useRealTimers();
 });
 
 describe("chat message interactions", () => {
+    it("switches from a folded chat with no stale fold index and opens the next chat's full window", async () => {
+        appendMessage(ref, { chatId: "a-last", role: "char", data: "A last" });
+        const next = createChat(ref.chaId, {
+            ...findChat(ref)!,
+            id: "next-chat",
+            // Copied chats share message ids; leaking this fold at index 1 would hide b-last.
+            message: ["b-first", "message", "b-last"].map((id) => ({ chatId: id, role: "char", data: id })),
+        });
+        const { element, props, instance } = renderChats();
+        foldChatToMessage("message");
+        flushSync();
+        expect(chatFoldedStateMessageIndex.index).toBe(0);
+        expect(element.querySelectorAll(".chat-message-container")).toHaveLength(1);
+
+        selectChat(ref.chaId, next.id!);
+        // No flush or await: opening the next transcript must never read the old fold.
+        expect(chatFoldedStateMessageIndex.index).toBe(-1);
+        props.messages = next.message;
+        const observer = new MutationObserver(() => {});
+        observer.observe(element, { childList: true, subtree: true });
+        flushSync();
+        const inserted = observer
+            .takeRecords()
+            .flatMap((record) => [...record.addedNodes])
+            .filter(
+                (node): node is HTMLElement => node instanceof HTMLElement && node.matches(".chat-message-container"),
+            );
+        observer.disconnect();
+        expect(inserted.map((row) => row.querySelector<HTMLElement>(".risu-chat")?.dataset.chatId).sort()).toEqual([
+            "b-first",
+            "b-last",
+            "message",
+        ]);
+        await settle(10);
+        await instance.whenRendered();
+        expect(element.textContent).toContain("b-first");
+        expect(element.textContent).toContain("b-last");
+    });
+
+    it("draws the configured memory limit only on the transcript's lastMemory row and explains the setting", async () => {
+        appendMessage(ref, { chatId: "newer", role: "char", data: "Newer" });
+        setChatMeta(ref, { lastMemory: "message" });
+        settings.ui.showMemoryLimit = true;
+        settings.ui.memoryLimitThickness = 3;
+        const { element } = renderChats();
+        const preview = renderChat().element;
+        await settle(10);
+        const row = (id: string) => element.querySelector<HTMLElement>(`.risu-chat[data-chat-id="${id}"]`)!;
+        expect(row("message").style.borderTopWidth).toBe("3px");
+        expect(row("newer").style.borderTopWidth).toBe("");
+        expect(preview.querySelector<HTMLElement>(".risu-chat")!.style.borderTopWidth).toBe("");
+
+        settings.ui.memoryLimitThickness = 7;
+        setChatMeta(ref, { lastMemory: "newer" });
+        flushSync();
+        expect(row("message").style.borderTopWidth).toBe("");
+        expect(row("newer").style.borderTopWidth).toBe("7px");
+        settings.ui.showMemoryLimit = false;
+        flushSync();
+        expect(row("message").style.borderTopWidth).toBe("");
+        expect(row("newer").style.borderTopWidth).toBe("");
+        const helpKey = displaySettingsItems.find((item) => item.id === "display.showMemoryLimit")?.helpKey;
+        expect(helpKey).toEqual(expect.any(String));
+        expect(language.help[helpKey as keyof typeof language.help]?.trim()).toBeTruthy();
+    });
+
     it("sends a mounted row's button, manual trigger, and form to its owning chat after selection changes", async () => {
         const nextChat = createChat(otherRef.chaId, { ...findChat(otherRef)!, id: "next-chat" });
         selectChat(otherRef.chaId, otherRef.chatId);
@@ -298,6 +379,172 @@ describe("chat message interactions", () => {
         appendMessage(ref, { chatId: "after-jump", role: "char", data: "After the jump" });
         flushSync();
         expect(element.scrollTop).toBe(-250);
+    });
+});
+
+describe("display transform recovery", () => {
+    let requests: TransformRequest[];
+    let respond: (body: TransformRequest) => Response | Promise<Response>;
+    const success = (body: TransformRequest) =>
+        Response.json({
+            results: body.targets.map((target) => ({
+                id: target.id,
+                ok: true,
+                text: `Rendered: ${target.source}`,
+                emotions: [],
+                key: target.id,
+                cached: false,
+            })),
+        });
+    const setVisible = (visible: boolean) => {
+        vi.spyOn(document, "visibilityState", "get").mockReturnValue(visible ? "visible" : "hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        flushSync();
+    };
+    const generation = () => captureTransform(0)!.generation;
+
+    beforeEach(() => {
+        requests = [];
+        respond = success;
+        // Keep batching on its 16ms fallback so retry boundaries do not depend on frame alignment.
+        vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(0);
+        setVisible(true);
+        window.dispatchEvent(new Event("online"));
+        flushSync();
+        seedChats([{ characterId: ref.chaId, id: ref.chatId, revision: "r1" }], []);
+        vi.spyOn(serverAuth, "authFetch").mockImplementation(async (path, init) => {
+            expect(path).toBe("/api/transform");
+            const body = JSON.parse(init!.body as string) as TransformRequest;
+            requests.push(body);
+            return respond(body);
+        });
+    });
+
+    it("retries only failed mounted rows once per round with 5s doubling backoff capped at 60s", async () => {
+        appendMessage(ref, { chatId: "unaffected", role: "char", data: "Untouched" });
+        const unaffected = renderChat("Untouched", { idx: 1, messageId: "unaffected" });
+        await settle(16);
+        await settle();
+        const unaffectedBody = unaffected.element.querySelector(".chattext")!.innerHTML;
+        const initialGeneration = generation();
+        const notice = vi.spyOn(diagnostics, "recordClientEvent");
+        respond = async () => {
+            throw new TypeError("No transform response");
+        };
+        const row = renderChat("Raw reply");
+        await settle(16);
+        await settle();
+        expect(row.element.querySelector(".chattext")!.textContent).toContain("Raw reply");
+        expect(row.element.querySelector(".chattext")!.textContent).not.toContain("Rendered:");
+        expect(notice).toHaveBeenCalledExactlyOnceWith({ kind: "notice", notice: "transformFailed" });
+        expect(requests).toHaveLength(2);
+
+        const delays = [5_000, 10_000, 20_000, 40_000, 60_000, 60_000];
+        for (const [round, delay] of delays.entries()) {
+            if (round === delays.length - 1) respond = success;
+            await settle(delay - 1);
+            expect(generation(), `before retry ${round + 1}`).toBe(initialGeneration + round);
+            expect(requests).toHaveLength(2 + round);
+            await settle(1);
+            expect(generation(), `at retry ${round + 1}`).toBe(initialGeneration + round + 1);
+            await settle(16);
+            await settle();
+            expect(requests).toHaveLength(3 + round);
+            expect(requests.at(-1)!.targets).toEqual([expect.objectContaining({ messageId: "message" })]);
+            expect(unaffected.element.querySelector(".chattext")!.innerHTML).toBe(unaffectedBody);
+        }
+        expect(row.element.querySelector(".chattext")!.textContent).toContain("Rendered: Raw reply");
+        await settle(120_000);
+        window.dispatchEvent(new Event("online"));
+        await settle(16);
+        expect(requests).toHaveLength(8);
+        expect(generation()).toBe(initialGeneration + delays.length);
+    });
+
+    it("does not retry stale display failures, editprocess failures, or failures without a captured message id", async () => {
+        const row = renderChat("Current reply");
+        await settle(16);
+        await settle();
+        let rejectOld!: (error: Error) => void;
+        respond = () =>
+            new Promise<Response>((_resolve, reject) => {
+                rejectOld = reject;
+            });
+        const old = serverProcessScript(
+            { chaId: ref.chaId },
+            "Old reply",
+            "editdisplay",
+            0,
+            {},
+            captureTransform(0)!,
+            "message",
+        );
+        await settle(16);
+        rerenderMessage(ref, "message");
+        const currentGeneration = generation();
+        rejectOld(new TypeError("No old transform response"));
+        await old;
+        respond = async () => {
+            throw new TypeError("No transform response");
+        };
+        const process = serverProcessScript(
+            { chaId: ref.chaId },
+            "Process text",
+            "editprocess",
+            0,
+            {},
+            captureTransform(0)!,
+            "message",
+        );
+        const anonymous = serverProcessScript(
+            { chaId: ref.chaId },
+            "Greeting",
+            "editdisplay",
+            -1,
+            {},
+            captureTransform(-1)!,
+            "text",
+        );
+        await settle(16);
+        await Promise.all([process, anonymous]);
+        expect(requests).toHaveLength(4);
+        respond = success;
+        await settle(60_000);
+        window.dispatchEvent(new Event("online"));
+        await settle(16);
+        expect(requests).toHaveLength(4);
+        expect(generation()).toBe(currentGeneration);
+        expect(row.element.querySelector(".chattext")!.textContent).toContain("Rendered: Current reply");
+    });
+
+    it.each(["visible again", "online"])("retries pending rows immediately when the page is %s", async (recovery) => {
+        respond = async () => {
+            throw new TypeError("No transform response");
+        };
+        const row = renderChat("Interrupted reply");
+        await settle(16);
+        await settle();
+        const initialGeneration = generation();
+        expect(requests).toHaveLength(1);
+        respond = success;
+        if (recovery === "visible again") {
+            setVisible(false);
+            await settle(120_000);
+            expect(requests).toHaveLength(1);
+            expect(generation()).toBe(initialGeneration);
+            setVisible(true);
+        } else {
+            window.dispatchEvent(new Event("online"));
+            flushSync();
+        }
+        // The row starts a new render now; only the transform batch waits for its 16ms dispatch.
+        expect(generation()).toBe(initialGeneration + 1);
+        await settle(16);
+        await settle();
+        expect(requests).toHaveLength(2);
+        expect(row.element.querySelector(".chattext")!.textContent).toContain("Rendered: Interrupted reply");
+        await settle(60_000);
+        expect(requests).toHaveLength(2);
     });
 });
 

@@ -239,7 +239,7 @@ and the owner's coupling links (for example, send handlers inside a chat screen)
   `src/etc/airisu.cbs`, `src/etc/docs/`.
 - **backup-sync-hub**: `src/ts/drive/`, `src/ts/realmBlocking.ts`, `src/lib/UI/Realm/`,
   `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`.
-- **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
+- **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
   `src/ts/{alert,alertQueue}.ts`, `shared/{localNetwork,notifications}.ts`, remaining `src/ts/network/`,
   `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`,
   `src/lib/Others/{AlertComp,IrisModal}.svelte`.
@@ -248,7 +248,7 @@ and the owner's coupling links (for example, send handlers inside a chat screen)
   `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.
 - **app-shell**: `index.html`, `src/{main,boot,startApp}.ts`, `src/App.svelte`,
   `src/lib/Others/NodeServerRequired.svelte`,
-  `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`,
+  `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`,
   `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`,
   `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
 - **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`.

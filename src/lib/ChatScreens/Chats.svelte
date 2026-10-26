@@ -540,7 +540,6 @@
                             context: rowContexts,
                             props: {
                                 ...next,
-                                isLastMemory: false,
                                 messageId: message.chatId,
                                 chatRef: ref,
                                 onReroll,

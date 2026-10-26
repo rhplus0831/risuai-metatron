@@ -189,6 +189,8 @@ export const languageKorean = {
         groupInnerFormat:
             "화자가 아닌 캐릭터를 위해 그룹 채팅에서 사용되는 포맷을 정의합니다. 비워두지 않으면 기본 포맷 대신 이 포맷을 사용합니다. `그룹 내 기타 봇 역할`이 `assistant`인 경우 화자에게도 적용됩니다.",
         groupOtherBotRole: "그룹 채팅에서 화자가 아닌 캐릭터에 사용되는 역할을 정의합니다.",
+        showMemoryLimit:
+            "이 선은 마지막 프롬프트에서 모델이 볼 수 있었던 첫 메시지를 표시합니다. 선 위의 오래된 대화는 프롬프트에서 제외되었습니다. 선의 위치가 정해진 뒤 최종 토큰 검사에서 메시지가 몇 개 더 제외될 수 있으므로, 대략적인 경계로 참고해 주세요.",
         chatHTML:
             "각 채팅으로 삽입될 HTML입니다.\n\nCBS와 특수 태그를 사용할 수 있습니다.\n- `<risutextbox>`: 텍스트를 렌더링하는 데 사용될 텍스트 상자\n- `<risuicon>`: 사용자 또는 어시스턴트용 아이콘\n- `<risubuttons>`: 채팅 편집, 번역 등을 위한 아이콘 버튼\n- `<risugeninfo>`: 생성 정보 버튼.",
         systemContentReplacement:

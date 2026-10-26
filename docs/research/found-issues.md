@@ -9,7 +9,6 @@ Reviewed against the current source on 2026-10-24. Confirmed fixes have been rem
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
-- [Chat screen](#chat-screen) (3)
 
 ## Chat store, sync, and change feeds
 
@@ -34,26 +33,3 @@ Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
-
-## Chat screen
-
-### Memory limit line not drawn
-
-The Display settings still offer `showMemoryLimit` and `memoryLimitThickness` (`src/ts/setting/displaySettingsData.svelte.ts:294-305`), and assembly still writes `Chat.lastMemory` (`server/src/prompt/assemble.ts:1629`, `server/src/prompt/runner.ts:1286-1294`), but no chat renderer reads either: the `isLastMemory` prop was removed in `29f53d3f6` (2025-06-07, "New chat loading"). Found 2026-10-25 while planning the context usage meter.
-
-**Why it matters:** the setting does nothing, and users expect a line where the model's history starts.
-**Suggested handling:** restore the line in `Chats.svelte`, or remove the two settings. `lastMemory` is set before the final recheck (`assemble.ts:1940`), so it can be off by the entries the recheck removes; the context usage meter's report ([archived plan](../archived-plan/README.md)) could supply the exact kept ids.
-
-### Stale fold index at a chat switch
-
-Switching away from a folded chat (`foldChatToMessage`) opens the next chat's rows with the old `chatFoldedStateMessageIndex.index`: `Chats.svelte`'s structural effect runs before the `$effect.root` pair in `src/ts/globalApi.svelte.ts` (~1508-1536) clears `chatFoldedState.data` and resets the index to -1 in the same flush. The opening diff therefore stages a window that ends at the old fold index, and the rerun right after it shows the full window, which arms every staged row. A diff that keeps the shown rows (a reload, a context change) no longer arms them, but this rerun changes the window. Reproduced in a browser on 2026-10-25 (fold to index 20, then switch chats of one character: four of four switches); found while finding the module reload trigger of the same symptom.
-
-**Why it matters:** the opening's first stage is mounted for the wrong window, and every row of the chat is then mounted before the first reveal.
-**Suggested handling:** read the fold index in `Chats.svelte` only while `chatFoldedState.data` targets the shown chat (the three `src/lib/ChatScreens/Chats*.svelte.test.ts` files mock `src/ts/globalApi.svelte` inline and would need `chatFoldedState` too), or reset the fold where the chat selection changes rather than in an effect.
-
-### A failed display transform is not rendered again by an equal-text reload
-
-`src/ts/parser/transformClient.ts` `serverProcessScript` returns the unprocessed text when the transform request did not answer (`answered.ok === false`, ~489: a network failure, a timeout, "The render did not answer"), with a `console.warn` only. `src/lib/ChatScreens/Chats.svelte` deliberately keeps a mounted row across a reload whose text and disabled state are equal (`Chats.svelte.test.ts` "keeps rows across a reload of equal text"), and `Chat.svelte` renders a row again only when its chat's `chatSaveVersion` moves (~296) or a streaming lock ends. So a row whose transform failed while the server was out of reach (a phone waking up) stays raw after the server answers again, through any whole read that brings equal text; opening another chat and coming back mounts the rows again and retries the transform. Found 2026-10-26 by the reviewer of the mobile resume reliability plan's slice 2 while settling the chat-switch question; read from the code, not reproduced in a browser, and not confirmed as the device report's cause (the report describes the reply itself appearing only after a chat switch, which the slice's explicit stale mark and read cover at the chat module; this is a separate, plausible rendering limitation).
-
-**Why it matters:** after a resume, a reply can show as raw CBS/markdown until the user switches chats, with nothing telling why.
-**Suggested handling:** have a failed transform leave its row re-renderable: bump the row's `generations` entry (`rerenderMessage`) or re-run the transform when the page becomes visible or `online`, and record a `notice`-style event when a transform fails so a report shows it. A storage-level test cannot see this; it needs a mounted `Chat.svelte` with the transform stubbed to fail, then answer.

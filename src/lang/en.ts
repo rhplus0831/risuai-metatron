@@ -247,6 +247,8 @@ export const languageEnglish = {
         groupInnerFormat:
             "This defines a format that is used in group chat for characters that isn't speaker. If it is not blank, it will use this format instead of the default format. If `Group Other Bot Role` is `assistant`, it will also be applied to the speaker.",
         groupOtherBotRole: "This defines a role that is used in group chat for characters that isn't speaker.",
+        showMemoryLimit:
+            "The line marks the first message the model still saw in the last prompt; older, omitted history is above it. It is approximate because a final token check can drop a few more messages after the line is placed.",
         chatHTML:
             "A HTML that would be inserted as each chat.\n\nYou can use CBS and special tags.\n- `<risutextbox>`: a textbox that would be used to render text\n- `<risuicon>`: an icon for user or assistant\n- `<risubuttons>`: icon buttons for chat edit, translations and etc.\n- `<risugeninfo>`: generation information button.",
         systemContentReplacement:

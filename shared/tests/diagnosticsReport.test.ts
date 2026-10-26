@@ -492,6 +492,7 @@ describe("buildDiagnosticReport: the v1 text", () => {
             `${ISO(AT + 30)} browser notice {"notice":"serverJobLost"}`,
             `${ISO(AT + 31)} browser notice {"notice":"serverJobEndedAway"}`,
             `${ISO(AT + 32)} browser notice {"notice":"resourceReloaded"}`,
+            `${ISO(AT + 33)} browser notice {"notice":"transformFailed"}`,
             `${ISO(AT + 40)} browser notice {}`,
             `${ISO(AT + 41)} browser page {"phase":"freeze"}`,
             `${ISO(AT + 42)} browser page {"phase":"resume"}`,

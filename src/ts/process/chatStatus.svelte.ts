@@ -1,9 +1,11 @@
 import { fromStore, get, writable } from "svelte/store";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { chatEntry, currentChatRef, lockedChatKeys, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import { chatEntry, currentChatRef, findChat, lockedChatKeys, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { isLocalSend } from "src/ts/process/localSends";
+import { gridOpenStore, settingsOpen } from "src/ts/screenVisibility";
+import { isPageVisible } from "src/ts/pageVisibility.svelte";
 
 const MAX_UNSEEN_CHATS = 256;
 
@@ -13,6 +15,8 @@ let followedView: { current: ReadonlyMap<string, string> } | undefined;
 let playgroundView: { current: number } | undefined;
 let recoveryView: { current: ReadonlyMap<string, string> } | undefined;
 let unseenView: { current: ReadonlySet<string> } | undefined;
+let settingsView: { current: boolean } | undefined;
+let gridView: { current: boolean } | undefined;
 
 /** The per-tab status key, shared with the followed-job registry. */
 export function chatStatusKey(ref: ChatRef): string {
@@ -65,10 +69,17 @@ export function noteJobDone(ref: ChatRef, end: GenerationTerminalEvent): void {
     unseenChatKeys.set(next);
 }
 
-/** The selected chat while its chat screen is open, including the playground (reactive). */
+/** The loaded chat while its transcript is shown on a visible page, including the playground (reactive). */
 export function visibleChatKey(): string | null {
+    if (
+        !isPageVisible() ||
+        (settingsView ??= fromStore(settingsOpen)).current ||
+        (gridView ??= fromStore(gridOpenStore)).current
+    ) {
+        return null;
+    }
     const ref = currentChatRef();
-    if (!ref) {
+    if (!ref || findChat(ref) === undefined) {
         return null;
     }
     const playground = ref.chaId === "§playground";
@@ -129,4 +140,6 @@ export function resetChatStatusForTests(): void {
     playgroundView = undefined;
     recoveryView = undefined;
     unseenView = undefined;
+    settingsView = undefined;
+    gridView = undefined;
 }

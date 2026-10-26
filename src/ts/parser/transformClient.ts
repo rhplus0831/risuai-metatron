@@ -25,6 +25,8 @@ import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLock
 import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { recordClientEvent } from "../diagnostics/collector";
+import { markDisplayTransformFailed } from "./displayTransformRecovery.svelte";
 
 /**
  * The client of the script transform (`shared/transform.ts`): the `editdisplay` stage of
@@ -487,12 +489,18 @@ export async function serverProcessScript(
         schedule();
     }
     const answered = await result;
+    const current = key === null || (generations.get(key) ?? 0) === captured.generation;
     if (answered.ok === false) {
         console.warn("[Transform]", answered.error);
+        if (mode === "editdisplay") {
+            recordClientEvent({ kind: "notice", notice: "transformFailed" });
+            if (captured.messageId && current) {
+                markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+            }
+        }
         return { data, emoChanged: false };
     }
     let emoChanged = false;
-    const current = key === null || (generations.get(key) ?? 0) === captured.generation;
     if (char.type !== "simple" && current && answered.emotions.length > 0 && !appliedEmotions.has(answered.key)) {
         if (appliedEmotions.size >= MAX_APPLIED) {
             appliedEmotions.clear();

@@ -190,9 +190,53 @@ afterEach(() => {
     chat.endServerJob("lock-other-2");
     status.resetChatStatusForTests();
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 describe("chat status sources", () => {
+    it.each(["settings", "grid", "hidden page", "unloaded chat"])(
+        "keeps completion and recovery marks behind %s until the transcript is shown",
+        async (obstruction) => {
+            vi.useFakeTimers();
+            const { settingsOpen, gridOpenStore } = await import("../screenVisibility");
+            const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+            const showPage = (visible: boolean) => {
+                visibility.mockReturnValue(visible ? "visible" : "hidden");
+                document.dispatchEvent(new Event("visibilitychange"));
+            };
+            view(a);
+            watch();
+            const saved = JSON.parse(JSON.stringify(chat.findChat(a)!));
+            const record = { characterId: a.chaId, id: a.chatId, revision: "r1" };
+            const orders = [{ characterId: a.chaId, revision: "o1", ids: [a.chatId] }];
+            if (obstruction === "settings") settingsOpen.set(true);
+            if (obstruction === "grid") gridOpenStore.set(true);
+            if (obstruction === "hidden page") showPage(false);
+            if (obstruction === "unloaded chat") {
+                chat.assembleChats([{ chaId: a.chaId }], [{ ...record, name: saved.name, fmIndex: -1 }], orders);
+                expect(chat.currentChatRef()).toEqual(a);
+                expect(chat.findChat(a)).toBeUndefined();
+            }
+            flushSync();
+            status.noteJobDone(a, done({ messageId: "reply" }));
+            expect(get(status.unseenChatKeys)).toEqual(new Set([keyA]));
+            status.noteJobLost(a, "lost-behind-screen");
+            flushSync();
+            expectMarks([keyA]);
+
+            settingsOpen.set(false);
+            gridOpenStore.set(false);
+            showPage(true);
+            if (obstruction === "unloaded chat") {
+                chat.assembleChats([{ chaId: a.chaId }], [{ ...record, data: saved }], orders);
+            }
+            flushSync();
+            expectMarks([]);
+            status.noteJobDone(a, done({ messageId: "visible-reply" }));
+            expect(get(status.unseenChatKeys)).toEqual(new Set());
+        },
+    );
+
     it("generating reacts to the union of followed chats and real server locks", async () => {
         expect(status.chatStatusKey(a)).toBe(keyA);
         expect(status.chatStatusKey(other)).toBe(keyOther);
@@ -345,6 +389,10 @@ describe("chat status sources", () => {
     });
 
     it("a new follow immediately clears that chat's recovery while keeping its unseen reply", async () => {
+        vi.useFakeTimers();
+        const { settingsOpen } = await import("../screenVisibility");
+        view(a);
+        settingsOpen.set(true);
         watch();
         status.noteJobLost(a, "old-a");
         status.noteJobLost(b, "old-b");
@@ -354,7 +402,8 @@ describe("chat status sources", () => {
         // The follow's registration clears the recovery mark, before the job ends.
         expect(get(status.recoveryChatKeys)).toEqual(new Map([[keyB, "old-b"]]));
         expect(get(status.unseenChatKeys)).toEqual(new Set([keyA]));
-        await vi.waitFor(() => expect(stubs.follows).toHaveLength(1));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stubs.follows).toHaveLength(1);
         stubs.follows[0].end(done());
         await end;
         flushSync();
