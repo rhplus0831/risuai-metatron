@@ -46,6 +46,7 @@ git show 47c534f69:docs/plan/context-usage-meter.md
 git show ca5b656fa:docs/plan/deep-audit-fixes.md
 git show 1fc70e547:docs/plan/chat-lore-override-states.md
 git show ae289ecf5:docs/plan/mobile-resume-reliability.md
+git show 802a4840a:docs/plan/hypav3-token-budget.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -93,6 +94,7 @@ it is not a current architecture guide.
 | Deep Audit Fixes                         | `ca5b656fa`: `docs/plan/deep-audit-fixes.md`                              | [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md), [characters/modules](../structure/characters-modules.md), [diagnostics](../structure/diagnostics.md), [global API](../structure/global-api.md)                                                                                                             |
 | Chat Lore Override States                | `1fc70e547`: `docs/plan/chat-lore-override-states.md`                     | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md)                                                                                                                                                                                               |
 | Mobile Resume Reliability                | `ae289ecf5`: `docs/plan/mobile-resume-reliability.md`                     | [global API](../structure/global-api.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [build/test/platforms](../structure/build-test-platforms.md), [server](../structure/self-host-server.md), [diagnostics](../structure/diagnostics.md)                                                                                                                                                                                                   |
+| HypaV3 Token Budget                      | `802a4840a`: `docs/plan/hypav3-token-budget.md`                           | [memory](../structure/memory.md), [settings/i18n](../structure/settings-i18n.md), [UI/theming](../structure/ui-theming.md), [persistence](../structure/persistence.md), [backup sync hub](../structure/backup-sync-hub.md)                                                                                                                                                                                                                                                                   |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -613,6 +615,32 @@ Push leftovers. Still open: the four Android PWA scenarios (lock the screen righ
 switch to another app for 5+ min; airplane mode during the reply; force-stop and reopen), each
 followed by Settings → Advanced → Developer & diagnostics → Save to server; the plan's
 **Verification** section maps each event to the cause it shows (H1–H7).
+
+HypaV3 Token Budget (a token budget mode for HypaV3 presets: the memory budget, the background
+summary headroom, and the extra summarization as plain token amounts instead of shares of the max
+context, planned with the user on 2026-10-27) landed both slices on `dev` on 2026-10-27 through
+the plan runner (`delegate-implementation` with an Opus implementer), one cherry-picked commit
+each: 1 `budgetMode` and the three token fields on `HypaV3Settings` (missing or invalid
+normalizes to `"ratio"`, the server's seeded default and new presets are `"tokens"`),
+`resolveHypaV3Budget` in `shared/hypaV3Presets.ts` with the reduction rule (headroom, then extra,
+then memory, each margin pair and the memory at most half of `C − maxResponse`), every server
+site reading `HypaV3Prepared.budget`, `ContextReport.memory.budgetReduced`, and the upstream
+export writing token-mode presets as ratios of the exported root `maxContext` (`6d24cc697`); 2 the
+settings page's Ratio / Tokens control, token inputs, estimate in tokens, live reduction
+warnings, and the convert-to-tokens button, and the context meter's "memory reduced" chip mark,
+summary clause, and popover lines (`92f830490`). `dev` moved during the run (`0fa8eea07`, the
+meter's history block reorder, and `0aad24ce5`); it was merged in as `0bb2a7675` with both sides
+kept. The final checks on `0bb2a7675` passed: `pnpm check`, 7287 unit tests, and 56 slow tests.
+Decisions made by the slices: the plan's "ordinary plan" site was `deferredStepCount` (the
+deferred replay), which reads the resolver too (1); the equivalence test uses binary-exact ratios,
+because integer products alone still differ in floating point (1); the export clamps to the
+sliders' ranges and keeps the stored ratios without a positive finite `maxContext` (1); token
+inputs store a floored integer ≥ 0, and `getMaxMemoryRatio` became `estimateMaxMemory`, which now
+recomputes when the max context changes (2). Out of scope by the plan: a trigger independent of
+`C`, token mode for HypaV2 or SupaMemory, token mode in the tab's oracle copy, and mixing modes per
+field. Still open: the manual checks in a browser after a real send (convert a ratio preset and
+confirm the summarize timing is unchanged; lower the max context and confirm the chip shows
+"memory reduced" with the applied values); the settings page itself was checked with Playwright.
 
 ## Server-Owned Data Chronology
 
