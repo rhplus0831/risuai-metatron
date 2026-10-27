@@ -2385,3 +2385,225 @@ describe("the Gemini retries after a tool call (crosscheck row 3)", () => {
         });
     }
 });
+
+describe("the OpenAI and Responses retries after a tool call (crosscheck side finding)", () => {
+    // The same backoff as the Gemini loops, in the four OpenAI loops: the Chat and the Responses
+    // adapter, buffered and streaming. Fake clock for the waits, real I/O turns through `settle`.
+    const settle = async (done: () => boolean) => {
+        while (!done()) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+    const busy = () => json({ error: { message: "Rate limit reached", type: "rate_limit_error" } }, 429);
+    const CHAT_CALL = { id: "call_1", type: "function", function: { name: "rollDice", arguments: '{"sides":6}' } };
+    const RESPONSES_CALL = { type: "function_call", call_id: "fc_1", name: "rollDice", arguments: '{"sides":6}' };
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /** A tool round trip whose follow-up request fails `failures` times, then answers. */
+    function roundTrip(
+        format: "chat" | "responses",
+        streaming: boolean,
+        failures: number,
+        controller?: AbortController,
+    ) {
+        const state = { followUps: 0, ended: false };
+        const pending = run({
+            settings: {
+                preset: format === "responses" ? { customAPIFormat: LLMFormat.OpenAIResponseAPI } : {},
+                providers: { requestRetrys: 3, ...(streaming ? { useStreaming: true } : {}) },
+            },
+            arg: { ...prompt(), useStreaming: streaming },
+            tools: [ROLL_DICE],
+            toolAnswer: [{ type: "text", text: "4" }],
+            controller,
+            upstream: (call) => {
+                const body = JSON.stringify(call.body);
+                const followUp =
+                    format === "chat" ? body.includes("tool_call_id") : body.includes("function_call_output");
+                if (!followUp) {
+                    if (format === "chat") {
+                        return streaming
+                            ? sse([{ choices: [{ delta: { tool_calls: [{ index: 0, ...CHAT_CALL }] } }] }, "[DONE]"])
+                            : chat("", { tool_calls: [CHAT_CALL] });
+                    }
+                    const first = { status: "completed", output: [RESPONSES_CALL] };
+                    return streaming ? sse([{ type: "response.completed", response: first }, "[DONE]"]) : json(first);
+                }
+                state.followUps += 1;
+                if (state.followUps <= failures) {
+                    return busy();
+                }
+                if (format === "chat") {
+                    return streaming
+                        ? sse([{ choices: [{ delta: { content: "rolled a 4" } }] }, "[DONE]"])
+                        : chat("rolled a 4");
+                }
+                const answer = {
+                    status: "completed",
+                    output: [{ type: "message", content: [{ type: "output_text", text: "rolled a 4" }] }],
+                };
+                return streaming ? sse([{ type: "response.completed", response: answer }, "[DONE]"]) : json(answer);
+            },
+        }).finally(() => {
+            state.ended = true;
+        });
+        /** Runs until the next wait is armed (or the request ended): the follow-ups sent so far. */
+        const waiting = async () => {
+            await settle(() => state.ended || vi.getTimerCount() > 0);
+            return state.followUps;
+        };
+        return { state, pending, waiting };
+    }
+
+    for (const format of ["chat", "responses"] as const) {
+        for (const streaming of [false, true]) {
+            const label = `${format === "chat" ? "Chat" : "Responses"}, ${streaming ? "streaming" : "buffered"}`;
+
+            it(`waits 1, 2, then 4 s before each retry (${label})`, async () => {
+                const { pending, waiting } = roundTrip(format, streaming, 3);
+                expect(await waiting()).toBe(1);
+                await vi.advanceTimersByTimeAsync(999);
+                expect(await waiting()).toBe(1);
+                await vi.advanceTimersByTimeAsync(1);
+                expect(await waiting()).toBe(2);
+                await vi.advanceTimersByTimeAsync(1999);
+                expect(await waiting()).toBe(2);
+                await vi.advanceTimersByTimeAsync(1);
+                expect(await waiting()).toBe(3);
+                await vi.advanceTimersByTimeAsync(3999);
+                expect(await waiting()).toBe(3);
+                await vi.advanceTimersByTimeAsync(1);
+                const recorded = await pending;
+                expect(recorded.calls).toHaveLength(5);
+                expect(recorded.alerts).toEqual([]);
+                const text = streaming ? JSON.stringify(recorded.chunks.at(-1)) : JSON.stringify(recorded.result);
+                expect(text).toContain("rolled a 4");
+            });
+
+            it(`sends nothing more once Stop ends a wait (${label})`, async () => {
+                const controller = new AbortController();
+                const { state, pending, waiting } = roundTrip(format, streaming, 3, controller);
+                expect(await waiting()).toBe(1);
+                controller.abort();
+                const recorded = await pending;
+                expect(state.followUps).toBe(1);
+                expect(recorded.calls).toHaveLength(2);
+                expect(vi.getTimerCount()).toBe(0);
+            });
+        }
+    }
+});
+
+describe("the Gemini overload re-request (crosscheck side finding)", () => {
+    // `antiServerOverloads` re-sends a request Gemini answered `RESOURCE_EXHAUSTED`: at most
+    // `requestRetrys` times, each after the backoff, and Stop ends it; before, without a wait or a bound.
+    const settle = async (done: () => boolean) => {
+        while (!done()) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+    const busy = () => json({ error: { code: 429, message: "Resource exhausted", status: "RESOURCE_EXHAUSTED" } }, 429);
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /** A request Gemini answers busy `failures` times, then with text. */
+    function overloaded(options: {
+        failures: number;
+        retries?: number;
+        anti?: boolean;
+        streaming?: boolean;
+        controller?: AbortController;
+    }) {
+        const { failures, retries = 2, anti = true, streaming = false, controller } = options;
+        const state = { sent: 0, ended: false };
+        const pending = run({
+            settings: {
+                preset: { aiModel: "gemini-2.5-flash" },
+                providers: {
+                    requestRetrys: retries,
+                    antiServerOverloads: anti,
+                    ...(streaming ? { useStreaming: true } : {}),
+                },
+            },
+            arg: { ...prompt(), useStreaming: streaming },
+            controller,
+            upstream: () => {
+                state.sent += 1;
+                if (state.sent <= failures) {
+                    return busy();
+                }
+                const answer = { candidates: [{ content: { parts: [{ text: "ok now" }] } }] };
+                return streaming ? sse([answer]) : json(answer);
+            },
+        }).finally(() => {
+            state.ended = true;
+        });
+        const waiting = async () => {
+            await settle(() => state.ended || vi.getTimerCount() > 0);
+            return state.sent;
+        };
+        return { state, pending, waiting };
+    }
+
+    for (const streaming of [false, true]) {
+        const label = streaming ? "streaming" : "buffered";
+
+        it(`re-sends after 1 s, then 2 s, and gives up as the original failure once requestRetrys is used (${label})`, async () => {
+            const { pending, waiting } = overloaded({ failures: 10, retries: 2, streaming });
+            expect(await waiting()).toBe(1);
+            await vi.advanceTimersByTimeAsync(999);
+            expect(await waiting()).toBe(1);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await waiting()).toBe(2);
+            await vi.advanceTimersByTimeAsync(1999);
+            expect(await waiting()).toBe(2);
+            await vi.advanceTimersByTimeAsync(1);
+            const recorded = await pending;
+            expect(recorded.calls).toHaveLength(3);
+            expect(recorded.result).toMatchObject({ type: "fail", failByServerError: true });
+            expect(JSON.stringify(recorded.result)).toContain("RESOURCE_EXHAUSTED");
+            expect(vi.getTimerCount()).toBe(0);
+        });
+    }
+
+    it("answers from the re-request that gets through", async () => {
+        const { pending, waiting } = overloaded({ failures: 1, retries: 2 });
+        expect(await waiting()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        const recorded = await pending;
+        expect(recorded.calls).toHaveLength(2);
+        expect(recorded.result).toEqual({ type: "success", result: "ok now" });
+    });
+
+    it("sends once with the setting off, or with no retries", async () => {
+        const off = await overloaded({ failures: 10, retries: 2, anti: false }).pending;
+        expect(off.calls).toHaveLength(1);
+        expect(off.result).toMatchObject({ type: "fail", failByServerError: true });
+        const none = await overloaded({ failures: 10, retries: 0 }).pending;
+        expect(none.calls).toHaveLength(1);
+        expect(none.result).toMatchObject({ type: "fail", failByServerError: true });
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("sends nothing more once Stop ends the wait", async () => {
+        const controller = new AbortController();
+        const { pending, waiting } = overloaded({ failures: 10, retries: 2, controller });
+        expect(await waiting()).toBe(1);
+        controller.abort();
+        const recorded = await pending;
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.result).toMatchObject({ type: "fail", failByServerError: true });
+        expect(vi.getTimerCount()).toBe(0);
+    });
+});

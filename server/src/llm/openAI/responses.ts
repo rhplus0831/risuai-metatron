@@ -2,7 +2,7 @@
 import { messages as language } from "../messages.ts";
 import { LLMFlags } from "../../../../shared/llm.ts";
 import { textifyReadableStream } from "../transport.ts";
-import { simplifySchema } from "../util.ts";
+import { simplifySchema, sleep, toolRetryDelay } from "../util.ts";
 import { NANOGPT_RESPONSES_ENDPOINT } from "../../../../shared/llm/providers/nanogpt.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../jsonSchema.ts";
@@ -588,6 +588,12 @@ async function requestHTTPResponsesAPI(
             if (resRec.type !== "fail") {
                 break;
             }
+            if (attempt <= db.requestRetrys) {
+                await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                if (arg.abortSignal?.aborted) {
+                    break;
+                }
+            }
         } while (attempt <= db.requestRetrys);
 
         if (resRec.type === "success") {
@@ -813,6 +819,12 @@ function wrapResponsesToolStream(
                         requestTimeoutMs: networkOptions.requestTimeoutMs,
                     });
                     ok = resRec.status === 200 && !!resRec.headers.get("Content-Type")?.includes("text/event-stream");
+                    if (!ok && attempt <= db.requestRetrys) {
+                        await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                        if (arg.abortSignal?.aborted) {
+                            break;
+                        }
+                    }
                 } while (!ok && attempt <= db.requestRetrys);
 
                 if (!ok) {

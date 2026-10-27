@@ -9,7 +9,7 @@ import {
 import { getFreeOpenRouterModels } from "../openrouter.ts";
 import { defaultCredentialKey } from "../credentials.ts";
 import { textifyReadableStream } from "../transport.ts";
-import { simplifySchema } from "../util.ts";
+import { simplifySchema, sleep, toolRetryDelay } from "../util.ts";
 import { SseLines } from "../sseLines.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../jsonSchema.ts";
@@ -855,6 +855,12 @@ export async function requestHTTPOpenAI(
                     if (resRec.type != "fail") {
                         break;
                     }
+                    if (attempt <= db.requestRetrys) {
+                        await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                        if (arg.abortSignal?.aborted) {
+                            break;
+                        }
+                    }
                 } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 
                 const callCode = callCodes.join("\n\n");
@@ -1276,6 +1282,12 @@ function wrapToolStream(
                                 // `fetchStream` logged and records this call itself.
                                 errorFlag = false;
                                 break;
+                            }
+                            if (attempt <= db.requestRetrys) {
+                                await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                                if (arg.abortSignal?.aborted) {
+                                    break;
+                                }
                             }
                         } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 

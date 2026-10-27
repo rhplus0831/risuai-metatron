@@ -48,7 +48,7 @@ rendering pipeline and records browser probes, remaining costs, and proposed fix
 
 ### PocketRisu / RisuBard ([§6](pocketrisu-risubard-picks.md#6-recommended-order))
 
-1. ~~Whether to start with the read-only comparison of the 18 shared-code bug fixes in §5.~~ Done 2026-10-20: [pocketrisu-fix-crosscheck.md](pocketrisu-fix-crosscheck.md). Which of the still-present rows to fix is open.
+1. ~~Whether to start with the read-only comparison of the 18 shared-code bug fixes in §5.~~ Done 2026-10-20: [pocketrisu-fix-crosscheck.md](pocketrisu-fix-crosscheck.md). Every still-present row and both retry side findings were fixed by 2026-10-28; only row 16 (`share_target` on Samsung Internet) waits for a device check.
 2. ~~Direct asset URLs with immutable caching (§2.1) need a security design against DPoP before they can be planned with the heap-memory work.~~ Planned 2026-10-23 with its security design: [Direct Asset URLs](../plan/direct-asset-urls.md). Done 2026-10-23: the service worker signs the existing `risu-auth` token for the page's asset loads (the plan's D1 (a)), with no cookie; verified content names are cached `immutable`.
 3. The plugin permission keying and `pluginCustomStorage` merge rules (§2.3) need a check against the v3 plugin runtime before adoption.
 

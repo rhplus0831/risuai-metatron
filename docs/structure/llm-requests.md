@@ -181,6 +181,7 @@ the write runs is used. `modelId` and `credentialId` are not forwarded profile r
 - Refusals warn, retain the old value, and return false without throwing so later
   plugin keys can still apply. New UI code should use explicit profile/slot actions;
   [persistence](persistence.md) owns the record/view write boundaries.
+- A failed request that follows a tool call (the Chat and Responses adapters in `openAI/`, the Gemini adapter; buffered and streaming) is retried up to `requestRetrys` times, each retry after `util.ts` `toolRetryDelay` (1, 2, 4, then 8 s) waited with the request's abort signal, so Stop ends the wait and sends nothing more. `google.ts` `fallBackGemini` (the `antiServerOverloads` re-request of a `RESOURCE_EXHAUSTED` answer) is bounded the same way: at most `requestRetrys` re-requests, each after that wait, then the original failure.
 
 ## Recipes
 
@@ -203,7 +204,7 @@ the write runs is used. `modelId` and `credentialId` are not forwarded profile r
 - Streaming: `server/src/tests/{llmStreamParsing,sseLines}.test.ts` cover provider event parsing, cumulative snapshots, split UTF-8 input, tool metadata, and cancellation.
 - Token counting: `server/src/tests/{imageTokens,tokens,tokenRoutes}.test.ts`, `src/ts/tokenizer.test.ts`, and `src/ts/process/prompt.tokenize.test.ts` cover image arithmetic, server count routes, count/encode client behavior (`jobTokenScope` against the tab scope, and `countTokensInScope` posting a captured scope after a selection change, its batching, cache key, and abort included), and prompt tokenization. Lore count scheduling is in `server/src/tests/lore.test.ts`.
 - UI credential and discovery refresh: `src/lib/UI/NanoGPTDashboard.test.ts`; credential-traffic coverage and its exclusions are recorded in `util/playwright/checkCredentialTraffic.mjs`.
-- Additional focused checks: `server/src/tests/llmCharsetRetries.test.ts` covers the request retry/yield budget and Echo group-send regression. Proxy routing in the tab is not tested; credential capture omits non-OpenAI provider sends, several discovery/account calls, previews, and Whisper through its component.
+- Additional focused checks: `server/src/tests/llmCharsetRetries.test.ts` covers the request retry/yield budget and Echo group-send regression; the tool-call retry backoff of the Chat, Responses, and Gemini adapters and the bounded Gemini overload re-request are in `llmProviderAdapters.test.ts` (fake timers, Stop during a wait). Proxy routing in the tab is not tested; credential capture omits non-OpenAI provider sends, several discovery/account calls, previews, and Whisper through its component.
 
 ## Known Hazards
 

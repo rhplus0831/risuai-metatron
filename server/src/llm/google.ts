@@ -6,7 +6,7 @@ import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { InlaySignature } from "../../../shared/llm/request.ts";
 import { defaultCredentialKey } from "./credentials.ts";
 import { textifyReadableStream } from "./transport.ts";
-import { simplifySchema, sleep } from "./util.ts";
+import { simplifySchema, sleep, toolRetryDelay } from "./util.ts";
 import { SseLines } from "./sseLines.ts";
 import { extractJSON, getGeneralJSONSchema } from "./jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
@@ -39,15 +39,6 @@ interface GeminiPart {
 interface GeminiChat {
     role?: "user" | "model";
     parts: GeminiPart[];
-}
-
-/**
- * The wait in ms before retry `retry` (1-based) of the request that follows a tool call: 1, 2, 4, then
- * 8 s for every later retry, so a 429 or 524 is not re-sent at once. The loops wait with the request's
- * abort signal, so Stop ends the wait and sends nothing more.
- */
-function toolRetryDelay(retry: number): number {
-    return Math.min(1000 * 2 ** (retry - 1), 8000);
 }
 
 export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
@@ -522,34 +513,33 @@ async function requestGoogle(
     body: any,
     headers: { [key: string]: string },
     arg: RequestDataArgumentExtended,
+    overloadRetry = 0,
 ): Promise<requestDataResponse> {
     const db = arg.ctx.db;
 
     const fallBackGemini = async (originalError: string): Promise<requestDataResponse> => {
-        if (!db.antiServerOverloads) {
-            return {
-                type: "fail",
-                result: originalError,
-                failByServerError: true,
-            };
+        const failure: requestDataResponse = {
+            type: "fail",
+            result: originalError,
+            failByServerError: true,
+        };
+        const retry = overloadRetry + 1;
+        const retryLimit = Number.isFinite(db.requestRetrys) ? db.requestRetrys : 0;
+        if (
+            !db.antiServerOverloads ||
+            arg.abortSignal?.aborted ||
+            arg.modelInfo.format === LLMFormat.VertexAIGemini ||
+            retry > retryLimit
+        ) {
+            return failure;
         }
 
-        if (arg?.abortSignal?.aborted) {
-            return {
-                type: "fail",
-                result: originalError,
-                failByServerError: true,
-            };
-        }
-        if (arg.modelInfo.format === LLMFormat.VertexAIGemini) {
-            return {
-                type: "fail",
-                result: originalError,
-                failByServerError: true,
-            };
+        await sleep(toolRetryDelay(retry), arg.abortSignal);
+        if (arg.abortSignal?.aborted) {
+            return failure;
         }
 
-        return requestGoogle(url, body, headers, arg);
+        return requestGoogle(url, body, headers, arg, retry);
     };
 
     // process the text parts into a single text response
