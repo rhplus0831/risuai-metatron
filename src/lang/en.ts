@@ -1707,6 +1707,15 @@ export const languageEnglish = {
         runwayUsage: (used: string, left: string) => `${used} used · ~${left} left`,
         memoryReserveNote: (reserved: string) => `The HypaV3 memory reserve (${reserved}) lowers this room.`,
         memorySettings: "HypaV3 settings",
+        taskTitle: "Background summary",
+        taskQueued: "summary queued",
+        taskRunning: (done: number, total: number) => `summarizing ${done}/${total}`,
+        taskRunningUnknown: "summarizing",
+        taskSummary: (state: string) => `background ${state}`,
+        taskLiveNote:
+            "Later sends use its summaries as the history needs them; the breakdown below is the last reply's.",
+        taskDone: "Finished: the new summaries are stored; later sends use them as the history needs them.",
+        taskFailed: "The last background summary failed.",
         historyOmitted: (count: number, tokens: string) =>
             `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
         omittedSummarized: (count: number) => `summarized into memory: ${count}`,

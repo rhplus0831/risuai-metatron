@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { historyDigest, type ContextReport } from "../../../shared/contextReport.ts";
+import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../../../shared/presets.ts";
 import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 
@@ -27,10 +28,18 @@ vi.mock("src/ts/storage/serverAuth", async () =>
 
 import { language } from "src/lang";
 import { doingAlert } from "src/ts/alert";
+import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import { currentJump, finishJump, jumpVersion } from "src/ts/setting/settingJump.svelte";
 import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { findChat, patchMessage, removeMessages, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import {
+    appendMessage,
+    findChat,
+    patchMessage,
+    removeMessages,
+    setChatMeta,
+    type ChatRef,
+} from "src/ts/storage/chatStore.svelte";
 import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { MEMORY_SETTINGS_MENU, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
@@ -156,9 +165,26 @@ const sectionRows = () =>
 /** A HypaV3 label/value row's label and value, e.g. `rowText(opened, "next")`. */
 const rowText = (opened: Element, name: string) =>
     [...opened.querySelector(`[data-context-meter-${name}]`)!.children].map((cell) => cell.textContent?.trim());
+/** A live-update `memoryTask` frame for `chat` (the meter's chat by default); a terminal holds no revision fence. */
+function taskFrame(status: MemoryTaskStatus, chat: ChatRef = ref) {
+    noteMemoryTaskFrame({ type: "memoryTask", epoch: "e", characterId: chat.chaId, chatId: chat.chatId, status });
+    flushSync();
+}
+const live = (state: "queued" | "running", done = 0, total = 0): MemoryTaskStatus => ({
+    taskId: "t1",
+    state,
+    done,
+    total,
+});
+const ended = (
+    state: "done" | "failed" | "cancelled" | "skipped",
+    extra: Partial<Extract<MemoryTaskStatus, { terminalRevision: string | null }>> = {},
+): MemoryTaskStatus => ({ taskId: "t1", state, done: 8, total: 8, terminalRevision: null, ...extra });
+const taskBlock = () => panel()?.querySelector<HTMLElement>("[data-context-meter-task]") ?? null;
 
 beforeEach(() => {
     vi.useFakeTimers();
+    resetMemoryTasks();
     vi.mocked(doingAlert).mockReturnValue(false);
     settingsOpen.set(false);
     SettingsMenuIndex.set(-1);
@@ -1003,6 +1029,136 @@ describe("the popover", () => {
         flushSync();
         expect(chip()).not.toBeNull();
         expect(panel()).toBeNull();
+    });
+});
+
+describe("the background summary task", () => {
+    const hypaReport = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } });
+
+    it("marks the line while the chat's task is queued or runs, with its count once the total is known", () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+
+        taskFrame(live("queued"));
+        expect(chipText()).toBe(`${language.contextUsage.taskQueued} · ${plain}`);
+        expect(chip()!.getAttribute("aria-label")).toContain(
+            `; ${language.contextUsage.taskSummary(language.contextUsage.taskQueued)}`,
+        );
+        taskFrame(live("running"));
+        expect(chipText()).toBe(`${language.contextUsage.taskRunningUnknown} · ${plain}`);
+        taskFrame(live("running", 3, 8));
+        expect(chipText()).toBe(`${language.contextUsage.taskRunning(3, 8)} · ${plain}`);
+        expect(chip()!.getAttribute("aria-label")).toContain(
+            language.contextUsage.taskSummary(language.contextUsage.taskRunning(3, 8)),
+        );
+
+        taskFrame(ended("cancelled"));
+        expect(chipText()).toBe(plain);
+        expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.taskSummary(""));
+    });
+
+    it("ignores another chat's task", () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        taskFrame(live("running", 1, 4), { chaId: "c", chatId: "other" });
+        expect(chipText()).toBe(plain);
+    });
+
+    it("shows the running task in the popover, above the last reply's breakdown", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(live("running", 3, 8));
+        const opened = await openPanel();
+        const block = taskBlock()!;
+        expect(block.dataset.tone).toBe("live");
+        expect(block.textContent).toContain(language.contextUsage.taskRunning(3, 8));
+        expect(block.textContent).toContain(language.contextUsage.taskLiveNote);
+        // Before the headline, so it does not read as part of the report.
+        expect(
+            block.compareDocumentPosition(opened.querySelector("[data-context-meter-headline]")!) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+        taskFrame(live("running", 4, 8));
+        expect(taskBlock()!.textContent).toContain(language.contextUsage.taskRunning(4, 8));
+    });
+
+    it("after a task it saw run commits, says the summaries are stored until the report changes", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(live("running", 3, 8));
+        taskFrame(ended("done", { terminalRevision: null, lastCommittedRevision: "r2" }));
+        expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+        await openPanel();
+        expect(taskBlock()!.dataset.tone).toBe("done");
+        expect(taskBlock()!.textContent).toContain(language.contextUsage.taskDone);
+
+        appendMessage(ref, reply("m2", { context: hypaReport() }) as any);
+        flushSync();
+        expect(taskBlock()).toBeNull();
+        // The newer reply ended the notice: removing it does not bring the notice back.
+        removeMessages(ref, ["m2"]);
+        flushSync();
+        expect(taskBlock()).toBeNull();
+    });
+
+    it("ends the notice when a continue rewrites the same reply's report", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(live("running", 3, 8));
+        taskFrame(ended("done", { lastCommittedRevision: "r2" }));
+        await openPanel();
+        expect(taskBlock()!.dataset.tone).toBe("done");
+        patchMessage(ref, "m1", { generationInfo: { context: hypaReport() } });
+        flushSync();
+        expect(taskBlock()!.dataset.tone).toBe("done");
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: trimmed({ input: 700, memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } }),
+            },
+        });
+        flushSync();
+        expect(taskBlock()).toBeNull();
+    });
+
+    it("says nothing of a finished task it did not see run, or one that committed nothing", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(ended("done", { lastCommittedRevision: "r2" }));
+        await openPanel();
+        expect(taskBlock()).toBeNull();
+
+        taskFrame({ ...live("running", 0, 2), taskId: "t2" });
+        taskFrame({ ...ended("done"), taskId: "t2" });
+        expect(taskBlock()).toBeNull();
+    });
+
+    it("reports a failed task with its error and a way to the memory settings", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(ended("failed", { error: "upstream 429" }));
+        expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+        await openPanel();
+        const block = taskBlock()!;
+        expect(block.dataset.tone).toBe("failed");
+        expect(block.textContent).toContain(language.contextUsage.taskFailed);
+        expect(block.querySelector("[data-context-meter-task-error]")!.textContent).toBe("upstream 429");
+        block.querySelector<HTMLButtonElement>("[data-context-meter-task-settings]")!.click();
+        flushSync();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
+        expect(panel()).toBeNull();
+    });
+
+    it("shows on a legacy fallback too", async () => {
+        install([reply("m1", { inputTokens: 600, maxContext: 1000 })]);
+        render();
+        taskFrame(live("queued"));
+        expect(chipText()).toBe(`${language.contextUsage.taskQueued} · 60%`);
+        await openPanel();
+        expect(taskBlock()!.dataset.tone).toBe("live");
     });
 });
 

@@ -1,10 +1,11 @@
 <script lang="ts">
-    import { BookAlertIcon, ChevronUpIcon, GaugeIcon, SettingsIcon } from "@lucide/svelte";
+    import { BookAlertIcon, ChevronUpIcon, GaugeIcon, LoaderCircleIcon, SettingsIcon } from "@lucide/svelte";
     import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
     import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import type { SettingHit } from "src/ts/setting/searchIndex";
+    import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
@@ -121,6 +122,52 @@
     const loreWarn = $derived(report !== null && report.lore.rejectedCount > 0 && !loreWarnOff);
     // HypaV3's token budget was reduced to fit the last request's max context, as the server reported it.
     const budgetReduced = $derived(report?.memory?.budgetReduced ?? []);
+
+    // The chat's background HypaV3 summary task (`memoryTasks.svelte.ts`), live unlike the report: the
+    // line shows it while it is queued or runs, and the popover says how it ended.
+    const task = $derived(visible ? memoryTaskStatus(chatRef) : null);
+    /** The meter's source as content: a new reply, or a continue that rewrote the report, changes it. */
+    const sourceKey = (value: Source | null) =>
+        value ? JSON.stringify([value.messageId, value.kind === "report" ? value.report : value.input]) : null;
+    // A task this mount saw run and then commit summaries, with the source it followed: the notice
+    // holds until the source changes, and ends for good then (deleting the newer reply does not bring
+    // it back).
+    let landed: { taskId: string; source: string | null } | null = $state(null);
+    let liveTaskId: string | null = null;
+    $effect(() => {
+        const current = task;
+        untrack(() => {
+            if (current?.state === "queued" || current?.state === "running") {
+                liveTaskId = current.taskId;
+                return;
+            }
+            if (current?.state === "done" && current.taskId === liveTaskId && current.lastCommittedRevision) {
+                landed = { taskId: current.taskId, source: sourceKey(source) };
+            }
+            liveTaskId = null;
+        });
+    });
+    $effect(() => {
+        if (landed && sourceKey(source) !== landed.source) {
+            landed = null;
+        }
+    });
+    const taskView: { tone: "live" | "done" | "failed"; text?: string; error?: string } | null = $derived.by(() => {
+        const s = language.contextUsage;
+        if (task?.state === "queued") {
+            return { tone: "live", text: s.taskQueued };
+        }
+        if (task?.state === "running") {
+            return { tone: "live", text: task.total > 0 ? s.taskRunning(task.done, task.total) : s.taskRunningUnknown };
+        }
+        if (task?.state === "done" && landed?.taskId === task.taskId && landed.source === sourceKey(source)) {
+            return { tone: "done" };
+        }
+        if (task?.state === "failed") {
+            return { tone: "failed", error: task.error };
+        }
+        return null;
+    });
 
     type Basis = {
         report: ContextReport;
@@ -381,8 +428,12 @@
 
     const chipTitle = $derived(
         chip
-            ? language.contextUsage.chipLabel(chip.summary) +
-                  (estimate ? ` ${language.contextUsage.estimateTitle}: ${estimate.line}` : "")
+            ? language.contextUsage.chipLabel(
+                  chip.summary +
+                      (taskView?.tone === "live" && taskView.text
+                          ? `; ${language.contextUsage.taskSummary(taskView.text)}`
+                          : ""),
+              ) + (estimate ? ` ${language.contextUsage.estimateTitle}: ${estimate.line}` : "")
             : "",
     );
 
@@ -643,6 +694,13 @@
             {:else}
                 <span class="shrink-0" aria-hidden="true"><GaugeIcon size={13} /></span>
             {/if}
+            {#if taskView?.tone === "live"}
+                <span class="flex shrink-0 items-center gap-0.5 text-secondary-500" data-context-meter-task-mark>
+                    <LoaderCircleIcon size={11} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    <span class="tabular-nums">{taskView.text}</span>
+                </span>
+                <span class="shrink-0" aria-hidden="true">·</span>
+            {/if}
             {#if budgetReduced.length > 0}
                 <span class="shrink-0 text-danger-500" data-context-meter-memory-reduced
                     >{language.contextUsage.memoryReduced}</span
@@ -711,11 +769,44 @@
                 </div>
             {/if}
 
+            {#if taskView}
+                <div
+                    class="flex flex-col gap-1 rounded-md bg-darkbutton p-2 text-xs"
+                    data-context-meter-task
+                    data-tone={taskView.tone}
+                >
+                    <div class="flex justify-between gap-2">
+                        <span class="font-semibold">{language.contextUsage.taskTitle}</span>
+                        {#if taskView.text}
+                            <span class="text-right text-secondary-500 tabular-nums">{taskView.text}</span>
+                        {/if}
+                    </div>
+                    {#if taskView.tone === "live"}
+                        <span class="text-textcolor2">{language.contextUsage.taskLiveNote}</span>
+                    {:else if taskView.tone === "done"}
+                        <span class="text-secondary-500">{language.contextUsage.taskDone}</span>
+                    {:else}
+                        <span class="text-danger-500">{language.contextUsage.taskFailed}</span>
+                        {#if taskView.error}
+                            <span class="break-words text-textcolor2" data-context-meter-task-error
+                                >{taskView.error}</span
+                            >
+                        {/if}
+                        <button
+                            type="button"
+                            class="self-start text-textcolor underline hover:text-primary-500"
+                            data-context-meter-task-settings
+                            onclick={openMemorySettings}>{language.contextUsage.memorySettings}</button
+                        >
+                    {/if}
+                </div>
+            {/if}
+
             {#if source.kind === "legacy"}
                 <span>{language.contextUsage.input(fmt(source.input), fmt(source.maxContext))}</span>
                 <span class="text-textcolor2">{language.contextUsage.legacyNote}</span>
             {:else if report}
-                <div class="flex flex-col gap-1">
+                <div class="flex flex-col gap-1" data-context-meter-headline>
                     {#if promptBudget > 0}
                         <span>
                             <span class="text-lg font-semibold tabular-nums">{fmt(report.input)}</span>
