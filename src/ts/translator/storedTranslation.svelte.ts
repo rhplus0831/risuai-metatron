@@ -172,9 +172,13 @@ async function runRequest(
         // The server translates its own copy: save this tab's changes first (the message may be new,
         // or its text edited). This saves every pending change, not only this chat's.
         try {
-            const { discarded } = await flushResources();
+            const { discarded, refused } = await flushResources();
             if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`)) {
                 alertError(language.translationSourceChanged);
+                return false;
+            }
+            if (refused.includes(`chats/${ref.chaId}/${ref.chatId}`) || refused.includes(`chats/${ref.chaId}`)) {
+                alertError(language.serverJob.refusedDraft);
                 return false;
             }
         } catch (error) {

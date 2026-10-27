@@ -80,9 +80,9 @@ const DETACHED_READ_CHUNK = 500;
  * Every chat of the characters `chaIds`, as plain copies in their server order, read from the server
  * after saving what is queued (for exports; complete whatever this tab has
  * loaded). The save comes first, so the copies hold this tab's changes: when it fails, or a conflict
- * discarded a local change of one of these characters or their chats, nothing is read and this
- * throws (a stale server copy is never returned instead). A character the server has no chat order
- * for gets `[]`.
+ * discarded a local change of one of these characters or their chats, or such a change remains refused,
+ * nothing is read and this throws (a stale server copy is never returned instead). A character the
+ * server has no chat order for gets `[]`.
  */
 export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<string, Chat[]>> {
     const wanted = [...new Set(chaIds)];
@@ -90,14 +90,20 @@ export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<
     if (wanted.length === 0) {
         return result;
     }
-    const { discarded } = await flushResources();
-    const touched = discarded.filter((key) =>
+    const { discarded, refused } = await flushResources();
+    // A key of a wanted character: its record, its chat order, or one of its chats.
+    const concerns = (key: string) =>
         wanted.some(
             (chaId) => key === `characters/${chaId}` || key === `chats/${chaId}` || key.startsWith(`chats/${chaId}/`),
-        ),
-    );
+        );
+    const touched = discarded.filter(concerns);
     if (touched.length > 0) {
         throw new Error(`A conflict discarded local changes before the read: ${touched.join(", ")}`);
+    }
+    // A change an earlier save left refused is held only in this tab: the server copy is behind it.
+    const refusedKeys = refused.filter(concerns);
+    if (refusedKeys.length > 0) {
+        throw new Error(`The server refused local changes that are not saved yet: ${refusedKeys.join(", ")}`);
     }
     for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
         const read = await readRefs([], { chatCollections: wanted.slice(start, start + DETACHED_READ_CHUNK) });

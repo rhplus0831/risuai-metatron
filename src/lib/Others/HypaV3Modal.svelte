@@ -228,6 +228,9 @@
                     case "discarded":
                         alertError(language.memoryTasks.discarded);
                         return;
+                    case "refused":
+                        alertError(language.serverJob.refusedDraft);
+                        return;
                     case "generating":
                         alertError(language.chatGenerating);
                         return;

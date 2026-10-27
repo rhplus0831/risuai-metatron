@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch) and 2026-10-26 (
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Chat screen and input](#chat-screen-and-input) (3)
 - [Test mocks](#test-mocks) (2)
@@ -36,17 +36,6 @@ Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
-
-### Earlier-refused chat read from the server copy
-
-Since the F01 flush fix (Deep Audit Fixes, 2026-10-26) `flushResources()` returns `refused: string[]` (`chats/<chaId>/<chatId>`, order `chats/<chaId>`) beside `discarded`. A chat quarantined by an earlier flush keeps its draft only in the tab and shows up in neither list of a later flush, so three callers that check only `discarded` work on the server's older copy while the tab shows the refused draft:
-
-- `src/ts/process/memoryTasks.svelte.ts:434` `startMemoryTask`: the server summarizes its older stored transcript.
-- `src/ts/storage/chatEdits.ts:93` `readChatsDetached` (Export All Chats in `src/ts/characters.ts`, `src/ts/storage/exportAsDataset.ts`): the export silently holds the server's copy, against the function's doc comment.
-- `src/ts/translator/storedTranslation.svelte.ts:175` (manual path, not `follow`): the request sends ids only, so the server translates its own older text while the local hash check passes on the draft.
-
-**Why it matters:** the same "successful flush = durable" assumption F01 fixed for send, export, and callbacks; the user gets a summary, export, or translation of text they do not see, without a warning.
-**Suggested handling:** treat a `refused` key naming the target chat (or its order) like `discarded`: refuse the memory task with reason "refused" (mirroring `runPinnedServerJob` in `serverCommands.ts`), throw or warn in `readChatsDetached`, and alert `translationSourceChanged` (or a refused-draft text) in the manual translation; leave the automatic `follow` path as is.
 
 ### Client applyChatResult unsets a dropped map
 

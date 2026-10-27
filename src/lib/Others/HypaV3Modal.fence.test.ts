@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
     alertNormalWait: vi.fn(async () => undefined),
     alertConfirm: vi.fn(async (_message: string) => true),
     /** The save loop's flush, as "Summarize now" awaits it (the loop itself is not under test here). */
-    flushResources: vi.fn(async () => ({ discarded: [] as string[] })),
+    flushResources: vi.fn(async () => ({ discarded: [] as string[], refused: [] as string[] })),
     /** The memory task routes' answers. */
     authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
 }));
@@ -643,7 +643,7 @@ describe("HypaV3Modal's memory task fence", () => {
         );
         resetMemoryTasks();
         mocks.alertNormal.mockClear();
-        mocks.flushResources.mockReset().mockResolvedValue({ discarded: [] });
+        mocks.flushResources.mockReset().mockResolvedValue({ discarded: [], refused: [] });
         mocks.authFetch.mockReset();
     });
 
@@ -705,7 +705,7 @@ describe("HypaV3Modal's memory task fence", () => {
 
     it("fences the chat during Summarize now's flush, shows the refusal, and offers Cancel for a waiting start", async () => {
         const modal = open(withData);
-        let finishFlush!: (value: { discarded: string[] }) => void;
+        let finishFlush!: (value: { discarded: string[]; refused: string[] }) => void;
         mocks.flushResources.mockReturnValueOnce(new Promise((resolve) => (finishFlush = resolve)));
         mocks.authFetch.mockResolvedValueOnce(
             json(503, { error: "Memory tasks are not enabled", reason: "notEnabled" }),
@@ -720,7 +720,7 @@ describe("HypaV3Modal's memory task fence", () => {
         expect(storedSummaries(withData)).toEqual(["one", "two"]);
         expect(mocks.authFetch).not.toHaveBeenCalled();
 
-        finishFlush({ discarded: [] });
+        finishFlush({ discarded: [], refused: [] });
         await settleMicrotasks();
         flushSync();
         expect(mocks.authFetch).toHaveBeenCalledTimes(1);

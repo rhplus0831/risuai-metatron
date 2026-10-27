@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { isRecordWrapper } from "../records.svelte";
-import { bootMutations, m, refJ, refK } from "./mutationStoresHarness";
+import { bootMutations, m, refJ, refK, SAVE_DEBOUNCE_MS } from "./mutationStoresHarness";
 
 // The chats live in the chat module's own store, not in the character records. Against the real
 // save adapter and server store (`storeBackedServer.ts`): character `c` with chats `k` (messages A,
@@ -15,8 +15,8 @@ import { bootMutations, m, refJ, refK } from "./mutationStoresHarness";
 // - Pins count per lifetime; a removal, a replacement, and ids named like `Object.prototype`
 //   members; `withChatsCopy`; the remote collections over the held store.
 // - `readChatsDetached` saves first and reads every chat of several characters in the server
-//   order, refuses after a discard of a requested character's chat or a failed save; and
-//   `exportAsDataset` over it.
+//   order, refuses after a discard of a requested character's chat, while its chat or chat order
+//   stays refused from an earlier save, or after a failed save; and `exportAsDataset` over it.
 // The reactive probe and `flushSync` come from the test's module graph (`vi.resetModules()`), the
 // one the chat module's `$state` belongs to.
 
@@ -495,6 +495,48 @@ describe("detached reads", () => {
         chat.appendMessage(refK, m("z", "Z"));
         fake.failNext = { status: 500, times: 3, match: (path) => path.includes("/api/resources/batch") };
         await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow();
+        fake.failNext = null;
+    });
+
+    it("readChatsDetached refuses while a requested character's chat or chat order stays refused from an earlier save (not another's), and reads again once the draft is discarded", async () => {
+        const { chat, characterStore, chatEdits, fake, sync, ids } = await boot();
+        characterStore.addCharacter({ chaId: "d", name: "D", chats: [newChat("kd", "KD")] });
+        await sync.flushResources();
+        // The server refuses `k`'s edit for its content: the draft is held in this tab only, and the
+        // flush before a later read reports it as refused, not discarded.
+        chat.setMessageText(refK, "a", "draft kept in this tab");
+        chat.setChatMeta(refK, { fmIndex: "invalid" as any });
+        await sync.flushResources();
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "chat", chaId: "c", chatId: "k" })]);
+        alerts.error.mockClear();
+        await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow(/refused.*chats\/c\/k/);
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        // Only the requested characters' refusals refuse.
+        const read = await chatEdits.readChatsDetached(["d"]);
+        expect(read.get("d")!.map((entry) => entry.id)).toEqual(["kd"]);
+        expect(alerts.error).not.toHaveBeenCalled();
+
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        const result = await chatEdits.readChatsDetached(["c"]);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(
+            result
+                .get("c")!
+                .find((entry) => entry.id === "k")!
+                .message.map((message) => message.data),
+        ).toEqual(["A", "B", "C"]);
+
+        // A refused chat order of a requested character refuses the read too.
+        fake.failNext = {
+            status: 413,
+            body: { error: "order too large" },
+            times: 1,
+            match: (path) => path === "/api/resources/batch",
+        };
+        chat.reorderChats("c", [...ids("c")].reverse());
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "order", chaId: "c" })]);
+        await expect(chatEdits.readChatsDetached(["d", "c"])).rejects.toThrow(/refused.*chats\/c$/);
         fake.failNext = null;
     });
 

@@ -334,7 +334,15 @@ export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> 
 }
 
 export type MemoryTaskRefusal =
-    "notEnabled" | "chatGone" | "queueFull" | "shuttingDown" | "maintenance" | "epoch" | "discarded" | "generating";
+    | "notEnabled"
+    | "chatGone"
+    | "queueFull"
+    | "shuttingDown"
+    | "maintenance"
+    | "epoch"
+    | "discarded"
+    | "refused"
+    | "generating";
 
 /** What a start or cancel came to; the caller shows the notice. */
 export type MemoryTaskActionResult =
@@ -404,12 +412,13 @@ async function exclusive(
 }
 
 /**
- * "Summarize now" for a chat: fences before saving the tab's pending changes (any change a conflict
- * discarded refuses the start, as a send does), then asks the server. The answer's status is taken
- * only when no frame or hello of the chat arrived meanwhile; a live answer cannot revive the fence
- * of a known terminal task. A refusal, a `pendingManual` answer, or a save failure puts back the
- * prior fence, including feed updates during the request. A transport failure or unrecognized
- * answer replaces this request's fence with `uncertain`, awaiting feed evidence or a live retry.
+ * "Summarize now" for a chat: fences before saving the tab's pending changes (a discarded change or
+ * a still-refused target chat or order refuses the start, as a send does), then asks the server. The
+ * answer's status is taken only when no frame or hello of the chat arrived meanwhile; a live answer
+ * cannot revive the fence of a known terminal task. A refusal, a `pendingManual` answer, or a save
+ * failure puts back the prior fence, including feed updates during the request. A transport failure
+ * or unrecognized answer replaces this request's fence with `uncertain`, awaiting feed evidence or a
+ * live retry.
  */
 export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
     const key = keyOf(ref.chaId, ref.chatId);
@@ -431,10 +440,14 @@ export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
             }
         };
         try {
-            const { discarded } = await flushResources();
+            const { discarded, refused } = await flushResources();
             if (discarded.length > 0) {
                 release();
                 return { outcome: "refused", reason: "discarded" };
+            }
+            if (refused.includes(`chats/${ref.chaId}/${ref.chatId}`) || refused.includes(`chats/${ref.chaId}`)) {
+                release();
+                return { outcome: "refused", reason: "refused" };
             }
         } catch (error) {
             release();

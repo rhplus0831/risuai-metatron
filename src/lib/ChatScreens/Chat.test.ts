@@ -92,7 +92,7 @@ vi.mock("src/ts/storage/serverAuth", () => ({
 }));
 vi.mock("src/ts/storage/resourceSync.svelte", () => {
     class GenerationBlockedError extends Error {}
-    return { flushResources: async () => ({ discarded: [] }), GenerationBlockedError };
+    return { flushResources: async () => ({ discarded: [], refused: [] }), GenerationBlockedError };
 });
 
 import { language } from "src/lang";

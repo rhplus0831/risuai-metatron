@@ -19,7 +19,8 @@ import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 //   `hello` restores a running task's badge and replaces the status map;
 // - a read refused for pending local work does not clear the fence; a late read for an earlier task
 //   does not clear a newer task's fence; a terminal of another task leaves a live task alone;
-// - "Summarize now": the fence from before the flush, the request, the answers (a refusal, queued,
+// - "Summarize now": the fence from before the flush, a still-refused draft of the chat or its order
+//   (no request), the request, the answers (a refusal, queued,
 //   `pendingManual`, one superseded by a frame, a late one for a task already known terminal), a
 //   transport failure's uncertain fence and what resolves it, one request per chat, and "Cancel".
 
@@ -463,6 +464,47 @@ describe("Summarize now and Cancel", () => {
             expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason });
             expect(fenced()).toBe(false);
         }
+    });
+
+    it("refuses the start of a chat whose draft an earlier save left refused, or whose character's chat order did, without a request; another chat still starts", async () => {
+        const { tasks, chat, sync, fake, fenced } = await boot();
+        const refJ = { chaId: "c", chatId: "j" };
+        routes.answer = async () => json(503, { error: "Memory tasks are not enabled", reason: "notEnabled" });
+        // The server refuses `k`'s edit for its content: the draft stays held in this tab only, and a
+        // later flush reports it as refused, not discarded.
+        chat.setMessageText(refK, "a", "draft kept in this tab");
+        chat.setChatMeta(refK, { fmIndex: "invalid" as any });
+        await sync.flushResources();
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "chat", chaId: "c", chatId: "k" })]);
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason: "refused" });
+        expect(fenced()).toBe(false);
+        expect(routes.requests).toHaveLength(0);
+        // The other chat of the character is not held back by `k`'s refusal: its request is sent.
+        expect(await tasks.startMemoryTask(refJ)).toEqual({ outcome: "refused", reason: "notEnabled" });
+        expect(routes.requests).toHaveLength(1);
+        expect(JSON.parse(routes.requests[0].init.body as string)).toEqual({ characterId: "c", chatId: "j" });
+
+        // Discarding the draft takes the server's copy back: the start goes through.
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        await sync.flushResources();
+        expect(sync.refusedItems()).toEqual([]);
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason: "notEnabled" });
+        expect(routes.requests).toHaveLength(2);
+
+        // A refused chat order of the character holds back every chat of it.
+        fake.failNext = {
+            status: 413,
+            body: { error: "order too large" },
+            times: 1,
+            match: (path: string) => path === "/api/resources/batch",
+        };
+        chat.reorderChats("c", ["j", "k"]);
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "order", chaId: "c" })]);
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason: "refused" });
+        expect(await tasks.startMemoryTask(refJ)).toEqual({ outcome: "refused", reason: "refused" });
+        expect(fenced()).toBe(false);
+        expect(routes.requests).toHaveLength(2);
     });
 
     it("takes a queued answer as the live status, keeps one request per chat, shows pendingManual once, and cancels", async () => {
