@@ -1422,6 +1422,44 @@ describe("the context report", () => {
         role: (i % 2 ? "char" : "user") as Message["role"],
     }));
 
+    it("HypaV3 reports applied token budgets and includes reductions only when the preset does not fit", async () => {
+        // C = 400, response = 10: half the prompt budget is 195. With extra = 200,
+        // all headroom goes first, then extra falls to 195; memory independently falls to 195.
+        for (const fits of [false, true]) {
+            const preset = createHypaV3Preset(
+                "Tokens",
+                {
+                    budgetMode: "tokens",
+                    memoryBudgetTokens: fits ? 100 : 6000,
+                    lookaheadHeadroomTokens: fits ? 50 : 4000,
+                    extraSummarizationTokens: fits ? 25 : 200,
+                    memoryTokensRatio: 0.01,
+                    similarMemoryRatio: 0,
+                },
+                "tokens",
+            );
+            const { run } = contextAssembly({
+                hypaV3: true,
+                maxContext: 400,
+                memoryJob: { ...selectOnlyJob, preview: false, input: true },
+                template: [{ type: "memory" }, CHAT_CARD],
+                messages: [{ chatId: "u1", data: "hello" }],
+                db: { hypaV3Presets: [preset], hypaV3PresetId: preset.id },
+            });
+            const { report } = await run();
+            expect(report.memory?.budget).toBe(fits ? 100 : 195);
+            if (fits) {
+                expect(report.memory).not.toHaveProperty("budgetReduced");
+            } else {
+                expect(report.memory?.budgetReduced).toEqual([
+                    { field: "memory", configured: 6000, applied: 195 },
+                    { field: "headroom", configured: 4000, applied: 0 },
+                    { field: "extra", configured: 200, applied: 195 },
+                ]);
+            }
+        }
+    });
+
     it("HypaV3 reports a gap when a select-only step trims uncovered history", async () => {
         const { run, chat } = contextAssembly({
             hypaV3: true,

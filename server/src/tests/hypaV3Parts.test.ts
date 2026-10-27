@@ -2046,3 +2046,140 @@ describe("warming the summaries' vectors", () => {
         expect(world.log.http).toEqual([]);
     });
 });
+
+describe("token and ratio budget equivalence", () => {
+    for (const implementation of ["standard", "experimental"] as const) {
+        it(`${implementation}: equivalent token amounts preserve preparation, ordinary and lookahead plans, selection, and forecasts`, async () => {
+            // Keep the separator's cumulative deadline independent of machine load. The fixture's
+            // regex host runs in process; these small runs never exhaust the 1000-request limiter.
+            vi.spyOn(performance, "now").mockReturnValue(0);
+            const cases = [
+                { name: "v3-fits-empty", context: 1024, extraFixed: 0 },
+                { name: "v3-cold-overflow", context: 512, extraFixed: 0 },
+                { name: "v3-existing-selection", context: 512, extraFixed: 0 },
+                { name: "v3-existing-selection", context: 512, extraFixed: 128 },
+                { name: "v3-user-messages-kept", context: 384, extraFixed: 0 },
+            ].map(({ name, ...budget }) => ({ scenario: scenarioNamed(name), ...budget }));
+            cases.push({
+                scenario: {
+                    ...scenarioNamed("v3-existing-selection"),
+                    name: "stored pairs after history growth",
+                    // 45 messages of 10 tokens plus 200 fixed tokens. Growth crosses the
+                    // 512-token context repeatedly; replay must stop at the 448-token target
+                    // each time, leaving some stored pairs deferred once the history fits.
+                    chats: makeChats(45).map((chat) => ({ ...chat, content: "x".repeat(28) })),
+                    currentTokens: 650,
+                    preset: { maxChatsPerSummary: 2, queryChatCount: 3, similarMemoryRatio: 0 },
+                    room: {
+                        hypaV3Data: {
+                            summaries: Array.from({ length: 20 }, (_, i) =>
+                                stored([`m${2 * i}`, `m${2 * i + 1}`], `S${i}`),
+                            ),
+                        },
+                    },
+                },
+                context: 512,
+                extraFixed: 0,
+            });
+            let executedSummaries = 0;
+            let deferredTokens = 0;
+            let replayedSummaries = 0;
+            let lookaheadCalls = 0;
+            for (const { scenario: fixtureScenario, context, extraFixed } of cases) {
+                const name = fixtureScenario.name;
+                // C and all ratios are binary-exact. With response 64, both memory (C/4)
+                // and margins (C/8 + C/8) fit in floor((C - 64)/2).
+                const incoming =
+                    fixtureScenario.currentTokens ??
+                    (await defaultCurrentTokens(fixtureScenario.chats)) + 64 + extraFixed;
+                for (const options of [undefined, { deferStored: true, responseCorrection: false }] as const) {
+                    const observe = async (budgetMode: "ratio" | "tokens") => {
+                        const scenario: Scenario = {
+                            ...fixtureScenario,
+                            maxContextTokens: context,
+                            currentTokens: incoming,
+                            settings: { ...fixtureScenario.settings, maxResponse: 64 },
+                            preset: {
+                                ...fixtureScenario.preset,
+                                ...EXPERIMENTAL_PRESET,
+                                useExperimentalImpl: implementation === "experimental",
+                                budgetMode,
+                                memoryTokensRatio: budgetMode === "ratio" ? 0.25 : 0.0625,
+                                lookaheadHeadroomRatio: budgetMode === "ratio" ? 0.125 : 0.5,
+                                extraSummarizationRatio: budgetMode === "ratio" ? 0.125 : 0.5,
+                                memoryBudgetTokens: context / 4,
+                                lookaheadHeadroomTokens: context / 8,
+                                extraSummarizationTokens: context / 8,
+                            },
+                        };
+                        const world = createWorld(scenario);
+                        const host = hostOf(scenario, world);
+                        const outcome = await prepareHypaV3(
+                            host,
+                            structuredClone(scenario.chats),
+                            incoming,
+                            context,
+                            structuredClone(scenario.room) as never,
+                            { tokenizeChat },
+                            options,
+                        );
+                        if (!outcome.ok) throw new Error(outcome.result.error);
+                        const prepared = outcome.prepared;
+                        expect(prepared.budget).toEqual({
+                            memoryTokens: context / 4,
+                            targetTokens: context * 0.875,
+                            lookaheadTrigger: context * 0.875,
+                            lookaheadTarget: context * 0.75,
+                            reduced: [],
+                        });
+                        const forecast = (execution: HypaV3ExecutionResult) =>
+                            forecastHypaV3(prepared, {
+                                cursor: execution.cursor,
+                                currentTokens: execution.currentTokens,
+                                summaryCount: appliedHypaV3Summaries(prepared, execution).length,
+                            });
+                        const beforeForecast = await forecast(emptyHypaV3Execution(prepared));
+                        const plan = await planHypaV3Summaries(prepared);
+                        const lookahead = await planHypaV3Summaries(prepared, { lookahead: true });
+                        const execution = await executeHypaV3Plan(host, prepared, plan);
+                        const selection = await selectHypaV3(host, prepared, execution);
+                        expect(selection.error).toBeUndefined();
+                        return {
+                            ledger: prepared.ledger,
+                            startIdx: prepared.startIdx,
+                            appliedSummaries: prepared.appliedSummaries,
+                            coverage: prepared.coverage,
+                            plan,
+                            lookahead,
+                            execution,
+                            selection,
+                            beforeForecast,
+                            afterForecast: await forecast(execution),
+                            summaryRequests: world.log.requests,
+                        };
+                    };
+                    const ratio = await observe("ratio");
+                    const tokens = await observe("tokens");
+                    expect(tokens, JSON.stringify({ name, context, extraFixed, options })).toEqual(ratio);
+                    executedSummaries += ratio.summaryRequests.length;
+                    lookaheadCalls += ratio.lookahead.llmCalls;
+                    if (options?.deferStored) {
+                        deferredTokens += ratio.coverage.deferredTokens;
+                        replayedSummaries += ratio.appliedSummaries;
+                        expect(ratio.ledger.responseCorrection).toBe(0);
+                        if (name === "stored pairs after history growth") {
+                            expect(ratio.appliedSummaries).toBeGreaterThan(0);
+                            expect(ratio.appliedSummaries).toBeLessThan(20);
+                            expect(ratio.plan.stopReason).toBe("notNeeded");
+                        }
+                    }
+                }
+            }
+            // These comparisons exercise work, including both taking and deferring stored summaries.
+            expect(executedSummaries).toBeGreaterThan(0);
+            expect(lookaheadCalls).toBeGreaterThan(0);
+            expect(deferredTokens).toBeGreaterThan(0);
+            expect(replayedSummaries).toBeGreaterThan(0);
+        });
+    }
+});

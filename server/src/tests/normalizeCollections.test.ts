@@ -496,7 +496,8 @@ describe("hypaV3Presets", () => {
             ],
             selectedId: "missing",
         });
-        const defaults = normalizeHypaV3Presets(undefined).items[0].settings;
+        // A stored preset without `budgetMode` stays in ratio mode; only the seeded one is in token mode.
+        const defaults = { ...normalizeHypaV3Presets(undefined).items[0].settings, budgetMode: "ratio" };
         expect(out.items[0]).toEqual({ id: "a", name: "A", settings: { ...defaults, memoryTokensRatio: 0.5 } });
         expect(out.items[1]).toEqual({ id: expect.stringMatching(UUID_V4), name: "Preset 2", settings: defaults });
         expect(out.items[2]).toEqual({ id: expect.stringMatching(UUID_V4), name: "Preset 3", settings: defaults });
@@ -517,7 +518,7 @@ describe("hypaV3Presets", () => {
         expect(Object.hasOwn(settings, "__proto__")).toBe(false);
         expect(Object.hasOwn(settings, "extra")).toBe(false);
         expect(settings.extra).toBeUndefined();
-        expect(settings).toEqual(normalizeHypaV3Presets(undefined).items[0].settings);
+        expect(settings).toEqual({ ...normalizeHypaV3Presets(undefined).items[0].settings, budgetMode: "ratio" });
         expectIdempotent(normalizeHypaV3Presets, input);
         expect(Object.hasOwn(Object.prototype, "extra")).toBe(false);
     });

@@ -57,7 +57,8 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
  *
  * - Settings: the sections and collections as a job's projection holds them (`databaseProjection.ts`),
  *   without metatron-only fields, with `formatversion: 5` so upstream's `checkNewFormat` runs no legacy
- *   migration, and with the translator and HypaV3 selections as list positions.
+ *   migration, with the translator and HypaV3 selections as list positions, and with every HypaV3
+ *   preset in ratios (upstream has no token budget mode).
  * - Presets: one upstream preset per prompt preset, each with the chosen model preset's slot
  *   model ids and main profile options; the chosen prompt preset also fills the root.
  * - Credentials: only with `includeSecrets`. Upstream reads one key per field (U `setPreset`
@@ -336,6 +337,8 @@ export function buildUpstreamDatabase(
 
     db.translatorPresets = upstreamTranslatorPresets(db, report);
     db.hypaV3PresetId = positionOf(db.hypaV3Presets, db.hypaV3PresetId);
+    // After `forwardSelectedPreset`: the root `maxContext` is the exported one.
+    db.hypaV3Presets = upstreamHypaV3Presets(db.hypaV3Presets, db.maxContext);
     db.characterOrder = repairCharacterOrder(db.characterOrder, report);
     db.loreBook = asList<Root>(db.loreBook).map((page, index) => ({
         ...page,
@@ -737,6 +740,42 @@ function upstreamTranslatorPresets(db: Root, report: UpstreamExportReport): Root
             prompt: typeof step?.prompt === "string" ? step.prompt : "",
             maxResponse: typeof step?.maxResponse === "number" ? step.maxResponse : 1000,
         };
+    });
+}
+
+/**
+ * Upstream HypaV3 presets. Upstream has no token budget mode, so a token-mode preset gets the ratios
+ * of its token amounts at the exported root `maxContext` `C` (`memoryBudgetTokens / C`,
+ * `extraSummarizationTokens / C`, `lookaheadHeadroomTokens / C`), each rounded to 2 decimals as the
+ * settings sliders are and kept in the sliders' ranges: memory in [0, 1], extra summarization in
+ * [0, 1 − memory], and headroom in [0, 0.99] (`createHypaV3Preset` replaces a headroom of 1). The
+ * bound `1 − memory` is rounded too (`1 − 0.33` is 0.6699999999999999), so every exported ratio has at
+ * most 2 decimals. Without a positive finite `C` the stored ratios stay. Every preset leaves out
+ * `budgetMode` and the token amounts; the result shares no settings object with `value`.
+ */
+function upstreamHypaV3Presets(value: unknown, maxContext: unknown): unknown {
+    if (!Array.isArray(value)) {
+        return value;
+    }
+    const context = typeof maxContext === "number" && Number.isFinite(maxContext) && maxContext > 0 ? maxContext : null;
+    return value.map((preset: unknown) => {
+        if (!isPlainObject(preset) || !isPlainObject(preset.settings)) {
+            return preset;
+        }
+        const { budgetMode, memoryBudgetTokens, lookaheadHeadroomTokens, extraSummarizationTokens, ...settings } =
+            preset.settings;
+        if (budgetMode === "tokens" && context !== null) {
+            const ratioOf = (tokens: unknown) =>
+                Math.round(((typeof tokens === "number" && tokens > 0 ? tokens : 0) / context) * 100) / 100;
+            const memory = Math.min(1, ratioOf(memoryBudgetTokens));
+            settings.memoryTokensRatio = memory;
+            settings.extraSummarizationRatio = Math.min(
+                Math.round((1 - memory) * 100) / 100,
+                ratioOf(extraSummarizationTokens),
+            );
+            settings.lookaheadHeadroomRatio = Math.min(0.99, ratioOf(lookaheadHeadroomTokens));
+        }
+        return { ...preset, settings };
     });
 }
 

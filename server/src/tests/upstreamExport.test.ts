@@ -5,6 +5,7 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Credential, ModelPreset, ModelProfile, RisuPersona, botPreset } from "../../../shared/database.ts";
+import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { LLMFormat, LLMTokenizer } from "../../../shared/llm.ts";
 import { RESOURCE_KIND, type ResourceKindName } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, DROPPED_FIELDS, SECTION_KIND } from "../../../shared/sections.ts";
@@ -632,6 +633,108 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(personas[0]).not.toHaveProperty("modules");
         expect(excluded(report, "persona-modules")).toMatchObject({ count: 1, examples: ["Uma"] });
         expect(report.counts.personas).toBe(2);
+    });
+});
+
+describe("buildUpstreamDatabase: HypaV3 budgets", () => {
+    const newFields = ["budgetMode", "memoryBudgetTokens", "lookaheadHeadroomTokens", "extraSummarizationTokens"];
+    const ratios = { memoryTokensRatio: 0.25, lookaheadHeadroomRatio: 0.125, extraSummarizationRatio: 0.5 };
+    const tokenPreset = (id: string, memory: number, headroom: number, extra: number) =>
+        createHypaV3Preset(
+            id,
+            {
+                ...ratios,
+                budgetMode: "tokens",
+                memoryBudgetTokens: memory,
+                lookaheadHeadroomTokens: headroom,
+                extraSummarizationTokens: extra,
+            },
+            id,
+        );
+
+    it("exports token amounts as rounded and clamped ratios of the selected root context without changing stored presets", async () => {
+        const presets = [
+            tokenPreset("rounded", 2666, 1234, 875),
+            tokenPreset("capped", 16000, 24000, 8000),
+            tokenPreset("extra-capped", 2666, 0, 12000),
+            tokenPreset("zero", 0, 0, 0),
+            createHypaV3Preset("Ratio", { ...ratios, budgetMode: "ratio" }, "ratio"),
+        ];
+        const snapshot = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(COLLECTION_KIND.hypaV3Presets, "main", { items: presets, selectedId: "rounded" });
+        });
+        const before = structuredClone(snapshot);
+        // Prompt A overrides the profile's 4000 with 8000; B uses the profile. These are
+        // configured amounts / C, irrespective of maxResponse or the runtime reduction.
+        const cases = [
+            {
+                promptPresetId: "ppA",
+                context: 8000,
+                ratios: [
+                    [0.33, 0.15, 0.11],
+                    [1, 0.99, 0],
+                    [0.33, 0, 0.67],
+                    [0, 0, 0],
+                    [0.25, 0.125, 0.5],
+                ],
+            },
+            {
+                promptPresetId: "ppB",
+                context: 4000,
+                ratios: [
+                    [0.67, 0.31, 0.22],
+                    [1, 0.99, 0],
+                    [0.67, 0, 0.33],
+                    [0, 0, 0],
+                    [0.25, 0.125, 0.5],
+                ],
+            },
+        ];
+        for (const testCase of cases) {
+            const { db } = exportOf(snapshot, { promptPresetId: testCase.promptPresetId });
+            expect(db.maxContext).toBe(testCase.context);
+            const exported = db.hypaV3Presets as { settings: Root }[];
+            expect(exported).toHaveLength(presets.length);
+            for (const [i, preset] of exported.entries()) {
+                const [memoryTokensRatio, lookaheadHeadroomRatio, extraSummarizationRatio] = testCase.ratios[i];
+                const kept = Object.fromEntries(
+                    Object.entries(presets[i].settings).filter(([key]) => !newFields.includes(key)),
+                );
+                expect(preset.settings).toEqual({
+                    ...kept,
+                    memoryTokensRatio,
+                    lookaheadHeadroomRatio,
+                    extraSummarizationRatio,
+                });
+                for (const field of newFields) expect(preset.settings).not.toHaveProperty(field);
+            }
+            expect(snapshot).toEqual(before);
+        }
+    });
+
+    it("keeps stored ratios when the exported root context is not positive while dropping token fields", async () => {
+        const preset = tokenPreset("tokens", 6000, 4000, 1000);
+        const snapshot = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(COLLECTION_KIND.hypaV3Presets, "main", { items: [preset], selectedId: preset.id });
+        });
+        for (const context of [0, -1]) {
+            // Raw export rows let the boundary see a context the profile normalization keeps.
+            const rows = snapshot.rows.map((row) => {
+                if (row.kind !== COLLECTION_KIND.modelProfiles) return row;
+                const profiles = JSON.parse(row.text) as Root[];
+                profiles.find((profile) => profile.id === "pMain")!.maxContext = context;
+                return { ...row, text: JSON.stringify(profiles) };
+            });
+            const before = structuredClone(rows);
+            const { db } = buildUpstreamDatabase(rows, snapshot, { ...SELECT_A, promptPresetId: "ppB" });
+            expect(db.maxContext).toBe(context);
+            const settings = (db.hypaV3Presets as { settings: Root }[])[0].settings;
+            expect(settings).toMatchObject(ratios);
+            for (const field of newFields) expect(settings).not.toHaveProperty(field);
+            expect(rows).toEqual(before);
+        }
     });
 });
 

@@ -598,6 +598,9 @@ async function startStack(options: { memoryTasks?: "disabled" | MemoryTaskServic
         ...defaultMemorySettings,
         hypaCustomSettings: { url: embedderUrl, key: EMBED_KEY, model: "emb-model" },
     });
+    // The chats here are sized for the ratio defaults (a fifth of the context for memory, background
+    // summaries above 85% of it); the seeded preset is in token mode.
+    await patchHypaV3({ budgetMode: "ratio" });
     return stack;
 }
 

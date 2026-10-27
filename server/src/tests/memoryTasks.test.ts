@@ -104,6 +104,8 @@ const REQUEST_TRIGGER = {
 };
 /** Two scanned entries per window and one protected entry: `n` history entries plan `ceil((n − 1) / 2)` summaries. */
 const PRESET_SETTINGS = {
+    // The seeded preset is in token mode; these sizes are ratios.
+    budgetMode: "ratio",
     memoryTokensRatio: 0.2,
     // The lookahead target is 0: every window up to the protected tail is planned.
     extraSummarizationRatio: 0.85,

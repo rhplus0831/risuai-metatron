@@ -99,10 +99,26 @@ export interface HypaV3Settings {
     summarizationModel: string;
     summarizationPrompt: string;
     reSummarizationPrompt: string;
+    /** Ratio mode: the memory budget's share of the context: `floor(C × r)`. */
     memoryTokensRatio: number;
+    /** Ratio mode: the share of the context a summarization frees beyond the trigger: the target is `C × (1 − e)`. */
     extraSummarizationRatio: number;
-    /** The share of the context a background summary keeps free: summaries are made above `C × (1 − h)`; in [0, 1). */
+    /** Ratio mode: the share of the context a background summary keeps free: summaries are made above `C × (1 − h)`; in [0, 1). */
     lookaheadHeadroomRatio: number;
+    /**
+     * How the memory budget, the background summary headroom, and the extra summarization are given:
+     * `"ratio"`, as shares of the max context `C` (the three `*Ratio` fields), or `"tokens"`, as token
+     * amounts (the three `*Tokens` fields below), reduced to fit the context. `resolveHypaV3Budget`
+     * (`shared/hypaV3Presets.ts`) turns either into the step's thresholds. Each mode keeps the other's
+     * fields, so switching back restores them.
+     */
+    budgetMode: "ratio" | "tokens";
+    /** Token mode: the memory budget, the tokens the summaries may take in the prompt; an integer ≥ 0. */
+    memoryBudgetTokens: number;
+    /** Token mode: the tokens a background summary keeps free: summaries are made above `C − headroom`; an integer ≥ 0. */
+    lookaheadHeadroomTokens: number;
+    /** Token mode: the tokens a summarization frees beyond the trigger: the target is `C − extra`; an integer ≥ 0. */
+    extraSummarizationTokens: number;
     maxChatsPerSummary: number;
     recentMemoryRatio: number;
     similarMemoryRatio: number;

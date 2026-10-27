@@ -1,4 +1,5 @@
 import type { Message } from "./database.ts";
+import type { HypaV3BudgetReduction } from "./hypaV3Presets.ts";
 
 /**
  * How one request spent the model's context: written by the server's `assemblePrompt` into
@@ -94,8 +95,17 @@ export type ContextReport = {
         kind: "hypaV3" | "hypaV2" | "supa" | "hanurai";
         /** The memory entries as sent (inner format and wrappers included); 0 when none was sent. */
         tokens: number;
-        /** HypaV3's memory budget (`floor(maxContext × memoryTokensRatio)`). */
+        /**
+         * HypaV3's memory budget as the step applied it (`resolveHypaV3Budget`): in ratio mode
+         * `floor(maxContext × memoryTokensRatio)`, in token mode the preset's amount reduced to fit.
+         */
         budget?: number;
+        /**
+         * HypaV3 in token mode: each amount of the preset the step reduced to fit the max context
+         * (`resolveHypaV3Budget`), with its configured and applied value, in the order memory,
+         * headroom, extra; absent when none was reduced.
+         */
+        budgetReduced?: readonly HypaV3BudgetReduction[];
         /** "gap" when HypaV3 left uncovered history; "unknown" when it cannot tell. */
         coverage: "covered" | "gap" | "unknown";
         /**
@@ -165,6 +175,7 @@ const SECTION_KINDS: readonly ContextSectionKind[] = [
 const TRIM_KINDS: readonly ContextTrimEntry["kind"][] = ["example", "marker", "message"];
 const MEMORY_KINDS: readonly NonNullable<ContextReport["memory"]>["kind"][] = ["hypaV3", "hypaV2", "supa", "hanurai"];
 const COVERAGES: readonly NonNullable<ContextReport["memory"]>["coverage"][] = ["covered", "gap", "unknown"];
+const BUDGET_FIELDS: readonly HypaV3BudgetReduction["field"][] = ["memory", "headroom", "extra"];
 
 type Fields = Record<string, unknown>;
 
@@ -269,6 +280,7 @@ export function parseContextReport(value: unknown): ContextReport | null {
             !isCount(memory.tokens) ||
             !oneOf(COVERAGES, memory.coverage) ||
             (memory.budget !== undefined && !isCount(memory.budget)) ||
+            (memory.budgetReduced !== undefined && !isBudgetReduced(memory.budgetReduced)) ||
             (memory.summarized !== undefined &&
                 (!isCount(memory.summarized) ||
                     !Number.isInteger(memory.summarized) ||
@@ -285,6 +297,28 @@ export function parseContextReport(value: unknown): ContextReport | null {
         }
     }
     return value as ContextReport;
+}
+
+/** `memory.budgetReduced`: a non-empty list of known fields, each at most once, with two counts. */
+function isBudgetReduced(value: unknown): boolean {
+    if (!Array.isArray(value) || value.length === 0) {
+        return false;
+    }
+    const fields = new Set<HypaV3BudgetReduction["field"]>();
+    for (let i = 0; i < value.length; i++) {
+        const entry: unknown = value[i];
+        if (
+            !Object.hasOwn(value, i) ||
+            !isRecord(entry) ||
+            !oneOf(BUDGET_FIELDS, entry.field) ||
+            fields.has(entry.field) ||
+            !counts(entry, ["configured", "applied"])
+        ) {
+            return false;
+        }
+        fields.add(entry.field);
+    }
+    return true;
 }
 
 type HistoryMessage = Pick<Message, "chatId" | "role" | "data" | "disabled">;

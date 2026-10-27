@@ -17,6 +17,7 @@ import type {
     MessageGenerationInfo,
     MessagePresetInfo,
 } from "../../../shared/database.ts";
+import type { HypaV3Budget, HypaV3BudgetReduction } from "../../../shared/hypaV3Presets.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type {
@@ -404,6 +405,8 @@ type HypaV3StepResult =
            * dropped uncovered history, "unknown" when the stored summaries end past the history.
            */
           coverage: "covered" | "gap" | "unknown";
+          /** The preset's thresholds the step applied (`HypaV3Prepared.budget`): the memory budget and the reductions. */
+          budget: HypaV3Budget;
           /**
            * For the context meter: the message ids the summaries in the prompt cover and those the
            * deferred ones cover (the greeting's is `undefined`), how far the next send is from
@@ -612,6 +615,7 @@ async function hypaV3Step(
             currentTokens: selection.currentTokens,
             protectedEntries: count > 0 ? selection.chats.slice(-count) : [],
             coverage: (selection.trim?.gap.tokens ?? 0) > 0 ? "gap" : prepared.coverageAhead ? "unknown" : "covered",
+            budget: prepared.budget,
             meter: {
                 summarizedMemos,
                 preparedMemos,
@@ -1751,7 +1755,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 memoryRun = {
                     kind: "hypaV3",
                     coverage: step.coverage,
-                    budget: Math.floor(maxContextTokens * getCurrentHypaV3Preset(memory).settings.memoryTokensRatio),
+                    budget: step.budget.memoryTokens,
+                    budgetReduced: step.budget.reduced,
                     meter: step.meter,
                 };
 
@@ -2292,7 +2297,10 @@ function emptySource(chat: OpenAIChat): { empty?: true } {
 type MemoryRun = {
     kind: NonNullable<ContextReport["memory"]>["kind"];
     coverage: "covered" | "gap" | "unknown";
+    /** HypaV3's memory budget as the step applied it. */
     budget?: number;
+    /** HypaV3: the token-mode amounts the step reduced to fit the context (empty when none was). */
+    budgetReduced?: readonly HypaV3BudgetReduction[];
     /** HypaV3's meter data (`HypaV3StepResult`). */
     meter?: HypaV3Meter;
 };
@@ -2603,10 +2611,20 @@ function buildContextReport(arg: {
         );
         const lostMemory =
             arg.memoryRun.kind === "hypaV3" && ((arg.hadMemoryEntries && !tracedMemorySurvives) || untracedMemory);
+        const budgetReduced = arg.memoryRun.kind === "hypaV3" ? (arg.memoryRun.budgetReduced ?? []) : [];
         report.memory = {
             kind: arg.memoryRun.kind,
             tokens: memoryTokens,
             ...(arg.memoryRun.budget !== undefined ? { budget: arg.memoryRun.budget } : {}),
+            ...(budgetReduced.length > 0
+                ? {
+                      budgetReduced: budgetReduced.map(({ field, configured, applied }) => ({
+                          field,
+                          configured,
+                          applied,
+                      })),
+                  }
+                : {}),
             coverage:
                 lostMemory || (arg.memoryRun.coverage === "covered" && lostAfter) ? "unknown" : arg.memoryRun.coverage,
         };

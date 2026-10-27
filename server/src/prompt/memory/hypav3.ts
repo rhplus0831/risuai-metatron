@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Chat, character, groupChat, Message } from "../../../../shared/database.ts";
-import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { type HypaV3Budget, resolveHypaV3Budget, selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import {
     type HypaV3Data,
     type HypaV3Preset,
@@ -122,7 +122,7 @@ export interface HypaV3Ledger {
     readonly prefixTokens: number;
     /** The empty `<Past Events Summary>` card. */
     readonly emptyMemoryTokens: number;
-    /** The full memory budget, `floor(maxContextTokens × memoryTokensRatio)`. */
+    /** The full memory budget, the resolved `HypaV3Prepared.budget.memoryTokens`. */
     readonly memoryTokens: number;
     /**
      * What `current` holds for the memory card until selection releases it: standard reserves the
@@ -145,6 +145,12 @@ export interface HypaV3Prepared {
     /** The processed history as passed in (returned as it is on the error paths). */
     readonly chats: OpenAIChat[];
     readonly maxContextTokens: number;
+    /**
+     * The preset's thresholds for `maxContextTokens` and `db.maxResponse` (`resolveHypaV3Budget`):
+     * the memory budget, the ordinary target, and the lookahead trigger and target, resolved once so
+     * the deferred replay, every plan, the forecast, and the selection read the same values.
+     */
+    readonly budget: HypaV3Budget;
     readonly tokenizer: MemoryTokenizer;
     /**
      * An independent copy of the stored value exactly as read (a stored `null` stays `null`), before
@@ -198,8 +204,9 @@ export interface HypaV3PrepareOptions {
 export interface HypaV3PlanOptions {
     /**
      * Plan the summaries the next sends will need before the prompt reaches the context: from the
-     * stored coverage, trigger above `C × (1 − h)` (`lookaheadHeadroomRatio`), target
-     * `max(0, C × (1 − h − extraSummarizationRatio))`, with the full memory budget counted as a
+     * stored coverage, trigger above the resolved lookahead trigger and target the lookahead target
+     * (`HypaV3Prepared.budget`; in ratio mode `C × (1 − h)` with `lookaheadHeadroomRatio` and
+     * `max(0, C × (1 − h − extraSummarizationRatio))`), with the full memory budget counted as a
      * planning cost even without stored summaries. The capacity checks stay at `C`, and only the
      * protected tail left is a normal stop even over `C`.
      */
@@ -490,7 +497,10 @@ export async function prepareHypaV3(
         role: "system",
         content: wrapWithXml(memoryPromptTag, ""),
     });
-    const memoryTokens = Math.floor(maxContextTokens * settings.memoryTokensRatio);
+    // The response size of the prompt budget whatever `responseCorrection` says: only a token-mode
+    // reduction depends on it.
+    const budget = resolveHypaV3Budget(settings, maxContextTokens, db.maxResponse);
+    const memoryTokens = budget.memoryTokens;
     const count = currentTokens + prefixTokens;
 
     /** The step whose prompt starts at `cursor` with `applied` summaries in. */
@@ -526,6 +536,7 @@ export async function prepareHypaV3(
             settings,
             chats,
             maxContextTokens,
+            budget,
             tokenizer,
             snapshot,
             data,
@@ -591,6 +602,7 @@ export async function prepareHypaV3(
         prefix,
         count,
         maxContextTokens,
+        budget,
         settings,
         implementation,
         emptyMemoryTokens,
@@ -668,10 +680,11 @@ function deferredSteps(
  * How many of the deferred steps a step takes: the original rules replayed over the history as it
  * grew, one message at a time, with the steps as the windows and the rest of the prompt as it is now.
  * At each length the count (the history from the cursor, the rest, and the reservation) over `C`
- * takes windows in order until it is at the target `C × (1 − extraSummarizationRatio)`, the next one
- * would take it under the target while it fits, or the next one reaches into the protected
- * `queryChatCount` tail of that length. A window without a summary is taken again at each length, as
- * the original rules keep only summaries, so the count is the steps up to the last summary taken.
+ * takes windows in order until it is at the ordinary target (`budget.targetTokens`, in ratio mode
+ * `C × (1 − extraSummarizationRatio)`), the next one would take it under the target while it fits, or
+ * the next one reaches into the protected `queryChatCount` tail of that length. A window without a
+ * summary is taken again at each length, as the original rules keep only summaries, so the count is
+ * the steps up to the last summary taken.
  */
 function deferredStepCount(arg: {
     steps: readonly DeferredStep[];
@@ -680,6 +693,8 @@ function deferredStepCount(arg: {
     /** The step's count after the response correction, the whole history in. */
     count: number;
     maxContextTokens: number;
+    /** The prepared step's thresholds: the full memory budget and the ordinary target. */
+    budget: HypaV3Budget;
     settings: Readonly<HypaV3Settings>;
     implementation: HypaV3Implementation;
     emptyMemoryTokens: number;
@@ -687,8 +702,7 @@ function deferredStepCount(arg: {
     const { steps, prefix, maxContextTokens, settings, emptyMemoryTokens } = arg;
     const length = prefix.length - 1;
     const rest = arg.count - prefix[length];
-    const memoryTokens = Math.floor(maxContextTokens * settings.memoryTokensRatio);
-    const targetTokens = maxContextTokens * (1 - settings.extraSummarizationRatio);
+    const { memoryTokens, targetTokens } = arg.budget;
     const endAt = (taken: number) => (taken > 0 ? steps[taken - 1].end : 0);
     let committed = 0;
     // The count of the first `at` entries with the committed steps taken and each main's reservation.
@@ -764,7 +778,7 @@ export async function forecastHypaV3(
     prepared: HypaV3Prepared,
     after: { readonly cursor: number; readonly currentTokens: number; readonly summaryCount: number },
 ): Promise<HypaV3Forecast> {
-    const { ledger, maxContextTokens, settings } = prepared;
+    const { ledger, maxContextTokens, budget } = prepared;
     const standard = prepared.implementation === "standard";
     // The count without the memory card.
     const entries = after.currentTokens - ledger.reservation.tokens;
@@ -777,10 +791,10 @@ export async function forecastHypaV3(
           : 0;
     const summarizeIn = Math.max(0, maxContextTokens - triggerReserve - entries + 1);
 
-    // A lookahead plan asks once it accepts its first window with a message to summarize: past
-    // `C × (1 − h)`, and either that window leaves the target reached or the window starts over `C`.
-    // It starts at the stored coverage, the history of deferred summaries counted as summarized.
-    const headroom = settings.lookaheadHeadroomRatio;
+    // A lookahead plan asks once it accepts its first window with a message to summarize: past the
+    // lookahead trigger (`C × (1 − h)` in ratio mode), and either that window leaves the lookahead
+    // target reached or the window starts over `C`. It starts at the stored coverage, the history of
+    // deferred summaries counted as summarized.
     const deferred = after.cursor < prepared.coverage.startIdx;
     const coveredEntries = deferred ? entries - prepared.coverage.deferredTokens : entries;
     let before = 0;
@@ -793,10 +807,9 @@ export async function forecastHypaV3(
             break;
         }
         if (window.included.length > 0) {
-            const target = Math.max(0, maxContextTokens * (1 - headroom - settings.extraSummarizationRatio));
             const asksAt = Math.max(
-                Math.floor(maxContextTokens * (1 - headroom)) + 1,
-                Math.min(Math.ceil(target) + before + window.tokens, maxContextTokens + before + 1),
+                Math.floor(budget.lookaheadTrigger) + 1,
+                Math.min(Math.ceil(budget.lookaheadTarget) + before + window.tokens, maxContextTokens + before + 1),
             );
             lookaheadIn = Math.max(0, asksAt - (coveredEntries + ledger.memoryTokens));
             break;
@@ -881,9 +894,8 @@ export async function planHypaV3Summaries(
     prepared: HypaV3Prepared,
     options: HypaV3PlanOptions = {},
 ): Promise<HypaV3Plan> {
-    const { settings, chats, maxContextTokens, ledger } = prepared;
+    const { settings, chats, maxContextTokens, ledger, budget } = prepared;
     const lookahead = options.lookahead === true;
-    const headroom = settings.lookaheadHeadroomRatio;
     const windows: HypaV3PlannedWindow[] = [];
     // A lookahead plan starts at the stored coverage (the deferred history counted as summarized) and
     // counts the full memory budget in place of the ledger's reservation.
@@ -901,12 +913,8 @@ export async function planHypaV3Summaries(
     });
 
     // If summarization is needed
-    const summarizationMode = lookahead
-        ? currentTokens > maxContextTokens * (1 - headroom)
-        : currentTokens > maxContextTokens;
-    const targetTokens = lookahead
-        ? Math.max(0, maxContextTokens * (1 - headroom - settings.extraSummarizationRatio))
-        : maxContextTokens * (1 - settings.extraSummarizationRatio);
+    const summarizationMode = lookahead ? currentTokens > budget.lookaheadTrigger : currentTokens > maxContextTokens;
+    const targetTokens = lookahead ? budget.lookaheadTarget : budget.targetTokens;
 
     if (!summarizationMode) {
         return finish("notNeeded");

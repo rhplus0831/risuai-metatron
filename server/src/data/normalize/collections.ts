@@ -189,7 +189,11 @@ export const normalizeTranslatorPresets: (input: unknown) => CollectionResource<
     () => createTranslatorPreset("Default"),
 );
 
-/** `hypaV3Presets` with the selected preset (`hypaV3PresetId`). */
+/**
+ * `hypaV3Presets` with the selected preset (`hypaV3PresetId`). A stored preset without `budgetMode`
+ * stays in ratio mode (`createHypaV3Preset`'s default); the preset seeded into a missing or empty
+ * list is a new one, in token mode.
+ */
 export const normalizeHypaV3Presets: (input: unknown) => CollectionResource<"hypaV3Presets"> = selectableList(
     "hypaV3Presets",
     (entry, index, id) =>
@@ -198,5 +202,5 @@ export const normalizeHypaV3Presets: (input: unknown) => CollectionResource<"hyp
             isPlainObject(entry.settings) ? entry.settings : {},
             id,
         ),
-    () => createHypaV3Preset("Default"),
+    () => createHypaV3Preset("Default", { budgetMode: "tokens" }),
 );
