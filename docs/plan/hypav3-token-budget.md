@@ -1,6 +1,6 @@
 # HypaV3 Token Budget Plan
 
-Status: landed 1 (6d24cc697).
+Status: landed 1 (6d24cc697), 2 (92f830490).
 
 Slice 1 notes for slice 2:
 
@@ -18,6 +18,20 @@ Slice 1 notes for slice 2:
 - Upstream export clamps to the sliders' ranges (memory [0, 1], extra
   [0, 1 − memory], headroom [0, 0.99]) and keeps the stored ratios when the root
   `maxContext` is not a positive finite number.
+
+Slice 2 notes:
+
+- Strings beyond the plan's list: the token estimate label and its error, the
+  popover's field labels (`budgetReducedFields`), and the chip's summary clause.
+- Token inputs store a floored integer >= 0; an empty entry writes nothing.
+  `getMaxMemoryRatio` became `estimateMaxMemory` (ratio and tokens) and now
+  recomputes when the max context changes.
+- Browser check done with Playwright on an isolated dev stack: a fresh database
+  opens the seeded preset in token mode; at max context 4000 large values show
+  two warning lines at once; ratio mode shows the sliders and the convert button,
+  and converting switches to tokens (memory 800). Not checked in a browser: a
+  real send's summarize timing and the chip's "memory reduced" after a send (the
+  meter is covered by unit tests only).
 
 - 2026-10-27: first draft, written after a design discussion with the user. The
   user's answers are recorded under **Agreed decisions**.
