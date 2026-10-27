@@ -92,6 +92,7 @@
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
     import { createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
+    import { createComposer } from "src/ts/process/composerDrafts.svelte";
     import {
         createInputTranslation,
         handleMainComposerKeydown,
@@ -127,14 +128,12 @@
         customStyle?: string;
     }
 
-    let messageInput: string = $state("");
-    let messageInputTranslate: string = $state("");
+    const composer = createComposer();
     let openMenu = $state(false);
     const rerollHistory = createRerollHistory();
     const sendDrafts = createSendDrafts();
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
     let toggleStickers: boolean = $state(false);
-    let fileInput: string[] = $state([]);
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
     let revealing = $state(false);
@@ -180,10 +179,10 @@
         translate,
         isExperimental: isExpTranslator,
         enabled: () => settings.memoryTranslateMedia.useAutoTranslateInput,
-        getText: (field) => (field === "main" ? messageInput : messageInputTranslate),
+        getText: (field) => (field === "main" ? composer.input : composer.translate),
         setText: (field, text) => {
-            if (field === "main") messageInput = text;
-            else messageInputTranslate = text;
+            if (field === "main") composer.input = text;
+            else composer.translate = text;
         },
         getChatKey: () => chatKey,
     });
@@ -202,11 +201,12 @@
         chatKey;
         inputTranslation.invalidate();
         untrack(() => {
+            composer.switchTo(chatKey);
             const ref = currentChatRef();
-            if (ref && messageInput === "") {
+            if (ref && composer.input === "") {
                 const draft = sendDrafts.takeUnplaced(ref);
                 if (draft) {
-                    messageInput = draft.input;
+                    composer.input = draft.input;
                 }
             }
         });
@@ -434,6 +434,7 @@
         if (!ref) {
             return;
         }
+        const draft = composer.at(chatKeyOf(ref));
         // Only this chat's own work refuses the send (a send of this tab, a followed job, or a lock),
         // before the text, translation draft, attachments, or reroll history are consumed; other chats
         // send at the same time.
@@ -443,10 +444,10 @@
         }
         const characterOf = () => characterList().find((character) => character?.chaId === ref.chaId);
 
-        if (messageInput.startsWith("/")) {
-            const commandProcessed = await processMultiCommand(messageInput);
+        if (draft.input.startsWith("/")) {
+            const commandProcessed = await processMultiCommand(draft.input);
             if (commandProcessed !== false) {
-                messageInput = "";
+                draft.input = "";
                 inputTranslation.invalidate();
                 return;
             }
@@ -462,7 +463,7 @@
             return;
         }
         // An incomplete binding opens its setup before anything is consumed (also for Continue): the
-        // text, the translation draft, and the attachments stay in the composer.
+        // text, the translation draft, and the attachments stay in this chat's composer.
         if (chatBinding(ref)?.ok === false) {
             chatBindingDialog.set(ref);
             return;
@@ -471,16 +472,16 @@
             return;
         }
 
-        if (fileInput.length > 0) {
-            for (const file of fileInput) {
-                messageInput += `{{inlayed::${file}}}`;
+        if (draft.files.length > 0) {
+            for (const file of draft.files) {
+                draft.input += `{{inlayed::${file}}}`;
             }
-            fileInput = [];
+            draft.files = [];
         }
 
         // The job runs the input stage and appends the user message.
         let serverInput: SendDraft | null = null;
-        if (messageInput === "") {
+        if (draft.input === "") {
             if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
                     if (settings.ui.useSayNothing) {
@@ -490,10 +491,10 @@
             }
         } else {
             // Retried text keeps its id: the server skips an input it already appended under it.
-            serverInput = { input: messageInput, userMessageId: sendDrafts.idFor(ref, messageInput) };
+            serverInput = { input: draft.input, userMessageId: sendDrafts.idFor(ref, draft.input) };
         }
-        messageInput = "";
-        messageInputTranslate = "";
+        draft.input = "";
+        draft.translate = "";
         inputTranslation.invalidate();
         rerollHistory.clear(ref);
         // The send is admitted without another await after the input is consumed.
@@ -691,10 +692,10 @@
                     landed,
                     ok,
                     selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
-                    composerEmpty: messageInput === "",
+                    composerEmpty: composer.at(chatKeyOf(target)).input === "",
                 });
                 if (result === "restore") {
-                    messageInput = serverInput.input;
+                    composer.at(chatKeyOf(target)).input = serverInput.input;
                 }
             }
         }
@@ -1014,7 +1015,7 @@
                             chatRef={displayedChat}
                             group={currentCharacter.type === "group"}
                             height={inputHeight}
-                            draft={messageInput}
+                            draft={composer.input}
                             generating={stoppable ||
                                 isLocalSend(displayedChat, $localSends) ||
                                 generatingChatKeys().has(chatStatusKey(displayedChat))}
@@ -1036,13 +1037,15 @@
 
                     <textarea
                         class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm"
-                        bind:value={messageInput}
+                        bind:value={composer.input}
                         bind:this={inputEle}
                         oncompositionstart={() => inputTranslation.compositionStart("main")}
                         oncompositionend={() => inputTranslation.compositionEnd("main")}
                         onkeydown={(e) =>
                             handleMainComposerKeydown(e, { sendWithEnter: settings.ui.sendWithEnter, send, reroll })}
                         onpaste={(e) => {
+                            const ref = currentChatRef();
+                            if (!ref) return;
                             const items = e.clipboardData?.items;
                             if (!items) {
                                 return;
@@ -1066,12 +1069,13 @@
                                                 data: uint8,
                                             });
                                             if (!results) return;
+                                            const draft = composer.at(chatKeyOf(ref));
                                             for (const res of results) {
                                                 if (res?.type === "asset") {
-                                                    fileInput.push(res.data);
+                                                    draft.files.push(res.data);
                                                 }
                                                 if (res?.type === "text") {
-                                                    messageInput += `{{file::${res.name}::${res.data}}}`;
+                                                    draft.input += `{{file::${res.name}::${res.data}}}`;
                                                 }
                                             }
                                             updateInputSizeAll();
@@ -1299,14 +1303,17 @@
                             <div
                                 class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                                 onclick={async () => {
-                                    const results = await postChatFile(messageInput);
+                                    const ref = currentChatRef();
+                                    if (!ref) return;
+                                    const results = await postChatFile(composer.at(chatKeyOf(ref)).input);
                                     if (!results) return;
+                                    const draft = composer.at(chatKeyOf(ref));
                                     for (const res of results) {
                                         if (res?.type === "asset") {
-                                            fileInput.push(res.data);
+                                            draft.files.push(res.data);
                                         }
                                         if (res?.type === "text") {
-                                            messageInput += `{{file::${res.name}::${res.data}}}`;
+                                            draft.input += `{{file::${res.name}::${res.data}}}`;
                                         }
                                     }
                                     updateInputSizeAll();
@@ -1359,7 +1366,7 @@
                     <textarea
                         id="messageInputTranslate"
                         class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow ml-4 mr-2 border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full"
-                        bind:value={messageInputTranslate}
+                        bind:value={composer.translate}
                         bind:this={inputTranslateEle}
                         oncompositionstart={() => inputTranslation.compositionStart("translation")}
                         oncompositionend={() => inputTranslation.compositionEnd("translation")}
@@ -1378,11 +1385,11 @@
                 </div>
             {/if}
 
-            {#if fileInput.length > 0}
+            {#if composer.files.length > 0}
                 <div
                     class="chat-screen-content-width flex items-center ml-4 flex-wrap p-2 m-2 border-darkborderc border rounded-md"
                 >
-                    {#each fileInput as file, i}
+                    {#each composer.files as file, i}
                         {#await getInlayAsset(file) then inlayAsset}
                             <div class="relative">
                                 {#if inlayAsset.type === "image"}
@@ -1408,7 +1415,7 @@
                                 <button
                                     class="absolute -right-1 -top-1 p-1 bg-darkbg text-textcolor rounded-md transition-colors hover:text-draculared focus:text-draculared"
                                     onclick={() => {
-                                        fileInput.splice(i, 1);
+                                        composer.files.splice(i, 1);
                                         updateInputSizeAll();
                                     }}
                                 >
@@ -1431,7 +1438,7 @@
                                 if (fileExtension === "mp4" || fileExtension === "webm") fileType = "video";
                                 else if (fileExtension === "mp3" || fileExtension === "wav") fileType = "audio";
                             }
-                            messageInput += `<span class='notranslate' translate='no'>{{${fileType}::${additionalAsset[0]}}}</span> *${additionalAsset[0]} added*`;
+                            composer.input += `<span class='notranslate' translate='no'>{{${fileType}::${additionalAsset[0]}}}</span> *${additionalAsset[0]} added*`;
                             updateInputSizeAll();
                         }}
                     />
@@ -1441,7 +1448,7 @@
             {#if settings.ui.useAutoSuggestions}
                 <Suggestion
                     messageInput={(msg) =>
-                        (messageInput =
+                        (composer.input =
                             (subModel === "textgen_webui" || subModel === "mancer" || subModel.startsWith("local_")) &&
                             settings.ui.autoSuggestClean
                                 ? msg.replace(/ +\(.+?\) *$| - [^"'*]*?$/, "")
