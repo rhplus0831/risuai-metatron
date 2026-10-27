@@ -201,18 +201,22 @@
         <span class="text-sm text-textcolor2">{language.name}</span>
         <TextInput marginBottom size="lg" placeholder="User" bind:value={activePersona.name} />
         <span class="text-sm text-textcolor2">{language.personaNote}</span>
+        <!-- The popups are the shown persona's: a selection change while one is open discards its text
+             (the bound value alone cannot tell two personas with the same note apart). -->
         <TextAreaInput
             autocomplete="off"
             height="20"
             margin="bottom"
             bind:value={activePersona.note}
             popupLanguage="plaintext"
+            popupEditorContext={activePersona.id}
             placeholder={language.personaNotePlaceholder}
         />
         <span class="text-sm text-textcolor2">{language.description}</span>
         <TextAreaInput
             autocomplete="off"
             bind:value={activePersona.personaPrompt}
+            popupEditorContext={activePersona.id}
             placeholder={`Put the description of this persona here.\nExample: [<user> is a 20 year old girl.]`}
         />
         <div class="mt-4 flex flex-col gap-2">

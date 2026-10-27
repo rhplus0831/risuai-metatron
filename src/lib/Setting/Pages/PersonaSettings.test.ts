@@ -41,7 +41,7 @@ import type { Database } from "src/ts/storage/database.svelte";
 import { selectCharacter, selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activePersona, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
-import { popUpEditorStore } from "src/ts/stores.svelte";
+import { closePopupEditorSession, popUpEditorStore } from "src/ts/stores.svelte";
 import PersonaSettings from "./PersonaSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -112,6 +112,59 @@ describe("PersonaSettings", () => {
 
             descriptionInput.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
             expect(popUpEditorStore).toMatchObject({ open: true, value: description, language: "markdown" });
+        } finally {
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+            Object.assign(popUpEditorStore, previousPopup);
+            vi.useRealTimers();
+        }
+    });
+
+    it("a note or description popup writes the persona it opened on; a persona switch while it is open discards it, even between personas with the same text", async () => {
+        vi.useFakeTimers();
+        const previousPopup = { ...popUpEditorStore };
+        try {
+            settings.ui.longPressToPopupEditor = true;
+            const { target } = render();
+            const noteInput = () =>
+                target.querySelector<HTMLTextAreaElement>(
+                    `textarea[placeholder="${language.personaNotePlaceholder}"]`,
+                )!;
+            const descriptionInput = () =>
+                [...target.querySelectorAll("textarea")].find((input) =>
+                    input.placeholder.startsWith("Put the description of this persona here."),
+                )!;
+            const closePopupWith = async (text: string) => {
+                popUpEditorStore.value = text;
+                closePopupEditorSession(popUpEditorStore.sessionId);
+                await vi.advanceTimersByTimeAsync(100);
+                flushSync();
+                await vi.advanceTimersByTimeAsync(0);
+                flushSync();
+            };
+
+            // Bob's (p2) note popup, then Ann is selected while it is open: both notes are "", so the
+            // bound value alone would not notice the switch and the popup's text would land in Ann.
+            noteInput().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: "" });
+            popUpEditorStore.value = "typed for Bob";
+            selectPersona("p1");
+            flushSync();
+            await vi.advanceTimersByTimeAsync(100);
+            flushSync();
+            expect(popUpEditorStore.open).toBe(false);
+            expect([persona("p1").note, persona("p2").note]).toEqual(["", ""]);
+            expect(noteInput().value).toBe("");
+
+            // Without a switch the description popup writes the shown persona (Ann now), and Bob keeps his own.
+            descriptionInput().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: "", language: "markdown" });
+            await closePopupWith("Ann, described");
+            expect([persona("p1").personaPrompt, persona("p2").personaPrompt]).toEqual(["Ann, described", ""]);
+            expect(descriptionInput().value).toBe("Ann, described");
+            selectPersona("p2");
+            flushSync();
+            expect(descriptionInput().value).toBe("");
         } finally {
             popUpEditorStore.open = false;
             await vi.advanceTimersByTimeAsync(100);

@@ -146,7 +146,7 @@ Languages (`src/lang/`):
 
 ## Tests
 
-- Registry, views, and wrappers: `src/ts/storage/tests/settingsViews.test.ts`, `src/ts/storage/tests/settingWrappers.test.ts`, `src/lib/UI/GUI/guiRendering.test.ts`, and `src/lib/Setting/Pages/PersonaSettings.test.ts`.
+- Registry, views, and wrappers: `src/ts/storage/tests/settingsViews.test.ts`, `src/ts/storage/tests/settingWrappers.test.ts`, `src/lib/UI/GUI/guiRendering.test.ts`, and `src/lib/Setting/Pages/PersonaSettings.test.ts` (the editor through `activePersona`; its note and description popups carry the shown persona's id as `popupEditorContext`, so a persona switch while one is open discards the popup's text instead of writing it to the persona shown then, also between personas whose text is the same).
 - Preset and page behavior: `src/lib/Setting/botpreset.test.ts`, `src/lib/Setting/botpresetArchive.test.ts`, `src/lib/Setting/Pages/presetPages.test.ts`, `src/ts/setting/botSettingsParamsData.test.ts`, `src/lib/Setting/Settings.hotkeys.test.ts`, and `e2e/settingsPages.spec.ts` (page mounting and first-visit defaults).
 - Section and condition integrity: `src/ts/setting/settingsPageSections.test.ts`, `src/lib/Setting/SettingsSections.test.ts`, and `src/ts/setting/translationSettingsData.test.ts`.
 - Search and deep links: `src/ts/setting/searchIndex.test.ts`, `src/ts/setting/settingJump.test.ts`, and `src/lib/Setting/Settings.search.test.ts`.
