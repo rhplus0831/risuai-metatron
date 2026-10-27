@@ -1129,11 +1129,10 @@ export const languageKorean = {
             triggers: "트리거 항목",
             history: "대화 기록",
         },
-        historyKept: (kept: number, total: number, unit: "user" | "message") =>
-            `${kept} / ${total} ${unit === "user" ? "턴" : "메시지"} 전송`,
-        historyKeptOther: (kept: number, total: number, unit: "user" | "message") =>
-            `${unit === "user" ? "내 턴" : "메시지"} ${kept} / ${total}`,
-        greetingCounted: "인사말도 메시지 1개로 셈",
+        historySent: (kept: number, otherKept: number, unit: "user" | "message") =>
+            unit === "user" ? `${kept}턴 (${otherKept} 메시지) 전송` : `${kept} 메시지 (${otherKept}턴) 전송`,
+        historyTotal: (total: number, otherTotal: number, unit: "user" | "message") =>
+            unit === "user" ? `전체 ${total}턴 · ${otherTotal} 메시지` : `전체 ${total} 메시지 · ${otherTotal}턴`,
         historyOmitted: (count: number, tokens: string) => `제외된 메시지 ${count}개 · ${tokens} 토큰`,
         omittedSummarized: (count: number) => `메모리로 요약 ${count}개`,
         omittedUnsummarized: (count: number) => `요약 없이 잘림 ${count}개`,
@@ -1146,13 +1145,16 @@ export const languageKorean = {
         loreWarnOffNote: "이 채팅에서는 로어북 제외 경고를 표시하지 않습니다.",
         memoryBudget: (kind: string) => `${kind} 메모리 예산`,
         memoryLine: (kind: string, tokens: string) => `${kind} 메모리: ${tokens} 토큰 전송`,
-        summarizeIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 다음 요약이 시작됩니다.`,
-        summarizeNow: "다음 전송에서 요약이 시작됩니다.",
-        preparedSummaries: (count: number) =>
-            `원문 그대로 보내는 메시지 ${count}개의 요약이 준비되어 있습니다. 프롬프트가 컨텍스트를 채우면 요약이 이 메시지를 대신합니다.`,
-        preparedIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 준비된 요약이 사용됩니다.`,
-        lookaheadIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 백그라운드 사전 요약이 시작됩니다.`,
-        lookaheadPassed: "백그라운드 사전 요약 지점은 이미 지났습니다.",
+        preparedLabel: "준비된 요약",
+        preparedCount: (count: number) => `메시지 ${count}개분`,
+        preparedInLabel: "준비된 요약 사용까지",
+        summarizeInLabel: "다음 요약까지",
+        lookaheadLabel: "백그라운드 사전 요약까지",
+        tokensAway: (tokens: string) => `기록 약 ${tokens} 토큰`,
+        nextSend: "다음 전송",
+        lookaheadPassed: "지남",
+        preparedHelp:
+            "준비된 요약은 아직 원문 그대로 보내는 메시지의 요약입니다. 프롬프트가 컨텍스트를 채우면 요약이 이 메시지를 대신합니다.",
         legendReserved: "메모리 예약 (미사용)",
         legendSummarize: "요약 시작",
         legendLookahead: "백그라운드 사전 요약",

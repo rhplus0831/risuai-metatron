@@ -1,3 +1,6 @@
+/** "1 turn", "3 messages": the context meter's counts. */
+const countOf = (count: number, noun: "turn" | "message") => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
 export const languageEnglish = {
     formating: {
         main: "Main Prompt",
@@ -1673,11 +1676,14 @@ export const languageEnglish = {
             triggers: "Trigger additions",
             history: "Chat history",
         },
-        historyKept: (kept: number, total: number, unit: "user" | "message") =>
-            unit === "user" ? `${kept} of ${total} turns sent` : `${kept} of ${total} messages sent`,
-        historyKeptOther: (kept: number, total: number, unit: "user" | "message") =>
-            unit === "user" ? `your turns ${kept} of ${total}` : `messages ${kept} of ${total}`,
-        greetingCounted: "the greeting counts as a message",
+        historySent: (kept: number, otherKept: number, unit: "user" | "message") =>
+            unit === "user"
+                ? `${countOf(kept, "turn")} (${countOf(otherKept, "message")}) sent`
+                : `${countOf(kept, "message")} (${countOf(otherKept, "turn")}) sent`,
+        historyTotal: (total: number, otherTotal: number, unit: "user" | "message") =>
+            unit === "user"
+                ? `of ${countOf(total, "turn")} · ${countOf(otherTotal, "message")}`
+                : `of ${countOf(total, "message")} · ${countOf(otherTotal, "turn")}`,
         historyOmitted: (count: number, tokens: string) =>
             `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
         omittedSummarized: (count: number) => `summarized into memory: ${count}`,
@@ -1698,13 +1704,16 @@ export const languageEnglish = {
         },
         memoryBudget: (kind: string) => `${kind} memory budget`,
         memoryLine: (kind: string, tokens: string) => `${kind} memory: ${tokens} tokens sent.`,
-        summarizeIn: (tokens: string) => `About ${tokens} more tokens of history and the next summary starts.`,
-        summarizeNow: "The next send summarizes.",
-        preparedSummaries: (count: number) =>
-            `Summaries are ready for ${count === 1 ? "1 message" : `${count} messages`} still sent in full; they take their place once the prompt fills the context.`,
-        preparedIn: (tokens: string) => `About ${tokens} more tokens of history and the ready summaries come in.`,
-        lookaheadIn: (tokens: string) => `About ${tokens} more tokens and a background summary starts.`,
-        lookaheadPassed: "Past the background summary point.",
+        preparedLabel: "Summaries ready",
+        preparedCount: (count: number) => `for ${countOf(count, "message")}`,
+        preparedInLabel: "Ready summaries come in",
+        summarizeInLabel: "Next summary",
+        lookaheadLabel: "Background summary",
+        tokensAway: (tokens: string) => `in ~${tokens} tokens of history`,
+        nextSend: "on the next send",
+        lookaheadPassed: "passed",
+        preparedHelp:
+            "Ready summaries cover messages still sent in full; they take those messages' place once the prompt fills the context.",
         legendReserved: "Memory reserve (unused)",
         legendSummarize: "Summarizes past here",
         legendLookahead: "Background summary",

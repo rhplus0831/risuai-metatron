@@ -153,6 +153,9 @@ const sectionRows = () =>
         row.dataset.section,
         row.textContent?.replace(/\s+/g, " ").trim(),
     ]);
+/** A HypaV3 label/value row's label and value, e.g. `rowText(opened, "next")`. */
+const rowText = (opened: Element, name: string) =>
+    [...opened.querySelector(`[data-context-meter-${name}]`)!.children].map((cell) => cell.textContent?.trim());
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -313,12 +316,12 @@ describe("the popover", () => {
         );
         // Without memory the report gives no reason for what it left out: no tag.
         expect(opened.querySelector("[data-context-meter-omitted-tags]")).toBeNull();
-        // The setting's unit leads; the other follows with the greeting's note.
+        // The setting's unit leads, the other in parentheses; the totals sit under them.
         expect(opened.querySelector("[data-context-meter-kept]")!.textContent).toBe(
-            language.contextUsage.historyKept(2, 3, "user"),
+            language.contextUsage.historySent(2, 4, "user"),
         );
-        expect(opened.querySelector("[data-context-meter-history]")!.textContent).toContain(
-            `${language.contextUsage.historyKeptOther(4, 6, "message")} · ${language.contextUsage.greetingCounted}`,
+        expect(opened.querySelector("[data-context-meter-total]")!.textContent).toBe(
+            language.contextUsage.historyTotal(3, 6, "user"),
         );
     });
 
@@ -424,7 +427,9 @@ describe("the popover", () => {
         let opened = await openPanel();
         let memory = opened.querySelector("[data-context-meter-memory]")!;
         expect(memory.textContent).toContain(language.contextUsage.memoryLine("HypaV3", "300"));
-        expect(memory.textContent).toContain(language.contextUsage.coverageGap);
+        expect(opened.querySelector("[data-context-meter-coverage]")!.textContent).toBe(
+            language.contextUsage.coverageGap,
+        );
         chip()!.click();
         flushSync();
         expect(panel()).toBeNull();
@@ -440,7 +445,12 @@ describe("the popover", () => {
         expect(memory.textContent).toContain(language.contextUsage.memoryBudget("HypaV3"));
         expect(memory.textContent).toContain("300 / 500");
         expect(memory.textContent).not.toContain(language.contextUsage.memoryLine("HypaV3", "300"));
-        expect(memory.textContent).toContain(language.contextUsage.coverageCovered);
+        expect(opened.querySelector("[data-context-meter-coverage]")!.textContent).toBe(
+            language.contextUsage.coverageCovered,
+        );
+        // The memory leads the block; what was left out follows it.
+        const omittedLine = opened.querySelector("[data-context-meter-omitted]")!;
+        expect(memory.compareDocumentPosition(omittedLine) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("places HypaV3's reserve and summarize points on the bar and splits the history left out", async () => {
@@ -479,12 +489,14 @@ describe("the popover", () => {
             ["memory", language.contextUsage.omittedSummarized(1)],
             ["warn", language.contextUsage.omittedUnsummarized(1)],
         ]);
-        expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(
-            language.contextUsage.summarizeIn("70"),
-        );
-        expect(opened.querySelector("[data-context-meter-next-lookahead]")!.textContent).toBe(
-            language.contextUsage.lookaheadIn("20"),
-        );
+        expect(rowText(opened, "next")).toEqual([
+            language.contextUsage.summarizeInLabel,
+            language.contextUsage.tokensAway("70"),
+        ]);
+        expect(rowText(opened, "next-lookahead")).toEqual([
+            language.contextUsage.lookaheadLabel,
+            language.contextUsage.tokensAway("20"),
+        ]);
         // The split replaces the coverage sentence.
         expect(opened.textContent).not.toContain(language.contextUsage.coverageGap);
         chip()!.click();
@@ -504,7 +516,10 @@ describe("the popover", () => {
         expect(opened.querySelector("[data-context-meter-next-lookahead]")).toBeNull();
         expect(opened.textContent).not.toContain(language.contextUsage.legendLookahead);
         expect(opened.textContent).toContain(language.contextUsage.legendSummarize);
-        expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(language.contextUsage.summarizeNow);
+        expect(rowText(opened, "next")).toEqual([
+            language.contextUsage.summarizeInLabel,
+            language.contextUsage.nextSend,
+        ]);
         // Every message left out is summarized: one tag.
         expect(opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]").length).toBe(1);
         chip()!.click();
@@ -520,25 +535,36 @@ describe("the popover", () => {
         flushSync();
         opened = await openPanel();
         expect(opened.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("100%");
-        expect(opened.querySelector("[data-context-meter-next-lookahead]")!.textContent).toBe(
+        expect(rowText(opened, "next-lookahead")).toEqual([
+            language.contextUsage.lookaheadLabel,
             language.contextUsage.lookaheadPassed,
-        );
+        ]);
         expect(opened.querySelector("[data-context-meter-prepared]")).toBeNull();
+        expect(opened.querySelector("[data-context-meter-prepared-help]")).toBeNull();
         chip()!.click();
         flushSync();
 
-        // Summaries ready for messages still sent raw: their line, and the next point is where they come in.
+        // Summaries ready for messages still sent raw: their row, the next point is where they come
+        // in, and the explanation closes the block after the left-out history.
         patchMessage(ref, "m1", {
             generationInfo: { context: trimmed({ sections, memory: { ...memory, prepared: 3 } }) },
         });
         flushSync();
         opened = await openPanel();
-        expect(opened.querySelector("[data-context-meter-prepared]")!.textContent).toBe(
-            language.contextUsage.preparedSummaries(3),
-        );
-        expect(opened.querySelector("[data-context-meter-next]")!.textContent).toBe(
-            language.contextUsage.preparedIn("70"),
-        );
+        expect(rowText(opened, "prepared")).toEqual([
+            language.contextUsage.preparedLabel,
+            language.contextUsage.preparedCount(3),
+        ]);
+        expect(rowText(opened, "next")).toEqual([
+            language.contextUsage.preparedInLabel,
+            language.contextUsage.tokensAway("70"),
+        ]);
+        const help = opened.querySelector("[data-context-meter-prepared-help]")!;
+        expect(help.textContent).toBe(language.contextUsage.preparedHelp);
+        expect(
+            opened.querySelector("[data-context-meter-omitted-tags]")!.compareDocumentPosition(help) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
     });
 
     it("sits above the chip when there is room, below it otherwise, and stays below alerts", async () => {
