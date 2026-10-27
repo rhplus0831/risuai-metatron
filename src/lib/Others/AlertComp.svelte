@@ -391,7 +391,7 @@
                         <Button
                             styled="outlined"
                             size="sm"
-                            onclick={() => copyToClipboard(jobDebugInfo(failure, risuVersion), "job-debug")}
+                            onclick={() => copyToClipboard(jobDebugInfo(failure, risuVersion, buildId), "job-debug")}
                         >
                             {#if copiedKey === "job-debug"}
                                 <CheckIcon size={14} class="inline mr-2 text-success-500" />

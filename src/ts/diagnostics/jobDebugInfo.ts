@@ -1,3 +1,4 @@
+import { BUILD_ID_PATTERN } from "../../../shared/buildInfo.ts";
 import { GENERATION_ERROR_REASONS, GENERATION_ERROR_STAGES, GENERATION_ID_PATTERN } from "../../../shared/jobs.ts";
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import type { JobFailureInfo } from "../alert";
@@ -11,6 +12,7 @@ import type { JobFailureInfo } from "../alert";
 const LABELS = {
     title: "RisuAI job failure",
     version: "Version",
+    build: "Build",
     time: "Time",
     job: "Job",
     request: "Request",
@@ -24,12 +26,16 @@ const VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
 
 const isId = (value: unknown): value is string => typeof value === "string" && GENERATION_ID_PATTERN.test(value);
 
-/** `failure.at` is when the tab received the job's end. */
-export function jobDebugInfo(failure: JobFailureInfo, version: string): string {
+/**
+ * `failure.at` is when the tab received the job's end. `version` is the compatibility version and
+ * `build` this bundle's build id (`src/ts/buildInfo.ts`); `unknown` fails the build check and is left out.
+ */
+export function jobDebugInfo(failure: JobFailureInfo, version: string, build: string): string {
     const { end } = failure;
     const time = new Date(failure.at);
     const fields: [string, string | null][] = [
         [LABELS.version, VERSION.test(version) ? version : null],
+        [LABELS.build, BUILD_ID_PATTERN.test(build) ? build : null],
         [LABELS.time, Number.isFinite(time.getTime()) ? time.toISOString() : null],
         [LABELS.job, isId(failure.jobId) ? failure.jobId : null],
         [LABELS.request, isId(end.requestId) ? end.requestId : null],

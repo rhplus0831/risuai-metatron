@@ -1,16 +1,16 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26; single entries move as they come up.
 
 These are notes, not verified reports. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
-Reviewed against the current source on 2026-10-24 (first batch) and 2026-10-26 (second batch). Confirmed fixes have been removed, and partially fixed entries have been narrowed to the remaining gap. Entries that still need runtime reproduction are retained.
+Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (second batch), and 2026-10-27 (single entries). Confirmed fixes have been removed, and partially fixed entries have been narrowed to the remaining gap. Entries that still need runtime reproduction are retained.
 
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Chat screen and input](#chat-screen-and-input) (3)
+- [Chat screen and input](#chat-screen-and-input) (4)
 - [Test mocks](#test-mocks) (2)
 
 ## Chat store, sync, and change feeds
@@ -89,6 +89,13 @@ Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in abo
 
 **Why it matters:** an orphaned popup whose close writes back to nothing; only reachable when open and destroy share one batch.
 **Suggested handling:** if it ever shows up, have the opener remember whether its open was the current session at open time and close unconditionally through a store function that compares ids captured outside the teardown, or close in a microtask after destroy.
+
+### Popup editor hotkey and dialog keys lack the IME commit-key guard
+
+`src/lib/UI/GUI/TextAreaInput.svelte` `handlePopupEditorKeyDown` and the textarea `onkeydown` in `src/lib/UI/GUI/TextAreaResizable.svelte` run `hotkeyMatches` for the `popupEditor` hotkey without `isImeComposing(event)` (`src/ts/ime.ts`, which also checks `keyCode === 229`, the key Safari can dispatch after it ended composition). A composing stroke that matches the hotkey (it needs Ctrl, Shift, or Alt, so only a modifier-bearing IME stroke) opens the popup editor mid-composition. The document-level hotkeys in `src/ts/hotkey.ts` got the guard in 5afc14ca4 (2026-10-27). The dialog key gate `accepts` in `src/ts/alertQueue.ts` checks `isComposing` only, not `keyCode`; the document guard upstream covers the global path, but a dialog reached by another listener is not covered. Found 2026-10-27 by the review of 5afc14ca4; the owner deferred it.
+
+**Why it matters:** an IME user whose popup-editor hotkey carries a modifier can get the popup over a half-composed word; the dialog case is Safari only.
+**Suggested handling:** `if (isImeComposing(e)) return false;` at the top of both popup-editor handlers, and `keyCode` on `DialogKeyEvent` with the shared guard in `accepts`; a test like the `describe("IME composition")` block in `src/ts/hotkey.test.ts`.
 
 ## Test mocks
 

@@ -141,7 +141,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   Exchanges and the outcome complete it. Tab requests also retain their separate
   `log` events; plugins' `getFetchLogs` still sees only that tab's in-memory list.
 - A checked failure reaches `alertJobError`: Copy debug info includes checked ids,
-  time, version, status, reason, stage, and provider code, never the message; Open in
+  time, version, build id, status, reason, stage, and provider code, never the message; Open in
   request history filters the viewer to its job ([chat-pipeline](chat-pipeline.md)).
 - Server events enter the journal; browser events stay local until the user saves
   a combined report. Copy and Download remain local. Save writes the shown report.
