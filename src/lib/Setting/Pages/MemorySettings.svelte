@@ -124,9 +124,9 @@
 
     /**
      * The room the max context leaves for the memory once the prompt template, the character, its lore
-     * budget, and three replies are taken out, as a ratio of the max context and in tokens.
+     * budget, and three replies are taken out, as a ratio of the max context.
      */
-    async function estimateMaxMemory(): Promise<{ ratio: number; tokens: number }> {
+    async function estimateMaxMemoryRatio(): Promise<number> {
         const maxContext = hypaMaxContext;
         const promptTemplateToken = await tokenizePreset(activePreset.promptTemplate);
         const char = currentCharacter;
@@ -137,12 +137,12 @@
             promptTemplateToken + charToken.persistant + Math.min(charToken.dynamic, maxLoreToken) + maxResponse * 3;
 
         if (maxContext === 0) {
-            return { ratio: 0, tokens: 0 };
+            return 0;
         }
 
         const maxMemoryRatio = Math.max((maxContext - requiredToken) / maxContext, 0);
 
-        return { ratio: parseFloat(maxMemoryRatio.toFixed(2)), tokens: Math.max(0, maxContext - requiredToken) };
+        return parseFloat(maxMemoryRatio.toFixed(2));
     }
 
     const budgetFieldLabels = $derived({
@@ -467,12 +467,6 @@
             size="md"
         />
         {#if settings.budgetMode === "tokens"}
-            {#await estimateMaxMemory() then maxMemory}
-                <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensLabel}</span>
-                <NumberInput marginBottom disabled size="sm" value={maxMemory.tokens} />
-            {:catch error}
-                <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensError}</span>
-            {/await}
             <span class="text-textcolor"
                 >{language.hypaV3Settings.memoryBudgetTokensLabel} <Help key="hypaV3MemoryBudgetTokens" /></span
             >
@@ -525,9 +519,9 @@
                 </div>
             {/if}
         {:else}
-            {#await estimateMaxMemory() then maxMemory}
+            {#await estimateMaxMemoryRatio() then maxMemoryRatio}
                 <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensRatioLabel}</span>
-                <NumberInput marginBottom disabled size="sm" value={maxMemory.ratio} />
+                <NumberInput marginBottom disabled size="sm" value={maxMemoryRatio} />
             {:catch error}
                 <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensRatioError}</span>
             {/await}

@@ -2036,8 +2036,6 @@ export const languageKorean = {
         budgetModeLabel: "예산 방식",
         budgetModeRatio: "비율",
         budgetModeTokens: "토큰",
-        maxMemoryTokensLabel: "최대 메모리 토큰 (추정)",
-        maxMemoryTokensError: "최대 메모리 토큰을 계산할 수 없습니다",
         memoryBudgetTokensLabel: "HypaV3에 할당할 메모리 총 공간 (토큰)",
         lookaheadHeadroomTokensLabel: "미리 요약을 시작할 토큰 여유",
         extraSummarizationTokensLabel: "요약할 때 추가로 비울 토큰",

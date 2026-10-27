@@ -2155,8 +2155,6 @@ export const languageEnglish = {
         budgetModeLabel: "Budget mode",
         budgetModeRatio: "Ratio",
         budgetModeTokens: "Tokens",
-        maxMemoryTokensLabel: "Max Memory Tokens (Estimated)",
-        maxMemoryTokensError: "Unable to calculate Max Memory Tokens",
         memoryBudgetTokensLabel: "Total space for HypaV3 memory (tokens)",
         lookaheadHeadroomTokensLabel: "Token headroom to start summaries early",
         extraSummarizationTokensLabel: "Extra tokens to free when summarizing",
