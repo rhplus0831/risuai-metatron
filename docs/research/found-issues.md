@@ -11,6 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch) and 2026-10-26 (
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Chat screen and input](#chat-screen-and-input) (3)
+- [Settings pages](#settings-pages) (1)
 - [Test mocks](#test-mocks) (2)
 
 ## Chat store, sync, and change feeds
@@ -100,6 +101,15 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a regression in either path would pass the gate.
 **Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
+
+## Settings pages
+
+### HypaV3 max-memory estimate without a character
+
+`src/lib/Setting/Pages/MemorySettings.svelte` `estimateMaxMemory()` (~:129-133, formerly `getMaxMemoryRatio`) calls `getCharToken(currentCharacter)`; with no character selected, `getCharToken` (`src/ts/tokenizer.ts:288`) falls back to `selectedCharacter()`, which is also undefined, and throws on `char.type`. The `{#await}` then always lands in `{:catch}`, so settings opened from home show "Unable to calculate Max Memory Tokens Ratio" (ratio mode) or "Unable to calculate Max Memory Tokens" (token mode). Pre-existing before the token budget mode; seen 2026-10-27 in a browser drive of the HypaV3 Token Budget plan's slice 2.
+
+**Why it matters:** the estimate is the only hint of how big the memory budget can be; from home it is always an error instead of an estimate without the character's share.
+**Suggested handling:** treat a missing character as 0 character and lore tokens (or hide the line) instead of throwing.
 
 ## Test mocks
 
