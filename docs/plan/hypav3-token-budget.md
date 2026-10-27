@@ -1,6 +1,23 @@
 # HypaV3 Token Budget Plan
 
-Status: planned, no slice started.
+Status: landed 1 (6d24cc697).
+
+Slice 1 notes for slice 2:
+
+- `resolveHypaV3Budget(settings, maxContext, maxResponse)` and the
+  `HypaV3BudgetReduction` type (`{ field, configured, applied }`) are exported
+  from `shared/hypaV3Presets.ts`; `ContextReport.memory.budgetReduced` uses that
+  type, lists fields in the order memory, headroom, extra, and is absent when
+  nothing was reduced.
+- The server's seeded default preset is already in token mode, so until slice 2
+  lands a fresh database shows ratio sliders for a token-mode preset.
+- The plan's "ordinary plan `:687-691`" is `deferredStepCount` (the deferred
+  replay); it reads the resolver too.
+- The equivalence test uses binary-exact ratios (0.25, 0.125, 0.5): integer
+  products alone still differ in floating point (C = 4000, h = 0.07).
+- Upstream export clamps to the sliders' ranges (memory [0, 1], extra
+  [0, 1 − memory], headroom [0, 0.99]) and keeps the stored ratios when the root
+  `maxContext` is not a positive finite number.
 
 - 2026-10-27: first draft, written after a design discussion with the user. The
   user's answers are recorded under **Agreed decisions**.
