@@ -285,6 +285,7 @@ export const SECTION_FIELDS = {
         "blockquoteStyling",
         "keepSessionAlive",
         "longPressToPopupEditor",
+        "disableAutoPopupMessageEditor",
         "irisDialogue",
         "legacyMediaFindings",
         "showMemoryLimit",

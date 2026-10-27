@@ -53,7 +53,16 @@
     import { getModelInfo } from "src/ts/model/modellist";
     import { runServerButton, runServerJob, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { sayTTS } from "src/ts/process/tts";
-    import { ReloadChatPointer, CurrentTriggerIdStore, popupStore, reloadChatKey } from "src/ts/stores.svelte";
+    import {
+        ReloadChatPointer,
+        CurrentTriggerIdStore,
+        popupStore,
+        reloadChatKey,
+        closePopupEditorSession,
+        isPopupEditorSessionCurrent,
+        openPopupEditorSession,
+        popUpEditorStore,
+    } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
     import { onDestroy, onMount, untrack } from "svelte";
     import { type Unsubscriber } from "svelte/store";
@@ -118,6 +127,11 @@
     } from "../../ts/translator/storedTranslation.svelte";
     import { chatAutoTranslate, chatTranslationSettings } from "../../ts/translator/chatTranslation.svelte";
     import type { BilingualInterleaveOptions } from "../../ts/translator/bilingualInterleave";
+    import {
+        shouldAutoPopupMessageEditor,
+        shouldAutoPopupTranslationEditor,
+        shouldUseStableMessageEditor,
+    } from "./messageEditPopup";
 
     let translating = $state(false);
     let editMode = $state(false);
@@ -205,6 +219,46 @@
         rawStreamingText = message,
         pendingReveal = false,
     }: Props = $props();
+
+    let autoPopupMessageEditorAttempted = false;
+    let autoPopupTranslationEditorAttempted = false;
+    let autoPopupMessageEditorRun = 0;
+    let autoPopupTranslationEditorRun = 0;
+    let activeAutoPopupMessageSessionId: number | null = null;
+    let activeAutoPopupTranslationSessionId: number | null = null;
+    let popupEditorsDestroyed = false;
+    let suppressAutoPopupTranslationEditor = $state(false);
+    const autoPopupMessageEditor = $derived(
+        shouldAutoPopupMessageEditor({
+            editMode,
+            index: idx,
+            disableAutoPopupMessageEditor: settings.ui.disableAutoPopupMessageEditor,
+        }),
+    );
+    const autoPopupTranslationEditor = $derived(
+        shouldAutoPopupTranslationEditor({
+            editTranslationMode,
+            index: idx,
+            disableAutoPopupMessageEditor: settings.ui.disableAutoPopupMessageEditor,
+            suppressAutoPopupTranslationEditor,
+        }),
+    );
+    const useStableMessageEditor = $derived(
+        shouldUseStableMessageEditor({
+            editMode,
+            index: idx,
+            message: draft ?? message,
+            theme: settings.ui.theme,
+        }),
+    );
+    const useStableTranslationEditor = $derived(
+        shouldUseStableMessageEditor({
+            editMode: editTranslationMode,
+            index: idx,
+            message: editTranslationText,
+            theme: settings.ui.theme,
+        }),
+    );
 
     let msgDisplay = $state("");
     let translated = $state(false);
@@ -351,6 +405,128 @@
         const ref = displayedChat;
         return ref && messageId ? { ref, id: messageId } : null;
     }
+
+    function isCurrentPopupMessageTarget(target: { ref: ChatRef; id: string }): boolean {
+        const current = messageTarget();
+        return (
+            current !== null &&
+            current.id === target.id &&
+            current.ref.chaId === target.ref.chaId &&
+            current.ref.chatId === target.ref.chatId
+        );
+    }
+
+    async function openAutoPopupMessageEditor() {
+        if (activeAutoPopupMessageSessionId !== null || popUpEditorStore.open) return;
+        const target = messageTarget();
+        if (!target) return;
+
+        const run = ++autoPopupMessageEditorRun;
+        const initialDraft = draft;
+        const initialValue = draft ?? message;
+        const sessionId = openPopupEditorSession(initialValue);
+        activeAutoPopupMessageSessionId = sessionId;
+        const editorIsCurrent = () =>
+            !popupEditorsDestroyed &&
+            run === autoPopupMessageEditorRun &&
+            editMode &&
+            draft === initialDraft &&
+            (draft ?? message) === initialValue &&
+            isCurrentPopupMessageTarget(target);
+
+        try {
+            while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
+                await sleep(100);
+            }
+
+            if (!editorIsCurrent()) {
+                closePopupEditorSession(sessionId);
+                return;
+            }
+            if (!isPopupEditorSessionCurrent(sessionId)) return;
+
+            draft = popUpEditorStore.value;
+            if (edit()) editMode = false;
+        } finally {
+            if (activeAutoPopupMessageSessionId === sessionId) activeAutoPopupMessageSessionId = null;
+        }
+    }
+
+    async function openAutoPopupTranslationEditor() {
+        if (activeAutoPopupTranslationSessionId !== null || popUpEditorStore.open) return;
+        const target = editTranslationTarget;
+        const rowTarget = messageTarget();
+        if (!target || !rowTarget) return;
+
+        const run = ++autoPopupTranslationEditorRun;
+        const initialValue = editTranslationText;
+        const sessionId = openPopupEditorSession(initialValue);
+        activeAutoPopupTranslationSessionId = sessionId;
+        const editorIsCurrent = () =>
+            !popupEditorsDestroyed &&
+            run === autoPopupTranslationEditorRun &&
+            editTranslationMode &&
+            editTranslationText === initialValue &&
+            editTranslationTarget === target &&
+            isCurrentPopupMessageTarget(rowTarget);
+
+        try {
+            while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
+                await sleep(100);
+            }
+
+            if (!editorIsCurrent()) {
+                closePopupEditorSession(sessionId);
+                return;
+            }
+            if (!isPopupEditorSessionCurrent(sessionId)) return;
+
+            suppressAutoPopupTranslationEditor = true;
+            editTranslationText = popUpEditorStore.value;
+            await saveTranslationEdit();
+        } finally {
+            if (activeAutoPopupTranslationSessionId === sessionId) activeAutoPopupTranslationSessionId = null;
+        }
+    }
+
+    $effect(() => {
+        if (!editMode) {
+            autoPopupMessageEditorAttempted = false;
+            autoPopupMessageEditorRun += 1;
+            if (activeAutoPopupMessageSessionId !== null) {
+                closePopupEditorSession(activeAutoPopupMessageSessionId);
+                activeAutoPopupMessageSessionId = null;
+            }
+            return;
+        }
+        if (autoPopupMessageEditor) {
+            untrack(() => {
+                if (autoPopupMessageEditorAttempted) return;
+                autoPopupMessageEditorAttempted = true;
+                void openAutoPopupMessageEditor();
+            });
+        }
+    });
+
+    $effect(() => {
+        if (!editTranslationMode) {
+            autoPopupTranslationEditorAttempted = false;
+            autoPopupTranslationEditorRun += 1;
+            suppressAutoPopupTranslationEditor = false;
+            if (activeAutoPopupTranslationSessionId !== null) {
+                closePopupEditorSession(activeAutoPopupTranslationSessionId);
+                activeAutoPopupTranslationSessionId = null;
+            }
+            return;
+        }
+        if (autoPopupTranslationEditor) {
+            untrack(() => {
+                if (autoPopupTranslationEditorAttempted) return;
+                autoPopupTranslationEditorAttempted = true;
+                void openAutoPopupTranslationEditor();
+            });
+        }
+    });
 
     /**
      * Alerts and returns true when a generation locks any of `ids` (checked when the write is made:
@@ -723,6 +899,15 @@
     });
 
     onDestroy(() => {
+        popupEditorsDestroyed = true;
+        if (activeAutoPopupMessageSessionId !== null) {
+            closePopupEditorSession(activeAutoPopupMessageSessionId);
+            activeAutoPopupMessageSessionId = null;
+        }
+        if (activeAutoPopupTranslationSessionId !== null) {
+            closePopupEditorSession(activeAutoPopupTranslationSessionId);
+            activeAutoPopupTranslationSessionId = null;
+        }
         unsubscribers.forEach((u) => u());
     });
 
@@ -1025,6 +1210,9 @@
     {#if editTranslationMode}
         <AutoresizeArea
             bind:value={editTranslationText}
+            popupEditor
+            ariaLabel={language.editTranslation}
+            stableHeight={useStableTranslationEditor}
             handleLongPress={() => {
                 saveTranslationEdit();
             }}
@@ -1033,6 +1221,9 @@
     {#if editMode}
         <AutoresizeArea
             bind:value={draft}
+            popupEditor
+            ariaLabel={language.input}
+            stableHeight={useStableMessageEditor}
             handleLongPress={() => {
                 editMode = false;
             }}

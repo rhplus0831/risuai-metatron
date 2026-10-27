@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch) and 2026-10-26 (
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Chat screen and input](#chat-screen-and-input) (4)
+- [Chat screen and input](#chat-screen-and-input) (5)
 - [Settings pages](#settings-pages) (1)
 - [Test mocks](#test-mocks) (2)
 
@@ -108,6 +108,13 @@ Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in abo
 
 **Why it matters:** each case is smaller than the jumps that were fixed (one row's growth, not a page), but it has the same feel: the reader lands somewhere they did not scroll to.
 **Suggested handling (optional, deferred by the owner):** once the anchor is released, keep a reader anchor. Record the visible row nearest the view's top and its offset on scroll. After a transcript resize, restore that offset at `scrollend`, not mid-animation, where a correction would fight the running animation. Measure the visible row's displacement beyond the intended scroll; do not double-compensate with any native anchoring.
+
+### Popup editor close at teardown reads pre-batch store values
+
+`TextAreaInput.svelte`, `TextAreaResizable.svelte`, and `Chat.svelte` close the popup editor session they own in `onDestroy` through `closePopupEditorSession(id)`, which checks `popUpEditorStore.sessionId`. Svelte 5 runs effect teardowns against the values from before a still-unflushed batch, so a field that opens the popup and is destroyed before that batch flushes (the same synchronous turn) reads the previous `sessionId`, the check fails, and the popup stays open with no owner (seen in a happy-dom test without `flushSync()` after the click; `TextAreaInput.svelte.test.ts` flushes for that reason). A real open always flushes long before the field goes away.
+
+**Why it matters:** an orphaned popup whose close writes back to nothing; only reachable when open and destroy share one batch.
+**Suggested handling:** if it ever shows up, have the opener remember whether its open was the current session at open time and close unconditionally through a store function that compares ids captured outside the teardown, or close in a microtask after destroy.
 
 ## Settings pages
 

@@ -146,7 +146,7 @@ describe("generated image delivery", () => {
         const component = mount(PlaygroundImageGen, { target });
         try {
             flushSync();
-            const button = target.querySelector("button")!;
+            const button = [...target.querySelectorAll("button")].find((b) => b.textContent.trim() === "Generate")!;
             button.click();
             flushSync();
             expect(button.textContent.trim()).toBe("");

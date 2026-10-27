@@ -66,6 +66,8 @@ prompt fields; the stored `botPresets[0]` keeps the pre-split template payload, 
 Toggle presets (2026-10-17;
 retrievable at `154711858` through [the archive](../../../../../../docs/archived-plan/README.md))
 added `"togglePresets": []` by hand.
+The chat message editor's auto popup (2026-10-27) added the `ui` default `disableAutoPopupMessageEditor`
+`false` by hand.
 
 Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
 `.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.

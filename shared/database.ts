@@ -568,6 +568,7 @@ export interface Database {
     requestHistoryLimit?: number;
     keepSessionAlive: "off" | "pip" | "sound";
     longPressToPopupEditor?: boolean;
+    disableAutoPopupMessageEditor?: boolean;
     disableAprilFools?: boolean;
     moveInsteadOfCopyOnCMPConvert?: boolean;
     /** Whether the chat composer shows the context usage meter. */

@@ -102,7 +102,14 @@ import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { assembleChats, findChat, seedChats, selectChat, setMessageText } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { createSimpleCharacter, ReloadChatPointer } from "src/ts/stores.svelte";
+import { language } from "src/lang";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import {
+    closePopupEditorSession,
+    createSimpleCharacter,
+    popUpEditorStore,
+    ReloadChatPointer,
+} from "src/ts/stores.svelte";
 import Chat from "./Chat.svelte";
 
 const ref = { chaId: "c", chatId: "draft-chat" };
@@ -309,5 +316,103 @@ describe("original message draft", () => {
         flushSync();
         expect(setMessageText).toHaveBeenCalledExactlyOnceWith(ref, "a", "Unsent draft");
         expect(ui.stored()).toBe("Unsent draft");
+    });
+});
+
+// Opening a stored message's editor also opens the shared popup editor on the draft; closing the
+// popup saves. Typing inline meanwhile keeps the inline edit and drops the popup, and the setting
+// turns the auto popup off. Timers are faked once the row has rendered, so the opener's poll runs
+// under the test's control.
+describe("Chat message editor auto popup", () => {
+    const initialPopup = { ...popUpEditorStore };
+    async function closePopupWith(text: string) {
+        popUpEditorStore.value = text;
+        closePopupEditorSession(popUpEditorStore.sessionId);
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+    }
+    afterEach(() => {
+        Object.assign(popUpEditorStore, initialPopup);
+        settings.ui.disableAutoPopupMessageEditor = false;
+    });
+
+    it("opens the popup on the draft when editing starts and saves the popup's text on close", async () => {
+        const ui = render();
+        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        vi.useFakeTimers();
+        ui.toggle();
+        expect(ui.instance.isEditing()).toBe(true);
+        expect(popUpEditorStore).toMatchObject({ open: true, value: "Original", language: "markdown" });
+        expect(ui.textarea().value).toBe("Original");
+
+        await closePopupWith("Edited in the popup");
+        expect(setMessageText).toHaveBeenCalledExactlyOnceWith(ref, "a", "Edited in the popup");
+        expect(ui.stored()).toBe("Edited in the popup");
+        expect(ui.textarea()).toBeNull();
+        expect(ui.instance.isEditing()).toBe(false);
+    });
+
+    it("keeps the inline edit and drops the popup when the draft is typed into while the popup is open", async () => {
+        const ui = render();
+        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        vi.useFakeTimers();
+        ui.toggle();
+        expect(popUpEditorStore.open).toBe(true);
+        popUpEditorStore.value = "Typed in the popup";
+        ui.type("Typed inline");
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+        expect(popUpEditorStore.open).toBe(false);
+        expect(setMessageText).not.toHaveBeenCalled();
+        expect(ui.textarea().value).toBe("Typed inline");
+        expect(ui.stored()).toBe("Original");
+
+        // The inline editor still saves as before, and leaving edit mode does not reopen the popup.
+        ui.toggle();
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+        expect(setMessageText).toHaveBeenCalledExactlyOnceWith(ref, "a", "Typed inline");
+        expect(popUpEditorStore.open).toBe(false);
+    });
+
+    it("opens no popup while the setting turns the auto popup off, and the inline editor still works", async () => {
+        const ui = render();
+        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        settings.ui.disableAutoPopupMessageEditor = true;
+        vi.useFakeTimers();
+        ui.toggle();
+        expect(popUpEditorStore.open).toBe(false);
+        expect(ui.textarea().value).toBe("Original");
+        // The expand button stays, so the popup is one click away.
+        expect(ui.target.querySelector(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`)).not.toBeNull();
+    });
+
+    it("closes its popup when the row unmounts before the popup is closed", async () => {
+        const ui = render();
+        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        vi.useFakeTimers();
+        ui.toggle();
+        expect(popUpEditorStore.open).toBe(true);
+        await unmount(mounted.pop()!);
+        expect(popUpEditorStore.open).toBe(false);
+        expect(setMessageText).not.toHaveBeenCalled();
+    });
+
+    it("edits a multi-line message in a fixed-height inline area and a short one in a growing area", async () => {
+        const long = render("", { message: "First line\nSecond line" });
+        await vi.waitFor(() => expect(long.text()).toBe("First line\nSecond line"));
+        vi.useFakeTimers();
+        long.toggle();
+        expect(long.textarea().style.height).toBe("16rem");
+        closePopupEditorSession(popUpEditorStore.sessionId);
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+        await unmount(mounted.pop()!);
+
+        const short = render();
+        short.toggle();
+        expect(short.textarea().style.height).not.toBe("16rem");
     });
 });

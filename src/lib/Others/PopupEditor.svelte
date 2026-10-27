@@ -1,8 +1,8 @@
 <script lang="ts">
     import { currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
-    import { onDestroy, onMount } from "svelte";
-    import { popUpEditorStore } from "../../ts/stores.svelte";
+    import { onDestroy, onMount, untrack } from "svelte";
+    import { closePopupEditorSession, popUpEditorStore } from "../../ts/stores.svelte";
     import type MonacoEditorType from "./MonacoEditor.svelte";
     import { language } from "src/lang";
     import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
@@ -10,6 +10,7 @@
     import { createTokenCountField } from "src/ts/tokenCountField";
     import Toggles from "../SideBars/Toggles.svelte";
 
+    const sessionId = untrack(() => popUpEditorStore.sessionId);
     let languageMode = $state(popUpEditorStore.language || "markdown");
     let previewing = $state(false);
     let tokens = $state(0);
@@ -66,7 +67,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
     class="fixed top-0 left-0 w-full h-full bg-black/50 backdrop-blur-sm flex items-center justify-center z-50"
-    onclick={() => (popUpEditorStore.open = false)}
+    onclick={() => closePopupEditorSession(sessionId)}
 >
     <div class="bg-darkbg rounded-lg p-4 w-11/12 h-11/12 flex flex-col gap-2" onclick={(e) => e.stopPropagation()}>
         <!-- <h2 class="text-xl font-bold">Popup Editor</h2> -->
@@ -95,7 +96,7 @@
                 {/if}
                 <button
                     class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 transition"
-                    onclick={() => (popUpEditorStore.open = false)}
+                    onclick={() => closePopupEditorSession(sessionId)}
                 >
                     X
                 </button>

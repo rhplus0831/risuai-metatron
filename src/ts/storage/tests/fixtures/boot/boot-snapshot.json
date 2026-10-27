@@ -644,6 +644,7 @@
   "requestHistoryLimit": 1000,
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
+  "disableAutoPopupMessageEditor": false,
   "moveInsteadOfCopyOnCMPConvert": false,
   "contextMeter": true,
   "contextMeterTurnUnit": "user",

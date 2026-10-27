@@ -54,6 +54,13 @@ export const interactionSettingsItems: SettingItem[] = [
         keywords: ["long", "press", "popup", "editor"],
     },
     {
+        id: "acc.disableAutoPopupMessageEditor",
+        type: "check",
+        labelKey: "disableAutoPopupMessageEditor",
+        bindKey: "disableAutoPopupMessageEditor",
+        keywords: ["disable", "auto", "popup", "editor", "edit", "message", "translation"],
+    },
+    {
         id: "acc.askRemoval",
         type: "check",
         labelKey: "askRemoval",
@@ -207,6 +214,7 @@ export const interactionSettingsSections: SettingSection[] = [
             "acc.enableBlockPartialEdit",
             "acc.enableDragPartialEdit",
             "acc.longPressToPopupEditor",
+            "acc.disableAutoPopupMessageEditor",
             "acc.askRemoval",
             "acc.instantRemove",
             "acc.swipe",

@@ -121,6 +121,7 @@ const spec: SectionSpec<"ui"> = {
     blockquoteStyling: ["boolean"],
     keepSessionAlive: ["string", "off"],
     longPressToPopupEditor: ["boolean", false],
+    disableAutoPopupMessageEditor: ["boolean", false],
     irisDialogue: ["array"],
     legacyMediaFindings: ["boolean"],
     showMemoryLimit: ["boolean", false],

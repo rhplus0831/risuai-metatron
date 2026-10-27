@@ -6,12 +6,15 @@ import type { PickerListState, MemoryProgressState } from "../stores.svelte";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
 type StoresModule = typeof import("../stores.svelte");
+type StoresMockOverrides = Omit<Partial<StoresModule>, "popUpEditorStore"> & {
+    popUpEditorStore?: Omit<StoresModule["popUpEditorStore"], "sessionId"> & { sessionId?: number };
+};
 
 /** Plain stores without the DOM, resize listeners, module effects, or CSS subscription.
  * Load inside each hoisted vi.mock factory and pass that file's handles as overrides.
  * Every call owns fresh state; adding a product export must update these defaults.
  */
-export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresModule {
+export function createStoresMock(overrides: StoresMockOverrides = {}): StoresModule {
     const defaults = {
         ...settingsMenu,
         SizeStore: writable({ w: 0, h: 0 }),
@@ -59,9 +62,16 @@ export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresM
         chatPanelStore: [],
         bodyIntercepterStore: [],
         popupStore: { children: null, mouseX: 0, mouseY: 0, openId: 0 },
-        popUpEditorStore: { open: false, value: "", mode: "default", language: "markdown" },
+        popUpEditorStore: { open: false, value: "", mode: "default", language: "markdown", sessionId: 0 },
+        openPopupEditorSession: vi.fn<StoresModule["openPopupEditorSession"]>(() => 0),
+        isPopupEditorSessionCurrent: vi.fn<StoresModule["isPopupEditorSessionCurrent"]>(() => false),
+        closePopupEditorSession: vi.fn<StoresModule["closePopupEditorSession"]>(() => false),
         irisStore: { open: false },
         hotReloading: [],
     } satisfies StoresModule;
-    return { ...defaults, ...overrides };
+    return {
+        ...defaults,
+        ...overrides,
+        popUpEditorStore: { ...defaults.popUpEditorStore, ...overrides.popUpEditorStore },
+    };
 }

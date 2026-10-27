@@ -871,6 +871,7 @@ export const languageKorean = {
     ttsCustomUrlNeedsKey:
         "커스텀 OpenAI TTS 기본 URL을 사용하려면 TTS 설정에 별도의 API 키를 입력해야 합니다. 저장된 OpenAI 키는 api.openai.com으로만 전송됩니다.",
     longPressToPopupEditor: "길게 눌러 팝업 편집기 열기",
+    disableAutoPopupMessageEditor: "메시지 편집 시 자동 팝업 편집기 끄기",
     UiLanguage: "UI 언어",
     createfromScratch: "새 캐릭터 생성",
     importCharacter: "캐릭터 임포트",

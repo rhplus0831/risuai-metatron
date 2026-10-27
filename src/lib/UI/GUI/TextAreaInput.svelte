@@ -3,10 +3,18 @@
     import { textAreaSize, textAreaTextSize } from "src/ts/gui/guisize";
     import { highlighter, getNewHighlightId, removeHighlight, AllCBS } from "src/ts/gui/highlight";
     import { sleep } from "src/ts/util";
-    import { onDestroy, onMount } from "svelte";
-    import { disableHighlight, popUpEditorStore } from "src/ts/stores.svelte";
+    import { onDestroy, onMount, tick } from "svelte";
+    import {
+        closePopupEditorSession,
+        disableHighlight,
+        isPopupEditorSessionCurrent,
+        openPopupEditorSession,
+        popUpEditorStore,
+    } from "src/ts/stores.svelte";
     import { isMobile } from "src/ts/platform";
     import { hotkeyMatches } from "src/ts/hotkey";
+    import { language } from "src/lang";
+    import { Maximize2Icon } from "@lucide/svelte";
     interface Props {
         size?: "xs" | "sm" | "md" | "lg" | "xl" | "default";
         autocomplete?: "on" | "off";
@@ -23,6 +31,9 @@
         highlight?: boolean;
         onchange?: (e: { currentTarget: HTMLTextAreaElement | HTMLDivElement }) => void;
         popupLanguage?: string;
+        popupEditor?: boolean | "auto";
+        popupEditorContext?: unknown;
+        ariaLabel?: string;
     }
 
     let {
@@ -41,6 +52,9 @@
         highlight = false,
         onchange = () => {},
         popupLanguage = "markdown",
+        popupEditor = "auto",
+        popupEditorContext = undefined,
+        ariaLabel = undefined,
     }: Props = $props();
     let selectingAutoComplete = $state(0);
     // TODO: Review if highlight prop can change dynamically - if so, this needs to be reactive
@@ -52,6 +66,87 @@
     let autoCompleteDom: HTMLDivElement = $state();
     let autocompleteContents: string[] = $state([]);
     let inputDom: HTMLDivElement = $state();
+    let textareaDom: HTMLTextAreaElement = $state();
+    let popupEditorRun = 0;
+    let popupEditorContextRevision = 0;
+    let activePopupEditorSessionId: number | null = null;
+
+    const isPopupEditorButtonVisible = () =>
+        popupEditor === true ||
+        (popupEditor === "auto" &&
+            (["32", "36", "full"].includes(height) || (height === "default" && $textAreaSize >= -2)));
+
+    async function openPopupEditor() {
+        if (popupEditor === false) return;
+
+        const run = ++popupEditorRun;
+        const initialValue = value;
+        const initialContext = popupEditorContext;
+        const initialContextRevision = popupEditorContextRevision;
+        hideAutoComplete();
+        const sessionId = openPopupEditorSession(value, popupLanguage);
+        activePopupEditorSessionId = sessionId;
+
+        const fieldIsCurrent = () =>
+            run === popupEditorRun &&
+            value === initialValue &&
+            popupEditorContext === initialContext &&
+            popupEditorContextRevision === initialContextRevision;
+
+        try {
+            while (fieldIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
+                await sleep(100);
+            }
+
+            if (!fieldIsCurrent()) {
+                closePopupEditorSession(sessionId);
+                return;
+            }
+            if (!isPopupEditorSessionCurrent(sessionId)) return;
+
+            const popupValue = popUpEditorStore.value;
+            value = popupValue;
+            // Flush the binding before change consumers read currentTarget's text.
+            await tick();
+            if (
+                run !== popupEditorRun ||
+                !isPopupEditorSessionCurrent(sessionId) ||
+                value !== popupValue ||
+                popupEditorContext !== initialContext ||
+                popupEditorContextRevision !== initialContextRevision
+            )
+                return;
+            onInput();
+            const currentTarget = inputDom ?? textareaDom;
+            if (currentTarget) onchange({ currentTarget });
+            if (inputDom) void highlightChange(value, highlightId);
+        } finally {
+            if (activePopupEditorSessionId === sessionId) activePopupEditorSessionId = null;
+        }
+    }
+
+    function handlePopupEditorKeyDown(e: KeyboardEvent): boolean {
+        if (
+            popupEditor !== false &&
+            (e.ctrlKey || e.shiftKey || e.altKey) &&
+            hotkeyMatches(
+                settings.hotkeys.find((hk) => hk.action === "popupEditor"),
+                e,
+            )
+        ) {
+            e.preventDefault();
+            void openPopupEditor();
+            return true;
+        }
+        return false;
+    }
+
+    function handlePopupEditorContextMenu(e: MouseEvent) {
+        if (popupEditor !== false && settings.ui.longPressToPopupEditor) {
+            e.preventDefault();
+            void openPopupEditor();
+        }
+    }
 
     const autoComplete = () => {
         if (isMobile) {
@@ -142,6 +237,11 @@
     });
 
     onDestroy(() => {
+        popupEditorRun += 1;
+        if (activePopupEditorSessionId !== null) {
+            closePopupEditorSession(activePopupEditorSessionId);
+            activePopupEditorSessionId = null;
+        }
         removeHighlight(highlightId);
     });
 
@@ -201,6 +301,10 @@
     }
 
     $effect.pre(() => {
+        void popupEditorContext;
+        popupEditorContextRevision += 1;
+    });
+    $effect.pre(() => {
         optiValue = value;
     });
     $effect.pre(() => {
@@ -254,9 +358,12 @@
             class="w-full h-full bg-transparent focus-within:outline-hidden resize-none absolute top-0 left-0 z-50 overflow-y-auto"
             class:px-4={padding}
             class:py-2={padding}
+            class:pr-10={isPopupEditorButtonVisible()}
+            aria-label={ariaLabel}
             {autocomplete}
             {placeholder}
             {id}
+            bind:this={textareaDom}
             bind:value
             oninput={(e) => {
                 if (optimaizedInput) {
@@ -277,56 +384,20 @@
                 }
                 onchange(e);
             }}
-            onkeydown={async (e) => {
-                if (
-                    (e.ctrlKey || e.shiftKey || e.altKey) &&
-                    hotkeyMatches(
-                        settings.hotkeys.find((hk) => hk.action === "popupEditor"),
-                        e,
-                    )
-                ) {
-                    e.preventDefault();
-                    popUpEditorStore.value = value;
-                    popUpEditorStore.mode = "default";
-                    popUpEditorStore.language = popupLanguage;
-                    popUpEditorStore.open = true;
-
-                    //lazy wait
-                    while (popUpEditorStore.open) {
-                        await sleep(100);
-                    }
-
-                    value = popUpEditorStore.value;
-                    onInput();
-                }
-            }}
-            oncontextmenu={(e) => {
-                if (settings.ui.longPressToPopupEditor) {
-                    e.preventDefault();
-                    popUpEditorStore.value = value;
-                    popUpEditorStore.mode = "default";
-                    popUpEditorStore.language = popupLanguage;
-                    popUpEditorStore.open = true;
-
-                    //lazy wait
-                    const checkInterval = setInterval(() => {
-                        if (!popUpEditorStore.open) {
-                            value = popUpEditorStore.value;
-                            onInput();
-                            clearInterval(checkInterval);
-                        }
-                    }, 100);
-                }
-            }}></textarea>
+            onkeydown={handlePopupEditorKeyDown}
+            oncontextmenu={handlePopupEditorContextMenu}></textarea>
     {:else}
         <div
             class="w-full h-full bg-transparent focus-within:outline-hidden resize-none absolute top-0 left-0 z-50 overflow-y-auto px-4 py-2 wrap-break-word whitespace-pre-wrap"
+            class:pr-10={isPopupEditorButtonVisible()}
+            aria-label={ariaLabel}
             contenteditable="true"
             bind:textContent={value}
             onkeydown={(e) => {
-                handleKeyDown(e);
+                if (!handlePopupEditorKeyDown(e)) handleKeyDown(e);
                 onInput();
             }}
+            oncontextmenu={handlePopupEditorContextMenu}
             role="textbox"
             tabindex="0"
             oninput={(e) => {
@@ -340,6 +411,17 @@
         >
             {value ?? ""}
         </div>
+    {/if}
+    {#if isPopupEditorButtonVisible()}
+        <button
+            type="button"
+            class="absolute right-1 top-1 z-60 flex h-7 w-7 items-center justify-center rounded-md text-textcolor2 transition-colors hover:bg-darkbutton hover:text-textcolor focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-borderc"
+            aria-label={language.hotkeyDesc.popupEditor}
+            title={language.hotkeyDesc.popupEditor}
+            onclick={() => void openPopupEditor()}
+        >
+            <Maximize2Icon size={16} />
+        </button>
     {/if}
     <div class="hidden absolute z-100 bg-bgcolor border border-darkborderc p-2 flex-col" bind:this={autoCompleteDom}>
         {#each autocompleteContents as content, i}
