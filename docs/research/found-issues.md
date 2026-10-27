@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
 - [Test mocks](#test-mocks) (2)
@@ -36,13 +36,6 @@ Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
-
-### Client applyChatResult unsets a dropped map
-
-`src/ts/storage/chatStore.svelte.ts` `applyChatResult` (~2937) merges a changed `CHAT_META_MERGE_KEYS` field entry by entry only when the result still has the field as a plain object. When a hook's result drops the field (deleted or `undefined`), it falls through to a whole-field `unset`, so the server removes every entry, including ones another tab saved meanwhile. The server's `applyTriggerChat` (`server/src/jobs/chatResult.ts`) turns a dropped map into `mergeUnset` of the baseline's entries instead. Callers: plugin v3 chat writes (`src/ts/plugins/apiV3/v3.svelte.ts`), `chatEdits.ts`, `chatStore.svelte.ts` itself. Noticed 2026-10-26 by the Deep Audit Fixes slice 1 challenger.
-
-**Why it matters:** rare (a plugin replacing the chat without `scriptstate`), but a silent cross-tab variable loss and a client/server rule mismatch.
-**Suggested handling:** mirror the server rule in the client merge branch (`after === undefined && isPlainRecord(before)` → removals of the baseline's entries), with a `chatLazyLoading`/`characterNormalization`-style test.
 
 ## Server jobs and prompt assembly
 

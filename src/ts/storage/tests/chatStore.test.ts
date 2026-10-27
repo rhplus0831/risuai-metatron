@@ -838,7 +838,7 @@ describe("applyChatResult", () => {
         ]);
     });
 
-    it("merges a changed map field entry by entry: a map the baseline lacked counts as empty, removed entries are unset, and a transition from or to a non-map is a whole-field write", async () => {
+    it("merges a changed map field entry by entry: a map the baseline lacked counts as empty, removed entries are unset, a dropped map removes only its baseline entries, and a transition from or to a non-map is a whole-field write", async () => {
         const { server, chat, ref, commit } = await boot();
         const saved = () => server.chat("c", "k")!.data as any;
         // No `scriptstate` in the baseline; another tab adds `$b` meanwhile: the hook's `$a` is merged.
@@ -882,7 +882,7 @@ describe("applyChatResult", () => {
         expect(saved().scriptstate).toEqual({ $a: "1x", $d: "4" });
 
         // A map replaced by a value that is not one, and a map replacing such a value, are whole-field
-        // sets; removing the field is an unset.
+        // sets.
         baseline = chat.captureChatBaseline(ref);
         result = clone(baseline.chat) as any;
         result.scriptstate = "text";
@@ -895,13 +895,40 @@ describe("applyChatResult", () => {
         chat.applyChatResult(baseline, result);
         expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: { scriptstate: { $e: "5" } }, unset: [] }]);
         expect(saved().scriptstate).toEqual({ $e: "5" });
+
+        // A map the hook dropped (the field deleted, or set to undefined) is an emptied map, as on
+        // the server (`applyTriggerChat`): its baseline entries are removed one by one, never the
+        // whole field, so an entry another tab added meanwhile survives.
+        baseline = chat.captureChatBaseline(ref);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", merge: { scriptstate: { $f: "6" } } }],
+            },
+        ]);
+        result = clone(baseline.chat) as any;
+        delete result.scriptstate;
+        chat.applyChatResult(baseline, result);
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({});
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", mergeUnset: { scriptstate: ["$e"] } }]);
+        expect(saved().scriptstate).toEqual({ $f: "6" });
+        chat.mergeChatMeta(ref, "scriptstate", { $g: "7" });
+        commit();
+        baseline = chat.captureChatBaseline(ref);
+        result = clone(baseline.chat) as any;
+        result.scriptstate = undefined;
+        chat.applyChatResult(baseline, result);
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", mergeUnset: { scriptstate: ["$g"] } }]);
+        expect(saved().scriptstate).toEqual({ $f: "6" });
+        // Dropping a map that was already empty queues nothing.
         baseline = chat.captureChatBaseline(ref);
         result = clone(baseline.chat) as any;
         delete result.scriptstate;
         chat.applyChatResult(baseline, result);
-        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: {}, unset: ["scriptstate"] }]);
-        expect(saved()).not.toHaveProperty("scriptstate");
-        expect(chat.findChat(ref)).not.toHaveProperty("scriptstate");
+        expect(commit().work.groups).toEqual([]);
+        expect(saved().scriptstate).toEqual({ $f: "6" });
     });
 });
 

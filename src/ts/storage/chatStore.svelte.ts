@@ -2929,10 +2929,12 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
  * (`baseline`), onto the chat as it is now: messages the hook removed are removed, added ones are
  * inserted after their predecessor, changed message fields are sent as a field patch of the current
  * message (`patchMessage`), changed chat fields are set or removed, a changed map field
- * (`CHAT_META_MERGE_KEYS`) entry by entry (`mergeChatMeta`). Changes made meanwhile by others are
- * kept. When the hook reordered surviving messages, the whole chat is replaced, but only if the chat
- * has not changed since the baseline and no generation runs in it (otherwise the order change is
- * dropped with a warning). The locks and the message patches are checked before the mirror changes.
+ * (`CHAT_META_MERGE_KEYS`) entry by entry (`mergeChatMeta`). A map the hook dropped is treated as an
+ * emptied map: its baseline entries are removed, while entries others added meanwhile are kept.
+ * Changes made meanwhile by others are kept. When the hook reordered surviving messages, the whole
+ * chat is replaced, but only if it has not changed since the baseline and no generation runs in it
+ * (otherwise the order change is dropped with a warning). The locks and the message patches are
+ * checked before the mirror changes.
  */
 export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Chat>) {
     const { ref } = baseline;
@@ -3048,21 +3050,22 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         const after = nextFields[key];
         if (
             CHAT_META_MERGE_KEYS.includes(key) &&
-            isPlainRecord(after) &&
-            (before === undefined || isPlainRecord(before))
+            (before === undefined || isPlainRecord(before)) &&
+            (isPlainRecord(after) || (after === undefined && isPlainRecord(before)))
         ) {
             // A map field (chat variables, toggles, tool calls) changed entry by entry: only the
             // entries the hook changed or removed are sent, so entries another writer changed
             // meanwhile are kept. A map the baseline lacked counts as an empty one.
             const was: Record<string, unknown> = isPlainRecord(before) ? before : {};
+            const copy = isPlainRecord(after) ? after : {};
             merges.push({
                 key,
                 entries: Object.fromEntries(
-                    Object.entries(after).filter(
+                    Object.entries(copy).filter(
                         ([id, value]) => !Object.hasOwn(was, id) || JSON.stringify(was[id]) !== JSON.stringify(value),
                     ),
                 ),
-                removals: Object.keys(was).filter((id) => !Object.hasOwn(after, id)),
+                removals: Object.keys(was).filter((id) => !Object.hasOwn(copy, id)),
             });
             continue;
         }
