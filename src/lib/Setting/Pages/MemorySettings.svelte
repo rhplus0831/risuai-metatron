@@ -130,8 +130,8 @@
         const maxContext = hypaMaxContext;
         const promptTemplateToken = await tokenizePreset(activePreset.promptTemplate);
         const char = currentCharacter;
-        const charToken = await getCharToken(char);
-        const maxLoreToken = char.loreSettings?.tokenBudget ?? settings.providers.loreBookToken;
+        const charToken = char ? await getCharToken(char) : { persistant: 0, dynamic: 0 };
+        const maxLoreToken = char?.loreSettings?.tokenBudget ?? settings.providers.loreBookToken;
         const maxResponse = activePreset.maxResponse;
         const requiredToken =
             promptTemplateToken + charToken.persistant + Math.min(charToken.dynamic, maxLoreToken) + maxResponse * 3;

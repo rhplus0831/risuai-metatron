@@ -338,8 +338,10 @@
             <button
                 class="bg-textcolor2 hover:bg-darkbutton font-bold py-2 px-4 rounded-sm text-textcolor"
                 onclick={() => {
+                    const ref = currentChatRef();
+                    if (!ref) return;
                     alertConfirm(language.askReRollAutoSuggestions).then((result) => {
-                        if (result) {
+                        if (result && isSelectedChat(ref)) {
                             suggestMessages = [];
                             cancelSuggestionRequest();
                             requestSuggestions();

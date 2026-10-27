@@ -150,7 +150,7 @@ Languages (`src/lang/`):
 - Preset and page behavior: `src/lib/Setting/botpreset.test.ts`, `src/lib/Setting/botpresetArchive.test.ts`, `src/lib/Setting/Pages/presetPages.test.ts`, `src/ts/setting/botSettingsParamsData.test.ts`, `src/lib/Setting/Settings.hotkeys.test.ts`, and `e2e/settingsPages.spec.ts` (page mounting and first-visit defaults).
 - Section and condition integrity: `src/ts/setting/settingsPageSections.test.ts`, `src/lib/Setting/SettingsSections.test.ts`, and `src/ts/setting/translationSettingsData.test.ts`.
 - Search and deep links: `src/ts/setting/searchIndex.test.ts`, `src/ts/setting/settingJump.test.ts`, and `src/lib/Setting/Settings.search.test.ts`.
-- Focused page helpers: `src/lib/Setting/Pages/MemorySettings.hypaV3Warnings.test.ts` (the HypaV3 model warnings, the gap threshold, and the token budget: the reduction lines at the effective max context while typing, the conversion, the mode switch, a new preset in token mode), `src/ts/setting/credentialLinks.test.ts`, and `src/lib/Setting/Pages/ThanksPage.test.ts`.
+- Focused page helpers: `src/lib/Setting/Pages/MemorySettings.hypaV3Warnings.test.ts` (the HypaV3 model warnings, the gap threshold, and the token budget: the reduction lines at the effective max context while typing, the conversion, the mode switch, a new preset in token mode), `src/lib/Setting/Pages/MemorySettings.maxMemoryEstimate.test.ts` (the ratio-mode estimate with no character selected, as from home, and with one), `src/ts/setting/credentialLinks.test.ts`, and `src/lib/Setting/Pages/ThanksPage.test.ts`.
 - `changeLanguage` and prompt editing have no focused tests.
 
 ## Known Hazards

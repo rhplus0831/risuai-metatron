@@ -899,3 +899,38 @@ describe("the preview hotkey", () => {
         expect(alertMd).not.toHaveBeenCalled();
     });
 });
+
+describe("IME composition", () => {
+    // A stroke the IME is still composing (`isComposing`), or Safari's commit key after it ended the
+    // composition (`keyCode` 229): the document handler takes neither.
+    function strokeSend(composing: { isComposing?: boolean; keyCode?: number }) {
+        const ev = new KeyboardEvent("keydown", {
+            key: "Enter",
+            ctrlKey: true,
+            altKey: true,
+            bubbles: true,
+            cancelable: true,
+        });
+        for (const [name, value] of Object.entries(composing)) {
+            Object.defineProperty(ev, name, { value });
+        }
+        document.dispatchEvent(ev);
+    }
+
+    it("runs no hotkey for a composing stroke: Ctrl+Alt+Enter sends only once the composition ended", () => {
+        const sendButton = document.createElement("button");
+        sendButton.className = "button-icon-send";
+        const click = vi.fn();
+        sendButton.addEventListener("click", click);
+        document.body.appendChild(sendButton);
+        try {
+            strokeSend({ isComposing: true });
+            strokeSend({ keyCode: 229 });
+            expect(click).not.toHaveBeenCalled();
+            strokeSend({});
+            expect(click).toHaveBeenCalledTimes(1);
+        } finally {
+            sendButton.remove();
+        }
+    });
+});

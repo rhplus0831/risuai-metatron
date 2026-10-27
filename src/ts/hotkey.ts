@@ -36,6 +36,7 @@ import { RISU_SIDEBAR_DRAG_TYPE } from "./dragTypes";
 import { createDialogKeyGate } from "./alertQueue";
 import { chatCheckpointsDialog, checkpointLoadBusy } from "./checkpoints/chatCheckpoints.svelte";
 import { topBindingLayer, type BindingLayer } from "./gui/dialogLayers";
+import { isImeComposing } from "./ime";
 
 export function initHotkey() {
     // Every stroke of Enter and Escape, seen before any element can stop it: a dialog takes a key only
@@ -47,6 +48,9 @@ export function initHotkey() {
     document.addEventListener("keydown", async (ev) => {
         // The terminal notice is a modal dialog with its own keys: no shortcut runs behind it.
         if (get(terminalNotice) !== null) {
+            return;
+        }
+        if (isImeComposing(ev)) {
             return;
         }
         const hasDialogs = alertStore.hasDialogs();

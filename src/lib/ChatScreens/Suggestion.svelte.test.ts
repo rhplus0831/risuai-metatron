@@ -40,6 +40,7 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 
 import { language } from "src/lang";
+import { alertConfirm } from "src/ts/alert";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { findChat, selectChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
@@ -299,5 +300,43 @@ describe("Suggestion's requests follow the local sends per chat", () => {
         expect(buttons()).toBe(5);
         end();
         expect(requested()).toEqual(["k"]);
+    });
+});
+
+describe("the reroll confirmation", () => {
+    // With no translator the refresh button is the first control.
+    const refresh = () => target.querySelector<HTMLButtonElement>("button")!;
+    async function settle() {
+        for (let i = 0; i < 5; i++) {
+            await Promise.resolve();
+        }
+        flushSync();
+    }
+
+    it("rerolls the chat it was opened for, not the one selected when it is answered", async () => {
+        open();
+        await answer(0);
+        expect(stored(chatK)).toEqual(["one", "two"]);
+
+        let decide!: (confirmed: boolean) => void;
+        vi.mocked(alertConfirm).mockImplementationOnce(
+            () =>
+                new Promise<boolean>((resolve) => {
+                    decide = resolve;
+                }),
+        );
+        refresh().click();
+        select(chatN);
+        decide(true);
+        await settle();
+        // Neither chat was rerolled: K keeps its suggestions and N got no request.
+        expect(requested()).toEqual(["k"]);
+        expect(stored(chatK)).toEqual(["one", "two"]);
+
+        // Answered on the chat it was opened for: that chat is rerolled.
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        refresh().click();
+        await settle();
+        expect(requested()).toEqual(["k", "n"]);
     });
 });

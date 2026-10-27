@@ -10,8 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch) and 2026-10-26 (
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Chat screen and input](#chat-screen-and-input) (5)
-- [Settings pages](#settings-pages) (1)
+- [Chat screen and input](#chat-screen-and-input) (3)
 - [Test mocks](#test-mocks) (2)
 
 ## Chat store, sync, and change feeds
@@ -81,20 +80,6 @@ Since the F01 flush fix (Deep Audit Fixes, 2026-10-26) `flushResources()` return
 
 ## Chat screen and input
 
-### Global hotkeys ignore IME composition
-
-`src/ts/hotkey.ts:47` (document keydown) skips only plain keys inside text entries; a modifier hotkey matched by `hotkeyMatches` runs with no `isComposing`/`keyCode 229` check, so the default `send` hotkey (Ctrl+Alt+Enter, `shared/hotkeys.ts`) clicks `.button-icon-send` even while an IME composes. The composers' shared IME guard (`src/ts/ime.ts`, Deep Audit Fixes slice 2) cannot stop it because the event still bubbles to the document. Found by the slice 2 challenger.
-
-**Why it matters:** low reach (an IME commit Enter rarely carries Ctrl+Alt), but it is the one send path left without the guard.
-**Suggested handling:** reuse the shared IME guard at the top of the document keydown handler; test with a synthetic composing Ctrl+Alt+Enter.
-
-### Suggestion reroll confirm acts on the live selection
-
-`src/lib/ChatScreens/Suggestion.svelte:341` (the RefreshCcw button): `alertConfirm(language.askReRollAutoSuggestions).then(...)` clears `suggestMessages`, cancels, and calls `requestSuggestions()` for the chat selected when the dialog resolves, not the one it was opened for. A chat switch while the confirm is open rerolls the other chat (a wasted request; its suggestions replaced). Found by the Deep Audit Fixes slice 3 challenger.
-
-**Why it matters:** the same ownership class as F11/CE08 (an async continuation acting on the live selection).
-**Suggested handling:** capture `currentChatRef()` before the confirm and skip unless it is still selected after; test in `Suggestion.svelte.test.ts` with a deferred confirm.
-
 ### Latest-message start scroll untested in DefaultChatScreen
 
 In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces of `src/lib/ChatScreens/DefaultChatScreen.svelte` have no unit test, because no test mounts that screen: the reroll swipe alignment gated on `followsSwap` / `Chats.followsLatest` (read before the swap, then `scrollToLatestMessage` after a tick), and the `$effect` that consumes `ShowLatestMessageStore` (set by `openRoute` for notification clicks), and (since 2026-10-27) the scroll handler's load-more skip while `Chats.holding` is true. Only `openRoute` setting the store is tested (`src/ts/router/router.test.ts`).
@@ -115,15 +100,6 @@ Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in abo
 
 **Why it matters:** an orphaned popup whose close writes back to nothing; only reachable when open and destroy share one batch.
 **Suggested handling:** if it ever shows up, have the opener remember whether its open was the current session at open time and close unconditionally through a store function that compares ids captured outside the teardown, or close in a microtask after destroy.
-
-## Settings pages
-
-### HypaV3 max-memory estimate without a character
-
-`src/lib/Setting/Pages/MemorySettings.svelte` `estimateMaxMemory()` (~:129-133, formerly `getMaxMemoryRatio`) calls `getCharToken(currentCharacter)`; with no character selected, `getCharToken` (`src/ts/tokenizer.ts:288`) falls back to `selectedCharacter()`, which is also undefined, and throws on `char.type`. The `{#await}` then always lands in `{:catch}`, so settings opened from home show "Unable to calculate Max Memory Tokens Ratio" (ratio mode) or "Unable to calculate Max Memory Tokens" (token mode). Pre-existing before the token budget mode; seen 2026-10-27 in a browser drive of the HypaV3 Token Budget plan's slice 2.
-
-**Why it matters:** the estimate is the only hint of how big the memory budget can be; from home it is always an error instead of an estimate without the character's share.
-**Suggested handling:** treat a missing character as 0 character and lore tokens (or hide the line) instead of throwing.
 
 ## Test mocks
 
