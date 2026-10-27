@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { BookAlertIcon, ChevronUpIcon, GaugeIcon } from "@lucide/svelte";
+    import { BookAlertIcon, ChevronUpIcon, GaugeIcon, SettingsIcon } from "@lucide/svelte";
     import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
@@ -10,6 +10,7 @@
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
     import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
+    import { settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { countTokensInScope, jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
     import { get } from "svelte/store";
@@ -52,19 +53,7 @@
 
     const PANEL_WIDTH = 352;
     const EDGE = 8;
-    // Bar colors by size rank; danger stays for warnings.
-    const PALETTE = [
-        "bg-primary-500",
-        "bg-success-500",
-        "bg-secondary-500",
-        "bg-primary-300",
-        "bg-success-300",
-        "bg-secondary-300",
-        "bg-primary-700",
-        "bg-success-700",
-        "bg-secondary-700",
-    ];
-    const OTHER_COLOR = "bg-neutral-400";
+    const memoryColor = "bg-secondary-500";
 
     const visible = $derived(settings.ui.contextMeter && !group);
 
@@ -108,6 +97,12 @@
     const report = $derived(source?.kind === "report" ? source.report : null);
     const unit = $derived(settings.ui.contextMeterTurnUnit === "message" ? "message" : "user");
     const warn = $derived(settings.ui.contextMeterFixedWarn);
+    const settingsLabel = $derived(
+        language.contextUsage.basis(
+            unit === "user" ? language.contextUsage.basisTurns : language.contextUsage.basisMessages,
+            warn,
+        ),
+    );
 
     const fmt = (value: number) => value.toLocaleString();
     /** `part` of `whole` in whole percent; 100 without a whole. */
@@ -382,8 +377,6 @@
         return result;
     });
 
-    // Sections with tokens, largest first (the sort is stable, so ties keep the report's order). The
-    // bar spans the prompt budget, or the section total when attribution exceeds it.
     const chipTitle = $derived(
         chip
             ? language.contextUsage.chipLabel(chip.summary) +
@@ -391,6 +384,7 @@
             : "",
     );
 
+    // Sections with tokens, largest first; ties keep the report's order. Dots identify their group.
     const rows = $derived.by(() => {
         if (!report) {
             return [];
@@ -398,16 +392,18 @@
         return report.sections
             .filter((section) => section.tokens > 0)
             .sort((a, b) => b.tokens - a.tokens)
-            .map((section, index) => ({
+            .map((section) => ({
                 kind: section.kind,
                 tokens: section.tokens,
-                color: PALETTE[index] ?? OTHER_COLOR,
+                color:
+                    section.kind === "memory"
+                        ? memoryColor
+                        : section.kind === "history"
+                          ? "bg-primary-500"
+                          : "bg-neutral-400",
             }));
     });
-    // HypaV3's reserve and summarize points. The reserve sits at the end of the bar with the memory
-    // sent at its start. The server counts how far the history can grow in the summarizer's own count
-    // (which keeps history trimmed without a summary and skips what formatting adds), so each point
-    // sits that far past the bar's entries rather than at a fixed place.
+    // The reserve belongs to the prompt budget; growth thresholds use the summarizer's history count.
     const hypa = $derived.by(() => {
         const memory = report?.memory;
         if (!report || memory?.kind !== "hypaV3" || memory.reserved === undefined || memory.summarizeIn === undefined) {
@@ -421,12 +417,31 @@
             lookaheadIn: settings.ui.contextMeterLookahead ? memory.lookaheadIn : undefined,
         };
     });
-    const barRows = $derived(hypa ? rows.filter((row) => row.kind !== "memory") : rows);
-    const barEntries = $derived(barRows.reduce((sum, row) => sum + row.tokens, 0));
-    const memoryColor = $derived(rows.find((row) => row.kind === "memory")?.color ?? "bg-secondary-500");
+    const historyTokens = $derived(rows.find((row) => row.kind === "history")?.tokens ?? 0);
+    const barRows = $derived(
+        [
+            {
+                kind: "fixed" as const,
+                tokens: rows.reduce(
+                    (sum, row) => sum + (row.kind !== "memory" && row.kind !== "history" ? row.tokens : 0),
+                    0,
+                ),
+                color: fixedOver ? "bg-danger-500" : "bg-neutral-400",
+            },
+            {
+                kind: "memory" as const,
+                tokens: rows.find((row) => row.kind === "memory")?.tokens ?? 0,
+                color: memoryColor,
+            },
+            { kind: "history" as const, tokens: historyTokens, color: "bg-primary-500" },
+        ].filter((row) => row.tokens > 0),
+    );
+    const barEntries = $derived(rows.reduce((sum, row) => sum + (hypa && row.kind === "memory" ? 0 : row.tokens), 0));
+    const unusedReserve = $derived(hypa ? Math.max(0, hypa.reserved - hypa.tokens) : 0);
     const barScale = $derived(Math.max(promptBudget, barEntries + (hypa ? Math.max(hypa.reserved, hypa.tokens) : 0)));
-    /** A summarize point `tokens` past the bar's entries (on the bar: `widthOf` clamps). */
-    const pointAt = (tokens: number) => widthOf(barEntries + tokens, barScale);
+    const runwayScale = $derived(historyTokens + (hypa ? Math.max(hypa.summarizeIn, hypa.lookaheadIn ?? 0) : 0));
+    /** A threshold of history growth, positioned on the runway. An empty runway has no room left. */
+    const pointAt = (tokens: number) => (runwayScale > 0 ? widthOf(historyTokens + tokens, runwayScale) : 100);
     /** The history and memory block's lines for the left-out history. */
     const omitted = $derived.by(() => {
         if (!report || report.history.total <= report.history.kept) {
@@ -575,6 +590,12 @@
             score: 0,
         } satisfies SettingHit);
     }
+
+    function openMemorySettings() {
+        close(false);
+        $settingsOpen = true;
+        $SettingsMenuIndex = MEMORY_SETTINGS_MENU;
+    }
 </script>
 
 <svelte:window
@@ -659,13 +680,25 @@
                     <h2 id="{panelId}-title" class="text-base font-semibold">{language.contextUsage.title}</h2>
                     <span class="text-xs text-textcolor2">{language.contextUsage.asOfLastReply}</span>
                 </div>
-                <button
-                    type="button"
-                    class="rounded-md px-2 py-1 text-textcolor2 hover:bg-selected hover:text-textcolor"
-                    onclick={() => close(true)}
-                >
-                    {language.contextUsage.close}
-                </button>
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        class="rounded-md px-2 py-1 text-textcolor2 hover:bg-selected hover:text-textcolor"
+                        data-context-meter-settings
+                        aria-label={settingsLabel}
+                        title={settingsLabel}
+                        onclick={openSettings}
+                    >
+                        <SettingsIcon size={16} aria-hidden="true" />
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded-md px-2 py-1 text-textcolor2 hover:bg-selected hover:text-textcolor"
+                        onclick={() => close(true)}
+                    >
+                        {language.contextUsage.close}
+                    </button>
+                </div>
             </div>
 
             {#if estimate}
@@ -681,22 +714,27 @@
                 <span class="text-textcolor2">{language.contextUsage.legacyNote}</span>
             {:else if report}
                 <div class="flex flex-col gap-1">
-                    <span>{language.contextUsage.input(fmt(report.input), fmt(report.maxContext))}</span>
                     {#if promptBudget > 0}
+                        <span>
+                            <span class="text-lg font-semibold tabular-nums">{fmt(report.input)}</span>
+                            <span class="text-textcolor2 tabular-nums">
+                                {language.contextUsage.inputOfBudget(
+                                    fmt(promptBudget),
+                                    percentOf(report.input, promptBudget),
+                                )}
+                            </span>
+                        </span>
                         <span class="text-xs text-textcolor2"
-                            >{language.contextUsage.promptBudget(
-                                fmt(promptBudget),
-                                fmt(report.maxContext),
-                                fmt(report.maxResponse),
-                            )}</span
+                            >{language.contextUsage.budgetFrom(fmt(report.maxContext), fmt(report.maxResponse))}</span
                         >
                     {:else}
+                        <span>{language.contextUsage.input(fmt(report.input), fmt(report.maxContext))}</span>
                         <span class="text-xs text-textcolor2">{language.contextUsage.noBudget}</span>
                     {/if}
                 </div>
 
                 {#if barScale > 0}
-                    <div class="relative shrink-0" class:mt-1={hypa} data-context-meter-bar>
+                    <div class="relative shrink-0" data-context-meter-bar>
                         <div class="flex h-3 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
                             {#each barRows as row (row.kind)}
                                 <div class="shrink-0 {row.color}" style:width="{widthOf(row.tokens, barScale)}%"></div>
@@ -704,52 +742,48 @@
                             {#if hypa}
                                 <div class="min-w-0 grow"></div>
                                 <div
-                                    class="shrink-0 {memoryColor}"
-                                    style:width="{widthOf(hypa.tokens, barScale)}%"
-                                ></div>
-                                <div
                                     class="shrink-0 context-meter-reserve"
                                     data-context-meter-reserve
-                                    style:width="{widthOf(Math.max(0, hypa.reserved - hypa.tokens), barScale)}%"
+                                    style:width="{widthOf(unusedReserve, barScale)}%"
                                 ></div>
                             {/if}
                         </div>
-                        {#if hypa}
-                            <div
-                                class="absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 bg-secondary-500"
-                                data-context-meter-summarize
-                                style:left="{pointAt(hypa.summarizeIn)}%"
-                                aria-hidden="true"
-                            ></div>
-                            {#if hypa.lookaheadIn !== undefined}
-                                <div
-                                    class="absolute -top-1 -bottom-1 -translate-x-1/2 border-l border-dashed border-textcolor2"
-                                    data-context-meter-lookahead
-                                    style:left="{pointAt(hypa.lookaheadIn)}%"
-                                    aria-hidden="true"
-                                ></div>
-                            {/if}
+                        <div
+                            class="absolute -top-0.5 -bottom-0.5 w-0.5 -translate-x-1/2 bg-textcolor"
+                            data-context-meter-fixed-warn
+                            style:left="{widthOf((promptBudget * warn) / 100, barScale)}%"
+                            aria-hidden="true"
+                        ></div>
+                    </div>
+                    <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-textcolor2 tabular-nums">
+                        {#each barRows as row (row.kind)}
+                            <span class="flex items-center gap-1">
+                                <span class="h-2.5 w-2.5 shrink-0 rounded-xs {row.color}" aria-hidden="true"></span>
+                                {language.contextUsage.groups[row.kind]}
+                                {fmt(row.tokens)}
+                            </span>
+                        {/each}
+                        {#if unusedReserve > 0}
+                            <span class="flex items-center gap-1">
+                                <span class="h-2.5 w-2.5 shrink-0 rounded-xs context-meter-reserve" aria-hidden="true"
+                                ></span>
+                                {language.contextUsage.legendReserveEmpty}
+                                {fmt(unusedReserve)}
+                            </span>
                         {/if}
                     </div>
-                    {#if hypa}
-                        <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-textcolor2" aria-hidden="true">
-                            <span class="flex items-center gap-1"
-                                ><span class="h-2.5 w-2.5 rounded-xs context-meter-reserve"></span>{language
-                                    .contextUsage.legendReserved}</span
-                            >
-                            <span class="flex items-center gap-1"
-                                ><span class="h-2.5 w-0.5 bg-secondary-500"></span>{language.contextUsage
-                                    .legendSummarize}</span
-                            >
-                            {#if hypa.lookaheadIn !== undefined}
-                                <span class="flex items-center gap-1"
-                                    ><span class="h-2.5 border-l border-dashed border-textcolor2"></span>{language
-                                        .contextUsage.legendLookahead}</span
-                                >
-                            {/if}
-                        </div>
-                    {/if}
                 {/if}
+                <span
+                    class="text-xs"
+                    class:text-danger-500={fixedOver}
+                    title={language.contextUsage.fixedShareHelp}
+                    data-context-meter-fixed
+                >
+                    {language.contextUsage.fixedShare(Math.round(fixed))}
+                    {#if fixedOver}
+                        {language.contextUsage.fixedShareOver(warn)}
+                    {/if}
+                </span>
 
                 <ul class="flex flex-col gap-1" data-context-meter-sections>
                     {#each rows as row (row.kind)}
@@ -764,25 +798,18 @@
                             {/if}
                         </li>
                     {/each}
-                    {#if report.adjustment !== 0}
-                        <li
-                            class="flex items-center gap-2"
-                            data-section="other"
-                            title={language.contextUsage.otherHelp}
-                        >
-                            <span class="h-2.5 w-2.5 shrink-0" aria-hidden="true"></span>
-                            <span class="grow">{language.contextUsage.other}</span>
-                            <span class="tabular-nums"
-                                >{language.contextUsage.tokens(
-                                    `${report.adjustment > 0 ? "+" : "−"}${fmt(Math.abs(report.adjustment))}`,
-                                )}</span
-                            >
-                            {#if promptBudget > 0}
-                                <span class="w-10"></span>
-                            {/if}
-                        </li>
-                    {/if}
                 </ul>
+                {#if report.adjustment !== 0}
+                    <span
+                        class="text-xs text-textcolor2 tabular-nums"
+                        data-context-meter-other
+                        title={language.contextUsage.otherHelp}
+                    >
+                        {language.contextUsage.otherLine(
+                            `${report.adjustment > 0 ? "+" : "−"}${fmt(Math.abs(report.adjustment))}`,
+                        )}
+                    </span>
+                {/if}
                 {#if !report.attributionExact}
                     <span class="text-xs text-textcolor2">{language.contextUsage.approximate}</span>
                 {/if}
@@ -799,116 +826,132 @@
                     <span class="text-right text-xs text-textcolor2 tabular-nums" data-context-meter-total
                         >{language.contextUsage.historyTotal(turns.total, other.total, unit)}</span
                     >
-                    {#if omitted || report.memory}
-                        <div class="mt-1 ml-1 flex flex-col gap-1 border-l-2 border-darkborderc pl-2.5">
-                            {#if report.memory}
-                                <div class="flex flex-col gap-1" data-context-meter-memory>
-                                    {#if report.memory.kind === "hypaV3" && report.memory.budget !== undefined}
-                                        <div class="flex justify-between gap-2">
-                                            <span>{language.contextUsage.memoryBudget(memoryName)}</span>
-                                            <span class="tabular-nums"
-                                                >{fmt(report.memory.tokens)} / {fmt(report.memory.budget)}</span
-                                            >
-                                        </div>
-                                        <div
-                                            class="h-2 w-full overflow-hidden rounded-sm bg-darkbutton"
-                                            aria-hidden="true"
-                                        >
-                                            <div
-                                                class="h-full {memoryColor}"
-                                                style:width="{widthOf(report.memory.tokens, report.memory.budget)}%"
-                                            ></div>
-                                        </div>
+                    {#if omitted}
+                        <span class="text-right text-xs text-textcolor2 tabular-nums" data-context-meter-omitted
+                            >{language.contextUsage.historyOmitted(
+                                omitted.count,
+                                fmt(report.history.droppedTokens),
+                            )}</span
+                        >
+                        {#if omitted.tags.length > 0}
+                            <div class="flex flex-wrap gap-1.5 text-xs" data-context-meter-omitted-tags>
+                                {#each omitted.tags as tag (tag.tone)}
+                                    <span
+                                        class="rounded-sm bg-darkbutton px-1.5 py-px"
+                                        class:text-secondary-500={tag.tone === "memory"}
+                                        class:text-danger-500={tag.tone === "warn"}
+                                        data-tone={tag.tone}>{tag.text}</span
+                                    >
+                                {/each}
+                            </div>
+                        {/if}
+                    {/if}
+                    {#if hypa}
+                        <div class="mt-1 flex flex-col gap-2 text-xs">
+                            <div class="flex justify-between gap-2">
+                                <span class="text-textcolor2">{language.contextUsage.runwayCaption}</span>
+                                <span class="text-right tabular-nums">
+                                    {language.contextUsage.runwayUsage(fmt(historyTokens), fmt(hypa.summarizeIn))}
+                                </span>
+                            </div>
+                            <div
+                                class="relative h-2 w-full rounded-sm bg-darkbutton"
+                                data-context-meter-runway
+                                aria-hidden="true"
+                            >
+                                <div
+                                    class="h-full rounded-sm bg-primary-500"
+                                    style:width="{runwayScale > 0 ? widthOf(historyTokens, runwayScale) : 100}%"
+                                ></div>
+                                <div
+                                    class="absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 bg-secondary-500"
+                                    data-context-meter-summarize
+                                    style:left="{pointAt(hypa.summarizeIn)}%"
+                                ></div>
+                                {#if hypa.lookaheadIn !== undefined}
+                                    <div
+                                        class="absolute -top-1 -bottom-1 -translate-x-1/2 border-l border-dashed border-textcolor2"
+                                        data-context-meter-lookahead
+                                        style:left="{pointAt(hypa.lookaheadIn)}%"
+                                    ></div>
+                                {/if}
+                            </div>
+                            <div class="flex flex-col gap-0.5">
+                                {#if hypa.lookaheadIn !== undefined}
+                                    <div
+                                        class="flex justify-between gap-2 text-textcolor2"
+                                        data-context-meter-next-lookahead
+                                    >
+                                        <span>{language.contextUsage.lookaheadLabel}</span>
+                                        <span class="text-right tabular-nums">
+                                            {hypa.lookaheadIn > 0
+                                                ? language.contextUsage.tokensAway(fmt(hypa.lookaheadIn))
+                                                : language.contextUsage.lookaheadPassed}
+                                        </span>
+                                    </div>
+                                {/if}
+                                <div class="flex justify-between gap-2 text-secondary-500" data-context-meter-next>
+                                    {#if hypa.prepared > 0}
+                                        <span title={language.contextUsage.preparedHelp} data-context-meter-prepared>
+                                            {language.contextUsage.preparedInLabel(hypa.prepared)}
+                                        </span>
                                     {:else}
-                                        <span
-                                            >{language.contextUsage.memoryLine(
-                                                memoryName,
-                                                fmt(report.memory.tokens),
-                                            )}</span
-                                        >
+                                        <span>{language.contextUsage.summarizeInLabel}</span>
                                     {/if}
-                                    {#if budgetReduced.length > 0}
-                                        <div
-                                            class="flex flex-col gap-0.5 text-xs text-danger-500 tabular-nums"
-                                            data-context-meter-budget-reduced
-                                        >
-                                            <span>{language.contextUsage.budgetReducedNote}</span>
-                                            {#each budgetReduced as reduction (reduction.field)}
-                                                <span data-field={reduction.field}
-                                                    >{language.contextUsage.budgetReducedValue(
-                                                        language.contextUsage.budgetReducedFields[reduction.field],
-                                                        fmt(reduction.configured),
-                                                        fmt(reduction.applied),
-                                                    )}</span
-                                                >
-                                            {/each}
-                                        </div>
-                                    {/if}
-                                    {#if hypa}
-                                        <!-- What changes between sends leads as label/value rows; the explanation trails the block. -->
-                                        <dl class="flex flex-col gap-0.5 text-xs">
-                                            {#if hypa.prepared > 0}
-                                                <div class="flex justify-between gap-2" data-context-meter-prepared>
-                                                    <dt class="text-textcolor2">
-                                                        {language.contextUsage.preparedLabel}
-                                                    </dt>
-                                                    <dd class="tabular-nums">
-                                                        {language.contextUsage.preparedCount(hypa.prepared)}
-                                                    </dd>
-                                                </div>
-                                            {/if}
-                                            <div class="flex justify-between gap-2" data-context-meter-next>
-                                                <dt class="text-textcolor2">
-                                                    {hypa.prepared > 0
-                                                        ? language.contextUsage.preparedInLabel
-                                                        : language.contextUsage.summarizeInLabel}
-                                                </dt>
-                                                <dd class="tabular-nums">
-                                                    {hypa.summarizeIn <= 0
-                                                        ? language.contextUsage.nextSend
-                                                        : language.contextUsage.tokensAway(fmt(hypa.summarizeIn))}
-                                                </dd>
-                                            </div>
-                                            {#if hypa.lookaheadIn !== undefined}
-                                                <div
-                                                    class="flex justify-between gap-2"
-                                                    data-context-meter-next-lookahead
-                                                >
-                                                    <dt class="text-textcolor2">
-                                                        {language.contextUsage.lookaheadLabel}
-                                                    </dt>
-                                                    <dd class="tabular-nums">
-                                                        {hypa.lookaheadIn > 0
-                                                            ? language.contextUsage.tokensAway(fmt(hypa.lookaheadIn))
-                                                            : language.contextUsage.lookaheadPassed}
-                                                    </dd>
-                                                </div>
-                                            {/if}
-                                        </dl>
-                                    {/if}
+                                    <span class="text-right tabular-nums">
+                                        {hypa.summarizeIn <= 0
+                                            ? language.contextUsage.nextSend
+                                            : language.contextUsage.tokensAway(fmt(hypa.summarizeIn))}
+                                    </span>
                                 </div>
+                            </div>
+                            {#if unusedReserve > 0}
+                                <span class="text-textcolor2">
+                                    {language.contextUsage.memoryReserveNote(fmt(hypa.reserved))}
+                                    <button
+                                        type="button"
+                                        class="text-textcolor underline hover:text-primary-500"
+                                        data-context-meter-memory-settings
+                                        onclick={openMemorySettings}>{language.contextUsage.memorySettings}</button
+                                    >
+                                </span>
                             {/if}
-                            {#if omitted}
-                                <span class="mt-1 tabular-nums" data-context-meter-omitted
-                                    >{language.contextUsage.historyOmitted(
-                                        omitted.count,
-                                        fmt(report.history.droppedTokens),
-                                    )}</span
-                                >
-                                {#if omitted.tags.length > 0}
-                                    <div class="flex flex-wrap gap-1.5 text-xs" data-context-meter-omitted-tags>
-                                        {#each omitted.tags as tag (tag.tone)}
-                                            <span
-                                                class="rounded-sm bg-darkbutton px-1.5 py-px"
-                                                class:text-secondary-500={tag.tone === "memory"}
-                                                class:text-danger-500={tag.tone === "warn"}
-                                                data-tone={tag.tone}>{tag.text}</span
+                        </div>
+                    {/if}
+                    {#if report.memory}
+                        <div class="mt-1 ml-1 flex flex-col gap-1 border-l-2 border-darkborderc pl-2.5">
+                            <div class="flex flex-col gap-1" data-context-meter-memory>
+                                {#if report.memory.kind === "hypaV3" && report.memory.budget !== undefined}
+                                    <div class="flex justify-between gap-2">
+                                        <span>{language.contextUsage.memoryBudget(memoryName)}</span>
+                                        <span class="tabular-nums"
+                                            >{fmt(report.memory.tokens)} / {fmt(report.memory.budget)}</span
+                                        >
+                                    </div>
+                                {:else}
+                                    <span
+                                        >{language.contextUsage.memoryLine(memoryName, fmt(report.memory.tokens))}</span
+                                    >
+                                {/if}
+                                {#if budgetReduced.length > 0}
+                                    <div
+                                        class="flex flex-col gap-0.5 text-xs text-danger-500 tabular-nums"
+                                        data-context-meter-budget-reduced
+                                    >
+                                        <span>{language.contextUsage.budgetReducedNote}</span>
+                                        {#each budgetReduced as reduction (reduction.field)}
+                                            <span data-field={reduction.field}
+                                                >{language.contextUsage.budgetReducedValue(
+                                                    language.contextUsage.budgetReducedFields[reduction.field],
+                                                    fmt(reduction.configured),
+                                                    fmt(reduction.applied),
+                                                )}</span
                                             >
                                         {/each}
                                     </div>
                                 {/if}
-                            {/if}
-                            {#if report.memory && report.memory.summarized === undefined}
+                            </div>
+                            {#if report.memory.summarized === undefined}
                                 <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report. -->
                                 <span class="text-xs text-textcolor2" data-context-meter-coverage
                                     >{report.memory.coverage === "covered"
@@ -916,11 +959,6 @@
                                         : report.memory.coverage === "gap"
                                           ? language.contextUsage.coverageGap
                                           : language.contextUsage.coverageUnknown}</span
-                                >
-                            {/if}
-                            {#if hypa && hypa.prepared > 0}
-                                <span class="text-xs text-textcolor2" data-context-meter-prepared-help
-                                    >{language.contextUsage.preparedHelp}</span
                                 >
                             {/if}
                         </div>
@@ -934,15 +972,13 @@
                             <span title={language.contextUsage.loreBudgetHelp}>{language.contextUsage.loreBudget}</span>
                             <span class="tabular-nums">{fmt(report.lore.budgetUsed)} / {fmt(report.lore.budget)}</span>
                         </div>
-                        <div class="h-2 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
-                            <div
-                                class="h-full"
-                                class:bg-primary-500={!rejected}
-                                class:bg-danger-300={rejected}
-                                style:width="{widthOf(report.lore.budgetUsed, report.lore.budget)}%"
-                            ></div>
-                        </div>
                         {#if rejected}
+                            <div class="h-2 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
+                                <div
+                                    class="h-full bg-danger-300"
+                                    style:width="{widthOf(report.lore.budgetUsed, report.lore.budget)}%"
+                                ></div>
+                            </div>
                             {@const named = report.lore.rejected ?? []}
                             <span class="text-xs text-textcolor"
                                 >{language.contextUsage.loreRejected(
@@ -987,39 +1023,7 @@
                         {/if}
                     </div>
                 {/if}
-
-                <div class="flex flex-col gap-1" data-context-meter-fixed>
-                    <div class="flex justify-between gap-2" class:text-danger-500={fixedOver}>
-                        <span title={language.contextUsage.fixedShareHelp}
-                            >{language.contextUsage.fixedShare(Math.round(fixed))}</span
-                        >
-                    </div>
-                    <div class="relative h-2 w-full rounded-sm bg-darkbutton" aria-hidden="true">
-                        <div
-                            class="h-full rounded-sm"
-                            class:bg-neutral-400={!fixedOver}
-                            class:bg-danger-500={fixedOver}
-                            style:width="{Math.min(100, fixed)}%"
-                        ></div>
-                        <div class="absolute -top-0.5 -bottom-0.5 w-0.5 bg-textcolor" style:left="{warn}%"></div>
-                    </div>
-                    {#if fixedOver}
-                        <span class="text-xs text-danger-500">{language.contextUsage.fixedShareOver(warn)}</span>
-                    {/if}
-                </div>
             {/if}
-
-            <div class="flex flex-wrap items-center gap-x-2 border-t border-darkborderc pt-3 text-xs text-textcolor2">
-                <span
-                    >{language.contextUsage.basis(
-                        unit === "user" ? language.contextUsage.basisTurns : language.contextUsage.basisMessages,
-                        warn,
-                    )}</span
-                >
-                <button type="button" class="text-textcolor underline hover:text-primary-500" onclick={openSettings}>
-                    {language.contextUsage.changeSettings}
-                </button>
-            </div>
         </div>
     </Portal>
 {/if}

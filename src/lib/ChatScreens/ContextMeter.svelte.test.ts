@@ -33,7 +33,7 @@ import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import { findChat, patchMessage, removeMessages, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
-import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+import { MEMORY_SETTINGS_MENU, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 import { jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
 import ContextMeter from "./ContextMeter.svelte";
 
@@ -279,7 +279,378 @@ describe("the chip", () => {
 });
 
 describe("the popover", () => {
-    it("opens focused, lists the sections largest first with the signed Other row outside the bar", async () => {
+    it("uses the prompt budget in the headline and falls back when the reply consumes it", async () => {
+        const s = language.contextUsage;
+        install([reply("m1", { context: report() })]);
+        render();
+        const opened = await openPanel();
+        const input = opened.querySelector("span.text-lg.font-semibold")!;
+        expect(input.textContent).toBe("600");
+        expect(input.nextElementSibling!.textContent?.trim()).toBe(s.inputOfBudget("800", 75));
+        const terms = input.parentElement!.nextElementSibling!;
+        expect(terms.textContent).toBe(s.budgetFrom("1,000", "200"));
+        expect(terms.classList.contains("text-textcolor2")).toBe(true);
+        expect(opened.textContent).not.toContain(s.input("600", "1,000"));
+
+        for (const maxResponse of [1000, 1200]) {
+            patchMessage(ref, "m1", { generationInfo: { context: report({ maxResponse }) } });
+            flushSync();
+            expect(opened.querySelector("span.text-lg.font-semibold")).toBeNull();
+            expect(opened.textContent).toContain(s.input("600", "1,000"));
+            expect(opened.textContent).toContain(s.noBudget);
+            expect(opened.textContent).not.toContain(s.budgetFrom("1,000", maxResponse.toLocaleString()));
+        }
+    });
+
+    it("groups the composition and legend as fixed, memory, history and warns on the fixed share", async () => {
+        const s = language.contextUsage;
+        const sections: ContextReport["sections"] = [
+            { kind: "history", tokens: 400 },
+            { kind: "main", tokens: 240 },
+            { kind: "memory", tokens: 100 },
+            { kind: "description", tokens: 60 },
+        ];
+        install([reply("m1", { context: report({ sections, input: 820 }) })]);
+        render();
+        const opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        const segments = () => [...bar.querySelector<HTMLElement>(".h-3")!.children] as HTMLElement[];
+        const legend = () =>
+            [...bar.nextElementSibling!.children].map((entry) => entry.textContent?.replace(/\s+/g, " ").trim());
+        expect(segments().map((segment) => segment.style.width)).toEqual(["37.5%", "12.5%", "50%"]);
+        for (const [index, color] of ["bg-neutral-400", "bg-secondary-500", "bg-primary-500"].entries()) {
+            expect(segments()[index].classList.contains(color)).toBe(true);
+            expect(bar.nextElementSibling!.children[index].firstElementChild!.classList.contains(color)).toBe(true);
+        }
+        expect(legend()).toEqual([`${s.groups.fixed} 300`, `${s.groups.memory} 100`, `${s.groups.history} 400`]);
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("60%");
+        expect(opened.querySelector("[data-context-meter-reserve]")).toBeNull();
+        const fixed = opened.querySelector("[data-context-meter-fixed]")!;
+        expect(fixed.textContent?.trim()).toBe(s.fixedShare(38));
+        expect(fixed.classList.contains("text-danger-500")).toBe(false);
+        expect(fixed.querySelector('[aria-hidden="true"]')).toBeNull();
+        for (const row of opened.querySelectorAll<HTMLElement>("[data-context-meter-sections] li")) {
+            const color =
+                row.dataset.section === "memory"
+                    ? "bg-secondary-500"
+                    : row.dataset.section === "history"
+                      ? "bg-primary-500"
+                      : "bg-neutral-400";
+            expect(row.firstElementChild!.classList.contains(color), row.dataset.section).toBe(true);
+        }
+
+        settings.ui.contextMeterFixedWarn = 37;
+        flushSync();
+        expect(segments()[0].classList.contains("bg-danger-500")).toBe(true);
+        expect(bar.nextElementSibling!.firstElementChild!.firstElementChild!.classList.contains("bg-danger-500")).toBe(
+            true,
+        );
+        expect(fixed.classList.contains("text-danger-500")).toBe(true);
+        expect(fixed.textContent?.replace(/\s+/g, " ").trim()).toBe(`${s.fixedShare(38)} ${s.fixedShareOver(37)}`);
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("37%");
+        for (const kind of ["main", "description"]) {
+            const dot = opened.querySelector(
+                `[data-context-meter-sections] [data-section="${kind}"]`,
+            )!.firstElementChild!;
+            expect(dot.classList.contains("bg-neutral-400"), `${kind} keeps the fixed group's neutral color`).toBe(
+                true,
+            );
+        }
+
+        // Empty groups contribute neither a segment nor a legend entry.
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    sections: [sections[1], sections[3], { kind: "memory", tokens: 0 }, { kind: "history", tokens: 0 }],
+                    input: 300,
+                    adjustment: 0,
+                }),
+            },
+        });
+        flushSync();
+        expect(segments().map((segment) => segment.style.width)).toEqual(["37.5%"]);
+        expect(legend()).toEqual([`${s.groups.fixed} 300`]);
+    });
+
+    it("ends the composition with unused HypaV3 reserve and scales its warning tick to fit it", async () => {
+        const s = language.contextUsage;
+        const sections: ContextReport["sections"] = [
+            { kind: "history", tokens: 400 },
+            { kind: "main", tokens: 300 },
+            { kind: "memory", tokens: 100 },
+        ];
+        const memory = { kind: "hypaV3", tokens: 100, reserved: 500, summarizeIn: 100, coverage: "covered" } as const;
+        install([reply("m1", { context: report({ sections, input: 800, adjustment: 0, memory }) })]);
+        render();
+        const opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        const track = bar.querySelector<HTMLElement>(".h-3")!;
+        const reserve = bar.querySelector<HTMLElement>("[data-context-meter-reserve]")!;
+        // Scale = max(800, 700 + max(500, 100)) = 1,200; unused reserve = 400.
+        expect(
+            [...track.children].slice(0, 3).map((segment) => parseFloat((segment as HTMLElement).style.width)),
+        ).toEqual([25, (100 / 1200) * 100, (400 / 1200) * 100]);
+        expect(track.children).toHaveLength(5);
+        expect(parseFloat(reserve.style.width)).toBeCloseTo((400 / 1200) * 100);
+        expect(track.lastElementChild).toBe(reserve);
+        expect(reserve.previousElementSibling!.classList.contains("grow")).toBe(true);
+        expect(bar.nextElementSibling!.lastElementChild!.textContent?.replace(/\s+/g, " ").trim()).toBe(
+            `${s.legendReserveEmpty} 400`,
+        );
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("40%");
+        expect(bar.querySelector("[data-context-meter-summarize], [data-context-meter-lookahead]")).toBeNull();
+
+        // Memory already larger than its reservation leaves no empty reserve and uses the sent amount in the scale.
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({ sections, input: 800, adjustment: 0, memory: { ...memory, reserved: 50 } }),
+            },
+        });
+        flushSync();
+        expect(reserve.style.width).toBe("0%");
+        expect((track.firstElementChild as HTMLElement).style.width).toBe("37.5%");
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("60%");
+        expect(bar.nextElementSibling!.textContent).not.toContain(s.legendReserveEmpty);
+
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    sections,
+                    input: 800,
+                    adjustment: 0,
+                    memory: { kind: "hypaV2", tokens: 100, coverage: "covered" },
+                }),
+            },
+        });
+        flushSync();
+        expect(bar.querySelector("[data-context-meter-reserve]")).toBeNull();
+        expect(track.children).toHaveLength(3);
+    });
+
+    it("explains the signed counting difference below the sections and omits it at zero", async () => {
+        const s = language.contextUsage;
+        install([reply("m1", { context: report() })]);
+        render();
+        const opened = await openPanel();
+        for (const [adjustment, signed] of [
+            [20, "+20"],
+            [-70, "−70"],
+        ] as const) {
+            patchMessage(ref, "m1", { generationInfo: { context: report({ adjustment, input: 580 + adjustment }) } });
+            flushSync();
+            const line = opened.querySelector("[data-context-meter-other]")!;
+            expect(line.textContent?.trim()).toBe(s.otherLine(signed));
+            expect(line.getAttribute("title")).toBe(s.otherHelp);
+            expect(line.classList.contains("text-textcolor2")).toBe(true);
+            expect(opened.querySelector("[data-context-meter-sections]")!.nextElementSibling).toBe(line);
+            expect(opened.querySelector('[data-context-meter-sections] [data-section="other"]')).toBeNull();
+        }
+        patchMessage(ref, "m1", { generationInfo: { context: report({ adjustment: 0, input: 580 }) } });
+        flushSync();
+        expect(opened.querySelector("[data-context-meter-other]")).toBeNull();
+    });
+
+    it("orders the history explanation before its runway and removes hidden lookahead from the scale", async () => {
+        const s = language.contextUsage;
+        const sections: ContextReport["sections"] = [
+            { kind: "main", tokens: 100 },
+            { kind: "history", tokens: 400 },
+            { kind: "memory", tokens: 50 },
+        ];
+        const memory = {
+            kind: "hypaV3",
+            tokens: 50,
+            budget: 200,
+            reserved: 200,
+            summarizeIn: 100,
+            lookaheadIn: 400,
+            summarized: 1,
+            coverage: "gap",
+        } as const;
+        install([reply("m1", { context: trimmed({ sections, input: 550, adjustment: 0, memory }) })]);
+        render();
+        const opened = await openPanel();
+        const history = opened.querySelector("[data-context-meter-history]")!;
+        const order = ["kept", "total", "omitted", "omitted-tags", "runway", "next-lookahead", "next", "memory"];
+        for (let i = 1; i < order.length; i++) {
+            const before = history.querySelector(`[data-context-meter-${order[i - 1]}]`)!;
+            const after = history.querySelector(`[data-context-meter-${order[i]}]`)!;
+            expect(
+                before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING,
+                `${order[i - 1]} before ${order[i]}`,
+            ).toBeTruthy();
+        }
+        const runway = history.querySelector<HTMLElement>("[data-context-meter-runway]")!;
+        expect(runway.previousElementSibling!.textContent).toContain(s.runwayCaption);
+        expect(runway.previousElementSibling!.textContent).toContain(s.runwayUsage("400", "100"));
+        expect((runway.firstElementChild as HTMLElement).style.width).toBe("50%");
+        const summarize = runway.querySelector<HTMLElement>("[data-context-meter-summarize]")!;
+        expect(summarize.style.left).toBe("62.5%");
+        expect(summarize.classList.contains("border-dashed")).toBe(false);
+        const lookahead = runway.querySelector<HTMLElement>("[data-context-meter-lookahead]")!;
+        expect(lookahead.style.left).toBe("100%");
+        expect(lookahead.classList.contains("border-dashed")).toBe(true);
+        expect(rowText(history, "next-lookahead")).toEqual([s.lookaheadLabel, s.tokensAway("400")]);
+        expect(rowText(history, "next")).toEqual([s.summarizeInLabel, s.tokensAway("100")]);
+        expect(history.querySelector("[data-context-meter-memory] .h-2")).toBeNull();
+
+        settings.ui.contextMeterLookahead = false;
+        flushSync();
+        expect(runway.querySelector("[data-context-meter-lookahead]")).toBeNull();
+        expect(history.querySelector("[data-context-meter-next-lookahead]")).toBeNull();
+        expect((runway.firstElementChild as HTMLElement).style.width).toBe("80%");
+        expect(summarize.style.left).toBe("100%");
+
+        // Both thresholds at zero describe the current boundary, rather than the prompt composition.
+        settings.ui.contextMeterLookahead = true;
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: trimmed({
+                    sections,
+                    input: 550,
+                    adjustment: 0,
+                    memory: { ...memory, summarizeIn: 0, lookaheadIn: 0 },
+                }),
+            },
+        });
+        flushSync();
+        expect((runway.firstElementChild as HTMLElement).style.width).toBe("100%");
+        expect(summarize.style.left).toBe("100%");
+        expect(runway.querySelector<HTMLElement>("[data-context-meter-lookahead]")!.style.left).toBe("100%");
+        expect(rowText(history, "next-lookahead")).toEqual([s.lookaheadLabel, s.lookaheadPassed]);
+        expect(rowText(history, "next")).toEqual([s.summarizeInLabel, s.nextSend]);
+        settings.ui.contextMeterLookahead = false;
+        flushSync();
+        expect(summarize.style.left).toBe("100%");
+    });
+
+    it("puts ready summaries in the next label and links the unused reserve note to memory settings", async () => {
+        const s = language.contextUsage;
+        const memory = {
+            kind: "hypaV3",
+            tokens: 50,
+            budget: 200,
+            reserved: 200,
+            summarizeIn: 70,
+            prepared: 3,
+            coverage: "covered",
+        } as const;
+        const sections: ContextReport["sections"] = [
+            { kind: "main", tokens: 130 },
+            { kind: "history", tokens: 400 },
+            { kind: "memory", tokens: 50 },
+        ];
+        install([reply("m1", { context: trimmed({ sections, memory }) })]);
+        render();
+        const opened = await openPanel();
+        const next = opened.querySelector("[data-context-meter-next]")!;
+        const prepared = next.querySelector("[data-context-meter-prepared]")!;
+        expect(rowText(opened, "next")).toEqual([s.preparedInLabel(3), s.tokensAway("70")]);
+        expect(prepared.getAttribute("title")).toBe(s.preparedHelp);
+        expect(opened.querySelector("dl, [data-context-meter-prepared-help]")).toBeNull();
+        expect(opened.querySelector("[data-context-meter-lookahead], [data-context-meter-next-lookahead]")).toBeNull();
+        const link = () => opened.querySelector<HTMLButtonElement>("[data-context-meter-memory-settings]");
+        expect(link()!.parentElement!.textContent).toContain(s.memoryReserveNote("200"));
+        expect(next.compareDocumentPosition(link()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(
+            link()!.compareDocumentPosition(opened.querySelector("[data-context-meter-memory]")!) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ sections, memory: { ...memory, prepared: 0, reserved: 50 } }) },
+        });
+        flushSync();
+        expect(next.querySelector("[data-context-meter-prepared]")).toBeNull();
+        expect(rowText(opened, "next")).toEqual([s.summarizeInLabel, s.tokensAway("70")]);
+        expect(link()).toBeNull();
+        expect(opened.textContent).not.toContain(s.memoryReserveNote("50"));
+
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed({ sections, memory }) } });
+        flushSync();
+        link()!.click();
+        flushSync();
+        expect(panel()).toBeNull();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
+    });
+
+    it("keeps lore to its budget row until rejections need a danger bar and details", async () => {
+        const s = language.contextUsage;
+        const lore = { budgetUsed: 75, budget: 100, rejectedCount: 0, rejectedTokens: 0, active: 2 };
+        install([reply("m1", { context: report({ lore }) })]);
+        render();
+        const opened = await openPanel();
+        const block = opened.querySelector("[data-context-meter-lore]")!;
+        expect(block.children).toHaveLength(1);
+        expect(block.textContent?.replace(/\s+/g, " ").trim()).toBe(`${s.loreBudget} 75 / 100`);
+        expect(block.querySelector('[aria-hidden="true"]')).toBeNull();
+        expect(block.querySelector("[data-context-meter-lore-toggle]")).toBeNull();
+
+        setChatMeta(ref, { loreBudgetWarnOff: true });
+        flushSync();
+        expect(block.querySelector('[aria-hidden="true"]')).toBeNull();
+        expect(block.textContent).toContain(s.loreWarnOffNote);
+        expect(block.querySelector("[data-context-meter-lore-toggle]")!.textContent?.trim()).toBe(s.loreWarnOn);
+
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    lore: {
+                        ...lore,
+                        rejectedCount: 3,
+                        rejectedTokens: 80,
+                        rejected: [{ name: "Old war", tokens: 30 }],
+                    },
+                }),
+            },
+        });
+        flushSync();
+        const fill = block.querySelector<HTMLElement>('[aria-hidden="true"] > div')!;
+        expect(fill.classList.contains("bg-danger-300")).toBe(true);
+        expect(fill.style.width).toBe("75%");
+        expect(block.textContent).toContain(s.loreRejected(3, "80"));
+        expect(block.querySelector("[data-context-meter-lore-rejected]")).not.toBeNull();
+        expect(block.textContent).toContain(s.loreRejectedMore(2));
+
+        patchMessage(ref, "m1", { generationInfo: { context: report({ lore }) } });
+        flushSync();
+        expect(block.querySelector('[aria-hidden="true"], [data-context-meter-lore-rejected]')).toBeNull();
+        expect(block.textContent).not.toContain(s.loreRejected(3, "80"));
+    });
+
+    it("opens the meter settings from the header button whose accessible label explains the basis", async () => {
+        const s = language.contextUsage;
+        install([reply("m1", { context: report() })]);
+        render();
+        const opened = await openPanel();
+        const button = opened.querySelector<HTMLButtonElement>("[data-context-meter-settings]")!;
+        expect(button.getAttribute("aria-label")).toBe(s.basis(s.basisTurns, 60));
+        expect(button.getAttribute("title")).toBe(s.basis(s.basisTurns, 60));
+        expect(button.nextElementSibling!.textContent?.trim()).toBe(s.close);
+        expect(button.parentElement!.parentElement!.querySelector("h2")).not.toBeNull();
+        expect(opened.textContent).not.toContain(s.basis(s.basisTurns, 60));
+
+        settings.ui.contextMeterTurnUnit = "message";
+        settings.ui.contextMeterFixedWarn = 45;
+        flushSync();
+        expect(button.getAttribute("aria-label")).toBe(s.basis(s.basisMessages, 45));
+        expect(button.getAttribute("title")).toBe(s.basis(s.basisMessages, 45));
+        button.click();
+        flushSync();
+        expect(panel()).toBeNull();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(INTERACTION_SETTINGS_MENU);
+        expect(currentJump()).toMatchObject({
+            kind: "section",
+            id: "interaction.contextMeter",
+            sectionId: "interaction.contextMeter",
+            menu: INTERACTION_SETTINGS_MENU,
+            available: true,
+        });
+    });
+
+    it("opens focused and lists the sections largest first, with the counting difference outside the list", async () => {
         install([reply("m1", { context: report() })]);
         render();
         expect(panel()).toBeNull();
@@ -292,13 +663,12 @@ describe("the popover", () => {
             ["history", `${language.contextUsage.sections.history} 450 tokens 56%`],
             ["main", `${language.contextUsage.sections.main} 100 tokens 13%`],
             ["description", `${language.contextUsage.sections.description} 30 tokens 4%`],
-            ["other", `${language.contextUsage.other} +20 tokens`],
         ]);
-        // The bar has one segment per section, none for Other.
-        expect(opened.querySelector('[aria-hidden="true"].h-3')!.children.length).toBe(3);
-        expect(opened.textContent).toContain(
-            language.contextUsage.promptBudget((800).toLocaleString(), (1000).toLocaleString(), (200).toLocaleString()),
+        expect(opened.querySelector("[data-context-meter-other]")!.textContent?.trim()).toBe(
+            language.contextUsage.otherLine("+20"),
         );
+        // The bar has one segment per group with tokens: the fixed sections and the history, no memory.
+        expect(opened.querySelector('[aria-hidden="true"].h-3')!.children.length).toBe(2);
         expect(opened.querySelector("[data-context-meter-reserve]")).toBeNull();
         expect(opened.textContent).not.toContain(language.contextUsage.approximate);
         expect(opened.querySelector("[data-context-meter-omitted]")).toBeNull();
@@ -309,7 +679,13 @@ describe("the popover", () => {
         install([reply("m1", { context: trimmed({ adjustment: -15, attributionExact: false }) })]);
         render();
         const opened = await openPanel();
-        expect(sectionRows().at(-1)).toEqual(["other", `${language.contextUsage.other} −15 tokens`]);
+        expect(sectionRows().at(-1)).toEqual([
+            "description",
+            `${language.contextUsage.sections.description} 30 tokens 4%`,
+        ]);
+        expect(opened.querySelector("[data-context-meter-other]")!.textContent?.trim()).toBe(
+            language.contextUsage.otherLine("−15"),
+        );
         expect(opened.textContent).toContain(language.contextUsage.approximate);
         expect(opened.querySelector("[data-context-meter-omitted]")!.textContent).toBe(
             language.contextUsage.historyOmitted(2, "300"),
@@ -421,7 +797,7 @@ describe("the popover", () => {
         expect(Object.hasOwn(findChat(ref)!, "loreBudgetWarnOff")).toBe(false);
     });
 
-    it("shows the HypaV3 budget meter only with a budget, else the memory line, with the coverage text", async () => {
+    it("shows the HypaV3 budget row only with a budget, else the memory line, with the coverage text", async () => {
         install([reply("m1", { context: trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } }) })]);
         render();
         let opened = await openPanel();
@@ -448,9 +824,9 @@ describe("the popover", () => {
         expect(opened.querySelector("[data-context-meter-coverage]")!.textContent).toBe(
             language.contextUsage.coverageCovered,
         );
-        // The memory leads the block; what was left out follows it.
+        // What was left out is a fact about the past: it sits under the totals, before the memory.
         const omittedLine = opened.querySelector("[data-context-meter-omitted]")!;
-        expect(memory.compareDocumentPosition(omittedLine) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(omittedLine.compareDocumentPosition(memory) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("shows the reported budget reductions in the chip, summary and memory breakdown only while present", async () => {
@@ -502,9 +878,7 @@ describe("the popover", () => {
         absent();
     });
 
-    it("places HypaV3's reserve and summarize points on the bar and splits the history left out", async () => {
-        // Budget 800; the memory card's 50 tokens sit at the start of its 200-token reserve, and the
-        // summarize points sit the server's counts past the other sections' 530 tokens.
+    it("splits the history left out into summarized and unsummarized tags, replacing the coverage sentence", async () => {
         const memory = {
             kind: "hypaV3" as const,
             tokens: 50,
@@ -524,96 +898,32 @@ describe("the popover", () => {
         install([reply("m1", { context: trimmed({ sections, memory }) })]);
         render();
         let opened = await openPanel();
-        const bar = opened.querySelector("[data-context-meter-bar]")!;
-        // Three sections, the spacer, the memory sent, and the unused reserve.
-        expect(bar.querySelector(".h-3")!.children.length).toBe(6);
-        expect(bar.querySelector<HTMLElement>("[data-context-meter-reserve]")!.style.width).toBe("18.75%");
-        expect(bar.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("75%");
-        expect(bar.querySelector<HTMLElement>("[data-context-meter-lookahead]")!.style.left).toBe("68.75%");
-        const tags = [...opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]")].map((tag) => [
-            tag.getAttribute("data-tone"),
-            tag.textContent,
-        ]);
-        expect(tags).toEqual([
+        const tags = () =>
+            [...opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]")].map((tag) => [
+                tag.getAttribute("data-tone"),
+                tag.textContent,
+            ]);
+        // One of the two messages left out is summarized, the other is not.
+        expect(opened.querySelector("[data-context-meter-omitted]")!.textContent).toBe(
+            language.contextUsage.historyOmitted(2, "300"),
+        );
+        expect(tags()).toEqual([
             ["memory", language.contextUsage.omittedSummarized(1)],
             ["warn", language.contextUsage.omittedUnsummarized(1)],
         ]);
-        expect(rowText(opened, "next")).toEqual([
-            language.contextUsage.summarizeInLabel,
-            language.contextUsage.tokensAway("70"),
-        ]);
-        expect(rowText(opened, "next-lookahead")).toEqual([
-            language.contextUsage.lookaheadLabel,
-            language.contextUsage.tokensAway("20"),
-        ]);
         // The split replaces the coverage sentence.
+        expect(opened.querySelector("[data-context-meter-coverage]")).toBeNull();
         expect(opened.textContent).not.toContain(language.contextUsage.coverageGap);
         chip()!.click();
         flushSync();
 
-        // The setting hides the lookahead marker, its legend entry, and its line.
-        settings.ui.contextMeterLookahead = false;
-        patchMessage(ref, "m1", {
-            generationInfo: {
-                context: trimmed({ sections, memory: { ...memory, summarized: 2, summarizeIn: 0, lookaheadIn: 0 } }),
-            },
-        });
-        flushSync();
-        opened = await openPanel();
-        expect(opened.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("66.25%");
-        expect(opened.querySelector("[data-context-meter-lookahead]")).toBeNull();
-        expect(opened.querySelector("[data-context-meter-next-lookahead]")).toBeNull();
-        expect(opened.textContent).not.toContain(language.contextUsage.legendLookahead);
-        expect(opened.textContent).toContain(language.contextUsage.legendSummarize);
-        expect(rowText(opened, "next")).toEqual([
-            language.contextUsage.summarizeInLabel,
-            language.contextUsage.nextSend,
-        ]);
         // Every message left out is summarized: one tag.
-        expect(opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]").length).toBe(1);
-        chip()!.click();
-        flushSync();
-
-        // A point past the bar's end stays on it; a lookahead count of 0 is passed.
-        settings.ui.contextMeterLookahead = true;
         patchMessage(ref, "m1", {
-            generationInfo: {
-                context: trimmed({ sections, memory: { ...memory, summarizeIn: 5000, lookaheadIn: 0 } }),
-            },
+            generationInfo: { context: trimmed({ sections, memory: { ...memory, summarized: 2 } }) },
         });
         flushSync();
         opened = await openPanel();
-        expect(opened.querySelector<HTMLElement>("[data-context-meter-summarize]")!.style.left).toBe("100%");
-        expect(rowText(opened, "next-lookahead")).toEqual([
-            language.contextUsage.lookaheadLabel,
-            language.contextUsage.lookaheadPassed,
-        ]);
-        expect(opened.querySelector("[data-context-meter-prepared]")).toBeNull();
-        expect(opened.querySelector("[data-context-meter-prepared-help]")).toBeNull();
-        chip()!.click();
-        flushSync();
-
-        // Summaries ready for messages still sent raw: their row, the next point is where they come
-        // in, and the explanation closes the block after the left-out history.
-        patchMessage(ref, "m1", {
-            generationInfo: { context: trimmed({ sections, memory: { ...memory, prepared: 3 } }) },
-        });
-        flushSync();
-        opened = await openPanel();
-        expect(rowText(opened, "prepared")).toEqual([
-            language.contextUsage.preparedLabel,
-            language.contextUsage.preparedCount(3),
-        ]);
-        expect(rowText(opened, "next")).toEqual([
-            language.contextUsage.preparedInLabel,
-            language.contextUsage.tokensAway("70"),
-        ]);
-        const help = opened.querySelector("[data-context-meter-prepared-help]")!;
-        expect(help.textContent).toBe(language.contextUsage.preparedHelp);
-        expect(
-            opened.querySelector("[data-context-meter-omitted-tags]")!.compareDocumentPosition(help) &
-                Node.DOCUMENT_POSITION_FOLLOWING,
-        ).toBeTruthy();
+        expect(tags()).toEqual([["memory", language.contextUsage.omittedSummarized(2)]]);
     });
 
     it("sits above the chip when there is room, below it otherwise, and stays below alerts", async () => {
@@ -733,33 +1043,13 @@ describe("dismissal and focus", () => {
 
     it("the close button closes and returns focus to the chip", async () => {
         const opened = await openPanel();
-        opened.querySelector<HTMLButtonElement>("button")!.click();
+        const close = [...opened.querySelectorAll("button")].find(
+            (button) => button.textContent?.trim() === language.contextUsage.close,
+        )!;
+        close.click();
         flushSync();
         expect(panel()).toBeNull();
         expect(document.activeElement).toBe(chip());
-    });
-
-    it("the basis line names the unit and level, and its link records a jump to the meter's settings section", async () => {
-        settings.ui.contextMeterTurnUnit = "message";
-        settings.ui.contextMeterFixedWarn = 45;
-        flushSync();
-        const opened = await openPanel();
-        expect(opened.textContent).toContain(language.contextUsage.basis(language.contextUsage.basisMessages, 45));
-        const link = [...opened.querySelectorAll("button")].find(
-            (button) => button.textContent?.trim() === language.contextUsage.changeSettings,
-        )!;
-        link.click();
-        flushSync();
-        expect(panel()).toBeNull();
-        expect(get(settingsOpen)).toBe(true);
-        expect(get(SettingsMenuIndex)).toBe(INTERACTION_SETTINGS_MENU);
-        expect(currentJump()).toMatchObject({
-            kind: "section",
-            id: "interaction.contextMeter",
-            sectionId: "interaction.contextMeter",
-            menu: INTERACTION_SETTINGS_MENU,
-            available: true,
-        });
     });
 });
 

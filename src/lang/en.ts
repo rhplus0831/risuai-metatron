@@ -1663,14 +1663,21 @@ export const languageEnglish = {
         memoryReducedSummary: "the HypaV3 budget was reduced to fit the max context",
         memoryReduced: "memory reduced",
         input: (input: string, maxContext: string) => `${input} of ${maxContext} tokens`,
-        promptBudget: (budget: string, maxContext: string, reply: string) =>
-            `Prompt budget ${budget} (context ${maxContext} − reply ${reply})`,
+        inputOfBudget: (budget: string, percent: number) => `of ${budget} prompt budget · ${percent}%`,
+        budgetFrom: (maxContext: string, reply: string) =>
+            `Model context ${maxContext}, minus ${reply} kept for the reply.`,
         tokens: (tokens: string) => `${tokens} tokens`,
         noBudget: "No prompt budget: the reply budget takes the whole context.",
-        other: "Other",
+        otherLine: (signed: string) => `Counting difference: ${signed} tokens`,
         otherHelp:
             "The difference between the counted input and the sections above; positive or negative (merges, trimming, continue text).",
         approximate: "≈ The breakdown is approximate: the prompt was rewritten or an entry could not be traced.",
+        groups: {
+            fixed: "Fixed",
+            memory: "Memory",
+            history: "Chat history",
+        },
+        legendReserveEmpty: "Memory reserve (empty)",
         sections: {
             main: "Main prompt",
             globalNote: "Global note",
@@ -1696,6 +1703,10 @@ export const languageEnglish = {
             unit === "user"
                 ? `of ${countOf(total, "turn")} · ${countOf(otherTotal, "message")}`
                 : `of ${countOf(total, "message")} · ${countOf(otherTotal, "turn")}`,
+        runwayCaption: "Room for the history as sent",
+        runwayUsage: (used: string, left: string) => `${used} used · ~${left} left`,
+        memoryReserveNote: (reserved: string) => `The HypaV3 memory reserve (${reserved}) lowers this room.`,
+        memorySettings: "HypaV3 settings",
         historyOmitted: (count: number, tokens: string) =>
             `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
         omittedSummarized: (count: number) => `summarized into memory: ${count}`,
@@ -1724,19 +1735,14 @@ export const languageEnglish = {
             `${label}: ${configured} → ${applied}`,
         memoryBudget: (kind: string) => `${kind} memory budget`,
         memoryLine: (kind: string, tokens: string) => `${kind} memory: ${tokens} tokens sent.`,
-        preparedLabel: "Summaries ready",
-        preparedCount: (count: number) => `for ${countOf(count, "message")}`,
-        preparedInLabel: "Ready summaries come in",
-        summarizeInLabel: "Next summary",
-        lookaheadLabel: "Background summary",
+        preparedInLabel: (count: number) => `Ready summaries for ${countOf(count, "message")} apply`,
+        summarizeInLabel: "Summary applies",
+        lookaheadLabel: "Background summary asked",
         tokensAway: (tokens: string) => `in ~${tokens} tokens of history`,
         nextSend: "on the next send",
         lookaheadPassed: "passed",
         preparedHelp:
             "Ready summaries cover messages still sent in full; they take those messages' place once the prompt fills the context.",
-        legendReserved: "Memory reserve (unused)",
-        legendSummarize: "Summarizes past here",
-        legendLookahead: "Background summary",
         coverageCovered: "The memory covers the history left out.",
         coverageGap: "Some history left out is not covered by the memory.",
         coverageUnknown: "Whether the memory covers the history left out is unknown.",
@@ -1746,7 +1752,6 @@ export const languageEnglish = {
         basis: (unit: string, warn: number) => `Counting ${unit}; warning above ${warn}%.`,
         basisTurns: "your turns",
         basisMessages: "all messages",
-        changeSettings: "Change",
         legacyNote: "No breakdown for this reply: it was generated before the meter, or its report could not be read.",
         estimateTitle: "If you send this draft",
         estimateSuffix: (count: number) => `≈ −${count}`,
