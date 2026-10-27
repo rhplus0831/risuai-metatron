@@ -35,6 +35,7 @@
         suspendTrim = false,
         hasNewUnreadMessage = $bindable(false),
         revealing = $bindable(false),
+        holding = $bindable(false),
     }: {
         messages: readonly DeepReadonly<Message>[];
         currentCharacter: AnyClientCharacter;
@@ -48,6 +49,8 @@
         suspendTrim?: boolean;
         hasNewUnreadMessage?: boolean;
         revealing?: boolean;
+        /** Whether rows added above the view are still held out of the layout. */
+        holding?: boolean;
     } = $props();
 
     let chatBody: HTMLDivElement = $state();
@@ -77,6 +80,9 @@
         element: HTMLDivElement;
         input: RowInput;
         armed: boolean;
+        held: boolean;
+        /** The instance whose render a held row last finished. */
+        renderedInstance?: Row["instance"];
         dispose: () => void;
     };
     const rows = new Map<string, Row>();
@@ -123,6 +129,133 @@
         for (const event of events) scroller.addEventListener(event, armDeferredRows, { passive: true });
         return () => {
             for (const event of events) scroller.removeEventListener(event, armDeferredRows);
+        };
+    });
+
+    // Rows added above the view (an opening's older rows, a loaded page) stay out of the layout
+    // until they have rendered and the reader is not scrolling. Chrome finishes a running scroll
+    // animation in this reversed scroller at its distance from the top, so content that grows
+    // above the view mid-animation moves the reader up by the grown height.
+    const heldRows = new Set<Row>();
+    let readerScrolling = false;
+    let touching = false;
+    let quietTimer: ReturnType<typeof setTimeout>;
+    let releaseFrame: number | undefined;
+    let gatedScroller: HTMLElement | undefined;
+    // Non-passive: while it is registered, a new wheel or touch scroll waits for this thread, so
+    // none can start between the decision to show rows and the commit of their growth.
+    const scrollGate = () => {};
+
+    function setScrollGate(on: boolean) {
+        const scroller = on ? chatBody?.parentElement : gatedScroller;
+        if (!scroller || on === (gatedScroller !== undefined)) return;
+        for (const event of ["wheel", "touchstart"] as const) {
+            if (on) scroller.addEventListener(event, scrollGate, { passive: false });
+            else scroller.removeEventListener(event, scrollGate);
+        }
+        gatedScroller = on ? scroller : undefined;
+    }
+
+    function holdRow(row: Row) {
+        row.held = true;
+        row.element.classList.add("chat-row-held");
+        heldRows.add(row);
+        holding = true;
+    }
+
+    function showRow(row: Row) {
+        row.held = false;
+        row.element.classList.remove("chat-row-held");
+        heldRows.delete(row);
+        // Laid out uncontained first, so the containment observer measures its rendered size.
+        row.element.classList.remove("far");
+        if (row.instance) {
+            observer?.unobserve(row.element);
+            observer?.observe(row.element);
+        }
+    }
+
+    function releaseHeldRows() {
+        cancelAnimationFrame(releaseFrame);
+        releaseFrame = undefined;
+        setScrollGate(false);
+        for (const row of [...heldRows]) showRow(row);
+        holding = false;
+    }
+
+    const rendered = (row: Row) => !!row.instance && row.renderedInstance === row.instance;
+
+    function scheduleRelease() {
+        if (releaseFrame !== undefined || readerScrolling || ![...heldRows].some(rendered)) return;
+        setScrollGate(true);
+        // The compositor learns of the gate at the next commit, so the rows are shown a frame
+        // later, and the gate is lifted a frame after their growth commits. A frame's input and
+        // scroll events are dispatched before its animation frame callbacks, so a scroll that
+        // started before the gate took effect is seen in time.
+        const frame = (step: () => void) => {
+            releaseFrame = requestAnimationFrame(() => {
+                releaseFrame = undefined;
+                step();
+            });
+        };
+        frame(() =>
+            frame(() => {
+                if (!readerScrolling) {
+                    for (const row of [...heldRows]) if (rendered(row)) showRow(row);
+                    holding = heldRows.size > 0;
+                }
+                frame(() => {
+                    setScrollGate(false);
+                    scheduleRelease();
+                });
+            }),
+        );
+    }
+
+    async function settleHeldRow(row: Row, instance: Row["instance"]) {
+        try {
+            await tick();
+            await instance.whenRendered?.();
+        } catch {
+            // A failed render must not hold the row forever.
+        }
+        if (!row.held || row.instance !== instance) return;
+        row.renderedInstance = instance;
+        scheduleRelease();
+    }
+
+    $effect(() => {
+        const scroller = chatBody?.parentElement;
+        if (!scroller) return;
+        const settle = () => {
+            clearTimeout(quietTimer);
+            if (touching) return;
+            readerScrolling = false;
+            scheduleRelease();
+        };
+        const active = () => {
+            readerScrolling = true;
+            clearTimeout(quietTimer);
+            // Without scrollend (older Safari), quiet input counts as the end.
+            quietTimer = setTimeout(settle, 400);
+        };
+        const touch = (event: TouchEvent) => {
+            touching = event.touches.length > 0;
+            active();
+        };
+        const events = ["wheel", "scroll", "touchmove"] as const;
+        for (const event of events) scroller.addEventListener(event, active, { passive: true });
+        for (const event of ["touchstart", "touchend", "touchcancel"] as const)
+            scroller.addEventListener(event, touch, { passive: true });
+        scroller.addEventListener("scrollend", settle);
+        return () => {
+            clearTimeout(quietTimer);
+            readerScrolling = false;
+            touching = false;
+            for (const event of events) scroller.removeEventListener(event, active);
+            for (const event of ["touchstart", "touchend", "touchcancel"] as const)
+                scroller.removeEventListener(event, touch);
+            scroller.removeEventListener("scrollend", settle);
         };
     });
 
@@ -351,6 +484,7 @@
             anchor = null;
             armDeferredRows();
             finishReveal();
+            releaseHeldRows();
         }
     });
     // Names and images update in place; only character identity and portrait affect mounting.
@@ -386,7 +520,8 @@
                     for (const entry of entries) {
                         const element = entry.target as HTMLDivElement;
                         const row = rowElements.get(element);
-                        if (!row) continue;
+                        // A held row has no layout yet; it is observed again when shown.
+                        if (!row || row.held) continue;
                         if (!element.classList.contains("far")) {
                             const style = getComputedStyle(element);
                             const blockSize =
@@ -458,12 +593,13 @@
         };
     });
 
-    function createRow(input: RowInput, initiallyArmed: boolean, ref: ChatRef | null): Row {
+    function createRow(input: RowInput, initiallyArmed: boolean, held: boolean, ref: ChatRef | null): Row {
         const element = document.createElement("div");
         element.classList.add("chat-message-container");
         let currentInput = $state.raw(input);
         let armed = $state(initiallyArmed);
         const row: Row = {
+            held: false,
             element,
             get input() {
                 return currentInput;
@@ -481,6 +617,7 @@
             dispose: () => {},
         };
         rowElements.set(element, row);
+        if (held) holdRow(row);
         row.dispose = $effect.root(() => {
             let mountKey: MountKey | undefined;
             let mountedCharacter: AnyClientCharacter;
@@ -554,6 +691,7 @@
                             },
                         });
                         if (mountBatch?.pending.has(row)) void settleFirstStageRow(mountBatch, row);
+                        if (row.held) void settleHeldRow(row, row.instance);
                         // A replacement instance must settle again while its row is still hidden.
                         const pending = revealBatch?.rows.slice(revealBatch.next).find((entry) => entry.row === row);
                         if (pending) void settleRevealRow(pending);
@@ -593,6 +731,7 @@
         rowElements.delete(row.element);
         row.element.remove();
         if (mountBatch?.pending.delete(row) && mountBatch.pending.size === 0) armDeferredRows();
+        if (heldRows.delete(row)) holding = heldRows.size > 0;
         const pending = revealBatch?.rows.find((entry) => entry.row === row);
         if (pending) {
             pending.wait?.abort();
@@ -660,6 +799,16 @@
         if (!sameRows) armDeferredRows();
         if (opening) finishReveal();
         let firstStage = inputs.length;
+        // Rows older than every row already shown come in above the view: an opening's deferred
+        // rows, or a loaded page. They are held until rendered and the reader stops scrolling.
+        let holdFrom = inputs.length;
+        if (!opening && !capturing && !suspendTrim) {
+            let oldestShown = -1;
+            inputs.forEach(({ key }, index) => {
+                if (rows.has(key)) oldestShown = index;
+            });
+            if (oldestShown !== -1) holdFrom = oldestShown + 1;
+        }
         if (opening && !capturing && !suspendTrim) {
             const height = chatBody.parentElement?.clientHeight ?? 0;
             firstStage = 0;
@@ -669,12 +818,13 @@
                 estimated += Math.min(480, 48 + inputs[firstStage].input.message.data.length * 0.2);
                 firstStage++;
             }
+            holdFrom = firstStage;
         }
         const shown: Row[] = [];
         for (const { key, input } of inputs) {
             let row = rows.get(key);
             if (!row) {
-                row = createRow(input, shown.length < firstStage, ref);
+                row = createRow(input, shown.length < firstStage, shown.length >= holdFrom, ref);
                 rows.set(key, row);
             } else if (Object.keys(input).some((field) => input[field] !== row.input[field])) {
                 row.input = input;
@@ -739,6 +889,8 @@
         anchor = null;
         armDeferredRows();
         finishReveal();
+        cancelAnimationFrame(releaseFrame);
+        setScrollGate(false);
         cancelAnimationFrame(retireFrame);
         for (const instance of retired) unmount(instance);
         retired.clear();
@@ -754,6 +906,7 @@
         do {
             armDeferredRows();
             finishReveal();
+            releaseHeldRows();
             await tick();
             // A pending opening diff can create a batch during this flush.
         } while (mountBatch);

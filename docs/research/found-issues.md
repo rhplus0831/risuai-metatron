@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch) and 2026-10-26 (
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Chat screen and input](#chat-screen-and-input) (3)
+- [Chat screen and input](#chat-screen-and-input) (4)
 - [Test mocks](#test-mocks) (2)
 
 ## Chat store, sync, and change feeds
@@ -96,10 +96,17 @@ Since the F01 flush fix (Deep Audit Fixes, 2026-10-26) `flushResources()` return
 
 ### Latest-message start scroll untested in DefaultChatScreen
 
-In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces of `src/lib/ChatScreens/DefaultChatScreen.svelte` have no unit test, because no test mounts that screen: the reroll swipe alignment gated on `followsSwap` / `Chats.followsLatest` (read before the swap, then `scrollToLatestMessage` after a tick), and the `$effect` that consumes `ShowLatestMessageStore` (set by `openRoute` for notification clicks). Only `openRoute` setting the store is tested (`src/ts/router/router.test.ts`).
+In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces of `src/lib/ChatScreens/DefaultChatScreen.svelte` have no unit test, because no test mounts that screen: the reroll swipe alignment gated on `followsSwap` / `Chats.followsLatest` (read before the swap, then `scrollToLatestMessage` after a tick), and the `$effect` that consumes `ShowLatestMessageStore` (set by `openRoute` for notification clicks), and (since 2026-10-27) the scroll handler's load-more skip while `Chats.holding` is true. Only `openRoute` setting the store is tested (`src/ts/router/router.test.ts`).
 
 **Why it matters:** a regression in either path would pass the gate.
 **Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
+
+### Reader position not kept across growth inside shown rows
+
+Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in above the view until they have rendered and the reader stops scrolling. That fixed the reproduced jumps: wheeling while a chat opens, and wheeling into load-more. Content that grows inside rows already shown above the view still moves the reader by the grown height while a scroll animation runs (Chrome, reversed scroller; measured on a minimal page). Examples are images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs from its rendered height when it comes near. Repro drivers from the investigation: headed Chrome on WSLg with real X wheel ticks through XTest. CDP `Input.dispatchMouseEvent` wheels do not animate, so they never reproduce it.
+
+**Why it matters:** each case is smaller than the jumps that were fixed (one row's growth, not a page), but it has the same feel: the reader lands somewhere they did not scroll to.
+**Suggested handling (optional, deferred by the owner):** once the anchor is released, keep a reader anchor. Record the visible row nearest the view's top and its offset on scroll. After a transcript resize, restore that offset at `scrollend`, not mid-animation, where a correction would fight the running animation. Measure the visible row's displacement beyond the intended scroll; do not double-compensate with any native anchoring.
 
 ## Test mocks
 
