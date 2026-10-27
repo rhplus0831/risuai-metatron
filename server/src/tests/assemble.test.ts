@@ -625,6 +625,8 @@ describe("the context report", () => {
         request?: MemoryHost["request"];
         /** Apply memory writes to the chat; the default drops them. */
         storeMemory?: boolean;
+        /** The host's inlay reads; the default finds none. */
+        readInlay?: AssemblyHost["readInlay"];
     };
     const CHAT_CARD: PromptItem = { type: "chat", rangeStart: 0, rangeEnd: "end" };
     const plain = (type2: "main" | "globalNote" | "normal", text: string): PromptItem => ({
@@ -771,7 +773,7 @@ describe("the context report", () => {
             },
             runStartTrigger: async () => null,
             runEditRequest: async (messages) => (options.editRequest ? options.editRequest(messages) : messages),
-            readInlay: async () => null,
+            readInlay: options.readInlay ?? (async () => null),
             readAsset: async () => null,
             moduleAssets: () => [],
             moduleToggles: () => "",
@@ -1537,6 +1539,51 @@ describe("the context report", () => {
         const { report } = await run();
         expect(report.history).toMatchObject({ total: 3, kept: 0 });
         expect(report.memory!.summarized).toBe(1);
+    });
+
+    it("history left blank by its scripts is not counted as left out unsummarized", async () => {
+        const messages = Array.from({ length: 30 }, (_, i) => ({
+            chatId: `m${i + 1}`,
+            data: String.fromCharCode(97 + (i % 26)).repeat(20),
+            role: (i % 2 ? "char" : "user") as Message["role"],
+        }));
+        // A blank greeting and a blank message in the raw tail: formatting drops both, and HypaV3 never
+        // summarizes a blank entry, so the stored summaries start at m1.
+        messages[25].data = "   ";
+        const { run, chat } = contextAssembly({
+            hypaV3: true,
+            memoryJob: selectOnlyJob,
+            template: [{ type: "memory" }, CHAT_CARD],
+            greeting: "",
+            messages,
+        });
+        chat.hypaV3Data = {
+            summaries: Array.from({ length: 12 }, (_, k) => ({
+                text: `S${k}`,
+                chatMemos: k === 0 ? ["m1"] : [`m${2 * k}`, `m${2 * k + 1}`],
+                isImportant: false,
+            })),
+        };
+        const { report } = await run();
+        // The deferral brings in the summaries through m19; m20 to m30 are sent but m26. Neither blank
+        // entry counts, so everything left out is summarized.
+        expect(report.history).toMatchObject({ total: 29, kept: 10, totalUser: 15, keptUser: 5 });
+        expect(report.memory).toMatchObject({ coverage: "covered", summarized: 19 });
+    });
+
+    it("a message with media and no text still counts as history", async () => {
+        const { run } = contextAssembly({
+            readInlay: async () => ({ type: "image", data: "data:image/png;base64,AA==", width: 1, height: 1 }),
+            messages: [
+                { chatId: "a", data: "{{inlayeddata::pic}}", role: "char" },
+                { chatId: "b", data: "   " },
+                { chatId: "c", data: "tail", role: "char" },
+            ],
+        });
+        // The inlay leaves the first message without text; the second is blank. The greeting, the
+        // image message, and the tail are the history.
+        const { report } = await run();
+        expect(report.history).toMatchObject({ total: 3, kept: 3, totalUser: 0, keptUser: 0, droppedTokens: 0 });
     });
 
     it("HypaV3's summarize count is the summarizer's, not the formatted prompt's", async () => {

@@ -1434,7 +1434,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         chats.push(chat);
         const tokens = await tokenizeChat(chat);
         currentTokens += tokens;
-        const source: ContextSource = { kind: "greeting", tokens, user: false };
+        const source: ContextSource = { kind: "greeting", tokens, user: false, ...emptySource(chat) };
         sourceOf.set(chat, source);
         historySources.push(source);
     }
@@ -1601,7 +1601,13 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         chats.push(chat);
         const tokens = await tokenizeChat(chat);
         currentTokens += tokens;
-        const source: ContextSource = { kind: "message", tokens, user: msg.role === "user", id: msg.chatId };
+        const source: ContextSource = {
+            kind: "message",
+            tokens,
+            user: msg.role === "user",
+            id: msg.chatId,
+            ...emptySource(chat),
+        };
         sourceOf.set(chat, source);
         historySources.push(source);
         if (msg.chatId !== undefined) {
@@ -2270,7 +2276,17 @@ type ContextSource = {
     user: boolean;
     /** The stored message's id. */
     id?: string;
+    /**
+     * A greeting or message with nothing to send: blank text after its scripts and no media.
+     * Formatting drops it and HypaV3 never summarizes it, so the report leaves it out of the history.
+     */
+    empty?: true;
 };
+
+/** `empty` for a history entry as built, by the rule formatting drops entries with. */
+function emptySource(chat: OpenAIChat): { empty?: true } {
+    return chat.content.trim() === "" && !(chat.multimodals && chat.multimodals.length > 0) ? { empty: true } : {};
+}
 
 /** The memory branch that ran, for the context report. */
 type MemoryRun = {
@@ -2522,9 +2538,13 @@ function buildContextReport(arg: {
         }
     }
 
-    const history = { total: arg.historySources.length, kept: 0, totalUser: 0, keptUser: 0, droppedTokens: 0 };
+    const history = { total: 0, kept: 0, totalUser: 0, keptUser: 0, droppedTokens: 0 };
     let historyTokens = 0;
     for (const source of arg.historySources) {
+        if (source.empty) {
+            continue;
+        }
+        history.total++;
         history.totalUser += source.user ? 1 : 0;
         if (kept.has(source)) {
             history.kept++;
@@ -2579,7 +2599,7 @@ function buildContextReport(arg: {
     if (arg.memoryRun) {
         // History the step kept raw and the prompt then lost is not covered by the summaries either.
         const lostAfter = [...arg.assembledSources].some(
-            (source) => source.kind !== "example" && source.kind !== "marker" && !kept.has(source),
+            (source) => source.kind !== "example" && source.kind !== "marker" && !source.empty && !kept.has(source),
         );
         const lostMemory =
             arg.memoryRun.kind === "hypaV3" && ((arg.hadMemoryEntries && !tracedMemorySurvives) || untracedMemory);
@@ -2598,6 +2618,7 @@ function buildContextReport(arg: {
                 report.memory.summarized = arg.historySources.filter(
                     (source) =>
                         !kept.has(source) &&
+                        !source.empty &&
                         (source.kind === "greeting" || source.id !== undefined) &&
                         meter.summarizedMemos.has(source.id),
                 ).length;

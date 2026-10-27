@@ -61,7 +61,10 @@ export type ContextReport = {
     /** False when editRequest changed the list or a removal or merge could not be traced. */
     attributionExact: boolean;
     history: {
-        /** Eligible stored messages (not disabled, from the last allBefore); the greeting counts as one. */
+        /**
+         * Eligible stored messages (not disabled, from the last allBefore); the greeting counts as one.
+         * One left blank by its scripts, with no media, has nothing to send and is not counted.
+         */
         total: number;
         kept: number;
         totalUser: number;
