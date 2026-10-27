@@ -792,39 +792,15 @@
                 <div class="flex flex-col gap-1 border-t border-darkborderc pt-3" data-context-meter-history>
                     <div class="flex items-baseline justify-between gap-2">
                         <span class="font-semibold">{language.contextUsage.sections.history}</span>
-                        <span class="tabular-nums" data-context-meter-kept
-                            >{language.contextUsage.historyKept(turns.kept, turns.total, unit)}</span
+                        <span class="font-semibold text-textcolor tabular-nums" data-context-meter-kept
+                            >{language.contextUsage.historySent(turns.kept, other.kept, unit)}</span
                         >
                     </div>
-                    <span class="text-right text-xs text-textcolor2 tabular-nums"
-                        >{language.contextUsage.historyKeptOther(
-                            other.kept,
-                            other.total,
-                            unit === "user" ? "message" : "user",
-                        )} · {language.contextUsage.greetingCounted}</span
+                    <span class="text-right text-xs text-textcolor2 tabular-nums" data-context-meter-total
+                        >{language.contextUsage.historyTotal(turns.total, other.total, unit)}</span
                     >
                     {#if omitted || report.memory}
                         <div class="mt-1 ml-1 flex flex-col gap-1 border-l-2 border-darkborderc pl-2.5">
-                            {#if omitted}
-                                <span class="tabular-nums" data-context-meter-omitted
-                                    >{language.contextUsage.historyOmitted(
-                                        omitted.count,
-                                        fmt(report.history.droppedTokens),
-                                    )}</span
-                                >
-                                {#if omitted.tags.length > 0}
-                                    <div class="flex flex-wrap gap-1.5 text-xs" data-context-meter-omitted-tags>
-                                        {#each omitted.tags as tag (tag.tone)}
-                                            <span
-                                                class="rounded-sm bg-darkbutton px-1.5 py-px"
-                                                class:text-secondary-500={tag.tone === "memory"}
-                                                class:text-danger-500={tag.tone === "warn"}
-                                                data-tone={tag.tone}>{tag.text}</span
-                                            >
-                                        {/each}
-                                    </div>
-                                {/if}
-                            {/if}
                             {#if report.memory}
                                 <div class="flex flex-col gap-1" data-context-meter-memory>
                                     {#if report.memory.kind === "hypaV3" && report.memory.budget !== undefined}
@@ -868,42 +844,84 @@
                                             {/each}
                                         </div>
                                     {/if}
-                                    {#if report.memory.summarized === undefined}
-                                        <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report. -->
-                                        <span class="text-xs text-textcolor2"
-                                            >{report.memory.coverage === "covered"
-                                                ? language.contextUsage.coverageCovered
-                                                : report.memory.coverage === "gap"
-                                                  ? language.contextUsage.coverageGap
-                                                  : language.contextUsage.coverageUnknown}</span
-                                        >
-                                    {/if}
                                     {#if hypa}
-                                        {#if hypa.prepared > 0}
-                                            <span
-                                                class="text-xs text-textcolor2 tabular-nums"
-                                                data-context-meter-prepared
-                                                >{language.contextUsage.preparedSummaries(hypa.prepared)}</span
-                                            >
-                                        {/if}
-                                        <span class="text-xs text-textcolor2 tabular-nums" data-context-meter-next
-                                            >{hypa.summarizeIn <= 0
-                                                ? language.contextUsage.summarizeNow
-                                                : hypa.prepared > 0
-                                                  ? language.contextUsage.preparedIn(fmt(hypa.summarizeIn))
-                                                  : language.contextUsage.summarizeIn(fmt(hypa.summarizeIn))}</span
-                                        >
-                                        {#if hypa.lookaheadIn !== undefined}
-                                            <span
-                                                class="text-xs text-textcolor2 tabular-nums"
-                                                data-context-meter-next-lookahead
-                                                >{hypa.lookaheadIn > 0
-                                                    ? language.contextUsage.lookaheadIn(fmt(hypa.lookaheadIn))
-                                                    : language.contextUsage.lookaheadPassed}</span
-                                            >
-                                        {/if}
+                                        <!-- What changes between sends leads as label/value rows; the explanation trails the block. -->
+                                        <dl class="flex flex-col gap-0.5 text-xs">
+                                            {#if hypa.prepared > 0}
+                                                <div class="flex justify-between gap-2" data-context-meter-prepared>
+                                                    <dt class="text-textcolor2">
+                                                        {language.contextUsage.preparedLabel}
+                                                    </dt>
+                                                    <dd class="tabular-nums">
+                                                        {language.contextUsage.preparedCount(hypa.prepared)}
+                                                    </dd>
+                                                </div>
+                                            {/if}
+                                            <div class="flex justify-between gap-2" data-context-meter-next>
+                                                <dt class="text-textcolor2">
+                                                    {hypa.prepared > 0
+                                                        ? language.contextUsage.preparedInLabel
+                                                        : language.contextUsage.summarizeInLabel}
+                                                </dt>
+                                                <dd class="tabular-nums">
+                                                    {hypa.summarizeIn <= 0
+                                                        ? language.contextUsage.nextSend
+                                                        : language.contextUsage.tokensAway(fmt(hypa.summarizeIn))}
+                                                </dd>
+                                            </div>
+                                            {#if hypa.lookaheadIn !== undefined}
+                                                <div
+                                                    class="flex justify-between gap-2"
+                                                    data-context-meter-next-lookahead
+                                                >
+                                                    <dt class="text-textcolor2">
+                                                        {language.contextUsage.lookaheadLabel}
+                                                    </dt>
+                                                    <dd class="tabular-nums">
+                                                        {hypa.lookaheadIn > 0
+                                                            ? language.contextUsage.tokensAway(fmt(hypa.lookaheadIn))
+                                                            : language.contextUsage.lookaheadPassed}
+                                                    </dd>
+                                                </div>
+                                            {/if}
+                                        </dl>
                                     {/if}
                                 </div>
+                            {/if}
+                            {#if omitted}
+                                <span class="mt-1 tabular-nums" data-context-meter-omitted
+                                    >{language.contextUsage.historyOmitted(
+                                        omitted.count,
+                                        fmt(report.history.droppedTokens),
+                                    )}</span
+                                >
+                                {#if omitted.tags.length > 0}
+                                    <div class="flex flex-wrap gap-1.5 text-xs" data-context-meter-omitted-tags>
+                                        {#each omitted.tags as tag (tag.tone)}
+                                            <span
+                                                class="rounded-sm bg-darkbutton px-1.5 py-px"
+                                                class:text-secondary-500={tag.tone === "memory"}
+                                                class:text-danger-500={tag.tone === "warn"}
+                                                data-tone={tag.tone}>{tag.text}</span
+                                            >
+                                        {/each}
+                                    </div>
+                                {/if}
+                            {/if}
+                            {#if report.memory && report.memory.summarized === undefined}
+                                <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report. -->
+                                <span class="text-xs text-textcolor2" data-context-meter-coverage
+                                    >{report.memory.coverage === "covered"
+                                        ? language.contextUsage.coverageCovered
+                                        : report.memory.coverage === "gap"
+                                          ? language.contextUsage.coverageGap
+                                          : language.contextUsage.coverageUnknown}</span
+                                >
+                            {/if}
+                            {#if hypa && hypa.prepared > 0}
+                                <span class="text-xs text-textcolor2" data-context-meter-prepared-help
+                                    >{language.contextUsage.preparedHelp}</span
+                                >
                             {/if}
                         </div>
                     {/if}

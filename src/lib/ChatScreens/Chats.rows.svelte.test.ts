@@ -185,6 +185,7 @@ function render(
         loadPages: window,
         suspendTrim: options.suspendTrim,
         revealing: false,
+        holding: false,
         hasNewUnreadMessage: false,
         onTrim: undefined as undefined | ((keep: number) => number | undefined),
     });
@@ -720,6 +721,9 @@ describe("opening row reveal", () => {
             state.rows.forEach((row) => row.settle());
             await frame();
             expect(ui.pending()).toEqual([]);
+            // The page loaded above shows over three frames (see "rows added above the view").
+            await frame();
+            await frame();
             expect(vi.getTimerCount()).toBe(0);
         },
     );
@@ -948,7 +952,8 @@ describe("opening staged mounting", () => {
         await flushWaits(16);
         expect(latest("m0").element.classList.contains("chat-row-pending")).toBe(true);
         for (const row of state.rows.slice(3)) row.settle();
-        await flushWaits(16);
+        // The held older rows show over three frames (see "rows added above the view").
+        await flushWaits(48);
         expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
         expect(ui.props.revealing).toBe(false);
         expect(vi.getTimerCount()).toBe(0);
@@ -1168,6 +1173,168 @@ describe("opening staged mounting", () => {
             expect(vi.getTimerCount()).toBe(0);
         },
     );
+
+    describe("rows added above the view", () => {
+        const held = (ui: ReturnType<typeof render>) =>
+            containers(ui)
+                .filter((element) => element.classList.contains("chat-row-held"))
+                .map((element) => element.dataset.messageId ?? "unmounted");
+        const touch = (type: string, fingers: number) =>
+            Object.assign(new Event(type), { touches: Array.from({ length: fingers }, () => ({})) });
+        // Showing takes three frames: the scroll gate's commit, the rows, then lifting the gate.
+        const releaseFrames = () => flushWaits(48);
+        // Settles the first stage, then the older rows it arms, without running animation frames.
+        async function renderAll() {
+            for (let pass = 0; pass < 2; pass++) {
+                state.rows.forEach((row) => row.settle());
+                await flushWaits();
+            }
+        }
+
+        it("holds an opening's older rows until they render and the reader stops scrolling", async () => {
+            const ui = staged();
+            expect(containers(ui).map((element) => element.classList.contains("chat-row-held"))).toEqual([
+                ...Array(3).fill(false),
+                ...Array(9).fill(true),
+            ]);
+            expect(ui.props.holding).toBe(true);
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            for (const row of state.rows.filter((row) => row.props.messageId !== "m0")) row.settle();
+            await releaseFrames();
+            // Rendered, but the reader is still scrolling.
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            // m0 has not rendered yet.
+            expect(held(ui)).toEqual(["m0"]);
+            expect(ui.props.holding).toBe(true);
+            latest("m0").settle();
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("ends a scroll without scrollend after 400 ms without scroll input", async () => {
+            const ui = staged();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            state.rows.forEach((row) => row.settle());
+            await flushWaits(399);
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            await flushWaits(399);
+            expect(held(ui)).toHaveLength(9);
+            await flushWaits(1);
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+        });
+
+        it("keeps holding while a finger is down, even past scrollend", async () => {
+            const ui = staged();
+            ui.scroller.dispatchEvent(touch("touchstart", 1));
+            flushSync();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            state.rows.forEach((row) => row.settle());
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await flushWaits(1000);
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(touch("touchend", 0));
+            await flushWaits(399);
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+        });
+
+        it("checks for a scroll again in the frame that would show the rows", async () => {
+            const ui = staged();
+            await renderAll();
+            // A wheel dispatched after the release frame was requested and before it runs.
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            await releaseFrames();
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+        });
+
+        it("makes new scrolls wait for the main thread from a frame before the rows show to a frame after", async () => {
+            const ui = staged();
+            const add = vi.spyOn(ui.scroller, "addEventListener");
+            const remove = vi.spyOn(ui.scroller, "removeEventListener");
+            const gates = () =>
+                add.mock.calls
+                    .filter(([, , options]) => (options as AddEventListenerOptions)?.passive === false)
+                    .map(([event]) => event);
+            await renderAll();
+            expect(gates()).toEqual(["wheel", "touchstart"]);
+            const gate = add.mock.calls.find(
+                ([, , options]) => (options as AddEventListenerOptions)?.passive === false,
+            )![1];
+            await flushWaits(16);
+            expect(held(ui)).toHaveLength(9);
+            await flushWaits(16);
+            expect(held(ui)).toEqual([]);
+            expect(remove.mock.calls.filter(([, listener]) => listener === gate)).toEqual([]);
+            await flushWaits(16);
+            expect(remove.mock.calls.filter(([, listener]) => listener === gate).map(([event]) => event)).toEqual([
+                "wheel",
+                "touchstart",
+            ]);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("contains a held row only after it is shown and measured", async () => {
+            const ui = staged();
+            const observer = Observer.live.at(-1)!;
+            await renderAll();
+            const element = latest("m0").element;
+            observer.deliver(element, false);
+            expect(element.classList.contains("far")).toBe(false);
+            expect(element.style.containIntrinsicBlockSize).toBe("");
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            observer.deliver(element, false);
+            expect(element.classList.contains("far")).toBe(true);
+            expect(element.style.containIntrinsicBlockSize).not.toBe("");
+        });
+
+        it("holds a loaded page above the view, never an appended reply", async () => {
+            const ui = render(longMessages(20), 12);
+            await renderAll();
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            ui.props.loadPages = 20;
+            flushSync();
+            expect(held(ui)).toEqual(["m7", "m6", "m5", "m4", "m3", "m2", "m1", "m0"]);
+            expect(ui.props.holding).toBe(true);
+            ui.append();
+            // The window keeps the newest 20: m0 leaves it.
+            expect(containers(ui)[0].dataset.messageId).toBe("m20");
+            expect(held(ui)).toEqual(["m7", "m6", "m5", "m4", "m3", "m2", "m1"]);
+            state.rows.forEach((row) => row.settle());
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+        });
+
+        it.each(["capture", "suspendTrim", "whenRendered"])("%s shows held rows at once", async (mode) => {
+            const ui = staged();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            if (mode === "capture") ui.props.loadPages = Infinity;
+            if (mode === "suspendTrim") ui.props.suspendTrim = true;
+            if (mode === "whenRendered") void ui.instance.whenRendered();
+            await flushWaits();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+        });
+    });
 
     it("a new opening and destroy cancel old staging without mounting removed rows", async () => {
         const ui = staged();

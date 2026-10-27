@@ -657,6 +657,11 @@ annotation {
     visibility: hidden;
 }
 
+/* Out of the layout until rendered and the reader stops scrolling (`Chats.svelte`). */
+.chat-message-container.chat-row-held {
+    display: none;
+}
+
 /* Near rows stay uncontained so fixed overlays and overflowing highlights keep their viewport. */
 .chat-message-container.far {
     content-visibility: auto;

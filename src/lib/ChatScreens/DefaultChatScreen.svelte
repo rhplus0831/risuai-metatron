@@ -138,6 +138,9 @@
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
     let revealing = $state(false);
+    // Rows added above the view wait out the reader's scroll; loading more meanwhile would only
+    // stack more of them while the transcript's top stays in reach.
+    let rowsHeld = $state(false);
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
     // Running jumps to a message: trimming waits for them.
     let scrollingToMessage = $state(0);
@@ -982,7 +985,7 @@
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;
-                if (scrolled < 100 && (currentChat?.message.length ?? 0) > loadPages) {
+                if (scrolled < 100 && !rowsHeld && (currentChat?.message.length ?? 0) > loadPages) {
                     loadPages += getAdditionalChatLoadPages(settings.ui);
                 }
                 const chatTarget = e.target as HTMLElement;
@@ -1477,6 +1480,7 @@
             <Chats
                 bind:this={chatsInstance}
                 bind:revealing
+                bind:holding={rowsHeld}
                 {messages}
                 {loadPages}
                 suspendTrim={takingScreenshot || isScrollingToMessage}
