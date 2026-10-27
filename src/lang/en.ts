@@ -335,6 +335,16 @@ export const languageEnglish = {
             "With background summaries, how far ahead of the max context they are made: a summary is prepared once the count the background planner keeps passes the max context less this share of it. " +
             "That count already holds the whole memory budget, so even at 0 a summary can be prepared before a send needs it. " +
             "A prepared summary takes the place of its messages only when the prompt reaches the max context, as without background summaries.",
+        hypaV3MemoryBudgetTokens:
+            "The total space, in tokens, for the long-term memory block {{slot}} in the prompt. " +
+            "When it does not fit the current max context, at most half of the prompt budget (the max context minus the reply) is used.",
+        hypaV3LookaheadHeadroomTokens:
+            "How many tokens before the max context the background summaries begin, which sets how many turns ahead of need a summary is made. " +
+            "A summary made early takes the place of its messages only when the prompt reaches the max context. " +
+            "Together with the extra tokens, it is reduced to fit at most half of the prompt budget (the max context minus the reply).",
+        hypaV3ExtraSummarizationTokens:
+            "How many tokens below the max context summarization goes before it stops. At 0, it stops as soon as the prompt fits. " +
+            "Larger values summarize less often, but more at once.",
         hypaV3MaxChatsPerSummary: "Maximum number of chat messages to include when creating a single summary.",
         hypaV3RecentMemoryRatio:
             "The fraction of memory tokens allocated to recent memory. Automatically filled with the most recently created summaries until the allocated tokens are full.",
@@ -1647,6 +1657,8 @@ export const languageEnglish = {
         fixedPart: (percent: number) => `fixed ${percent}%`,
         loreWarnSummary: (count: number) =>
             `the lorebook budget left out ${count === 1 ? "1 entry" : `${count} entries`}`,
+        memoryReducedSummary: "the HypaV3 budget was reduced to fit the max context",
+        memoryReduced: "memory reduced",
         input: (input: string, maxContext: string) => `${input} of ${maxContext} tokens`,
         promptBudget: (budget: string, maxContext: string, reply: string) =>
             `Prompt budget ${budget} (context ${maxContext} − reply ${reply})`,
@@ -1696,6 +1708,14 @@ export const languageEnglish = {
             supa: "SupaMemory",
             hanurai: "Hanurai",
         },
+        budgetReducedNote: "Reduced to fit the current max context",
+        budgetReducedFields: {
+            memory: "Memory budget",
+            headroom: "Background summary headroom",
+            extra: "Extra summarization",
+        },
+        budgetReducedValue: (label: string, configured: string, applied: string) =>
+            `${label}: ${configured} → ${applied}`,
         memoryBudget: (kind: string) => `${kind} memory budget`,
         memoryLine: (kind: string, tokens: string) => `${kind} memory: ${tokens} tokens sent.`,
         summarizeIn: (tokens: string) => `About ${tokens} more tokens of history and the next summary starts.`,
@@ -2123,6 +2143,17 @@ export const languageEnglish = {
         memoryTokensRatioLabel: "Memory Tokens Ratio",
         extraSummarizationRatioLabel: "Extra Summarization Ratio",
         lookaheadHeadroomRatioLabel: "Background Summary Headroom Ratio",
+        budgetModeLabel: "Budget mode",
+        budgetModeRatio: "Ratio",
+        budgetModeTokens: "Tokens",
+        maxMemoryTokensLabel: "Max Memory Tokens (Estimated)",
+        maxMemoryTokensError: "Unable to calculate Max Memory Tokens",
+        memoryBudgetTokensLabel: "Total space for HypaV3 memory (tokens)",
+        lookaheadHeadroomTokensLabel: "Token headroom to start summaries early",
+        extraSummarizationTokensLabel: "Extra tokens to free when summarizing",
+        convertToTokens: (maxContext: string) => `Convert to tokens at the current max context (${maxContext})`,
+        budgetReducedWarning: (maxContext: string, promptBudget: string, applied: string) =>
+            `At the current max context (${maxContext}, ${promptBudget} without the reply) this is reduced to ${applied}.`,
         maxChatsPerSummaryLabel: "Max Messages Per Summary",
         queryChatCountLabel: "Query Chat Count",
         gapConfirmTokensLabel: "Ask Before Summarizing Over (Tokens)",

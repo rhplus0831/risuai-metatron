@@ -265,6 +265,16 @@ export const languageKorean = {
             "백그라운드 요약을 최대 컨텍스트보다 얼마나 앞서 만들지 정하는 비율입니다. 백그라운드 계획이 세는 토큰 수가 최대 컨텍스트에서 이 비율만큼 뺀 지점을 넘으면 요약을 미리 만들어 둡니다. " +
             "이 토큰 수에는 메모리 예산 전체가 이미 들어 있어서, 0이어도 전송에 필요해지기 전에 요약을 만들 수 있습니다. " +
             "미리 만든 요약은 백그라운드 요약을 쓰지 않을 때와 같이 프롬프트가 최대 컨텍스트에 닿을 때 비로소 해당 메시지를 대신합니다.",
+        hypaV3MemoryBudgetTokens:
+            "프롬프트의 장기기억 블록 {{slot}}에 할당되는 토큰 단위의 총 공간입니다. " +
+            "현재 최대 컨텍스트에 맞지 않으면 프롬프트 예산(최대 컨텍스트에서 응답을 뺀 값)의 절반까지만 사용합니다.",
+        hypaV3LookaheadHeadroomTokens:
+            "최대 컨텍스트보다 몇 토큰 앞에서 백그라운드 요약을 시작할지 정하며, 이 값으로 요약이 필요해지기 몇 턴 전에 만들어질지가 정해집니다. " +
+            "미리 만든 요약은 프롬프트가 최대 컨텍스트에 닿을 때 비로소 해당 메시지를 대신합니다. " +
+            "추가로 비울 토큰과 합쳐 프롬프트 예산(최대 컨텍스트에서 응답을 뺀 값)의 절반을 넘지 않도록 줄어듭니다.",
+        hypaV3ExtraSummarizationTokens:
+            "요약이 멈추기 전에 최대 컨텍스트보다 몇 토큰 아래까지 요약할지 정합니다. 0이면 프롬프트가 들어가는 즉시 요약을 멈춥니다. " +
+            "값이 클수록 요약을 덜 자주 하지만 한 번에 더 많이 요약합니다.",
         hypaV3MaxChatsPerSummary: "하나의 요약본을 만들 때 포함할 최대 채팅 메시지 수입니다.",
         hypaV3QueryChatCount:
             "유사도 검색의 쿼리로 사용되는 최근 채팅 메시지 수입니다. 값이 높을수록 더 많은 분량의 채팅으로 유사도를 판별합니다.",
@@ -1104,6 +1114,8 @@ export const languageKorean = {
         fixedWarnSummary: "고정 영역 과다로 대화 기록 공간 부족",
         fixedPart: (percent: number) => `고정 ${percent}%`,
         loreWarnSummary: (count: number) => `예산 초과로 로어북 ${count}개 제외`,
+        memoryReducedSummary: "최대 컨텍스트에 맞춰 HypaV3 예산 축소",
+        memoryReduced: "메모리 축소",
         input: (input: string, maxContext: string) => `${input} / ${maxContext} 토큰`,
         promptBudget: (budget: string, maxContext: string, reply: string) =>
             `프롬프트 예산 ${budget} (전체 ${maxContext} − 응답 ${reply})`,
@@ -1144,6 +1156,12 @@ export const languageKorean = {
         loreWarnOff: "이 채팅에서 경고 끄기",
         loreWarnOn: "이 채팅에서 다시 경고하기",
         loreWarnOffNote: "이 채팅에서는 로어북 제외 경고를 표시하지 않습니다.",
+        budgetReducedNote: "현재 최대 컨텍스트에 맞춰 줄였습니다",
+        budgetReducedFields: {
+            memory: "메모리 예산",
+            headroom: "백그라운드 요약 여유",
+            extra: "추가 요약",
+        },
         memoryBudget: (kind: string) => `${kind} 메모리 예산`,
         memoryLine: (kind: string, tokens: string) => `${kind} 메모리: ${tokens} 토큰 전송`,
         summarizeIn: (tokens: string) => `기록이 약 ${tokens} 토큰 더 쌓이면 다음 요약이 시작됩니다.`,
@@ -2013,6 +2031,17 @@ export const languageKorean = {
         memoryTokensRatioLabel: "메모리 토큰 비율",
         extraSummarizationRatioLabel: "추가 요약 비율",
         lookaheadHeadroomRatioLabel: "백그라운드 사전 요약 여유 비율",
+        budgetModeLabel: "예산 방식",
+        budgetModeRatio: "비율",
+        budgetModeTokens: "토큰",
+        maxMemoryTokensLabel: "최대 메모리 토큰 (추정)",
+        maxMemoryTokensError: "최대 메모리 토큰을 계산할 수 없습니다",
+        memoryBudgetTokensLabel: "HypaV3에 할당할 메모리 총 공간 (토큰)",
+        lookaheadHeadroomTokensLabel: "미리 요약을 시작할 토큰 여유",
+        extraSummarizationTokensLabel: "요약할 때 추가로 비울 토큰",
+        convertToTokens: (maxContext: string) => `현재 최대 컨텍스트(${maxContext}) 기준으로 토큰으로 변환`,
+        budgetReducedWarning: (maxContext: string, promptBudget: string, applied: string) =>
+            `현재 최대 컨텍스트(${maxContext}, 응답 제외 ${promptBudget})에서는 ${applied}으로 줄어 적용됩니다.`,
         maxChatsPerSummaryLabel: "요약본당 최대 메시지 수",
         queryChatCountLabel: "쿼리 채팅 수",
         gapConfirmTokensLabel: "요약 전 확인 기준 (토큰)",

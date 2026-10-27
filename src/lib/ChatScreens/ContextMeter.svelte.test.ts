@@ -443,6 +443,55 @@ describe("the popover", () => {
         expect(memory.textContent).toContain(language.contextUsage.coverageCovered);
     });
 
+    it("shows the reported budget reductions in the chip, summary and memory breakdown only while present", async () => {
+        const s = language.contextUsage;
+        const memory = { kind: "hypaV3", tokens: 50, budget: 400, coverage: "covered" } as const;
+        const budgetReduced = [
+            { field: "memory", configured: 6000, applied: 400 },
+            { field: "headroom", configured: 2000, applied: 0 },
+            { field: "extra", configured: 1000, applied: 400 },
+        ] satisfies NonNullable<ContextReport["memory"]>["budgetReduced"];
+        const lines = budgetReduced.map(({ field, configured, applied }) =>
+            s.budgetReducedValue(s.budgetReducedFields[field], configured.toLocaleString(), applied.toLocaleString()),
+        );
+        install([reply("m1", { context: trimmed({ memory }) })]);
+        render();
+        const opened = await openPanel();
+        const absent = () => {
+            expect(chip()!.querySelector("[data-context-meter-memory-reduced]")).toBeNull();
+            expect(chipText()).not.toContain(s.memoryReduced);
+            for (const attribute of ["aria-label", "title"]) {
+                expect(chip()!.getAttribute(attribute)).not.toContain(s.memoryReducedSummary);
+            }
+            expect(opened.querySelector("[data-context-meter-budget-reduced]")).toBeNull();
+            expect(opened.textContent).not.toContain(s.budgetReducedNote);
+            for (const line of lines) {
+                expect(opened.textContent).not.toContain(line);
+            }
+        };
+        absent();
+
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ memory: { ...memory, budgetReduced } }) },
+        });
+        flushSync();
+        const mark = chip()!.querySelector("[data-context-meter-memory-reduced]")!;
+        expect(mark).not.toBeNull();
+        expect(mark.textContent?.trim()).toBe(s.memoryReduced);
+        expect(mark.classList.contains("text-danger-500")).toBe(true);
+        for (const attribute of ["aria-label", "title"]) {
+            expect(chip()!.getAttribute(attribute)).toContain(s.memoryReducedSummary);
+        }
+        const block = opened.querySelector("[data-context-meter-memory] [data-context-meter-budget-reduced]")!;
+        expect(block).not.toBeNull();
+        expect(block.classList.contains("text-danger-500")).toBe(true);
+        expect([...block.children].map((line) => line.textContent?.trim())).toEqual([s.budgetReducedNote, ...lines]);
+
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed({ memory }) } });
+        flushSync();
+        absent();
+    });
+
     it("places HypaV3's reserve and summarize points on the bar and splits the history left out", async () => {
         // Budget 800; the memory card's 50 tokens sit at the start of its 200-token reserve, and the
         // summarize points sit the server's counts past the other sections' 530 tokens.

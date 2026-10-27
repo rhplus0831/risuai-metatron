@@ -124,6 +124,8 @@
     // the warning off (the popover lists them either way).
     const loreWarnOff = $derived(findChat(chatRef)?.loreBudgetWarnOff === true);
     const loreWarn = $derived(report !== null && report.lore.rejectedCount > 0 && !loreWarnOff);
+    // HypaV3's token budget was reduced to fit the last request's max context, as the server reported it.
+    const budgetReduced = $derived(report?.memory?.budgetReduced ?? []);
 
     type Basis = {
         report: ContextReport;
@@ -374,6 +376,9 @@
         if (loreWarn) {
             result.summary += `; ${language.contextUsage.loreWarnSummary(r.lore.rejectedCount)}`;
         }
+        if (budgetReduced.length > 0) {
+            result.summary += `; ${language.contextUsage.memoryReducedSummary}`;
+        }
         return result;
     });
 
@@ -615,6 +620,12 @@
             {:else}
                 <span class="shrink-0" aria-hidden="true"><GaugeIcon size={13} /></span>
             {/if}
+            {#if budgetReduced.length > 0}
+                <span class="shrink-0 text-danger-500" data-context-meter-memory-reduced
+                    >{language.contextUsage.memoryReduced}</span
+                >
+                <span class="shrink-0" aria-hidden="true">·</span>
+            {/if}
             <span class="min-w-0 truncate">{chip.parts.join(" · ")}</span>
             {#if estimate?.suffix}
                 <span class="shrink-0">· {language.contextUsage.estimateLead}</span>
@@ -839,6 +850,23 @@
                                                 fmt(report.memory.tokens),
                                             )}</span
                                         >
+                                    {/if}
+                                    {#if budgetReduced.length > 0}
+                                        <div
+                                            class="flex flex-col gap-0.5 text-xs text-danger-500 tabular-nums"
+                                            data-context-meter-budget-reduced
+                                        >
+                                            <span>{language.contextUsage.budgetReducedNote}</span>
+                                            {#each budgetReduced as reduction (reduction.field)}
+                                                <span data-field={reduction.field}
+                                                    >{language.contextUsage.budgetReducedValue(
+                                                        language.contextUsage.budgetReducedFields[reduction.field],
+                                                        fmt(reduction.configured),
+                                                        fmt(reduction.applied),
+                                                    )}</span
+                                                >
+                                            {/each}
+                                        </div>
                                     {/if}
                                     {#if report.memory.summarized === undefined}
                                         <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report. -->

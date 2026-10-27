@@ -12,6 +12,7 @@
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
+    import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import { onMount, untrack } from "svelte";
@@ -22,13 +23,18 @@
     import { PlusIcon, PencilIcon, TrashIcon, DownloadIcon, HardDriveUploadIcon } from "@lucide/svelte";
     import { alertError, alertInput, alertConfirm, alertNormal } from "src/ts/alert";
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
-    import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+    import {
+        resolveHypaV3Budget,
+        selectedHypaV3Preset,
+        type HypaV3BudgetReduction,
+    } from "../../../../shared/hypaV3Presets.ts";
     import { maxContextOverrideOf } from "../../../../shared/sections.ts";
     import {
         VOYAGE_CONTEXT_MODELS,
         VOYAGE_EMBEDDING_MODELS,
         isVoyageContextModel,
         isVoyageEmbeddingModel,
+        type HypaV3Settings,
     } from "../../../../shared/memory.ts";
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
@@ -110,7 +116,18 @@
         }
     });
 
-    async function getMaxMemoryRatio(): Promise<number> {
+    // The size the server's prompt assembly uses: the prompt preset's override, else the main profile's.
+    const hypaMaxContext = $derived(
+        maxContextOverrideOf(activePreset as unknown as Record<string, unknown>) ?? activeMainProfile.maxContext,
+    );
+    const hypaMaxContextUsable = $derived(Number.isFinite(hypaMaxContext) && hypaMaxContext > 0);
+
+    /**
+     * The room the max context leaves for the memory once the prompt template, the character, its lore
+     * budget, and three replies are taken out, as a ratio of the max context and in tokens.
+     */
+    async function estimateMaxMemory(): Promise<{ ratio: number; tokens: number }> {
+        const maxContext = hypaMaxContext;
         const promptTemplateToken = await tokenizePreset(activePreset.promptTemplate);
         const char = currentCharacter;
         const charToken = await getCharToken(char);
@@ -118,17 +135,50 @@
         const maxResponse = activePreset.maxResponse;
         const requiredToken =
             promptTemplateToken + charToken.persistant + Math.min(charToken.dynamic, maxLoreToken) + maxResponse * 3;
-        // The size the server's prompt assembly uses: the prompt preset's override, else the main profile's.
-        const maxContext =
-            maxContextOverrideOf(activePreset as unknown as Record<string, unknown>) ?? activeMainProfile.maxContext;
 
         if (maxContext === 0) {
-            return 0;
+            return { ratio: 0, tokens: 0 };
         }
 
         const maxMemoryRatio = Math.max((maxContext - requiredToken) / maxContext, 0);
 
-        return parseFloat(maxMemoryRatio.toFixed(2));
+        return { ratio: parseFloat(maxMemoryRatio.toFixed(2)), tokens: Math.max(0, maxContext - requiredToken) };
+    }
+
+    const budgetFieldLabels = $derived({
+        memory: language.hypaV3Settings.memoryBudgetTokensLabel,
+        headroom: language.hypaV3Settings.lookaheadHeadroomTokensLabel,
+        extra: language.hypaV3Settings.extraSummarizationTokensLabel,
+    } satisfies Record<HypaV3BudgetReduction["field"], string>);
+
+    // Token mode: the amounts the server reduces at the current max context, so a typed value that does
+    // not fit is flagged at once.
+    const budgetReduced = $derived(
+        currentHypaV3?.settings.budgetMode === "tokens"
+            ? resolveHypaV3Budget(currentHypaV3.settings, hypaMaxContext, activePreset.maxResponse).reduced
+            : [],
+    );
+
+    /** A token amount as the preset stores it: an integer >= 0; an empty or invalid entry writes nothing. */
+    function setTokenAmount(
+        target: HypaV3Settings,
+        key: "memoryBudgetTokens" | "lookaheadHeadroomTokens" | "extraSummarizationTokens",
+        value: number | null | undefined,
+    ) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+            target[key] = Math.max(0, Math.floor(value));
+        }
+    }
+
+    // Token amounts from the ratios at the current max context; the ratios stay, so switching back to
+    // ratio mode restores them.
+    function convertToTokens(target: HypaV3Settings) {
+        if (!hypaMaxContextUsable) return;
+        const maxContext = hypaMaxContext;
+        target.memoryBudgetTokens = Math.floor(maxContext * target.memoryTokensRatio);
+        target.lookaheadHeadroomTokens = Math.round(maxContext * target.lookaheadHeadroomRatio);
+        target.extraSummarizationTokens = Math.round(maxContext * target.extraSummarizationRatio);
+        target.budgetMode = "tokens";
     }
     // End HypaV3
 </script>
@@ -242,7 +292,7 @@
         <button
             class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
             onclick={() => {
-                const newPreset = createHypaV3Preset();
+                const newPreset = createHypaV3Preset("New Preset", { budgetMode: "tokens" });
                 settings.hypaV3Presets.items.push(newPreset);
                 settings.hypaV3Presets.selectedId = newPreset.id;
             }}
@@ -401,40 +451,124 @@
                 bind:value={settings.reSummarizationPrompt}
             />
         </div>
-        {#await getMaxMemoryRatio() then maxMemoryRatio}
-            <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensRatioLabel}</span>
-            <NumberInput marginBottom disabled size="sm" value={maxMemoryRatio} />
-        {:catch error}
-            <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensRatioError}</span>
-        {/await}
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.memoryTokensRatioLabel} <Help key="hypaV3MemoryTokensRatio" /></span
-        >
-        <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.memoryTokensRatio} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.extraSummarizationRatioLabel}
-            <Help key="hypaV3ExtraSummarizationRatio" /></span
-        >
-        <SliderInput
-            marginBottom
-            min={0}
-            max={1 - settings.memoryTokensRatio}
-            step={0.01}
-            fixed={2}
-            bind:value={settings.extraSummarizationRatio}
+        <span class="text-textcolor">{language.hypaV3Settings.budgetModeLabel}</span>
+        <SegmentedControl
+            bind:value={
+                () => settings.budgetMode,
+                (value) => {
+                    settings.budgetMode = value === "tokens" ? "tokens" : "ratio";
+                }
+            }
+            options={[
+                { value: "ratio", label: language.hypaV3Settings.budgetModeRatio },
+                { value: "tokens", label: language.hypaV3Settings.budgetModeTokens },
+            ]}
+            label={language.hypaV3Settings.budgetModeLabel}
+            size="md"
         />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.lookaheadHeadroomRatioLabel}
-            <Help key="hypaV3LookaheadHeadroomRatio" /></span
-        >
-        <SliderInput
-            marginBottom
-            min={0}
-            max={0.99}
-            step={0.01}
-            fixed={2}
-            bind:value={settings.lookaheadHeadroomRatio}
-        />
+        {#if settings.budgetMode === "tokens"}
+            {#await estimateMaxMemory() then maxMemory}
+                <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensLabel}</span>
+                <NumberInput marginBottom disabled size="sm" value={maxMemory.tokens} />
+            {:catch error}
+                <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensError}</span>
+            {/await}
+            <span class="text-textcolor"
+                >{language.hypaV3Settings.memoryBudgetTokensLabel} <Help key="hypaV3MemoryBudgetTokens" /></span
+            >
+            <NumberInput
+                marginBottom
+                size="sm"
+                min={0}
+                bind:value={
+                    () => settings.memoryBudgetTokens, (value) => setTokenAmount(settings, "memoryBudgetTokens", value)
+                }
+            />
+            <span class="text-textcolor"
+                >{language.hypaV3Settings.lookaheadHeadroomTokensLabel}
+                <Help key="hypaV3LookaheadHeadroomTokens" /></span
+            >
+            <NumberInput
+                marginBottom
+                size="sm"
+                min={0}
+                bind:value={
+                    () => settings.lookaheadHeadroomTokens,
+                    (value) => setTokenAmount(settings, "lookaheadHeadroomTokens", value)
+                }
+            />
+            <span class="text-textcolor"
+                >{language.hypaV3Settings.extraSummarizationTokensLabel}
+                <Help key="hypaV3ExtraSummarizationTokens" /></span
+            >
+            <NumberInput
+                marginBottom
+                size="sm"
+                min={0}
+                bind:value={
+                    () => settings.extraSummarizationTokens,
+                    (value) => setTokenAmount(settings, "extraSummarizationTokens", value)
+                }
+            />
+            {#if budgetReduced.length > 0}
+                {@const promptBudget = Math.max(0, hypaMaxContext - activePreset.maxResponse)}
+                <div class="-mt-2 mb-4 flex flex-col gap-1">
+                    {#each budgetReduced as reduction (reduction.field)}
+                        <span class="text-draculared text-xs" data-hypav3-budget-reduced={reduction.field}
+                            >{budgetFieldLabels[reduction.field]}: {language.hypaV3Settings.budgetReducedWarning(
+                                hypaMaxContext.toLocaleString(),
+                                promptBudget.toLocaleString(),
+                                reduction.applied.toLocaleString(),
+                            )}</span
+                        >
+                    {/each}
+                </div>
+            {/if}
+        {:else}
+            {#await estimateMaxMemory() then maxMemory}
+                <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensRatioLabel}</span>
+                <NumberInput marginBottom disabled size="sm" value={maxMemory.ratio} />
+            {:catch error}
+                <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensRatioError}</span>
+            {/await}
+            <span class="text-textcolor"
+                >{language.hypaV3Settings.memoryTokensRatioLabel} <Help key="hypaV3MemoryTokensRatio" /></span
+            >
+            <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.memoryTokensRatio} />
+            <span class="text-textcolor"
+                >{language.hypaV3Settings.extraSummarizationRatioLabel}
+                <Help key="hypaV3ExtraSummarizationRatio" /></span
+            >
+            <SliderInput
+                marginBottom
+                min={0}
+                max={1 - settings.memoryTokensRatio}
+                step={0.01}
+                fixed={2}
+                bind:value={settings.extraSummarizationRatio}
+            />
+            <span class="text-textcolor"
+                >{language.hypaV3Settings.lookaheadHeadroomRatioLabel}
+                <Help key="hypaV3LookaheadHeadroomRatio" /></span
+            >
+            <SliderInput
+                marginBottom
+                min={0}
+                max={0.99}
+                step={0.01}
+                fixed={2}
+                bind:value={settings.lookaheadHeadroomRatio}
+            />
+            {#if hypaMaxContextUsable}
+                <button
+                    type="button"
+                    class="mb-4 self-start text-left text-sm text-textcolor2 underline hover:text-textcolor cursor-pointer"
+                    data-hypav3-convert-to-tokens
+                    onclick={() => convertToTokens(settings)}
+                    >{language.hypaV3Settings.convertToTokens(hypaMaxContext.toLocaleString())}</button
+                >
+            {/if}
+        {/if}
         <span class="text-textcolor"
             >{language.hypaV3Settings.maxChatsPerSummaryLabel} <Help key="hypaV3MaxChatsPerSummary" /></span
         >
