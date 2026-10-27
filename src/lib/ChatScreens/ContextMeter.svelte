@@ -349,8 +349,10 @@
         const percent = percentOf(r.input, promptBudget);
         let result: { parts: string[]; summary: string };
         if (r.memory) {
+            // "covered" only says nothing left out is unsummarized: with nothing left out, no summary is behind it.
+            const omitted = r.history.kept < r.history.total;
             const coverage =
-                r.memory.coverage === "covered"
+                r.memory.coverage === "covered" && omitted
                     ? language.contextUsage.summarized
                     : r.memory.coverage === "gap"
                       ? language.contextUsage.gap
@@ -951,8 +953,9 @@
                                     </div>
                                 {/if}
                             </div>
-                            {#if report.memory.summarized === undefined}
-                                <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report. -->
+                            {#if report.memory.summarized === undefined && omitted}
+                                <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report.
+                                     With nothing left out there is nothing for the sentence to cover. -->
                                 <span class="text-xs text-textcolor2" data-context-meter-coverage
                                     >{report.memory.coverage === "covered"
                                         ? language.contextUsage.coverageCovered

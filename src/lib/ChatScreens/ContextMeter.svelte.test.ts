@@ -211,6 +211,14 @@ describe("the chip", () => {
         }
     });
 
+    it("with memory and no history left out, does not call the history summarized", () => {
+        // HypaV3 reports "covered" when no history was trimmed, before any summary exists.
+        install([reply("m1", { context: report({ memory: { kind: "hypaV3", tokens: 0, coverage: "covered" } }) })]);
+        render();
+        expect(chipText()).toBe(`3 turns · ${language.contextUsage.memoryOn} · 75%`);
+        expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.summarized);
+    });
+
     it("takes the danger tone only when the fixed share exceeds the warning level", () => {
         // Fixed sections 480 of the 800 budget: exactly 60%.
         const sections = [
@@ -827,6 +835,15 @@ describe("the popover", () => {
         // What was left out is a fact about the past: it sits under the totals, before the memory.
         const omittedLine = opened.querySelector("[data-context-meter-omitted]")!;
         expect(omittedLine.compareDocumentPosition(memory) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("leaves out the coverage text when no history was left out", async () => {
+        install([reply("m1", { context: report({ memory: { kind: "hypaV3", tokens: 0, coverage: "covered" } }) })]);
+        render();
+        const opened = await openPanel();
+        expect(opened.querySelector("[data-context-meter-memory]")).not.toBeNull();
+        expect(opened.querySelector("[data-context-meter-coverage]")).toBeNull();
+        expect(opened.textContent).not.toContain(language.contextUsage.coverageCovered);
     });
 
     it("shows the reported budget reductions in the chip, summary and memory breakdown only while present", async () => {
