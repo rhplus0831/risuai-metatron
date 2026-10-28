@@ -1,6 +1,6 @@
 # Display Evaluation Plan
 
-Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e), 2 (4a1d870f3). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
 **Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
 Probe numbers are under **Measurements**.
 
@@ -485,6 +485,14 @@ narrowed. The digest is plain `JSON.stringify` (property order kept), because CB
 output depends on it (`shared/cbs/registry.ts:312`). The speaker memo is keyed by owner, chat and
 chat revision and holds the owner's identity, so a membership change misses. The tab's plugin
 handlers can still read `lastInteraction` through `getCharacter()` (D2, outside the guarantee).
+
+Slice 2 notes: the install version also moves on job hydration, whole-chat collection installs
+(two paths) and `installRead`, besides D4's three points; a job patch or hydration that re-delivers
+the revision the tab already holds does not move it (a job's end sends its chat again; without
+this a send transformed its reply twice). `applyRemoteChat` always moves it. The unacknowledged
+flag counts pending, in-flight, quarantined, deferred and job-blocked work. The scheduler is
+`src/lib/ChatScreens/settledRender.svelte.ts`. `e2e/serverTransform.spec.ts`'s send test allows the
+new user row two renders (its mount, and once more when the reply's install lands during it).
 
 ## Verification
 
