@@ -1,6 +1,6 @@
 # Display Evaluation Plan
 
-Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
 **Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
 Probe numbers are under **Measurements**.
 
@@ -462,6 +462,29 @@ nothing is charged twice. Over the global budget the oldest waiting snapshots gi
 client's first), then the target fails with the existing error; that loop can drop every waiting
 snapshot when a running continuation holds the budget (accepted as rare). `loadRequestDb` now
 delegates to a pure `buildRequestDb`; generation's reads are unchanged.
+
+Slice 5 (three runs each):
+
+| Label | Before | After Slice 5 |
+|---|---|---|
+| `after-stamp-500-8-batches` | 141–152 ms, 400 selects, 592 parses, 0 hits | 10.6–11.4 ms, 201, 9, 500 hits |
+| `cold-500-plain-8-batches` | 178–185 ms, 425, 1,116 | 175–180 ms, 425, 1,116 |
+| `after-variable-500-8-batches` | 129–133 ms, 402, 1,093 | 127–159 ms, 402, 1,093 |
+| `500-targets-10-no-match-regex` | 271–279 ms, 400, 592 | 274–283 ms, 401, 593 |
+
+Digest cost on a large character after a stamp (median of 30, one target, no scripts): 1 MiB
+description 5.38 ms (miss and render) → 4.25 ms (one read and digest, then a hit), 0.31 ms on the
+same revision; 4 MiB 17.9 → 15.7 ms, 0.33 ms. The challenger's 4.75 MB record with 10,000 lore
+entries: 10.3 ms to read, 18.2 ms (p95 19.0) to stringify and hash.
+
+Slice 5 notes: kinds dropped from the key, with reasons in `displayKinds.ts`: `providers`,
+`loreBook`, `globalscript`, `hotkeys`, `characterOrder`, `authRefreshes`, `translatorPresets`,
+`hypaV3Presets`, `togglePresets`, `credentials`, `statics` (four beyond D6's candidates; no display
+path reads their fields). An unclassified kind stays keyed; the configuration cache key is not
+narrowed. The digest is plain `JSON.stringify` (property order kept), because CBS `{{lorebook}}`
+output depends on it (`shared/cbs/registry.ts:312`). The speaker memo is keyed by owner, chat and
+chat revision and holds the owner's identity, so a membership change misses. The tab's plugin
+handlers can still read `lastInteraction` through `getCharacter()` (D2, outside the guarantee).
 
 ## Verification
 
