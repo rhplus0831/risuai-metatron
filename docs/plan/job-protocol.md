@@ -1,6 +1,7 @@
 # Job Protocol Plan
 
-Status: drafted 2026-10-28, no slice landed. The user accepted every recommendation for Q1–Q4 the
+Status: drafted 2026-10-28. Landed: Slice 1 (`d0b6c096c`; the running request-id index moves to
+Slice 2, which first fills request ids). The user accepted every recommendation for Q1–Q4 the
 same day (see **Answered questions**). A Sol review of the first
 draft (24 points, 3 blockers) is folded in. Most notably, follow-ups run as one sequence job instead
 of a chain of jobs (see **Review record**).
