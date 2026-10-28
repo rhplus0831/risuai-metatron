@@ -94,10 +94,20 @@ export type RecordLayerValues = {
     refused: { op: RecordOp; text: string | null; reason: string };
 };
 
-/** A by-id op's target before the edit: absent (no such message or field) or its value. */
+/**
+ * A local by-id edit's target before the mirror changed. Appends use `absent` for all appended ids;
+ * setText holds data, setMessage and a single-id remove the whole message, setTranslation its
+ * translation (or `absent`). patchMessage/meta hold only touched fields that existed, including
+ * whole prior maps for merge/mergeUnset; omitted touched fields were absent. Coalescing preserves
+ * the first before for each touched field. An unloaded summary can omit a raw value (pinned:false),
+ * so its before may conservatively fail a later recovery comparison.
+ */
 export type JournalBefore = { absent: true } | { value: unknown };
 
-/** A pending chat op; by-id ops carry `before`, whole-chat ops (`create`, `replace`, `delete`) none. */
+/**
+ * A pending op with its local before; never sent as this envelope. Whole-chat ops and multi-id
+ * removes carry none. Generation ops have no local producer and no invented before value.
+ */
 export type JournalChatOp = { op: ChatOp; before?: JournalBefore };
 
 /** A chat's layers: the earlier group to resend, the queued batch (with its pre-minted id), and refused intent. */
@@ -359,7 +369,7 @@ export type JournalWrite =
 /**
  * What became of one write: `written` (some named layer changed), `stale` (newer work or a later removal
  * covers every named layer), `ineligible` (a record text the journal may not hold: its layer was
- * removed), `skipped` (over a budget, or the key holds an unknown row), `failed` (the transaction or the
+ * removed), `skipped` (over a budget, or the key holds an unknown or reserved row), `failed` (the transaction or the
  * database failed), `off` (no journal).
  */
 export type WriteOutcome = "written" | "stale" | "ineligible" | "skipped" | "failed" | "off";
@@ -609,6 +619,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     const transactions = new Map<IDBTransaction, () => void>();
     /** Removal fences: `key` (every layer) or `key\0layer` → the version removed through. */
     const fences = new Map<string, number>();
+    /** Chat/order rows held before this page's writes still belong to recovery. */
+    const reserved = new Set<string>();
 
     const report = (event: DiagnosticEventInput) => {
         try {
@@ -755,6 +767,9 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     const row = checkJournalRow(cursor.value);
                     if (row?.type === "mutation") {
                         highest = Math.max(highest, row.version);
+                        if (row.scope === "chat" || row.scope === "order") {
+                            reserved.add(String(cursor.primaryKey));
+                        }
                     } else if (isPlainObject(cursor.value) && cursor.value.format === JOURNAL_FORMAT) {
                         malformed++;
                     }
@@ -1002,6 +1017,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                             }
                             const { item, key, eligible, excluded } = entry;
                             const raw: unknown = await requestValue(store.get(key));
+                            // Adoption may have reserved it while this transaction waited to run.
+                            if (reserved.has(key)) {
+                                answers.push("skipped");
+                                continue;
+                            }
                             let existing: MutationEntry | undefined;
                             if (raw !== undefined) {
                                 const checked = checkJournalRow(raw);
@@ -1117,7 +1137,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         const removed = new Map<string, number>();
         for (const { key, version, layers } of items) {
             const existing = checkJournalRow(await requestValue(store.get(key)));
-            if (existing?.type !== "mutation") {
+            if (reserved.has(key) || existing?.type !== "mutation") {
                 continue;
             }
             const kept = trimThrough(existing, version, layers);
@@ -1216,6 +1236,9 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         const id = mintId();
                         store.put(draftOf(row, id), draftKey(id));
                     } else {
+                        if (row.scope === "chat" || row.scope === "order") {
+                            reserved.add(target);
+                        }
                         const adopted = { ...row, tabId: own, version, layers, updatedAt: time } as MutationEntry;
                         adopted.size = sizeOf(adopted);
                         store.put(adopted, target);

@@ -76,6 +76,8 @@ import { flushClientDiagnostics, recordClientEvent } from "../diagnostics/collec
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     type ChatRef,
+    type ChatJournalKey,
+    chatJournal,
     acceptRemoteCollection,
     ackChatWork,
     applyRemoteCollection,
@@ -173,9 +175,9 @@ import {
  *   is diffed by `chaId` every cycle: a new id is created, a vanished one deleted.
  * - One batch per cycle, one cycle in flight. A key stays dirty if it was marked again while its
  *   batch was in flight.
- * - Eligible record intent is mirrored to the page's draft journal: sent, newer local, and refused
- *   layers. One serialized queue coalesces the pre-dispatch deltas and debounces later outcomes;
- *   hide flushes run independently of the network. Only a create waits, for at most 200 ms.
+ * - Eligible record, chat, and order intent is mirrored to the page's draft journal. One serialized
+ *   queue coalesces pre-dispatch deltas and debounces later outcomes; hide flushes run independently
+ *   of the network. Creates wait at most 200 ms; a split chat batch waits for journal confirmation.
  * - A 409 reloads the conflicting records into the mirror (another tab or device wrote them) and
  *   shows `resourceReloaded` as the reload notice (`alertReloadNotice`: its own store, kept until the
  *   user dismisses it, so one notice per episode on screen); a 412 (the server was restored) stops saving and
@@ -426,6 +428,47 @@ type JournalRecordView = {
 /** Keys touched by this page, including captured layers handed over by boot recovery. */
 const journalRecords = new Map<string, JournalRecordView>();
 const journalPending = new Set<string>();
+type JournalChatView = {
+    key: ChatJournalKey;
+    epoch: string;
+    written: Record<string, { version: number; value: unknown }>;
+    splitFailures?: { groupId: string; count: number };
+};
+/** Scope is part of identity; these keys never enter the record projection loop. */
+const journalChatViews = new Map<string, JournalChatView>();
+const journalChatPending = new Set<string>();
+
+function queueJournalChat(key: ChatJournalKey) {
+    if (halted) return;
+    if (journalOff) {
+        if (key.scope === "chat") {
+            const split = chatJournal.splitGroupId(key.target);
+            if (split) chatJournal.confirmSplit(key.target, split);
+        }
+        return;
+    }
+    const scoped = `${key.scope}\u0000${key.target}`;
+    if (!journalChatViews.has(scoped)) {
+        journalChatViews.set(scoped, { key, epoch: getResourceEpoch(), written: {} });
+    }
+    journalChatPending.add(scoped);
+    scheduleJournal();
+}
+
+function disableChatJournal() {
+    for (const { key } of journalChatViews.values()) {
+        if (key.scope === "chat") {
+            const split = chatJournal.splitGroupId(key.target);
+            if (split) chatJournal.confirmSplit(key.target, split);
+        }
+    }
+    journalChatPending.clear();
+    journalChatViews.clear();
+}
+
+function hasJournalPending() {
+    return journalPending.size > 0 || journalChatPending.size > 0;
+}
 let journalQueue: Promise<void> = Promise.resolve();
 let journalOff = false;
 let journalTimer: ReturnType<typeof setTimeout> | null = null;
@@ -453,7 +496,7 @@ function journalView(key: string): JournalRecordView | undefined {
 }
 
 function scheduleJournal(delay = DEBOUNCE_MS) {
-    if (halted || journalOff || journalPending.size === 0) {
+    if (halted || journalOff || !hasJournalPending()) {
         return;
     }
     const deadline = Date.now() + delay;
@@ -638,12 +681,12 @@ function flushJournal(onHide = false): Promise<void> {
         clearTimeout(journalTimer);
         journalTimer = null;
     }
-    if (halted || journalOff || journalPending.size === 0) {
+    if (halted || journalOff || !hasJournalPending()) {
         return journalQueue;
     }
     journalQueue = journalQueue
         .then(async () => {
-            if (halted || journalOff || journalPending.size === 0) {
+            if (halted || journalOff || !hasJournalPending()) {
                 return;
             }
             const journal = pageDraftJournal();
@@ -659,6 +702,7 @@ function flushJournal(onHide = false): Promise<void> {
                 }
                 journalPending.clear();
                 journalRecords.clear();
+                disableChatJournal();
                 return;
             }
             const writes: JournalWrite[] = [];
@@ -737,9 +781,83 @@ function flushJournal(onHide = false): Promise<void> {
                     }
                 }
             }
-            if (writes.length > 0 || removals.length > 0) {
-                await journal.write(writes, removals);
+            // Chat projections are detached and cached per layer by their owner. Failed writes
+            // retain their captured versions for retry; split confirmation needs the actual result.
+            const chatWrites: {
+                scoped: string;
+                view: JournalChatView;
+                index: number;
+                layers: Record<string, unknown>;
+                removed: string[];
+                version: number;
+                splitGroupId?: string;
+            }[] = [];
+            for (const scoped of journalChatPending) {
+                const view = journalChatViews.get(scoped)!;
+                const projection = chatJournal.project(view.key);
+                const desired: Record<string, unknown> = projection.layers;
+                const layers: Record<string, unknown> = {};
+                const removed: string[] = [];
+                for (const name of new Set([...Object.keys(view.written), ...Object.keys(desired)])) {
+                    const value = desired[name];
+                    const stored = view.written[name];
+                    if (value === undefined) {
+                        if (stored) {
+                            removals.push({ ...view.key, epoch: view.epoch, version: stored.version, layers: [name] });
+                            removed.push(name);
+                        }
+                    } else if (!stored || !isEqual(value, stored.value)) {
+                        layers[name] = value;
+                    }
+                }
+                const splitGroupId = projection.scope === "chat" ? projection.splitGroupId : undefined;
+                // Even an unchanged split must get a per-item outcome, not merely a resolved flush.
+                if (splitGroupId) Object.assign(layers, desired);
+                journalChatPending.delete(scoped);
+                if (Object.keys(layers).length === 0 && removed.length === 0) continue;
+                const version = journal.nextVersion();
+                chatWrites.push({ scoped, view, index: writes.length, layers, removed, version, splitGroupId });
+                writes.push({ ...view.key, epoch: view.epoch, version, layers } as JournalWrite);
             }
+            if (writes.length > 0 || removals.length > 0) {
+                const outcomes = await journal.write(writes, removals);
+                if (halted) return;
+                for (const item of chatWrites) {
+                    const outcome = outcomes[item.index];
+                    if (outcome === "off") {
+                        journalOff = true;
+                        journalPending.clear();
+                        journalRecords.clear();
+                        disableChatJournal();
+                        break;
+                    }
+                    if (outcome === "failed" || !outcome) {
+                        journalChatPending.add(item.scoped);
+                        if (item.splitGroupId) {
+                            const previous = item.view.splitFailures;
+                            const count = previous?.groupId === item.splitGroupId ? previous.count + 1 : 1;
+                            item.view.splitFailures = { groupId: item.splitGroupId, count };
+                            // Saving proceeds after repeated failure; a broken journal can retain
+                            // the older whole-batch row, so recovery has a documented loss window.
+                            if (count >= 2) chatJournal.confirmSplit(item.view.key.target, item.splitGroupId);
+                        }
+                        continue;
+                    }
+                    for (const name of item.removed) delete item.view.written[name];
+                    for (const [name, value] of Object.entries(item.layers)) {
+                        if (value !== undefined) item.view.written[name] = { version: item.version, value };
+                    }
+                    if (item.splitGroupId) {
+                        if (outcome === "written" || outcome === "skipped" || outcome === "ineligible") {
+                            chatJournal.confirmSplit(item.view.key.target, item.splitGroupId);
+                            item.view.splitFailures = undefined;
+                        } else {
+                            journalChatPending.add(item.scoped);
+                        }
+                    }
+                }
+            }
+            if (journalChatPending.size > 0) scheduleJournal();
             if (Number.isFinite(nextDelay)) {
                 scheduleJournal(Math.max(0, now + nextDelay - Date.now()));
             }
@@ -2391,6 +2509,8 @@ function runCycle(): Promise<boolean> {
                         journalSettled(key);
                     }
                 }
+                // Chat transitions already invalidated their real layers, including early exits.
+                scheduleJournal();
                 pruneWaits();
                 scheduleRefresh(0);
                 // A record whose hydration waited for the batch: its ordering check runs again now.
@@ -2444,7 +2564,11 @@ async function cycle() {
     // as dispatched even if an earlier batch prevented its request from going out.
     journalDispatched(ops);
     const journalFlush = flushJournal();
-    if (!journalOff && ops.some((op) => op.text !== null && op.baseRevision === null && journalRecords.has(op.key))) {
+    if (
+        !journalOff &&
+        (ops.some((op) => op.text !== null && op.baseRevision === null && journalRecords.has(op.key)) ||
+            batches.some((batch) => batch.work.groups.some((group) => group.ops[0]?.op === "create")))
+    ) {
         await waitForCreateJournal(journalFlush);
     }
     if (stopped) return;
@@ -2461,6 +2585,7 @@ async function cycle() {
                 // An earlier request of this cycle may have created or deleted chats of a character
                 // whose reorder travels here: base it on the order revision that acknowledgement gave.
                 rebaseChatOrders(batch.work);
+                void flushJournal();
             }
             let result: ResourceBatchResult;
             for (const op of batch.ops) {
@@ -2868,6 +2993,8 @@ async function haltForRestore() {
         journalTimer = null;
     }
     journalPending.clear();
+    journalChatPending.clear();
+    chatJournal.setListener(null);
     if (refreshTimer) {
         clearTimeout(refreshTimer);
     }
@@ -4860,8 +4987,8 @@ function showGeneratingNotice() {
     alertNormal(language.chatGenerating);
 }
 
-/** A surviving page can wait for its keepalive answer, but cannot hold a flush indefinitely. */
-async function waitForUnload(write: Promise<void>): Promise<void> {
+/** Keepalive answers and held journal splits cannot hold a flush caller indefinitely. */
+async function waitForWriteDependency(write: Promise<void>): Promise<void> {
     let timer: ReturnType<typeof setTimeout>;
     const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("Could not save every change")), READ_DEADLINE_MS);
@@ -4943,6 +5070,11 @@ export async function flushResources(
         if (!pending()) {
             break;
         }
+        const waitingOnSplit = unsettledChatObligations(chatObligations).some((key) => chatJournal.splitGroupId(key));
+        if (waitingOnSplit) {
+            await waitForWriteDependency(flushJournal());
+            continue;
+        }
         if (wrote && hasPendingWork()) {
             continue;
         }
@@ -4973,7 +5105,7 @@ export async function flushResources(
         for (const key of open) {
             const unload = unloadWrites.get(key);
             if (unload) {
-                dependencies.push(waitForUnload(unload));
+                dependencies.push(waitForWriteDependency(unload));
             }
         }
         if (dependencies.length > 0) {
@@ -5054,6 +5186,7 @@ export function startResourceSync() {
         permanentError = null;
         schedule();
     });
+    chatJournal.setListener(queueJournalChat);
     setChatWorkListener(() => {
         pruneWaits();
         noteChatWaits();
@@ -5194,6 +5327,8 @@ export function stopResourceSync() {
         controller.abort(new Error("Resource sync stopped"));
     }
     journalPending.clear();
+    journalChatPending.clear();
+    chatJournal.setListener(null);
     setRecordWriteListener(null);
     setCharacterWriteListener(null);
     setChatWorkListener(null);

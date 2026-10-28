@@ -1,8 +1,17 @@
 import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_JOURNAL_ENTRY_BYTES, type DraftJournal, type RecordLayerValues } from "../draftJournal";
+import { translationSourceHash } from "../../../../shared/translation/hash.ts";
+import {
+    chatTarget,
+    orderTarget,
+    MAX_JOURNAL_ENTRY_BYTES,
+    type DraftJournal,
+    type RecordLayerValues,
+    type ChatLayerValues,
+    type OrderLayerValues,
+} from "../draftJournal";
 import { createFakeLockManager } from "./fakeLockManager";
-import { bootMutations, plain, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
+import { bootMutations, m, plain, refJ, refK, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import type { StoreBackedServer } from "./storeBackedServer";
 
 const { server, diagnostics } = vi.hoisted(() => ({
@@ -25,6 +34,7 @@ vi.mock("../../diagnostics/collector", async () =>
 let journal: DraftJournal;
 let factory: IDBFactory;
 let transactionCount = 0;
+let onWriteTransaction: ((tx: IDBTransaction) => void) | null = null;
 const pendingTransactions = new Set<Promise<void>>();
 const openReleases: (() => void)[] = [];
 const listeners = new Map<string, EventListenerOrEventListenerObject[]>();
@@ -85,6 +95,45 @@ async function layers(key: string) {
         : {};
 }
 
+async function chatLayers(ref = refK): Promise<Partial<ChatLayerValues>> {
+    const row = (await rows()).find(
+        (entry) => entry.scope === "chat" && entry.target === chatTarget(ref.chaId, ref.chatId),
+    );
+    return row?.scope === "chat"
+        ? Object.fromEntries(Object.entries(row.layers).map(([name, layer]) => [name, layer.value]))
+        : {};
+}
+
+async function orderLayers(): Promise<Partial<OrderLayerValues>> {
+    const row = (await rows()).find((entry) => entry.scope === "order" && entry.target === orderTarget("c"));
+    return row?.scope === "order"
+        ? Object.fromEntries(Object.entries(row.layers).map(([name, layer]) => [name, layer.value]))
+        : {};
+}
+
+/** Keep a real IndexedDB transaction active until release, so no split write can commit early. */
+function holdJournalCommit() {
+    let released = false;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+        entered = resolve;
+    });
+    onWriteTransaction = (tx) => {
+        const keepActive = () => {
+            if (released) return;
+            tx.objectStore("entries").get("test-transaction-barrier").onsuccess = keepActive;
+        };
+        keepActive();
+        entered();
+    };
+    return {
+        started,
+        release: () => {
+            released = true;
+        },
+    };
+}
+
 async function flushJournal() {
     hide();
     return rows();
@@ -134,6 +183,7 @@ beforeEach(() => {
     pendingTransactions.clear();
     openReleases.length = 0;
     transactionCount = 0;
+    onWriteTransaction = null;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     factory = new IDBFactory();
@@ -156,6 +206,9 @@ beforeEach(() => {
                 tx.addEventListener("abort", done);
             });
             pendingTransactions.add(completion);
+            const held = onWriteTransaction;
+            onWriteTransaction = null;
+            held?.(tx);
         }
         return tx;
     });
@@ -549,5 +602,472 @@ describe("resource save journal", () => {
         await vi.advanceTimersByTimeAsync(5000);
         expect(await rows()).toEqual([]);
         expect(transactions()).toBe(0);
+    });
+});
+
+describe("chat save journal", () => {
+    beforeEach(() => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(() => {
+                throw new TypeError("Keepalive was not sent");
+            }),
+        );
+    });
+    // Identity is chosen while pending, before either transport gets the batch.
+    it.each(["not sent", "failed", "lost answer"] as const)(
+        "uses the journaled batch id for normal saving after keepalive was %s",
+        async (outcome) => {
+            const { fake, chat, sync } = await boot();
+            const base = fake.chat("c", "k")!.revision;
+            const op = { op: "setText", id: "a", text: "edited" };
+            chat.setMessageText(refK, "a", "edited");
+            // A synchronous fetch refusal leaves the built keepalive in pending.
+            await vi.advanceTimersByTimeAsync(0);
+            hide();
+            const pending = (await chatLayers()).pending!;
+            expect(pending).toEqual({
+                groupId: expect.any(String),
+                baseRevision: base,
+                ops: [{ op, before: { value: "A" } }],
+            });
+            const request = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)![1]!.body));
+            expect(request.chats).toEqual([
+                { characterId: "c", chatId: "k", baseRevision: base, groupId: pending.groupId, ops: [op] },
+            ]);
+            expect(fake.batchCount()).toBe(0);
+
+            if (outcome !== "not sent") {
+                const keepalive = vi.fn((path: string, init?: RequestInit) => fake.fetch(path, init));
+                vi.stubGlobal("fetch", keepalive);
+                if (outcome === "failed") fake.failNext = { status: 500, times: 1, match: batchPath };
+                else fake.dropNextBatchResponse = true;
+                hide();
+                await rows();
+                expect(keepalive).toHaveBeenCalledWith(
+                    "/api/resources/batch",
+                    expect.objectContaining({ keepalive: true }),
+                );
+                expect(fake.batchBodies()[0]).toEqual(request);
+                hide();
+                expect(await chatLayers()).toEqual({
+                    resend: {
+                        ops: [op],
+                        baseRevision: base,
+                        groupId: pending.groupId,
+                        seq: expect.any(Number),
+                        inDoubt: true,
+                    },
+                });
+            }
+
+            fake.holdNextBatch = true;
+            const saving = sync.flushResources();
+            await rows();
+            const normal = fake.batchBodies().at(-1)!.chats[0];
+            expect(normal).toEqual({ ...request.chats[0], ...(outcome === "not sent" ? {} : { retry: true }) });
+            expect((await chatLayers()).resend).toEqual({
+                ops: [op],
+                baseRevision: base,
+                groupId: pending.groupId,
+                seq: expect.any(Number),
+                inDoubt: outcome !== "not sent",
+            });
+            fake.releaseBatch!();
+            await saving;
+            await vi.advanceTimersByTimeAsync(500);
+            expect(await chatLayers()).toEqual({});
+        },
+    );
+
+    // A recoverable whole batch must become two durable identities before its prefix leaves.
+    it("commits the split before sending its first 5000 operations, then sends the remainder under a new id", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        const ops = Array.from({ length: 5001 }, (_, index) => ({
+            op: "setText" as const,
+            id: index % 2 === 0 ? "a" : "b",
+            text: `edit-${index}`,
+        }));
+        for (const op of ops) chat.setMessageText(refK, op.id, op.text);
+        hide();
+        const whole = (await chatLayers()).pending!;
+        expect(whole.ops.map((entry) => entry.op)).toEqual(ops);
+        expect(chat.unloadPendingChatWork(Number.MAX_SAFE_INTEGER)).toEqual([]);
+        expect(fake.batchCount()).toBe(0);
+
+        const held = holdJournalCommit();
+        fake.holdNextBatchResponse = true;
+        const saving = sync.flushResources();
+        // Observe a rejection even if an earlier assertion fails while the request is held.
+        void saving.catch(() => {});
+        try {
+            try {
+                await held.started;
+                await vi.advanceTimersByTimeAsync(0);
+                expect(fake.batchCount()).toBe(0);
+            } finally {
+                held.release();
+            }
+            await rows();
+            const split = await chatLayers();
+            expect(split.resend).toEqual({
+                ops: ops.slice(0, 5000),
+                baseRevision: base,
+                groupId: whole.groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            });
+            expect(split.pending).toEqual({
+                ops: [{ op: ops[5000], before: { value: "edit-4998" } }],
+                baseRevision: base,
+                groupId: expect.any(String),
+            });
+            expect(split.pending!.groupId).not.toBe(whole.groupId);
+            expect(fake.batchBodies().flatMap((body) => body.chats ?? [])).toEqual([
+                { characterId: "c", chatId: "k", baseRevision: base, groupId: whole.groupId, ops: ops.slice(0, 5000) },
+            ]);
+            const acknowledgedBase = fake.chat("c", "k")!.revision;
+            fake.releaseBatchResponse!();
+            await saving;
+            expect(fake.batchBodies().flatMap((body) => body.chats ?? [])).toEqual([
+                { characterId: "c", chatId: "k", baseRevision: base, groupId: whole.groupId, ops: ops.slice(0, 5000) },
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: acknowledgedBase,
+                    groupId: split.pending!.groupId,
+                    ops: ops.slice(5000),
+                },
+            ]);
+            await vi.advanceTimersByTimeAsync(500);
+            expect(await chatLayers()).toEqual({});
+        } finally {
+            sync.stopResourceSync();
+            held.release();
+            await rows();
+            fake.releaseBatchResponse?.();
+            await saving.catch(() => {});
+        }
+    });
+
+    // Both kinds of intent coexist, rebase on acknowledgement, and clean up without another edit.
+    it("keeps a text revert and a newer order behind their in-flight layers until each is acknowledged", async () => {
+        const { fake, chat, settings, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        const orderBase = fake.order("c")!.revision;
+        const transactions = writeTransactions();
+        fake.holdNextBatchResponse = true;
+        settings.ui.theme = "same transaction";
+        chat.setMessageText(refK, "a", "B");
+        chat.reorderChats("c", ["j", "k"]);
+        await vi.advanceTimersByTimeAsync(500);
+        const first = fake.batchBodies()[0];
+        const sentId = first.chats[0].groupId;
+        const resend = {
+            ops: [{ op: "setText", id: "a", text: "B" }],
+            baseRevision: base,
+            groupId: sentId,
+            seq: expect.any(Number),
+            inDoubt: false,
+        };
+        expect(first.chats).toEqual([
+            { characterId: "c", chatId: "k", baseRevision: base, groupId: expect.any(String), ops: resend.ops },
+        ]);
+        expect(first.chatOrders).toEqual([{ characterId: "c", baseRevision: orderBase, ids: ["j", "k"] }]);
+        expect(await chatLayers()).toEqual({ resend });
+        expect(await orderLayers()).toEqual({ sent: { baseRevision: orderBase, ids: ["j", "k"] } });
+        expect((await rows()).map((row) => row.scope).sort()).toEqual(["chat", "order", "record"]);
+        expect(transactions()).toBe(1);
+
+        chat.setMessageText(refK, "a", "A");
+        chat.reorderChats("c", ["k", "j"]);
+        await vi.advanceTimersByTimeAsync(500);
+        const pending = {
+            ops: [{ op: { op: "setText", id: "a", text: "A" }, before: { value: "B" } }],
+            baseRevision: base,
+            groupId: expect.any(String),
+        };
+        expect(await chatLayers()).toEqual({ resend, pending });
+        const nextId = (await chatLayers()).pending!.groupId;
+        expect(nextId).not.toBe(sentId);
+        expect(await orderLayers()).toEqual({
+            sent: { baseRevision: orderBase, ids: ["j", "k"] },
+            latest: { baseRevision: orderBase, ids: ["k", "j"] },
+        });
+        const nextBase = fake.chat("c", "k")!.revision;
+        const nextOrderBase = fake.order("c")!.revision;
+        fake.releaseBatchResponse!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        expect(await chatLayers()).toEqual({ pending: { ...pending, groupId: nextId, baseRevision: nextBase } });
+        expect(await orderLayers()).toEqual({ latest: { baseRevision: nextOrderBase, ids: ["k", "j"] } });
+
+        fake.holdNextBatchResponse = true;
+        const saving = sync.flushResources();
+        await rows();
+        expect(fake.batchBodies()[1].chats).toEqual([
+            {
+                characterId: "c",
+                chatId: "k",
+                groupId: nextId,
+                baseRevision: nextBase,
+                ops: [{ op: "setText", id: "a", text: "A" }],
+            },
+        ]);
+        expect(fake.batchBodies()[1].chatOrders).toEqual([
+            { characterId: "c", baseRevision: nextOrderBase, ids: ["k", "j"] },
+        ]);
+        expect(await chatLayers()).toEqual({
+            resend: {
+                ...resend,
+                groupId: nextId,
+                baseRevision: nextBase,
+                ops: [{ op: "setText", id: "a", text: "A" }],
+            },
+        });
+        expect(await orderLayers()).toEqual({ sent: { baseRevision: nextOrderBase, ids: ["k", "j"] } });
+        fake.releaseBatchResponse!();
+        await saving;
+        await vi.advanceTimersByTimeAsync(500);
+        expect(await rows()).toEqual([]);
+    });
+
+    // An old deletion acknowledgement cannot consume the new incarnation's create.
+    it("preserves a recreated chat's pending snapshot when the old deletion is acknowledged", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        fake.holdNextBatchResponse = true;
+        chat.deleteChat(refK);
+        await vi.advanceTimersByTimeAsync(500);
+        const deletion = fake.batchBodies()[0].chats[0];
+        expect(deletion).toEqual({
+            characterId: "c",
+            chatId: "k",
+            baseRevision: base,
+            groupId: expect.any(String),
+            ops: [{ op: "delete" }],
+        });
+        const snapshot = {
+            id: "k",
+            name: "Recreated",
+            note: "",
+            localLore: [],
+            fmIndex: -1,
+            message: [m("a", "new incarnation")],
+        };
+        chat.createChat("c", snapshot);
+        await vi.advanceTimersByTimeAsync(500);
+        const beforeAck = await chatLayers();
+        expect(beforeAck).toEqual({
+            resend: {
+                ops: [{ op: "delete" }],
+                baseRevision: base,
+                groupId: deletion.groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            },
+            pending: { ops: [], baseRevision: base, groupId: expect.any(String), createSnapshot: snapshot },
+        });
+        expect(beforeAck.pending!.groupId).not.toBe(deletion.groupId);
+        fake.releaseBatchResponse!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        expect(await chatLayers()).toEqual({ pending: { ...beforeAck.pending, baseRevision: null } });
+        fake.holdNextBatchResponse = true;
+        const saving = sync.flushResources();
+        await rows();
+        const createOps = [{ op: "create", chat: snapshot, index: 1 }];
+        expect(fake.batchBodies()[1].chats).toEqual([
+            { characterId: "c", chatId: "k", baseRevision: null, groupId: beforeAck.pending!.groupId, ops: createOps },
+        ]);
+        expect(await chatLayers()).toEqual({
+            resend: {
+                ops: createOps,
+                baseRevision: null,
+                groupId: beforeAck.pending!.groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            },
+        });
+        fake.releaseBatchResponse!();
+        await saving;
+        await vi.advanceTimersByTimeAsync(500);
+        expect(await chatLayers()).toEqual({});
+    });
+
+    // A definite rollback can merge newer work, but the older group's identity owns the merge.
+    it("journals and sends a rolled-back group merged with newer work under the older id", async () => {
+        const { fake, chat, settings, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        const ui = fake.record("ui", "main")!;
+        fake.set("ui", "main", { ...plain(ui.data), theme: "remote" });
+        fake.holdNextBatch = true;
+        settings.ui.theme = "conflict";
+        chat.setMessageText(refK, "a", "first");
+        await vi.advanceTimersByTimeAsync(500);
+        const first = fake.batchBodies()[0].chats[0];
+        chat.setMessageText(refK, "b", "second");
+        await vi.advanceTimersByTimeAsync(500);
+        const newer = (await chatLayers()).pending!;
+        expect(newer.groupId).not.toBe(first.groupId);
+        fake.releaseBatch!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        const ops = [
+            { op: "setText", id: "a", text: "first" },
+            { op: "setText", id: "b", text: "second" },
+        ];
+        expect(await chatLayers()).toEqual({
+            pending: {
+                groupId: first.groupId,
+                baseRevision: base,
+                ops: [
+                    { op: ops[0], before: { value: "A" } },
+                    { op: ops[1], before: { value: "B" } },
+                ],
+            },
+        });
+        await sync.flushResources();
+        expect(fake.batchBodies().at(-1)!.chats).toEqual([
+            { characterId: "c", chatId: "k", baseRevision: base, groupId: first.groupId, ops },
+        ]);
+    });
+
+    // Expected befores come from the fixture and the preceding edits, including absent fields.
+    it("journals the first before values through coalescing and sends only the operations", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        chat.setMessageText(refK, "a", "A1");
+        chat.setMessageText(refK, "a", "A2");
+        chat.patchMessage(refK, "a", { name: "first", data: "A3" });
+        chat.patchMessage(refK, "a", { name: "second", disabled: true });
+        chat.setChatMeta(refK, { note: "first", scriptstate: { $x: "1" } });
+        chat.setChatMeta(refK, { note: "second", scriptstate: { $x: "2" }, name: "renamed" });
+        chat.replaceMessage(refK, m("b", "B1"));
+        chat.replaceMessage(refK, m("b", "B2"));
+        chat.removeMessages(refK, ["c"]);
+        chat.appendMessage(refK, m("new", "appended"));
+        const translation = {
+            text: "translated",
+            sourceHash: translationSourceHash("A3"),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        };
+        chat.setMessageTranslation(refK, "a", translation);
+        chat.setMessageTranslation(refK, "a", null);
+        const expected = [
+            { op: { op: "setText", id: "a", text: "A2" }, before: { value: "A" } },
+            {
+                op: { op: "patchMessage", id: "a", set: { name: "second", data: "A3", disabled: true }, unset: [] },
+                before: { value: { data: "A2" } },
+            },
+            {
+                op: { op: "meta", set: { note: "second", scriptstate: { $x: "2" }, name: "renamed" }, unset: [] },
+                before: { value: { note: "", name: "K" } },
+            },
+            { op: { op: "setMessage", message: m("b", "B2") }, before: { value: m("b", "B") } },
+            { op: { op: "remove", ids: ["c"] }, before: { value: m("c", "C", "char") } },
+            { op: { op: "append", messages: [m("new", "appended")], anchor: { end: true } }, before: { absent: true } },
+            { op: { op: "setTranslation", id: "a", translation }, before: { absent: true } },
+            { op: { op: "setTranslation", id: "a", translation: null }, before: { value: translation } },
+        ];
+        hide();
+        const pending = (await chatLayers()).pending!;
+        expect(pending).toEqual({ ops: expected, baseRevision: base, groupId: expect.any(String) });
+        await sync.flushResources();
+        expect(fake.batchBodies()[0].chats).toEqual([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: base,
+                groupId: pending.groupId,
+                ops: expected.map((entry) => entry.op),
+            },
+        ]);
+    });
+
+    // Neither an ineligible suffix nor the byte budget permits a keepalive prefix.
+    it("keeps whole batches journaled when a multi-id removal or the byte budget prevents keepalive", async () => {
+        const { fake, chat, sync } = await boot();
+        chat.setMessageText(refK, "a", "eligible prefix");
+        chat.removeMessages(refK, ["b", "c"]);
+        chat.setChatMeta(refJ, { note: "eligible prefix" });
+        chat.appendMessage(refJ, m("large", "x".repeat(70_000)));
+        hide();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(fake.batchCount()).toBe(0);
+        const k = (await chatLayers()).pending!;
+        const j = (await chatLayers(refJ)).pending!;
+        expect(k.ops).toEqual([
+            { op: { op: "setText", id: "a", text: "eligible prefix" }, before: { value: "A" } },
+            { op: { op: "remove", ids: ["b", "c"] } },
+        ]);
+        expect(j.ops).toEqual([
+            { op: { op: "meta", set: { note: "eligible prefix" }, unset: [] }, before: { value: { note: "" } } },
+            {
+                op: { op: "append", messages: [m("large", "x".repeat(70_000))], anchor: { end: true } },
+                before: { absent: true },
+            },
+        ]);
+        await sync.flushResources();
+        expect(fake.batchBodies().flatMap((body) => body.chats ?? [])).toEqual([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: k.baseRevision,
+                groupId: k.groupId,
+                ops: k.ops.map((entry) => entry.op),
+            },
+            {
+                characterId: "c",
+                chatId: "j",
+                baseRevision: j.baseRevision,
+                groupId: j.groupId,
+                ops: j.ops.map((entry) => entry.op),
+            },
+        ]);
+    });
+
+    // The queued remove has no remaining mirror row from which to discover the renamed id.
+    it("renames a queued removal and its before when a create acknowledgement renames the removed message", async () => {
+        const { fake, chat, sync } = await boot();
+        const ref = { chaId: "c", chatId: "new" };
+        const oldId = "invalid\tid";
+        fake.holdNextBatchResponse = true;
+        chat.createChat("c", { id: "new", name: "New", note: "", localLore: [], message: [m(oldId, "remove me")] });
+        await vi.advanceTimersByTimeAsync(500);
+        await rows();
+        const create = fake.batchBodies()[0].chats[0];
+        expect(create.ops[0]).toMatchObject({ op: "create", chat: { message: [m(oldId, "remove me")] } });
+        const serverId = fake.chat("c", "new")!.data.message[0].chatId!;
+        const base = fake.chat("c", "new")!.revision;
+        expect(serverId).not.toBe(oldId);
+        chat.removeMessages(ref, [oldId]);
+        await vi.advanceTimersByTimeAsync(500);
+        const beforeAck = await chatLayers(ref);
+        expect(beforeAck.pending!.ops).toEqual([
+            { op: { op: "remove", ids: [oldId] }, before: { value: m(oldId, "remove me") } },
+        ]);
+        fake.releaseBatchResponse!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        expect(await chatLayers(ref)).toEqual({
+            pending: {
+                baseRevision: base,
+                groupId: beforeAck.pending!.groupId,
+                ops: [{ op: { op: "remove", ids: [serverId] }, before: { value: m(serverId, "remove me") } }],
+            },
+        });
+        await sync.flushResources();
+        expect(fake.batchBodies()[1].chats).toEqual([
+            {
+                characterId: "c",
+                chatId: "new",
+                baseRevision: base,
+                groupId: beforeAck.pending!.groupId,
+                ops: [{ op: "remove", ids: [serverId] }],
+            },
+        ]);
     });
 });

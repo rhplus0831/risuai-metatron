@@ -424,7 +424,15 @@ describe("boot journal recovery", () => {
         expect(ops("characters")).toEqual(
             dispatched ? [] : [{ kind: "characters", id: "new-character", baseRevision: null, data: JSON.parse(text) }],
         );
-        expect(await second.journal.readOwn()).toEqual([]);
+        const left = await second.journal.readOwn();
+        expect(left.filter((entry) => entry.scope !== "chat")).toEqual([]);
+        // The dispatched create's first chat went out with it; boot recovery leaves that chat row alone.
+        expect(
+            left.map((entry) => [
+                entry.target.split("\0")[0],
+                entry.scope === "chat" ? entry.layers.resend?.value.ops.map((op) => op.op) : null,
+            ]),
+        ).toEqual(dispatched ? [["new-character", ["create"]]] : []);
     });
 });
 

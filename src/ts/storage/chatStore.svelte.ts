@@ -30,6 +30,14 @@ import { alertError } from "../alert";
 import type { character, Chat, groupChat, Message, MessageTranslation } from "./database.svelte";
 import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
+import {
+    chatTarget,
+    orderTarget,
+    type ChatLayerValues,
+    type OrderLayerValues,
+    type JournalBefore,
+    type JournalChatOp,
+} from "./draftJournal";
 
 /**
  * The chat mutation module. Chats are server resources of their own
@@ -81,6 +89,34 @@ const forbiddenMetaKeys = new Set(CHAT_META_FORBIDDEN_KEYS);
 const keyOf = (chaId: string, chatId: string) => `${chaId}\u0000${chatId}`;
 const messageKeyOf = (ref: ChatRef, messageId: string) => `${keyOf(ref.chaId, ref.chatId)}\u0000${messageId}`;
 
+/** Map transitions invalidate journal layers; in-place changes mark them at their write sites. */
+class JournalMap<T> extends Map<string, T> {
+    private readonly change: (key: string, before: T | undefined, after: T | undefined) => void;
+
+    constructor(change: (key: string, before: T | undefined, after: T | undefined) => void) {
+        super();
+        this.change = change;
+    }
+
+    override set(key: string, value: T) {
+        const before = this.get(key);
+        super.set(key, value);
+        this.change(key, before, value);
+        return this;
+    }
+
+    override delete(key: string) {
+        const before = this.get(key);
+        const removed = super.delete(key);
+        if (removed) this.change(key, before, undefined);
+        return removed;
+    }
+
+    override clear() {
+        for (const key of this.keys()) this.delete(key);
+    }
+}
+
 /** A chat's queued, unsent work. */
 type Pending = {
     characterId: string;
@@ -94,6 +130,8 @@ type Pending = {
      * until it is answered and go out in a group of their own.
      */
     resend: Resend | null;
+    /** Identity of this unsent batch, independent of a kept resend's id. */
+    groupId: string;
     /** Unsent ops, in order. */
     ops: ChatOp[];
     /** Local sequence number of the latest change. */
@@ -105,7 +143,15 @@ type Pending = {
  * group id as sent. `inDoubt`: an earlier attempt may have landed (its answer was lost), so it goes
  * out with `retry` and the same id, and the server answers it as before if it did.
  */
-type Resend = { ops: ChatOp[]; seq: number; baseRevision: string | null; groupId: string; inDoubt: boolean };
+type Resend = {
+    ops: ChatOp[];
+    seq: number;
+    baseRevision: string | null;
+    groupId: string;
+    inDoubt: boolean;
+    /** A split cannot send its prefix until the journal replaced the old whole-batch row. */
+    unconfirmed?: true;
+};
 
 /** Whether the group kept for a resend is a create (the chat may not be on the server yet). */
 function isCreateResend(entry: Pending | undefined): boolean {
@@ -178,7 +224,11 @@ const absentChats = new Set<string>();
  * chat list of the character is accepted (`acceptRemoteCollection`). A create resend is not kept
  * only when it is not in doubt and this client holds no revision of the chat (`parkResends`).
  */
-const parkedResends = new Map<string, Map<string, { chatId: string; resend: Resend }>>();
+const parkedResends = new JournalMap<Map<string, { chatId: string; resend: Resend }>>((_id, before, after) => {
+    for (const key of new Set([...(before?.keys() ?? []), ...(after?.keys() ?? [])])) {
+        dirtyChatJournal(key, "resend");
+    }
+});
 
 /** Whether the server's chat order holds the chat as far as this client knows (`absentChats`). */
 function serverHolds(key: string): boolean {
@@ -189,6 +239,8 @@ function serverHolds(key: string): boolean {
 function holdChatRevision(key: string, revision: string) {
     const first = !chatRevisions.has(key);
     chatRevisions.set(key, revision);
+    dirtyChatJournal(key, "pending");
+    dirtyOrderJournal(key.split("\u0000")[0], "latest");
     if (first) {
         savedVersions[key] = (savedVersions[key] ?? 0) + 1;
     }
@@ -202,6 +254,8 @@ function dropChatRevision(key: string) {
     chatRevisions.delete(key);
     ackedRevisions.delete(key);
     absentChats.delete(key);
+    dirtyChatJournal(key, "pending");
+    dirtyOrderJournal(key.split("\u0000")[0], "latest");
     releaseFeedLocks(`${key}\u0000`);
 }
 
@@ -220,13 +274,16 @@ export function chatSaveVersion(ref: ChatRef): number {
     return savedVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
 }
 
-const orderRevisions = new Map<string, string>();
-const pending = new Map<string, Pending>();
-const inflight = new Map<string, SentChatGroup>();
-const pendingOrders = new Map<string, number>();
-const inflightOrders = new Map<string, SentChatOrder>();
+const orderRevisions = new JournalMap<string>((id) => dirtyOrderJournal(id, "latest"));
+const pending = new JournalMap<Pending>((key, before, after) => {
+    dirtyChatJournal(key, "pending");
+    if ((before?.resend ?? null) !== (after?.resend ?? null)) dirtyChatJournal(key, "resend");
+});
+const inflight = new JournalMap<SentChatGroup>((key) => dirtyChatJournal(key, "resend"));
+const pendingOrders = new JournalMap<number>((id) => dirtyOrderJournal(id, "latest"));
+const inflightOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
 /** Conflicting sent orders whose outcome waits for an authoritative collection read. */
-const recoveringOrders = new Map<string, SentChatOrder>();
+const recoveringOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
 /** Chat keys → highest local sequence settled (acknowledged or discarded). */
 const settled = new Map<string, number>();
 const ordersSettled = new Map<string, number>();
@@ -235,9 +292,12 @@ const discarded = new Map<string, number>();
 let discardSequence = 0;
 /** Refused intent, retained until an explicit local edit, retry, or discard. Identity fences discards. */
 type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean };
-const quarantined = new Map<string, ChatRefusal>();
+const quarantined = new JournalMap<ChatRefusal>((key) => dirtyChatJournal(key, "refused"));
 /** Refused reorders wait until the ordered ids change. */
-const quarantinedOrders = new Map<string, { ids: string; reason: string }>();
+const quarantinedOrders = new JournalMap<{ ids: string; reason: string }>((id) => {
+    dirtyOrderJournal(id, "refused");
+    dirtyOrderJournal(id, "latest");
+});
 const chatAlerts = new Set<string>();
 const orderAlerts = new Set<string>();
 let refusalVersion = $state(0);
@@ -439,6 +499,165 @@ export function chatOwnerToken(chaId: string): string {
     return lifetimeOf(chaId);
 }
 
+export type ChatJournalKey = { scope: "chat" | "order"; target: string };
+type JournalProjection =
+    | { scope: "chat"; target: string; layers: Partial<ChatLayerValues>; splitGroupId?: string }
+    | { scope: "order"; target: string; layers: Partial<OrderLayerValues> };
+type LayerCache<T> = {
+    generations: Partial<Record<keyof T, number>>;
+    projected: Partial<Record<keyof T, number>>;
+    layers: Partial<T>;
+};
+const journalChats = new Map<string, LayerCache<ChatLayerValues>>();
+const journalOrders = new Map<string, LayerCache<OrderLayerValues>>();
+let journalListener: ((key: ChatJournalKey) => void) | null = null;
+const createSnapshots = new WeakMap<Chat, { version: number; value: Chat }>();
+
+function dirtyLayer<T>(views: Map<string, LayerCache<T>>, target: string, layer: keyof T) {
+    let view = views.get(target);
+    if (!view) {
+        view = { generations: {}, projected: {}, layers: {} };
+        views.set(target, view);
+    }
+    view.generations[layer] = (view.generations[layer] ?? 0) + 1;
+}
+
+function dirtyChatJournal(key: string, layer: keyof ChatLayerValues) {
+    const [chaId, chatId] = key.split("\u0000");
+    if (
+        !journalChats.has(key) &&
+        !pending.has(key) &&
+        !inflight.has(key) &&
+        !quarantined.has(key) &&
+        !parkedResends.get(chaId)?.has(key)
+    )
+        return;
+    dirtyLayer(journalChats, key, layer);
+    journalListener?.({ scope: "chat", target: chatTarget(chaId, chatId) });
+}
+
+function dirtyOrderJournal(chaId: string, layer: keyof OrderLayerValues) {
+    if (
+        !journalOrders.has(chaId) &&
+        !pendingOrders.has(chaId) &&
+        !inflightOrders.has(chaId) &&
+        !recoveringOrders.has(chaId) &&
+        !quarantinedOrders.has(chaId)
+    )
+        return;
+    dirtyLayer(journalOrders, chaId, layer);
+    journalListener?.({ scope: "order", target: orderTarget(chaId) });
+}
+
+function projectedLayer<T, K extends keyof T>(view: LayerCache<T>, name: K, project: () => T[K] | undefined) {
+    const generation = view.generations[name] ?? 0;
+    if (view.projected[name] !== generation) {
+        view.layers[name] = project();
+        view.projected[name] = generation;
+    }
+}
+
+function queuedChatLayer(key: string): ChatLayerValues["pending"] | undefined {
+    const entry = pending.get(key);
+    if (!entry || (!entry.create && entry.ops.length === 0)) return;
+    const ops: JournalChatOp[] = entry.ops.map((op) => ({
+        op,
+        ...(beforeValues.has(op) ? { before: beforeValues.get(op) } : {}),
+    }));
+    let createSnapshot: Chat | undefined;
+    if (entry.create) {
+        const chat = heldChat({ chaId: entry.characterId, chatId: entry.chatId });
+        if (chat) {
+            const version = versions.get(key) ?? 0;
+            let cached = createSnapshots.get(chat);
+            if (!cached || cached.version !== version) {
+                cached = { version, value: projectChat(chat) };
+                createSnapshots.set(chat, cached);
+            }
+            createSnapshot = cached.value;
+        }
+    }
+    return {
+        ops: clone(ops),
+        baseRevision: chatRevisions.get(key) ?? null,
+        groupId: entry.groupId,
+        ...(createSnapshot ? { createSnapshot } : {}),
+        ...(entry.ops.some((op) => op.op === "delete") ? { delete: true } : {}),
+    };
+}
+
+/**
+ * Detached, cached journal layers owned by the chat module. Subscription includes work queued
+ * before the adapter starts. Projection never takes work, clears a refusal, or changes the mirror.
+ */
+export const chatJournal = {
+    setListener(listener: ((key: ChatJournalKey) => void) | null) {
+        journalListener = listener;
+        if (listener) {
+            for (const target of journalChats.keys()) listener({ scope: "chat", target });
+            for (const target of journalOrders.keys()) listener({ scope: "order", target });
+        }
+    },
+    project({ scope, target }: ChatJournalKey): JournalProjection {
+        if (scope === "chat") {
+            const view = journalChats.get(target)!;
+            const [chaId] = target.split("\u0000");
+            const resend =
+                inflight.get(target) ?? pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
+            projectedLayer(view, "resend", () =>
+                resend
+                    ? clone({
+                          ops: resend.ops,
+                          baseRevision: resend.baseRevision,
+                          groupId: resend.groupId,
+                          seq: resend.seq,
+                          inDoubt: !!resend.inDoubt,
+                      })
+                    : undefined,
+            );
+            projectedLayer(view, "pending", () => queuedChatLayer(target));
+            projectedLayer(view, "refused", () => {
+                const refused = quarantined.get(target);
+                return refused ? clone(refused) : undefined;
+            });
+            return {
+                scope,
+                target,
+                layers: { ...view.layers },
+                ...(resend && "unconfirmed" in resend && resend.unconfirmed ? { splitGroupId: resend.groupId } : {}),
+            };
+        }
+        const view = journalOrders.get(target)!;
+        projectedLayer(view, "sent", () => {
+            const sent = inflightOrders.get(target) ?? recoveringOrders.get(target);
+            return sent ? { baseRevision: sent.baseRevision, ids: [...sent.ids] } : undefined;
+        });
+        projectedLayer(view, "latest", () =>
+            pendingOrders.has(target) && quarantinedOrders.get(target)?.ids !== sendableOrderText(target)
+                ? { baseRevision: orderRevisions.get(target) ?? null, ids: [...memberIds(target)] }
+                : undefined,
+        );
+        projectedLayer(view, "refused", () => {
+            const refused = quarantinedOrders.get(target);
+            return refused ? { ids: JSON.parse(refused.ids) as string[], reason: refused.reason } : undefined;
+        });
+        return { scope, target, layers: { ...view.layers } };
+    },
+    splitGroupId(target: string): string | undefined {
+        const [chaId] = target.split("\u0000");
+        const resend = pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
+        return resend?.unconfirmed ? resend.groupId : undefined;
+    },
+    confirmSplit(target: string, groupId: string) {
+        const [chaId] = target.split("\u0000");
+        const resend = pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
+        if (resend?.unconfirmed && resend.groupId === groupId) {
+            delete resend.unconfirmed;
+            notifyWork();
+        }
+    },
+};
+
 /** Registers the save loop's wake-up; called when new chat work is queued. */
 export function setChatWorkListener(listener: (() => void) | null) {
     workListener = listener;
@@ -476,6 +695,7 @@ function nextSeq() {
 /** Records that a chat changed in the mirror (its version, and the drift check's token). */
 function changed(key: string) {
     versions.set(key, (versions.get(key) ?? 0) + 1);
+    if (pending.get(key)?.create) dirtyChatJournal(key, "pending");
     mutationToken += 1;
 }
 
@@ -624,6 +844,7 @@ function insertChat(chaId: string, index: number, chat: Chat): Chat {
     holding.chats[slot(chat.id!)] = chat;
     delete holding.summaries[slot(chat.id!)];
     holding.ids.splice(index, 0, chat.id!);
+    dirtyOrderJournal(chaId, "latest");
     return holding.chats[slot(chat.id!)];
 }
 
@@ -634,6 +855,7 @@ function insertSummary(chaId: string, index: number, id: string, meta: ChatEntry
     holding.summaries[slot(id)] = meta;
     delete holding.chats[slot(id)];
     holding.ids.splice(index, 0, id);
+    dirtyOrderJournal(chaId, "latest");
 }
 
 /** Takes a chat out of a character's list (loaded or not). */
@@ -649,6 +871,8 @@ function removeChat(chaId: string, chatId: string) {
     loadedKeys.delete(keyOf(chaId, chatId));
     delete holding.chats[slot(chatId)];
     delete holding.summaries[slot(chatId)];
+    dirtyOrderJournal(chaId, "latest");
+    if (pending.get(keyOf(chaId, chatId))?.create) dirtyChatJournal(keyOf(chaId, chatId), "pending");
 }
 
 /** Drops everything held for a character (its list, loaded chats, and summaries). */
@@ -657,6 +881,10 @@ function dropHeld(chaId: string) {
         loadedKeys.delete(keyOf(chaId, id));
     }
     delete held[slot(chaId)];
+    dirtyOrderJournal(chaId, "latest");
+    for (const [key, entry] of pending) {
+        if (entry.characterId === chaId && entry.create) dirtyChatJournal(key, "pending");
+    }
 }
 
 /** Replaces a character's whole list (membership, order, loaded chats, and summaries) with `entries`. */
@@ -678,6 +906,11 @@ function setChatList(chaId: string, entries: readonly ChatEntry[]) {
     holding.chats = chats;
     holding.summaries = summaries;
     holding.ids = entries.map((entry) => entry.id);
+    dirtyOrderJournal(chaId, "latest");
+    for (const entry of entries) {
+        const key = keyOf(chaId, entry.id);
+        if (pending.get(key)?.create) dirtyChatJournal(key, "pending");
+    }
 }
 
 /** Loaded chats as list entries. */
@@ -855,12 +1088,22 @@ function prepareMessages(messages: Message[], taken: Set<string>) {
     }
 }
 
-function pendingFor(ref: ChatRef): Pending {
+function pendingFor(ref: ChatRef, newBatch = false): Pending {
     const key = keyOf(ref.chaId, ref.chatId);
     let entry = pending.get(key);
     if (!entry) {
-        entry = { characterId: ref.chaId, chatId: ref.chatId, create: false, resend: null, ops: [], seq: 0 };
+        entry = {
+            characterId: ref.chaId,
+            chatId: ref.chatId,
+            groupId: uuidv4(),
+            create: false,
+            resend: null,
+            ops: [],
+            seq: 0,
+        };
         pending.set(key, entry);
+    } else if (newBatch) {
+        entry.groupId = uuidv4();
     }
     return entry;
 }
@@ -871,8 +1114,66 @@ function workSeq(key: string): number {
     return Math.max(entry?.seq ?? 0, entry?.resend?.seq ?? 0, inflight.get(key)?.seq ?? 0);
 }
 
+/** Local metadata stays off the wire and follows copied ops explicitly. */
+const beforeValues = new WeakMap<ChatOp, JournalBefore>();
+
+function fieldsBefore(target: object, fields: Iterable<string>): JournalBefore {
+    const values = target as Record<string, unknown>;
+    return {
+        value: clone(
+            Object.fromEntries(
+                [...fields].filter((key) => Object.hasOwn(values, key)).map((key) => [key, values[key]]),
+            ),
+        ),
+    };
+}
+
+function touchedFields(op: ChatOp): string[] {
+    if (op.op === "setText") return ["data"];
+    if (op.op === "patchMessage" || op.op === "meta") {
+        return [
+            ...Object.keys(op.set ?? {}),
+            ...(op.unset ?? []),
+            ...(op.op === "meta" ? [...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})] : []),
+        ];
+    }
+    return [];
+}
+
+function coalescedBefore(last: ChatOp, next: ChatOp): JournalBefore | undefined {
+    const before = beforeValues.get(last);
+    const later = beforeValues.get(next);
+    if (
+        (last.op !== "patchMessage" && last.op !== "meta") ||
+        !before ||
+        !("value" in before) ||
+        !later ||
+        !("value" in later)
+    )
+        return before;
+    const touched = new Set(touchedFields(last));
+    const values = next.op === "setText" ? { data: later.value } : (later.value as Record<string, unknown>);
+    return {
+        value: {
+            ...(before.value as object),
+            ...Object.fromEntries(
+                touchedFields(next)
+                    .filter((key) => !touched.has(key) && Object.hasOwn(values, key))
+                    .map((key) => [key, values[key]]),
+            ),
+        },
+    };
+}
+
+function copyOpBefore<T extends ChatOp>(source: ChatOp, copy: T): T {
+    const before = beforeValues.get(source);
+    if (before) beforeValues.set(copy, clone<JournalBefore>(before));
+    return copy;
+}
+
 /** Queues an explicit local edit after its mirror write, releasing any refused intent first. */
-function enqueueLocalEdit(ref: ChatRef, op: ChatOp) {
+function enqueueLocalEdit(ref: ChatRef, op: ChatOp, before?: JournalBefore) {
+    if (before) beforeValues.set(op, before);
     if (releaseChatRefusal(ref) === "snapshot") {
         // The replacement/create already includes this edit, including an append's new ids.
         notifyWork();
@@ -881,9 +1182,14 @@ function enqueueLocalEdit(ref: ChatRef, op: ChatOp) {
     const entry = pendingFor(ref);
     entry.seq = nextSeq();
     const last = entry.ops[entry.ops.length - 1];
-    if (!(last && coalesce(last, op))) {
+    // Capture the touched-field union before coalesce changes the earlier op.
+    const mergedBefore = last ? coalescedBefore(last, op) : undefined;
+    if (last && coalesce(last, op)) {
+        if (mergedBefore) beforeValues.set(last, mergedBefore);
+    } else {
         entry.ops.push(op);
     }
+    dirtyChatJournal(keyOf(ref.chaId, ref.chatId), "pending");
     notifyWork();
 }
 
@@ -2070,13 +2376,7 @@ export function chatJobRetryAt(): number | null {
 /** Takes an unload request's ops out of the queue and marks its groups in flight (the request was sent). */
 export function trackUnloadWork(work: ChatWork) {
     for (const group of work.groups) {
-        const entry = pending.get(group.key);
-        if (entry) {
-            entry.ops = entry.ops.slice(group.ops.length);
-            if (entry.ops.length === 0) {
-                pending.delete(group.key);
-            }
-        }
+        pending.delete(group.key);
         inflight.set(group.key, group);
     }
 }
@@ -2106,7 +2406,7 @@ export function settleUnloadWork(work: ChatWork, results: readonly ChatGroupResu
 
 /**
  * Pending by-id work for existing chats, one request per chat within the remaining shared budget.
- * Take only an eligible prefix: jumping past a replace or delete could change its meaning.
+ * Only whole eligible batches go: a remembered prefix id must never hide an unsent suffix.
  * Nothing leaves the queue until `trackUnloadWork` confirms the request was sent.
  */
 export function unloadPendingChatWork(limitBytes: number): { body: string; work: ChatWork }[] {
@@ -2125,28 +2425,24 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
         ) {
             continue;
         }
-        const ops: ChatOp[] = [];
-        for (const op of entry.ops) {
-            if (
-                op.op !== "append" &&
-                op.op !== "setText" &&
-                op.op !== "setMessage" &&
-                op.op !== "patchMessage" &&
-                op.op !== "setTranslation" &&
-                op.op !== "meta" &&
-                !(op.op === "remove" && op.ids.length === 1)
-            ) {
-                break;
-            }
-            if (ops.length === 5000) {
-                break;
-            }
-            ops.push(op);
-        }
-        if (ops.length === 0) {
+        const ops = entry.ops;
+        if (
+            ops.length === 0 ||
+            ops.length > 5000 ||
+            !ops.every(
+                (op) =>
+                    op.op === "append" ||
+                    op.op === "setText" ||
+                    op.op === "setMessage" ||
+                    op.op === "patchMessage" ||
+                    op.op === "setTranslation" ||
+                    op.op === "meta" ||
+                    (op.op === "remove" && op.ids.length === 1),
+            )
+        ) {
             continue;
         }
-        const group = sentGroup(key, entry, base, ops, ops.length === entry.ops.length ? entry.seq : 0);
+        const group = sentGroup(key, entry, base, ops, entry.groupId);
         const work = { groups: [group], orders: [] };
         const body = `{"chats":[${chatWorkBody(work).chats.join(",")}]}`;
         const bytes = encoder.encode(body).length;
@@ -2213,6 +2509,7 @@ export function createChat(
         const entry = pendingFor(ref);
         entry.create = true;
         entry.seq = nextSeq();
+        dirtyChatJournal(key, "pending");
     }
     syncSelection(chaId);
     if (options.select) {
@@ -2264,6 +2561,7 @@ export function deleteChat(ref: ChatRef) {
         pending.set(key, {
             characterId: ref.chaId,
             chatId: ref.chatId,
+            groupId: uuidv4(),
             create: false,
             resend: entry?.resend ?? null,
             ops: [{ op: "delete" }],
@@ -2484,7 +2782,7 @@ export function appendMessage(
     }
     chat.message.splice(position, 0, ...messages);
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor });
+    enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor }, { absent: true });
     return messages.map((message) => message.chatId!);
 }
 
@@ -2507,9 +2805,10 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     if (current !== undefined) {
         message.translation = clone<MessageTranslation>(current);
     }
+    const before = { value: clone(chat.message[index]) };
     chat.message[index] = message;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) });
+    enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) }, before);
 }
 
 /** A message field patch as the server takes it (`patchMessage`): fields to set and fields to remove. */
@@ -2567,6 +2866,7 @@ function prepareMessagePatch(set: unknown, unset: unknown): MessagePatch | null 
  */
 function applyMessagePatch(ref: ChatRef, chat: Chat, index: number, id: string, patch: MessagePatch) {
     const row = chat.message[index] as unknown as Record<string, unknown>;
+    const before = fieldsBefore(row, [...Object.keys(patch.set), ...patch.unset]);
     let differs = false;
     for (const key of patch.unset) {
         if (Object.hasOwn(row, key)) {
@@ -2591,7 +2891,7 @@ function applyMessagePatch(ref: ChatRef, chat: Chat, index: number, id: string, 
     if (patch.unset.length > 0) {
         op.unset = [...patch.unset] as typeof op.unset;
     }
-    enqueueLocalEdit(ref, op);
+    enqueueLocalEdit(ref, op, before);
 }
 
 /**
@@ -2627,11 +2927,12 @@ export function setMessageText(ref: ChatRef, id: string, text: string) {
         throw new Error(`No message ${id}`);
     }
     assertUnlocked(ref, [id]);
+    const before = { value: chat.message[index].data };
     if (chat.message[index].data !== text) {
         chat.message[index].data = text;
         changed(keyOf(ref.chaId, ref.chatId));
     }
-    enqueueLocalEdit(ref, { op: "setText", id, text });
+    enqueueLocalEdit(ref, { op: "setText", id, text }, before);
 }
 
 /**
@@ -2660,6 +2961,8 @@ export function setMessageTranslation(
     if (value !== null && value.sourceHash !== translationSourceHash(message.data)) {
         return false;
     }
+    const before: JournalBefore =
+        message.translation === undefined ? { absent: true } : { value: clone(message.translation) };
     if (value === null) {
         delete message.translation;
     } else {
@@ -2667,7 +2970,7 @@ export function setMessageTranslation(
     }
     changed(keyOf(ref.chaId, ref.chatId));
     // Never coalesced: a set lands only on a matching text, so dropping an earlier op could change the result.
-    enqueueLocalEdit(ref, { op: "setTranslation", id, translation: value });
+    enqueueLocalEdit(ref, { op: "setTranslation", id, translation: value }, before);
     return true;
 }
 
@@ -2685,10 +2988,14 @@ export function removeMessages(ref: ChatRef, ids: readonly string[]) {
 /** Removes messages already checked against the locks, as one op (several need the current revision). */
 function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
     const removing = new Set(present);
+    const before =
+        removing.size === 1
+            ? { value: clone(chat.message.find((message) => removing.has(message.chatId!))!) }
+            : undefined;
     const kept = chat.message.filter((message) => !removing.has(message.chatId!));
     chat.message.splice(0, chat.message.length, ...kept);
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "remove", ids: [...removing] });
+    enqueueLocalEdit(ref, { op: "remove", ids: [...removing] }, before);
 }
 
 /**
@@ -2729,6 +3036,7 @@ export function restoreUnsentRemoval(
         return false;
     }
     entry.ops.splice(index, 1);
+    dirtyChatJournal(key, "pending");
     const restored = clone<Message[]>(messages);
     restored.forEach((message) => dropInvalidTranslation(message));
     chat.message.push(...restored);
@@ -2834,6 +3142,7 @@ export function setChatMeta(
     if (Object.keys(changes).length === 0 && removals.length === 0) {
         return;
     }
+    const before = fieldsBefore(chat, [...Object.keys(changes), ...removals]);
     for (const [key, value] of Object.entries(changes)) {
         chat[key] = clone(value);
     }
@@ -2841,7 +3150,7 @@ export function setChatMeta(
         delete chat[key];
     }
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "meta", set: changes, unset: removals });
+    enqueueLocalEdit(ref, { op: "meta", set: changes, unset: removals }, before);
 }
 
 /**
@@ -2882,6 +3191,7 @@ export function mergeChatMeta(
     }
     const chat = requireChat(ref) as unknown as Record<string, unknown>;
     const stored = chat[key];
+    const before = fieldsBefore(chat, [key]);
     if (isPlainRecord(stored) || adding) {
         // Built from entries (never assigned by name, never through `$state.snapshot`, which drops
         // an own `__proto__`), so any entry id stays an own entry; kept values are the mirror's own.
@@ -2897,7 +3207,7 @@ export function mergeChatMeta(
     if (removed.length > 0) {
         op.mergeUnset = { [key]: removed };
     }
-    enqueueLocalEdit(ref, op);
+    enqueueLocalEdit(ref, op, before);
 }
 
 /**
@@ -3420,7 +3730,7 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
     const refused = quarantined.get(key);
     if (!refused) return false;
     const chat = heldChat(ref);
-    const entry = pendingFor(ref);
+    const entry = pendingFor(ref, true);
     const seq = nextSeq();
     if (refused.delete && !isMember(ref)) {
         if (refused.create) {
@@ -3443,6 +3753,8 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
         entry.seq = seq;
     }
     clearChatRefusal(key);
+    dirtyChatJournal(key, "pending");
+    dirtyChatJournal(key, "resend");
     return chat ? "snapshot" : "ops";
 }
 
@@ -3571,6 +3883,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
                 pending.set(key, {
                     characterId: chaId,
                     chatId,
+                    groupId: uuidv4(),
                     create: false,
                     resend: entry?.resend ?? null,
                     ops: [{ op: "delete" }],
@@ -3584,7 +3897,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
         }
         for (const chat of chatsOf(chaId)) {
             const key = keyOf(chaId, chat.id!);
-            const entry = pendingFor({ chaId, chatId: chat.id! });
+            const entry = pendingFor({ chaId, chatId: chat.id! }, true);
             const sending = inflight.get(key);
             // A delete in flight will remove the base, so the reused id needs a create after it settles.
             entry.create =
@@ -3593,6 +3906,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
                 (!chatRevisions.has(key) && !sending && !entry.resend);
             entry.ops = entry.create ? [] : [{ op: "replace", chat: projectChat(chat) }];
             entry.seq = nextSeq();
+            dirtyChatJournal(key, "pending");
         }
         // The reorder waits until the queued deletes can leave a permutation of the server's list.
         pendingOrders.set(chaId, nextSeq());
@@ -3614,9 +3928,10 @@ function restoreParkedResends(chaId: string) {
     for (const [key, { chatId, resend }] of parked ?? []) {
         const entry = pending.get(key);
         if (!entry) {
-            pending.set(key, { characterId: chaId, chatId, create: false, resend, ops: [], seq: 0 });
+            pending.set(key, { characterId: chaId, chatId, groupId: uuidv4(), create: false, resend, ops: [], seq: 0 });
         } else if (!entry.resend) {
             entry.resend = resend;
+            dirtyChatJournal(key, "resend");
         }
     }
 }
@@ -3727,6 +4042,7 @@ export function adoptCharacter(chaId: string) {
             const created = pendingFor({ chaId, chatId });
             created.create = true;
             created.seq = nextSeq();
+            dirtyChatJournal(key, "pending");
         }
     }
 }
@@ -3874,7 +4190,7 @@ export function ackCharacterDelete(chaId: string) {
         }
         if (isMember({ chaId, chatId: entry.chatId })) {
             // Its server copy is gone: the create sends the mirror's chat, which holds every change.
-            pending.set(key, { ...entry, create: true, resend: null, ops: [], seq: workSeq(key) });
+            pending.set(key, { ...entry, groupId: uuidv4(), create: true, resend: null, ops: [], seq: workSeq(key) });
         } else {
             // A delete of a chat the character's deletion removed.
             settleKey(key, workSeq(key));
@@ -3913,9 +4229,9 @@ function memberIndex(entry: Pending): number {
  * are in the mirror, per character in mirror order; sent-but-unacknowledged creates exactly as
  * sent), then every other chat with unsent work, then reorders. `creating` names characters the
  * same batch creates; chat work of characters not yet on the server waits. A chat with more unsent
- * ops than `maxOps` (the server's cap on one request) sends the first `maxOps` now and the rest
- * once those are acknowledged, on the revision they produce; its work counts as saved only when the
- * last part is. Reorders wait behind in-doubt membership resends and `holdOrders` (characters whose
+ * ops than `maxOps` (the server's cap on one request) holds the first part as a resend until the
+ * journal confirms the split. The rest follows its acknowledgement, on the revision it produces;
+ * its work counts as saved only when the last part is. Reorders wait behind in-doubt membership resends and `holdOrders` (characters whose
  * chat list still needs a read after an acknowledgement): their base may be stale.
  */
 export function takeChatWork(
@@ -3952,7 +4268,8 @@ export function takeChatWork(
             // id, so its replay can be recognized; later work follows once it is answered, in a
             // group of its own (a replay answered as a duplicate never carries it down).
             const { resend } = entry;
-            const group = sentGroup(key, entry, resend.baseRevision, resend.ops, resend.seq, resend);
+            if (resend.unconfirmed) continue;
+            const group = sentGroup(key, entry, resend.baseRevision, resend.ops, resend.groupId, resend.seq, resend);
             inflight.set(key, group);
             if (entry.create || entry.ops.length > 0 || entry.seq > resend.seq) {
                 // The newer work stays, also an empty entry whose newer sequence a flush may wait for.
@@ -3972,9 +4289,9 @@ export function takeChatWork(
         if (queuesDelete(entry) && base !== undefined) {
             // Delete the old incarnation alone. The recreation keeps its sequence until its own
             // create is answered, even when this deletion needs a replay or conflict recovery.
-            const group = sentGroup(key, entry, base, [{ op: "delete" }], 0);
+            const group = sentGroup(key, entry, base, [{ op: "delete" }], entry.groupId, 0);
             inflight.set(key, group);
-            pending.set(key, { ...entry, ops: [] });
+            pending.set(key, { ...entry, groupId: uuidv4(), ops: [] });
             groups.push(group);
             deletedHere.add(key);
             continue;
@@ -3992,7 +4309,7 @@ export function takeChatWork(
             return serverHolds(otherKey) || createdHere.has(otherKey);
         }).length;
         // The mirror copy already holds every queued change.
-        const group = sentGroup(key, entry, null, [{ op: "create", chat: projectChat(chat), index }]);
+        const group = sentGroup(key, entry, null, [{ op: "create", chat: projectChat(chat), index }], entry.groupId);
         inflight.set(key, group);
         pending.delete(key);
         groups.push(group);
@@ -4023,15 +4340,25 @@ export function takeChatWork(
         }
         const ops = deleting ? [{ op: "delete" } as ChatOp] : entry.ops;
         if (ops.length > maxOps) {
-            // More than one request can carry: the first part goes now with sequence 0 (settling
-            // it settles nothing), the rest stays queued behind it with the entry's sequence.
-            const group = sentGroup(key, entry, base, ops.slice(0, maxOps), 0);
-            inflight.set(key, group);
-            pending.set(key, { ...entry, ops: ops.slice(maxOps) });
-            groups.push(group);
+            // The old id must not reach the server as a prefix while its recoverable row still
+            // names the whole batch. Journal the split before sending the prefix, whose sequence
+            // settles nothing; the remainder keeps the original flush obligation.
+            pending.set(key, {
+                ...entry,
+                groupId: uuidv4(),
+                ops: ops.slice(maxOps),
+                resend: {
+                    ops: ops.slice(0, maxOps),
+                    baseRevision: base,
+                    groupId: entry.groupId,
+                    seq: 0,
+                    inDoubt: false,
+                    unconfirmed: true,
+                },
+            });
             continue;
         }
-        const group = sentGroup(key, entry, base, ops);
+        const group = sentGroup(key, entry, base, ops, entry.groupId);
         inflight.set(key, group);
         pending.delete(key);
         groups.push(group);
@@ -4082,6 +4409,7 @@ function sentGroup(
     entry: Pending,
     baseRevision: string | null,
     ops: ChatOp[],
+    groupId: string,
     seq = entry.seq,
     resend: Resend | null = null,
 ): SentChatGroup {
@@ -4093,7 +4421,7 @@ function sentGroup(
         baseRevision,
         ops,
         seq,
-        groupId: resend?.groupId ?? uuidv4(),
+        groupId,
         ...(resend ? { resent: true as const } : {}),
         ...(resend?.inDoubt ? { inDoubt: true as const } : {}),
         // The chat as it is on the server if the create landed.
@@ -4145,6 +4473,7 @@ export function rebaseChatOrders(work: ChatWork) {
         const current = orderRevisions.get(order.characterId);
         if (current !== undefined) {
             order.baseRevision = current;
+            dirtyOrderJournal(order.characterId, "sent");
         }
     }
 }
@@ -4273,13 +4602,12 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     }
     const ref = { chaId: group.characterId, chatId: group.chatId };
     const chat = heldChat(ref);
-    const firstRename = new Map<string, string>();
+    const firstRename = new Map([...renames].map(([id, values]) => [id, values[0]]));
     if (chat) {
         for (const message of chat.message) {
             const list = renames.get(message.chatId!);
             const next = list?.shift();
             if (next !== undefined && next !== message.chatId) {
-                firstRename.set(message.chatId!, next);
                 message.chatId = next;
             }
         }
@@ -4288,6 +4616,16 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const rename = (id: string) => firstRename.get(id) ?? id;
     const entry = pending.get(group.key);
     for (const op of entry?.ops ?? []) {
+        const before = beforeValues.get(op);
+        if (
+            (op.op === "setMessage" || (op.op === "remove" && op.ids.length === 1)) &&
+            before &&
+            "value" in before &&
+            isPlainRecord(before.value) &&
+            typeof before.value.chatId === "string"
+        ) {
+            before.value.chatId = rename(before.value.chatId);
+        }
         if (op.op === "setText" || op.op === "setTranslation" || op.op === "patchMessage") {
             op.id = rename(op.id);
         } else if (op.op === "setMessage") {
@@ -4298,6 +4636,7 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
             op.anchor = { after: rename(op.anchor.after) };
         }
     }
+    dirtyChatJournal(group.key, "pending");
     const streamed = streamingChats[keyOf(ref.chaId, ref.chatId)];
     if (streamed !== undefined) {
         streamed.messageId = rename(streamed.messageId);
@@ -4320,6 +4659,7 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
             pending.set(group.key, {
                 characterId: group.characterId,
                 chatId: group.chatId,
+                groupId: newer?.groupId ?? uuidv4(),
                 create: newer?.create ?? false,
                 resend: {
                     ops: group.ops,
@@ -4336,6 +4676,7 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
         pending.set(group.key, {
             characterId: group.characterId,
             chatId: group.chatId,
+            groupId: group.groupId,
             create: false,
             resend: newer?.resend ?? null,
             ops: [...group.ops, ...(newer?.ops ?? [])],
@@ -4364,7 +4705,7 @@ export function quarantineChat(
     const [chaId, chatId] = group.key.split("\u0000");
     quarantined.set(group.key, {
         reason,
-        ops: clone(ops),
+        ops: clone(ops).map((op, index) => copyOpBefore(ops[index], op)),
         create: (!chatRevisions.has(group.key) && !!entry?.create) || ops.some((op) => op.op === "create"),
         delete: !isMember({ chaId, chatId }) && ops.some((op) => op.op === "delete"),
     });
@@ -4605,7 +4946,7 @@ function reanchorGoneAppends(group: SentChatGroup, server: RemoteChat): ChatOp[]
         ops.forEach((op, index) => {
             if (op.op === "append") {
                 if ("after" in op.anchor && !present.has(op.anchor.after)) {
-                    ops[index] = { ...op, anchor: { end: true } };
+                    ops[index] = copyOpBefore(op, { ...op, anchor: { end: true } });
                     rewritten = true;
                 }
                 for (const message of op.messages) {
@@ -4621,8 +4962,8 @@ function reanchorGoneAppends(group: SentChatGroup, server: RemoteChat): ChatOp[]
     if (!reanchor(ops)) {
         return null;
     }
-    if (newer) {
-        reanchor(newer.ops);
+    if (newer && reanchor(newer.ops)) {
+        dirtyChatJournal(group.key, "pending");
     }
     return ops;
 }
@@ -4661,7 +5002,8 @@ function dropLockedEdits(
     locked: ReadonlySet<string>,
 ): { kept: ChatOp[]; dropped: boolean; waiting: boolean } {
     const newer = pending.get(group.key);
-    const kept = group.ops.filter((op) => !targetsLocked(op, locked));
+    const filtered = group.ops.filter((op) => !targetsLocked(op, locked));
+    const kept = filtered.length === group.ops.length ? group.ops : filtered;
     const newerKept = newer?.ops.filter((op) => !targetsLocked(op, locked)) ?? [];
     const dropped = kept.length < group.ops.length || (newer !== undefined && newerKept.length < newer.ops.length);
     if (!dropped) {
@@ -4675,6 +5017,7 @@ function dropLockedEdits(
     }
     if (newer) {
         newer.ops = newerKept;
+        dirtyChatJournal(group.key, "pending");
         if (newerKept.length === 0 && !newer.create && !newer.resend && kept.length === 0) {
             pending.delete(group.key);
             settleKey(group.key, newer.seq);
@@ -4700,6 +5043,7 @@ function requeueRecovered(groups: readonly SentChatGroup[]) {
             pending.set(group.key, {
                 characterId: group.characterId,
                 chatId: group.chatId,
+                groupId: group.groupId,
                 create: false,
                 resend: null,
                 ops: [...group.ops, ...(newer?.ops ?? [])],

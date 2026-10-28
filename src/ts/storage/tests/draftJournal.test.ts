@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
     checkJournalRow,
+    chatTarget,
+    orderTarget,
     createDraftJournal,
     type DraftJournal,
     type DraftJournalDeps,
@@ -1394,4 +1396,117 @@ describe("adopting orphans", () => {
         releaseHolder();
         expect(await drive(tab.journal.adoptOrphans(), 50)).toBe(1);
     });
+});
+
+// Recovery owns prior-page chat/order rows, including after orphan adoption; record rows stay writable.
+describe("chat and order rows reserved for recovery", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    it.each(["reload", "orphan adoption"] as const)(
+        "preserves previous chat and order layers through new-page writes and removals after %s",
+        async (arrival) => {
+            const h = harness();
+            const old = await started(h);
+            const chatKey = chatTarget("c1", "chat");
+            const orderKey = orderTarget("c1");
+            await old.journal.write([
+                {
+                    epoch: EPOCH,
+                    scope: "chat",
+                    target: chatKey,
+                    version: old.journal.nextVersion(),
+                    layers: {
+                        resend: {
+                            groupId: "old-sent",
+                            baseRevision: "r1",
+                            seq: 1,
+                            inDoubt: true,
+                            ops: [{ op: "setText", id: "m", text: "sent" }],
+                        },
+                        pending: {
+                            groupId: "old-pending",
+                            baseRevision: "r1",
+                            ops: [{ op: { op: "setText", id: "m", text: "pending" }, before: { value: "sent" } }],
+                        },
+                    },
+                },
+                {
+                    epoch: EPOCH,
+                    scope: "order",
+                    target: orderKey,
+                    version: old.journal.nextVersion(),
+                    layers: {
+                        sent: { baseRevision: "o1", ids: ["chat", "other"] },
+                        latest: { baseRevision: "o1", ids: ["other", "chat"] },
+                    },
+                },
+                characterWrite(old.journal.nextVersion(), { latest: latest("old record") }),
+            ]);
+            const original = await old.journal.readOwn();
+            await old.journal.close();
+            const next = await started(h, arrival === "reload" ? { storage: () => old.storage } : {});
+            if (arrival === "orphan adoption") expect(await next.journal.adoptOrphans()).toBe(3);
+            else expect(next.journal.tabId).toBe(old.journal.tabId);
+            const reserved = (await next.journal.readOwn()).filter((row) => row.scope !== "record");
+            expect(
+                reserved.map((row) => [
+                    row.scope,
+                    row.target,
+                    Object.fromEntries(Object.entries(row.layers).map(([key, layer]) => [key, layer.value])),
+                ]),
+            ).toEqual(
+                original
+                    .filter((row) => row.scope !== "record")
+                    .map((row) => [
+                        row.scope,
+                        row.target,
+                        Object.fromEntries(Object.entries(row.layers).map(([key, layer]) => [key, layer.value])),
+                    ]),
+            );
+            expect(
+                await next.journal.write([
+                    {
+                        epoch: EPOCH,
+                        scope: "chat",
+                        target: chatKey,
+                        version: next.journal.nextVersion(),
+                        layers: {
+                            resend: null,
+                            pending: {
+                                groupId: "new-page",
+                                baseRevision: "r2",
+                                ops: [
+                                    { op: { op: "setText", id: "m", text: "new page" }, before: { value: "server" } },
+                                ],
+                            },
+                            refused: { ops: [], create: false, delete: true, reason: "new page" },
+                        },
+                    },
+                    {
+                        epoch: EPOCH,
+                        scope: "order",
+                        target: orderKey,
+                        version: next.journal.nextVersion(),
+                        layers: {
+                            sent: null,
+                            latest: { baseRevision: "o2", ids: ["chat", "other"] },
+                            refused: { ids: [], reason: "new page" },
+                        },
+                    },
+                    characterWrite(next.journal.nextVersion(), { latest: latest("new record") }),
+                ]),
+            ).toEqual(["skipped", "skipped", "written"]);
+            expect((await next.journal.readOwn()).filter((row) => row.scope !== "record")).toEqual(reserved);
+            const record = (await next.journal.readOwn()).find((row) => row.scope === "record");
+            expect(record?.scope === "record" && record.layers.latest?.value).toEqual(latest("new record"));
+            await next.journal.remove([
+                { epoch: EPOCH, scope: "chat", target: chatKey, version: next.journal.nextVersion() },
+                { epoch: EPOCH, scope: "order", target: orderKey, version: next.journal.nextVersion() },
+                { epoch: EPOCH, scope: "record", target: CHARACTER, version: next.journal.nextVersion() },
+            ]);
+            expect(await next.journal.readOwn()).toEqual(reserved);
+            await next.journal.close();
+        },
+    );
 });
