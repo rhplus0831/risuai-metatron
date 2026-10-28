@@ -91,6 +91,15 @@ const summaries = () => [
     { text: "one", chatMemos: ["m0"], isImportant: false },
     { text: "two", chatMemos: ["m1"], isImportant: false },
 ];
+/** The last selection's `metrics` with the given recent and deferred summaries. */
+const lastSelection = (recent: number[], deferred?: number[]) => ({
+    lastImportantSummaries: [],
+    lastRecentSummaries: recent,
+    lastSimilarSummaries: [],
+    lastRandomSummaries: [],
+    ...(deferred ? { lastDeferredSummaries: deferred } : {}),
+});
+const storedMetrics = (ref: ChatRef) => findChat(ref)?.hypaV3Data?.metrics;
 const hypaV2Data = {
     lastMainChunkID: 1,
     mainChunks: [{ id: 1, text: "chunk", chatMemos: ["m0"], lastChatMemo: "m0" }],
@@ -232,6 +241,24 @@ describe("HypaV3Modal's summary identity after deletion", () => {
             { text: "three", isImportant: true },
             { text: "four", isImportant: false },
         ]);
+    });
+
+    it("moves the last selection's badges past a deleted summary and drops the deleted ones' badges", async () => {
+        setChatMeta(withData, {
+            hypaV3Data: { summaries: four(), categories: [], metrics: lastSelection([1, 3], [2]) },
+        });
+        const { target } = open(withData);
+        await deleteFrom(target, "two", false);
+        expect(storedSummaries(withData)).toEqual(["one", "three", "four"]);
+        expect(storedMetrics(withData)).toEqual(lastSelection([2], [1]));
+        const ready = [...target.querySelectorAll<HTMLElement>("[data-hypa-ready]")];
+        expect(ready.map((badge) => badge.closest("div.flex-col")!.querySelector("textarea")!.value)).toEqual([
+            "three",
+        ]);
+
+        await deleteFrom(target, "one", true);
+        expect(storedSummaries(withData)).toEqual(["one"]);
+        expect(storedMetrics(withData)).toEqual(lastSelection([]));
     });
 
     it("drops deleted selections after Delete after and applies a bulk action only to the surviving selection", async () => {
@@ -449,8 +476,8 @@ describe("HypaV3Modal's bulk resummary", () => {
         { text: "three", chatMemos: ["m2"], isImportant: false },
     ];
 
-    async function resummarizeFirstAndLast(initial = three()) {
-        setChatMeta(withData, { hypaV3Data: { summaries: initial, categories: [] } });
+    async function resummarizeFirstAndLast(initial = three(), metrics?: ReturnType<typeof lastSelection>) {
+        setChatMeta(withData, { hypaV3Data: { summaries: initial, categories: [], ...(metrics ? { metrics } : {}) } });
         const modal = open(withData);
         const button = (match: (button: HTMLButtonElement) => boolean) =>
             [...modal.target.querySelectorAll("button")].find(match)!;
@@ -485,6 +512,14 @@ describe("HypaV3Modal's bulk resummary", () => {
             },
         };
     }
+
+    it("drops the merged summaries' last-selection badges and keeps the others on their summaries", async () => {
+        const run = await resummarizeFirstAndLast(three(), lastSelection([1, 2], [0]));
+        await run.finish("merged");
+        run.apply();
+        expect(storedSummaries(withData)).toEqual(["merged", "two"]);
+        expect(storedMetrics(withData)).toEqual(lastSelection([1]));
+    });
 
     it("keeps a cancelled bulk resummary hidden when its pending request resolves", async () => {
         const run = await resummarizeFirstAndLast();
