@@ -16,7 +16,7 @@ import {
 import { assetExtension, assetMimeType, isActiveAssetExtension } from "../../../shared/assetMime.ts";
 import { mkdirDurable, syncDir } from "../data/durableWrite.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
-import { assetVerification, contentNameHash } from "../http/assetVerification.ts";
+import { assetVerification, contentNameHash, type AssetVerificationOptions } from "../http/assetVerification.ts";
 import {
     THUMBNAIL_VERSION,
     ThumbnailBusy,
@@ -27,6 +27,11 @@ import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
+
+export const ASSET_MISSING_PATH = "/api/assets/missing";
+export const MAX_ASSET_MISSING_NAMES = 512;
+export const MAX_ASSET_MISSING_BODY_BYTES = 64 * 1024;
 
 /**
  * Folders under `save/` that hold user files. A logical key `<namespace>/<name>` is stored at
@@ -435,6 +440,8 @@ export function registerStorageRoutes(
         thumbnails: ThumbnailService;
         /** Most records of one batch write (default `MAX_ASSET_BATCH_RECORDS`; tests lower it). */
         maxBatchRecords?: number;
+        /** Limits for awaited content verification (defaults: four hashes and 256 MiB per request). */
+        missingVerification?: Omit<AssetVerificationOptions, "signal">;
     },
 ) {
     const { savePath, auth, limiter, maintenance, thumbnails, maxBatchRecords } = arg;
@@ -863,6 +870,54 @@ export function registerStorageRoutes(
         }
         return c.json({ success: true, written });
     });
+
+    app.post(
+        ASSET_MISSING_PATH,
+        limiter,
+        async (c, next) => {
+            const denied = await auth.checkAuth(c);
+            return denied ?? next();
+        },
+        limitedBody(MAX_ASSET_MISSING_BODY_BYTES),
+        async (c) => {
+            const parsed = await readJsonBody(c);
+            if (!parsed.ok) {
+                return parsed.response;
+            }
+            const names: unknown = parsed.body.names;
+            if (
+                !Array.isArray(names) ||
+                names.length === 0 ||
+                names.length > MAX_ASSET_MISSING_NAMES ||
+                names.some(
+                    (name) =>
+                        typeof name !== "string" ||
+                        name.length === 0 ||
+                        Buffer.byteLength(name, "utf-8") > MAX_ASSET_BATCH_NAME_BYTES,
+                )
+            ) {
+                return c.json({ error: `names must be a list of 1 to ${MAX_ASSET_MISSING_NAMES} names` }, 400);
+            }
+            const asked = new Map<string, string | null>();
+            const files = new Map<string, { fullPath: string; expectedHex: string }>();
+            for (const name of names as string[]) {
+                const expectedHex = contentNameHash(name);
+                const fullPath = expectedHex === null ? null : resolveStorageKey(savePath, name);
+                asked.set(name, fullPath);
+                if (fullPath !== null && expectedHex !== null) {
+                    files.set(fullPath, { fullPath, expectedHex });
+                }
+            }
+            const present = await assetVerification.verifyFiles([...files.values()], {
+                ...arg.missingVerification,
+                signal: c.req.raw.signal,
+            });
+            c.header("Cache-Control", "no-store");
+            return c.json({
+                missing: [...asked].filter(([, file]) => file === null || !present.has(file)).map(([name]) => name),
+            });
+        },
+    );
 
     // One record per asked key, in the order asked (duplicates included), each read as the backup
     // export reads a file (no symlinks, size and bytes from one handle). A key with no storage

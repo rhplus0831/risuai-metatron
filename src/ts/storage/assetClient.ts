@@ -38,13 +38,28 @@ export const ASSET_BATCH_CLIENT_BYTES = 64 * 1024 * 1024;
 /** Most records of one `writeAssets` or `readAssets` request (the server takes up to `MAX_ASSET_BATCH_RECORDS`). */
 export const ASSET_BATCH_CLIENT_RECORDS = 500;
 
+// Server twins: server/src/routes/storage.ts.
+const ASSET_MISSING_PATH = "/api/assets/missing";
+const MAX_ASSET_MISSING_NAMES = 512;
+const MAX_ASSET_MISSING_BODY_BYTES = 64 * 1024;
+
+/** Canonical content-name hash; server twin: contentNameHash in server/src/http/assetVerification.ts. */
+export function assetContentHash(key: string): string | null {
+    return /^assets\/(?:inlay_)?([0-9a-f]{64})\.[A-Za-z0-9]+$/.exec(key)?.[1] ?? null;
+}
+
 export type AssetRequestOptions = {
     /** Aborts the pending wait and the request in flight. */
     signal?: AbortSignal;
 };
 
 /** One asset for `writeAssets`. */
-export type AssetWriteItem = { key: string; bytes: Uint8Array };
+export type AssetWriteItem = {
+    key: string;
+    bytes: Uint8Array;
+    /** SHA-256 hex computed by the caller from exactly these bytes; omitted for raw overwrites and custom ids. */
+    sha256?: string;
+};
 
 function encodedPath(key: string) {
     return Buffer.from(key, "utf-8").toString("hex");
@@ -54,7 +69,8 @@ function abortReason(signal: AbortSignal): unknown {
     return signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
 }
 
-function throwIfAborted(signal: AbortSignal | undefined) {
+/** Throws the asset request's abort reason, with an AbortError for a nullish reason. */
+export function throwIfAborted(signal: AbortSignal | undefined) {
     if (signal?.aborted) {
         throw abortReason(signal);
     }
@@ -148,6 +164,73 @@ function rethrow(error: unknown, signal: AbortSignal | undefined): never {
 }
 
 /**
+ * Returns names the server does not hold verified, checking at most 512 names and 64 KiB of JSON
+ * per request. Throws on a failed or malformed answer; an abort throws the signal's reason.
+ */
+export async function missingAssets(names: readonly string[], options: AssetRequestOptions = {}): Promise<Set<string>> {
+    const { signal } = options;
+    throwIfAborted(signal);
+    const encoder = new TextEncoder();
+    const batches: string[][] = [];
+    let batch: string[] = [];
+    const emptySize = encoder.encode(JSON.stringify({ names: [] })).byteLength;
+    let size = emptySize;
+    for (const name of names) {
+        const nameSize = encoder.encode(JSON.stringify(name)).byteLength;
+        if (emptySize + nameSize > MAX_ASSET_MISSING_BODY_BYTES) {
+            throw new Error("Asset name exceeds missing check body limit");
+        }
+        if (
+            batch.length > 0 &&
+            (batch.length >= MAX_ASSET_MISSING_NAMES || size + 1 + nameSize > MAX_ASSET_MISSING_BODY_BYTES)
+        ) {
+            batches.push(batch);
+            batch = [];
+            size = emptySize;
+        }
+        size += nameSize + (batch.length > 0 ? 1 : 0);
+        batch.push(name);
+    }
+    if (batch.length > 0) {
+        batches.push(batch);
+    }
+    const missing = new Set<string>();
+    for (const names of batches) {
+        try {
+            const res = await requestWithRetry(
+                ASSET_MISSING_PATH,
+                () => ({
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ names }),
+                }),
+                signal,
+            );
+            throwIfAborted(signal);
+            if (res.status < 200 || res.status >= 300) {
+                throw new Error("Asset missing check failed");
+            }
+            const data = await res.json();
+            throwIfAborted(signal);
+            const asked = new Set(names);
+            if (
+                !Array.isArray(data?.missing) ||
+                data.missing.some((name: unknown) => typeof name !== "string" || !asked.has(name))
+            ) {
+                throw new Error("Invalid asset missing check answer");
+            }
+            for (const name of data.missing) {
+                missing.add(name);
+            }
+        } catch (error) {
+            rethrow(error, signal);
+        }
+    }
+    throwIfAborted(signal);
+    return missing;
+}
+
+/**
  * Writes `value` under `key`, retrying as described above. Throws `"setItem Error"` for a non-2xx
  * answer and the answer's `error` for a refused one.
  */
@@ -217,7 +300,7 @@ type WriteRecord = { header: Uint8Array; bytes: Uint8Array };
 /**
  * Splits the items into request batches of at most {@link ASSET_BATCH_CLIENT_RECORDS} records and
  * {@link ASSET_BATCH_CLIENT_BYTES} record bytes, a larger single record alone. Every header is
- * encoded first, so an item the framing cannot carry throws before anything is sent.
+ * encoded first, so an item the framing cannot carry throws before any upload is sent.
  */
 function writeBatches(items: readonly AssetWriteItem[]): WriteRecord[][] {
     const batches: WriteRecord[][] = [];
@@ -262,14 +345,42 @@ function joinRecords(batch: readonly WriteRecord[]): Uint8Array {
 
 /**
  * Writes every item under its key with `POST /api/assets/write`, one batch at a time (see
- * {@link writeBatches}), each request retried as described above; the server always overwrites, and
- * a zero-length item is an empty file. Nothing is sent for an empty list. Throws `"setItem Error"`
+ * {@link writeBatches}), each request retried as described above. Canonical names with matching
+ * `sha256` skip the upload when the server holds verified bytes; any raw overwrite of the same key
+ * disables that skip for the whole call. A failed check sends everything; an abort rejects.
+ * A zero-length item is an empty file. Nothing is sent for an empty list. Throws `"setItem Error"`
  * for a non-2xx answer and the answer's `error` for a refused one, as `writeAsset` does; the
  * batches before the failing one, and possibly some of its records, stay written.
  */
 export async function writeAssets(items: readonly AssetWriteItem[], options: AssetRequestOptions = {}): Promise<void> {
     const { signal } = options;
-    for (const batch of writeBatches(items)) {
+    throwIfAborted(signal);
+    const candidates = new Set<string>();
+    const alwaysWrite = new Set<string>();
+    for (const item of items) {
+        const hash = assetContentHash(item.key);
+        if (hash !== null && item.sha256 === hash) {
+            candidates.add(item.key);
+        } else {
+            alwaysWrite.add(item.key);
+        }
+    }
+    for (const key of alwaysWrite) {
+        candidates.delete(key);
+    }
+    let uploads = items;
+    if (candidates.size > 0) {
+        try {
+            const missing = await missingAssets([...candidates], options);
+            throwIfAborted(signal);
+            uploads = items.filter((item) => !candidates.has(item.key) || missing.has(item.key));
+        } catch (error) {
+            throwIfAborted(signal);
+            console.warn("Asset missing check failed; uploading all assets", error);
+        }
+    }
+    throwIfAborted(signal);
+    for (const batch of writeBatches(uploads)) {
         const body = joinRecords(batch);
         const da = await requestWithRetry(
             ASSET_BATCH_WRITE_PATH,

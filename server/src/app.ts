@@ -93,7 +93,7 @@ import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
 import { registerResourceRoutes } from "./routes/resources.ts";
-import { registerStorageRoutes } from "./routes/storage.ts";
+import { ASSET_MISSING_PATH, registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
 import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
@@ -665,8 +665,8 @@ export function createServerContext(options: {
     const limitBody = limitedBody(MAX_BODY_BYTES);
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
-    // message search's, the memory task start's, the checkpoint POSTs' and policy PUT's, and the token routes cap their bodies themselves
-    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB).
+    // message search's, the memory task start's, the checkpoint POSTs' and policy PUT's, the token routes', and the missing asset check's bodies are capped by those routes
+    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB, 64 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -685,6 +685,7 @@ export function createServerContext(options: {
                     route.startsWith(`${CHAT_CHECKPOINTS_PATH}/`) ||
                     route === TOKEN_COUNT_PATH ||
                     route === TOKEN_ENCODE_PATH ||
+                    route === ASSET_MISSING_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||

@@ -12,6 +12,7 @@ import {
 } from "../model/types";
 import { createAlertMock } from "./alertMock";
 import type { ChatRef } from "../storage/chatStore.svelte";
+import { createAssetClientMock } from "../storage/tests/assetClientMock";
 import { createServerAuthMock } from "../storage/tests/serverAuthMock";
 import { createServerCommandsMock } from "../process/tests/serverCommandsMock";
 
@@ -49,18 +50,9 @@ export function createBootMock<K extends keyof BootModules>(
         serverAuth: createServerAuthMock(),
         alert: createAlertMock(),
         serverCommands: createServerCommandsMock(),
-        assetClient: {
-            writeAsset: vi.fn<BootModules["assetClient"]["writeAsset"]>(),
+        assetClient: createAssetClientMock({
             readAsset: vi.fn<BootModules["assetClient"]["readAsset"]>(async () => Buffer.from([137, 80, 78, 71])),
-            writeAssets: vi.fn<BootModules["assetClient"]["writeAssets"]>(),
-            readAssets: vi.fn<BootModules["assetClient"]["readAssets"]>(),
-            MAX_ASSET_ATTEMPTS: 8,
-            BASE_RETRY_DELAY_MS: 1000,
-            MAX_BACKOFF_MS: 30000,
-            MAX_RETRY_AFTER_MS: 60000,
-            ASSET_BATCH_CLIENT_BYTES: 64 * 1024 * 1024,
-            ASSET_BATCH_CLIENT_RECORDS: 500,
-        },
+        }),
         resourceSync: {
             seedResources: vi.fn<BootModules["resourceSync"]["seedResources"]>(),
             heldRecordSnapshot: vi.fn<BootModules["resourceSync"]["heldRecordSnapshot"]>(),

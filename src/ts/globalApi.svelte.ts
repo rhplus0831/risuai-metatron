@@ -25,6 +25,9 @@ import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storag
 import {
     readAsset,
     readAssets,
+    missingAssets,
+    assetContentHash,
+    throwIfAborted,
     writeAsset,
     writeAssets,
     type AssetRequestOptions,
@@ -360,12 +363,13 @@ export async function readImage(data: string) {
 }
 
 /**
- * Saves an asset file with the given data, custom ID, and file name.
+ * Saves an asset file, skipping a canonical upload when the server already holds verified bytes.
+ * A failed check uploads normally; custom ids always write.
  *
  * @param {Uint8Array} data - The data of the asset file.
  * @param {string} [customId=''] - The custom ID for the asset file.
  * @param {string} [fileName=''] - The name of the asset file.
- * @param {AssetRequestOptions} [options] - `signal` aborts the write (and its retries, `writeAsset`).
+ * @param {AssetRequestOptions} [options] - `signal` aborts the check, write, and retries with its reason.
  * @returns {Promise<string>} - A promise that resolves to the path of the saved asset file.
  */
 export async function saveAsset(
@@ -375,6 +379,18 @@ export async function saveAsset(
     options: AssetRequestOptions = {},
 ) {
     const form = await assetKey(data, customId, fileName);
+    if (customId === "" && assetContentHash(form) !== null) {
+        try {
+            const missing = await missingAssets([form], options);
+            throwIfAborted(options.signal);
+            if (!missing.has(form)) {
+                return form;
+            }
+        } catch (error) {
+            throwIfAborted(options.signal);
+            console.warn("Asset missing check failed; uploading asset", error);
+        }
+    }
     await writeAsset(form, data, options);
     return form;
 }
@@ -401,7 +417,7 @@ export async function assetKey(data: Uint8Array, customId: string = "", fileName
     return `assets/${id}.${fileExtension}`;
 }
 
-/** Writes each item under its key with the batch route (`writeAssets`: one request per batch, retried). */
+/** Checks canonical items with matching `sha256`, then batches uploads through `writeAssets` with retries. */
 export async function saveAssetBatch(
     items: readonly AssetWriteItem[],
     options: AssetRequestOptions = {},

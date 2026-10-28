@@ -7,6 +7,31 @@ import { STORAGE_READ_FLAGS } from "./recordStream.ts";
 type AssetStat = Pick<BigIntStats, "size" | "mtimeNs" | "ino" | "dev">;
 type Verification = AssetStat & { ok: boolean };
 type AssetHasher = (handle: FileHandle) => Promise<string>;
+type BoundedAssetHasher = (handle: FileHandle, size: number, signal?: AbortSignal) => Promise<string | null>;
+
+export type AssetVerificationOptions = {
+    hasher?: BoundedAssetHasher;
+    concurrency?: number;
+    readBudgetBytes?: number;
+    signal?: AbortSignal;
+};
+
+/** Reads at most the reserved bytes, even if the open file grows while it is being hashed. */
+async function hashBoundedHandle(handle: FileHandle, size: number, signal?: AbortSignal): Promise<string | null> {
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(Math.min(size, 64 * 1024));
+    let offset = 0;
+    while (offset < size) {
+        signal?.throwIfAborted();
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
+        if (bytesRead === 0) {
+            return null;
+        }
+        hash.update(buffer.subarray(0, bytesRead));
+        offset += bytesRead;
+    }
+    return hash.digest("hex");
+}
 
 /** Only canonical SHA-256 content names with an alphanumeric extension can become immutable. */
 export function contentNameHash(key: string): string | null {
@@ -50,6 +75,7 @@ export async function hashAssetFile(
 export class AssetVerification {
     private readonly entries = new Map<string, Verification>();
     private readonly pending = new Map<string, { expectedHex: string; generation: number }>();
+    private readonly awaited = new Map<string, { generation: number; users: number }>();
     private readonly hasher: AssetHasher;
     private readonly maxPending: number;
     private readonly maxEntries: number;
@@ -83,11 +109,127 @@ export class AssetVerification {
     }
 
     private bumpGeneration(file: string): void {
-        // Only pending paths need a counter: no asynchronous result outlives its queue entry.
+        // Keep counters only while an asynchronous result can still be used.
         const pending = this.pending.get(file);
         if (pending) {
             pending.generation += 1;
         }
+        const awaited = this.awaited.get(file);
+        if (awaited) {
+            awaited.generation += 1;
+        }
+    }
+
+    /** Fresh-stat verification, reserving unknown files' read budgets in input order. */
+    async verifyFiles(
+        files: readonly { fullPath: string; expectedHex: string }[],
+        options: AssetVerificationOptions = {},
+    ): Promise<Set<string>> {
+        const { concurrency = 4, readBudgetBytes = 256 * 1024 * 1024, hasher = hashBoundedHandle, signal } = options;
+        if (
+            !Number.isSafeInteger(concurrency) ||
+            concurrency < 1 ||
+            !Number.isSafeInteger(readBudgetBytes) ||
+            readBudgetBytes < 0
+        ) {
+            throw new TypeError("Invalid asset verification limits");
+        }
+        let remaining = BigInt(readBudgetBytes);
+        const active = new Set<Promise<void>>();
+        const results = new Map<
+            string,
+            { tracker: { generation: number; users: number }; verifiedGeneration?: number }
+        >();
+        try {
+            for (const { fullPath, expectedHex } of files) {
+                signal?.throwIfAborted();
+                if (active.size >= concurrency) {
+                    await Promise.race(active);
+                    signal?.throwIfAborted();
+                }
+                const file = path.resolve(fullPath);
+                if (results.has(file)) {
+                    continue;
+                }
+                const tracker = this.awaited.get(file) ?? { generation: 0, users: 0 };
+                tracker.users += 1;
+                this.awaited.set(file, tracker);
+                const result: { tracker: typeof tracker; verifiedGeneration?: number } = { tracker };
+                results.set(file, result);
+                const generation = tracker.generation;
+                let handle: FileHandle | null = null;
+                try {
+                    handle = await fs.open(file, STORAGE_READ_FLAGS);
+                    const stat = await handle.stat({ bigint: true });
+                    if (!stat.isFile() || stat.size === 0n || generation !== tracker.generation) {
+                        continue;
+                    }
+                    const known = this.lookupVerification(file, stat);
+                    if (known === "mismatch") {
+                        continue;
+                    }
+                    if (known === "verified") {
+                        const current = await fs.lstat(file, { bigint: true });
+                        if (current.isFile() && sameFile(stat, current) && generation === tracker.generation) {
+                            result.verifiedGeneration = generation;
+                        }
+                        continue;
+                    }
+                    if (stat.size > remaining) {
+                        continue;
+                    }
+                    remaining -= stat.size;
+                    signal?.throwIfAborted();
+                    const opened = handle;
+                    handle = null;
+                    const task = (async () => {
+                        try {
+                            const hashHex = await hasher(opened, Number(stat.size), signal);
+                            const after = await opened.stat({ bigint: true });
+                            const current = await fs.lstat(file, { bigint: true });
+                            if (
+                                hashHex === null ||
+                                !sameFile(stat, after) ||
+                                !current.isFile() ||
+                                !sameFile(stat, current) ||
+                                generation !== tracker.generation ||
+                                signal?.aborted
+                            ) {
+                                return;
+                            }
+                            const ok = hashHex === expectedHex;
+                            this.recordVerification(file, stat, ok);
+                            if (ok) {
+                                result.verifiedGeneration = tracker.generation;
+                            }
+                        } catch {
+                            // An unreadable or changing file is missing; its upload can repair it.
+                        } finally {
+                            await opened.close().catch(() => {});
+                        }
+                    })();
+                    active.add(task);
+                    void task.then(() => active.delete(task));
+                } catch {
+                    // Missing or unopenable files are missing, including symlinks.
+                } finally {
+                    await handle?.close().catch(() => {});
+                }
+            }
+        } finally {
+            await Promise.all(active);
+            for (const [file, { tracker }] of results) {
+                if (--tracker.users === 0) {
+                    this.awaited.delete(file);
+                }
+            }
+        }
+        signal?.throwIfAborted();
+        return new Set(
+            [...results]
+                .filter(([, result]) => result.verifiedGeneration === result.tracker.generation)
+                .map(([file]) => file),
+        );
     }
 
     /** False means the queue is full; the next request can try again. Accepted paths are deduplicated. */

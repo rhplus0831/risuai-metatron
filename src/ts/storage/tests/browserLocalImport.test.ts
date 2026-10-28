@@ -90,15 +90,17 @@ vi.mock("../serverAuth", () => ({
     getNodeServerProxyAuth: async () => "signed-token",
 }));
 
-vi.mock("../assetClient", () => ({
-    writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
-        assets.set(key, new Uint8Array(value));
+vi.mock("../assetClient", async () =>
+    (await import("./assetClientMock")).createAssetClientMock({
+        writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
+            assets.set(key, new Uint8Array(value));
+        }),
+        readAsset: vi.fn(async (key: string) => {
+            const bytes = assets.get(key);
+            return bytes ? Buffer.from(bytes) : null;
+        }),
     }),
-    readAsset: vi.fn(async (key: string) => {
-        const bytes = assets.get(key);
-        return bytes ? Buffer.from(bytes) : null;
-    }),
-}));
+);
 
 vi.mock("../../globalApi.svelte", () => ({
     downloadFile: vi.fn(),

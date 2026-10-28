@@ -1,5 +1,5 @@
 import { assetKey, loadAssets, saveAsset, saveAssetBatch } from "../globalApi.svelte";
-import { ASSET_BATCH_CLIENT_BYTES, ASSET_BATCH_CLIENT_RECORDS } from "./assetClient";
+import { ASSET_BATCH_CLIENT_BYTES, ASSET_BATCH_CLIENT_RECORDS, assetContentHash } from "./assetClient";
 
 /**
  * Yields one completed batch in key order while prefetching the next (200 keys by default).
@@ -222,7 +222,7 @@ function isAsyncIterable<T>(value: Iterable<T> | AsyncIterable<T>): value is Asy
 const keyEncoder = new TextEncoder();
 
 /** A loaded item waiting for its batch: `bytes` null for a repeat of a hash key already batched. */
-type LoadedAsset = { index: number; key: string; bytes: Uint8Array | null; size: number };
+type LoadedAsset = { index: number; key: string; bytes: Uint8Array | null; size: number; sha256?: string };
 
 /**
  * Saves `items` and resolves to their keys in item order (the key `saveAsset` would give each). An
@@ -326,7 +326,9 @@ export async function saveAssets(
         open = open.slice(count);
         openRecords -= records;
         openBytes -= bytes;
-        const writes = batch.flatMap((entry) => (entry.bytes ? [{ key: entry.key, bytes: entry.bytes }] : []));
+        const writes = batch.flatMap((entry) =>
+            entry.bytes ? [{ key: entry.key, bytes: entry.bytes, sha256: entry.sha256 }] : [],
+        );
         writing = (writes.length > 0 ? saveAssetBatch(writes, signal ? { signal } : undefined) : Promise.resolve())
             .then(
                 () => {
@@ -370,7 +372,9 @@ export async function saveAssets(
                     }
                     // The record's framing: u32 name length, the UTF-8 name, u32 data length.
                     const size = 8 + keyEncoder.encode(key).byteLength + data.byteLength;
-                    open.push({ index, key, bytes: data, size });
+                    // assetKey already hashed these bytes; custom ids never attest to their content.
+                    const sha256 = item.customId ? undefined : (assetContentHash(key) ?? undefined);
+                    open.push({ index, key, bytes: data, size, sha256 });
                     openRecords += 1;
                     openBytes += size;
                 }

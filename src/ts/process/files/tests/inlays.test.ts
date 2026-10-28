@@ -28,15 +28,17 @@ vi.mock("../../../storage/serverAuth", () => ({
     },
 }));
 
-vi.mock("../../../storage/assetClient", () => ({
-    writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
-        assets.set(key, new Uint8Array(value));
+vi.mock("../../../storage/assetClient", async () =>
+    (await import("../../../storage/tests/assetClientMock")).createAssetClientMock({
+        writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
+            assets.set(key, new Uint8Array(value));
+        }),
+        readAsset: vi.fn(async (key: string) => {
+            const bytes = assets.get(key);
+            return bytes ? Buffer.from(bytes) : null;
+        }),
     }),
-    readAsset: vi.fn(async (key: string) => {
-        const bytes = assets.get(key);
-        return bytes ? Buffer.from(bytes) : null;
-    }),
-}));
+);
 
 vi.mock("uuid", () => ({ v4: vi.fn(() => "test-uuid-1234") }));
 vi.mock(import("src/ts/media"), () => ({ getImageType: vi.fn() }));
