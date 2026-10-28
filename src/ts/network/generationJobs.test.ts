@@ -874,21 +874,13 @@ describe("the event dispatcher and the resume", () => {
         expect(chatStageOf(get(jobStages), ref)).toBeNull();
     });
 
-    it("drops only the released job's presentation stage, including a job resumed from saved generations", async () => {
+    it("drops only the released job's presentation stage, including a followed job's", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         transport.rememberGenerationJob(ref, "resumed");
-        stubs.fetch.mockResolvedValueOnce(
-            json(200, {
-                jobId: "resumed",
-                kind: "send",
-                characterId: ref.chaId,
-                chatId: ref.chatId,
-                epoch: EPOCH,
-                state: "running",
-            }),
+        const follow: ReturnType<Transport["followGenerationJob"]> = transport.followGenerationJob("resumed", (event) =>
+            transport.applyGenerationEvent("resumed", ref, event, follow),
         );
-        const follows = await transport.resumeSavedGenerations();
         try {
             stubs.auth[0].resolve("jwt");
             await vi.advanceTimersByTimeAsync(0);
@@ -904,7 +896,7 @@ describe("the event dispatcher and the resume", () => {
             expect(chatStageOf(get(jobStages), ref)).toBeNull();
             expect([...get(jobStages)]).toEqual([["other-job", { chatKey: "other\u0000chat", stage: "memory" }]]);
         } finally {
-            follows.forEach((follow) => follow.close());
+            follow.close();
         }
     });
 
@@ -1446,61 +1438,6 @@ describe("the event dispatcher and the resume", () => {
             ["j1", follow],
         ]);
         expect(stubs.endJobChannel).toHaveBeenCalledWith("j1");
-    });
-
-    it("attaches again to the saved jobs the server still knows in this epoch, forgetting the others", async () => {
-        transport.rememberGenerationJob({ chaId: "c", chatId: "k" }, "known");
-        transport.rememberGenerationJob({ chaId: "c", chatId: "j" }, "gone");
-        transport.rememberGenerationJob({ chaId: "d", chatId: "q" }, "old-epoch");
-        stubs.fetch.mockImplementation(async (path) => {
-            if (path.startsWith("/api/generations/known")) {
-                return json(200, {
-                    jobId: "known",
-                    kind: "send",
-                    characterId: "c",
-                    chatId: "k",
-                    epoch: EPOCH,
-                    state: "running",
-                });
-            }
-            if (path.startsWith("/api/generations/old-epoch")) {
-                return json(200, {
-                    jobId: "old-epoch",
-                    kind: "send",
-                    characterId: "d",
-                    chatId: "q",
-                    epoch: "other",
-                    state: "running",
-                });
-            }
-            return json(404, { error: "Generation not found" });
-        });
-        const seen: [string, unknown, string][] = [];
-        const follows = await transport.resumeSavedGenerations((jobId, target, event) =>
-            seen.push([jobId, target, event.type]),
-        );
-        expect(follows).toHaveLength(1);
-        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "known" });
-        stubs.auth[0].resolve("jwt");
-        await flush();
-        const [socket] = FakeSocket.instances;
-        expect(socket.url).toContain("/api/generations/known/ws");
-        socket.open();
-        const chunk = {
-            type: "chunk",
-            epoch: EPOCH,
-            messageId: "r",
-            generationId: "g",
-            seq: 1,
-            base: 0,
-            keep: 0,
-            text: "t",
-        };
-        socket.message(chunk);
-        expect(stubs.applyServerGenerationChunk).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, "known", chunk);
-        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
-        expect(seen).toEqual([["known", { chaId: "c", chatId: "k" }, "chunk"]]);
-        follows[0].close();
     });
 });
 

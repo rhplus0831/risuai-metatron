@@ -142,7 +142,6 @@ export function createGenerationJobsMock(overrides: Partial<GenerationJobsModule
         ),
         applyGenerationEvent: vi.fn<GenerationJobsModule["applyGenerationEvent"]>(),
         releaseGenerationJob: vi.fn<GenerationJobsModule["releaseGenerationJob"]>(),
-        resumeSavedGenerations: vi.fn<GenerationJobsModule["resumeSavedGenerations"]>(async () => []),
     } satisfies GenerationJobsModule;
     return { ...defaults, ...overrides };
 }

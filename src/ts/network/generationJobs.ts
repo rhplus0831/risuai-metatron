@@ -124,7 +124,7 @@ export function noteChannelCallbacks(count: number) {
  * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
  * owner socket, plus `applyGenerationEvent`, which mirrors a job's events into the chat module and
  * the save loop without any outgoing write. The tab's `clientId` and its jobs (one per chat) are
- * kept in `sessionStorage`, so a reloaded tab can attach again (`resumeSavedGenerations`). Its
+ * kept in `sessionStorage`, so boot can resume through `resumeServerJobs` and `followJobToEnd`. Its
  * callers are the server command and send jobs of `process/serverCommands.ts` (the only generation
  * path).
  */
@@ -1203,29 +1203,4 @@ export function releaseGenerationJob(jobId: string) {
     liveJobs.delete(jobId);
     busyJobs.delete(jobId);
     notifyPluginWork();
-}
-
-/**
- * Attaches again to this tab's saved jobs (after a reload): each one the server still knows is
- * followed and its events applied; an unknown one is forgotten. Returns the follows started.
- */
-export async function resumeSavedGenerations(
-    onEvent?: (jobId: string, ref: ChatRef, event: GenerationEvent) => void,
-): Promise<GenerationFollow[]> {
-    const follows: GenerationFollow[] = [];
-    for (const jobId of Object.values(readSavedJobs())) {
-        const status = await readGenerationJob(jobId);
-        if (!status || status.epoch !== getResourceEpoch()) {
-            forgetGenerationJob(jobId);
-            continue;
-        }
-        const ref = { chaId: status.characterId, chatId: status.chatId };
-        // The follow is the channel's transport: its answers go out on the job's current socket.
-        const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
-            applyGenerationEvent(jobId, ref, event, follow);
-            onEvent?.(jobId, ref, event);
-        });
-        follows.push(follow);
-    }
-    return follows;
 }

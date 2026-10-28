@@ -83,13 +83,6 @@ The Job Protocol plan's D6 said a negotiated tab's chat is free within `OWNER_SI
 **Why it matters:** a user waiting on an absent owner's chat can wait longer than the documented absence wait suggests.
 **Suggested handling:** scope any stated bound to a dispatched callback of the job itself; if the newer-job case matters, give queued roots of an absent client the job-level absence deadline too.
 
-### resumeSavedGenerations has no product caller
-
-`src/ts/network/generationJobs.ts` exports `resumeSavedGenerations` (~:1176), but only tests call it (`generationJobs.test.ts` ~:723 and ~:1311, plus `tests/generationJobsMock.ts`). Boot resumes through `resumeServerJobs` (`src/ts/process/serverCommands.ts`, called from `src/ts/bootstrap.ts`). Unlike that path it does not handle a kept outcome (`GenerationStatus.kept`), and the module comment near :127 still names it as the reload path. Found 2026-10-28 during the Job Protocol receipt store (Slice 1).
-
-**Why it matters:** its tests protect a path the app no longer uses, and the stale comment can lead later job-resume work to edit the wrong function.
-**Suggested handling:** confirm the caller before touching tab job resume; remove the export and its tests, or point the comment at `resumeServerJobs`.
-
 ## Display transform
 
 ### Budget-refused handler rows stay raw
