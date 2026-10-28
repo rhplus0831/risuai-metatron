@@ -103,7 +103,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
     afterAll(() => {
         vi.restoreAllMocks();
     });
-    afterEach(closeServer);
+    afterEach(async () => {
+        await closeServer();
+        vi.useRealTimers();
+    });
 
     async function listen() {
         server = createTestServer({ password: "pw", generationRunner: runner });
@@ -247,6 +250,154 @@ describe("generation jobs over HTTP and WebSocket", () => {
             (event as { messages?: { after: string | null; message: { chatId: string; data: string } }[] }).messages ??
             []
         ).map((row) => [row.message.chatId, row.after, row.message.data]);
+
+    describe("named chat job stops", () => {
+        const lookup = (clientId = "other") =>
+            request(`/api/generations/current?characterId=c&chatId=k&clientId=${clientId}`, {}, { epoch: null });
+        const stop = (jobId: string, clientId = "other", options: { epoch?: string | null; jwt?: string } = {}) =>
+            request("/api/generations/stop", json({ ...ref, jobId, clientId }), options);
+        const running = () =>
+            new Promise<RunningJob>((resolve) => {
+                step((job) => resolve(job));
+            });
+        const controlledClock = () =>
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+
+        it("looks up a command without locks without granting another client attachment or callback answers", async () => {
+            controlledClock();
+            await listen();
+            const created = await create({
+                kind: "command",
+                context: await context(),
+                clientId: "tab",
+                command: { type: "button", data: "" },
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const jobId = created.body.jobId as string;
+            const job = await running();
+            job.emit({ type: "stage", stage: "preparing" });
+            expect(server.context.generationJobs.streamingSnapshot()).toEqual([]);
+            expect(job.ownerAttached()).toBe(false);
+            const found = await lookup();
+            expect(found.status).toBe(200);
+            expect(await found.json()).toEqual({ jobId, kind: "command", owned: false, stage: "preparing" });
+            expect(job.ownerAttached()).toBe(false);
+            expect(await (await lookup("tab")).json()).toMatchObject({ jobId, owned: true });
+
+            const owner = await follow(jobId);
+            let outcome: CallbackResult | undefined;
+            const callback = job.channel.callback("editoutput", { text: "original" }).then((result) => {
+                outcome = result;
+                return result;
+            });
+            await owner.fence();
+            const question = owner.events.find((event) => event.type === "callback");
+            expect(question).toBeDefined();
+            const foreign = await follow(jobId, { clientId: "other" });
+            try {
+                if (foreign.ws.readyState === WsClient.OPEN) {
+                    foreign.ws.send(
+                        JSON.stringify({ type: "answer", id: question!.id, outcome: "answered", value: "foreign" }),
+                    );
+                    await foreign.fence();
+                }
+                expect(foreign.ws.readyState).not.toBe(WsClient.OPEN);
+                expect(foreign.events).toEqual([]);
+                expect(outcome).toBeUndefined();
+            } finally {
+                foreign.ws.close();
+            }
+            owner.ws.send(JSON.stringify({ type: "answer", id: question!.id, outcome: "answered", value: "owner" }));
+            expect(await callback).toMatchObject({ outcome: "answered", value: "owner" });
+            await stop(jobId);
+            await owner.closed;
+        });
+
+        it("refuses a superseded job id and returns idle after the named job ends", async () => {
+            controlledClock();
+            await listen();
+            const first = await createOk();
+            const firstJob = await running();
+            const named = (await (await lookup()).json()) as { jobId: string };
+            firstJob.emit({ type: "done", revision: firstJob.context.chatRevision });
+            step(() => "end" as never);
+            await Promise.all(runners);
+            const replacement = await createOk();
+            const nextJob = await running();
+            expect(named.jobId).toBe(first);
+            const changed = await stop(named.jobId);
+            expect(changed.status).toBe(409);
+            expect(await changed.json()).toEqual({ error: "jobChanged" });
+            expect(nextJob.signal.aborted).toBe(false);
+            expect(await (await lookup()).json()).toMatchObject({ jobId: replacement });
+
+            // The confirmed job can finish while the dialog is open; the late stop aborts nothing.
+            nextJob.emit({ type: "done", revision: nextJob.context.chatRevision });
+            step(() => "end" as never);
+            await Promise.all(runners);
+            const idle = await stop(replacement);
+            expect(idle.status).toBe(404);
+            expect(await idle.json()).toEqual({ error: "idle" });
+            expect(nextJob.signal.aborted).toBe(false);
+            const empty = await lookup();
+            expect(empty.status).toBe(404);
+            expect(await empty.json()).toEqual({ error: "idle" });
+        });
+
+        it("requires a JWT for lookup and stop and refuses a stale stop epoch without aborting", async () => {
+            controlledClock();
+            await listen();
+            const jobId = await createOk();
+            const job = await running();
+            const unsignedLookup = await fetch(`${base}/api/generations/current?characterId=c&chatId=k&clientId=other`);
+            expect(unsignedLookup.status).toBeGreaterThanOrEqual(400);
+            expect(unsignedLookup.status).toBeLessThan(500);
+            const unsigned = await fetch(`${base}/api/generations/stop`, {
+                ...json({ ...ref, jobId, clientId: "other" }),
+                headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+            });
+            expect(unsigned.status).toBeGreaterThanOrEqual(400);
+            expect(unsigned.status).toBeLessThan(500);
+            const stale = await stop(jobId, "other", { epoch: "stale-epoch" });
+            expect(stale.status).toBe(412);
+            expect(job.signal.aborted).toBe(false);
+        });
+
+        it("leaves an owner's stop unattributed even if another client stops it again during abort grace", async () => {
+            controlledClock();
+            await listen();
+            const recorded = vi.spyOn(server.context.diagnostics, "record");
+            const jobId = await createOk();
+            let release!: () => void;
+            const hold = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const entered = new Promise<RunningJob>((resolve) =>
+                step(async (job) => {
+                    resolve(job);
+                    await hold;
+                }),
+            );
+            const job = await entered;
+            try {
+                expect((await stop(jobId, "tab")).status).toBe(200);
+                expect(job.signal.aborted).toBe(true);
+                expect((await stop(jobId, "other")).status).toBe(200);
+            } finally {
+                release();
+            }
+            await server.context.generationJobs.drain();
+            const terminal = server.context.generationJobs.status(jobId, "tab")?.terminal;
+            expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+            expect(terminal).not.toHaveProperty("abortedBy");
+            const ends = recorded.mock.calls
+                .map(([event]) => event)
+                .filter((event) => event.kind === "job" && event.phase === "error");
+            expect(ends).toHaveLength(1);
+            expect(ends[0]).not.toHaveProperty("stoppedBy");
+        });
+    });
 
     it("validates the body and needs a JWT (never the password) on every route", async () => {
         await listen();

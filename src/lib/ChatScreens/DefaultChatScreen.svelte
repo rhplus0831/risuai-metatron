@@ -64,10 +64,15 @@
     import { editChatSync } from "../../ts/storage/chatEdits";
     import { getCharImage } from "../../ts/characters";
     import { sendChat } from "../../ts/process/index.svelte";
-    import { chatStatusKey, generatingChatKeys, isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import {
+        chatStatusKey,
+        generatingChatKeys,
+        foreignJobChatKeys,
+        isChatBusy,
+    } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
-    import { followedJobs, followedJobsOf } from "src/ts/process/serverCommands";
+    import { followedJobs, followedJobsOf, stopChatJob } from "src/ts/process/serverCommands";
     import { jobStages, chatStageOf } from "src/ts/process/jobStages";
     import { abortGenerationJob } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
@@ -661,6 +666,10 @@
     const sendAborts = createSendAborts();
     // Stop shows for this screen's send in the selected chat or any followed job of it.
     const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
+    const foreignStoppable = $derived.by(() => {
+        const ref = currentChatRef();
+        return !stoppable && ref !== null && foreignJobChatKeys().has(chatStatusKey(ref));
+    });
     // The selected chat's own job stage.
     const processStage = $derived.by(() => {
         const ref = currentChatRef();
@@ -1176,6 +1185,20 @@
                             style:height={inputHeight}
                         >
                             <Send />
+                        </button>
+                    {/if}
+                    {#if foreignStoppable}
+                        <button
+                            aria-label={language.serverJob.stopOther.label}
+                            title={language.serverJob.stopOther.label}
+                            class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-darkbutton transition-colors"
+                            onclick={() => {
+                                const ref = currentChatRef();
+                                if (ref) void stopChatJob(ref);
+                            }}
+                            style:height={inputHeight}
+                        >
+                            <div class="loadmove"></div>
                         </button>
                     {/if}
                     {#if currentCharacter?.chaId !== "§playground"}

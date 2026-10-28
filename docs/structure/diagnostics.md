@@ -50,6 +50,10 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `server/src/diagnostics/journal.ts` `createDiagnosticsJournal`: `record`, `recent`,
   `state`, `start`, `writeState`, `close`, `saveReport`, `saveShare`, `commitShare`, `discardShare`,
   `removeShares`, `removeAllShares`, `listShares`, `eventsFor`.
+  A `job` error end from an explicit chat stop by another client includes the content-free
+  `stoppedBy: "otherClient"`, retained by the journal and report projection. Its reason stays
+  `aborted`: `isJobFailureEvent` excludes all user aborts, including these, from
+  `recentJobFailures`; support-share failure summaries are unchanged.
   Events are `http`, `job`, `request`, `runtime`, `lifecycle`, and `push`; HTTP events record
   only failures or responses over 5 s, with a registered route template. Server `push` events
   (`server/src/push/pushService.ts`, through `recordSafely`, so a throwing recorder never changes
@@ -174,7 +178,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
 - `state.json` is replaced atomically: checked version and build id (`app.build`, from
   `server/src/buildInfo.ts` `readServerBuildInfo`)/runtime, uptime, history
   settings/stats, journal bytes/failures, worker counters, live jobs, and last 20
-  non-owner-abort failures. Writes occur at creation, every 10 minutes, within 5 s
+  non-abort failures. Writes occur at creation, every 10 minutes, within 5 s
   of an error, on fatal fault, and after admitted work drains at disposal.
 - `reports/<UTC stamp>-<8 hex>.txt`: newest 50 matching regular files retained;
   the new save survives a prune failure. `shared/<UTC stamp>-job-<id>.json` or

@@ -6,7 +6,8 @@ import type { ChatPatchBody } from "./resources.ts";
 /**
  * The generation job contract: `POST /api/generations` creates a job for one chat, its owner (the
  * tab's `clientId`) follows it over `/api/generations/:id/ws`, and `DELETE /api/generations/:id`
- * aborts it. One chat has at most one running job.
+ * aborts it. Any authenticated tab can read `/api/generations/current` and explicitly stop that
+ * chat's named job through `/api/generations/stop`. One chat has at most one running job.
  */
 
 export type GenerationKind = "send" | "continue" | "reroll" | "group" | "preview" | "previewPrompt" | "command";
@@ -142,6 +143,18 @@ export type GenerationCancelBody = { requestId: string; clientId: string };
 export type GenerationCancelled =
     | { state: "cancelled" }
     | { state: "aborted" | "ended"; jobId: string; owned: boolean; status: GenerationStatus | null };
+
+/** The chat's running job, without attaching or granting access to its channel. */
+export type GenerationCurrent = {
+    jobId: string;
+    kind: GenerationKind;
+    owned: boolean;
+    stage?: GenerationStage;
+    sequence?: Pick<GenerationSequence, "total" | "sent">;
+};
+
+/** Stops only the named job while it still holds this chat; clientId is attribution, not authority. */
+export type GenerationStopBody = { characterId: string; chatId: string; jobId: string; clientId: string };
 
 /** 409: the chat has a running job (the owner can attach to it). */
 export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
@@ -291,6 +304,8 @@ export type GenerationTerminalEvent =
           message: string;
           status: number;
           reason: GenerationErrorReason;
+          /** An explicit chat stop from another client; present only for reason `aborted`. */
+          abortedBy?: "other";
           sequence?: GenerationSequence;
           /**
            * A runner's failure only (an abort, a timeout, shutdown, or maintenance has none): where

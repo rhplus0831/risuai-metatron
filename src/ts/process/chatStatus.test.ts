@@ -271,6 +271,27 @@ describe("chat status sources", () => {
         expectGenerating([]);
     });
 
+    it("clears a foreign mark when its server lock is released and retains a lockless chat's mark", () => {
+        vi.useFakeTimers();
+        watch();
+        status.noteForeignJob(a, "foreign-reply");
+        status.noteForeignJob(b, "lockless-command");
+        chat.noteRemoteStreaming([
+            { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        flushSync();
+        expect(get(status.foreignJobs)).toEqual(
+            new Map([
+                [keyA, "foreign-reply"],
+                [keyB, "lockless-command"],
+            ]),
+        );
+
+        chat.releaseFeedLocks();
+        flushSync();
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyB, "lockless-command"]]));
+    });
+
     it("only a done reply outside the chat visible at completion becomes unseen", async () => {
         view(a);
         await finish("away", b, done({ messageId: "reply" }));

@@ -24,6 +24,7 @@ export function createServerCommandsMock(overrides: Partial<ServerCommandsModule
     const defaults = {
         followedJobs: writable<ReadonlyMap<string, string>>(new Map()),
         followedJobsOf: vi.fn<ServerCommandsModule["followedJobsOf"]>(() => []),
+        stopChatJob: vi.fn<ServerCommandsModule["stopChatJob"]>(async () => {}),
         followJobToEnd: vi.fn<ServerCommandsModule["followJobToEnd"]>(async () => "lost"),
         resumeServerJobs: vi.fn<ServerCommandsModule["resumeServerJobs"]>(async () => {}),
         runServerJob: vi.fn<ServerCommandsModule["runServerJob"]>(async () => ({

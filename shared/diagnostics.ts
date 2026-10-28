@@ -354,6 +354,8 @@ export function isStackFrame(frame: unknown): frame is string {
 export const ROUTE_TEMPLATES = [
     "/api/generations",
     "/api/generations/cancel",
+    "/api/generations/current",
+    "/api/generations/stop",
     "/api/generations/:id",
     "/api/generations/:id/memory-stop",
     "/api/generations/:id/drained",
@@ -506,6 +508,7 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         jobKind: oneOf(GENERATION_KINDS),
         stage: oneOf(GENERATION_ERROR_STAGES),
         reason: oneOf(GENERATION_ERROR_REASONS),
+        stoppedBy: oneOf(["otherClient"]),
         status: httpStatus,
         requestId: id,
         providerCode: isProviderCode,
@@ -612,7 +615,7 @@ export function projectDiagnosticEvent(input: unknown): DiagnosticEvent | null {
     return event;
 }
 
-/** A job's failure: an `error` end other than its owner's abort. */
+/** A job's failure: an `error` end other than a user abort, including one from another client. */
 export function isJobFailureEvent(event: DiagnosticEvent): boolean {
     return event.kind === "job" && event.phase === "error" && event.reason !== "aborted";
 }

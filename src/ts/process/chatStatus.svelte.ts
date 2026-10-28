@@ -3,7 +3,7 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { chatEntry, currentChatRef, findChat, lockedChatKeys, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
-import { isLocalSend } from "src/ts/process/localSends";
+import { isLocalSend, localSends } from "src/ts/process/localSends";
 import { gridOpenStore, settingsOpen } from "src/ts/screenVisibility";
 import { isPageVisible } from "src/ts/pageVisibility.svelte";
 
@@ -17,6 +17,7 @@ let recoveryView: { current: ReadonlyMap<string, string> } | undefined;
 let unseenView: { current: ReadonlySet<string> } | undefined;
 let settingsView: { current: boolean } | undefined;
 let gridView: { current: boolean } | undefined;
+let foreignView: { current: ReadonlyMap<string, string> } | undefined;
 
 /** The per-tab status key, shared with the followed-job registry. */
 export function chatStatusKey(ref: ChatRef): string {
@@ -36,6 +37,33 @@ export function generatingChatKeys(): ReadonlySet<string> {
  */
 export function isChatBusy(ref: ChatRef): boolean {
     return isLocalSend(ref) || generatingChatKeys().has(chatStatusKey(ref));
+}
+
+/** Advisory only: a stale foreign mark must never block a new send. */
+export const foreignJobs = writable<ReadonlyMap<string, string>>(new Map());
+
+export function noteForeignJob(ref: ChatRef, jobId: string): void {
+    const key = chatStatusKey(ref);
+    const jobs = get(foreignJobs);
+    if (jobs.get(key) !== jobId) foreignJobs.set(new Map(jobs).set(key, jobId));
+}
+
+export function clearForeignJob(ref: ChatRef, jobId?: string): void {
+    const key = chatStatusKey(ref);
+    const jobs = get(foreignJobs);
+    if (!jobs.has(key) || (jobId !== undefined && jobs.get(key) !== jobId)) return;
+    const next = new Map(jobs);
+    next.delete(key);
+    foreignJobs.set(next);
+}
+
+/** Chats with a lock or advisory job mark, excluding chats this tab follows (reactive). */
+export function foreignJobChatKeys(): ReadonlySet<string> {
+    const foreign = (foreignView ??= fromStore(foreignJobs)).current;
+    const followed = (followedView ??= fromStore(followedJobs)).current;
+    const keys = new Set([...lockedChatKeys(), ...foreign.keys()]);
+    for (const key of followed.values()) keys.delete(key);
+    return keys;
 }
 
 /** Lost follows, held until the chat is viewed or another job of it is followed. */
@@ -109,9 +137,21 @@ export function watchChatVisibility(): () => void {
             }
         });
 
+        let previousLocks = lockedChatKeys();
+        $effect(() => {
+            const locks = lockedChatKeys();
+            for (const key of previousLocks) {
+                if (!locks.has(key)) {
+                    const [chaId, chatId] = key.split("\u0000");
+                    clearForeignJob({ chaId, chatId });
+                }
+            }
+            previousLocks = locks;
+        });
+
         // A subscription sees even a short follow that starts and ends between effect flushes.
         let previous: ReadonlyMap<string, string> = new Map();
-        return followedJobs.subscribe((jobs) => {
+        const stopFollows = followedJobs.subscribe((jobs) => {
             const recovery = get(recoveryChatKeys);
             let next: Map<string, string> | undefined;
             for (const [jobId, key] of jobs) {
@@ -129,13 +169,30 @@ export function watchChatVisibility(): () => void {
             if (next) {
                 recoveryChatKeys.set(next);
             }
+            const foreign = get(foreignJobs);
+            const remaining = new Map(foreign);
+            for (const key of jobs.values()) remaining.delete(key);
+            if (remaining.size !== foreign.size) foreignJobs.set(remaining);
         });
+        let previousSends: ReadonlyMap<string, ChatRef | null> = new Map();
+        const stopSends = localSends.subscribe((sends) => {
+            for (const [key, ref] of sends) {
+                if (ref && previousSends.get(key) !== ref) clearForeignJob(ref);
+            }
+            previousSends = sends;
+        });
+        return () => {
+            stopFollows();
+            stopSends();
+        };
     });
 }
 
 export function resetChatStatusForTests(): void {
     recoveryChatKeys.set(new Map());
     unseenChatKeys.set(new Set());
+    foreignJobs.set(new Map());
+    foreignView = undefined;
     followedView = undefined;
     playgroundView = undefined;
     recoveryView = undefined;

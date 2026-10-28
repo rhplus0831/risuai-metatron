@@ -107,6 +107,7 @@ vi.mock("src/lang", () => ({
     language: {
         chatGenerating: "generating",
         serverJob: {
+            stoppedElsewhere: "stopped elsewhere",
             lost: "job lost",
             endedAway: "ended away",
             sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
@@ -271,6 +272,39 @@ afterEach(() => {
 });
 
 describe("followJobToEnd", () => {
+    it("notifies the owner when another client stopped its job and keeps other aborts silent", async () => {
+        vi.useFakeTimers();
+        try {
+            for (const abortedBy of [undefined, "other"] as const) {
+                stubs.alertToast.mockClear();
+                const attached = new Promise<void>((resolve) => {
+                    stubs.attached = resolve;
+                });
+                const end = commands.followJobToEnd(abortedBy ?? "self", ref);
+                await attached;
+                const terminal: GenerationTerminalEvent = {
+                    type: "error",
+                    epoch: EPOCH,
+                    status: 499,
+                    message: "aborted",
+                    reason: "aborted",
+                    ...(abortedBy ? { abortedBy } : {}),
+                };
+                endWith(follows().at(-1)!, terminal);
+                expect(await end).toEqual(terminal);
+                if (abortedBy) {
+                    expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("stopped elsewhere");
+                } else {
+                    expect(stubs.alertToast).not.toHaveBeenCalled();
+                }
+                expect(stubs.alertError).not.toHaveBeenCalled();
+                expect(stubs.alertJobError).not.toHaveBeenCalled();
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("shares one lifecycle per job: two callers get one socket and the same terminal, applied once, with no release or alert for `done`", async () => {
         const first = commands.followJobToEnd("j", ref);
         const second = commands.followJobToEnd("j", ref);

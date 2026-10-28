@@ -16,6 +16,8 @@ import {
     type GenerationCreated,
     type GenerationCancelBody,
     type GenerationCancelled,
+    type GenerationCurrent,
+    type GenerationStopBody,
     type GenerationHooks,
     type HydrationReceipt,
     GENERATION_ERROR_STAGES,
@@ -188,7 +190,8 @@ export type RunningJob = {
     ownerAttached(): boolean;
     /** The database epoch the job was admitted under; every write and event names it. */
     readonly epoch: string;
-    /** Aborted by DELETE, the time limit, shutdown, or maintenance; the job then has its abort grace
+    /** Aborted by owner DELETE, request cancel, chat stop, the time limit, shutdown, or maintenance;
+     * the job then has its abort grace
      * (`abortGraceMs`, `JOB_ABORT_GRACE_MS` by default) to persist its text and return. It may already
      * be aborted when the runner starts (check `aborted` before adding a listener). */
     readonly signal: AbortSignal;
@@ -336,6 +339,7 @@ type Job = {
     token: string;
     controller: AbortController;
     abortReason: GenerationErrorReason | null;
+    stoppedByOther?: true;
     abortTimer: ReturnType<typeof setTimeout> | null;
     startedAt: number;
     /** The duration limit starts anew for each sequence part; diagnostics use startedAt. */
@@ -931,6 +935,9 @@ export function createGenerationJobs(options: {
         if (terminal.type === "error" && job.sequence) {
             terminal.sequence = { ...job.sequence };
         }
+        if (terminal.type === "error" && terminal.reason === "aborted" && job.stoppedByOther) {
+            terminal.abortedBy = "other";
+        }
         let text: string;
         try {
             text = JSON.stringify(terminal);
@@ -965,6 +972,7 @@ export function createGenerationJobs(options: {
             ...(terminal.type === "error"
                 ? {
                       reason: terminal.reason,
+                      ...(terminal.abortedBy === "other" ? { stoppedBy: "otherClient" } : {}),
                       status: terminal.status,
                       stage: terminal.stage,
                       requestId: terminal.requestId,
@@ -1592,6 +1600,44 @@ export function createGenerationJobs(options: {
         return job && job.clientId === clientId ? job : null;
     }
 
+    function currentJob(characterId: string, chatId: string): Job | null {
+        const id = chatSlots.get(chatKey(characterId, chatId));
+        const job = id ? jobs.get(id) : undefined;
+        return job && !job.ended ? job : null;
+    }
+
+    /** The slot covers every job kind, even before a command acquires a generation lock. */
+    function current(characterId: string, chatId: string, clientId: string | undefined): GenerationCurrent | null {
+        const job = currentJob(characterId, chatId);
+        return job
+            ? {
+                  jobId: job.id,
+                  kind: job.kind,
+                  owned: job.clientId === clientId,
+                  ...(job.stage ? { stage: job.stage } : {}),
+                  ...(job.sequence ? { sequence: { ...job.sequence } } : {}),
+              }
+            : null;
+    }
+
+    /** Comparing the slot and aborting are synchronous: a replacement job is never stopped. */
+    function stop(
+        body: GenerationStopBody,
+        epoch: string | undefined,
+    ):
+        | { ok: true; body: { aborted: boolean } }
+        | { ok: false; status: 404 | 409 | 412; body: Record<string, unknown> } {
+        if (epoch !== store.epoch()) {
+            return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+        }
+        const job = currentJob(body.characterId, body.chatId);
+        if (!job) return { ok: false, status: 404, body: { error: "idle" } };
+        if (job.id !== body.jobId) return { ok: false, status: 409, body: { error: "jobChanged" } };
+        // Signal listeners can finalize synchronously; only the first abort decides attribution.
+        if (!job.abortReason && body.clientId !== job.clientId) job.stoppedByOther = true;
+        return { ok: true, body: { aborted: abort(job, "aborted") } };
+    }
+
     /** The kept outcomes, cleared first when the epoch changed (a restore or import replaced the data). */
     function keptOutcomes(): typeof kept {
         const epoch = store.epoch();
@@ -1908,6 +1954,8 @@ export function createGenerationJobs(options: {
     return {
         create,
         cancel,
+        current,
+        stop,
 
         /** The change feed's whole lock snapshot, with stored chat revisions sampled synchronously. */
         streamingSnapshot(): ChatStreamingSnapshot[] {

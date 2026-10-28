@@ -1076,6 +1076,31 @@ export const languageKorean = {
     rerollRepliesNotRestored:
         "다시 생성한 답변이 없지만, 리롤로 지운 답변을 안전하게 되돌리지 못했습니다. 이 채팅을 다른 곳에서 생성하고 있거나, 최신 채팅을 읽지 못했습니다.",
     serverJob: {
+        stoppedElsewhere: "다른 탭이나 기기에서 이 작업을 중지했습니다.",
+        stopOther: {
+            label: "이 채팅에서 실행 중인 작업 중지",
+            confirm: "{kind} 작업을 중지할까요? ({stage}{sequence})",
+            idle: "이 채팅에서 실행 중인 작업이 없습니다.",
+            invalidCurrent: "서버에서 올바르지 않은 작업 조회 응답을 받았습니다.",
+            invalidStop: "서버에서 올바르지 않은 작업 중지 응답을 받았습니다.",
+            running: "실행 중",
+            sequence: ", 전체 {total}개 중 {part}번째",
+            kinds: {
+                send: "응답 생성",
+                continue: "응답 이어쓰기",
+                reroll: "응답 다시 생성",
+                group: "그룹 응답 생성",
+                preview: "메시지 미리보기",
+                previewPrompt: "요청 미리보기",
+                command: "명령 실행",
+            },
+            stages: {
+                preparing: "준비 중",
+                memory: "메모리 처리 중",
+                generating: "생성 중",
+                finishing: "마무리 중",
+            },
+        },
         requestIdReused: "이 요청 ID는 이미 다른 작업에 사용되었습니다. 다시 보내면 새 요청이 시작됩니다.",
         lost: "서버 작업과의 연결이 끊겼습니다. 변경 사항을 보려면 채팅을 다시 불러와 주세요.",
         endedAway: "페이지가 꺼져 있는 동안 응답 작업이 끝나 채팅을 다시 불러왔습니다",

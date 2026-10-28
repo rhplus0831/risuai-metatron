@@ -1619,6 +1619,31 @@ export const languageEnglish = {
     rerollRepliesNotRestored:
         "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",
     serverJob: {
+        stoppedElsewhere: "This job was stopped from another tab or device.",
+        stopOther: {
+            label: "Stop this chat's running job",
+            confirm: "Stop {kind} ({stage}){sequence}?",
+            idle: "No job is running in this chat.",
+            invalidCurrent: "The server returned an invalid job lookup response.",
+            invalidStop: "The server returned an invalid job stop response.",
+            running: "running",
+            sequence: ", part {part} of {total}",
+            kinds: {
+                send: "reply generation",
+                continue: "reply continuation",
+                reroll: "reply regeneration",
+                group: "group reply generation",
+                preview: "message preview",
+                previewPrompt: "request preview",
+                command: "command",
+            },
+            stages: {
+                preparing: "preparing",
+                memory: "processing memory",
+                generating: "generating",
+                finishing: "finishing",
+            },
+        },
         requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",

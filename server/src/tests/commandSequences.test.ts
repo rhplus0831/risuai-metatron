@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { WebSocket } from "ws";
 import type { Chat, Message } from "../../../shared/database.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
+import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import { NO_GENERATION_HOOKS, type GenerationEvent, type GenerationHooks } from "../../../shared/jobs.ts";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
 import { createChangeFeed } from "../data/changeFeed.ts";
@@ -203,6 +204,7 @@ function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean; modelId
         effectClock: () => 0,
     });
     const start = deferred();
+    const diagnostics: DiagnosticEventInput[] = [];
     const jobs = createGenerationJobs({
         store,
         kinds,
@@ -211,6 +213,7 @@ function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean; modelId
         gate: snapshots.gate,
         authorize: async () => true,
         receipts,
+        diagnostics: { record: (event) => diagnostics.push(event) },
         now: clock,
         hub: createChannelHub({ now: clock }),
         runner: async (job) => {
@@ -307,6 +310,7 @@ function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean; modelId
     };
     return {
         jobs,
+        diagnostics,
         app,
         store,
         file,
@@ -533,6 +537,50 @@ describe("server command sequences", () => {
 });
 
 describe("a running sequence part", () => {
+    it("lets another client stop the entire command sequence and attributes its live and kept end", async () => {
+        const h = fixture();
+        const held = holdSecond(h);
+        const id = h.create();
+        const owner = await h.follow(id);
+        h.start.resolve();
+        const signal = await held.entered;
+        const current = await h.app.request("/api/generations/current?characterId=c&chatId=k&clientId=other");
+        expect(current.status).toBe(200);
+        expect(await current.json()).toEqual({
+            jobId: id,
+            kind: "command",
+            owned: false,
+            stage: "generating",
+            sequence: { total: 3, sent: 1 },
+        });
+        const stopped = await h.app.request("/api/generations/stop", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-resource-epoch": h.store.epoch() },
+            body: JSON.stringify({ characterId: "c", chatId: "k", jobId: id, clientId: "other" }),
+        });
+        expect(stopped.status).toBe(200);
+        expect(signal.aborted).toBe(true);
+        await h.jobs.drain();
+        await owner.until((events) => events.some((event) => event.type === "error" || event.type === "done"));
+        const terminal = {
+            type: "error",
+            reason: "aborted",
+            abortedBy: "other",
+            sequence: { total: 3, sent: 1 },
+        };
+        expect(owner.events.filter((event) => event.type === "error" || event.type === "done")).toEqual([
+            expect.objectContaining(terminal),
+        ]);
+        expect(h.jobs.status(id, "owner")?.terminal).toMatchObject(terminal);
+        expect(h.receipts.read(id)?.status?.terminal).toMatchObject(terminal);
+        expect(h.diagnostics.filter((event) => event.kind === "job" && event.phase === "error")).toEqual([
+            expect.objectContaining({ jobId: id, reason: "aborted", stoppedBy: "otherClient" }),
+        ]);
+        expect(h.providerCalls).toHaveLength(2);
+        expect(textOf(h.messages())).toEqual(["user:two"]);
+        expect(h.jobs.chatBusy("c", "k")).toBe(false);
+    });
+
     it.each(["Stop", "provider failure", "shutdown"])(
         "ends the whole sequence on %s during part two, preserving progress",
         async (cause) => {

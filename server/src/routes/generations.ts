@@ -224,7 +224,10 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
  * (`{ stopped: true }`; 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`; 412 for another epoch),
  * and `POST /:id/drained?clientId=` (`ChannelDrainedBody`) reports a callback of the job the server
  * cancelled as no longer running in the tab, freeing the client's channel lane (`{ drained }`, false
- * when it held none; also for an ended job still kept). Another client's job is a 404. The socket is
+ * when it held none; also for an ended job still kept). Those id routes return 404 for another
+ * client's job. `GET /current?characterId=&chatId=&clientId=` reads the chat's running job without
+ * attaching (404 `idle`); `POST /stop` with `GenerationStopBody` and the epoch aborts only that
+ * chat's named current job (409 `jobChanged`, 404 `idle`). The socket is
  * `/api/generations/:id/ws` (`generationJobs.handleUpgrade`). Responses are never cached.
  */
 export function registerGenerationRoutes(
@@ -279,6 +282,46 @@ export function registerGenerationRoutes(
         }
         const result = jobs.cancel(
             { requestId: body.requestId, clientId: body.clientId },
+            c.req.header(RESOURCE_EPOCH_HEADER),
+        );
+        return result.ok ? c.json(result.body) : c.json(result.body, result.status);
+    });
+
+    app.get("/api/generations/current", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) return denied;
+        const characterId = c.req.query("characterId");
+        const chatId = c.req.query("chatId");
+        const clientId = c.req.query("clientId");
+        if (
+            !isValidResourceId(characterId) ||
+            !isValidResourceId(chatId) ||
+            (clientId !== undefined && !isValidResourceId(clientId))
+        ) {
+            return c.json({ error: "characterId, chatId and optional clientId must be valid ids" }, 400);
+        }
+        const current = jobs.current(characterId, chatId, clientId);
+        return current ? c.json(current) : c.json({ error: "idle" }, 404);
+    });
+
+    app.post("/api/generations/stop", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) return denied;
+        const read = await readJsonBody(c);
+        if (!read.ok) return read.response;
+        const body = read.body;
+        if (
+            !isPlainObject(body) ||
+            !isValidResourceId(body.characterId) ||
+            !isValidResourceId(body.chatId) ||
+            !isValidResourceId(body.clientId) ||
+            typeof body.jobId !== "string" ||
+            !GENERATION_ID_PATTERN.test(body.jobId)
+        ) {
+            return c.json({ error: "characterId, chatId, jobId and clientId must be valid ids" }, 400);
+        }
+        const result = jobs.stop(
+            { characterId: body.characterId, chatId: body.chatId, jobId: body.jobId, clientId: body.clientId },
             c.req.header(RESOURCE_EPOCH_HEADER),
         );
         return result.ok ? c.json(result.body) : c.json(result.body, result.status);

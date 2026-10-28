@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { language } from "src/lang";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import type { OrphanedOverrideEntry } from "../../../shared/lore/overrides.ts";
 import {
@@ -9,6 +10,10 @@ import {
     type GenerationCreateBody,
     type GenerationCreated,
     type GenerationCancelled,
+    type GenerationCurrent,
+    type GenerationStopBody,
+    GENERATION_KINDS,
+    GENERATION_STAGES,
     GENERATION_ID_PATTERN,
     type GenerationEvent,
     type GenerationStatus,
@@ -600,6 +605,64 @@ export async function createGenerationJob(
 
 const jobPath = (jobId: string) =>
     `/api/generations/${encodeURIComponent(jobId)}?clientId=${encodeURIComponent(generationClientId())}`;
+
+/** Reads the chat slot without following, saving, or holding the job live in this tab. */
+export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurrent | null> {
+    const query = new URLSearchParams({ characterId: ref.chaId, chatId: ref.chatId, clientId: generationClientId() });
+    try {
+        const body: unknown = await (await request(`/api/generations/current?${query}`)).json();
+        if (
+            !object(body) ||
+            typeof body.jobId !== "string" ||
+            !GENERATION_ID_PATTERN.test(body.jobId) ||
+            !GENERATION_KINDS.some((kind) => kind === body.kind) ||
+            typeof body.owned !== "boolean" ||
+            (body.stage !== undefined && !GENERATION_STAGES.some((stage) => stage === body.stage)) ||
+            (body.sequence !== undefined &&
+                (!object(body.sequence) ||
+                    !Number.isSafeInteger(body.sequence.total) ||
+                    (body.sequence.total as number) < 1 ||
+                    !Number.isSafeInteger(body.sequence.sent) ||
+                    (body.sequence.sent as number) < 0 ||
+                    (body.sequence.sent as number) > (body.sequence.total as number)))
+        ) {
+            throw new ResourceRequestError(0, language.serverJob.stopOther.invalidCurrent);
+        }
+        return body as GenerationCurrent;
+    } catch (error) {
+        if (error instanceof ResourceRequestError && error.status === 404) return null;
+        throw error;
+    }
+}
+
+/** Stops exactly the named current job; a changed slot requires a fresh confirmation. */
+export async function stopChatGeneration(ref: ChatRef, jobId: string): Promise<"stopped" | "idle" | "changed"> {
+    const body: GenerationStopBody = {
+        characterId: ref.chaId,
+        chatId: ref.chatId,
+        jobId,
+        clientId: generationClientId(),
+    };
+    try {
+        const answer: unknown = await (
+            await request("/api/generations/stop", {
+                method: "POST",
+                headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                body: JSON.stringify(body),
+            })
+        ).json();
+        if (!object(answer) || typeof answer.aborted !== "boolean") {
+            throw new ResourceRequestError(0, language.serverJob.stopOther.invalidStop);
+        }
+        return "stopped";
+    } catch (error) {
+        if (error instanceof ResourceRequestError) {
+            if (error.status === 404 && error.message === "idle") return "idle";
+            if (error.status === 409 && error.message === "jobChanged") return "changed";
+        }
+        throw error;
+    }
+}
 
 /**
  * This tab's job (or its kept outcome, `kept`, once the server collected it), or null when the server

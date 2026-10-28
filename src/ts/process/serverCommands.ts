@@ -13,8 +13,8 @@ import type {
     GenerationStatus,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
-import { writable } from "svelte/store";
-import { alertError, alertJobError, alertToast } from "../alert";
+import { get, writable } from "svelte/store";
+import { alertConfirm, alertError, alertJobError, alertToast } from "../alert";
 import {
     abortGenerationJob,
     applyGenerationEvent,
@@ -29,6 +29,8 @@ import {
     type GenerationFollow,
     GenerationBusyError,
     readGenerationJob,
+    readChatGeneration,
+    stopChatGeneration,
     releaseGenerationJob,
     savedGenerationJobIds,
 } from "../network/generationJobs";
@@ -53,7 +55,13 @@ import {
 } from "../storage/resourceSync.svelte";
 import { sleep } from "../util";
 import { recordClientEvent } from "../diagnostics/collector";
-import { chatStatusKey as chatKeyOf, noteJobDone, noteJobLost } from "src/ts/process/chatStatus.svelte";
+import {
+    chatStatusKey as chatKeyOf,
+    noteJobDone,
+    noteJobLost,
+    noteForeignJob,
+    clearForeignJob,
+} from "src/ts/process/chatStatus.svelte";
 import { installReplyAlternatives } from "./serverGeneration";
 import { incrementStatic } from "../storage/collectionStore.svelte";
 import { dropJobStage } from "./jobStages";
@@ -108,6 +116,57 @@ export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef):
     return ids;
 }
 
+const stoppingChats = new Set<string>();
+
+/** Names the current job before stopping it; each changed job requires its own confirmation. */
+export async function stopChatJob(ref: ChatRef): Promise<void> {
+    ref = { ...ref };
+    const key = chatKeyOf(ref);
+    if (stoppingChats.has(key)) return;
+    stoppingChats.add(key);
+    try {
+        for (;;) {
+            const current = await readChatGeneration(ref);
+            if (!current) {
+                clearForeignJob(ref);
+                alertToast(language.serverJob.stopOther.idle);
+                return;
+            }
+            if (current.owned || get(followedJobs).has(current.jobId)) clearForeignJob(ref);
+            else noteForeignJob(ref, current.jobId);
+            const text = language.serverJob.stopOther;
+            const progress = current.sequence;
+            const sequence = progress
+                ? text.sequence.replace(/\{(part|total)\}/g, (_, field: "part" | "total") =>
+                      String(
+                          {
+                              part: Math.min(progress.sent + 1, progress.total),
+                              total: progress.total,
+                          }[field],
+                      ),
+                  )
+                : "";
+            const confirm = text.confirm.replace(
+                /\{(kind|stage|sequence)\}/g,
+                (_, field: "kind" | "stage" | "sequence") =>
+                    ({
+                        kind: text.kinds[current.kind],
+                        stage: current.stage ? text.stages[current.stage] : text.running,
+                        sequence,
+                    })[field],
+            );
+            if (!(await alertConfirm(confirm))) return;
+            const result = await stopChatGeneration(ref, current.jobId);
+            if (result === "idle") clearForeignJob(ref, current.jobId);
+            if (result !== "changed") return;
+        }
+    } catch (error) {
+        alertError(errorText(error));
+    } finally {
+        stoppingChats.delete(key);
+    }
+}
+
 /**
  * Follows a job until its end, once per job however many callers ask (a button, a busy job of this
  * tab, the boot resume): the lifecycle is reserved before anything else, so only it discovers the
@@ -150,6 +209,7 @@ export function followJobToEnd(
                 const target: ChatRef | "lost" = discovered;
                 if (target !== "lost") {
                     const key = chatKeyOf(target);
+                    clearForeignJob(target);
                     followedJobs.update((jobs) => new Map(jobs).set(jobId, key));
                     release ??= pinChat(target);
                 }
@@ -463,6 +523,8 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
                 alertJobError(jobId, end, at);
             }
         });
+    } else if (end.type === "error" && end.reason === "aborted" && end.abortedBy === "other") {
+        alertToast(language.serverJob.stoppedElsewhere);
     } else if (end.type === "error" && end.reason !== "aborted") {
         alertJobError(jobId, end);
     }
@@ -696,6 +758,7 @@ async function runPinnedServerJob(
         if (created.outcome === "replayed") {
             outcome = "replayed";
             cancelled = created.cancelled === true;
+            if (!created.owned && created.status?.state === "running") noteForeignJob(ref, jobId);
             if (!created.owned && created.status?.state === "running" && !cancelled) {
                 alertError(language.chatGenerating);
                 return { ...refused, blockedChats: [ref], requestUncertain: true };
@@ -732,6 +795,7 @@ async function runPinnedServerJob(
             // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
             const owned = await readGenerationJob(error.jobId, { deadlineMs: STEP_DEADLINE_MS }).catch(() => null);
             if (!owned) {
+                noteForeignJob(ref, error.jobId);
                 alertError(language.chatGenerating);
                 // Another tab's job runs in this chat, with or without a lock this tab knows of yet.
                 return { ...refused, blockedChats: [ref] };

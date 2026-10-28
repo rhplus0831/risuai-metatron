@@ -12,8 +12,15 @@ const io = vi.hoisted(() => ({
     createJob: vi.fn<typeof import("src/ts/network/generationJobs").createGenerationJob>(),
     generationFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
     selectFiles: vi.fn<typeof import("src/ts/util").selectMultipleFile>(),
+    confirm: vi.fn<typeof import("src/ts/alert").alertConfirm>(),
+    alertError: vi.fn<typeof import("src/ts/alert").alertError>(),
 }));
-vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: io.confirm,
+        alertError: io.alertError,
+    }),
+);
 vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
         authFetch: async (path, init, options) => {
@@ -98,6 +105,8 @@ async function mountComposer({ reload = false } = {}) {
     vi.resetModules();
     io.createJob.mockReset();
     io.generationFetch.mockReset();
+    io.confirm.mockReset().mockResolvedValue(false);
+    io.alertError.mockReset();
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.setSystemTime(pageTime);
     if (!reload) {
@@ -189,6 +198,152 @@ async function mountComposer({ reload = false } = {}) {
 
     return { target, input, type, click, menuItem, menu, hide, journal };
 }
+
+it("offers Stop beside Send for an unfollowed lock, busy refusal, or replay, and confirms the looked-up job", async () => {
+    const { target, click } = await mountComposer();
+    const chat = await import("src/ts/storage/chatStore.svelte");
+    const status = await import("src/ts/process/chatStatus.svelte");
+    const commands = await import("src/ts/process/serverCommands");
+    const transport = await import("src/ts/network/generationJobs");
+    const { selectedCharacter } = await import("src/ts/storage/characterStore.svelte");
+    const { get } = await import("svelte/store");
+    const ref = { chaId: "c", chatId: "a" };
+    const stopButton = () => target.querySelector(`[aria-label="${language.serverJob.stopOther.label}"]`);
+    const dispose = status.watchChatVisibility();
+    try {
+        expect(stopButton()).toBeNull();
+        for (const source of ["lock", "chatBusy", "replay"] as const) {
+            const advisoryId = `${source}-advisory`;
+            const currentId = `${source}-current`;
+            io.generationFetch
+                .mockReset()
+                .mockResolvedValue(Response.json({ error: "Generation not found" }, { status: 404 }));
+            if (source === "lock") {
+                chat.noteRemoteStreaming([
+                    {
+                        characterId: "c",
+                        id: "a",
+                        streaming: [{ messageId: "a-answer", generationId: advisoryId, seq: 0 }],
+                    },
+                ]);
+            } else {
+                if (source === "chatBusy")
+                    io.createJob.mockRejectedValueOnce(new transport.GenerationBusyError(advisoryId));
+                else
+                    io.createJob.mockResolvedValueOnce({
+                        outcome: "replayed",
+                        jobId: advisoryId,
+                        owned: false,
+                        status: {
+                            jobId: advisoryId,
+                            kind: "command",
+                            characterId: "c",
+                            chatId: "a",
+                            epoch: io.server!.epoch,
+                            state: "running",
+                        },
+                    });
+                await drive(commands.runServerButton(selectedCharacter()!, "go", ref));
+                expect(get(status.foreignJobs).get(a)).toBe(advisoryId);
+            }
+            flushSync();
+            expect(stopButton()).not.toBeNull();
+            expect(target.querySelector(".button-icon-send")).not.toBeNull();
+            expect(get(commands.followedJobs).size).toBe(0);
+            let confirm!: (yes: boolean) => void;
+            io.confirm.mockReset().mockImplementation(
+                () =>
+                    new Promise((resolve) => {
+                        confirm = resolve;
+                    }),
+            );
+            io.generationFetch
+                .mockReset()
+                .mockResolvedValueOnce(
+                    Response.json({ jobId: currentId, kind: "command", owned: false, stage: "memory" }),
+                )
+                .mockResolvedValueOnce(Response.json({ aborted: true }));
+            click(stopButton());
+            await until(() => io.confirm.mock.calls.length === 1);
+            expect(io.generationFetch).toHaveBeenCalledTimes(1);
+            const lookup = new URL(io.generationFetch.mock.calls[0][0], "https://test.invalid");
+            expect(lookup.pathname).toBe("/api/generations/current");
+            expect(Object.fromEntries(lookup.searchParams)).toEqual({
+                characterId: "c",
+                chatId: "a",
+                clientId: transport.generationClientId(),
+            });
+            expect(io.confirm.mock.calls[0][0]).toContain(language.serverJob.stopOther.kinds.command);
+            expect(io.confirm.mock.calls[0][0]).toContain(language.serverJob.stopOther.stages.memory);
+            expect(transport.savedGenerationJobIds()).toEqual([]);
+            expect(transport.generationPluginWorkActive()).toBe(false);
+            confirm(true);
+            await until(() => io.generationFetch.mock.calls.length === 2);
+            const [path, request] = io.generationFetch.mock.calls[1];
+            expect(path).toBe("/api/generations/stop");
+            expect(request?.method).toBe("POST");
+            expect(new Headers(request?.headers).get("x-resource-epoch")).toBe(io.server!.epoch);
+            expect(JSON.parse(String(request?.body))).toEqual({
+                characterId: "c",
+                chatId: "a",
+                jobId: currentId,
+                clientId: transport.generationClientId(),
+            });
+            // A followed chat uses its ordinary owner Stop, even if an advisory mark remains.
+            commands.followedJobs.set(new Map([[currentId, a]]));
+            flushSync();
+            expect(stopButton()).toBeNull();
+            commands.followedJobs.set(new Map());
+            chat.releaseFeedLocks();
+            status.clearForeignJob(ref);
+            flushSync();
+            expect(stopButton()).toBeNull();
+        }
+    } finally {
+        dispose();
+    }
+});
+
+it("confirms a replacement after jobChanged and clears Stop when that job ends during confirmation", async () => {
+    const { target, click } = await mountComposer();
+    const status = await import("src/ts/process/chatStatus.svelte");
+    const { get } = await import("svelte/store");
+    const ref = { chaId: "c", chatId: "a" };
+    status.noteForeignJob(ref, "advisory");
+    flushSync();
+    const confirms: ((yes: boolean) => void)[] = [];
+    io.confirm.mockImplementation(() => new Promise((resolve) => confirms.push(resolve)));
+    io.generationFetch
+        .mockResolvedValueOnce(Response.json({ jobId: "first", kind: "send", owned: false, stage: "generating" }))
+        .mockResolvedValueOnce(Response.json({ error: "jobChanged" }, { status: 409 }))
+        .mockResolvedValueOnce(
+            Response.json({ jobId: "replacement", kind: "command", owned: false, stage: "finishing" }),
+        )
+        .mockResolvedValueOnce(Response.json({ error: "idle" }, { status: 404 }));
+    const stopButton = () => target.querySelector(`[aria-label="${language.serverJob.stopOther.label}"]`);
+    click(stopButton());
+    await until(() => confirms.length === 1);
+    expect(io.generationFetch).toHaveBeenCalledTimes(1);
+    confirms[0](true);
+    await until(() => confirms.length === 2);
+    expect(io.generationFetch).toHaveBeenCalledTimes(3);
+    expect(io.confirm.mock.calls[1][0]).toContain(language.serverJob.stopOther.kinds.command);
+    expect(io.confirm.mock.calls[1][0]).toContain(language.serverJob.stopOther.stages.finishing);
+    expect(new URL(io.generationFetch.mock.calls[2][0], "https://test.invalid").pathname).toBe(
+        "/api/generations/current",
+    );
+    // The server now answers idle: confirming must not issue a wider stop or retry a different id.
+    confirms[1](true);
+    await until(() => !get(status.foreignJobs).has(a));
+    expect(io.generationFetch).toHaveBeenCalledTimes(4);
+    expect([1, 3].map((i) => JSON.parse(String(io.generationFetch.mock.calls[i][1]?.body)).jobId)).toEqual([
+        "first",
+        "replacement",
+    ]);
+    expect(stopButton()).toBeNull();
+    expect(target.querySelector(".button-icon-send")).not.toBeNull();
+    expect(io.alertError).not.toHaveBeenCalled();
+});
 
 it("journals screen sends, restores on switch, flushes on hide, and tracks attachments", async () => {
     const { target, input, type, click, menuItem, menu, hide, journal } = await mountComposer();
