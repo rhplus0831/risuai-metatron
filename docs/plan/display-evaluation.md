@@ -381,19 +381,19 @@ Overlap with the Durable Drafts plan:
 Probe (`transform-jobs-probe.mjs`), baseline at `2f38c2e7b` and after Slice 1. Times vary by run;
 select and parse counts are exact.
 
-| Label | Baseline | After Slice 1 |
-|---|---|---|
-| `cold-500-plain-8-batches` | 205.54 ms, 480 selects, 4,849 parses | 215.16 ms, 480, 4,849 |
-| `hit-500-plain-8-batches` | 13.8 ms, 200 selects, 8 parses, 500 hits | 14.6 ms, 200, 8, 500 |
-| `after-variable-500-8-batches` | 159.82 ms, 480, 4,848 | 168 ms, 480, 4,848 |
-| `after-stamp-500-8-batches` | 138.67 ms, 480, 4,848 | 148.49 ms, 480, 4,848 |
-| `one-loadJobScope` | 2.32 ms, 35 selects, 605 parses | 2.69 ms, 35, 605 |
-| `500-whole-chat-hydrations-local-model` | 2,094.15 ms, 1,000 selects, 250,500 parses | 2,480.51 ms, 1,000, 250,500 |
-| `worker-warmup` | 139.22 ms | 153.84 ms |
-| `500-targets-10-no-match-regex` | 1,044.6 ms, 500 regex tasks, 5,000 host parses | 1,071.54 ms, 500, 5,000 |
-| `mixed-revision-cache` | after the save: cached, old text, same key | after the save: not cached, stored text, new key |
-| `viewport-cross-client` | narrow client gets the `800` result, cached | narrow client gets `320`, not cached |
-| `four-tiny-snapshots` | 45.86 MiB heap for 16 pending bytes | 45.83 MiB, 16 B |
+| Label                                   | Baseline                                       | After Slice 1                                    |
+| --------------------------------------- | ---------------------------------------------- | ------------------------------------------------ |
+| `cold-500-plain-8-batches`              | 205.54 ms, 480 selects, 4,849 parses           | 215.16 ms, 480, 4,849                            |
+| `hit-500-plain-8-batches`               | 13.8 ms, 200 selects, 8 parses, 500 hits       | 14.6 ms, 200, 8, 500                             |
+| `after-variable-500-8-batches`          | 159.82 ms, 480, 4,848                          | 168 ms, 480, 4,848                               |
+| `after-stamp-500-8-batches`             | 138.67 ms, 480, 4,848                          | 148.49 ms, 480, 4,848                            |
+| `one-loadJobScope`                      | 2.32 ms, 35 selects, 605 parses                | 2.69 ms, 35, 605                                 |
+| `500-whole-chat-hydrations-local-model` | 2,094.15 ms, 1,000 selects, 250,500 parses     | 2,480.51 ms, 1,000, 250,500                      |
+| `worker-warmup`                         | 139.22 ms                                      | 153.84 ms                                        |
+| `500-targets-10-no-match-regex`         | 1,044.6 ms, 500 regex tasks, 5,000 host parses | 1,071.54 ms, 500, 5,000                          |
+| `mixed-revision-cache`                  | after the save: cached, old text, same key     | after the save: not cached, stored text, new key |
+| `viewport-cross-client`                 | narrow client gets the `800` result, cached    | narrow client gets `320`, not cached             |
+| `four-tiny-snapshots`                   | 45.86 MiB heap for 16 pending bytes            | 45.83 MiB, 16 B                                  |
 
 Slice 1 notes: the probe memo became `chatCharacters` (group members and message speakers, by owner
 and chat revisions); a missing speaker enters the key as `null`; other targets' sources stay out of
@@ -405,12 +405,12 @@ the loaded revision); Slice 2 re-renders the shown row.
 Slice 6 (three runs each, low load; the `other-stage` row is a scratch variant of the probe with
 ten `editinput`-only scripts):
 
-| Label | Before | After Slice 6 |
-|---|---|---|
-| `500-targets-10-no-match-regex` | 1,036–1,049 ms, 500 regex tasks, 5,000 host parses | 293–351 ms, 500, 0 |
-| `500-targets-10-other-stage-regex` | 253–269 ms, 500 regex tasks | 138–143 ms, 0 |
-| `cold-500-plain-8-batches` | 199–204 ms | 198–205 ms |
-| `four-tiny-snapshots` | 45.86 MiB | 45.86 MiB |
+| Label                              | Before                                             | After Slice 6      |
+| ---------------------------------- | -------------------------------------------------- | ------------------ |
+| `500-targets-10-no-match-regex`    | 1,036–1,049 ms, 500 regex tasks, 5,000 host parses | 293–351 ms, 500, 0 |
+| `500-targets-10-other-stage-regex` | 253–269 ms, 500 regex tasks                        | 138–143 ms, 0      |
+| `cold-500-plain-8-batches`         | 199–204 ms                                         | 198–205 ms         |
+| `four-tiny-snapshots`              | 45.86 MiB                                          | 45.86 MiB          |
 
 Slice 6 notes: "did not match" is tested as an unchanged result (`replaced === data`), so a match
 that replaces with the same string also skips the parse; a skipped parse also skips the CBS budget
@@ -420,11 +420,11 @@ never-matching `editprocess` script, since an `editinput`-only list no longer re
 Slice 3 (the stock probe throws at `r.pending[0]` once no snapshot is kept; the after numbers come
 from a copy guarded with `?.`, and later runs need the same guard):
 
-| Label | Before | After Slice 3 |
-|---|---|---|
-| `four-tiny-snapshots` | 45.83 MiB, 4 snapshots, 16 B counted | no snapshot kept, all 4 targets fail raw; +0.12 MiB measured alone |
-| `cold-500-plain-8-batches` | 206.02 ms, 480, 4,849 | 200.31 ms, 480, 4,849 |
-| `hit-500-plain-8-batches` | 13.83 ms, 200, 8 | 15.92 ms, 200, 8 |
+| Label                      | Before                               | After Slice 3                                                      |
+| -------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
+| `four-tiny-snapshots`      | 45.83 MiB, 4 snapshots, 16 B counted | no snapshot kept, all 4 targets fail raw; +0.12 MiB measured alone |
+| `cold-500-plain-8-batches` | 206.02 ms, 480, 4,849                | 200.31 ms, 480, 4,849                                              |
+| `hit-500-plain-8-batches`  | 13.83 ms, 200, 8                     | 15.92 ms, 200, 8                                                   |
 
 Charged against measured retained heap per snapshot (Node 24.21, four snapshots, three runs): no
 scripts, 64 targets: 3.23 MB charged, 1.70 MB held; CBS calls, 64 targets: 3.23 / 2.80 MB; 10,000
@@ -442,15 +442,15 @@ total.
 
 Slice 4 (three alternating runs against the Slice 3 tree; counts exact, times as ranges):
 
-| Label | Before | After Slice 4 |
-|---|---|---|
-| `cold-500-plain-8-batches` | 203–211 ms, 480 selects, 4,849 parses | 177–182 ms, 425, 1,116 |
-| `hit-500-plain-8-batches` | 13.5–14.4 ms, 200, 8 | 14.3–14.8 ms, 200, 8 |
-| `after-variable-500-8-batches` | 153–155 ms, 480, 4,848 | 127–134 ms, 402, 1,093 |
-| `after-stamp-500-8-batches` | 145–148 ms, 480, 4,848 | 139–144 ms, 400, 592 |
-| `500-targets-10-no-match-regex` | 293–300 ms, 480, 4,848 | 273–274 ms, 400, 592 |
-| `one-loadJobScope` | 35, 605 | 35, 605 (generation unchanged) |
-| `four-tiny-snapshots` | no snapshot kept, 4 targets fail raw | 4 snapshots kept, 2 shared entries pinned, the 15.6 MiB chat charged once (16,898,012 B); +16.44 MiB measured alone |
+| Label                           | Before                                | After Slice 4                                                                                                       |
+| ------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `cold-500-plain-8-batches`      | 203–211 ms, 480 selects, 4,849 parses | 177–182 ms, 425, 1,116                                                                                              |
+| `hit-500-plain-8-batches`       | 13.5–14.4 ms, 200, 8                  | 14.3–14.8 ms, 200, 8                                                                                                |
+| `after-variable-500-8-batches`  | 153–155 ms, 480, 4,848                | 127–134 ms, 402, 1,093                                                                                              |
+| `after-stamp-500-8-batches`     | 145–148 ms, 480, 4,848                | 139–144 ms, 400, 592                                                                                                |
+| `500-targets-10-no-match-regex` | 293–300 ms, 480, 4,848                | 273–274 ms, 400, 592                                                                                                |
+| `one-loadJobScope`              | 35, 605                               | 35, 605 (generation unchanged)                                                                                      |
+| `four-tiny-snapshots`           | no snapshot kept, 4 targets fail raw  | 4 snapshots kept, 2 shared entries pinned, the 15.6 MiB chat charged once (16,898,012 B); +16.44 MiB measured alone |
 
 About 74 parses per batch remain, from the per-request projection (`forwardPresetRoots` copies) and
 the character reads. Time falls only 10–15 %: per-target runs dominate.
@@ -466,12 +466,12 @@ delegates to a pure `buildRequestDb`; generation's reads are unchanged.
 
 Slice 5 (three runs each):
 
-| Label | Before | After Slice 5 |
-|---|---|---|
-| `after-stamp-500-8-batches` | 141–152 ms, 400 selects, 592 parses, 0 hits | 10.6–11.4 ms, 201, 9, 500 hits |
-| `cold-500-plain-8-batches` | 178–185 ms, 425, 1,116 | 175–180 ms, 425, 1,116 |
-| `after-variable-500-8-batches` | 129–133 ms, 402, 1,093 | 127–159 ms, 402, 1,093 |
-| `500-targets-10-no-match-regex` | 271–279 ms, 400, 592 | 274–283 ms, 401, 593 |
+| Label                           | Before                                      | After Slice 5                  |
+| ------------------------------- | ------------------------------------------- | ------------------------------ |
+| `after-stamp-500-8-batches`     | 141–152 ms, 400 selects, 592 parses, 0 hits | 10.6–11.4 ms, 201, 9, 500 hits |
+| `cold-500-plain-8-batches`      | 178–185 ms, 425, 1,116                      | 175–180 ms, 425, 1,116         |
+| `after-variable-500-8-batches`  | 129–133 ms, 402, 1,093                      | 127–159 ms, 402, 1,093         |
+| `500-targets-10-no-match-regex` | 271–279 ms, 400, 592                        | 274–283 ms, 401, 593           |
 
 Digest cost on a large character after a stamp (median of 30, one target, no scripts): 1 MiB
 description 5.38 ms (miss and render) → 4.25 ms (one read and digest, then a hit), 0.31 ms on the
@@ -518,20 +518,20 @@ the cached text (`whenRendered` does not wait for the confirmation, per Q2).
 Slice 9 (after all slices; baseline `2f38c2e7b` and the tip alternated on one machine, three runs
 each; the probe is a `?.`-guarded scratch copy; `other-stage` is the Slice 6 scratch variant):
 
-| Label | Baseline | After all slices |
-|---|---|---|
-| `cold-500-plain-8-batches` | 208–211 ms, 480 selects, 4,849 parses | 171–215 ms, 425, 1,116 |
-| `hit-500-plain-8-batches` | 13.0–15.4 ms, 200, 8, 500 hits | 12.0–17.6 ms, 200, 8, 500 hits |
-| `after-variable-500-8-batches` | 149–167 ms, 480, 4,848 | 125–148 ms, 402, 1,093 |
-| `after-stamp-500-8-batches` | 143–154 ms, 480, 4,848, 0 hits | 10.7–14.2 ms, 201, 9, 500 hits |
-| `one-loadJobScope` | 2.5–3.7 ms, 35, 605 | 3.2–5.4 ms, 35, 605 (generation unchanged) |
-| `500-whole-chat-hydrations-local-model` | 2,114–2,297 ms, 1,000, 250,500 | 2,173–2,512 ms, 1,000, 250,500 |
-| `worker-warmup` | 131–141 ms | 151–163 ms |
-| `500-targets-10-no-match-regex` | 1,033–1,193 ms, 480, 4,848, 500 regex tasks, 5,000 host parses | 274–314 ms, 401, 593, 500, 0 |
-| `500-targets-10-other-stage-regex` | 302–314 ms, 500 regex tasks | 125–135 ms, 0 |
-| `mixed-revision-cache` | after the save: cached, old text, same key | after the save: not cached, stored text, new key |
-| `viewport-cross-client` | narrow client gets `800`, cached | narrow client gets `320`, not cached |
-| `four-tiny-snapshots` | 16 B counted; 62.9–63.2 MiB freed on close | 2 shared entries pinned, 16,898,012 B charged; 15.94 MiB freed on close |
+| Label                                   | Baseline                                                       | After all slices                                                        |
+| --------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `cold-500-plain-8-batches`              | 208–211 ms, 480 selects, 4,849 parses                          | 171–215 ms, 425, 1,116                                                  |
+| `hit-500-plain-8-batches`               | 13.0–15.4 ms, 200, 8, 500 hits                                 | 12.0–17.6 ms, 200, 8, 500 hits                                          |
+| `after-variable-500-8-batches`          | 149–167 ms, 480, 4,848                                         | 125–148 ms, 402, 1,093                                                  |
+| `after-stamp-500-8-batches`             | 143–154 ms, 480, 4,848, 0 hits                                 | 10.7–14.2 ms, 201, 9, 500 hits                                          |
+| `one-loadJobScope`                      | 2.5–3.7 ms, 35, 605                                            | 3.2–5.4 ms, 35, 605 (generation unchanged)                              |
+| `500-whole-chat-hydrations-local-model` | 2,114–2,297 ms, 1,000, 250,500                                 | 2,173–2,512 ms, 1,000, 250,500                                          |
+| `worker-warmup`                         | 131–141 ms                                                     | 151–163 ms                                                              |
+| `500-targets-10-no-match-regex`         | 1,033–1,193 ms, 480, 4,848, 500 regex tasks, 5,000 host parses | 274–314 ms, 401, 593, 500, 0                                            |
+| `500-targets-10-other-stage-regex`      | 302–314 ms, 500 regex tasks                                    | 125–135 ms, 0                                                           |
+| `mixed-revision-cache`                  | after the save: cached, old text, same key                     | after the save: not cached, stored text, new key                        |
+| `viewport-cross-client`                 | narrow client gets `800`, cached                               | narrow client gets `320`, not cached                                    |
+| `four-tiny-snapshots`                   | 16 B counted; 62.9–63.2 MiB freed on close                     | 2 shared entries pinned, 16,898,012 B charged; 15.94 MiB freed on close |
 
 The in-probe `heapDeltaMiB` is noise now (−1.16 to +1.05 MiB, earlier garbage collected inside the
 window), so the snapshot rows measure the heap freed by `service.close()` and a gc after four
@@ -542,13 +542,13 @@ B of 200 rows (1.5 KB each) with an `editdisplay` regex matching every row; the 
 30 rows (`DEFAULT_CHAT_LOAD_INITIAL_PAGES`) with `knownKey`; a send appends two rows and stamps
 `lastInteraction`, then B → A; three rounds.
 
-| Case | `same` | Full | Text downloaded | Server time |
-|---|---|---|---|---|
-| B → A, nothing changed | 30 / 30 | 0 | 0 B | 0.8–1.5 ms |
-| First remount after a send (30 rows) | 2 | 28 (93 %) | 89–95 KB | 30–37 ms |
-| Same, 10 rows | 2 | 8 (80 %) | 21–27 KB | 11–13 ms |
-| The next remount | 30 / 30 | 0 | 0 B | about 1 ms |
-| After a variable write only | 0 | 30 (100 %) | about 93 KB | 35 ms |
+| Case                                 | `same`  | Full       | Text downloaded | Server time |
+| ------------------------------------ | ------- | ---------- | --------------- | ----------- |
+| B → A, nothing changed               | 30 / 30 | 0          | 0 B             | 0.8–1.5 ms  |
+| First remount after a send (30 rows) | 2       | 28 (93 %)  | 89–95 KB        | 30–37 ms    |
+| Same, 10 rows                        | 2       | 8 (80 %)   | 21–27 KB        | 11–13 ms    |
+| The next remount                     | 30 / 30 | 0          | 0 B             | about 1 ms  |
+| After a variable write only          | 0       | 30 (100 %) | about 93 KB     | 35 ms       |
 
 **Later** is not needed now: the miss costs one remount after each save (about 35 ms of server
 time and 90 KB per 30 rows, one transcript load), and the tab shows its cached text at once (Q2),
