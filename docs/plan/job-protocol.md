@@ -7,7 +7,8 @@ Slice 2, which first fills request ids), Slice 2 (`b532a95e2`; after an unanswer
 because a reloaded page posts with the current epoch, so D4's 412 does not refuse it), Slice 3
 (`d4586f152`; error and abort terminals also carry `sequence { total, sent }` so a `shutdown`
 outcome reports progress, and a done sequence takes one automatic checkpoint since the slot is held
-between parts). The user
+between parts), Slice 4 (`31dd5c2f0`; the channel hub gains `expireOverdue` and `ownerChanged`,
+and MCP owner checks read the same effective presence). The user
 accepted every recommendation for Q1–Q4 the
 same day (see **Answered questions**). A Sol review of the first
 draft (24 points, 3 blockers) is folded in. Most notably, follow-ups run as one sequence job instead
