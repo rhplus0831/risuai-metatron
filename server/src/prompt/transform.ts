@@ -150,6 +150,21 @@ function targetRetainedBytes(run: TargetRun): number {
     );
 }
 
+/** Partition ordinary cache hits already held by the tab out of the first call's full results. */
+function partitionKnownResults(targets: TransformTarget[], results: TransformResult[]): TransformResponse {
+    const knownKeys = new Map(targets.map((target) => [target.id, target.knownKey]));
+    const full: TransformResult[] = [];
+    const same: NonNullable<TransformResponse["same"]> = [];
+    for (const result of results) {
+        if (result.ok && result.cached && result.key === knownKeys.get(result.id)) {
+            same.push({ id: result.id, key: result.key });
+        } else {
+            full.push(result);
+        }
+    }
+    return same.length ? { results: full, same } : { results };
+}
+
 /**
  * The script transform: `processScriptFull`'s `editdisplay` and `editprocess` stages for targets
  * the tab sends, read-only. A fresh display projection per request the result cache does not answer
@@ -188,6 +203,10 @@ function targetRetainedBytes(run: TargetRun): number {
  * the tab applies a key's emotions once. A request whose every target has an entry is answered
  * before the load (`cachedResults`: revisions and chat metadata, plus character reads on identity
  * memo misses; no configuration or messages parsed).
+ * On the first call, an ordinary cache hit matching the target's `knownKey` is answered in `same`
+ * with only its id and key; fresh results and continuations are always answered in full.
+ * The key identifies inputs, not output, so random, clock, or plugin output refilled under the
+ * same key after eviction or Re-render can differ while `same` still confirms that key.
  *
  * Lifecycle: a request is registered (its controller, its deadline, the epoch, the maintenance
  * count) when it is admitted, before it waits for one of `MAX_ACTIVE` slots (`MAX_QUEUED` may wait;
@@ -713,7 +732,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             const answered = cachedResults(request, life.epoch);
             stillValid(life);
             if (answered) {
-                return { results: answered };
+                return partitionKnownResults(request.targets, answered);
             }
             const context: GenerationContext = {
                 characterId: request.context.characterId,
@@ -805,7 +824,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             }
             stillValid(life);
             if (pending.length === 0) {
-                return { results };
+                return partitionKnownResults(request.targets, results);
             }
             const snapshot: Snapshot = {
                 id: randomUUID(),
@@ -839,7 +858,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             snapshots.set(snapshot.id, snapshot);
             kept = snapshot;
             return {
-                results,
+                ...partitionKnownResults(request.targets, results),
                 snapshotId: snapshot.id,
                 pending: pending.map((run) => ({ id: run.target.id, text: run.text })),
             };

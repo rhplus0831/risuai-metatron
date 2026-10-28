@@ -770,6 +770,34 @@ describe("the transform cache probe", () => {
         );
     };
 
+    it("answers an evicted knownKey in full even when recomputing the same key", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        const h = open();
+        h.setHold(false);
+        const service = createTransformService(h.deps);
+        try {
+            const request = h.request("known");
+            const first = await service.transform(request, signal());
+            expect(first.results[0]).toMatchObject({ ok: true, text: "Xknown!", cached: false });
+            const key = keyOf(first);
+            const known = { ...request, targets: request.targets.map((target) => ({ ...target, knownKey: key })) };
+            expect(await service.transform(known, signal())).toEqual({ results: [], same: [{ id: "known", key }] });
+
+            // Fill the 512-entry cache with other results, leaving this row least recently used.
+            for (let batch = 0; batch < 8; batch++) {
+                const targets = Array.from({ length: 64 }, (_, i) => h.request(`fill-${batch * 64 + i}`).targets[0]);
+                const filled = await service.transform({ ...request, targets }, signal());
+                expect(filled.results).toHaveLength(64);
+                expect(filled.results.every((result) => result.ok && !result.cached)).toBe(true);
+            }
+            expect(await service.transform(known, signal())).toEqual({
+                results: [{ id: "known", ok: true, text: "Xknown!", emotions: [], key, cached: false }],
+            });
+        } finally {
+            await service.close();
+        }
+    });
+
     describe("display result identities", () => {
         beforeEach(() => {
             vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });

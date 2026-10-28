@@ -141,6 +141,12 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
         if (value.noCache !== undefined && typeof value.noCache !== "boolean") {
             return `targets[${index}].noCache must be a boolean`;
         }
+        if (
+            value.knownKey !== undefined &&
+            (typeof value.knownKey !== "string" || !/^[0-9a-f]{64}$/.test(value.knownKey))
+        ) {
+            return `targets[${index}].knownKey must be a string of exactly 64 lowercase hex characters`;
+        }
         targets.push({
             id: value.id,
             kind: value.kind as TransformTarget["kind"],
@@ -150,6 +156,7 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
             source: value.source,
             ...(cbsConditions ? { cbsConditions } : {}),
             ...(value.noCache ? { noCache: true } : {}),
+            ...(value.knownKey !== undefined ? { knownKey: value.knownKey as string } : {}),
         });
     }
     if (bytes > MAX_TRANSFORM_REQUEST_TEXT_BYTES) {
