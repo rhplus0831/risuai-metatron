@@ -1,10 +1,10 @@
 # Durable Drafts Plan
 
-Status: planned 2026-10-28; landed 1 (2a8ce1e83), 9 (62277946b), 2 (f5023bf8b). The user decided
-D2's base rule (retry in the same epoch), D3's retention (about two days) and D10's scope (composer
-drafts stay in this browser) on 2026-10-28, and answered Q1–Q4 the same day (see **Answered
-questions**; Q4's budgets were raised after Slice 3 measured them). A Sol review of the first draft
-is folded in (see **Review record**).
+Status: planned 2026-10-28; landed 1 (2a8ce1e83), 9 (62277946b), 2 (f5023bf8b), 3 (ca3e30b7b). The
+user decided D2's base rule (retry in the same epoch), D3's retention (about two days) and D10's
+scope (composer drafts stay in this browser) on 2026-10-28, and answered Q1–Q4 the same day (see
+**Answered questions**; Q4's budgets were raised after Slice 3 measured them). A Sol review of the
+first draft is folded in (see **Review record**).
 
 Sources: findings F02, F03 and F04 of the
 [server/client stabilization audit](../research/deep-audit/server-client-stabilization.md)
