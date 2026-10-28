@@ -1,9 +1,9 @@
 # Boot Bytes Plan
 
 Status: drafted 2026-10-29; landed: 1 (5063a1a18), 2 (761d41c52), 3 (2f35afe02), 4 (18d36f062), 5
-(c10aed8a1), 6 (db31dc70f), 7 (a07028e56). An Astra review of the first draft (17 points, 2
-blockers) is folded in (see **Review record**). The user answered Q1–Q6 the same day (see **Answered
-questions**); Q3 and Q4 are settled by Slice 1's numbers as recorded there.
+(c10aed8a1), 6 (db31dc70f), 7 (a07028e56), 8 (179505dc6). An Astra review of the first draft (17
+points, 2 blockers) is folded in (see **Review record**). The user answered Q1–Q6 the same day (see
+**Answered questions**); Q3 and Q4 are settled by Slice 1's numbers as recorded there.
 
 Sources: findings ST02, ST03 (its change cursor and listing digest) and ST06 of the
 [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md) (at `ff7cb9d20`),
