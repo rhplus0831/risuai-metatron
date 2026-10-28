@@ -1599,6 +1599,9 @@ export const languageEnglish = {
     noWaitForTranslate: "No Wait for Translate",
     antiClaudeOverload: "Anti-Claude Overload",
     resourceReloaded: "Another tab or device changed this data. The latest version was loaded.",
+    resourceRecoveryDrafts:
+        "Changes from an earlier page could not be applied automatically. They are available as recovery drafts.",
+    resourceNoticeDismiss: "Dismiss",
     chatLoadFailed: "This chat could not be loaded: {0}",
     chatLoadRetry: "Try again",
     selectChatToOpen: "Select a chat from the list to start.",

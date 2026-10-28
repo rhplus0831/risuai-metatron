@@ -21,6 +21,7 @@ import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } fr
 import { readBoot, readKinds } from "./storage/resourceClient";
 import { indexedDbBootCacheStore, loadBootSnapshot, scheduleBootCacheCommit } from "./storage/bootCache";
 import { appVer } from "./storage/database.svelte";
+import { recoverJournal } from "./storage/journalRecovery";
 import {
     heldRecordRevision,
     onRemoteRecordApplied,
@@ -76,6 +77,7 @@ export async function loadData() {
             loadSelection();
             installBootRecords(snapshot);
             applyFirstBootDefaults();
+            await recoverJournal();
 
             LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {

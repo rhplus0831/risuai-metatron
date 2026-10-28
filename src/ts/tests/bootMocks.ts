@@ -63,6 +63,10 @@ export function createBootMock<K extends keyof BootModules>(
         },
         resourceSync: {
             seedResources: vi.fn<BootModules["resourceSync"]["seedResources"]>(),
+            heldRecordSnapshot: vi.fn<BootModules["resourceSync"]["heldRecordSnapshot"]>(),
+            adoptRecoveredRecord: vi.fn<BootModules["resourceSync"]["adoptRecoveredRecord"]>(),
+            sameJson: vi.fn<BootModules["resourceSync"]["sameJson"]>(),
+            stopResourceSync: vi.fn<BootModules["resourceSync"]["stopResourceSync"]>(),
             onRemoteRecordApplied: vi.fn<BootModules["resourceSync"]["onRemoteRecordApplied"]>(),
             onPluginStorageDiscarded: vi.fn<BootModules["resourceSync"]["onPluginStorageDiscarded"]>(),
             refusedItems: vi.fn<BootModules["resourceSync"]["refusedItems"]>(),

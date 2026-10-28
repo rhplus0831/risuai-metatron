@@ -7,6 +7,7 @@ import {
     type JournalRemoval,
     type RecordLayerValues,
     type StoredLayers,
+    type MutationEntry,
 } from "./draftJournal";
 import { isJournalEligible } from "./journalEligibility";
 import { tick, untrack } from "svelte";
@@ -315,6 +316,9 @@ let membershipGeneration = 0;
 let membershipAcked = 0;
 let started = false;
 let halted = false;
+let stopped = false;
+let removeLifecycleListeners: (() => void) | null = null;
+let unloadAuthInterval: ReturnType<typeof setInterval> | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** When the scheduled cycle runs; a later mark never postpones it. */
 let timerDeadline = 0;
@@ -419,7 +423,7 @@ type JournalRecordView = {
     largeWriteAt?: number;
     skippedGeneration?: number;
 };
-/** Only keys touched by this page; old journal rows are never read or removed here. */
+/** Keys touched by this page, including captured layers handed over by boot recovery. */
 const journalRecords = new Map<string, JournalRecordView>();
 const journalPending = new Set<string>();
 let journalQueue: Promise<void> = Promise.resolve();
@@ -647,7 +651,7 @@ function flushJournal(onHide = false): Promise<void> {
             if (halted) {
                 return;
             }
-            if (!enabled) {
+            if (!enabled || !journal.enabled) {
                 journalOff = true;
                 if (journalTimer) {
                     clearTimeout(journalTimer);
@@ -778,6 +782,43 @@ export function seedResources(result: ResourceReadKindsResult) {
             });
         }
     }
+}
+
+/** A detached view of the server baseline; recovery must never seed it with local intent. */
+export function heldRecordSnapshot(kind: string, id: string): { revision: string; text: string } | null {
+    const held = persisted.get(recordKey(kind, id));
+    return held ? { revision: held.revision, text: held.text } : null;
+}
+
+/**
+ * Takes ownership only after recovery installed the local value (or found it satisfied). The first
+ * journal flush replaces/removes captured layers atomically; an intervening reload keeps the row.
+ * An unresolved update retains the exact resend ahead of any newer local value.
+ */
+export function adoptRecoveredRecord(
+    entry: Extract<MutationEntry, { scope: "record" }>,
+    unresolvedSent?: RecordLayerValues["sent"],
+) {
+    if (started || halted || entry.epoch !== getResourceEpoch()) {
+        throw new Error("Record recovery requires the current boot before saving starts");
+    }
+    const written = structuredClone(entry.layers);
+    if (unresolvedSent) {
+        const held = persisted.get(entry.target);
+        if (
+            unresolvedSent.op !== "update" ||
+            unresolvedSent.text === null ||
+            !held ||
+            unresolvedSent.baseRevision !== held.revision
+        ) {
+            throw new Error("Only an unresolved update on the held base can be recovered as in doubt");
+        }
+        inDoubt.set(entry.target, { baseRevision: held.revision, text: unresolvedSent.text, parts: null });
+    }
+    journalRecords.set(entry.target, { epoch: entry.epoch, desired: {}, written });
+    // Do not start a timer before the service worker can request another reload. Startup's marks
+    // schedule this reconciliation together with the normal save cycle.
+    journalPending.add(entry.target);
 }
 
 /**
@@ -1193,8 +1234,10 @@ function runRefresh(): Promise<void> {
         }
     })().finally(() => {
         refreshInFlight = null;
-        scheduleTrim();
-        scheduleRefresh();
+        if (!stopped) {
+            scheduleTrim();
+            scheduleRefresh();
+        }
     });
     return refreshInFlight;
 }
@@ -2320,6 +2363,9 @@ export function splitBatches<T extends { bytes: number; weight?: number }>(ops: 
 }
 
 function runCycle(): Promise<boolean> {
+    if (halted) {
+        return Promise.resolve(false);
+    }
     if (inFlight) {
         return inFlight;
     }
@@ -2331,41 +2377,45 @@ function runCycle(): Promise<boolean> {
             lastError = null;
             permanentError = null;
         } catch (error) {
-            lastError = error;
-            handleCycleError(error);
+            if (!stopped) {
+                lastError = error;
+                handleCycleError(error);
+            }
         } finally {
             inFlight = null;
-            sendingKeys.clear();
-            // Early returns also release conservative marks of batches that never dispatched.
-            for (const [key, view] of journalRecords) {
-                if (view.dispatched) {
-                    journalSettled(key);
+            if (!stopped) {
+                sendingKeys.clear();
+                // Early returns also release conservative marks of batches that never dispatched.
+                for (const [key, view] of journalRecords) {
+                    if (view.dispatched) {
+                        journalSettled(key);
+                    }
                 }
-            }
-            pruneWaits();
-            scheduleRefresh(0);
-            // A record whose hydration waited for the batch: its ordering check runs again now.
-            for (const record of [...deferredHydrations.values()]) {
-                deferredHydrations.delete(recordKey(record.kind, record.id));
-                applyHydration(record);
-            }
-            saving.state = false;
-            // Chats whose protection ended in this cycle (saved, refreshed, released) may be evicted now.
-            scheduleTrim();
-            backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
-            if (lastError) {
-                noteWaitBlockers("backoff");
-            }
-            const retryAt = jobRetryAt();
-            if (retryAt === null) {
-                generatingNoticeShown = false;
-            }
-            if (!halted && !permanentError && (hasPendingWork() || lastError)) {
-                schedule(DEBOUNCE_MS);
-            }
-            if (!halted && retryAt !== null) {
-                // Work refused for a generating message: one wakeup at its retry time.
-                schedule(Math.max(0, retryAt - Date.now()));
+                pruneWaits();
+                scheduleRefresh(0);
+                // A record whose hydration waited for the batch: its ordering check runs again now.
+                for (const record of [...deferredHydrations.values()]) {
+                    deferredHydrations.delete(recordKey(record.kind, record.id));
+                    applyHydration(record);
+                }
+                saving.state = false;
+                // Chats whose protection ended in this cycle (saved, refreshed, released) may be evicted now.
+                scheduleTrim();
+                backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
+                if (lastError) {
+                    noteWaitBlockers("backoff");
+                }
+                const retryAt = jobRetryAt();
+                if (retryAt === null) {
+                    generatingNoticeShown = false;
+                }
+                if (!halted && !permanentError && (hasPendingWork() || lastError)) {
+                    schedule(DEBOUNCE_MS);
+                }
+                if (!halted && retryAt !== null) {
+                    // Work refused for a generating message: one wakeup at its retry time.
+                    schedule(Math.max(0, retryAt - Date.now()));
+                }
             }
         }
         return cycleWrote;
@@ -2397,6 +2447,7 @@ async function cycle() {
     if (!journalOff && ops.some((op) => op.text !== null && op.baseRevision === null && journalRecords.has(op.key))) {
         await waitForCreateJournal(journalFlush);
     }
+    if (stopped) return;
     if (batches.length > 0) {
         saving.state = true;
         cycleWrote = true;
@@ -2837,6 +2888,7 @@ async function haltForRestore() {
     // The terminal notice: no other alert replaces or clears it, so the page reloads only after the
     // user acknowledged it.
     await alertTerminal(language.resourceRestored);
+    if (stopped) return;
     recordClientEvent({ kind: "sync", phase: "reload", reason: "restore" });
     flushClientDiagnostics();
     location.reload();
@@ -2847,6 +2899,7 @@ const RESTORE_WATCH_MS = 120_000;
 const RESTORE_POLL_MS = 1_000;
 const RESTORE_READ_MS = 5_000;
 let restoreWatch: Promise<boolean> | null = null;
+let cancelRestorePoll: (() => void) | null = null;
 
 /**
  * A server job of this tab ended because a restore or import is replacing the data (its
@@ -2867,8 +2920,17 @@ export function watchForRestore(): Promise<boolean> {
         try {
             const until = Date.now() + RESTORE_WATCH_MS;
             while (Date.now() < until && !halted) {
-                await new Promise((resolve) => setTimeout(resolve, RESTORE_POLL_MS));
+                await new Promise<void>((resolve) => {
+                    const timer = setTimeout(resolve, RESTORE_POLL_MS);
+                    cancelRestorePoll = () => {
+                        clearTimeout(timer);
+                        resolve();
+                    };
+                });
+                cancelRestorePoll = null;
+                if (halted) return true;
                 const controller = new AbortController();
+                readControllers.add(controller);
                 const read = getResource(SECTION_KIND.ui, "main", { signal: controller.signal }).then(
                     () => false,
                     (error) => error instanceof ResourceEpochMismatchError,
@@ -2876,6 +2938,7 @@ export function watchForRestore(): Promise<boolean> {
                 const budget = Math.max(0, Math.min(RESTORE_READ_MS, until - Date.now()));
                 let timer: ReturnType<typeof setTimeout> | undefined;
                 const timedOut = new Promise<false>((resolve) => {
+                    controller.signal.addEventListener("abort", () => resolve(false), { once: true });
                     timer = setTimeout(() => {
                         controller.abort();
                         resolve(false);
@@ -2883,6 +2946,7 @@ export function watchForRestore(): Promise<boolean> {
                 });
                 const replaced = await Promise.race([read, timedOut]);
                 clearTimeout(timer);
+                readControllers.delete(controller);
                 if (replaced) {
                     return true;
                 }
@@ -3438,8 +3502,8 @@ function mergeItemListChange(item: RemoteItem, key: string): boolean {
     return true;
 }
 
-/** Whether two JSON texts hold the same value, key order aside (same-length texts are compared parsed). */
-function sameJson(a: string, b: string): boolean {
+/** Compares adapter-produced compact JSON, key order aside; only equal-length texts are parsed. */
+export function sameJson(a: string, b: string): boolean {
     if (a === b) {
         return true;
     }
@@ -4975,7 +5039,7 @@ function collectMembershipChanges(): boolean {
  * the server; unchanged records compare equal and are not sent.
  */
 export function startResourceSync() {
-    if (started) {
+    if (started || halted) {
         return;
     }
     started = true;
@@ -4999,13 +5063,14 @@ export function startResourceSync() {
     setRecordWriteListener((kind) => {
         markKey(collectionKey(kind));
     });
-    document.addEventListener("visibilitychange", () => {
+    function onVisibilityChange() {
         if (document.visibilityState !== "hidden" || halted) {
             return;
         }
         void flushJournal(true);
         void (async () => {
             await tick();
+            if (halted) return;
             if (timer) {
                 clearTimeout(timer);
                 timer = null;
@@ -5017,15 +5082,15 @@ export function startResourceSync() {
                 await runCycle();
             }
         })();
-    });
-    window.addEventListener("beforeunload", (event) => {
+    }
+    function onBeforeUnload(event: BeforeUnloadEvent) {
         // A halted loop (the data was replaced) can save nothing more: no warning, so the reload after
         // the restore notice goes through.
         if (!halted && hasUnsavedWork()) {
             event.preventDefault();
             event.returnValue = "";
         }
-    });
+    }
     // One shared budget, including requests still in flight from an earlier pagehide: by-id chat work,
     // one request per chat. Resource writes use only normal cycles, so they never race a keepalive
     // write on the same revision.
@@ -5070,7 +5135,7 @@ export function startResourceSync() {
             fenceCharacterWrites([], request.work, false);
         }
     }
-    window.addEventListener("pagehide", () => {
+    function onPageHide() {
         if (halted) {
             return;
         }
@@ -5080,8 +5145,16 @@ export function startResourceSync() {
                 sendUnload(request);
             }
         } catch {}
-    });
-    setInterval(() => {
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("pagehide", onPageHide);
+    removeLifecycleListeners = () => {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        window.removeEventListener("beforeunload", onBeforeUnload);
+        window.removeEventListener("pagehide", onPageHide);
+    };
+    unloadAuthInterval = setInterval(() => {
         if (!halted && hasUnsavedWork()) {
             prepareUnloadAuth();
         }
@@ -5100,4 +5173,34 @@ export function startResourceSync() {
         markKey(characterKey(character.chaId as string));
     }
     markMembership();
+}
+
+/** Terminal teardown of this adapter instance, without saving, alerting, or reloading the page. */
+export function stopResourceSync() {
+    stopped = true;
+    halted = true;
+    setMutationAdmission(() => false);
+    removeLifecycleListeners?.();
+    removeLifecycleListeners = null;
+    if (timer) clearTimeout(timer);
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (journalTimer) clearTimeout(journalTimer);
+    if (unloadAuthInterval) clearInterval(unloadAuthInterval);
+    timer = refreshTimer = journalTimer = null;
+    unloadAuthInterval = null;
+    cancelRestorePoll?.();
+    cancelRestorePoll = null;
+    for (const controller of readControllers) {
+        controller.abort(new Error("Resource sync stopped"));
+    }
+    journalPending.clear();
+    setRecordWriteListener(null);
+    setCharacterWriteListener(null);
+    setChatWorkListener(null);
+    setEpochMismatchListener(null);
+    setSecretScheduler(() => {});
+    restoreReloadHook = null;
+    remoteChangeListeners.clear();
+    pluginStorageDiscardListeners.clear();
+    saving.state = false;
 }
