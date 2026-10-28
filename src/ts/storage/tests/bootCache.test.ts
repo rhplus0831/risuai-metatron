@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
+import { CHAT_SUMMARY_FORMAT } from "../../../../shared/chats.ts";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
     BOOT_RESOURCE_FORMAT,
+    chatCollectionClaim,
     RESOURCE_KIND,
     type ResourceBootRequest,
     type ResourceReadKindsResult,
@@ -386,7 +388,7 @@ describe("the boot request", () => {
         expect(context.hashes.get("presets")).toEqual(new Set());
     });
 
-    it("claims nothing past 5,000 claims or a 2 MiB body, keeping the plain request", () => {
+    it("counts collections with records and hashes and claims nothing past 5,000 claims or a 2 MiB body", () => {
         const many = Array.from({ length: MAX_BOOT_CLAIMS + 1 }, (_, index) => ({
             kind: "characters",
             id: `c${index}`,
@@ -407,6 +409,37 @@ describe("the boot request", () => {
         const bytes = prepareBootRequest(contents(big));
         expect(bytes.request).not.toHaveProperty("known");
         expect(bytes.claims.size).toBe(0);
+        const collection = (id: string): CachedRecord => {
+            const order = { characterId: id, revision: "00000000-0000-0000-0000-000000000001:1:1", ids: [] };
+            return {
+                kind: "@chatCollection",
+                id,
+                revision: chatCollectionClaim(CHAT_SUMMARY_FORMAT, id, order.revision, []),
+                text: JSON.stringify({ format: CHAT_SUMMARY_FORMAT, summaries: [], order }),
+            };
+        };
+        const hash = hashOf(module("m"));
+        const item: CachedRecord = { kind: "modules", id: "main", revision: "r", hashes: [hash] };
+        const items: [string, string][] = [[itemKey("modules", hash), JSON.stringify(module("m"))]];
+        const mixed = [...many.slice(0, 4997), item, collection("one")];
+        const atLimit = prepareBootRequest(contents(mixed, items));
+        expect(atLimit.request.known?.records).toHaveLength(4998);
+        expect(atLimit.request.known?.items).toEqual([{ kind: "modules", hashes: [hash] }]);
+        expect(atLimit.request.known?.chatCollections).toEqual([{ characterId: "one", claim: mixed.at(-1)!.revision }]);
+        const overCount = prepareBootRequest(contents([...mixed, collection("two")], items));
+        expect(Object.hasOwn(overCount.request, "known")).toBe(false);
+        const longCollections = Array.from({ length: 2000 }, (_, index) => collection(`${index}`.padStart(512, "x")));
+        // Each half fits; their combined body exceeds 2 MiB with fewer than 5,000 claims.
+        expect(prepareBootRequest(contents(big.slice(0, 2000))).request).toHaveProperty("known");
+        expect(prepareBootRequest(contents(longCollections)).request.known?.chatCollections).toHaveLength(2000);
+        const overBytes = prepareBootRequest(contents([...big.slice(0, 2000), ...longCollections]));
+        for (const context of [overCount, overBytes]) {
+            expect(Object.hasOwn(context.request, "known")).toBe(false);
+            expect(context.request).toEqual({ kinds: ALL_KINDS, chatSummaries: true });
+            expect(context.claims.size).toBe(0);
+            expect(context.hashes.size).toBe(0);
+            expect(context.chatCollections.size).toBe(0);
+        }
     });
 });
 
@@ -1194,6 +1227,57 @@ describe("the boot over the IndexedDB cache", () => {
         expect([...(await dump()).records.keys()].sort()).toEqual(
             [recordKey("characters", "c1"), recordKey("modules", "main"), recordKey("presets", "main")].sort(),
         );
+    });
+
+    it("never claims planted credential-bearing or plugin records or collections from another or missing summary format", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const server = seededServer();
+        const store = cacheStore();
+        await (await loadBootSnapshot(depsFor(server, store))).commit();
+        const never = [
+            "llmSecrets",
+            "secrets",
+            "providers",
+            "authRefreshes",
+            "credentials",
+            "customModels",
+            "memoryTranslateMedia",
+            "modelProfiles",
+            "plugins",
+            "pluginStorage",
+            "pluginPermissions",
+        ];
+        const planted: [string, unknown][] = never.map((kind) => [
+            recordKey(kind, "main"),
+            { kind, id: "main", revision: "e1:1:1", text: "{}" },
+        ]);
+        for (const format of [CHAT_SUMMARY_FORMAT + 1, undefined]) {
+            const id = format === undefined ? "missing" : "foreign";
+            const order = { characterId: id, revision: "00000000-0000-0000-0000-000000000001:1:1", ids: [] };
+            planted.push([
+                recordKey("@chatCollection", id),
+                {
+                    kind: "@chatCollection",
+                    id,
+                    // Recompute even the foreign entry's hash, so only the format makes it unusable.
+                    revision: chatCollectionClaim(format!, id, order.revision, []),
+                    text: JSON.stringify({ format, summaries: [], order }),
+                },
+            ]);
+        }
+        await seedRaw({ records: planted });
+        const deps = depsFor(server, store);
+        const boot = await loadBootSnapshot(deps);
+        const known = deps.requests[0].known!;
+        expect(known.records?.map(({ kind, id }) => `${kind}/${id}`).sort()).toEqual(
+            ["characters/c1", "modules/main", "presets/main"].sort(),
+        );
+        expect(known.chatCollections ?? []).toEqual([]);
+        expect(JSON.stringify(boot.snapshot)).toBe(JSON.stringify(server.full()));
+        expect(deps.fullReads).toBe(0);
+        await boot.commit();
+        const state = await dump();
+        for (const [key] of planted) expect(state.records.has(key), key).toBe(false);
     });
 
     it("a cached character holding a credential (a foreign write) is installed, advertised once, and dropped by the commit", async () => {

@@ -219,19 +219,20 @@ export function buildBootFixture(
         pluginStorage: audit
             ? { _pluginStorage: { history: Array.from({ length: 1000 }, () => textOfSize(2048)) } }
             : {},
-        inlays: audit
-            ? Array.from({ length: 300 }, (_, i) => ({
-                  id: randomUUID(),
-                  data: {
-                      name: `Image ${i}`,
-                      ext: "png",
-                      type: "image",
-                      asset: `assets/${hex(`inlay-${i}`)}.png`,
-                      width: 512,
-                      height: 512,
-                  },
-              }))
-            : [],
+        inlays:
+            audit || cacheCheck
+                ? Array.from({ length: audit ? 300 : 3 }, (_, i) => ({
+                      id: randomUUID(),
+                      data: {
+                          name: `Image ${i}`,
+                          ext: "png",
+                          type: "image",
+                          asset: `assets/${hex(`inlay-${i}`)}.png`,
+                          width: 512,
+                          height: 512,
+                      },
+                  }))
+                : [],
     };
 }
 
@@ -325,9 +326,19 @@ export async function seedBootFixture(api, name, { providerUrl, cacheCheck } = {
 }
 
 async function measureBoot() {
-    const { checkCacheMeta, checkCachedRecord, expandBootAnswer, isCurrentMeta, itemKey, prepareBootRequest } =
-        await import(path.join(repoRoot, "src/ts/storage/bootCache.ts"));
-    const { BOOT_CACHED_KINDS, RESOURCE_KIND } = await import(path.join(repoRoot, "shared/resources.ts"));
+    const {
+        checkCacheMeta,
+        checkCachedRecord,
+        expandBootAnswer,
+        holdsCredential,
+        isCurrentMeta,
+        itemKey,
+        prepareBootRequest,
+    } = await import(path.join(repoRoot, "src/ts/storage/bootCache.ts"));
+    const { BOOT_CACHED_KINDS, RESOURCE_KIND, chatCollectionClaim } = await import(
+        path.join(repoRoot, "shared/resources.ts")
+    );
+    const { CHAT_SUMMARY_FORMAT } = await import(path.join(repoRoot, "shared/chats.ts"));
     const { bootItemHash } = await import(path.join(repoRoot, "server/src/routes/resourceBoot.ts"));
 
     const RUNS = Number(process.env.RUNS ?? 3);
@@ -692,6 +703,7 @@ async function measureBoot() {
                 };
             }
             for (const [key, value] of Object.entries(answer)) {
+                // Include the collection omissions and producer format alongside summaries and orders.
                 if (key === "kinds") continue;
                 const rest = { ...answer };
                 delete rest[key];
@@ -940,6 +952,7 @@ async function measureBoot() {
                 let expected = 0;
                 for (const kind of BOOT_CACHED_KINDS) {
                     for (const record of plain.kinds[kind] ?? []) {
+                        if (holdsCredential(kind, record.data)) continue;
                         expected++;
                         const cached = written.records.find((entry) => entry.kind === kind && entry.id === record.id);
                         const text =
@@ -952,6 +965,32 @@ async function measureBoot() {
                         }
                     }
                 }
+                const collections = new Map();
+                const collectionFor = (id) => {
+                    if (!collections.has(id))
+                        collections.set(id, { format: answer.chatSummaryFormat, summaries: [], order: null });
+                    return collections.get(id);
+                };
+                if (answer.chatSummaryFormat === CHAT_SUMMARY_FORMAT) {
+                    for (const summary of plain.chatSummaries)
+                        collectionFor(summary.characterId).summaries.push(summary);
+                    for (const order of plain.chatOrders) collectionFor(order.characterId).order = order;
+                    for (const [id, collection] of collections) {
+                        expected++;
+                        const cached = written.records.find(
+                            (entry) => entry.kind === "@chatCollection" && entry.id === id,
+                        );
+                        const claim = chatCollectionClaim(
+                            collection.format,
+                            id,
+                            collection.order?.revision ?? null,
+                            collection.summaries,
+                        );
+                        if (cached?.revision !== claim || cached?.text !== JSON.stringify(collection)) {
+                            mismatched.push(`@chatCollection/${id}`);
+                        }
+                    }
+                }
                 check(
                     `${scenario}: the cache the tab wrote equals a plain read`,
                     mismatched.length === 0 && written.records.length === expected,
@@ -961,14 +1000,35 @@ async function measureBoot() {
                     const claimed = new Set((boot?.request?.known?.records ?? []).map((r) => `${r.kind}/${r.id}`));
                     const hashes = boot?.request?.known?.items?.find((entry) => entry.kind === "modules")?.hashes ?? [];
                     const stored = new Set((await single("modules")).data.map((item) => bootItemHash(item)));
+                    const claimedCollections = new Map(
+                        (boot?.request?.known?.chatCollections ?? []).map((entry) => [entry.characterId, entry.claim]),
+                    );
                     check(
-                        "warm: every character, the modules and presets records, and every module's hash are claimed",
-                        characters.every((c) => claimed.has(`characters/${c.chaId}`)) &&
+                        "warm: every eligible record, module hash and chat collection is claimed",
+                        characters
+                            .filter((c) => !holdsCredential("characters", c))
+                            .every((c) => claimed.has(`characters/${c.chaId}`)) &&
                             claimed.has("modules/main") &&
                             claimed.has("presets/main") &&
+                            (plain.kinds.inlays ?? []).every((record) => claimed.has(`inlays/${record.id}`)) &&
+                            claimedCollections.size === collections.size &&
+                            [...collections].every(
+                                ([id, collection]) =>
+                                    claimedCollections.get(id) ===
+                                    chatCollectionClaim(
+                                        collection.format,
+                                        id,
+                                        collection.order?.revision ?? null,
+                                        collection.summaries,
+                                    ),
+                            ) &&
                             hashes.length === stored.size &&
                             hashes.every((hash) => stored.has(hash)),
-                        { records: claimed.size, moduleHashes: hashes.length },
+                        {
+                            records: claimed.size,
+                            moduleHashes: hashes.length,
+                            chatCollections: claimedCollections.size,
+                        },
                     );
                 }
             }

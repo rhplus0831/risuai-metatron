@@ -1,9 +1,14 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
 import zlib from "node:zlib";
+import path from "node:path";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { CHAT_SUMMARY_FORMAT } from "../../../shared/chats.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
     BOOT_CACHED_KINDS,
+    BOOT_CACHE_ELIGIBILITY,
+    chatCollectionClaim,
     BOOT_ITEM_HASH_PATTERN,
     BOOT_ITEM_KINDS,
     BOOT_RESOURCE_FORMAT,
@@ -96,7 +101,16 @@ function expand(
             return { id: record.id, revision: record.revision, data };
         });
     }
-    const { format: _format, kinds: _kinds, ...rest } = result;
+    if (result.cachedChatCollections && result.cachedChatCollections.length > 0) {
+        throw new Error(`cached chat collections ${result.cachedChatCollections.join(", ")} cannot be expanded`);
+    }
+    const {
+        format: _format,
+        kinds: _kinds,
+        chatSummaryFormat: _chatSummaryFormat,
+        cachedChatCollections: _cachedChatCollections,
+        ...rest
+    } = result;
     return { ...rest, kinds };
 }
 
@@ -171,6 +185,8 @@ describe("POST /api/resources/boot without an inventory", () => {
         const result = await bootResult(s, { kinds: [...ALL_KINDS], chatSummaries: true });
         expect(result.format).toBe(BOOT_RESOURCE_FORMAT);
         expect(result.epoch).toBe(s.epoch);
+        expect(result.chatSummaryFormat).toBe(CHAT_SUMMARY_FORMAT);
+        expect(result.cachedChatCollections).toEqual([]);
         expect(Object.keys(result.kinds)).toEqual(ALL_KINDS);
         expect(expand(result)).toEqual(read);
 
@@ -290,6 +306,40 @@ describe("POST /api/resources/boot with known revisions", () => {
         expect(result.kinds).toEqual(read.kinds);
     });
 
+    it("never caches credential-bearing or plugin kinds even when their current revisions are claimed", async () => {
+        const never = [
+            "llmSecrets",
+            "secrets",
+            "providers",
+            "authRefreshes",
+            "credentials",
+            "customModels",
+            "memoryTranslateMedia",
+            "modelProfiles",
+            "plugins",
+            "pluginStorage",
+            "pluginPermissions",
+        ] as const;
+        expect(Object.keys(BOOT_CACHE_ELIGIBILITY).sort()).toEqual([...ALL_KINDS].sort());
+        const s = await defaultServer();
+        await s.create("plugins", "main", []);
+        await s.create("pluginStorage", "main", {});
+        await s.create("pluginPermissions", "main", { grants: {}, lastGrantTime: {} });
+        const read = await fullRead(s, never);
+        for (const kind of never) {
+            expect(BOOT_CACHE_ELIGIBILITY[kind].decision, kind).toBe("never");
+            expect(BOOT_CACHED_KINDS, kind).not.toContain(kind);
+            expect(read.kinds[kind], kind).toHaveLength(1);
+        }
+        const result = await bootResult(s, {
+            kinds: [...never],
+            known: {
+                records: never.flatMap((kind) => read.kinds[kind].map(({ id, revision }) => ({ kind, id, revision }))),
+            },
+        });
+        expect(result.kinds).toEqual(read.kinds);
+    });
+
     it("misses a revision from another epoch while item hashes still match", async () => {
         const s = await defaultServer();
         await s.create("characters", "a", character("a"));
@@ -331,6 +381,64 @@ describe("POST /api/resources/boot with known revisions", () => {
         expectCached(result.kinds.characters[0], "a", a, "characters/a");
         const after = await fullRead(s, ["characters"]);
         expect(expectWhole(result.kinds.characters[1], "d", "characters/d")).toEqual(after.kinds.characters[1]);
+    });
+});
+
+describe("POST /api/resources/boot with chat collections", () => {
+    it("omits matching collections without reading their metadata and checks claims against the server summary format", async () => {
+        const s = await defaultServer();
+        await s.create("characters", "c", character("c"));
+        const created = await s.json("/api/resources/batch", {
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "chat",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { name: "Original", message: [] } }],
+                },
+            ],
+        });
+        expect(created.status, await created.clone().text()).toBe(200);
+        const before = await fullRead(s, ["characters"], true);
+        const claim = (format: number) => ({
+            characterId: "c",
+            claim: chatCollectionClaim(format, "c", before.chatOrders![0].revision, before.chatSummaries!),
+        });
+        const request = (format: number): ResourceBootRequest => ({
+            kinds: ["characters"],
+            chatSummaries: true,
+            known: { chatCollections: [claim(format)] },
+        });
+        const foreign = await bootResult(s, request(CHAT_SUMMARY_FORMAT + 1));
+        expect(foreign.chatSummaryFormat).toBe(CHAT_SUMMARY_FORMAT);
+        expect(foreign.cachedChatCollections).toEqual([]);
+        expect(foreign.chatSummaries).toEqual(before.chatSummaries);
+        expect(foreign.chatOrders).toEqual(before.chatOrders);
+
+        // Observe the SQLite I/O boundary: reading meta and filtering it out afterward is still a read.
+        const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+        const statements = Object.getPrototypeOf(db.prepare("SELECT 1")) as StatementSync;
+        const all = statements.all;
+        const metadataReads: string[] = [];
+        const reads = vi.spyOn(statements, "all").mockImplementation(function (this: StatementSync, ...args) {
+            const rows = all.apply(this, args);
+            for (const row of rows) {
+                if (Object.hasOwn(row, "meta") && typeof row.characterId === "string")
+                    metadataReads.push(row.characterId);
+            }
+            return rows;
+        });
+        try {
+            const warm = await bootResult(s, request(CHAT_SUMMARY_FORMAT));
+            expect(metadataReads).toEqual([]);
+            expect(warm.chatSummaryFormat).toBe(CHAT_SUMMARY_FORMAT);
+            expect(warm.cachedChatCollections).toEqual(["c"]);
+            expect(warm.chatSummaries).toEqual([]);
+            expect(warm.chatOrders).toEqual([]);
+        } finally {
+            reads.mockRestore();
+            db.close();
+        }
     });
 });
 
@@ -525,7 +633,7 @@ describe("POST /api/resources/boot inventory semantics", () => {
         expectWhole(result.kinds.characters[1], "b", "characters/b");
     });
 
-    it("accepts 5000 records and hashes in all, and 400s one more (counted before dropping)", async () => {
+    it("accepts 5000 record, hash and collection claims in all, and 400s one more (counted before dropping)", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a"));
         const claim = { kind: "characters", id: "a", revision: a };
@@ -546,6 +654,22 @@ describe("POST /api/resources/boot inventory semantics", () => {
         });
         expect(over.status).toBe(400);
         expect(((await over.json()) as BootError).error).toContain("5000");
+
+        const collection = { characterId: "a", claim: "0".repeat(32) };
+        const withCollection = {
+            kinds: ["characters"],
+            chatSummaries: true,
+            known: {
+                records: records(4998),
+                items: [{ kind: "modules", hashes: hashes(1) }],
+                chatCollections: [collection],
+            },
+        };
+        expect((await boot(s, withCollection)).status).toBe(200);
+        withCollection.known.chatCollections.push(collection);
+        const overWithCollections = await boot(s, withCollection);
+        expect(overWithCollections.status).toBe(400);
+        expect(((await overWithCollections.json()) as BootError).error).toContain("5000");
 
         // Entries of an ignored kind still count.
         const ignored = await boot(s, {

@@ -3,12 +3,15 @@ import {
     BOOT_ITEM_HASH_PATTERN,
     BOOT_ITEM_KINDS,
     BOOT_RESOURCE_FORMAT,
+    chatCollectionClaim,
     MAX_BOOT_BODY_BYTES,
     RESOURCE_KIND,
+    parseRevisionToken,
     type ResourceBootRequest,
     type ResourceReadKindsResult,
     type ResourceRecord,
 } from "../../../shared/resources.ts";
+import { CHAT_SUMMARY_FORMAT, type ChatOrderRecord, type ChatSummary } from "../../../shared/chats.ts";
 import type { BOOT_CACHE_REASONS, DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import { newId } from "../../../shared/ids.ts";
 
@@ -27,8 +30,11 @@ import { newId } from "../../../shared/ids.ts";
 
 /** The cache's own layout; bump it for any incompatible change. */
 export const BOOT_CACHE_FORMAT = 1;
-/** Most claims (records plus hashes) a boot request carries, as the server allows. */
+/** Most claims (records, hashes and chat collections) a boot request carries, as the server allows. */
 export const MAX_BOOT_CLAIMS = 5000;
+// The @ prefix cannot pass the server registry's resource kind grammar.
+const CHAT_COLLECTION_KIND = "@chatCollection";
+type CachedChatCollection = { format: number; summaries: ChatSummary[]; order: ChatOrderRecord | null };
 const MAX_RECORD_ID_LENGTH = 512;
 const MAX_REVISION_LENGTH = 256;
 // Match isValidResourceId in server/src/data/resourceStore.ts before advertising cached ids.
@@ -110,6 +116,57 @@ export function holdsCredential(kind: string, data: unknown): boolean {
     return isPlainObject(tts) && typeof tts.apiKey === "string" && tts.apiKey !== "";
 }
 
+/** Corrupt collection entries are dropped before the request, where no fallback catch runs. */
+function readCachedCollection(record: CachedRecord): CachedChatCollection | null {
+    if (record.text === undefined) return null;
+    try {
+        const value: unknown = JSON.parse(record.text);
+        if (!isPlainObject(value) || value.format !== CHAT_SUMMARY_FORMAT || !Array.isArray(value.summaries)) {
+            return null;
+        }
+        const { summaries, order } = value;
+        if (summaries.length === 0 && order === null) return null;
+        const ids = new Set<string>();
+        let epoch: string | undefined;
+        let previousSeq = -1;
+        for (const summary of summaries) {
+            if (
+                !isPlainObject(summary) ||
+                summary.characterId !== record.id ||
+                !isValidResourceId(summary.id) ||
+                ids.has(summary.id) ||
+                typeof summary.name !== "string" ||
+                typeof summary.fmIndex !== "number"
+            )
+                return null;
+            const token = parseRevisionToken(summary.revision);
+            if (!token || (epoch !== undefined && token.epoch !== epoch) || token.seq <= previousSeq) return null;
+            epoch = token.epoch;
+            previousSeq = token.seq;
+            ids.add(summary.id);
+        }
+        if (order !== null) {
+            if (
+                !isPlainObject(order) ||
+                order.characterId !== record.id ||
+                typeof order.revision !== "string" ||
+                !Array.isArray(order.ids) ||
+                !order.ids.every((id) => typeof id === "string")
+            )
+                return null;
+            const token = parseRevisionToken(order.revision);
+            if (!token || (epoch !== undefined && token.epoch !== epoch)) return null;
+        }
+        const collection = value as CachedChatCollection;
+        return record.revision ===
+            chatCollectionClaim(collection.format, record.id, collection.order?.revision ?? null, collection.summaries)
+            ? collection
+            : null;
+    } catch {
+        return null;
+    }
+}
+
 /** A stored record entry checked at runtime, or null (dropped from the contents). */
 export function checkCachedRecord(value: unknown): CachedRecord | null {
     if (!isPlainObject(value)) {
@@ -118,7 +175,7 @@ export function checkCachedRecord(value: unknown): CachedRecord | null {
     const { kind, id, revision, text, hashes } = value;
     if (
         typeof kind !== "string" ||
-        !BOOT_CACHED_KINDS.includes(kind) ||
+        (!BOOT_CACHED_KINDS.includes(kind) && kind !== CHAT_COLLECTION_KIND) ||
         !isValidResourceId(id) ||
         typeof revision !== "string" ||
         revision.length === 0 ||
@@ -127,7 +184,8 @@ export function checkCachedRecord(value: unknown): CachedRecord | null {
         return null;
     }
     if (typeof text === "string" && hashes === undefined) {
-        return { kind, id, revision, text };
+        const record = { kind, id, revision, text };
+        return kind !== CHAT_COLLECTION_KIND || readCachedCollection(record) ? record : null;
     }
     if (
         text === undefined &&
@@ -164,19 +222,28 @@ export type BootRequestContext = {
     claims: Map<string, CachedRecord>;
     /** Kind → the advertised item hashes. */
     hashes: Map<string, Set<string>>;
+    /** Character id → the complete collection advertised by this boot. */
+    chatCollections: Map<string, CachedRecord>;
 };
 
 const utf8Length = (text: string) => new TextEncoder().encode(text).length;
 
 /**
  * The boot request for `contents`: every kind with chat summaries (as the plain read), claiming each
- * complete record (an item record only when every item text is there) and every item hash whose text
- * is there. Over `MAX_BOOT_CLAIMS` claims or `MAX_BOOT_BODY_BYTES` it claims nothing.
+ * complete record (an item record only when every item text is there), valid chat collection and
+ * every item hash whose text is there. Over `MAX_BOOT_CLAIMS` or `MAX_BOOT_BODY_BYTES` it claims nothing.
  */
 export function prepareBootRequest(contents: BootCacheContents): BootRequestContext {
     const claims = new Map<string, CachedRecord>();
     const hashes = new Map<string, Set<string>>();
-    for (const record of contents.records) {
+    const chatCollections = new Map<string, CachedRecord>();
+    for (const value of contents.records) {
+        const record = checkCachedRecord(value);
+        if (!record) continue;
+        if (record.kind === CHAT_COLLECTION_KIND) {
+            chatCollections.set(record.id, record);
+            continue;
+        }
         if (record.hashes !== undefined) {
             const set = hashes.get(record.kind) ?? new Set<string>();
             let complete = true;
@@ -195,21 +262,30 @@ export function prepareBootRequest(contents: BootCacheContents): BootRequestCont
         claims.set(recordKey(record.kind, record.id), record);
     }
     const base: ResourceBootRequest = { kinds: Object.values(RESOURCE_KIND), chatSummaries: true };
-    const claimCount = claims.size + [...hashes.values()].reduce((sum, set) => sum + set.size, 0);
+    const claimCount =
+        claims.size + chatCollections.size + [...hashes.values()].reduce((sum, set) => sum + set.size, 0);
     if (claimCount === 0) {
-        return { request: base, contents, claims: new Map(), hashes: new Map() };
+        return { request: base, contents, claims: new Map(), hashes: new Map(), chatCollections: new Map() };
     }
     const request: ResourceBootRequest = {
         ...base,
         known: {
             records: [...claims.values()].map(({ kind, id, revision }) => ({ kind, id, revision })),
             items: [...hashes].filter(([, set]) => set.size > 0).map(([kind, set]) => ({ kind, hashes: [...set] })),
+            ...(chatCollections.size > 0
+                ? {
+                      chatCollections: [...chatCollections.values()].map(({ id, revision }) => ({
+                          characterId: id,
+                          claim: revision,
+                      })),
+                  }
+                : {}),
         },
     };
     if (claimCount > MAX_BOOT_CLAIMS || utf8Length(JSON.stringify(request)) > MAX_BOOT_BODY_BYTES) {
-        return { request: base, contents, claims: new Map(), hashes: new Map() };
+        return { request: base, contents, claims: new Map(), hashes: new Map(), chatCollections: new Map() };
     }
-    return { request, contents, claims, hashes };
+    return { request, contents, claims, hashes, chatCollections };
 }
 
 /** What a boot answer gave: the plain read result, and the cache write that records it. */
@@ -221,6 +297,30 @@ export type ExpandedBoot = {
 };
 
 const miss = (message: string) => new BootCacheMiss("incomplete", message);
+
+/** Chats and orders each have their own seq space; sort and validate them separately. */
+function mergeBySeq<T extends { characterId: string; revision: string }>(
+    fresh: T[],
+    cached: T[],
+    cachedIds: ReadonlySet<string>,
+    epoch: string,
+): T[] {
+    if (fresh.some((row) => !isPlainObject(row) || cachedIds.has(row.characterId))) {
+        throw new BootCacheMiss("format", "The boot answer includes fresh data for a cached character");
+    }
+    const sequences = new Set<number>();
+    return [...fresh, ...cached]
+        .map((row) => {
+            const token = parseRevisionToken(row.revision);
+            if (!token || token.epoch !== epoch || sequences.has(token.seq)) {
+                throw new BootCacheMiss("format", "The boot answer cannot be merged in plain read order");
+            }
+            sequences.add(token.seq);
+            return { row, seq: token.seq };
+        })
+        .sort((a, b) => a.seq - b.seq)
+        .map(({ row }) => row);
+}
 
 /**
  * The boot answer expanded against the request's advertised claims into what the plain read gives
@@ -322,7 +422,76 @@ export function expandBootAnswer(answer: unknown, context: BootRequestContext): 
             return { id, revision, data: record.data };
         });
     }
-    const snapshot: ResourceReadKindsResult = { epoch, kinds: resultKinds, chatSummaries, chatOrders };
+    const cachedIds = answer.cachedChatCollections === undefined ? [] : answer.cachedChatCollections;
+    if (!Array.isArray(cachedIds)) {
+        throw new BootCacheMiss("format", "The boot answer's cached chat collections are not a list");
+    }
+    let summaries: ChatSummary[] = chatSummaries;
+    let orders: ChatOrderRecord[] = chatOrders;
+    if (cachedIds.length > 0) {
+        if (answer.chatSummaryFormat !== CHAT_SUMMARY_FORMAT) {
+            throw new BootCacheMiss("format", "The boot answer has another chat summary format");
+        }
+        const seen = new Set<string>();
+        const cachedSummaries: ChatSummary[] = [];
+        const cachedOrders: ChatOrderRecord[] = [];
+        const advertised = new Map(
+            context.request.known?.chatCollections?.map(({ characterId, claim }) => [characterId, claim]),
+        );
+        for (const id of cachedIds) {
+            if (!isValidResourceId(id) || seen.has(id)) {
+                throw new BootCacheMiss("format", "The boot answer repeats or has an invalid cached character id");
+            }
+            seen.add(id);
+            const record = context.chatCollections.get(id);
+            const collection = record && readCachedCollection(record);
+            if (!record || advertised.get(id) !== record.revision || !collection) {
+                throw miss(`The boot answer left out the chat collection ${id}, which this boot did not claim`);
+            }
+            for (const summary of collection.summaries) cachedSummaries.push(summary);
+            if (collection.order) cachedOrders.push(collection.order);
+        }
+        summaries = mergeBySeq(summaries, cachedSummaries, seen, epoch);
+        orders = mergeBySeq(orders, cachedOrders, seen, epoch);
+    }
+    const producerFormat = answer.chatSummaryFormat;
+    if (producerFormat === CHAT_SUMMARY_FORMAT) {
+        const collections = new Map<string, CachedChatCollection>();
+        const group = (id: string) => {
+            let collection = collections.get(id);
+            if (!collection) {
+                collection = { format: producerFormat, summaries: [], order: null };
+                collections.set(id, collection);
+            }
+            return collection;
+        };
+        for (const summary of summaries) group(summary.characterId).summaries.push(summary);
+        for (const order of orders) {
+            const collection = group(order.characterId);
+            if (collection.order) throw new BootCacheMiss("format", "The boot answer repeats a character's order");
+            collection.order = order;
+        }
+        for (const [id, collection] of collections) {
+            const record = checkCachedRecord({
+                kind: CHAT_COLLECTION_KIND,
+                id,
+                revision: chatCollectionClaim(
+                    collection.format,
+                    id,
+                    collection.order?.revision ?? null,
+                    collection.summaries,
+                ),
+                text: JSON.stringify(collection),
+            });
+            if (record) manifest.push(record);
+        }
+    }
+    const snapshot: ResourceReadKindsResult = {
+        epoch,
+        kinds: resultKinds,
+        chatSummaries: summaries,
+        chatOrders: orders,
+    };
     // Item texts of items that ended up only in a record that is not cached are dropped by the
     // write's GC; keep only the ones a manifest record names.
     const named = new Set<string>();
@@ -701,7 +870,7 @@ export async function loadBootSnapshot(deps: BootCacheDeps): Promise<BootSnapsho
     mark("risu-boot-cache:read");
     const context = prepareBootRequest(contents);
     const claims = {
-        records: context.claims.size,
+        records: context.claims.size + context.chatCollections.size,
         items: [...context.hashes.values()].reduce((sum, set) => sum + set.size, 0),
     };
     let answer: unknown;

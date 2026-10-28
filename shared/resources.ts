@@ -116,8 +116,8 @@ const revisionTokenPattern =
 
 /**
  * A revision token `<epoch>:<seq>:<revision>` (the store's format: `seq` is the record's
- * incarnation, `revision` counts its writes), or null when it is not one. Only hydration ordering
- * reads tokens; everything else treats them as opaque.
+ * incarnation, `revision` counts its writes), or null when it is not one. Hydration orders tokens;
+ * boot expansion also uses `seq` to rebuild the plain read's order within each table.
  */
 export function parseRevisionToken(token: unknown): { epoch: string; seq: number; revision: number } | null {
     if (typeof token !== "string") {
@@ -208,14 +208,58 @@ export const BOOT_RESOURCE_FORMAT = 1;
 export const MAX_BOOT_BODY_BYTES = 2 * 1024 * 1024;
 
 /**
- * The kinds whose records a boot answer may leave out as `cached` (their revision is the known one).
- * A kind with a server `project` never is, whatever this list says.
+ * Every resource kind's disk-cache policy. `eligible` means permitted but not worth a claim at its
+ * measured size. A kind with a server `project` is never cached, whatever this table says.
  */
-export const BOOT_CACHED_KINDS: readonly string[] = [
-    RESOURCE_KIND.characters,
-    RESOURCE_KIND.modules,
-    RESOURCE_KIND.presets,
-];
+export const BOOT_CACHE_ELIGIBILITY = {
+    characters: { decision: "cached", reason: "Whole records, except a non-empty oaiTTSConfig.apiKey." },
+    modules: {
+        decision: "cached",
+        reason: "Array records with item hashes; no managed credential field or projection.",
+    },
+    presets: {
+        decision: "cached",
+        reason: "Prompt preset arrays with item hashes; no managed credential field or projection.",
+    },
+    inlays: { decision: "cached", reason: "Whole records; no managed credential field, no projection." },
+    plugins: { decision: "never", reason: "Plugin values stay out of the boot cache." },
+    pluginStorage: { decision: "never", reason: "Plugin values stay out of the boot cache." },
+    pluginPermissions: { decision: "never", reason: "Host consent grants stay out of the boot cache." },
+    providers: { decision: "never", reason: "additionalParams header lines can carry credentials." },
+    secrets: { decision: "never", reason: "Client-readable auxiliary credentials." },
+    llmSecrets: { decision: "never", reason: "Managed credentials and a masked server projection." },
+    memoryTranslateMedia: {
+        decision: "never",
+        reason: "Endpoint URLs and workflow/config content can carry credentials.",
+    },
+    authRefreshes: { decision: "never", reason: "Refresh tokens." },
+    customModels: { decision: "never", reason: "Model params and header lines can carry credentials." },
+    credentials: { decision: "never", reason: "Credential records are excluded by policy; values live in llmSecrets." },
+    modelProfiles: { decision: "never", reason: "Endpoint URLs and connection config can carry credentials." },
+    ui: { decision: "eligible", reason: "Display preferences; measured payload under 3 KB." },
+    loreBook: { decision: "eligible", reason: "Lore content; measured payload under 3 KB." },
+    globalscript: { decision: "eligible", reason: "Script content; measured payload under 3 KB." },
+    hotkeys: { decision: "eligible", reason: "Key bindings; measured payload under 3 KB." },
+    characterOrder: { decision: "eligible", reason: "Character ordering; measured payload under 3 KB." },
+    globalChatVariables: { decision: "eligible", reason: "Chat variables; measured payload under 3 KB." },
+    personas: { decision: "eligible", reason: "Persona content; measured payload under 3 KB." },
+    translatorPresets: {
+        decision: "eligible",
+        reason: "Translation prompts and options; measured payload under 3 KB.",
+    },
+    hypaV3Presets: { decision: "eligible", reason: "Memory prompts and options; measured payload under 3 KB." },
+    togglePresets: { decision: "eligible", reason: "Toggle values; measured payload under 3 KB." },
+    enabledModules: { decision: "eligible", reason: "Module ids; measured payload under 3 KB." },
+    statics: { decision: "eligible", reason: "Static asset references; measured payload under 3 KB." },
+    modelPresets: { decision: "eligible", reason: "Profile slot references and options; measured payload under 3 KB." },
+} as const satisfies {
+    readonly [K in ResourceKindName]: { decision: "cached" | "eligible" | "never"; reason: string };
+};
+
+/** Only measured worthwhile kinds are cached; eligible kinds remain full reads. Free-form content may contain secrets. */
+export const BOOT_CACHED_KINDS: readonly string[] = Object.values(RESOURCE_KIND).filter(
+    (kind) => BOOT_CACHE_ELIGIBILITY[kind].decision === "cached",
+);
 
 /**
  * The cached kinds whose array records a boot answer sends item by item (`items`) when their revision
@@ -242,6 +286,8 @@ export type ResourceBootRequest = {
     known?: {
         records?: { kind: string; id: string; revision: string }[];
         items?: { kind: string; hashes: string[] }[];
+        /** Complete per-character summaries and order; conflicting claims for one character are a miss. */
+        chatCollections?: { characterId: string; claim: string }[];
     };
 };
 
@@ -266,6 +312,10 @@ export type ResourceBootResult = {
     kinds: Record<string, ResourceBootRecord[]>;
     chatSummaries?: ChatSummary[];
     chatOrders?: ChatOrderRecord[];
+    /** Producer's summary projection format; present whenever summaries are requested. */
+    chatSummaryFormat?: number;
+    /** Characters whose summaries AND order were omitted for an exact collection claim. */
+    cachedChatCollections?: string[];
 };
 
 /**
@@ -395,6 +445,28 @@ export function revisionDigest(listing: ResourceRevisionListing): string {
     for (const { characterId, id, revision } of listing.chats) sum += hash(["c", characterId, id, revision]);
     for (const { characterId, revision } of listing.chatOrders) sum += hash(["o", characterId, revision]);
     return BigInt.asUintN(128, sum).toString(16).padStart(32, "0");
+}
+
+/**
+ * A complete collection in chat seq order, hashed as a domain-separated JSON tuple with the
+ * producer's summary format. MurmurHash3 x86_128 detects accidental differences, not hostile input.
+ */
+export function chatCollectionClaim(
+    format: number,
+    characterId: string,
+    orderRevision: string | null,
+    chats: readonly { id: string; revision: string }[],
+): string {
+    const tuple = [
+        "chatCollection",
+        format,
+        characterId,
+        orderRevision,
+        chats.map(({ id, revision }) => [id, revision]),
+    ];
+    return murmurHash128(revisionEncoder.encode(JSON.stringify(tuple)))
+        .toString(16)
+        .padStart(32, "0");
 }
 
 export type BackupSnapshotInfo = { id: string; createdAt: string; size: number };

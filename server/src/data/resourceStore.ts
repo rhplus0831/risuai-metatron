@@ -1408,11 +1408,11 @@ export function createResourceStore(options: {
          * Every record of several kinds, read in one synchronous call, so one committed state. With
          * `chats`, also every chat (metadata plus messages in order) and every chat order; with
          * `chatSummaries` (not together with `chats`), every chat's summary (with memoized last-message times)
-         * and every chat order.
+         * and every chat order, except characters named by the boot's `skipChatCollections`.
          */
         readKinds(
             kindList: readonly ResourceKind[],
-            options: { chats?: boolean; chatSummaries?: boolean } = {},
+            options: { chats?: boolean; chatSummaries?: boolean; skipChatCollections?: ReadonlySet<string> } = {},
         ): {
             epoch: string;
             kinds: Record<string, StoredResource<unknown>[]>;
@@ -1433,7 +1433,7 @@ export function createResourceStore(options: {
                 return { epoch, kinds: result, ...chatTables.readAll() };
             }
             if (options.chatSummaries) {
-                return { epoch, kinds: result, ...chatTables.readSummaries() };
+                return { epoch, kinds: result, ...chatTables.readSummaries(options.skipChatCollections) };
             }
             return { epoch, kinds: result };
         },

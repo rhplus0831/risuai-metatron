@@ -170,6 +170,9 @@ export type ChatRecord = { characterId: string; id: string; revision: string; da
 
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
+/** Bump when the server's chat summary projection changes, including derived fields. */
+export const CHAT_SUMMARY_FORMAT = 1;
+
 /**
  * A chat's summary: what a chat list shows, projected from the stored metadata and the memoized
  * time of its last message by position. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`, `supaMemoryData`),

@@ -685,6 +685,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const updateOrder = db.prepare("UPDATE chatOrders SET revision = revision + 1, ids = ? WHERE seq = ?");
     const deleteOrder = db.prepare("DELETE FROM chatOrders WHERE characterId = ?");
     const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta FROM chats ORDER BY seq");
+    // Filter in SQL so a cached character's potentially large meta never leaves SQLite.
+    const selectUncachedChats = db.prepare(
+        "SELECT seq, characterId, id, revision, meta FROM chats WHERE characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY seq",
+    );
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
@@ -697,6 +701,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         "SELECT seq, id, revision, meta FROM chats WHERE characterId = ? ORDER BY seq",
     );
     const selectAllOrders = db.prepare("SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq");
+    const selectUncachedOrders = db.prepare(
+        "SELECT seq, characterId, revision, ids FROM chatOrders WHERE characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY seq",
+    );
     const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision FROM chats ORDER BY seq");
     const selectOrderRevisions = db.prepare("SELECT seq, characterId, revision FROM chatOrders ORDER BY seq");
     const insertRestoredChat = db.prepare(
@@ -1785,10 +1792,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return { chats, chatOrders };
         },
 
-        /** Every chat's summary (with memoized last-message times) and every chat order, in one read. */
-        readSummaries(): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
+        /** Summaries and orders in seq order, without reading any skipped character's meta or order ids. */
+        readSummaries(skip?: ReadonlySet<string>): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
+            const skipped = skip?.size ? JSON.stringify([...skip]) : null;
             const chatSummaries = (
-                selectAllChats.all() as {
+                (skipped === null ? selectAllChats.all() : selectUncachedChats.all(skipped)) as {
                     seq: number;
                     characterId: string;
                     id: string;
@@ -1797,7 +1805,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 }[]
             ).map((row) => chatSummary(row.characterId, row));
             const chatOrders = (
-                selectAllOrders.all() as { seq: number; characterId: string; revision: number; ids: string }[]
+                (skipped === null ? selectAllOrders.all() : selectUncachedOrders.all(skipped)) as {
+                    seq: number;
+                    characterId: string;
+                    revision: number;
+                    ids: string;
+                }[]
             ).map((row) => ({
                 characterId: row.characterId,
                 revision: tokens.token(row.seq, row.revision),

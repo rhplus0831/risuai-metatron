@@ -1,9 +1,12 @@
 // @vitest-environment node
+import { CHAT_SUMMARY_FORMAT } from "../../../../shared/chats.ts";
 import { IDBFactory } from "fake-indexeddb";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
     RESOURCE_BOOT_PATH,
+    chatCollectionClaim,
+    type ResourceBootResult,
     RESOURCE_KIND,
     type ResourceBootRequest,
     type ResourceReadKindsResult,
@@ -48,6 +51,7 @@ beforeEach(() => {
     vi.stubGlobal("indexedDB", new IDBFactory());
 });
 afterEach(async () => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     await Promise.all(servers.splice(0).map((s) => s.close()));
 });
@@ -84,12 +88,15 @@ function depsFor(s: TestClient, store = indexedDbBootCacheStore(APP)) {
         appVer: APP,
         events: [] as DiagnosticEventInput[],
         requests: [] as ResourceBootRequest[],
+        answers: [] as ResourceBootResult[],
         fullReads: 0,
         readBoot: async (request: ResourceBootRequest) => {
             deps.requests.push(request);
             const res = await s.json(RESOURCE_BOOT_PATH, request);
             expect(res.status, await res.clone().text()).toBe(200);
-            return (await res.json()) as unknown;
+            const answer = (await res.json()) as ResourceBootResult;
+            deps.answers.push(answer);
+            return answer;
         },
         readKinds: async () => {
             deps.fullReads += 1;
@@ -98,6 +105,24 @@ function depsFor(s: TestClient, store = indexedDbBootCacheStore(APP)) {
         report: (event: DiagnosticEventInput) => deps.events.push(event),
     };
     return deps;
+}
+
+async function chatBatch(s: TestClient, body: unknown) {
+    const response = await s.json("/api/resources/batch", body);
+    expect(response.status, await response.clone().text()).toBe(200);
+}
+
+/** Chat seq interleaves characters; order seq follows character creation instead. */
+async function seedInterleavedChats(s: TestClient) {
+    for (const id of ["c1", "c2", "c3"]) await s.create("characters", id, character(id));
+    await chatBatch(s, {
+        chats: ["c2", "c1", "c3", "c2", "c1", "c3"].map((characterId, index) => ({
+            characterId,
+            chatId: `chat${index}`,
+            baseRevision: null,
+            ops: [{ op: "create", chat: { name: `Chat ${index}`, message: [] } }],
+        })),
+    });
 }
 
 /** The cache's stores, raw. */
@@ -244,6 +269,219 @@ describe("the boot through the cache against the real route", () => {
         expect(deps.fullReads).toBe(0);
     });
 
+    it("caches inlays as whole records and re-sends only a stale inlay through the real route", async () => {
+        const s = await server();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const inlay = { name: "Image", ext: "png", type: "image", asset: "assets/image.png", width: 32, height: 16 };
+        await s.create("inlays", "i1", inlay);
+        await s.create("inlays", "i2", { ...inlay, name: "Other" });
+        const store = indexedDbBootCacheStore(APP);
+        const cold = depsFor(s, store);
+        const first = await loadBootSnapshot(cold);
+        const before = await fullRead(s);
+        expect(cold.answers[0].kinds.inlays).toEqual(before.kinds.inlays);
+        expect(JSON.stringify(first.snapshot)).toBe(JSON.stringify(before));
+        await first.commit();
+        const state = await dump();
+        for (const record of before.kinds.inlays) {
+            expect(state.records.get(recordKey("inlays", record.id))).toEqual({
+                kind: "inlays",
+                id: record.id,
+                revision: record.revision,
+                text: JSON.stringify(record.data),
+            });
+        }
+        const warm = depsFor(s, store);
+        expect(JSON.stringify((await loadBootSnapshot(warm)).snapshot)).toBe(JSON.stringify(before));
+        expect(warm.requests[0].known?.records?.filter(({ kind }) => kind === "inlays")).toEqual(
+            before.kinds.inlays.map(({ id, revision }) => ({ kind: "inlays", id, revision })),
+        );
+        expect(warm.answers[0].kinds.inlays).toEqual(
+            before.kinds.inlays.map(({ id, revision }) => ({ id, revision, cached: true })),
+        );
+        await putRecord(s, "inlays", "i1", { ...inlay, name: "Edited image" });
+        const changed = depsFor(s, store);
+        const boot = await loadBootSnapshot(changed);
+        const after = await fullRead(s);
+        expect(changed.answers[0].kinds.inlays).toEqual([
+            after.kinds.inlays[0],
+            { id: "i2", revision: before.kinds.inlays[1].revision, cached: true },
+        ]);
+        expect(JSON.stringify(boot.snapshot)).toBe(JSON.stringify(after));
+        expect([cold.fullReads, warm.fullReads, changed.fullReads]).toEqual([0, 0, 0]);
+    });
+
+    it.each(["a metadata change", "a message append", "an added chat", "a removed chat", "a changed order"] as const)(
+        "re-sends only the affected character after %s and reconstructs interleaved summaries and orders exactly",
+        async (change) => {
+            const s = await server();
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            await seedInterleavedChats(s);
+            const store = indexedDbBootCacheStore(APP);
+            const first = await loadBootSnapshot(depsFor(s, store));
+            const before = await fullRead(s);
+            expect(before.chatSummaries!.map(({ characterId }) => characterId)).toEqual([
+                "c2",
+                "c1",
+                "c3",
+                "c2",
+                "c1",
+                "c3",
+            ]);
+            expect(before.chatOrders!.map(({ characterId }) => characterId)).toEqual(["c1", "c2", "c3"]);
+            expect(JSON.stringify(first.snapshot)).toBe(JSON.stringify(before));
+            await first.commit();
+            const warm = depsFor(s, store);
+            const warmBoot = await loadBootSnapshot(warm);
+            expect(
+                warm.requests[0].known?.chatCollections
+                    ?.slice()
+                    .sort((a, b) => a.characterId.localeCompare(b.characterId)),
+            ).toEqual(
+                ["c1", "c2", "c3"].map((characterId) => ({
+                    characterId,
+                    claim: chatCollectionClaim(
+                        CHAT_SUMMARY_FORMAT,
+                        characterId,
+                        before.chatOrders!.find((row) => row.characterId === characterId)!.revision,
+                        before.chatSummaries!.filter((row) => row.characterId === characterId),
+                    ),
+                })),
+            );
+            expect(warm.answers[0].cachedChatCollections?.slice().sort()).toEqual(["c1", "c2", "c3"]);
+            expect(warm.answers[0].chatSummaries).toEqual([]);
+            expect(warm.answers[0].chatOrders).toEqual([]);
+            expect(warm.answers[0].chatSummaryFormat).toBe(CHAT_SUMMARY_FORMAT);
+            expect(warmBoot.snapshot.chatSummaries!.map(({ id }) => id)).toEqual([
+                "chat0",
+                "chat1",
+                "chat2",
+                "chat3",
+                "chat4",
+                "chat5",
+            ]);
+            expect(warmBoot.snapshot.chatOrders!.map(({ characterId }) => characterId)).toEqual(["c1", "c2", "c3"]);
+            expect(JSON.stringify(warmBoot.snapshot)).toBe(JSON.stringify(before));
+            await warmBoot.commit();
+
+            const target = before.chatSummaries!.find(({ id }) => id === "chat0")!;
+            const order = before.chatOrders!.find(({ characterId }) => characterId === "c2")!;
+            if (change === "a changed order") {
+                await chatBatch(s, {
+                    chatOrders: [{ characterId: "c2", baseRevision: order.revision, ids: [...order.ids].reverse() }],
+                });
+            } else {
+                const ops =
+                    change === "a metadata change"
+                        ? [{ op: "meta", set: { name: "Renamed" } }]
+                        : change === "a message append"
+                          ? [
+                                {
+                                    op: "append",
+                                    anchor: { end: true },
+                                    messages: [{ role: "user", chatId: "message1", data: "Hello", time: 123 }],
+                                },
+                            ]
+                          : change === "an added chat"
+                            ? [{ op: "create", chat: { name: "New", message: [] } }]
+                            : [{ op: "delete" }];
+                await chatBatch(s, {
+                    chats: [
+                        {
+                            characterId: "c2",
+                            chatId: change === "an added chat" ? "new" : target.id,
+                            baseRevision: change === "an added chat" ? null : target.revision,
+                            ops,
+                        },
+                    ],
+                });
+            }
+            const deps = depsFor(s, store);
+            const boot = await loadBootSnapshot(deps);
+            const full = await fullRead(s);
+            const answer = deps.answers[0];
+            expect(answer.chatSummaryFormat).toBe(CHAT_SUMMARY_FORMAT);
+            expect(answer.cachedChatCollections?.slice().sort()).toEqual(["c1", "c3"]);
+            expect(answer.chatSummaries).toEqual(full.chatSummaries!.filter(({ characterId }) => characterId === "c2"));
+            expect(answer.chatOrders).toEqual(full.chatOrders!.filter(({ characterId }) => characterId === "c2"));
+            expect(JSON.stringify(boot.snapshot)).toBe(JSON.stringify(full));
+            expect(warm.fullReads).toBe(0);
+            expect(deps.fullReads).toBe(0);
+            expect(deps.events).toEqual([]);
+        },
+    );
+
+    it.each(["another", "missing"] as const)(
+        "does not cache summaries from an answer with %s chatSummaryFormat and falls back if that answer omits cached collections",
+        async (format) => {
+            const s = await server();
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            await seedInterleavedChats(s);
+            const store = indexedDbBootCacheStore(APP);
+            const withFormat = () => {
+                const deps = depsFor(s, store);
+                const readBoot = deps.readBoot;
+                deps.readBoot = async (request) => {
+                    const answer = await readBoot(request);
+                    if (format === "missing") delete answer.chatSummaryFormat;
+                    else answer.chatSummaryFormat = CHAT_SUMMARY_FORMAT + 1;
+                    return answer;
+                };
+                return deps;
+            };
+            const full = await fullRead(s);
+            const cold = withFormat();
+            const first = await loadBootSnapshot(cold);
+            expect(JSON.stringify(first.snapshot)).toBe(JSON.stringify(full));
+            await first.commit();
+            expect([...(await dump()).records.keys()].filter((key) => key.startsWith("@chatCollection"))).toEqual([]);
+            const next = depsFor(s, store);
+            const nextBoot = await loadBootSnapshot(next);
+            expect(next.requests[0].known?.chatCollections ?? []).toEqual([]);
+            expect(next.answers[0].cachedChatCollections).toEqual([]);
+            expect(next.answers[0].chatSummaries).toEqual(full.chatSummaries);
+            expect(next.answers[0].chatOrders).toEqual(full.chatOrders);
+            expect(JSON.stringify(nextBoot.snapshot)).toBe(JSON.stringify(full));
+            await nextBoot.commit();
+            // Now there is a valid collection to claim, but the producer's format no longer agrees.
+            const incompatible = withFormat();
+            const fallback = await loadBootSnapshot(incompatible);
+            expect(incompatible.requests[0].known?.chatCollections).toHaveLength(3);
+            expect(incompatible.answers[0].cachedChatCollections).toHaveLength(3);
+            expect(JSON.stringify(fallback.snapshot)).toBe(JSON.stringify(full));
+            expect(incompatible.fullReads).toBe(1);
+            expect(incompatible.events).toContainEqual(
+                expect.objectContaining({ kind: "bootCache", phase: "fallback", reason: "format" }),
+            );
+            await fallback.commit();
+            expect((await dump()).records.size).toBe(0);
+        },
+    );
+
+    it("falls back to the plain read when an answer omits an unclaimed chat collection", async () => {
+        const s = await server();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        await seedInterleavedChats(s);
+        const deps = depsFor(s);
+        const readBoot = deps.readBoot;
+        deps.readBoot = async (request) => {
+            const answer = await readBoot(request);
+            answer.cachedChatCollections = ["c2"];
+            answer.chatSummaries = answer.chatSummaries!.filter(({ characterId }) => characterId !== "c2");
+            answer.chatOrders = answer.chatOrders!.filter(({ characterId }) => characterId !== "c2");
+            return answer;
+        };
+        const boot = await loadBootSnapshot(deps);
+        expect(deps.requests[0]).not.toHaveProperty("known");
+        expect(deps.fullReads).toBe(1);
+        expect(JSON.stringify(boot.snapshot)).toBe(JSON.stringify(await fullRead(s)));
+        expect(deps.events).toContainEqual(
+            expect.objectContaining({ kind: "bootCache", phase: "fallback", reason: "incomplete" }),
+        );
+        await boot.commit();
+        expect((await dump()).records.size).toBe(0);
+    });
+
     it("a modified cached text that still parses falls back to the plain read and clears the cache (a character under another id)", async () => {
         const s = await server();
         await s.create("characters", "c1", character("c1"));
@@ -270,7 +508,8 @@ describe("the boot through the cache against the real route", () => {
         ]);
         await boot.commit();
         expect(deps.events).toEqual([
-            expect.objectContaining({ kind: "bootCache", phase: "fallback", reason: "incomplete", records: 2 }),
+            // The claimed records count the character's chat collection too.
+            expect.objectContaining({ kind: "bootCache", phase: "fallback", reason: "incomplete", records: 3 }),
             { kind: "bootCache", phase: "cleared", reason: "incomplete" },
         ]);
         expect((await dump()).records.size).toBe(0);
