@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideRecordRecovery } from "../journalRecovery";
+import { decideChatRecovery, decideRecordRecovery } from "../journalRecovery";
 import type { RecordLayerValues, StoredLayers } from "../draftJournal";
 
 const A = JSON.stringify({ name: "sent" });
@@ -90,5 +90,32 @@ describe("record recovery decisions", () => {
         for (const item of cases) {
             expect(decideRecordRecovery(item.layers, item.server), item.name).toEqual(item.expected);
         }
+    });
+});
+
+describe("whole-chat recovery decisions", () => {
+    const snapshot = {
+        id: "chat",
+        name: "Local replacement",
+        note: "",
+        localLore: [],
+        message: [{ chatId: "m", role: "user" as const, data: "local" }],
+    };
+    it.each([
+        { name: "replace", op: { op: "replace" as const, chat: snapshot } },
+        { name: "delete", op: { op: "delete" as const } },
+        { name: "multi-id remove", op: { op: "remove" as const, ids: ["m", "n"] } },
+    ])("replays $name only on its unchanged revision, without requesting message data", ({ op }) => {
+        const layers: StoredLayers<"chat"> = {
+            pending: layer({ baseRevision: "original-base", groupId: "original-group", ops: [{ op }] }),
+        };
+        const context = { parent: true, chatId: "chat", canDelete: true };
+        expect(decideChatRecovery(layers, { revision: "original-base" }, context)).toMatchObject({
+            action: "replay",
+            ops: [op],
+            baseRevision: "original-base",
+            groupId: "original-group",
+        });
+        expect(decideChatRecovery(layers, { revision: "remote-base" }, context)).toEqual({ action: "draft" });
     });
 });

@@ -1640,6 +1640,8 @@ export const languageEnglish = {
     chatSaveRefused:
         "The server refused this chat change. Edit or delete the chat, or choose Retry, to try again. Use the refusal banner to export available local data or discard the refused change.",
     chatOrderRefused: "This chat order could not be saved. Change the order to try again.",
+    chatRecoveryExpired:
+        "The server can no longer confirm whether these recovered changes were saved. They have been kept as refused work. Retry only if you want to apply them again.",
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",

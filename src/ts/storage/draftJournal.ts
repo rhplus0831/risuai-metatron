@@ -32,6 +32,9 @@ import { isJournalEligible } from "./journalEligibility";
  *   its stored rows, and a page that is gone sends nothing late.
  *   `write(items, removals)` applies captured-version removals and writes in one transaction, with
  *   the same fences and budgets as separate calls; a replaced entry keeps its creation time.
+ *   Startup and adopted chat/order keys are reserved until recovery installs them and calls
+ *   `release`. A committed whole move to drafts or expiry also frees the reservation; a partial
+ *   move atomically drafts only its named layers and leaves the remaining row reserved.
  * - Eligibility: every record text goes through `isJournalEligible`. An ineligible layer is not
  *   written and its older value is removed (the journal never holds an older text than the one the tab
  *   would send); a kind that is never journaled loses its whole entry.
@@ -386,8 +389,10 @@ export type DraftInput = { epoch: string; target: string; createdAt?: number } &
     | { scope: "order"; layers: LayerWrites<"order"> }
 );
 
-/** Moves one of this tab's entries to a draft, unless a layer was written after `version`. */
-export type DraftMove = { epoch: string; scope: JournalScope; target: string; version: number };
+/** Moves the named layers (all when omitted) to a draft unless one was written after `version`. */
+export type DraftMove = JournalRemoval;
+
+export type JournalRelease = { epoch: string; scope: "chat" | "order"; target: string };
 
 export type ComposerRemoval = { userMessageId?: string; keepSendingIds?: readonly string[] };
 
@@ -409,6 +414,8 @@ export interface DraftJournal {
     adoptOrphans(): Promise<number>;
     /** Converts entries to drafts, each in the same transaction as its removal; answers each draft's id or null. */
     moveToDrafts(items: DraftMove[]): Promise<(string | null)[]>;
+    /** Reads layers and frees keys after commit; expired rows are fenced/deleted. Empty answer on failure or off. */
+    release(items: JournalRelease[]): Promise<(StoredLayers<"chat"> | StoredLayers<"order"> | null)[]>;
     /** Stores a draft (reclaiming only expired drafts and composer rows); its id, or null when not stored. */
     putDraft(input: DraftInput): Promise<string | null>;
     listDrafts(): Promise<DraftEntry[]>;
@@ -1322,36 +1329,59 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         }
         const prepared = items.map((item) => {
             const key = mutationKey(item.epoch, tabId!, item.scope, item.target);
-            return { key, version: item.version };
+            return { key, version: item.version, layers: item.layers ? [...item.layers] : null };
         });
         return tracked(
             items.map(() => null),
             async () => {
                 try {
+                    const freed: string[] = [];
                     const ids = await withDatabase("readwrite", async (store) => {
                         const answers: (string | null)[] = [];
-                        for (const { key, version } of prepared) {
+                        for (const { key, version, layers } of prepared) {
                             const row = checkJournalRow(await requestValue(store.get(key)));
-                            raiseFence(key, version);
+                            for (const name of layers ?? [null])
+                                raiseFence(name === null ? key : `${key}${NUL}${name}`, version);
                             if (
                                 row?.type !== "mutation" ||
-                                Object.values(row.layers).some((layer) => layer && layer.version > version)
+                                Object.entries(row.layers).some(
+                                    ([name, layer]) => (!layers || layers.includes(name)) && layer.version > version,
+                                )
                             ) {
                                 answers.push(null);
                                 continue;
                             }
                             if (!layersEligible(row)) {
                                 store.delete(key);
+                                freed.push(key);
+                                answers.push(null);
+                                continue;
+                            }
+                            const selected = Object.fromEntries(
+                                Object.entries(row.layers).filter(([name]) => !layers || layers.includes(name)),
+                            );
+                            if (layers && Object.keys(selected).length === 0) {
                                 answers.push(null);
                                 continue;
                             }
                             const id = mintId();
-                            store.put(draftOf(row, id), draftKey(id));
-                            store.delete(key);
+                            store.put(draftOf({ ...row, layers: selected } as MutationEntry, id), draftKey(id));
+                            const remaining = Object.fromEntries(
+                                Object.entries(row.layers).filter(([name]) => layers && !layers.includes(name)),
+                            );
+                            if (Object.keys(remaining).length > 0) {
+                                const kept = { ...row, layers: remaining };
+                                kept.size = journalValueSize(kept);
+                                store.put(kept, key);
+                            } else {
+                                store.delete(key);
+                                freed.push(key);
+                            }
                             answers.push(id);
                         }
                         return answers;
                     });
+                    for (const key of freed) reserved.delete(key);
                     return ids;
                 } catch (error) {
                     reportFailure(error, "write");
@@ -1359,6 +1389,34 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                 }
             },
         );
+    }
+
+    function release(items: JournalRelease[]): Promise<(StoredLayers<"chat"> | StoredLayers<"order"> | null)[]> {
+        const version = counter;
+        const keys = items.map((item) => mutationKey(item.epoch, tabId!, item.scope, item.target));
+        return tracked([], async () => {
+            try {
+                const layers = await withDatabase("readwrite", async (store) => {
+                    const answers: (StoredLayers<"chat"> | StoredLayers<"order"> | null)[] = [];
+                    for (const key of keys) {
+                        const row = checkJournalRow(await requestValue(store.get(key)));
+                        if (row?.type === "mutation" && row.scope !== "record") {
+                            if (isExpired(row.createdAt, now())) {
+                                raiseFence(key, version);
+                                store.delete(key);
+                                answers.push(null);
+                            } else answers.push(row.layers);
+                        } else answers.push(null);
+                    }
+                    return answers;
+                });
+                for (const key of keys) reserved.delete(key);
+                return layers;
+            } catch (error) {
+                reportFailure(error, "write");
+                return [];
+            }
+        });
     }
 
     function putDraft(input: DraftInput): Promise<string | null> {
@@ -1572,7 +1630,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return tracked(0, async () => {
             const own = tabId!;
             try {
-                return await withDatabase("readwrite", async (store) => {
+                const expired = await withDatabase("readwrite", async (store) => {
                     const time = now();
                     const expired: string[] = [];
                     const collect = (request: IDBRequest<IDBCursorWithValue | null>, owned: boolean) =>
@@ -1599,8 +1657,10 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     for (const key of expired) {
                         store.delete(key);
                     }
-                    return expired.length;
+                    return expired;
                 });
+                for (const key of expired) reserved.delete(key);
+                return expired.length;
             } catch (error) {
                 reportFailure(error, "write");
                 return 0;
@@ -1656,6 +1716,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         readOwn,
         adoptOrphans,
         moveToDrafts,
+        release,
         putDraft,
         listDrafts,
         removeDraft,

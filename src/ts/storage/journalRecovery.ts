@@ -1,5 +1,9 @@
 import { changeLanguage, language } from "src/lang";
 import type { ChatOp } from "../../../shared/chats.ts";
+import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
+import type { Chat, Message } from "../../../shared/database.ts";
+import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { isMessageTranslation, dropInvalidTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, COLLECTION_SELECTION_FIELDS, SECTION_KIND } from "../../../shared/sections.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -22,6 +26,10 @@ import {
     createChat,
     ensureChatLoaded,
     findChat,
+    heldChatRevision,
+    heldOrderRevision,
+    installRecoveredChat,
+    installRecoveredOrder,
     isCharacterGenerating,
     isChatGenerating,
     mergeChatMeta,
@@ -44,6 +52,8 @@ import {
     type MutationEntry,
     type RecordLayerValues,
     type StoredLayers,
+    type JournalChatOp,
+    type JournalRelease,
 } from "./draftJournal";
 import { isJournalEligible } from "./journalEligibility";
 import { replaceRecord, type RecordKind } from "./records.svelte";
@@ -51,6 +61,8 @@ import { recoveryDrafts } from "./recoveryDrafts.svelte";
 import { getResourceEpoch } from "./resourceClient";
 import {
     adoptRecoveredRecord,
+    adoptRecoveredChat,
+    MAX_BATCH_OPERATIONS,
     assertSaveAdmission,
     beginMutationScope,
     flushResources,
@@ -127,6 +139,399 @@ export function decideRecordRecovery(layers: StoredLayers<"record">, server: Ser
         return final.op === "create" && !sent ? { action: "replay", text: final.text } : draft;
     }
     return final.baseRevision === server.revision ? { action: "replay", text: final.text } : draft;
+}
+
+type ChatDecision =
+    | { action: "draft" }
+    | { action: "satisfied" }
+    | { action: "load" }
+    | { action: "create"; snapshot: Chat; groupId: string }
+    | { action: "replay"; ops: ChatOp[]; baseRevision: string | null; groupId: string; splitPending: boolean };
+type RecoveryChatState = { revision: string; data?: DeepReadonly<Chat> } | null;
+type OrderDecision = { action: "draft" | "satisfied" } | { action: "replay"; ids: string[] };
+
+const recoveryId = (value: unknown): value is string =>
+    typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f]/.test(value);
+const revisionOrNull = (value: unknown) => value === null || (typeof value === "string" && value.length > 0);
+const strings = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every((id) => typeof id === "string");
+const ids = (value: unknown): value is string[] =>
+    strings(value) && value.every(recoveryId) && new Set(value).size === value.length;
+const equal = (a: unknown, b: unknown) => {
+    const left = JSON.stringify(a);
+    const right = JSON.stringify(b);
+    return left === right || (left !== undefined && right !== undefined && sameJson(left, right));
+};
+const copyJson = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+function validMessage(value: unknown): value is Message {
+    return (
+        isPlainObject(value) &&
+        recoveryId(value.chatId) &&
+        (value.role === "user" || value.role === "char") &&
+        typeof value.data === "string"
+    );
+}
+
+function validChat(value: unknown, chatId: string): value is Chat {
+    return (
+        isPlainObject(value) &&
+        value.id === chatId &&
+        Array.isArray(value.message) &&
+        value.message.every(validMessage) &&
+        new Set(value.message.map((message) => message.chatId)).size === value.message.length &&
+        (value.name == null || typeof value.name === "string") &&
+        (value.note == null || typeof value.note === "string") &&
+        (value.localLore == null || Array.isArray(value.localLore)) &&
+        (value.fmIndex == null || typeof value.fmIndex === "number")
+    );
+}
+
+function validRecoveryOp(value: unknown, chatId: string): value is ChatOp {
+    if (!isPlainObject(value)) return false;
+    if (
+        value.generation !== undefined &&
+        (!isPlainObject(value.generation) ||
+            !recoveryId(value.generation.id) ||
+            !Number.isSafeInteger(value.generation.seq) ||
+            (value.generation.seq as number) < 0 ||
+            (value.generation.final !== undefined && typeof value.generation.final !== "boolean"))
+    )
+        return false;
+    switch (value.op) {
+        case "create":
+            return (
+                validChat(value.chat, chatId) &&
+                (value.index === undefined || (Number.isSafeInteger(value.index) && (value.index as number) >= 0))
+            );
+        case "replace":
+            return validChat(value.chat, chatId);
+        case "delete":
+            return true;
+        case "begin":
+            return recoveryId(value.id) && recoveryId(value.generationId);
+        case "setText":
+            return recoveryId(value.id) && typeof value.text === "string";
+        case "setMessage":
+            return validMessage(value.message);
+        case "setTranslation":
+            return recoveryId(value.id) && (value.translation === null || isMessageTranslation(value.translation));
+        case "remove":
+            return ids(value.ids) && value.ids.length > 0;
+        case "append": {
+            const anchor = value.anchor;
+            return (
+                Array.isArray(value.messages) &&
+                value.messages.length > 0 &&
+                value.messages.every(validMessage) &&
+                new Set(value.messages.map((message) => message.chatId)).size === value.messages.length &&
+                isPlainObject(anchor) &&
+                Object.keys(anchor).length === 1 &&
+                (anchor.start === true || anchor.end === true || recoveryId(anchor.after))
+            );
+        }
+        case "meta":
+        case "patchMessage": {
+            const set = value.set ?? {};
+            const unset = value.unset ?? [];
+            if (!isPlainObject(set) || !strings(unset) || unset.some((key) => Object.hasOwn(set, key))) return false;
+            const fields = [...Object.keys(set), ...unset];
+            if (fields.includes("__proto__")) return false;
+            if (value.op === "patchMessage") {
+                return (
+                    recoveryId(value.id) &&
+                    fields.length > 0 &&
+                    !fields.some((field) => field === "chatId" || field === "translation") &&
+                    !unset.some((field) => field === "role" || field === "data") &&
+                    (!Object.hasOwn(set, "data") || typeof set.data === "string") &&
+                    (!Object.hasOwn(set, "role") || set.role === "user" || set.role === "char")
+                );
+            }
+            const merge = value.merge ?? {};
+            const mergeUnset = value.mergeUnset ?? {};
+            return (
+                !fields.some((field) => CHAT_META_FORBIDDEN_KEYS.includes(field)) &&
+                isPlainObject(merge) &&
+                isPlainObject(mergeUnset) &&
+                Object.entries(merge).every(
+                    ([key, map]) => CHAT_META_MERGE_KEYS.includes(key) && !fields.includes(key) && isPlainObject(map),
+                ) &&
+                Object.entries(mergeUnset).every(
+                    ([key, keys]) => CHAT_META_MERGE_KEYS.includes(key) && !fields.includes(key) && strings(keys),
+                )
+            );
+        }
+        default:
+            return false;
+    }
+}
+
+/** Checks before values in order and the final touched values, without changing the boot mirror. */
+export function decideChatOpsRecovery(
+    ops: JournalChatOp[],
+    chat: DeepReadonly<Chat>,
+): "replay" | "satisfied" | "draft" {
+    const observed = copyJson<Chat>(chat as Chat);
+    const scratch = copyJson(observed);
+    const touched = new Map<string, Set<string> | null>();
+    const appended = new Set<string>();
+    let append: Extract<ChatOp, { op: "append" }> | undefined;
+    let notApplied = true;
+    const message = (state: Chat, id: string) => state.message.find((row) => row.chatId === id);
+    const touch = (id: string, fields?: string[]) => {
+        if (!fields) touched.set(id, null);
+        else if (touched.get(id) !== null) touched.set(id, new Set([...(touched.get(id) ?? []), ...fields]));
+    };
+    const fieldsOf = (value: object, fields: string[]) =>
+        Object.fromEntries(
+            fields
+                .filter((field) => Object.hasOwn(value, field))
+                .map((field) => [field, (value as Record<string, unknown>)[field]]),
+        );
+    for (const item of ops) {
+        const { op, before } = item;
+        if (!validRecoveryOp(op, chat.id!) || !before || !isPlainObject(before)) return "draft";
+        if (op.op === "setTranslation" || op.op === "begin" || ("generation" in op && op.generation !== undefined))
+            return "draft";
+        if (op.op === "append") {
+            // Mixed membership edits need an order history that the before sidecars do not carry.
+            if (
+                append ||
+                ops.some(({ op: other }) => other.op === "remove") ||
+                !("absent" in before) ||
+                before.absent !== true
+            )
+                return "draft";
+            append = op;
+            for (const row of op.messages) {
+                if (touched.has(row.chatId!)) return "draft";
+                appended.add(row.chatId!);
+                if (message(scratch, row.chatId!)) notApplied = false;
+                touch(row.chatId!);
+            }
+            scratch.message = scratch.message.filter((row) => !appended.has(row.chatId!));
+            const at =
+                "start" in op.anchor
+                    ? 0
+                    : "end" in op.anchor
+                      ? scratch.message.length
+                      : scratch.message.findIndex((row) => row.chatId === op.anchor["after"]) + 1;
+            if ("after" in op.anchor && at === 0) return "draft";
+            const added = copyJson(op.messages);
+            added.forEach(dropInvalidTranslation);
+            scratch.message.splice(at, 0, ...added);
+            continue;
+        }
+        if (!("value" in before)) return "draft";
+        if (op.op === "meta" || op.op === "patchMessage") {
+            const target = op.op === "meta" ? scratch : message(scratch, op.id);
+            const id = op.op === "meta" ? "" : op.id;
+            if (!target || appended.has(id) || !isPlainObject(before.value)) return "draft";
+            const fields = [
+                ...new Set([
+                    ...Object.keys(op.set ?? {}),
+                    ...(op.unset ?? []),
+                    ...(op.op === "meta" ? [...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})] : []),
+                ]),
+            ];
+            if (fields.length === 0 || Object.keys(before.value).some((key) => !fields.includes(key))) return "draft";
+            // These fields have server defaults or normalization beyond a plain assignment.
+            if (
+                op.op === "meta" &&
+                (fields.includes("loreOverrides") ||
+                    fields.some(
+                        (field) =>
+                            ["name", "note", "localLore", "fmIndex"].includes(field) &&
+                            ((op.unset ?? []).includes(field) || op.set?.[field] == null),
+                    ))
+            )
+                return "draft";
+            if (!equal(fieldsOf(target, fields), before.value)) notApplied = false;
+            const record = target as unknown as Record<string, unknown>;
+            for (const key of op.unset ?? []) delete record[key];
+            for (const [key, value] of Object.entries(op.set ?? {})) record[key] = copyJson(value);
+            if (op.op === "meta") {
+                for (const key of new Set([...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})])) {
+                    const prior = before.value[key];
+                    if (!isPlainObject(prior) && !Object.hasOwn(op.merge ?? {}, key)) {
+                        if (Object.hasOwn(before.value, key)) record[key] = copyJson(prior);
+                        else delete record[key];
+                        continue;
+                    }
+                    const map = isPlainObject(prior) ? copyJson(prior) : {};
+                    for (const name of op.mergeUnset?.[key] ?? []) delete map[name];
+                    record[key] = { ...map, ...copyJson(op.merge?.[key] ?? {}) };
+                }
+            }
+            touch(id, fields);
+            continue;
+        }
+        if (op.op === "create" || op.op === "replace" || op.op === "delete") return "draft";
+        const id = op.op === "setMessage" ? op.message.chatId! : op.op === "remove" ? op.ids[0] : op.id;
+        if (appended.has(id)) return "draft";
+        const row = message(scratch, id);
+        if (op.op === "remove") {
+            if (op.ids.length !== 1 || !validMessage(before.value) || before.value.chatId !== id) return "draft";
+            if (!equal(row, before.value)) notApplied = false;
+            scratch.message = scratch.message.filter((row) => row.chatId !== id);
+            touch(id);
+        } else if (!row) return "draft";
+        else if (op.op === "setText") {
+            if (typeof before.value !== "string") return "draft";
+            if (row.data !== before.value) notApplied = false;
+            row.data = op.text;
+            touch(id, ["data"]);
+        } else if (op.op === "setMessage") {
+            if (
+                !validMessage(before.value) ||
+                before.value.chatId !== id ||
+                [row, before.value, op.message].some((value) => Object.hasOwn(value, "translation"))
+            )
+                return "draft";
+            if (!equal(row, before.value)) notApplied = false;
+            scratch.message[scratch.message.indexOf(row)] = copyJson(op.message);
+            touch(id);
+        } else return "draft";
+    }
+    const landed =
+        [...touched].every(([id, fields]) => {
+            const current = id ? message(observed, id) : observed;
+            const final = id ? message(scratch, id) : scratch;
+            return fields === null
+                ? equal(current, final)
+                : !!current && !!final && equal(fieldsOf(current, [...fields]), fieldsOf(final, [...fields]));
+        }) &&
+        (!append ||
+            [...appended].every(
+                (id) =>
+                    observed.message.findIndex((row) => row.chatId === id) ===
+                    scratch.message.findIndex((row) => row.chatId === id),
+            ));
+    return landed ? "satisfied" : notApplied ? "replay" : "draft";
+}
+
+/** Classifies a chat against the boot revision, requesting a whole read only for by-id predicates. */
+export function decideChatRecovery(
+    layers: StoredLayers<"chat">,
+    server: RecoveryChatState,
+    context: { parent: boolean; chatId: string; canDelete: boolean },
+): ChatDecision {
+    const draft: ChatDecision = { action: "draft" };
+    const resend = layers.resend?.value;
+    const pending = layers.pending?.value;
+    if (!context.parent || layers.refused || (!resend && !pending)) return draft;
+    const validBatch = (batch: { groupId: string; baseRevision: string | null }, ops: unknown[]) =>
+        recoveryId(batch.groupId) &&
+        revisionOrNull(batch.baseRevision) &&
+        Array.isArray(ops) &&
+        ops.every((op) => validRecoveryOp(op, context.chatId));
+    if (
+        resend &&
+        (!validBatch(resend, resend.ops) ||
+            resend.ops.length === 0 ||
+            typeof resend.inDoubt !== "boolean" ||
+            !Number.isSafeInteger(resend.seq))
+    )
+        return draft;
+    if (
+        pending &&
+        (!Array.isArray(pending.ops) ||
+            pending.ops.some((item) => !isPlainObject(item)) ||
+            !validBatch(
+                pending,
+                pending.ops.map((item) => item.op),
+            ) ||
+            (pending.delete !== undefined && typeof pending.delete !== "boolean") ||
+            (pending.createSnapshot !== undefined && !validChat(pending.createSnapshot, context.chatId)))
+    )
+        return draft;
+    if (resend) {
+        if (
+            !server ||
+            (resend.ops[0].op === "create") !== (resend.baseRevision === null) ||
+            resend.ops.slice(1).some((op) => op.op === "create") ||
+            (resend.ops.some((op) => op.op === "delete") && !context.canDelete)
+        )
+            return draft;
+        return {
+            action: "replay",
+            ops: resend.ops,
+            baseRevision: resend.baseRevision,
+            groupId: resend.groupId,
+            splitPending: !!pending,
+        };
+    }
+    if (pending!.ops.length > MAX_BATCH_OPERATIONS) return draft;
+    if (pending!.createSnapshot) {
+        return !server &&
+            pending!.baseRevision === null &&
+            !pending!.delete &&
+            !pending!.ops.some(
+                ({ op }) =>
+                    op.op === "delete" ||
+                    op.op === "create" ||
+                    op.op === "begin" ||
+                    ("generation" in op && op.generation !== undefined),
+            )
+            ? { action: "create", snapshot: pending!.createSnapshot, groupId: pending!.groupId }
+            : draft;
+    }
+    const ops = pending!.ops.map((item) => item.op);
+    if (!server || pending!.baseRevision === null || ops.some((op) => op.op === "create")) return draft;
+    if (pending!.delete && !ops.some((op) => op.op === "delete")) return draft;
+    if (ops.some((op) => op.op === "delete") && !context.canDelete) return draft;
+    const whole = ops.some(
+        (op) =>
+            op.op === "replace" ||
+            op.op === "delete" ||
+            op.op === "begin" ||
+            (op.op === "remove" && op.ids.length > 1) ||
+            ("generation" in op && op.generation !== undefined),
+    );
+    if (whole) {
+        if (server.revision !== pending!.baseRevision) return draft;
+    } else {
+        if (!server.data) return { action: "load" };
+        const action = decideChatOpsRecovery(pending!.ops, server.data);
+        if (action !== "replay") return { action };
+    }
+    return {
+        action: "replay",
+        ops,
+        baseRevision: pending!.baseRevision,
+        groupId: pending!.groupId,
+        splitPending: false,
+    };
+}
+
+/** Orders use the untouched server vector and revision, with membership after recovered creates/deletes. */
+export function decideOrderRecovery(
+    layers: StoredLayers<"order">,
+    server: { revision: string | null; ids: string[] },
+    membership: string[],
+    parent: boolean,
+): OrderDecision {
+    const draft: OrderDecision = { action: "draft" };
+    const sent = layers.sent?.value;
+    const latest = layers.latest?.value;
+    if (
+        !parent ||
+        layers.refused ||
+        (!sent && !latest) ||
+        [sent, latest].some((value) => value && (!revisionOrNull(value.baseRevision) || !ids(value.ids)))
+    )
+        return draft;
+    const final = latest ?? sent!;
+    if (final.ids.length !== membership.length || !final.ids.every((id) => membership.includes(id))) return draft;
+    const replay: OrderDecision = { action: "replay", ids: final.ids };
+    if (sent) {
+        if (server.revision === sent.baseRevision) return equal(final.ids, sent.ids) ? replay : draft;
+        if (!equal(server.ids, sent.ids)) return draft;
+        if (!latest) return { action: "satisfied" };
+        return latest.baseRevision === server.revision ? replay : draft;
+    }
+    if (equal(server.ids, final.ids)) return { action: "satisfied" };
+    return final.baseRevision === server.revision ? replay : draft;
 }
 
 const singletonKinds = new Set<string>([
@@ -218,7 +623,7 @@ function install(item: Installation) {
                 if (!removeCharacters([id]).includes(id)) throw new Error("Recovered character could not be removed");
             } else {
                 // The index is resolved and used in this task, with no asynchronous gap. Appending
-                // fields avoids import transforms and leaves the first chat to initializeChats.
+                // fields avoids import transforms; chat recovery or initializeChats supplies its chats.
                 writeCharacterFieldsAt(index < 0 ? characters.length : index, value as AnyClientCharacter);
             }
         } else {
@@ -465,7 +870,7 @@ class RecoveryTimeout extends Error {}
 
 /**
  * Claims and classifies durable intent before any recovered local write. The deadline covers all
- * reads and moves; failure closes the journal (its bounded drain adds at most its open timeout).
+ * reads, moves, and handoff; failure closes the journal (its bounded drain adds at most its open timeout).
  */
 export async function recoverJournal(
     options: { journal?: DraftJournal; timeoutMs?: number; now?: () => number } = {},
@@ -474,6 +879,7 @@ export async function recoverJournal(
     const now = options.now ?? Date.now;
     const timeoutMs = options.timeoutMs ?? 5000;
     const deadline = now() + timeoutMs;
+    const unpin: (() => void)[] = [];
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const check = () => {
@@ -484,6 +890,8 @@ export async function recoverJournal(
         check();
         if (!enabled || !journal.enabled) return;
         await journal.adoptOrphans();
+        check();
+        await journal.purgeExpired();
         check();
         const rows = await journal.readOwn();
         check();
@@ -504,30 +912,194 @@ export async function recoverJournal(
             if (item) installations.push(item);
             else moves.push({ epoch: entry.epoch, scope: entry.scope, target: entry.target, version: entry.version });
         }
+        const parents = new Set(characterList().map((character) => character.chaId));
+        for (const item of installations) {
+            if (item.kind !== "characters" || item.decision.action !== "replay") continue;
+            if (item.decision.text === null) parents.delete(item.id);
+            else parents.add(item.id);
+        }
+        const membership = new Map([...parents].map((id) => [id, chatList(id).map((chat) => chat.id)]));
+        const orders = rows
+            .filter((entry) => entry.epoch === epoch && entry.scope === "order")
+            .map((entry) => ({
+                entry: entry as Extract<MutationEntry, { scope: "order" }>,
+                server: {
+                    revision: heldOrderRevision(entry.target) ?? null,
+                    ids: [...(membership.get(entry.target) ?? [])],
+                },
+            }));
+        const chats: {
+            entry: Extract<MutationEntry, { scope: "chat" }>;
+            ref: ChatRef;
+            decision: Exclude<ChatDecision, { action: "draft" | "satisfied" | "load" }> | { action: "satisfied" };
+            splitIndex?: number;
+        }[] = [];
+        const candidates = rows
+            .filter((entry) => entry.epoch === epoch && entry.scope === "chat")
+            .map((entry) => {
+                const [chaId, chatId, extra] = entry.target.split("\u0000");
+                const ref = { chaId, chatId };
+                const revision = heldChatRevision(ref);
+                return { entry: entry as Extract<MutationEntry, { scope: "chat" }>, ref, extra, revision };
+            });
+        for (const { entry, ref, extra, revision } of candidates) {
+            check();
+            const context = {
+                parent: parents.has(ref.chaId),
+                chatId: ref.chatId,
+                canDelete: (membership.get(ref.chaId)?.length ?? 0) > 1 && !isChatGenerating(ref),
+            };
+            let decision: ChatDecision = { action: "draft" };
+            if (recoveryId(ref.chaId) && recoveryId(ref.chatId) && extra === undefined) {
+                const decide = (server: RecoveryChatState): ChatDecision => {
+                    try {
+                        return decideChatRecovery(entry.layers, server, context);
+                    } catch {
+                        return { action: "draft" };
+                    }
+                };
+                decision = decide(revision ? { revision } : null);
+                const deleting = decision.action === "replay" && decision.ops.some((op) => op.op === "delete");
+                if (decision.action === "load" || deleting) {
+                    unpin.push(pinChat(ref));
+                    const data = await ensureChatLoaded(ref);
+                    check();
+                    context.canDelete = context.canDelete && !isChatGenerating(ref);
+                    decision = data
+                        ? decide({ revision: deleting ? heldChatRevision(ref)! : revision!, data })
+                        : { action: "draft" };
+                }
+            }
+            if (decision.action === "draft" || decision.action === "load") {
+                moves.push({ epoch, scope: entry.scope, target: entry.target, version: entry.version });
+                continue;
+            }
+            let splitIndex: number | undefined;
+            if (decision.action === "replay" && decision.splitPending) {
+                splitIndex = moves.length;
+                moves.push({ epoch, scope: "chat", target: entry.target, version: entry.version, layers: ["pending"] });
+            }
+            chats.push({ entry, ref, decision, splitIndex });
+            if (decision.action === "create") membership.get(ref.chaId)!.push(ref.chatId);
+            if (decision.action === "replay" && decision.ops.some((op) => op.op === "delete")) {
+                membership.set(
+                    ref.chaId,
+                    membership.get(ref.chaId)!.filter((id) => id !== ref.chatId),
+                );
+            }
+        }
+        // A whole read can discover a remote deletion. Build the order's membership from that
+        // mirror plus the staged installations, and recheck deletes against the remaining chats.
+        for (const id of parents)
+            membership.set(
+                id,
+                chatList(id).map((chat) => chat.id),
+            );
+        for (let index = 0; index < chats.length;) {
+            const item = chats[index];
+            const { entry, ref, decision, splitIndex } = item;
+            const members = membership.get(ref.chaId)!;
+            if (decision.action === "create") members.push(ref.chatId);
+            if (decision.action === "replay" && decision.ops.some((op) => op.op === "delete")) {
+                if (!members.includes(ref.chatId) || members.length <= 1 || isChatGenerating(ref)) {
+                    const move: DraftMove = { epoch, scope: "chat", target: entry.target, version: entry.version };
+                    if (splitIndex !== undefined) moves[splitIndex] = move;
+                    else moves.push(move);
+                    chats.splice(index, 1);
+                    continue;
+                }
+                membership.set(
+                    ref.chaId,
+                    members.filter((id) => id !== ref.chatId),
+                );
+            }
+            index += 1;
+        }
+        const recoveredOrders: { entry: Extract<MutationEntry, { scope: "order" }>; decision: OrderDecision }[] = [];
+        for (const { entry, server } of orders) {
+            const decision = decideOrderRecovery(
+                entry.layers,
+                server,
+                membership.get(entry.target) ?? [],
+                parents.has(entry.target) && recoveryId(entry.target),
+            );
+            if (decision.action === "draft")
+                moves.push({ epoch, scope: "order", target: entry.target, version: entry.version });
+            else recoveredOrders.push({ entry, decision });
+        }
         check();
         const moved = moves.length ? await journal.moveToDrafts(moves) : [];
         check();
+        if (moves.some((move, index) => move.scope !== "record" && !move.layers && !moved[index])) {
+            throw new Error("Chat recovery could not preserve its drafts");
+        }
         // Adoption may itself have drafted a collision, even when this tab has no mutation rows.
         const drafts = await journal.listDrafts();
         check();
 
-        // No more awaits: characters precede their order vector, then selection and locale see the
-        // final records. The server baseline and the boot cache's captured snapshot stay untouched.
+        // Install synchronously before handing reservations over. The server baseline and the boot
+        // cache's captured snapshot stay untouched.
         installations.sort((a, b) => rank(a.kind) - rank(b.kind));
         let recovered = moved.filter((id) => id !== null).length;
+        const failedParents = new Set<string>();
         for (const item of installations) {
             try {
                 install(item);
                 recovered += 1;
             } catch {
+                if (item.kind === "characters") failedParents.add(item.id);
                 // A local writer can refuse a malformed row. Keep its durable layers for another
                 // boot, continue the other targets, and never claim that this row was recovered.
+                recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "format", entries: 1 });
+            }
+        }
+        const released: JournalRelease[] = [];
+        for (const { entry, ref, decision, splitIndex } of chats) {
+            try {
+                if (failedParents.has(ref.chaId) || !findCharacter(ref.chaId))
+                    throw new Error("Recovered parent was not installed");
+                if (splitIndex !== undefined && !moved[splitIndex])
+                    throw new Error("Dependent chat work was not drafted");
+                if (decision.action === "create")
+                    installRecoveredChat(
+                        ref,
+                        { groupId: decision.groupId, snapshot: decision.snapshot },
+                        entry.createdAt,
+                    );
+                else if (decision.action === "replay") installRecoveredChat(ref, decision, entry.createdAt);
+                const layers = { ...entry.layers };
+                if (splitIndex !== undefined) delete layers.pending;
+                adoptRecoveredChat(entry, layers);
+                released.push(entry);
+                recovered += 1;
+            } catch {
+                recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "format", entries: 1 });
+            }
+        }
+        for (const { entry, decision } of recoveredOrders) {
+            try {
+                if (failedParents.has(entry.target) || !findCharacter(entry.target))
+                    throw new Error("Recovered parent was not installed");
+                const vector = (entry.layers.latest ?? entry.layers.sent)!.value.ids;
+                const current = chatList(entry.target).map((chat) => chat.id);
+                if (vector.length !== current.length || !vector.every((id) => current.includes(id)))
+                    throw new Error("Recovered chat membership was not installed");
+                if (decision.action === "replay") installRecoveredOrder(entry.target, decision.ids);
+                adoptRecoveredChat(entry, entry.layers);
+                released.push(entry);
+                recovered += 1;
+            } catch {
                 recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "format", entries: 1 });
             }
         }
         reconcileSelection();
         changeLanguage(settings.ui.language);
         recoveryDrafts.replace(drafts, epoch);
+        if (released.length > 0) {
+            const layers = await journal.release(released);
+            check();
+            if (layers.length !== released.length) throw new Error("Chat recovery could not release installed rows");
+        }
         // Adoption has its own reason: orphan. This count describes only this boot's decisions.
         if (recovered > 0) recordClientEvent({ kind: "sync", phase: "journalRecovered", entries: recovered });
     };
@@ -554,6 +1126,7 @@ export async function recoverJournal(
     } finally {
         active = false;
         clearTimeout(timer);
+        for (const release of unpin) release();
     }
 }
 

@@ -409,10 +409,21 @@ describe("boot journal recovery", () => {
         expect(row).toBeDefined();
         expect(row.scope === "record" && !!row.layers.sent).toBe(dispatched);
         const text = row.scope === "record" ? (row.layers.latest ?? row.layers.sent)!.value.text! : "";
+        const chatRow = (await first.journal.readOwn()).find(
+            (entry) => entry.scope === "chat" && entry.target.startsWith("new-character\0"),
+        );
+        expect(!!chatRow).toBe(dispatched);
         const second = await reload();
         if (dispatched) {
             expect(second.characters.findCharacter("new-character")).toBeUndefined();
-            expect(second.recoveryDrafts.entries).toMatchObject([{ target: row.target, layers: row.layers }]);
+            // The dispatched create's first chat went out with it; its parent is absent, so it is a draft too.
+            expect(second.recoveryDrafts.entries).toHaveLength(2);
+            expect(second.recoveryDrafts.entries).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({ target: row.target, layers: row.layers }),
+                    expect.objectContaining({ scope: "chat", target: chatRow!.target, layers: chatRow!.layers }),
+                ]),
+            );
         } else {
             expect(second.characters.findCharacter("new-character")).toMatchObject({
                 name: "Recovered",
@@ -424,20 +435,13 @@ describe("boot journal recovery", () => {
         expect(ops("characters")).toEqual(
             dispatched ? [] : [{ kind: "characters", id: "new-character", baseRevision: null, data: JSON.parse(text) }],
         );
-        const left = await second.journal.readOwn();
-        expect(left.filter((entry) => entry.scope !== "chat")).toEqual([]);
-        // The dispatched create's first chat went out with it; boot recovery leaves that chat row alone.
-        expect(
-            left.map((entry) => [
-                entry.target.split("\0")[0],
-                entry.scope === "chat" ? entry.layers.resend?.value.ops.map((op) => op.op) : null,
-            ]),
-        ).toEqual(dispatched ? [["new-character", ["create"]]] : []);
+        await drain();
+        expect(await second.journal.readOwn()).toEqual([]);
     });
 });
 
 describe("boot recovery ownership and isolation", () => {
-    it("recovers closed-tab work but leaves a live owner and current chat/order rows alone", async () => {
+    it("recovers closed-tab work, leaves a live owner alone, and drafts chat/order rows naming a chat the server lacks", async () => {
         const { createDraftJournal } = await import("./storage/draftJournal");
         const makeOwner = (id: string) => {
             const memory = new Map([["risu-journal-tab", id]]);
@@ -493,7 +497,8 @@ describe("boot recovery ownership and isolation", () => {
                 },
             ]),
         ).toEqual(["written", "written"]);
-        const untouched = await page.journal.readOwn();
+        const chatRows = await page.journal.readOwn();
+        expect(chatRows).toHaveLength(2);
         await page.loadData();
         expect(io.alertError).not.toHaveBeenCalled();
         expect(get(page.stores.loadedStore)).toBe(true);
@@ -507,9 +512,25 @@ describe("boot recovery ownership and isolation", () => {
         expect(writes("ui", ui.data)).toEqual([
             { kind: "ui", id: "main", baseRevision: ui.revision, data: { ...ui.data, theme: "orphan theme" } },
         ]);
-        expect(await page.journal.readOwn()).toEqual(untouched);
+        // The server holds no chat "chat": its pending row and the order naming it become drafts with
+        // their layers as journaled, and nothing is sent for them.
+        const chatWork = server
+            .batchBodies()
+            .flatMap((body: { chats?: { chatId: string }[]; chatOrders?: unknown[] }) => [
+                ...(body.chats ?? []).filter((group) => group.chatId === "chat"),
+                ...(body.chatOrders ?? []),
+            ]);
+        expect(chatWork).toEqual([]);
+        expect(await page.journal.readOwn()).toEqual([]);
         expect(await live.readOwn()).toEqual(liveRows);
-        expect(page.recoveryDrafts.entries).toEqual([]);
+        expect(page.recoveryDrafts.entries).toHaveLength(2);
+        expect(page.recoveryDrafts.entries).toEqual(
+            expect.arrayContaining(
+                chatRows.map((row) =>
+                    expect.objectContaining({ scope: row.scope, target: row.target, layers: row.layers }),
+                ),
+            ),
+        );
     });
 
     it("lists other epochs, refused records and malformed records as durable drafts without replay", async () => {
@@ -657,5 +678,407 @@ describe("boot recovery ownership and isolation", () => {
         expect(page.recoveryDrafts.entries).toEqual([]);
         await flush();
         expect(ops("ui")).toEqual([]);
+    });
+});
+
+const ref = (chatId = "chat") => ({ chaId: "c", chatId });
+const chatGroups = () => server.batchBodies().flatMap((body) => body.chats ?? []);
+const chatOrders = () => server.batchBodies().flatMap((body) => body.chatOrders ?? []);
+const chatReads = () =>
+    server.requests.flatMap((request) => (request.path === "/api/resources/read" ? (request.body?.chats ?? []) : []));
+function seedChats(ids = ["chat", "untouched"]) {
+    for (const id of ids) {
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: id,
+                baseRevision: null,
+                ops: [
+                    {
+                        op: "create",
+                        chat: {
+                            id,
+                            name: id,
+                            note: "",
+                            localLore: [],
+                            message: [
+                                { chatId: "m", role: "user", data: "before" },
+                                { chatId: "n", role: "char", data: "second" },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ]);
+    }
+}
+function remoteChat(ops: import("../../shared/chats").ChatOp[], chatId = "chat", groupId?: string) {
+    return server.chatBatch([
+        {
+            characterId: "c",
+            chatId,
+            baseRevision: server.chat("c", chatId)!.revision,
+            ops,
+            ...(groupId ? { groupId } : {}),
+        },
+    ]);
+}
+async function hideUnsent() {
+    // A synchronous transport failure leaves the pending batch undispatched, with its before values.
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(() => {
+            throw new TypeError("Page closed before keepalive dispatch");
+        }),
+    );
+    window.dispatchEvent(new Event("pagehide"));
+    await drain();
+    return page!.journal.readOwn();
+}
+
+describe("boot recovery of chat work", () => {
+    it("retries a remembered group with its original request and hands the settled chat to the new journal", async () => {
+        seedChats();
+        const first = await boot();
+        await flush();
+        await first.chat.ensureChatLoaded(ref());
+        const baseRevision = server.chat("c", "chat")!.revision;
+        const edit = { op: "setText" as const, id: "m", text: "sent text" };
+        server.requests.length = 0;
+        let earlierAnswer: unknown;
+        io.fetch = async (path, init) => {
+            const answer = await transport.fetch(path, init);
+            if (batchPath(path)) {
+                earlierAnswer = await answer.json();
+                throw new TypeError("Lost committed answer");
+            }
+            return answer;
+        };
+        first.chat.setMessageText(ref(), "m", edit.text);
+        await vi.advanceTimersByTimeAsync(500);
+        await drain();
+        const original = plain(chatGroups()[0]);
+        expect(original).toEqual({
+            characterId: "c",
+            chatId: "chat",
+            groupId: expect.any(String),
+            baseRevision,
+            ops: [edit],
+        });
+        expect(await first.journal.readOwn()).toMatchObject([
+            {
+                scope: "chat",
+                layers: {
+                    resend: {
+                        value: {
+                            groupId: original.groupId,
+                            baseRevision,
+                            ops: [edit],
+                        },
+                    },
+                },
+            },
+        ]);
+        // Applying this setText a second time would clobber a later edit; an append would not prove deduplication.
+        remoteChat([{ op: "setText", id: "m", text: "remote after commit" }]);
+        const current = plain(server.chat("c", "chat"));
+        const answers: unknown[] = [];
+        io.fetch = async (path, init) => {
+            const answer = await transport.fetch(path, init);
+            if (batchPath(path)) answers.push(await answer.clone().json());
+            return answer;
+        };
+        const second = await reload();
+        expect(chatReads()).toEqual([]);
+        await flush();
+        expect(chatGroups()).toEqual([{ ...original, retry: true }]);
+        expect(answers).toEqual([earlierAnswer]);
+        expect(server.chat("c", "chat")).toEqual(current);
+        expect(await second.journal.readOwn()).toEqual([]);
+        expect(second.recoveryDrafts.entries).toEqual([]);
+
+        await second.chat.ensureChatLoaded(ref());
+        second.chat.setMessageText(ref(), "m", "edited on the new page");
+        const rows = await hideUnsent();
+        expect(rows).toMatchObject([
+            {
+                scope: "chat",
+                target: "c\0chat",
+                layers: {
+                    pending: {
+                        value: {
+                            baseRevision: current!.revision,
+                            ops: [
+                                {
+                                    op: { op: "setText", id: "m", text: "edited on the new page" },
+                                    before: { value: "remote after commit" },
+                                },
+                            ],
+                        },
+                    },
+                },
+            },
+        ]);
+    });
+
+    it.each(["before", "landed", "remote", "stale message", "missing message"] as const)(
+        "checks an unloaded chat's by-id target at boot: %s",
+        async (outcome) => {
+            seedChats();
+            const first = await boot();
+            await flush();
+            expect(first.chat.findChat(ref())).toBeUndefined();
+            await first.chat.ensureChatLoaded(ref());
+            const baseRevision = server.chat("c", "chat")!.revision;
+            if (outcome === "stale message") {
+                first.chat.replaceMessage(ref(), { chatId: "m", role: "user", data: "local" });
+            } else first.chat.setMessageText(ref(), "m", "local");
+            const rows = await hideUnsent();
+            const row = rows.find((entry) => entry.scope === "chat")!;
+            expect(row.scope).toBe("chat");
+            if (row.scope !== "chat") throw new Error("Missing chat journal row");
+            const pending = row.layers.pending!.value;
+            expect(row.layers.resend).toBeUndefined();
+            if (outcome === "before") remoteChat([{ op: "meta", set: { note: "unrelated remote edit" } }]);
+            if (outcome === "landed") remoteChat([{ op: "setText", id: "m", text: "local" }]);
+            if (outcome === "remote") remoteChat([{ op: "setText", id: "m", text: "remote" }]);
+            if (outcome === "stale message")
+                remoteChat([{ op: "patchMessage", id: "m", set: { saying: "remote speaker" } }]);
+            if (outcome === "missing message") remoteChat([{ op: "remove", ids: ["m"] }]);
+            const current = plain(server.chat("c", "chat"));
+            const second = await reload();
+            expect(chatReads()).toEqual([{ characterId: "c", id: "chat" }]);
+            expect(second.chat.findChat(ref("untouched"))).toBeUndefined();
+            await flush();
+            if (outcome === "before") {
+                expect(chatGroups()).toEqual([
+                    {
+                        characterId: "c",
+                        chatId: "chat",
+                        groupId: pending.groupId,
+                        baseRevision,
+                        ops: [{ op: "setText", id: "m", text: "local" }],
+                        retry: true,
+                    },
+                ]);
+                expect(server.texts("c", "chat")).toEqual(["local", "second"]);
+                expect(second.chat.findChat(ref())?.message[0].data).toBe("local");
+                expect(second.recoveryDrafts.entries).toEqual([]);
+            } else {
+                expect(chatGroups()).toEqual([]);
+                expect(server.chat("c", "chat")).toEqual(current);
+                if (outcome === "landed") {
+                    expect(second.recoveryDrafts.entries).toEqual([]);
+                    expect(await second.journal.listDrafts()).toEqual([]);
+                } else {
+                    expect(second.recoveryDrafts.entries).toMatchObject([
+                        {
+                            scope: "chat",
+                            target: row.target,
+                            otherEpoch: false,
+                            layers: row.layers,
+                        },
+                    ]);
+                    expect(await second.journal.listDrafts()).toMatchObject([{ scope: "chat", layers: row.layers }]);
+                    const recovery = await import("./storage/journalRecovery");
+                    const draft = second.recoveryDrafts.entries[0];
+                    expect(recovery.recoveryDraftDetails(draft).canApply).toBe(true);
+                    if (outcome === "remote") {
+                        await recovery.applyRecoveryDraft(draft);
+                        await flush();
+                        expect(server.texts("c", "chat")).toEqual(["local", "second"]);
+                        expect(await second.journal.listDrafts()).toEqual([]);
+                    }
+                }
+            }
+            expect(await second.journal.readOwn()).toEqual([]);
+        },
+    );
+
+    it.each([false, true])("recovers an order only if no remote reorder intervened (remote: %s)", async (remote) => {
+        seedChats(["a", "b", "c"]);
+        const first = await boot();
+        await flush();
+        const baseRevision = server.order("c")!.revision;
+        const localIds = ["b", "a", "c"];
+        first.chat.reorderChats("c", localIds);
+        const row = (await hideUnsent()).find((entry) => entry.scope === "order")!;
+        expect(row).toBeDefined();
+        if (remote)
+            server.store.applyChanges({
+                chatOrders: [{ characterId: "c", baseRevision, ids: ["c", "b", "a"] }],
+            });
+        const second = await reload();
+        expect(second.chat.chatList("c").map((chat) => chat.id)).toEqual(remote ? ["c", "b", "a"] : localIds);
+        const drafts = remote ? [{ scope: "order", layers: row.layers }] : [];
+        expect(second.recoveryDrafts.entries).toMatchObject(drafts);
+        expect(await second.journal.listDrafts()).toMatchObject(drafts);
+        await flush();
+        expect(chatOrders()).toEqual(remote ? [] : [{ characterId: "c", baseRevision, ids: localIds }]);
+        expect(chatReads()).toEqual([]);
+        expect(await second.journal.readOwn()).toEqual([]);
+    });
+
+    it("recovers an undispatched character and its original first chat without a synthetic second chat", async () => {
+        seedChats();
+        const first = await boot();
+        await flush();
+        first.characters.addCharacter({ chaId: "new-parent", name: "Recovered parent" });
+        // Imported first chats are collected only by the save cycle. The hide captures the
+        // character; supply its unsent chat snapshot so both are present at recovery.
+        const originalId = first.chat.chatList("new-parent")[0].id;
+        await hideUnsent();
+        await first.journal.write([
+            {
+                epoch: server.store.epoch(),
+                scope: "chat",
+                target: `new-parent\0${originalId}`,
+                version: first.journal.nextVersion(),
+                layers: {
+                    pending: {
+                        groupId: "original-first-chat-group",
+                        baseRevision: null,
+                        ops: [],
+                        createSnapshot: plain(first.chat.findChat({ chaId: "new-parent", chatId: originalId })!),
+                    },
+                },
+            },
+        ]);
+        const rows = await first.journal.readOwn();
+        const row = rows.find((entry) => entry.scope === "chat" && entry.target === `new-parent\0${originalId}`)!;
+        expect(row.scope).toBe("chat");
+        if (row.scope !== "chat") throw new Error("Missing create journal row");
+        const pending = row.layers.pending!.value;
+        expect(pending.createSnapshot?.id).toBe(originalId);
+        expect(row.layers.resend).toBeUndefined();
+        const second = await reload();
+        expect(second.chat.chatList("new-parent").map((chat) => chat.id)).toEqual([originalId]);
+        await flush();
+        expect(chatGroups()).toEqual([
+            {
+                characterId: "new-parent",
+                chatId: originalId,
+                groupId: pending.groupId,
+                baseRevision: null,
+                ops: [expect.objectContaining({ op: "create", chat: pending.createSnapshot })],
+            },
+        ]);
+        expect(server.order("new-parent")!.ids).toEqual([originalId]);
+        expect(second.recoveryDrafts.entries).toEqual([]);
+        expect(await second.journal.readOwn()).toEqual([]);
+    });
+
+    it.each(["dispatched create", "gone chat", "gone parent"] as const)(
+        "preserves work as a draft without inventing a create: %s",
+        async (outcome) => {
+            seedChats();
+            const first = await boot();
+            await flush();
+            let target = "c\0chat";
+            if (outcome === "dispatched create") {
+                first.chat.createChat("c", {
+                    id: "new-chat",
+                    name: "Unanswered",
+                    note: "",
+                    localLore: [],
+                    message: [],
+                });
+                target = "c\0new-chat";
+                server.failNext = { status: 0, times: 1, match: batchPath };
+                await vi.advanceTimersByTimeAsync(500);
+                await drain();
+            } else {
+                await first.chat.ensureChatLoaded(ref());
+                first.chat.setMessageText(ref(), "m", "local");
+                await hideUnsent();
+                if (outcome === "gone chat") remoteChat([{ op: "delete" }]);
+                else server.store.delete(server.kind("characters"), "c", server.record("characters", "c")!.revision);
+            }
+            const row = (await first.journal.readOwn()).find(
+                (entry) => entry.scope === "chat" && entry.target === target,
+            )!;
+            expect(row).toBeDefined();
+            if (outcome === "dispatched create") {
+                expect(row).toMatchObject({
+                    scope: "chat",
+                    layers: {
+                        resend: {
+                            value: {
+                                baseRevision: null,
+                                ops: [
+                                    expect.objectContaining({
+                                        op: "create",
+                                        chat: expect.objectContaining({ id: "new-chat" }),
+                                    }),
+                                ],
+                            },
+                        },
+                    },
+                });
+                expect(server.chat("c", "new-chat")).toBeNull();
+            }
+            const second = await reload();
+            expect(second.recoveryDrafts.entries).toEqual(
+                expect.arrayContaining([expect.objectContaining({ scope: "chat", target, layers: row.layers })]),
+            );
+            expect(await second.journal.listDrafts()).toEqual(
+                expect.arrayContaining([expect.objectContaining({ scope: "chat", target, layers: row.layers })]),
+            );
+            await flush();
+            expect(chatGroups()).toEqual([]);
+            expect(await second.journal.readOwn()).toEqual([]);
+        },
+    );
+
+    it("keeps an expired recovered group as refused work and drafts it on the next boot", async () => {
+        seedChats();
+        const first = await boot();
+        await flush();
+        await first.chat.ensureChatLoaded(ref());
+        const baseRevision = server.chat("c", "chat")!.revision;
+        const edit = { op: "setText" as const, id: "m", text: "lost local text" };
+        server.requests.length = 0;
+        server.dropNextBatchResponse = true;
+        first.chat.setMessageText(ref(), "m", edit.text);
+        await vi.advanceTimersByTimeAsync(500);
+        await drain();
+        const original = plain(chatGroups()[0]);
+        expect(original).toMatchObject({ baseRevision, ops: [edit] });
+        // The real server retains the last 100 group results for this chat.
+        for (let index = 0; index < 101; index++) {
+            remoteChat([{ op: "setText", id: "m", text: `remote ${index}` }], "chat", `remote-group-${index}`);
+        }
+        const current = plain(server.chat("c", "chat"));
+        const second = await reload();
+        await flush();
+        expect(chatGroups()).toEqual([{ ...original, retry: true }]);
+        expect(server.chat("c", "chat")).toEqual(current);
+        expect(second.chat.refusedChatItems()).toHaveLength(1);
+        const rows = await second.journal.readOwn();
+        expect(rows).toMatchObject([
+            {
+                scope: "chat",
+                target: "c\0chat",
+                layers: {
+                    refused: {
+                        value: {
+                            ops: [edit],
+                            create: false,
+                            delete: false,
+                            reason: expect.any(String),
+                        },
+                    },
+                },
+            },
+        ]);
+        io.alertError.mockClear();
+        const third = await reload();
+        expect(third.recoveryDrafts.entries).toMatchObject([
+            { scope: "chat", target: "c\0chat", layers: rows[0].layers },
+        ]);
+        expect(await third.journal.listDrafts()).toMatchObject([{ scope: "chat", layers: rows[0].layers }]);
+        await flush();
+        expect(chatGroups()).toEqual([]);
+        expect(await third.journal.readOwn()).toEqual([]);
     });
 });

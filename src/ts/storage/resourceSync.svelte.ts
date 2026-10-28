@@ -238,7 +238,7 @@ const DEBOUNCE_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 /** Largest batch body the server accepts (its global body limit is 100 MiB), in UTF-8 bytes. */
 const MAX_BATCH_BYTES = 100 * 1024 * 1024 - 64 * 1024;
-const MAX_BATCH_OPERATIONS = 5000;
+export const MAX_BATCH_OPERATIONS = 5000;
 /** Bytes of the batch envelope around its parts: `{"ops":[],"chats":[],"chatOrders":[]}`. */
 const BATCH_FRAME_BYTES = 38;
 
@@ -1044,6 +1044,20 @@ export function adoptRecoveredRecord(
     // Do not start a timer before the service worker can request another reload. Startup's marks
     // schedule this reconciliation together with the normal save cycle.
     journalPending.add(entry.target);
+}
+
+/** Hands installed or settled boot intent to the journal queue before saving starts. */
+export function adoptRecoveredChat(
+    entry: Extract<MutationEntry, { scope: "chat" | "order" }>,
+    layers: StoredLayers<"chat"> | StoredLayers<"order">,
+) {
+    if (started || halted || entry.epoch !== getResourceEpoch()) {
+        throw new Error("Chat recovery requires the current boot before saving starts");
+    }
+    const key = { scope: entry.scope, target: entry.target };
+    const scoped = `${key.scope}\u0000${key.target}`;
+    journalChatViews.set(scoped, { key, epoch: entry.epoch, written: structuredClone(layers) });
+    journalChatPending.add(scoped);
 }
 
 /**
@@ -3899,9 +3913,14 @@ async function recoverConflictedWork(
     // Counts only: the conflicting records' ids stay here.
     recordClientEvent({ kind: "sync", phase: "conflict", ...counted });
     // Drop refused locked edits and retain conflicting order snapshots before any read can fail.
+    const expiredRecovered = new Set(
+        work.groups
+            .filter((group) => group.recoveredAt !== undefined && expiredChats.has(group.key))
+            .map((group) => group.key),
+    );
     const immediateRecovery = recoverChatConflicts(
         {
-            groups: work.groups.filter((group) => generatingChats.has(group.key)),
+            groups: work.groups.filter((group) => generatingChats.has(group.key) || expiredRecovered.has(group.key)),
             orders: work.orders.filter((order) => conflictedOrders.has(order.characterId)),
         },
         new Set(),
@@ -3909,6 +3928,7 @@ async function recoverConflictedWork(
         [],
         generatingChats,
         lockedMessages,
+        expiredChats,
     );
     if (generating || immediateRecovery.blocked) {
         showGeneratingNotice();
@@ -3921,7 +3941,7 @@ async function recoverConflictedWork(
     }
     noteWaitBlockers();
     const remainingWork = {
-        groups: work.groups.filter((group) => !generatingChats.has(group.key)),
+        groups: work.groups.filter((group) => !generatingChats.has(group.key) && !expiredRecovered.has(group.key)),
         orders: work.orders.filter((order) => !conflictedOrders.has(order.characterId)),
     };
     let read: Awaited<ReturnType<typeof readRefs>>;

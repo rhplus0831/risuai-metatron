@@ -136,6 +136,8 @@ type Pending = {
     ops: ChatOp[];
     /** Local sequence number of the latest change. */
     seq: number;
+    /** Creation time of intent installed by boot recovery. */
+    recoveredAt?: number;
 };
 
 /**
@@ -151,6 +153,7 @@ type Resend = {
     inDoubt: boolean;
     /** A split cannot send its prefix until the journal replaced the old whole-batch row. */
     unconfirmed?: true;
+    recoveredAt?: number;
 };
 
 /** Whether the group kept for a resend is a create (the chat may not be on the server yet). */
@@ -179,6 +182,7 @@ export type SentChatGroup = {
     inDoubt?: true;
     /** For a create: what the chat is on the server if this whole group landed (replay recognition). */
     expected?: string;
+    recoveredAt?: number;
 };
 
 export type SentChatOrder = { characterId: string; baseRevision: string; ids: string[]; seq: number };
@@ -291,7 +295,7 @@ const ordersSettled = new Map<string, number>();
 const discarded = new Map<string, number>();
 let discardSequence = 0;
 /** Refused intent, retained until an explicit local edit, retry, or discard. Identity fences discards. */
-type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean };
+type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean; recovered?: true };
 const quarantined = new JournalMap<ChatRefusal>((key) => dirtyChatJournal(key, "refused"));
 /** Refused reorders wait until the ordered ids change. */
 const quarantinedOrders = new JournalMap<{ ids: string; reason: string }>((id) => {
@@ -600,7 +604,8 @@ export const chatJournal = {
     },
     project({ scope, target }: ChatJournalKey): JournalProjection {
         if (scope === "chat") {
-            const view = journalChats.get(target)!;
+            const view = journalChats.get(target);
+            if (!view) return { scope, target, layers: {} };
             const [chaId] = target.split("\u0000");
             const resend =
                 inflight.get(target) ?? pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
@@ -627,7 +632,8 @@ export const chatJournal = {
                 ...(resend && "unconfirmed" in resend && resend.unconfirmed ? { splitGroupId: resend.groupId } : {}),
             };
         }
-        const view = journalOrders.get(target)!;
+        const view = journalOrders.get(target);
+        if (!view) return { scope, target, layers: {} };
         projectedLayer(view, "sent", () => {
             const sent = inflightOrders.get(target) ?? recoveringOrders.get(target);
             return sent ? { baseRevision: sent.baseRevision, ids: [...sent.ids] } : undefined;
@@ -3473,6 +3479,61 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
 // ---------------------------------------------------------------------------------------------
 // Boot
 
+/** Installs classified boot intent under its original identity, without applying resends to the mirror. */
+export function installRecoveredChat(
+    ref: ChatRef,
+    intent: { groupId: string; snapshot: Chat } | Pick<Resend, "groupId" | "ops" | "baseRevision">,
+    createdAt: number,
+) {
+    requireCharacter(ref.chaId);
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (pending.has(key) || inflight.has(key) || quarantined.has(key)) {
+        throw new Error("Chat recovery requires a chat without local work");
+    }
+    const create = "snapshot" in intent;
+    const deleting = !create && intent.ops.some((op) => op.op === "delete");
+    if (create) {
+        if (isMember(ref) || chatRevisions.has(key) || intent.snapshot.id !== ref.chatId) {
+            throw new Error("Recovered create requires its original absent chat id");
+        }
+    } else if (!isMember(ref) || !chatRevisions.has(key)) {
+        throw new Error("Recovered resend requires an existing chat");
+    }
+    if (deleting && (memberIds(ref.chaId).length <= 1 || isChatGenerating(ref))) {
+        throw new Error("Recovered delete requires another chat and no generation");
+    }
+    const copy = clone<typeof intent>(intent);
+    const seq = nextSeq();
+    if ("snapshot" in copy) {
+        insertChat(ref.chaId, memberIds(ref.chaId).length, copy.snapshot);
+        changed(key);
+    } else if (deleting) {
+        removeChat(ref.chaId, ref.chatId);
+        notifyRemoval(ref);
+        changed(key);
+    }
+    pending.set(key, {
+        characterId: ref.chaId,
+        chatId: ref.chatId,
+        create,
+        groupId: create ? intent.groupId : uuidv4(),
+        ops: [],
+        seq,
+        ...("snapshot" in copy
+            ? { resend: null, recoveredAt: createdAt }
+            : { resend: { ...copy, seq, inDoubt: true, recoveredAt: createdAt } }),
+    });
+    syncSelection(ref.chaId);
+    notifyWork();
+}
+
+/** Queues the classified vector even when recovery's membership changes already put it in order. */
+export function installRecoveredOrder(chaId: string, ids: readonly string[]) {
+    reorderChats(chaId, ids);
+    pendingOrders.set(chaId, nextSeq());
+    notifyWork();
+}
+
 /** Records what the server holds (boot read: chats or their summaries), before anything queues work. */
 export function seedChats(
     chats: readonly { characterId: string; id: string; revision: string }[],
@@ -3724,6 +3785,7 @@ export function hasRefusedChatWork(): boolean {
 /**
  * Releases only at an explicit edit/retry. A loaded chat sends its whole current copy on the held
  * revision; an unloaded chat replays retained metadata ops without inventing an empty transcript.
+ * Recovered work is replayed from its ops, since its effects are not in the boot mirror.
  */
 function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
     const key = keyOf(ref.chaId, ref.chatId);
@@ -3732,7 +3794,16 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
     const chat = heldChat(ref);
     const entry = pendingFor(ref, true);
     const seq = nextSeq();
-    if (refused.delete && !isMember(ref)) {
+    if (refused.recovered && chatRevisions.has(key)) {
+        entry.create = false;
+        entry.resend = null;
+        entry.ops = [
+            ...refused.ops.map((op): ChatOp => (op.op === "create" ? { op: "replace", chat: op.chat } : op)),
+            ...entry.ops,
+        ];
+        entry.seq = seq;
+        staleChats.add(key);
+    } else if (refused.delete && !isMember(ref)) {
         if (refused.create) {
             pending.delete(key);
             settleKey(key, seq);
@@ -3745,17 +3816,18 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
     } else {
         entry.create = refused.create;
         entry.resend = null;
-        entry.ops = chat
-            ? refused.create
-                ? []
-                : [{ op: "replace", chat: projectChat(chat) }]
-            : [...refused.ops, ...entry.ops];
+        entry.ops =
+            chat && !refused.recovered
+                ? refused.create
+                    ? []
+                    : [{ op: "replace", chat: projectChat(chat) }]
+                : [...refused.ops, ...entry.ops];
         entry.seq = seq;
     }
     clearChatRefusal(key);
     dirtyChatJournal(key, "pending");
     dirtyChatJournal(key, "resend");
-    return chat ? "snapshot" : "ops";
+    return chat && !refused.recovered ? "snapshot" : "ops";
 }
 
 /** Explicit retry of one chat or order from the refusal inventory. */
@@ -4424,6 +4496,9 @@ function sentGroup(
         groupId,
         ...(resend ? { resent: true as const } : {}),
         ...(resend?.inDoubt ? { inDoubt: true as const } : {}),
+        ...((resend?.recoveredAt ?? entry.recoveredAt) !== undefined
+            ? { recoveredAt: resend?.recoveredAt ?? entry.recoveredAt }
+            : {}),
         // The chat as it is on the server if the create landed.
         ...(create ? { expected: canonicalChat(create.chat) } : {}),
     };
@@ -4547,9 +4622,13 @@ export function ackChatWork(
                 // the mirror, which holds this group's edit (`ackedRevisions`).
                 ackedRevisions.set(group.key, result.revision);
             }
-            if ((result.stale || result.targets?.includes("missing")) && result.revision !== null) {
+            if (
+                (group.recoveredAt !== undefined || result.stale || result.targets?.includes("missing")) &&
+                result.revision !== null
+            ) {
                 // A `missing` target (another writer removed its message) changed nothing and is not
-                // a discard: the idle read removes the message from the mirror.
+                // a discard: the idle read removes it. Recovered ops were never applied to the
+                // boot mirror, so even a fresh or duplicate acknowledgement needs the whole read.
                 staleChats.add(group.key);
             }
             if (result.messageIds) {
@@ -4667,6 +4746,7 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
                     baseRevision: group.baseRevision,
                     groupId: group.groupId,
                     inDoubt: !!options.lost || !!group.inDoubt,
+                    ...(group.recoveredAt !== undefined ? { recoveredAt: group.recoveredAt } : {}),
                 },
                 ops: newer?.ops ?? [],
                 seq: newer?.seq ?? 0,
@@ -4693,7 +4773,7 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
 
 /** Holds refused work locally, reporting it discarded to flush callers, until an explicit release. */
 export function quarantineChat(
-    group: Pick<SentChatGroup, "key" | "seq" | "ops">,
+    group: Pick<SentChatGroup, "key" | "seq" | "ops" | "recoveredAt">,
     reason = language.chatSaveRefused,
     alertText = `${language.chatSaveRefused}\n${reason}`,
 ) {
@@ -4708,6 +4788,7 @@ export function quarantineChat(
         ops: clone(ops).map((op, index) => copyOpBefore(ops[index], op)),
         create: (!chatRevisions.has(group.key) && !!entry?.create) || ops.some((op) => op.op === "create"),
         delete: !isMember({ chaId, chatId }) && ops.some((op) => op.op === "delete"),
+        ...(group.recoveredAt !== undefined ? { recovered: true as const } : {}),
     });
     notifyRefusals();
     deferred.delete(group.key);
@@ -4762,7 +4843,9 @@ export type RemoteChat = {
  * gone is dropped with its work and its character's chat list is to be refreshed (`refresh`); a group
  * refused for an `append` whose anchor is gone is retried at the end (`reanchorGoneAppends`), unless
  * its id expired (`expired`: `reason: "expired"`) and it may already have landed; any
- * other is replaced by the server copy and its local work discarded. Reorders that conflicted keep
+ * other is replaced by the server copy and its local work discarded. Expired recovered groups
+ * quarantine their ops and newer work for explicit Retry/Discard and durable journaling.
+ * Reorders that conflicted keep
  * their sent vectors until a collection read distinguishes a lost answer from a discarded reorder.
  * A group refused for a generating message (`generating`: `reason: "generating"`) is kept and retried
  * after `JOB_RETRY_MS`, not reloaded, except its edits of the locked messages the conflict names
@@ -4788,6 +4871,10 @@ export function recoverChatConflicts(
     let blocked = false;
     for (const group of work.groups) {
         inflight.delete(group.key);
+        if (group.recoveredAt !== undefined && expired.has(group.key)) {
+            quarantineChat(group, language.chatRecoveryExpired);
+            continue;
+        }
         if (generating.has(group.key)) {
             const outcome = dropLockedEdits(group, new Set(lockedMessages.get(group.key) ?? []));
             if (outcome.dropped) {
@@ -4826,6 +4913,7 @@ export function recoverChatConflicts(
             // Our create (and the rest of its group) landed before the answer was lost: the whole
             // group is settled at the server's revision, so none of its ops applies a second time.
             holdChatRevision(group.key, server.revision);
+            if (group.recoveredAt !== undefined) staleChats.add(group.key);
             settleKey(group.key, group.seq);
             refreshOrders.add(group.characterId);
             continue;

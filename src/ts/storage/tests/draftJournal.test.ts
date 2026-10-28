@@ -1510,3 +1510,92 @@ describe("chat and order rows reserved for recovery", () => {
         },
     );
 });
+
+describe("partial recovery hand-over", () => {
+    it("drafts only pending chat work, releases the stored resend and order versions, and permits later writes", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const h = harness();
+        const old = await started(h);
+        const chatAddress = { epoch: EPOCH, scope: "chat" as const, target: chatTarget("c1", "chat") };
+        const orderAddress = { epoch: EPOCH, scope: "order" as const, target: orderTarget("c1") };
+        const resend = {
+            groupId: "sent-group",
+            baseRevision: "r1",
+            seq: 1,
+            inDoubt: true,
+            ops: [{ op: "setText" as const, id: "m", text: "sent" }],
+        };
+        const pending = {
+            groupId: "pending-group",
+            baseRevision: "r1",
+            ops: [{ op: { op: "setText" as const, id: "m", text: "newer" }, before: { value: "sent" } }],
+        };
+        await old.journal.write([
+            { ...chatAddress, version: old.journal.nextVersion(), layers: { resend, pending } },
+            {
+                ...orderAddress,
+                version: old.journal.nextVersion(),
+                layers: { latest: { baseRevision: "o1", ids: ["chat"] } },
+            },
+        ]);
+        const original = await old.journal.readOwn();
+        const chat = original.find((row) => row.scope === "chat")!;
+        const order = original.find((row) => row.scope === "order")!;
+        await old.journal.close();
+        const next = await started(h, { storage: () => old.storage });
+        try {
+            const [id] = await next.journal.moveToDrafts([
+                { ...chatAddress, version: chat.version, layers: ["pending"] },
+            ]);
+            expect(id).toEqual(expect.any(String));
+            expect(await next.journal.listDrafts()).toMatchObject([
+                {
+                    id,
+                    scope: "chat",
+                    target: chat.target,
+                    createdAt: chat.createdAt,
+                    layers: { pending: chat.layers.pending },
+                },
+            ]);
+            expect((await next.journal.listDrafts())[0].layers).toEqual({ pending: chat.layers.pending });
+            expect((await next.journal.readOwn()).find((row) => row.scope === "chat")!.layers).toEqual({
+                resend: chat.layers.resend,
+            });
+            // The surviving resend stays protected until the recovery queue adopts it.
+            await next.journal.remove([{ ...chatAddress, version: next.journal.nextVersion() }]);
+            expect((await next.journal.readOwn()).find((row) => row.scope === "chat")).toBeDefined();
+            expect(await next.journal.release([chatAddress, orderAddress])).toEqual([
+                { resend: chat.layers.resend },
+                order.layers,
+            ]);
+            await next.journal.remove([{ ...orderAddress, version: order.version }]);
+            const version = next.journal.nextVersion();
+            expect(
+                await next.journal.write([
+                    {
+                        ...chatAddress,
+                        version,
+                        layers: {
+                            resend: null,
+                            pending: { ...pending, baseRevision: "r2", groupId: "new-page-group" },
+                        },
+                    },
+                ]),
+            ).toEqual(["written"]);
+            // An old acknowledgement cannot erase the new page's pending layer.
+            await next.journal.remove([{ ...chatAddress, version: chat.version }]);
+            expect(await next.journal.readOwn()).toMatchObject([
+                {
+                    scope: "chat",
+                    createdAt: chat.createdAt,
+                    layers: { pending: { version, value: { groupId: "new-page-group", baseRevision: "r2" } } },
+                },
+            ]);
+            expect(await next.journal.readOwn()).toHaveLength(1);
+            await next.journal.remove([{ ...chatAddress, version }]);
+            expect(await next.journal.readOwn()).toEqual([]);
+        } finally {
+            await next.journal.close();
+        }
+    });
+});

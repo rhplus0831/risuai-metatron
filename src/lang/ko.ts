@@ -775,6 +775,8 @@ export const languageKorean = {
     chatSaveRefused:
         "서버가 이 채팅의 변경을 거부했습니다. 채팅을 수정하거나 삭제하거나 재시도를 눌러 다시 시도하세요. 거부 알림 배너에서 남아 있는 로컬 데이터를 내보내거나 거부된 변경을 버릴 수 있습니다.",
     chatOrderRefused: "이 채팅 순서를 저장하지 못했습니다. 순서를 변경하면 다시 시도합니다.",
+    chatRecoveryExpired:
+        "서버가 복구된 변경 사항의 저장 여부를 더 이상 확인할 수 없습니다. 거부된 작업으로 보관했습니다. 변경 사항을 다시 적용하려는 경우에만 재시도하세요.",
     resourceRestored: "서버 데이터가 백업에서 복원되었습니다. 앱을 새로고침합니다.",
     characterGenerating: "이 캐릭터가 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
     homePinnedChatsEmpty: "채팅을 고정하면 여기에서 빠르게 열 수 있습니다.",
