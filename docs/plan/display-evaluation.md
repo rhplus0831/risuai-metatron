@@ -1,6 +1,7 @@
 # Display Evaluation Plan
 
-Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e), 2 (4a1d870f3). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e),
+2 (4a1d870f3), 7 (f5eda0ff6). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
 **Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
 Probe numbers are under **Measurements**.
 
@@ -493,6 +494,15 @@ this a send transformed its reply twice). `applyRemoteChat` always moves it. The
 flag counts pending, in-flight, quarantined, deferred and job-blocked work. The scheduler is
 `src/lib/ChatScreens/settledRender.svelte.ts`. `e2e/serverTransform.spec.ts`'s send test allows the
 new user row two renders (its mount, and once more when the reply's install lands during it).
+
+Slice 7 notes: `same` is a separate response field (`{ id, key }[]`, present only when
+non-empty), not a `TransformResult` member, so the current client compiles untouched; each
+first-call target is answered once, in `results`, `same` or `pending`. The partition runs after
+the existing cache paths, so admission and refusals are unchanged. `noCache` with `knownKey`
+answers in full. The key names inputs, not output: after an eviction or a Re-render elsewhere, a
+random, clock or plugin row can be refilled with other text under the same key while `same` still
+confirms the tab's older text. Accepted as within Q1–Q3 (both texts are renderings of the same
+inputs); Slice 8 shows the tab's text.
 
 ## Verification
 
