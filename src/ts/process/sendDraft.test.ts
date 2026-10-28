@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSendDrafts } from "./sendDraft";
+import { composerSendText, createSendDrafts } from "./sendDraft";
 
 // The chat screen's send drafts (`sendDraft.ts`). A send whose user message did not land and whose
 // job did not end `done` keeps its text and `userMessageId`: the text goes back into the composer
@@ -82,5 +82,18 @@ describe("createSendDrafts", () => {
         expect(drafts.settle(b, second, { ...failed, landed: true })).toBe("drop");
         expect(drafts.takeUnplaced(b)).toBeUndefined();
         expect(drafts.takeUnplaced(a)).toEqual(first);
+    });
+
+    it("adopts recovered text once and retains its id only for an unchanged retry", () => {
+        const drafts = createSendDrafts();
+        const restored = { input: "hello", files: ["first", "second"] };
+        expect(composerSendText(restored)).toBe("hello{{inlayed::first}}{{inlayed::second}}");
+        drafts.adopt(a, { input: composerSendText(restored), userMessageId: "journal-id" });
+        expect(drafts.takeUnplaced(a)).toBeUndefined();
+        expect(drafts.retryIdFor(a, "hello{{inlayed::first}}{{inlayed::second}}")).toBe("journal-id");
+        expect(drafts.retryIdFor(b, composerSendText(restored))).toBeUndefined();
+        expect(drafts.retryIdFor(a, composerSendText({ ...restored, input: "edited" }))).toBeUndefined();
+        expect(drafts.retryIdFor(a, composerSendText({ ...restored, files: ["second", "first"] }))).toBeUndefined();
+        expect(drafts.idFor(a, composerSendText(restored))).toBe("journal-id");
     });
 });

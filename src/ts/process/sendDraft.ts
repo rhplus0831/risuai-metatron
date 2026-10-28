@@ -11,9 +11,23 @@ export type SendDraftOutcome = {
 
 const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
+/** The text submitted by the composer, including its queued attachments in order. */
+export function composerSendText(draft: { input: string; files: readonly string[] }): string {
+    return draft.input + draft.files.map((file) => `{{inlayed::${file}}}`).join("");
+}
+
 /** Retains failed sends' text and ids, including when an absent message may just be waiting for hydration. */
 export function createSendDrafts() {
     const drafts = new Map<string, SendDraft & { placed: boolean }>();
+
+    function retryIdFor(ref: ChatRef, text: string): string | undefined {
+        const draft = drafts.get(keyOf(ref));
+        return draft?.input === text ? draft.userMessageId : undefined;
+    }
+
+    function adopt(ref: ChatRef, draft: SendDraft): void {
+        drafts.set(keyOf(ref), { ...draft, placed: true });
+    }
 
     function idFor(ref: ChatRef, text: string): string {
         const key = keyOf(ref);
@@ -45,5 +59,5 @@ export function createSendDrafts() {
         return { input: draft.input, userMessageId: draft.userMessageId };
     }
 
-    return { idFor, settle, takeUnplaced };
+    return { idFor, settle, takeUnplaced, retryIdFor, adopt };
 }

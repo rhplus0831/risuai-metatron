@@ -53,6 +53,7 @@
         chatOwnerToken,
         type ChatRef,
         currentChatRef,
+        ensureChatLoaded,
         findChat,
         retrySelectedChatLoad,
         setChatMeta,
@@ -91,8 +92,9 @@
     import { v4 } from "uuid";
     import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
-    import { createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
+    import { composerSendText, createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
     import { createComposer } from "src/ts/process/composerDrafts.svelte";
+    import { pageDraftJournal } from "src/ts/storage/draftJournal";
     import {
         createInputTranslation,
         handleMainComposerKeydown,
@@ -100,7 +102,7 @@
     } from "src/ts/process/inputTranslation.svelte";
     import { processMultiCommand } from "src/ts/process/command";
     import { postChatFile } from "src/ts/process/files/multisend";
-    import { getInlayAsset } from "src/ts/process/files/inlays";
+    import { getInlayAsset, getInlayMetadata } from "src/ts/process/files/inlays";
     import Chats from "./Chats.svelte";
     import ContextMeter from "./ContextMeter.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -128,10 +130,17 @@
         customStyle?: string;
     }
 
-    const composer = createComposer();
+    const sendDrafts = createSendDrafts();
+    const composer = createComposer({
+        journal: pageDraftJournal(),
+        retryIdFor: (key, text) => {
+            const [chaId, chatId] = key.split("\u0000");
+            return sendDrafts.retryIdFor({ chaId, chatId }, text);
+        },
+    });
+    onDestroy(() => composer.destroy());
     let openMenu = $state(false);
     const rerollHistory = createRerollHistory();
-    const sendDrafts = createSendDrafts();
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
     let toggleStickers: boolean = $state(false);
     let showNewMessageButton = $state(false);
@@ -208,6 +217,31 @@
                 if (draft) {
                     composer.input = draft.input;
                 }
+            }
+            if (ref) {
+                void composer
+                    .restore(chatKeyOf(ref), {
+                        landed: async (userMessageId) => {
+                            try {
+                                const chat = await ensureChatLoaded(ref);
+                                return chat?.message.some(
+                                    (message) => message.role === "user" && message.chatId === userMessageId,
+                                );
+                            } catch {
+                                return undefined;
+                            }
+                        },
+                        inlayExists: async (id) => {
+                            try {
+                                return (await getInlayMetadata(id)) !== null;
+                            } catch {
+                                return undefined;
+                            }
+                        },
+                    })
+                    .then((draft) => {
+                        if (draft) sendDrafts.adopt(ref, { input: draft.text, userMessageId: draft.userMessageId });
+                    });
             }
         });
     });
@@ -472,16 +506,11 @@
             return;
         }
 
-        if (draft.files.length > 0) {
-            for (const file of draft.files) {
-                draft.input += `{{inlayed::${file}}}`;
-            }
-            draft.files = [];
-        }
-
+        const snapshot = { input: draft.input, translate: draft.translate, files: [...draft.files] };
+        const input = composerSendText(snapshot);
         // The job runs the input stage and appends the user message.
         let serverInput: SendDraft | null = null;
-        if (draft.input === "") {
+        if (input === "") {
             if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
                     if (settings.ui.useSayNothing) {
@@ -491,8 +520,10 @@
             }
         } else {
             // Retried text keeps its id: the server skips an input it already appended under it.
-            serverInput = { input: draft.input, userMessageId: sendDrafts.idFor(ref, draft.input) };
+            serverInput = { input, userMessageId: sendDrafts.idFor(ref, input) };
+            composer.beginSend(chatKeyOf(ref), { snapshot, userMessageId: serverInput.userMessageId });
         }
+        draft.files = [];
         draft.input = "";
         draft.translate = "";
         inputTranslation.invalidate();
@@ -694,6 +725,7 @@
                     selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
                     composerEmpty: composer.at(chatKeyOf(target)).input === "",
                 });
+                composer.settleSend(chatKeyOf(target), serverInput.userMessageId, result === "drop");
                 if (result === "restore") {
                     composer.at(chatKeyOf(target)).input = serverInput.input;
                 }
@@ -1072,7 +1104,7 @@
                                             const draft = composer.at(chatKeyOf(ref));
                                             for (const res of results) {
                                                 if (res?.type === "asset") {
-                                                    draft.files.push(res.data);
+                                                    draft.addFile(res.data);
                                                 }
                                                 if (res?.type === "text") {
                                                     draft.input += `{{file::${res.name}::${res.data}}}`;
@@ -1310,7 +1342,7 @@
                                     const draft = composer.at(chatKeyOf(ref));
                                     for (const res of results) {
                                         if (res?.type === "asset") {
-                                            draft.files.push(res.data);
+                                            draft.addFile(res.data);
                                         }
                                         if (res?.type === "text") {
                                             draft.input += `{{file::${res.name}::${res.data}}}`;
@@ -1415,7 +1447,7 @@
                                 <button
                                     class="absolute -right-1 -top-1 p-1 bg-darkbg text-textcolor rounded-md transition-colors hover:text-draculared focus:text-draculared"
                                     onclick={() => {
-                                        composer.files.splice(i, 1);
+                                        composer.removeFileAt(i);
                                         updateInputSizeAll();
                                     }}
                                 >

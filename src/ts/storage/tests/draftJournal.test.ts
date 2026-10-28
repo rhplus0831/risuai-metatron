@@ -294,9 +294,11 @@ describe("keys, sizes, expiry, and the row check", () => {
             createdAt: T0,
             updatedAt: T0,
             size: 0,
-            value: {},
+            value: { input: "typed", translate: "", files: ["inlay"] },
         };
         expect(checkJournalRow(composer)).toBe(composer);
+        // A composer payload without its fields is unknown, like any other unreadable row.
+        expect(checkJournalRow({ ...composer, value: {} })).toBeNull();
         expect(checkJournalRow({ ...mutation, format: 2 })).toBeNull();
         expect(checkJournalRow({ ...mutation, size: -1 })).toBeNull();
         expect(checkJournalRow({ ...mutation, size: Infinity })).toBeNull();
