@@ -300,8 +300,9 @@ describe("server copies of presets and personas", () => {
         const retainedPreset = settings.presets[0];
         const retainedPersona = settings.personas[0];
         const retainedScheme = settings.ui.colorScheme;
-        // Another tab removed the selected preset and changed the ui record; this tab edited both.
-        fake.set("presets", "main", [record("presets")[0]]);
+        // Another tab removed the selected preset, renamed the other, and changed the ui record; this
+        // tab edited the same preset and ui field (same-item and same-field conflicts).
+        fake.set("presets", "main", [{ ...record("presets")[0], name: "server" }]);
         fake.set("ui", "main", { ...record("ui"), zoomsize: 61 });
         settings.presets[0].name = "local";
         settings.ui.zoomsize = 60;
@@ -312,8 +313,8 @@ describe("server copies of presets and personas", () => {
         expect(selection.presetId).toBe(p1);
         expect(selection.personaId).toBe("pb");
         expect(settings.ui.zoomsize).toBe(61);
-        // Then the selected persona, alone.
-        fake.set("personas", "main", [record("personas")[0]]);
+        // Then the selected persona, alone (the other one renamed on both tabs).
+        fake.set("personas", "main", [{ ...record("personas")[0], name: "server" }]);
         settings.personas[0].name = "local";
         result = await sync.flushResources();
         expect(result.discarded).toEqual(["personas/main"]);

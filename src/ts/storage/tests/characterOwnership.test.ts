@@ -122,6 +122,8 @@ describe("server copies of a character", () => {
             globalLore: [{ key: "k", content: "server" }],
         });
         element.desc = "conflicting local edit";
+        // Both tabs renamed it: a same-field conflict, so the whole record is reloaded.
+        element.name = "local name";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/c"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");

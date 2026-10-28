@@ -322,7 +322,53 @@ describe("records another writer committed", () => {
         noNotice();
     });
 
-    it("does not apply a copy read while this tab edited the record; its save then conflicts through the 409 path with the notice", async () => {
+    it("does not apply a copy read while this tab edited the record; its save then conflicts through the 409 path and merges the other tab's field with no notice", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, settings, intercept, sync } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        const base = fake.record("ui", "main")!;
+        try {
+            intercept.hold = (path) => path === "/api/resources/read";
+            editUi(fake, { zoomsize: 200 });
+            const theirs = fake.record("ui", "main")!.revision;
+            await vi.advanceTimersByTimeAsync(100);
+            expect(intercept.release).not.toBeNull();
+            // The local edit lands while the read is out.
+            settings.ui.iconsize = 77;
+            intercept.release!();
+            await vi.advanceTimersByTimeAsync(0);
+            // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
+            const batch = fake.batchBodies()[0];
+            expect(batch?.ops).toEqual([
+                { kind: "ui", id: "main", baseRevision: base.revision, patch: { set: { iconsize: 77 }, remove: [] } },
+            ]);
+            await vi.advanceTimersByTimeAsync(3000);
+            // Two tabs edited different fields of one section: both are kept, the merged write goes on the
+            // server's revision, with no notice and no recovery draft.
+            noNotice();
+            expect(settings.ui.zoomsize).toBe(200);
+            expect(settings.ui.iconsize).toBe(77);
+            expect(fake.record("ui", "main")!.data).toMatchObject({ zoomsize: 200, iconsize: 77 });
+            expect(fake.batchBodies().map((body) => body.ops)).toEqual([
+                batch!.ops,
+                [{ kind: "ui", id: "main", baseRevision: theirs, patch: { set: { iconsize: 77 }, remove: [] } }],
+            ]);
+            await settle(fake);
+            await sync.flushResources();
+            await vi.advanceTimersByTimeAsync(500);
+            expect(fake.batchCount()).toBe(2);
+            expect(await journal.listDrafts()).toEqual([]);
+            expect((await journal.readOwn()).filter((row) => row.target === "ui\0main")).toEqual([]);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
+    });
+
+    it("keeps a recovery draft after a held copy read meets different edits of the same ui field", async () => {
         vi.stubGlobal("indexedDB", new IDBFactory());
         vi.stubGlobal("IDBKeyRange", IDBKeyRange);
         vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
@@ -332,9 +378,8 @@ describe("records another writer committed", () => {
         const base = fake.record("ui", "main")!;
         const text = JSON.stringify({ ...base.data, iconsize: 77 });
         try {
-            const iconsize = settings.ui.iconsize;
             intercept.hold = (path) => path === "/api/resources/read";
-            editUi(fake, { zoomsize: 200 });
+            editUi(fake, { iconsize: 200 });
             await vi.advanceTimersByTimeAsync(100);
             expect(intercept.release).not.toBeNull();
             // The local edit lands while the read is out.
@@ -343,13 +388,15 @@ describe("records another writer committed", () => {
             await vi.advanceTimersByTimeAsync(0);
             // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
             const batch = fake.batchBodies()[0];
-            expect(batch?.ops?.[0]?.patch?.set?.iconsize).toBe(77);
+            expect(batch?.ops).toEqual([
+                { kind: "ui", id: "main", baseRevision: base.revision, patch: { set: { iconsize: 77 }, remove: [] } },
+            ]);
             await vi.advanceTimersByTimeAsync(3000);
-            // Two tabs edited one whole-record section: the later saver's edit goes, with the notice.
+            // Both tabs changed the same field: the server wins and the sent local text is recoverable.
             expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-            expect(settings.ui.zoomsize).toBe(200);
-            expect(settings.ui.iconsize).toBe(iconsize);
-            expect(fake.record("ui", "main")!.data.iconsize).toBe(iconsize);
+            expect(settings.ui.iconsize).toBe(200);
+            expect(fake.record("ui", "main")!.data.iconsize).toBe(200);
+            expect(fake.batchCount()).toBe(1);
             const drafts = await journal.listDrafts();
             expect(drafts).toHaveLength(1);
             expect(drafts[0]).toMatchObject({

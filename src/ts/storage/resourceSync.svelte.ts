@@ -1,4 +1,12 @@
 import isEqual from "lodash/isEqual";
+import {
+    ABSENT,
+    fieldOf,
+    isItemMergeKind,
+    mergeCharacterFields,
+    mergeItemCollection,
+    mergeSectionFields,
+} from "./recordMerge";
 import { newId } from "../../../shared/ids.ts";
 import {
     JOURNAL_FORMAT,
@@ -2995,20 +3003,34 @@ function adoptSecretRecord(revision: string, masked: MaskedLlmSecrets, invalidat
     if (held && (compareRevision(revision, held.revision) ?? 0) < 0) {
         return;
     }
-    const saved = held?.text;
+    if (!adoptSecretSiblings(revision, masked, invalidate)) {
+        // Through `applySettingsRecord`, which invalidates every credential path.
+        acceptRemote({ kind: SECTION_KIND.llmSecrets, id: SINGLETON_RESOURCE_ID, revision, data: masked });
+        showReloadedNotice();
+    }
+}
+
+/**
+ * The readable siblings are one unit for credential replies, live updates, and save conflicts:
+ * unchanged local siblings take remote; unchanged remote siblings keep local. Two changed bodies
+ * conflict without touching the mirror. Credential status is always the actual masked server copy.
+ */
+function adoptSecretSiblings(revision: string, masked: MaskedLlmSecrets, invalidate: SecretPath[] | "all"): boolean {
+    const key = collectionKey(SECTION_KIND.llmSecrets);
+    const saved = persisted.get(key)?.text;
     const remote = llmSecretsText(masked);
     const local = projectCollection(SECTION_KIND.llmSecrets);
     if (local === saved) {
         persisted.set(key, { revision, text: remote });
         applySettingsRecord(SECTION_KIND.llmSecrets, masked, invalidate);
-    } else if (remote === saved) {
+        return true;
+    }
+    if (remote === saved) {
         persisted.set(key, { revision, text: remote });
         setMaskedSecrets(masked, invalidate);
-    } else {
-        // Through `applySettingsRecord`, which invalidates every credential path.
-        acceptRemote({ kind: SECTION_KIND.llmSecrets, id: SINGLETON_RESOURCE_ID, revision, data: masked });
-        showReloadedNotice();
+        return true;
     }
+    return false;
 }
 
 async function rereadSecrets() {
@@ -3402,31 +3424,14 @@ function storedFields(data: unknown): Record<string, unknown> | null {
     return copy;
 }
 
-const ABSENT = Symbol("absent");
-const fieldOf = (record: Record<string, unknown>, field: string): unknown =>
-    Object.hasOwn(record, field) ? record[field] : ABSENT;
 const isStamp = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 /** The `statics` counts (`incrementStatic`). */
 const STATIC_COUNTS = new Set(["imports", "messages"]);
 /**
- * What a conflicting record's server copy changed against the saved base, if every change is one
- * this client can take without losing or reinterpreting anything, else null. The changes are the
- * values the mirror must take (ABSENT: delete the field). Allowed, field by field (top level):
- * - a field the server holds as this client does (both made the same change);
- * - a field the base did not have and this client does not have either (another tab filled it in,
- *   such as a default its character screen binds); the server's value is taken;
- * - a character's `lastInteraction` (a send job stamped it while this client had an unsaved change):
- *   the server's finite stamp when this client left the field as saved (the server's clock wins, even
- *   over a later stamp an earlier client clock wrote), else the later of two finite stamps;
- * - a `statics` count: best effort, the server's count plus this client's increments since the
- *   base (`imports`, `messages`; a count both tabs raised to the same value, or one a lost answer
- *   already holds, may be off by those increments).
- * Anything else (a substantive remote edit, even of a field this client did not touch) is a
- * conflict as before, so related fields (a group's member arrays) are never combined from two
- * sources.
+ * Best-effort statics counts add this client's increments to the server's count. Other fields keep
+ * the existing equal/absent-field rule; a substantive remote change of one still conflicts.
  */
 function benignChanges(
-    kind: string,
     saved: Record<string, unknown>,
     remote: Record<string, unknown>,
     local: Record<string, unknown>,
@@ -3434,25 +3439,7 @@ function benignChanges(
     const changes = new Map<string, unknown>();
     for (const field of new Set([...Object.keys(saved), ...Object.keys(remote), ...Object.keys(local)])) {
         const [base, theirs, ours] = [fieldOf(saved, field), fieldOf(remote, field), fieldOf(local, field)];
-        if (kind === RESOURCE_KIND.characters && field === "lastInteraction") {
-            if (isEqual(theirs, ours) || (isStamp(theirs) && (ours === ABSENT || isEqual(ours, base)))) {
-                if (!isEqual(theirs, ours)) {
-                    changes.set(field, theirs);
-                }
-                continue;
-            }
-            if (!isStamp(theirs) && theirs === base) {
-                continue;
-            }
-            if (!isStamp(theirs) || !isStamp(ours)) {
-                return null;
-            }
-            if (theirs > ours) {
-                changes.set(field, theirs);
-            }
-            continue;
-        }
-        if (kind === COLLECTION_KIND.statics && STATIC_COUNTS.has(field)) {
+        if (STATIC_COUNTS.has(field)) {
             const counted = (value: unknown) => (value === ABSENT ? 0 : value);
             const [b, t, o] = [counted(base), counted(theirs), counted(ours)];
             if (!isStamp(b) || !isStamp(t) || !isStamp(o)) {
@@ -3627,23 +3614,21 @@ function pluginStorageLosses(key: string, item: RemoteItem): PluginStorageDiscar
 }
 
 /**
- * A conflicting character or `statics` record whose server change this client can take
- * (`benignChanges`): a send job stamped the character (its `lastInteraction`), filled in a
- * default its screen binds, or counted a send. The changes go into the mirror, the base moves
- * to the server's revision, and the key stays dirty, so the next cycle writes the merged record.
- * Nothing is discarded and no reload notice is shown; a field taken from the server is announced to
- * the remote-change listeners (caches derived from the record). Not for a create, a delete, another
- * kind, a character whose reload already waits for its generation, or a taken field the mirror object
- * only inherits (`assignsInherited`). A `pluginStorage` record is merged key by key instead
- * (`mergePluginStorageChange`), and an item list of `ITEM_LIST_MERGE_KINDS` item by item
- * (`mergeItemListChange`: this client's added items over the server's list), a create included.
+ * Merges independent fields or items against the saved base and the current local projection. All
+ * units must resolve before the mirror changes; otherwise normal conflict recovery keeps eligible
+ * local intent as a draft and accepts the server record. Successful merges rebase through
+ * `adoptMergedBase`, with no discard or reload notice. Character creates/deletes and taken fields
+ * the mirror only inherits remain conflicts; item collections also support concurrent creation.
  */
 function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     if (item.kind === RESOURCE_KIND.pluginStorage) {
         return mergePluginStorageChange(item, key);
     }
-    if (ITEM_LIST_MERGE_KINDS.has(item.kind)) {
+    if (isItemMergeKind(item.kind)) {
         return mergeItemListChange(item, key);
+    }
+    if (isSection(item.kind)) {
+        return mergeSectionChange(item, key);
     }
     const isCharacter = item.kind === RESOURCE_KIND.characters;
     if (!(isCharacter || item.kind === COLLECTION_KIND.statics) || item.revision === null) {
@@ -3662,7 +3647,18 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     }
     const remote = storedFields(item.data);
     const local = storedFields(JSON.parse(projected));
-    const changes = remote && saved && local ? benignChanges(item.kind, saved, remote, local) : null;
+    if (!remote || !saved || !local) {
+        return false;
+    }
+    const merged = isCharacter ? mergeCharacterFields(saved, remote, local) : null;
+    const changes = isCharacter
+        ? merged &&
+          new Map(
+              [...new Set([...Object.keys(local), ...Object.keys(merged)])]
+                  .filter((field) => !isEqual(fieldOf(local, field), fieldOf(merged, field)))
+                  .map((field) => [field, fieldOf(merged, field)]),
+          )
+        : benignChanges(saved, remote, local);
     if (!changes) {
         return false;
     }
@@ -3772,86 +3768,56 @@ function mergePluginStorageChange(item: RemoteItem, key: string): boolean {
 }
 
 /**
- * The item lists whose items are independent records addressed by their id, including toggle presets,
- * so an item this client added can go over another writer's list (`mergeItemAdds`). Other lists that
- * pass `itemIds` are not here: `characterOrder`'s folders hold character membership, and `loreBook`,
- * `plugins`, `hotkeys`, and `authRefreshes` are addressed by page, name, action, or URL, whatever ids
- * their items carry.
+ * Sections merge by field and coupled tuple; llmSecrets keeps its entire readable sibling body as
+ * one unit. Masked credential status always comes from the server, never from the merged projection.
+ * No section merges without a saved base, and every value is detached before raw application.
  */
-const ITEM_LIST_MERGE_KINDS = new Set<string>([
-    RESOURCE_KIND.modules,
-    RESOURCE_KIND.presets,
-    COLLECTION_KIND.personas,
-    COLLECTION_KIND.credentials,
-    COLLECTION_KIND.modelPresets,
-    COLLECTION_KIND.modelProfiles,
-    COLLECTION_KIND.togglePresets,
-]);
-
-/**
- * An item list merged from a conflict, or null when it cannot be: the server's list (its items and
- * order) with the items this client added (an id neither the saved base nor the server's list has)
- * after it, in this client's order. Every other change of this client must be one the server already
- * holds: each saved item as saved or as the server has it (an edit or removal only the server made is
- * taken; one this client made conflicts, even of an item the server left alone), the saved items in
- * the saved order or the server's, and an item both added under one id equal on both sides. All three
- * lists need unique item ids (`itemIds`).
- */
-function mergeItemAdds(base: unknown, theirs: unknown, ours: unknown): Record<string, unknown>[] | null {
-    const [baseIds, theirIds, ourIds] = [itemIds(base), itemIds(theirs), itemIds(ours)];
-    if (!baseIds || !theirIds || !ourIds) {
-        return null;
+function mergeSectionChange(item: RemoteItem, key: string): boolean {
+    const base = persisted.get(key);
+    const projected = projectRecord(item.kind, item.id);
+    if (!base || item.revision === null || projected === undefined || !isSection(item.kind)) {
+        return false;
     }
-    const byId = (list: unknown, ids: string[]) =>
-        new Map(ids.map((id, index) => [id, (list as Record<string, unknown>[])[index]]));
-    const [saved, remote, local] = [byId(base, baseIds), byId(theirs, theirIds), byId(ours, ourIds)];
-    const valueOf = (items: Map<string, unknown>, id: string) => (items.has(id) ? items.get(id) : ABSENT);
-    for (const id of baseIds) {
-        const value = valueOf(local, id);
-        if (!isEqual(value, valueOf(saved, id)) && !isEqual(value, valueOf(remote, id))) {
-            return null;
+    if (item.kind === SECTION_KIND.llmSecrets) {
+        if (!adoptSecretSiblings(item.revision, item.data as MaskedLlmSecrets, "all")) {
+            return false;
         }
+        adoptMergedBase(item, item.revision, key, projected !== projectCollection(item.kind));
+        return true;
     }
-    const kept = ourIds.filter((id) => saved.has(id));
-    const savedOrder = baseIds.filter((id) => local.has(id));
-    const remoteOrder = theirIds.filter((id) => saved.has(id) && local.has(id));
-    if (!isEqual(kept, savedOrder) && !isEqual(kept, remoteOrder)) {
-        return null;
+    let merged: Record<string, unknown> | null;
+    const local = JSON.parse(projected);
+    try {
+        merged = mergeSectionFields(item.kind, JSON.parse(base.text), item.data, local);
+        if (merged) merged = structuredClone(merged);
+    } catch {
+        return false;
     }
-    const added: Record<string, unknown>[] = [];
-    for (const id of ourIds) {
-        if (saved.has(id)) {
-            continue;
-        }
-        if (remote.has(id)) {
-            if (!isEqual(local.get(id), remote.get(id))) {
-                return null;
-            }
-            continue;
-        }
-        added.push(local.get(id)!);
+    if (!merged) {
+        return false;
     }
-    return [...(theirs as Record<string, unknown>[]), ...added];
+    applyToMirror(item.kind, item.id, merged);
+    adoptMergedBase(item, item.revision, key, !isEqual(merged, local));
+    return true;
 }
 
 /**
- * A conflicting item list of `ITEM_LIST_MERGE_KINDS` (`mergeItemAdds`): a module this tab imported
- * while another tab renamed a different one keeps both. The merge goes into the mirror raw (the
- * selections are resolved against it, `applyToMirror`), and the key stays dirty (`adoptMergedBase`),
- * so the next cycle sends the added items on the server's revision: no discard, no notice. A list
- * both tabs created merges against an empty base.
+ * Independent items merge whole by id, with explicit ordering, nonempty, and selection rules.
+ * The detached result goes into the mirror raw and the next cycle saves it on the server revision.
+ * Lists both tabs created merge against an empty base; any unresolved item leaves the mirror alone.
  */
 function mergeItemListChange(item: RemoteItem, key: string): boolean {
     const projected = projectRecord(item.kind, item.id);
-    if (item.revision === null || projected === undefined) {
+    if (item.revision === null || projected === undefined || !isItemMergeKind(item.kind)) {
         return false;
     }
     const base = persisted.get(key);
     let local: unknown;
-    let merged: Record<string, unknown>[] | null;
+    let merged: Record<string, unknown>[] | Record<string, unknown> | null;
     try {
         local = JSON.parse(projected);
-        merged = mergeItemAdds(base ? JSON.parse(base.text) : [], item.data, local);
+        merged = mergeItemCollection(item.kind, base ? JSON.parse(base.text) : ABSENT, item.data, local);
+        if (merged) merged = structuredClone(merged);
     } catch {
         return false;
     }
@@ -4902,21 +4868,7 @@ function hasRemoteWork(): boolean {
  * changed server sibling, nothing is applied and false is returned: the save's 409 decides.
  */
 function adoptRemoteSecretRecord(revision: string, masked: MaskedLlmSecrets): boolean {
-    const key = collectionKey(SECTION_KIND.llmSecrets);
-    const saved = persisted.get(key)?.text;
-    const remote = llmSecretsText(masked);
-    const local = projectCollection(SECTION_KIND.llmSecrets);
-    if (local === saved) {
-        persisted.set(key, { revision, text: remote });
-        applySettingsRecord(SECTION_KIND.llmSecrets, masked, "all");
-        return true;
-    }
-    if (remote === saved) {
-        persisted.set(key, { revision, text: remote });
-        setMaskedSecrets(masked, "all");
-        return true;
-    }
-    return false;
+    return adoptSecretSiblings(revision, masked, "all");
 }
 
 /**

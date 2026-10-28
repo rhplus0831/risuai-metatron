@@ -1,16 +1,19 @@
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../../shared/characters.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
+import { createFakeLockManager } from "./fakeLockManager";
 import { FakeResourceServer } from "./fakeResourceServer";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
-// A conflicting character or `statics` record whose server copy changed only in ways this client
-// can take (`benignChanges`, `mergeConcurrentChange` in `resourceSync.svelte.ts`) is merged into
-// the mirror and written again on the server's revision, with no discard and no reload notice. Any
-// other remote change conflicts as before. The save adapter runs for real (fresh module graph per
-// test, Svelte runes) against the in-memory fake. The `lastInteraction` rule (a send job stamps it
+// A conflicting record whose server copy changed only units this client left alone (a field, a coupled
+// group, an item: `mergeConcurrentChange` in `resourceSync.svelte.ts`, the tables in `recordMerge.ts`)
+// is merged into the mirror and written again on the server's revision, with no discard and no reload
+// notice. A unit both sides changed differently conflicts as before. The save adapter runs for real
+// (fresh module graph per test, Svelte runes) against the in-memory fake. The `lastInteraction` rule (a send job stamps it
 // on the server with the server's clock): the server's finite stamp is taken whenever this client
 // left the field as saved, even an earlier one; the later of two only when both sides moved it.
 
@@ -228,6 +231,62 @@ describe("a character another tab only opened or sent to", () => {
 });
 
 describe("which remote changes are merged", () => {
+    it("merges a remote character name with a local description and writes both on the server's revision", async () => {
+        const { fake, sync, mirror, remote } = await boot();
+        const base = fake.get("characters", "a")!.revision;
+        remote("characters", "a", (data) => (data.name = "Alice remote"));
+        const theirs = fake.get("characters", "a")!;
+        const merged = { ...fake.data("characters", "a"), desc: "local description" };
+        mirror("a").desc = "local description";
+
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(mirror("a")).toMatchObject(merged);
+        expect(fake.data("characters", "a")).toEqual(merged);
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [
+                {
+                    kind: "characters",
+                    id: "a",
+                    baseRevision: base,
+                    patch: { set: { desc: "local description" }, remove: [] },
+                },
+            ],
+            [
+                {
+                    kind: "characters",
+                    id: "a",
+                    baseRevision: theirs.revision,
+                    patch: { set: { desc: "local description" }, remove: [] },
+                },
+            ],
+        ]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("conflicts when two tabs change different arrays of the coupled group membership", async () => {
+        const { fake, sync, mirror, remote } = await boot();
+        const base = fake.get("characters", "g")!.revision;
+        remote("characters", "g", (data) => (data.characterTalks = [0.8, 0.2]));
+        const theirs = fake.data("characters", "g");
+        mirror("g").characterActive[1] = false;
+
+        expect((await sync.flushResources()).discarded).toEqual(["characters/g"]);
+        expect(mirror("g")).toMatchObject(theirs);
+        expect(fake.data("characters", "g")).toEqual(theirs);
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [
+                {
+                    kind: "characters",
+                    id: "g",
+                    baseRevision: base,
+                    patch: { set: { characterActive: [true, false] }, remove: [] },
+                },
+            ],
+        ]);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+    });
+
     it("takes a field neither the base nor the local copy has (the screen's `supaMemory: false`, any other while idle) and tells the listeners", async () => {
         const { fake, sync, mirror, remote, changed } = await boot();
         remote("characters", "a", (data) => {
@@ -296,26 +355,50 @@ describe("which remote changes are merged", () => {
         expect(fake.batchCount()).toBe(1);
     });
 
+    const nestedCharacter = (fake: FakeResourceServer) =>
+        fake.set(
+            "characters",
+            "a",
+            character("a", "Alice", {
+                lastInteraction: 100,
+                desc: "base",
+                tags: ["a", "b"],
+                nested: { x: 1, y: 1 },
+            }),
+        );
+
     it.each([
         ["a substantive edit of a field this client did not touch", (data: any) => (data.name = "Remote name")],
         ["an ordinary deletion", (data: any) => delete data.desc],
         ["a re-ordered array", (data: any) => (data.tags = ["b", "a"])],
+    ])("merges %s beside a local edit of another field", async (_label, change) => {
+        const { fake, sync, mirror, remote, changed } = await boot({ prepare: nestedCharacter });
+        remote("characters", "a", (data) => {
+            change(data);
+            data.lastInteraction = 200;
+        });
+        const expected = { ...structuredClone(fake.data("characters", "a")), nested: { x: 1, y: 2 } };
+        mirror("a").nested.y = 2;
+        mirror("a").lastInteraction = 150;
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        // The server's change and stamp (the later of two) beside this tab's nested edit, on both sides (a
+        // deleted field may come back as the server's default on save, never as the base value).
+        expect(fake.data("characters", "a")).toMatchObject(expected);
+        if (!Object.hasOwn(expected, "desc")) {
+            expect(fake.data("characters", "a").desc).not.toBe("base");
+        }
+        expect(JSON.parse(JSON.stringify(mirror("a")))).toMatchObject(
+            Object.fromEntries(Object.entries(expected).filter(([key]) => key !== "chats")),
+        );
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(changed).toEqual(["characters/a"]);
+    });
+
+    it.each([
         ["a different edit of the same nested object", (data: any) => (data.nested.x = 9)],
         ["a type change", (data: any) => (data.type = "group")],
     ])("conflicts as before for %s", async (_label, change) => {
-        const { fake, sync, mirror, remote, changed } = await boot({
-            prepare: (fake) =>
-                fake.set(
-                    "characters",
-                    "a",
-                    character("a", "Alice", {
-                        lastInteraction: 100,
-                        desc: "base",
-                        tags: ["a", "b"],
-                        nested: { x: 1, y: 1 },
-                    }),
-                ),
-        });
+        const { fake, sync, mirror, remote, changed } = await boot({ prepare: nestedCharacter });
         remote("characters", "a", (data) => {
             change(data);
             data.lastInteraction = 200;
@@ -332,15 +415,18 @@ describe("which remote changes are merged", () => {
         expect(changed).toEqual(["characters/a"]);
     });
 
-    it("conflicts for a remote deletion of a null field (null is not absence)", async () => {
-        const { sync, mirror, remote } = await boot({
+    it("takes a remote deletion of a null field (null is not absence) beside a local edit of another field", async () => {
+        const { fake, sync, mirror, remote } = await boot({
             prepare: (fake) =>
                 fake.set("characters", "a", character("a", "Alice", { lastInteraction: 100, extra: null })),
         });
         remote("characters", "a", (data) => delete data.extra);
         mirror("a").name = "local";
-        expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
         expect(Object.hasOwn(mirror("a"), "extra")).toBe(false);
+        expect(mirror("a").name).toBe("local");
+        expect(Object.hasOwn(fake.data("characters", "a"), "extra")).toBe(false);
+        expect(fake.data("characters", "a").name).toBe("local");
     });
 
     it("a membership change against a local activity edit follows normal conflict handling", async () => {
@@ -366,16 +452,17 @@ describe("which remote changes are merged", () => {
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.data("characters", "a")).toMatchObject({ constructor: "ext", name: "local", lastInteraction: 150 });
 
-        // A remote deletion of the own `constructor` (with a stamp): a deletion, so a conflict. The
-        // stamp is not taken on its own before the refusal: the whole record is the server's.
+        // A remote deletion of the own `constructor` (with a stamp) beside a local rename: the deletion
+        // assigns nothing inherited, so it is taken with the stamp and the rename is kept.
         remote("characters", "a", (data) => {
             delete data.constructor;
             data.lastInteraction = 200;
         });
         mirror("a").name = "local 2";
-        expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
+        expect((await sync.flushResources()).discarded).toEqual([]);
         expect(Object.hasOwn(mirror("a"), "constructor")).toBe(false);
-        expect(mirror("a")).toMatchObject({ name: "local", lastInteraction: 200 });
+        expect(mirror("a")).toMatchObject({ name: "local 2", lastInteraction: 200 });
+        expect(Object.hasOwn(fake.data("characters", "a"), "constructor")).toBe(false);
 
         // A remote-only own `__proto__` is refused: a conflict, never a prototype change.
         const current = JSON.stringify(fake.data("characters", "a"));
@@ -383,7 +470,7 @@ describe("which remote changes are merged", () => {
         mirror("a").name = "local 3";
         expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
         expect(({} as any).polluted).toBeUndefined();
-        expect(mirror("a").name).toBe("local");
+        expect(mirror("a").name).toBe("local 2");
     });
 
     // A field the mirror object only inherits cannot be assigned in place on the Svelte proxy, so the
@@ -523,11 +610,11 @@ describe("a running generation's character (the generation deferral is gone)", (
         },
     );
 
-    it("conflicts at once for a substantive change while generating; a later stamp-only change then merges", async () => {
+    it("conflicts at once for a same-field change while generating; a later stamp-only change then merges", async () => {
         const { fake, sync, mirror, remote } = await boot();
         const end = await generate(mirror);
         remote("characters", "a", (data) => (data.name = "Remote name"));
-        mirror("a").desc = "local";
+        mirror("a").name = "local";
         expect((await sync.flushResources()).discarded).toEqual(["characters/a"]);
         expect(mirror("a")).toMatchObject({ name: "Remote name", lastInteraction: 100, desc: "base" });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
@@ -976,12 +1063,93 @@ describe("the pluginStorage record every plugin shares", () => {
     });
 });
 
-// `mergeItemAdds` and `ITEM_LIST_MERGE_KINDS` (persistence.md Save step 5): a conflicting item list
-// keeps the items this client added over the server's list (its items and order), appended in this
-// client's order, with no discard and no notice; every other local change of the list (an edit,
-// removal, or reorder of a saved item, an add under an id the server added with another value, a
-// list without valid ids) conflicts as before, and so does a list of a kind outside the set,
-// whatever ids its items carry.
+describe("settings sections edited on two tabs", () => {
+    it("merges independent providers fields on the server's revision without a notice or recovery draft", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        const locks = vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, sync, settings, remote } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            const base = fake.get("providers", "main")!.revision;
+            remote("providers", "main", (data) => (data.requestRetrys = 7));
+            const theirs = fake.get("providers", "main")!;
+            const merged = { ...fake.data("providers", "main"), loreBookToken: 4321 };
+            settings.providers.loreBookToken = 4321;
+
+            expect((await sync.flushResources()).discarded).toEqual([]);
+            expect(JSON.parse(JSON.stringify(settings.providers))).toEqual(merged);
+            expect(fake.data("providers", "main")).toEqual(merged);
+            expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+                [
+                    {
+                        kind: "providers",
+                        id: "main",
+                        baseRevision: base,
+                        patch: { set: { loreBookToken: 4321 }, remove: [] },
+                    },
+                ],
+                [
+                    {
+                        kind: "providers",
+                        id: "main",
+                        baseRevision: theirs.revision,
+                        patch: { set: { loreBookToken: 4321 }, remove: [] },
+                    },
+                ],
+            ]);
+            await vi.advanceTimersByTimeAsync(2000);
+            await sync.flushResources();
+            expect(fake.batchCount()).toBe(2);
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(await journal.listDrafts()).toEqual([]);
+            expect((await journal.readOwn()).filter((row) => row.target === "providers\0main")).toEqual([]);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+            locks.mockRestore();
+        }
+    });
+
+    it("conflicts when additional parameters and their apply-to-all flag change on different tabs", async () => {
+        const { fake, sync, settings, remote } = await boot({
+            prepare: (fake) =>
+                fake.set("providers", "main", {
+                    ...fake.data<Record<string, unknown>>("providers", "main"),
+                    additionalParams: [],
+                    applyAdditionalParamsToAll: false,
+                }),
+        });
+        const base = fake.get("providers", "main")!.revision;
+        remote("providers", "main", (data) => (data.applyAdditionalParamsToAll = true));
+        const theirs = fake.data("providers", "main");
+        settings.providers.additionalParams = [["temperature", "0.7"]];
+
+        expect((await sync.flushResources()).discarded).toEqual(["providers/main"]);
+        expect(JSON.parse(JSON.stringify(settings.providers))).toEqual(theirs);
+        expect(fake.data("providers", "main")).toEqual(theirs);
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [
+                {
+                    kind: "providers",
+                    id: "main",
+                    baseRevision: base,
+                    patch: { set: { additionalParams: [["temperature", "0.7"]] }, remove: [] },
+                },
+            ],
+        ]);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+    });
+});
+
+// `mergeItemCollection` (persistence.md Save step 5): a conflicting item list merges item by item
+// (an item only one side changed, added, or removed takes that side), with no discard and no notice;
+// a one-sided reorder wins, otherwise the server's order, and the other side's additions are
+// appended. An item both sides changed differently (an add under one id with other values, an edit
+// against a removal), both sides reordering, a list without valid ids, and a kind outside the table
+// (whatever ids its items carry) conflict as before.
 describe("item lists: this tab's adds over another tab's list", () => {
     type CollectionStore = typeof import("../collectionStore.svelte");
     const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
@@ -1021,6 +1189,156 @@ describe("item lists: this tab's adds over another tab's list", () => {
         // The rejected batch only: nothing of this tab's was written.
         expect(h.fake.batchCount()).toBe(1);
     };
+
+    it("conflicts when the other tab deletes the preset this tab edited", async () => {
+        const h = await bootPresets();
+        const { fake, settings, remote } = h;
+        const base = fake.get("presets", "main")!.revision;
+        remote("presets", "main", (data) => data.splice(0, 1));
+        settings.presets[0].name = "mine";
+
+        await discarded(h, "presets");
+        expect(plain(settings.presets)).toEqual([{ id: "pb", name: "p2" }]);
+        expect(fake.data("presets", "main")).toEqual([{ id: "pb", name: "p2" }]);
+        expect(fake.batchBodies()[0].ops).toEqual([
+            {
+                kind: "presets",
+                id: "main",
+                baseRevision: base,
+                data: [
+                    { id: "pa", name: "mine" },
+                    { id: "pb", name: "p2" },
+                ],
+            },
+        ]);
+    });
+
+    it("merges a local preset deletion with the other tab's edit of another preset", async () => {
+        const { fake, sync, settings, remote } = await bootPresets();
+        const base = fake.get("presets", "main")!.revision;
+        remote("presets", "main", (data) => (data[1].name = "theirs"));
+        const theirs = fake.get("presets", "main")!.revision;
+        settings.presets.splice(0, 1);
+        const merged = [{ id: "pb", name: "theirs" }];
+
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(plain(settings.presets)).toEqual(merged);
+        expect(fake.data("presets", "main")).toEqual(merged);
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [{ kind: "presets", id: "main", baseRevision: base, data: [{ id: "pb", name: "p2" }] }],
+            [{ kind: "presets", id: "main", baseRevision: theirs, data: merged }],
+        ]);
+        noNotice();
+        await idle(fake, sync);
+    });
+
+    it("keeps this tab's preset reorder and appends the other tab's insertion in the merged write", async () => {
+        const { fake, sync, settings, remote } = await bootPresets();
+        remote("presets", "main", (data) => data.unshift({ id: "x", name: "X" }));
+        const theirs = fake.get("presets", "main")!.revision;
+        settings.presets = [plain(settings.presets[1]), plain(settings.presets[0])];
+        const merged = [
+            { id: "pb", name: "p2" },
+            { id: "pa", name: "p1" },
+            { id: "x", name: "X" },
+        ];
+
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(plain(settings.presets)).toEqual(merged);
+        expect(fake.data("presets", "main")).toEqual(merged);
+        expect(fake.batchCount()).toBe(2);
+        expect(fake.batchBodies()[1].ops).toEqual([
+            {
+                kind: "presets",
+                id: "main",
+                baseRevision: theirs,
+                patch: { items: [], changes: [], order: ["pb", "pa", "x"] },
+            },
+        ]);
+        noNotice();
+        await idle(fake, sync);
+    });
+
+    it("conflicts when both tabs reorder presets, even into the same order", async () => {
+        const h = await bootPresets();
+        const { fake, settings, remote } = h;
+        const base = fake.get("presets", "main")!.revision;
+        remote("presets", "main", (data) => data.reverse());
+        settings.presets = [
+            { id: "pb", name: "local edit" },
+            { id: "pa", name: "p1" },
+        ] as any;
+        // The edit makes the sent record differ, so a same-record retry cannot bypass the order rule.
+        await discarded(h, "presets");
+        const theirs = [
+            { id: "pb", name: "p2" },
+            { id: "pa", name: "p1" },
+        ];
+        expect(plain(settings.presets)).toEqual(theirs);
+        expect(fake.data("presets", "main")).toEqual(theirs);
+        expect(fake.batchBodies()[0].ops).toEqual([
+            {
+                kind: "presets",
+                id: "main",
+                baseRevision: base,
+                data: [
+                    { id: "pb", name: "local edit" },
+                    { id: "pa", name: "p1" },
+                ],
+            },
+        ]);
+    });
+
+    it("keeps the remote translator selection when the item selected only here was removed", async () => {
+        const a = createTranslatorPreset("A", { id: "ta" });
+        const b = createTranslatorPreset("B", { id: "tb" });
+        const { fake, sync, settings, remote } = await bootPresets((fake) =>
+            fake.set("translatorPresets", "main", { items: [a, b], selectedId: "ta" }),
+        );
+        const base = fake.get("translatorPresets", "main")!.revision;
+        remote("translatorPresets", "main", (data) => data.items.splice(1, 1));
+        settings.translatorPresets.selectedId = "tb";
+        settings.translatorPresets.items[0].name = "A local";
+        const merged = { items: [{ ...a, name: "A local" }], selectedId: "ta" };
+        const theirs = fake.get("translatorPresets", "main")!.revision;
+
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect(plain(settings.translatorPresets)).toEqual(merged);
+        expect(fake.data("translatorPresets", "main")).toEqual(merged);
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [
+                {
+                    kind: "translatorPresets",
+                    id: "main",
+                    baseRevision: base,
+                    data: { items: [{ ...a, name: "A local" }, b], selectedId: "tb" },
+                },
+            ],
+            [{ kind: "translatorPresets", id: "main", baseRevision: theirs, data: merged }],
+        ]);
+        noNotice();
+        await idle(fake, sync);
+    });
+
+    it("conflicts when the winning remote translator selection names an item deleted only here", async () => {
+        const a = createTranslatorPreset("A", { id: "ta" });
+        const b = createTranslatorPreset("B", { id: "tb" });
+        const h = await bootPresets((fake) =>
+            fake.set("translatorPresets", "main", { items: [a, b], selectedId: "ta" }),
+        );
+        const { fake, settings, remote } = h;
+        const base = fake.get("translatorPresets", "main")!.revision;
+        remote("translatorPresets", "main", (data) => (data.selectedId = "tb"));
+        settings.translatorPresets.items.splice(1, 1);
+
+        await discarded(h, "translatorPresets");
+        const theirs = { items: [a, b], selectedId: "tb" };
+        expect(plain(settings.translatorPresets)).toEqual(theirs);
+        expect(fake.data("translatorPresets", "main")).toEqual(theirs);
+        expect(fake.batchBodies()[0].ops).toEqual([
+            { kind: "translatorPresets", id: "main", baseRevision: base, data: { items: [a], selectedId: "ta" } },
+        ]);
+    });
 
     it("presets: an added preset over another tab's rename of a saved one: both kept, written once on the server's revision, no discard, no notice, the listener told, no echo", async () => {
         const { fake, sync, settings, remote, changed, collection } = await bootPresets();
@@ -1139,12 +1457,16 @@ describe("item lists: this tab's adds over another tab's list", () => {
         expect(names(h.settings.presets)).toEqual(["p1", "p2", "X"]);
     });
 
-    it.each(["edit", "remove", "reorder"])(
-        "conflicts for this tab's %s of a saved item (the server changed only another item), losing the add alongside it",
-        async (change) => {
-            const h = await bootPresets();
-            const { settings, remote, collection } = h;
+    it.each([
+        ["edit", ["mine", "theirs", "added"]],
+        ["remove", ["theirs", "added"]],
+        ["reorder", ["theirs", "p1", "added"]],
+    ])(
+        "keeps this tab's %s of a saved item and the add alongside it over the server's edit of another item",
+        async (change, expected) => {
+            const { fake, sync, settings, remote, collection } = await bootPresets();
             remote("presets", "main", (data) => (data[1].name = "theirs"));
+            const theirs = fake.get("presets", "main")!.revision;
             if (change === "edit") {
                 settings.presets[0].name = "mine";
             } else if (change === "remove") {
@@ -1153,8 +1475,14 @@ describe("item lists: this tab's adds over another tab's list", () => {
                 settings.presets = [plain(settings.presets[1]), plain(settings.presets[0])];
             }
             collection.addPreset({ name: "added" });
-            await discarded(h, "presets");
-            expect(names(settings.presets)).toEqual(["p1", "theirs"]);
+            expect((await sync.flushResources()).discarded).toEqual([]);
+            expect(names(settings.presets)).toEqual(expected);
+            expect(fake.data("presets", "main")).toEqual(plain(settings.presets));
+            expect(fake.batchBodies()[1].ops).toEqual([
+                expect.objectContaining({ kind: "presets", id: "main", baseRevision: theirs }),
+            ]);
+            noNotice();
+            await idle(fake, sync);
         },
     );
 
