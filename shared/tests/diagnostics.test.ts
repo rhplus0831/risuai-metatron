@@ -30,6 +30,8 @@ import {
     RUNTIME_ORIGINS,
     sanitizeStack,
     SERVER_PUSH_PHASES,
+    SYNC_PHASES,
+    SYNC_REASONS,
     UNKNOWN_ERROR_NAME,
 } from "../diagnostics.ts";
 import { BASE_LLM_MODELS } from "../llm/models.ts";
@@ -448,6 +450,31 @@ describe("projectDiagnosticEvent", () => {
             at: AT,
             kind: "serviceWorker",
             phase: "initFailed",
+        });
+    });
+
+    it("sync, the draft journal's phases: `journalSkipped`, `journalFailed`, and `journalRecovered` keep their reason and `entries` through the browser projection; an unlisted reason and a non-count `entries` are dropped", () => {
+        expect(SYNC_PHASES).toEqual(["conflict", "reload", "journalSkipped", "journalFailed", "journalRecovered"]);
+        for (const reason of ["tooLarge", "budget", "format"]) {
+            const skipped = { at: AT, kind: "sync", phase: "journalSkipped", reason, entries: 3 };
+            expect(projectBrowserEvent(skipped), reason).toEqual(skipped);
+        }
+        for (const reason of ["unavailable", "timeout", "blocked", "quota", "write", "readFailed"]) {
+            const failed = { at: AT, kind: "sync", phase: "journalFailed", reason };
+            expect(projectBrowserEvent(failed), reason).toEqual(failed);
+        }
+        const recovered = { at: AT, kind: "sync", phase: "journalRecovered", reason: "orphan", entries: 2 };
+        expect(projectBrowserEvent(recovered)).toEqual(recovered);
+        for (const reason of SYNC_REASONS) {
+            expect(SYNC_REASONS.indexOf(reason), reason).toBe(SYNC_REASONS.lastIndexOf(reason));
+        }
+        expect(
+            projectBrowserEvent({ at: AT, kind: "sync", phase: "journalSkipped", reason: "Alice", entries: -1 }),
+        ).toEqual({ at: AT, kind: "sync", phase: "journalSkipped" });
+        expect(projectBrowserEvent({ at: AT, kind: "sync", phase: "journalRecovered", entries: 1.5 })).toEqual({
+            at: AT,
+            kind: "sync",
+            phase: "journalRecovered",
         });
         expect(projectDiagnosticEvent({ at: AT, kind: "serviceWorker", phase: "updated", scope: "/" })).toEqual({
             at: AT,
