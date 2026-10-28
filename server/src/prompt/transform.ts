@@ -13,6 +13,7 @@ import {
     type TransformResult,
     type TransformTarget,
 } from "../../../shared/transform.ts";
+import { isValidResourceId } from "../data/resourceStore.ts";
 import { GenerationRunnerError, type RunningJob } from "../jobs/generationJobs.ts";
 import { type JobScope, jobScopeKinds, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup, type GenerationRunnerDeps, type RunSetup } from "../jobs/runSetup.ts";
@@ -46,8 +47,8 @@ const MAX_SNAPSHOTS_PER_CLIENT = 4;
 const MAX_SNAPSHOTS = 16;
 /** What one snapshot keeps of its targets: their texts and the variables their Lua wrote. */
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
-/** Owners whose group members the cache probe remembers (`ownerMembers`). */
-const MAX_OWNER_MEMBERS = 256;
+/** Chats whose member and speaker ids the cache probe remembers (`chatCharacters`). */
+const MAX_CHAT_CHARACTERS = 256;
 
 /** What every target of one request shares: one Lua budget and CBS time. */
 type Shared = {
@@ -145,10 +146,11 @@ function retainedBytes(run: TargetRun): number {
  * A text after the stages before the plugin handlers is bounded as the second call's texts are.
  *
  * Results are cached (`transformCache.ts`) under a digest of the epoch, the target, the context,
- * the handler set, the revisions the load read (every section and collection, the presets, the
- * modules, the owner, the source, a group's members), and the chat's variables, author's note,
- * local lore, name, modules, bound persona, bound presets, and greeting index; not the viewport or
- * the other messages. `noCache` replaces the entry. A cached result keeps its emotions;
+ * the handler set, the viewport and browser language, the stored chat revision the load read,
+ * the revisions the load read (every section and collection, the presets, the modules, the owner,
+ * the source, a group's members, and the chat's earlier speakers; missing characters use null),
+ * and the chat's variables, author's note, local lore, name, modules, bound persona, bound presets,
+ * and greeting index. `noCache` replaces the entry. A cached result keeps its emotions;
  * the tab applies a key's emotions once. A request whose every target has an entry is answered
  * before the load (`cachedResults`: revisions and the chat's metadata only, no record parsed).
  *
@@ -322,26 +324,33 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
     });
 
     /**
-     * The members of a chat's owner as a load read them, by the owner's id and revision (none for a
-     * character): the cache probe keys a request without reading the owner's record.
+     * A chat's member and speaker ids besides its owner, as a load read them, by owner and chat
+     * revisions: the cache probe keys a request without reading the owner or message rows.
      */
-    const ownerMembers = new Map<string, readonly string[]>();
-    const membersKey = (characterId: string, revision: string) => `${characterId}\0${revision}`;
+    const chatCharacters = new Map<string, readonly string[]>();
+    const charactersKey = (characterId: string, ownerRevision: string, chatId: string, chatRevision: string) =>
+        `${characterId}\0${ownerRevision}\0${chatId}\0${chatRevision}`;
 
-    /** The owner's members of a loaded scope (none for a character), remembered for the probe. */
-    const scopeMembers = (scope: JobScope): readonly string[] => {
+    /** The loaded chat's characters, including missing ones, without sources named only by targets. */
+    const scopeCharacters = (scope: JobScope): readonly string[] => {
         const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
-        const members = owner?.type === "group" ? [...(owner.characters ?? [])] : [];
-        const revision = scope.revisions?.get(`characters/${scope.characterId}`);
-        if (revision !== undefined) {
-            const key = membersKey(scope.characterId, revision);
-            ownerMembers.delete(key);
-            ownerMembers.set(key, members);
-            if (ownerMembers.size > MAX_OWNER_MEMBERS) {
-                ownerMembers.delete(ownerMembers.keys().next().value!);
+        const ids = new Set<string>(owner?.type === "group" ? (owner.characters ?? []) : []);
+        for (const message of scopeChat(scope)?.message ?? []) {
+            if (message.saying) {
+                ids.add(message.saying);
             }
         }
-        return members;
+        const characters = [...ids].filter((id) => id !== scope.characterId && isValidResourceId(id));
+        const revision = scope.revisions?.get(`characters/${scope.characterId}`);
+        if (revision !== undefined) {
+            const key = charactersKey(scope.characterId, revision, scope.chatId, scope.chatRevision);
+            chatCharacters.delete(key);
+            chatCharacters.set(key, characters);
+            if (chatCharacters.size > MAX_CHAT_CHARACTERS) {
+                chatCharacters.delete(chatCharacters.keys().next().value!);
+            }
+        }
+        return characters;
     };
 
     /**
@@ -353,28 +362,33 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         request: TransformRequest,
         revisions: ReadonlyMap<string, string> | undefined,
         characterId: string,
-        members: readonly string[],
+        characters: readonly string[],
         epoch: string,
         chat: Chat,
+        chatRevision: string,
     ): unknown[] => {
-        const characterIds = new Set<string>([characterId, ...members]);
-        const included: [string, string][] = [];
+        const included: [string, string | null][] = [];
         for (const [name, revision] of revisions ?? []) {
             const slash = name.indexOf("/");
-            if (name.slice(0, slash) !== "characters" || characterIds.has(name.slice(slash + 1))) {
+            if (name.slice(0, slash) !== "characters") {
                 included.push([name, revision]);
             }
+        }
+        for (const id of new Set([characterId, ...characters])) {
+            const name = `characters/${id}`;
+            included.push([name, revisions?.get(name) ?? null]);
         }
         included.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
         return [
             epoch,
+            chatRevision,
             request.mode,
             request.context,
             request.client?.browserLanguage ?? "",
+            request.client ? [request.client.viewport.width, request.client.viewport.height] : null,
             request.handlers ?? null,
             included,
-            // What a render reads of the chat besides its messages (the history stays as first
-            // rendered), and its binding (the load's check).
+            // The chat metadata read by the render and its binding (the load's check).
             sha256(
                 canonical({
                     scriptstate: chat.scriptstate ?? {},
@@ -415,9 +429,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
      * The request's results from the cache alone, when every target has an entry: it reads the
      * revisions and the chat's metadata (no record's data, no message), so a render the cache
      * answers never loads the job scope (the sections, presets, modules, and rendered characters
-     * parsed). Null when a target must run, the owner's members are not known for its revision, or
-     * the chat is gone: the request then loads as before (and its load reports a missing record or
-     * a binding refusal).
+     * parsed). Null when a target must run, the chat's characters are not known for its owner and
+     * chat revisions, or the chat is gone: the request then loads as before (and its load reports a
+     * missing record or a binding refusal).
      */
     const cachedResults = (request: TransformRequest, epoch: string): TransformResult[] | null => {
         if (request.targets.length === 0 || request.targets.some((target) => target.noCache)) {
@@ -436,12 +450,14 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             }
         }
         const ownerRevision = revisions.get(`characters/${characterId}`);
-        const members =
-            ownerRevision === undefined ? undefined : ownerMembers.get(membersKey(characterId, ownerRevision));
-        if (!members) {
+        const characters =
+            ownerRevision === undefined
+                ? undefined
+                : chatCharacters.get(charactersKey(characterId, ownerRevision, chatId, chatRecord.revision));
+        if (!characters) {
             return null;
         }
-        const base = baseKey(request, revisions, characterId, members, epoch, chatRecord.data as Chat);
+        const base = baseKey(request, revisions, characterId, characters, epoch, chatRecord.data, chatRecord.revision);
         const results: TransformResult[] = [];
         for (const target of request.targets) {
             const key = targetKey(base, revisions, target);
@@ -613,7 +629,15 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             });
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: deps.scriptWorkers.createBudget(), cbsUsage: { usedMs: 0 } };
-            const base = baseKey(request, scope.revisions, scope.characterId, scopeMembers(scope), life.epoch, chat);
+            const base = baseKey(
+                request,
+                scope.revisions,
+                scope.characterId,
+                scopeCharacters(scope),
+                life.epoch,
+                chat,
+                scope.chatRevision,
+            );
             const results: TransformResult[] = [];
             const pending: TargetRun[] = [];
             let retained = 0;

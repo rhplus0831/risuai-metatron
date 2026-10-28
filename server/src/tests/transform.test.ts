@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } fr
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
 
 // The script transform (`POST /api/transform`, `POST /api/transform/continue`;
@@ -15,8 +15,8 @@ import { allowListenerOrigin, createSigner, createTestServer, json } from "./tes
 // emotions (kept by a cached result), `@@inject` discarded; nothing stored (the chat's variables and
 // messages unchanged); each target's own variables, regex cache, and emotions; a Lua variable kept
 // across the image getter's refused callback; the cache key's dependencies (the chat's variables,
-// author's note, local lore, the source character, the language) and its deliberate staleness (the
-// viewport, the other messages); the two-call protocol (the snapshot's variables, not the store's;
+// author's note, local lore, the source character, the language, the stored transcript, viewport,
+// and earlier speakers); the two-call protocol (the snapshot's variables, not the store's;
 // the exact pending set checked before the snapshot is used; one winner; the text limits of the first
 // call's pending texts and of the snapshot); a maintenance ending a snapshot and refusing renders;
 // the admission order (authentication before the body is read, the 8 MiB cap, the epoch, a missing
@@ -486,7 +486,7 @@ describe("the transform cache's key", () => {
     });
 
     it(
-        "renders again after a committed variable, author's note, local lore, source character, or language change; not for the viewport or the other messages",
+        "renders again after a committed variable, author's note, local lore, source character, language, viewport, or other message change",
         async () => {
             await batch({
                 ops: [character("ck", { customscript: [rx("x", "y")] })],
@@ -497,8 +497,16 @@ describe("the transform cache's key", () => {
                 (await render("ck", "k", t, extra)).body.results[0];
             const first = await run();
             expect(first).toMatchObject({ ok: true, text: "y null", cached: false });
-            // Deliberately stale: the viewport, and the chat's other messages.
-            expect(await run({ client: client(320) })).toMatchObject({ cached: true, key: first.key });
+            expect(await run()).toMatchObject({ cached: true, key: first.key });
+
+            const keys = new Set([first.key]);
+            const expectNew = async (label: string, expectedText: string, extra: Record<string, unknown> = {}) => {
+                const result = await run(extra);
+                expect(result, label).toMatchObject({ ok: true, text: expectedText, cached: false });
+                expect(keys.has(result.key), label).toBe(false);
+                keys.add(result.key);
+            };
+            await expectNew("viewport", "y null", { client: client(320) });
             const chat = await readChat("ck", "k");
             await batch({
                 chats: [
@@ -516,15 +524,7 @@ describe("the transform cache's key", () => {
                     },
                 ],
             });
-            expect(await run()).toMatchObject({ cached: true, key: first.key });
-
-            const keys = new Set([first.key]);
-            const expectNew = async (label: string, expectedText: string, extra: Record<string, unknown> = {}) => {
-                const result = await run(extra);
-                expect(result, label).toMatchObject({ ok: true, text: expectedText, cached: false });
-                expect(keys.has(result.key), label).toBe(false);
-                keys.add(result.key);
-            };
+            await expectNew("other messages", "y null");
             await patchChat("ck", "k", { scriptstate: { $v: "1" } });
             await expectNew("variable", "y 1");
             await patchChat("ck", "k", { note: "a note" });
@@ -575,6 +575,194 @@ describe("the transform cache's key", () => {
             expect(one.key).not.toBe(two.key);
         },
         SLOW,
+    );
+});
+
+describe("the transform cache's transcript, viewport, and speakers", () => {
+    const cases = [
+        { mode: "editdisplay", calls: "one-call", handlers: undefined },
+        { mode: "editprocess", calls: "one-call", handlers: undefined },
+        { mode: "editdisplay", calls: "two-call", handlers: "cache:editdisplay" },
+        { mode: "editprocess", calls: "two-call", handlers: "cache:editprocess" },
+    ] as const;
+
+    beforeEach(() => {
+        // These CBS-only renders need no workers. Freeze the render deadline, snapshot expiry,
+        // and CBS clock so neither a slow request nor the continuation gap races real time.
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => vi.useRealTimers());
+
+    /** Pass the plugin handler's text through unchanged, or take an already cached result. */
+    const complete = async (response: Awaited<ReturnType<typeof render>>, clientId = "tab1") => {
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        if (response.body.snapshotId !== undefined) {
+            expect(response.body.results).toEqual([]);
+            expect(response.body.pending).toHaveLength(1);
+            const continued = await resume(response.body.snapshotId, response.body.pending, clientId);
+            expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+            return continued.body.results[0];
+        }
+        return response.body.results[0];
+    };
+
+    it.each(cases)("$mode, $calls: replaces a mixed-revision result after the transcript is saved", async (c) => {
+        const id = `history-${c.mode}-${c.calls}`;
+        await batch({ ops: [character(id)], chats: [chatCreate(id, "k")] });
+        // The tab has edited m2, but the server still has m1="first" and m2="second".
+        const source = "local draft | previous={{previouscharchat}}";
+        const run = async () =>
+            complete(await render(id, "k", [target("a", id, source)], { mode: c.mode, handlers: c.handlers }));
+        const first = await run();
+        expect(first).toMatchObject({ ok: true, text: "local draft | previous=first", cached: false });
+        expect(await run()).toMatchObject({ cached: true, key: first.key });
+
+        const chat = await readChat(id, "k");
+        await batch({
+            chats: [
+                {
+                    characterId: id,
+                    chatId: "k",
+                    baseRevision: chat.revision,
+                    ops: [
+                        { op: "setText", id: "m1", text: "saved history" },
+                        { op: "setText", id: "m2", text: source },
+                    ],
+                },
+            ],
+        });
+        const after = await run();
+        expect(after).toMatchObject({ ok: true, text: "local draft | previous=saved history", cached: false });
+        expect(after.key).not.toBe(first.key);
+        expect(await run()).toMatchObject({ cached: true, key: after.key });
+    });
+
+    it.each(cases)("$mode, $calls: keys cross-client renders by viewport width and height", async (c) => {
+        const id = `viewport-${c.mode}-${c.calls}`;
+        await batch({ ops: [character(id)], chats: [chatCreate(id, "k")] });
+        const run = async (clientId: string, width: number, height = 600) =>
+            complete(
+                await render(id, "k", [target("a", id, "{{screenwidth}}x{{screenheight}}")], {
+                    mode: c.mode,
+                    handlers: c.handlers,
+                    clientId,
+                    client: { ...client(width), viewport: { width, height } },
+                }),
+                clientId,
+            );
+        const wide = await run("desktop", 800);
+        expect(wide).toMatchObject({ ok: true, text: "800x600", cached: false });
+        const narrow = await run("phone", 320);
+        expect(narrow).toMatchObject({ ok: true, text: "320x600", cached: false });
+        expect(narrow.key).not.toBe(wide.key);
+        expect(await run("phone", 320)).toMatchObject({ cached: true, key: narrow.key });
+
+        const tall = await run("phone", 320, 900);
+        expect(tall).toMatchObject({ ok: true, text: "320x900", cached: false });
+        expect(tall.key).not.toBe(narrow.key);
+        expect(await run("another-phone", 320, 900)).toMatchObject({ cached: true, key: tall.key });
+        expect(await run("another-desktop", 800)).toMatchObject({ cached: true, key: wide.key });
+    });
+
+    it("keys an earlier nonmember speaker by revision, including absence and return", async () => {
+        await batch({
+            ops: [
+                character("speaker-group", { type: "group", characters: ["speaker-member"] }),
+                character("speaker-member"),
+                character("former-speaker", { name: "Before" }),
+            ],
+            chats: [
+                chatCreate("speaker-group", "k", {
+                    message: [
+                        { role: "char", data: "earlier", saying: "former-speaker", chatId: "m1" },
+                        { role: "user", data: "second", chatId: "m2" },
+                    ],
+                }),
+            ],
+        });
+        const run = async () =>
+            complete(await render("speaker-group", "k", [target("a", "speaker-member", "{{previouscharchat}}")]));
+        const chat = await readChat("speaker-group", "k");
+        const first = await run();
+        expect(first).toMatchObject({ ok: true, text: "earlier", cached: false });
+        expect(await run()).toMatchObject({ cached: true, key: first.key });
+
+        const stored = (await api("/api/resources/characters/former-speaker")).body;
+        await batch({
+            ops: [
+                {
+                    ...character("former-speaker"),
+                    baseRevision: stored.revision,
+                    data: { ...stored.data, name: "After" },
+                },
+            ],
+        });
+        const after = await run();
+        expect(after).toMatchObject({ ok: true, text: "earlier", cached: false });
+        expect(after.key).not.toBe(first.key);
+        expect(await run()).toMatchObject({ cached: true, key: after.key });
+
+        const removeSpeaker = async () => {
+            const speaker = (await api("/api/resources/characters/former-speaker")).body;
+            await batch({
+                ops: [{ kind: "characters", id: "former-speaker", baseRevision: speaker.revision, delete: true }],
+            });
+        };
+        await removeSpeaker();
+        const missing = await run();
+        expect(missing).toMatchObject({ ok: true, text: "earlier", cached: false });
+        expect(missing.key).not.toBe(after.key);
+        expect(await run()).toMatchObject({ cached: true, key: missing.key });
+
+        await batch({ ops: [character("former-speaker", { name: "Returned" })] });
+        const returned = await run();
+        expect(returned).toMatchObject({ ok: true, text: "earlier", cached: false });
+        expect(returned.key).not.toBe(missing.key);
+        expect(await run()).toMatchObject({ cached: true, key: returned.key });
+        // Absence is a fixed value, even after a different incarnation of that id existed.
+        await removeSpeaker();
+        expect(await run()).toMatchObject({ cached: true, key: missing.key });
+        expect((await readChat("speaker-group", "k")).revision).toBe(chat.revision);
+    });
+
+    it.each(["editdisplay", "editprocess"] as const)(
+        "%s: stores a held continuation under the revision it loaded before a save",
+        async (mode) => {
+            const id = `held-${mode}`;
+            await batch({ ops: [character(id)], chats: [chatCreate(id, "k")] });
+            const source = "draft | previous={{previouscharchat}}";
+            const extra = { mode, handlers: `held:${mode}` };
+            const targets = [target("a", id, source)];
+            const before = await complete(await render(id, "k", targets, extra));
+            expect(before).toMatchObject({ ok: true, text: "draft | previous=first", cached: false });
+
+            // Start another run at the same revision and hold it between its load and store.
+            const held = await render(id, "k", [target("a", id, source, { noCache: true })], extra);
+            expect(held.status).toBe(200);
+            expect(held.body.results).toEqual([]);
+            expect(held.body.pending).toEqual([{ id: "a", text: source }]);
+            const chat = await readChat(id, "k");
+            await batch({
+                chats: [
+                    {
+                        characterId: id,
+                        chatId: "k",
+                        baseRevision: chat.revision,
+                        ops: [{ op: "setText", id: "m1", text: "saved while pending" }],
+                    },
+                ],
+            });
+            const old = await complete(held);
+            expect(old).toMatchObject({ ok: true, text: "draft | previous=first", cached: false, key: before.key });
+
+            const after = await complete(await render(id, "k", targets, extra));
+            expect(after).toMatchObject({ ok: true, text: "draft | previous=saved while pending", cached: false });
+            expect(after.key).not.toBe(old.key);
+            expect(await complete(await render(id, "k", targets, extra))).toMatchObject({
+                cached: true,
+                key: after.key,
+            });
+        },
     );
 });
 
