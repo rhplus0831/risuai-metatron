@@ -6,8 +6,10 @@
 // that keeps `JSON.stringify(snapshot)` on `window.__risuBootSnapshot`), so what it compares is
 // exactly what `loadData` installs.
 //
-// Data: 14 modules of 300 asset tuples (one listed twice), 6 characters (one with a TTS API key, which is
-// never cached), 20 presets. Boots, each a reload: `cold` (cache deleted), `warm`, after one module's
+// FIXTURE=check (default), reported or audit uses the shared synthetic builder. Every fixture
+// includes a credential character and a duplicated module. The default data: 14 modules of 300 asset
+// tuples (one listed twice), 6 characters (one with a TTS API key, which is never cached), 20 presets.
+// Boots, each a reload: `cold` (cache deleted), `warm`, after one module's
 // assets change, after a module reorder, after a character's edit, after a character's deletion, after
 // a character's creation, and `fallback` (the boot route aborted: the plain read). Per boot: the
 // snapshot equals a plain read taken right after it; a cached boot read through the boot route and
@@ -18,10 +20,11 @@
 // credential claims, and the full-cache claims of the compared document.
 //
 // Usage: node util/playwright/checkBootCache.mjs
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { chromium } from "playwright-core";
-import { chromePath, openApp, repoRoot, startStack } from "./stack.mjs";
+import { chromePath, clearSafeBootAttempts, openApp, repoRoot, startStack } from "./stack.mjs";
+import { assetTuples, buildBootFixture, seedBootFixture } from "./measureBoot.mjs";
 
 const { RESOURCE_KIND } = await import(path.join(repoRoot, "shared/resources.ts"));
 const BOOT_PATH = "/api/resources/boot";
@@ -34,32 +37,16 @@ const check = (name, ok, detail) => {
     console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
 };
 
-const hex = (seed) => createHash("sha256").update(seed).digest("hex");
-const assetTuples = (prefix, count) =>
-    Array.from({ length: count }, (_, i) => [`${prefix} asset ${i}`, `assets/${hex(`${prefix}${i}`)}.png`, "png"]);
-const character = (index, extra = {}) => ({
-    chaId: randomUUID(),
-    name: `Character ${index}`,
-    type: "character",
-    desc: `The description of character ${index}. `.repeat(50),
-    firstMessage: "Hello.",
-    globalLore: [],
-    customscript: [],
-    additionalAssets: assetTuples(`c${index}`, 50),
-    emotionImages: [],
-    bias: [],
-    viewScreen: "none",
-    chatFolders: [],
-    firstMsgIndex: -1,
-    ...extra,
-});
-
 let stack = null;
 let browser = null;
 try {
-    stack = await startStack({ serverPort: 6141, vitePort: 5241 });
+    stack = await startStack({
+        serverPort: Number(process.env.PORT ?? 6141),
+        vitePort: Number(process.env.VITE_PORT ?? 5241),
+    });
     browser = await chromium.launch({ executablePath: chromePath, headless: true });
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    await clearSafeBootAttempts(context);
     const page = await context.newPage();
     const pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 300)));
@@ -128,26 +115,11 @@ try {
     await openApp(page, stack.baseURL);
     await page.waitForTimeout(1500);
 
-    // Seed.
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
-    const presets = await single("presets");
-    const modules = await single("modules");
-    const moduleList = Array.from({ length: 14 }, (_, i) => ({
-        id: randomUUID(),
-        name: `Module ${i}`,
-        description: "",
-        lorebook: [],
-        assets: assetTuples(`m${i}`, 300),
-    }));
-    moduleList.push(moduleList[3]);
-    const keyed = character(0, { oaiTTSConfig: { model: "tts-1", voice: "alloy", speed: "1", apiKey: "sk-check" } });
-    const characters = [keyed, ...Array.from({ length: 5 }, (_, i) => character(i + 1))];
-    const presetList = Array.from({ length: 20 }, (_, i) => ({
-        ...presets.data[0],
-        id: i === 0 ? presets.data[0].id : randomUUID(),
-        name: `Preset ${i}`,
-    }));
+    const fixture = await seedBootFixture(api, process.env.FIXTURE ?? "check", { cacheCheck: true });
+    const { characters } = fixture;
+    const keyed = characters.find((character) => character.oaiTTSConfig?.apiKey);
     const chatOps = (list) =>
         list.map((data) => ({
             characterId: data.chaId,
@@ -160,25 +132,6 @@ try {
                 },
             ],
         }));
-    const seeded = await api("/api/resources/batch", {
-        method: "POST",
-        body: JSON.stringify({
-            ops: [
-                {
-                    kind: "ui",
-                    id: "main",
-                    baseRevision: ui.revision,
-                    data: { ...ui.data, didFirstSetup: true, useLegacyGUI: true },
-                },
-                { kind: "presets", id: "main", baseRevision: presets.revision, data: presetList },
-                { kind: "modules", id: "main", baseRevision: modules?.revision ?? null, data: moduleList },
-                ...characters.map((data) => ({ kind: "characters", id: data.chaId, baseRevision: null, data })),
-            ],
-            chats: chatOps(characters),
-            chatOrders: [],
-        }),
-    });
-    check("seed: stored", seeded.status === 200, seeded.status === 200 ? undefined : seeded);
     const deleteCache = () =>
         page.evaluate(
             () =>
@@ -322,7 +275,7 @@ try {
     check("character delete: stored", deleted.status === 200, deleted.status === 200 ? undefined : deleted);
     await bootOnce("character delete", { full: true });
 
-    const added = character(9);
+    const added = { ...buildBootFixture("check").characters[1], chaId: randomUUID(), name: "Character 9" };
     const created = await api("/api/resources/batch", {
         method: "POST",
         body: JSON.stringify({
