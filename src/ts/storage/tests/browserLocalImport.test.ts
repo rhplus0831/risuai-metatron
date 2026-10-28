@@ -302,6 +302,39 @@ describe("plugin storage", () => {
 });
 
 describe("permissions", () => {
+    it("reloads a grant committed by another writer after the legacy merge", async () => {
+        table(PERMISSIONS).set("legacy", true);
+        const fetch = fake.fetch;
+        let merged = false;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = await fetch(path, init);
+                if (path === "/api/resources/pluginPermissions/main" && init?.method === "PUT" && response.ok) {
+                    merged = true;
+                    // The merge's response contains only its own grant. Another writer commits
+                    // before the importer can reload; only that reload can expose this grant.
+                    fake.set("pluginPermissions", "main", {
+                        grants: { ...fake.data("pluginPermissions", "main").grants, remote: true },
+                        lastGrantTime: { remote_lastGrantTime: 99 },
+                    });
+                }
+                return response;
+            },
+        };
+
+        await importer.importBrowserLocalData();
+        expect(merged).toBe(true);
+        expect(permissions.hasPermissionGrant("legacy")).toBe(true);
+        expect(permissions.hasPermissionGrant("remote")).toBe(true);
+        expect(permissions.getLastGrantTime("remote_lastGrantTime")).toBe(99);
+        expect(
+            fake.requests
+                .filter(({ path }) => path === "/api/resources/pluginPermissions/main")
+                .map(({ method }) => method),
+        ).toEqual(["PUT", "GET"]);
+        expect([...table(PERMISSIONS).keys()]).toEqual([]);
+    });
+
     it("merges grants and grant times into the server record and deletes them locally", async () => {
         fake.set("pluginPermissions", "main", { grants: { theirs: true }, lastGrantTime: { t: 50 } });
         table(PERMISSIONS).set("hash_db", true);

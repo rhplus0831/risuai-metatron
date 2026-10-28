@@ -2,6 +2,7 @@ import {
     compareRevision,
     type PluginPermissionGrants,
     RESOURCE_KIND,
+    type ResourceRecord,
     SINGLETON_RESOURCE_ID,
 } from "../../../../shared/resources.ts";
 import { getResource, putResource, ResourceConflictError } from "../../storage/resourceClient";
@@ -46,7 +47,17 @@ async function fetchGrants(): Promise<Loaded> {
         : { revision: null, data: emptyGrants() };
 }
 
-/** Loads the grants from the server. Call at boot before plugins load. */
+/**
+ * Initializes grants once from the boot read, before any grant write is queued. This is not a general
+ * reset: a grant write already in flight would overwrite the seeded state.
+ */
+export function seedPluginPermissions(record: ResourceRecord | undefined): void {
+    current = record
+        ? { revision: record.revision, data: copyGrants(record.data as PluginPermissionGrants) }
+        : { revision: null, data: emptyGrants() };
+}
+
+/** Reloads grants from the server after the legacy browser-permission migration merges them. */
 export async function loadPluginPermissions(): Promise<void> {
     current = await fetchGrants();
 }

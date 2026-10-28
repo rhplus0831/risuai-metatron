@@ -17,6 +17,7 @@ import {
     loadPluginPermissions,
     recordPermissionGrants,
     refreshPluginPermissions,
+    seedPluginPermissions,
 } from "./permissionStore";
 
 let fake: FakeResourceServer;
@@ -47,6 +48,67 @@ describe("loading", () => {
         expect(hasPermissionGrant("constructor")).toBe(false);
         expect(hasPermissionGrant("__proto__")).toBe(false);
         expect(getLastGrantTime("toString")).toBeUndefined();
+    });
+});
+
+describe("seedPluginPermissions", () => {
+    it("filters boot grants and uses the boot revision for the first write without a conflict read", async () => {
+        const revision = fake.set("pluginPermissions", "main", {
+            grants: { boot: true, denied: false, junk: "yes" },
+            lastGrantTime: { boot_lastGrantTime: 42, junk: "42" },
+        });
+        const snapshot = await client.readKinds(["pluginPermissions"]);
+        const record = snapshot.kinds.pluginPermissions.find(({ id }) => id === "main")!;
+        fake.requests.length = 0;
+
+        seedPluginPermissions(record);
+        expect(hasPermissionGrant("boot")).toBe(true);
+        expect(hasPermissionGrant("denied")).toBe(false);
+        expect(hasPermissionGrant("junk")).toBe(false);
+        expect(getLastGrantTime("boot_lastGrantTime")).toBe(42);
+        expect(getLastGrantTime("junk")).toBeUndefined();
+
+        await recordPermissionGrants({ grants: ["new"] });
+        expect(fake.requests).toEqual([
+            {
+                method: "PUT",
+                path: "/api/resources/pluginPermissions/main",
+                body: {
+                    baseRevision: revision,
+                    data: { grants: { boot: true, new: true }, lastGrantTime: { boot_lastGrantTime: 42 } },
+                },
+            },
+        ]);
+        expect(hasPermissionGrant("new")).toBe(true);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { boot: true, new: true },
+            lastGrantTime: { boot_lastGrantTime: 42 },
+        });
+    });
+
+    it("seeds an absent record empty and creates the first grant at a null base", async () => {
+        const revision = fake.set("pluginPermissions", "main", {
+            grants: { previous: true },
+            lastGrantTime: { previous_lastGrantTime: 42 },
+        });
+        seedPluginPermissions({ id: "main", revision, data: fake.data("pluginPermissions", "main") });
+        expect(hasPermissionGrant("previous")).toBe(true);
+        fake.delete("pluginPermissions", "main");
+        fake.requests.length = 0;
+
+        seedPluginPermissions(undefined);
+        expect(hasPermissionGrant("previous")).toBe(false);
+        expect(getLastGrantTime("previous_lastGrantTime")).toBeUndefined();
+        await recordPermissionGrants({ grants: ["first"] });
+        expect(fake.requests).toEqual([
+            {
+                method: "PUT",
+                path: "/api/resources/pluginPermissions/main",
+                body: { baseRevision: null, data: { grants: { first: true }, lastGrantTime: {} } },
+            },
+        ]);
+        expect(fake.data("pluginPermissions", "main")).toEqual({ grants: { first: true }, lastGrantTime: {} });
+        expect(hasPermissionGrant("first")).toBe(true);
     });
 });
 

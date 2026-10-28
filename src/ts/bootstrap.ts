@@ -34,7 +34,7 @@ import { checkCharOrderAtBoot, queueRemoteCharOrderRepair } from "./storage/char
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
-import { loadPluginPermissions, refreshPluginPermissions } from "./plugins/apiV3/permissionStore";
+import { refreshPluginPermissions, seedPluginPermissions } from "./plugins/apiV3/permissionStore";
 import { startEventFeed } from "./network/eventFeed";
 import { registerModelDynamic } from "./model/modellist";
 import { initializeRecords, type RecordFields, type RecordKind } from "./storage/records.svelte";
@@ -73,6 +73,10 @@ export async function loadData() {
             seedResources(snapshot);
             seedChats(snapshot.chatSummaries ?? snapshot.chats ?? [], snapshot.chatOrders ?? []);
             seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
+            // Permissions use the boot record and revision before browser-local grants are imported.
+            seedPluginPermissions(
+                snapshot.kinds[RESOURCE_KIND.pluginPermissions]?.find((record) => record.id === SINGLETON_RESOURCE_ID),
+            );
             // This client's preset and lorebook page; the installation checks the ids.
             loadSelection();
             installBootRecords(snapshot);
@@ -127,7 +131,6 @@ export async function loadData() {
             characterURLImport();
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
-            await loadPluginPermissions();
             // Live updates: other tabs' and devices' changes reach this tab from here on.
             setRemoteResourceOwner(RESOURCE_KIND.inlays, { apply: noteRemoteInlay, reconcile: reconcileInlays });
             setRemoteResourceOwner(RESOURCE_KIND.pluginPermissions, {

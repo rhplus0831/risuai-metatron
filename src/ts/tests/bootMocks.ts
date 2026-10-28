@@ -133,6 +133,7 @@ export function createBootMock<K extends keyof BootModules>(
             allowedDbKeys: [],
         },
         permissionStore: {
+            seedPluginPermissions: vi.fn<BootModules["permissionStore"]["seedPluginPermissions"]>(),
             loadPluginPermissions: vi.fn<BootModules["permissionStore"]["loadPluginPermissions"]>(),
             hasPermissionGrant: vi.fn<BootModules["permissionStore"]["hasPermissionGrant"]>(),
             getLastGrantTime: vi.fn<BootModules["permissionStore"]["getLastGrantTime"]>(),

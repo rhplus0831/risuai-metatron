@@ -192,6 +192,61 @@ afterEach(async () => {
     previousServers.splice(0).forEach((previous) => previous.close());
 });
 
+describe("boot plugin permissions", () => {
+    it("installs boot grants before browser-local import without a permissions read", async () => {
+        server.set("pluginPermissions", "main", {
+            grants: { boot: true },
+            lastGrantTime: { boot_lastGrantTime: 42 },
+        });
+        const permissions = await import("./plugins/apiV3/permissionStore");
+        const { importBrowserLocalData } = await import("./storage/browserLocalImport");
+        let beforeImport: [boolean, number | undefined] | undefined;
+        vi.mocked(importBrowserLocalData).mockImplementationOnce(async () => {
+            beforeImport = [permissions.hasPermissionGrant("boot"), permissions.getLastGrantTime("boot_lastGrantTime")];
+        });
+
+        await boot();
+        expect(beforeImport).toEqual([true, 42]);
+        expect(permissions.hasPermissionGrant("boot")).toBe(true);
+        expect(permissions.getLastGrantTime("boot_lastGrantTime")).toBe(42);
+        expect(
+            server.requests.filter(
+                ({ method, path }) => method === "GET" && path === "/api/resources/pluginPermissions/main",
+            ),
+        ).toEqual([]);
+    });
+
+    it("picks up a grant committed between the boot read and the first hello reconcile", async () => {
+        server.set("pluginPermissions", "main", { grants: { boot: true }, lastGrantTime: {} });
+        const permissions = await import("./plugins/apiV3/permissionStore");
+        const { importBrowserLocalData } = await import("./storage/browserLocalImport");
+        vi.mocked(importBrowserLocalData).mockImplementationOnce(async () => {
+            // The boot answer has been read, but the event feed has not started yet.
+            server.set("pluginPermissions", "main", {
+                grants: { boot: true, remote: true },
+                lastGrantTime: { remote_lastGrantTime: 99 },
+            });
+        });
+        const current = await boot();
+        expect(permissions.hasPermissionGrant("boot")).toBe(true);
+        expect(permissions.hasPermissionGrant("remote")).toBe(false);
+        server.requests.length = 0;
+
+        // The first hello hands its revision listing to this public boundary. The boot has
+        // registered the real permission owner; an empty write waits for its queued refresh.
+        current.sync.reconcileRemote(server.store.listRevisions());
+        await permissions.recordPermissionGrants({});
+
+        expect(permissions.hasPermissionGrant("remote")).toBe(true);
+        expect(permissions.getLastGrantTime("remote_lastGrantTime")).toBe(99);
+        expect(
+            server.requests
+                .filter(({ path }) => path === "/api/resources/pluginPermissions/main")
+                .map(({ method }) => method),
+        ).toEqual(["GET"]);
+    });
+});
+
 describe("boot after a restore snapshot", () => {
     it("lists every old-epoch snapshot entry as an export-only draft without replaying its intent", async () => {
         const first = await boot();
