@@ -33,6 +33,11 @@ not imply an observed production incident or an authorization bypass.
 | U2  | P3       | Separate recovery change             | An obsolete failure forces another render after a newer render succeeded              |
 | U3  | P3       | Pre-existing parser behavior         | Character-image expansion follows a later selection instead of the captured render    |
 
+**Resolution (2026-10-29).** All four are fixed: DE1 and U1 in `a123c4596`, U2 and U3 in
+`341108f1c`, each with regression tests on the harnesses named below. U1 was fixed as a
+read-only contract for both transform modes; its accepted limits are in the
+[CBS/rendering guide](../structure/cbs-rendering.md#limitations).
+
 ## Plan-related finding
 
 ### DE1 — The provisional-result handoff bypasses mixed-state detection
