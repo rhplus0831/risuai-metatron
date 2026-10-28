@@ -148,6 +148,8 @@ export interface HypaV3Data {
         lastRecentSummaries: number[];
         lastSimilarSummaries: number[];
         lastRandomSummaries: number[];
+        /** The summaries the last selection deferred (stored, not yet needed); absent when none was. */
+        lastDeferredSummaries?: number[];
     };
     modalSettings?: {
         displayMode: DisplayMode;
@@ -226,11 +228,13 @@ function remapMetrics(
                   return mapped === undefined ? [] : [mapped];
               })
             : [];
+    const deferred = each(metrics.lastDeferredSummaries);
     return {
         lastImportantSummaries: each(metrics.lastImportantSummaries),
         lastRecentSummaries: each(metrics.lastRecentSummaries),
         lastSimilarSummaries: each(metrics.lastSimilarSummaries),
         lastRandomSummaries: each(metrics.lastRandomSummaries),
+        ...(deferred.length > 0 ? { lastDeferredSummaries: deferred } : {}),
     };
 }
 

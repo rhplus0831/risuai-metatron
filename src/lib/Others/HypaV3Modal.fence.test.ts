@@ -315,6 +315,24 @@ afterEach(async () => {
     document.body.replaceChildren();
 });
 
+describe("HypaV3Modal's ready summaries", () => {
+    it("marks the summaries the last selection deferred outside the selected filter", () => {
+        const metrics = {
+            lastImportantSummaries: [],
+            lastRecentSummaries: [0],
+            lastSimilarSummaries: [],
+            lastRandomSummaries: [],
+            lastDeferredSummaries: [1],
+        };
+        setChatMeta(withData, { hypaV3Data: { summaries: summaries(), categories: [], metrics } });
+        const { target } = open(withData);
+        const ready = [...target.querySelectorAll<HTMLElement>("[data-hypa-ready]")];
+        expect(ready).toHaveLength(1);
+        expect(ready[0].title).toBe(language.hypaV3Modal.readyBadgeHelp);
+        expect(ready[0].closest("div.flex-col")!.querySelector("textarea")!.value).toBe("two");
+    });
+});
+
 describe("HypaV3Modal's write fence", () => {
     it("writes an edit through the chat module when nothing runs in the chat", () => {
         const modal = open(withData);
