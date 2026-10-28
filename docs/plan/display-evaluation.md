@@ -1,6 +1,6 @@
 # Display Evaluation Plan
 
-Status: landed 1 (fd7f50766). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+Status: landed 1 (fd7f50766), 6 (15ed61b6c). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
 **Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
 Probe numbers are under **Measurements**.
 
@@ -400,6 +400,21 @@ the shared key so a row's key does not depend on its batch. Known limit (challen
 loaded revision R and is still waiting on its first target can still serve R-keyed hits to later
 targets after a save; a request that arrives after the save misses. This follows D1 (store under
 the loaded revision); Slice 2 re-renders the shown row.
+
+Slice 6 (three runs each, low load; the `other-stage` row is a scratch variant of the probe with
+ten `editinput`-only scripts):
+
+| Label | Before | After Slice 6 |
+|---|---|---|
+| `500-targets-10-no-match-regex` | 1,036–1,049 ms, 500 regex tasks, 5,000 host parses | 293–351 ms, 500, 0 |
+| `500-targets-10-other-stage-regex` | 253–269 ms, 500 regex tasks | 138–143 ms, 0 |
+| `cold-500-plain-8-batches` | 199–204 ms | 198–205 ms |
+| `four-tiny-snapshots` | 45.86 MiB | 45.86 MiB |
+
+Slice 6 notes: "did not match" is tested as an unchanged result (`replaced === data`), so a match
+that replaces with the same string also skips the parse; a skipped parse also skips the CBS budget
+check. Two prompt-runner tests that observed stages through the first worker call gained a
+never-matching `editprocess` script, since an `editinput`-only list no longer reaches the worker.
 
 ## Verification
 
