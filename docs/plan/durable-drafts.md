@@ -1,9 +1,10 @@
 # Durable Drafts Plan
 
 Status: planned 2026-10-28; landed 1 (2a8ce1e83), 9 (62277946b), 2 (f5023bf8b). The user decided
-D2's base rule (retry in the same epoch), D3's retention (about two days) and D10's scope (composer drafts stay in this browser) on
-2026-10-28, and answered Q1–Q4 the same day (see **Answered questions**; Q4's numbers are confirmed
-after Slice 3 measures them). A Sol review of the first draft is folded in (see **Review record**).
+D2's base rule (retry in the same epoch), D3's retention (about two days) and D10's scope (composer
+drafts stay in this browser) on 2026-10-28, and answered Q1–Q4 the same day (see **Answered
+questions**; Q4's budgets were raised after Slice 3 measured them). A Sol review of the first draft
+is folded in (see **Review record**).
 
 Sources: findings F02, F03 and F04 of the
 [server/client stabilization audit](../research/deep-audit/server-client-stabilization.md)
@@ -135,8 +136,8 @@ All of this lives in module-level maps; a page reload drops it.
   - (g) Entries of another epoch (a restore or import happened) are drafts with Export and
     Discard only.
 - **D3. Retention and budgets.** (Two days is the user's decision.) An entry expires 48 hours after
-  its `createdAt`, which survives every state change and ownership transfer. Starting budgets, to
-  confirm by measurement in Slice 3 (Q4): at most 4 MiB of text per entry and 32 MiB in total.
+  its `createdAt`, which survives every state change and ownership transfer. Budgets (the user's
+  decision after Slice 3's measurement, Q4): at most 16 MiB of text per entry and 64 MiB in total.
   An entry over its limit is not written (a `sync` `journalSkipped` event). Eviction for space
   removes only expired entries and recovery drafts, oldest first, never a live owner's rows.
 - **D4. Entry identity and versions.** Mutation entries are keyed by
@@ -244,8 +245,12 @@ The user answered these on 2026-10-28, each with the recommended option:
 - **Q3. The back/forward cache:** the page gives it up in Chrome for its life-long owner lock;
   releasing the lock on freeze (with a fence for a resumed page) is not built. Slice 12 verifies
   the outcome.
-- **Q4. Budgets:** start with D3's 4 MiB / 32 MiB and D7's 256 KiB / 5 s, and confirm them with
-  the user after Slice 3 measures a large-lorebook character under a 4× CPU throttle.
+- **Q4. Budgets:** started with 4 MiB / 32 MiB and D7's 256 KiB / 5 s. Slice 3 measured a
+  lorebook character under a 4× CPU throttle: a 5 MiB character was over the 4 MiB entry budget
+  and never journaled, and an entry holding both `sent` and `latest` lost layers above about
+  2 MiB; with a raised budget a 5 MiB write took about 100 ms (p95 123 ms) and added about 0.9 s of
+  main-thread time over 36 s of typing, with unchanged input latency. On 2026-10-28 the user raised
+  the budgets to 16 MiB per entry and 64 MiB in total and kept 256 KiB / 5 s.
 
 ## Slices
 
