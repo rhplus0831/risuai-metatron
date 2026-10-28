@@ -11,6 +11,10 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   transcript and the viewport, a row that showed an unsaved mix renders again after the save, a
   render burst loads once, snapshots are charged for what they hold, and a remounted row reuses its
   confirmed result (audit TJ02, TJ03, TJ05, ST05).
+- [Job Protocol](job-protocol.md): a lost create answer is replayed instead of run twice, a
+  command's `/multisend` runs on the server as one sequence job, an absent owner frees its chat in
+  minutes, another tab or device can stop a chat's job, and a restart reads as an ended job (audit
+  F15, F16, TJ06).
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
