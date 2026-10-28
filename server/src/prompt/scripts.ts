@@ -190,7 +190,10 @@ export async function runScriptTail(
     const chatRef = { chaId: scope.characterId, chatId: scope.chatId };
     const parse = (text: string) => evaluator.risuChatParser(text, { chatID, cbsConditions, chatRef });
     let data = parse(input);
-    const scripts = (scope.db.presetRegex ?? []).concat(char.customscript ?? []).concat(moduleRegexScripts(setup));
+    const scripts = (scope.db.presetRegex ?? [])
+        .concat(char.customscript ?? [])
+        .concat(moduleRegexScripts(setup))
+        .filter((script) => script.type === mode);
     const hash = regexScriptCacheKey(scripts, data, mode, chatID, `${chatRef.chaId}/${chatRef.chatId}`, parse);
     const cached = cache.get(hash);
     // The client's `if (cached)`: an empty result is computed again (its effects run again).

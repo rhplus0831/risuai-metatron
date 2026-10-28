@@ -209,6 +209,15 @@ const editinputScript = (comment: string) => ({
     flag: "g",
     ableFlag: true,
 });
+/** An `editprocess` script that never matches, so previews and groups reach the script worker. */
+const editprocessScript = {
+    comment: "preset-process",
+    in: "never-matches-a-message",
+    out: "@@emo none",
+    type: "editprocess",
+    flag: "g",
+    ableFlag: true,
+};
 
 let seeded = 0;
 /** A character (or a group of `members`) with one chat `k` holding `messages`. */
@@ -333,8 +342,8 @@ async function job(
     const ownerAttached = socketOpen;
     const workers = server.context.scriptWorkers;
     const runScripts = workers.runScripts.bind(workers);
-    // This preset has a regex script: editinput (sends with input), or editprocess on the
-    // greeting/history (previews and groups), reaches the worker before memory or the request.
+    // This preset's regex scripts reach the worker before memory or the request: editinput (sends
+    // with input), or editprocess on the greeting/history (previews and groups).
     const workerHold = options.observeStages
         ? vi.spyOn(workers, "runScripts").mockImplementationOnce(async (...args) => {
               await ownerAttached;
@@ -551,7 +560,7 @@ beforeAll(async () => {
                         ...common,
                         mainPrompt: "Main {{char}}",
                         formatingOrder: ["main", "description", "chats", "lastChat"],
-                        regex: [editinputScript("preset")],
+                        regex: [editinputScript("preset"), editprocessScript],
                     },
                     {
                         ...presets.data[0],
