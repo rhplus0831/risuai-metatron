@@ -1,9 +1,9 @@
 # Display Evaluation Plan
 
 Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e),
-2 (4a1d870f3), 7 (f5eda0ff6). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
-**Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
-Probe numbers are under **Measurements**.
+2 (4a1d870f3), 7 (f5eda0ff6), 8 (aa4f2a68a). The user answered Q1–Q3 on 2026-10-28, all as
+recommended (see **Answered questions**). A Sol review of the first draft is folded in (see
+**Review record**). Probe numbers are under **Measurements**.
 
 Sources: findings TJ02, TJ03, TJ05 and ST05 of the
 [server migration deep audit](../research/deep-audit-with-fable/server-migration-audit.md)
@@ -503,6 +503,17 @@ answers in full. The key names inputs, not output: after an eviction or a Re-ren
 random, clock or plugin row can be refilled with other text under the same key while `same` still
 confirms the tab's older text. Accepted as within Q1–Q3 (both texts are renderings of the same
 inputs); Slice 8 shows the tab's text.
+
+Slice 8 notes: the tab cache is `src/ts/parser/transformResults.ts` (2,048 entries, an 8 MiB
+estimate counting identities and sources). A `ReloadGUIPointer` reset advances the generation and
+keeps the entries, because every chat switch (`changeChatTo`) bumps it; an epoch change and
+`epochMismatch` (a live restore, which does not call `setResourceEpoch`) clear it, called directly
+from `resourceClient.ts`. Sign-out has the exported `clearTransformResults` only. The identity uses
+a synchronous source hash plus an exact source check instead of `sha256(source)`, since an async
+digest stalls fake-timer render tests. A call that may still need its emotions sends no `knownKey`.
+Only the final display stage shows cached text early; translation inputs and auto-translate probes
+wait. Accepted limit: a screenshot taken while a replacing render is still in flight can capture
+the cached text (`whenRendered` does not wait for the confirmation, per Q2).
 
 ## Verification
 
