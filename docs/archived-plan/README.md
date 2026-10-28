@@ -49,6 +49,7 @@ git show ae289ecf5:docs/plan/mobile-resume-reliability.md
 git show 802a4840a:docs/plan/hypav3-token-budget.md
 git show 1db8c10a8:docs/plan/display-evaluation.md
 git show bbc747f24:docs/plan/durable-drafts.md
+git show 73c12d29c:docs/plan/job-protocol.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -99,6 +100,7 @@ it is not a current architecture guide.
 | HypaV3 Token Budget                      | `802a4840a`: `docs/plan/hypav3-token-budget.md`                           | [memory](../structure/memory.md), [settings/i18n](../structure/settings-i18n.md), [UI/theming](../structure/ui-theming.md), [persistence](../structure/persistence.md), [backup sync hub](../structure/backup-sync-hub.md)                                                                                                                                                                                                                                                                   |
 | Display Evaluation                       | `1db8c10a8`: `docs/plan/display-evaluation.md`                            | [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                         |
 | Durable Drafts                           | `bbc747f24`: `docs/plan/durable-drafts.md`                                | [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [diagnostics](../structure/diagnostics.md), [UI/theming](../structure/ui-theming.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                                                                                     |
+| Job Protocol                             | `73c12d29c`: `docs/plan/job-protocol.md`                                  | [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [plugins/MCP](../structure/plugins-mcp.md), [diagnostics](../structure/diagnostics.md), [persistence](../structure/persistence.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                 |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -709,6 +711,36 @@ Findings outside the plan went to `docs/research/found-issues.md` (Save journal 
 open: the device checks (an Android PWA killed from the task switcher, the iOS Home Screen app,
 Safari including the bfcache return, Firefox), the recovery dialog at phone width, and the
 "Recovered changes" row shown while drafts exist (unit-tested only).
+
+Job Protocol (audit findings F15, F16 and TJ06: a create whose answer was lost is replayed instead
+of run twice, a command's `/multisend` runs on the server as one sequence job, an absent owner frees
+its chat in minutes, another tab or device can stop a chat's job, and a restart reads as an ended
+job; planned on 2026-10-28 and reviewed by Sol, the user answering Q1–Q4 as recommended) landed all
+seven slices on `dev` on 2026-10-29 through the plan runner (`delegate-implementation`, Codex
+implementer and challenger; the slice sessions ran one at a time in the orchestrator's worktree): 1
+the job receipt store `save/data/generation-jobs.sqlite` (`server/src/data/generationReceipts.ts`,
+`d0b6c096c`); 2 create request ids with a fingerprint, replay, `requestIdReused`/`requestCancelled`,
+the cancel route, and the tab's retry with backoff (`b532a95e2`); 2b request ids in recovered
+composer drafts (`fdf7a1235`); 3 the `/multisend` sequence job, removing `followUps` and
+`runFollowUps` (`d4586f152`); 4 negotiated owner liveness (`liveness=1`, `pong`) and the job-level
+absence deadline (`31dd5c2f0`); 5 the chat-slot lookup and stop routes with `abortedBy: "other"`
+attribution and a confirming Stop beside Send (`2864a806e`); 6 the guides' close and the browser
+driver `util/playwright/checkJobProtocol.mjs` with a real plugin provider (`0fb58b456`). Where the
+code settled differently from the text: the running request-id index moved from Slice 1 to Slice 2;
+after an unanswered create, a 412, 429, auth or 5xx answer stays `unknown` because it comes before
+the request-id lookup; recovered composer rows store `requestEpoch`, because a reloaded page posts
+with the current epoch and D4's 412 does not refuse it; error and abort terminals also carry
+`sequence { total, sent }`, and a done sequence takes one automatic checkpoint because the slot is
+held between parts; the channel hub gained `expireOverdue` and `ownerChanged`, and MCP owner checks
+read the same presence; the lookup takes an optional `clientId` for `owned`. D6's "chat free within
+45 + 120 + 5 s" bound does not hold for every path (found-issues, Server jobs). `dev` moved during
+the run (the Durable Drafts slices 2–12 and the Boot Bytes plan) and was merged in as `a15eaa2c4`;
+on that tree `pnpm check` and 7,734 unit tests passed, and the driver passed all five cases (a cut
+create answer, a reload mid-sequence, a stop from a second context, the owner closed during a
+provider reply, a SIGKILL before a checkpoint). Still open: the Android PWA device checks (a kill
+and reopen mid-reply with a server provider and with a plugin provider, a stop from the phone while
+the desktop generates, airplane mode right after Send), and the window where a page killed between
+the create and its journal write recovers the text without the request id (documented, not driven).
 
 ## Server-Owned Data Chronology
 

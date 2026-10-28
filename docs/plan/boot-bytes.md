@@ -465,7 +465,7 @@ Files: `shared/resources.ts` (`BOOT_CACHED_KINDS`, plus an eligibility table), `
 - Waiting avoids rebasing against a moving target. It does not replace the integration checks:
   Slice 6 and Slice 7 tests run against its recovery and refresh paths.
 
-**Job Protocol.** Its Slice 3 (`plan-job-protocol-3`, `d4586f152`, in progress) extracts the
+**Job Protocol.** Its Slice 3 (`d4586f152`, on `dev` since `a15eaa2c4`) extracts the
 per-part send runner in `server/src/prompt/runner.ts`, where `stampInteraction` lives. Slice 5
 therefore runs after it. Job Protocol also edits `server/src/app.ts` (receipts), and Slice 7 may need
 that file.
