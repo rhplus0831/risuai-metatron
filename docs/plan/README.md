@@ -11,6 +11,10 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   command's `/multisend` runs on the server as one sequence job, an absent owner frees its chat in
   minutes, another tab or device can stop a chat's job, and a restart reads as an ended job (audit
   F15, F16, TJ06).
+- [Boot Bytes](boot-bytes.md): "last chatted" comes from the chats so a send stops invalidating
+  boot-cached characters, boot reads plugin permissions once, a reconnect that missed nothing skips
+  the revision listing, app scripts are served compressed, and verified present assets are not
+  uploaded again (audit ST02, ST03, ST06). Drafted and Astra-reviewed; no slice landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
