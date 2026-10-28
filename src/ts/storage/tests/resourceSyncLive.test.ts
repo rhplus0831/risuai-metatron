@@ -1035,21 +1035,21 @@ describe("the reconcile after a `hello`", () => {
 });
 
 describe("halting for a restore", () => {
-    it("applies nothing and sends nothing once an epoch change lands during a live read", async () => {
+    it("applies nothing and sends nothing more once an epoch change lands during a live read", async () => {
         const { fake, client, settings, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         editUi(fake, { zoomsize: 190 });
-        // A local edit of another record waits for this cycle's batch, after the live read.
+        // A local edit of another record does not wait for the live read: its batch goes first.
         character().name = "C local";
         await vi.advanceTimersByTimeAsync(100);
         expect(intercept.release).not.toBeNull();
-        expect(fake.batchCount()).toBe(0);
+        expect(fake.batchCount()).toBe(1);
         client.epochMismatch("restored-epoch");
         intercept.release!();
         await vi.advanceTimersByTimeAsync(5000);
-        expect(fake.batchCount()).toBe(0);
+        expect(fake.batchCount()).toBe(1);
         expect(settings.ui.zoomsize).not.toBe(190);
-        expect(fake.record("characters", "c")!.data.name).toBe("C");
+        expect(fake.record("characters", "c")!.data.name).toBe("C local");
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 

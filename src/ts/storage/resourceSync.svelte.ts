@@ -86,7 +86,6 @@ import {
     forgetCharacter,
     settleCharacterDelete,
     ackCharacterDelete,
-    hasChatWork,
     hydrateChat,
     hydrateChatPatch,
     isChatBehind,
@@ -174,7 +173,7 @@ import {
  *   entry names (`messageIds`) are dropped instead (`recoverChatConflicts`), with the reload notice.
  * - `applyHydration` applies a record a server job sent, without any outgoing write.
  * - Live updates (`noteRemoteChanges`, from the change feed, `network/eventFeed.ts`): records another
- *   writer committed are read and applied inside the cycle, before its batch, only while this client
+ *   writer committed are read by an independent refresh queue, only while this client
  *   has no unsent change of them; nothing is discarded and no notice is shown. A record with a local
  *   change waits: its save then lands (the update is older) or conflicts (the normal 409 path).
  *
@@ -285,7 +284,9 @@ function notifyRefusals() {
 }
 
 function clearRecordRefusal(key: string) {
-    if (quarantinedRecords.delete(key)) notifyRefusals();
+    if (quarantinedRecords.delete(key)) {
+        notifyRefusals();
+    }
 }
 /** An unindexed refusal is isolated into one resource, chat group, or order per request. */
 let isolateBatches = false;
@@ -317,7 +318,23 @@ const hydrate = new Set<string>();
 const listRefresh = new Set<string>();
 /** List refreshes parked while the character is absent locally; a same-id re-add resumes them. */
 const parkedListRefresh = new Set<string>();
-let inFlight: Promise<void> | null = null;
+let inFlight: Promise<boolean> | null = null;
+let refreshInFlight: Promise<void> | null = null;
+let refreshFailures = 0;
+const reportedRefreshErrors = new WeakSet<object>();
+let refreshBackoffUntil = 0;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshDeadline = 0;
+const readControllers = new Set<AbortController>();
+const READ_DEADLINE_MS = 20_000;
+const characterRefreshes = new Map<string, Promise<boolean>>();
+const deferredRefreshes = new Map<string, Promise<boolean>>();
+const listReadGenerations = new Map<string, number>();
+const characterWriteSerials = new Map<string, number>();
+const writingCharacters = new Map<string, number>();
+let cycleWrote = false;
+let recoveringConflict = false;
+const unloadWrites = new Map<string, Promise<void>>();
 let failures = 0;
 /** The last cycle's failure that a retry may fix (network, 5xx, 429); retried with backoff. */
 let lastError: unknown = null;
@@ -350,7 +367,7 @@ export type PluginStorageDiscard = { pluginStorage: string[]; localPluginStorage
 type PluginStorageDiscardListener = (lost: PluginStorageDiscard) => void;
 const pluginStorageDiscardListeners = new Set<PluginStorageDiscardListener>();
 /**
- * Live updates waiting to be read and applied inside the cycle: record key → the newest revision
+ * Live updates waiting to be read and applied by the refresh queue: record key → the newest revision
  * another writer committed (null: deleted). `blockedLocal`: the `llmSecrets` siblings this client
  * held unsent when the server's siblings had changed too; the entry waits for that local text to
  * change (its save or a conflict settles it). `patch`: the notice's record patch, applied without a
@@ -426,8 +443,11 @@ export function onPluginStorageDiscarded(listener: PluginStorageDiscardListener)
 function markKey(key: string) {
     generation += 1;
     dirty.set(key, generation);
+    noteWait(`record:${key}`, generation);
     // Cached projections and whole-record replacements need a notification too.
-    if (quarantinedRecords.has(key)) notifyRefusals();
+    if (quarantinedRecords.has(key)) {
+        notifyRefusals();
+    }
     permanentError = null;
     schedule();
 }
@@ -435,7 +455,20 @@ function markKey(key: string) {
 function markMembership() {
     generation += 1;
     membershipGeneration = generation;
-    if (quarantinedRecords.size > 0) notifyRefusals();
+    const present = new Set(characterData().map((character) => character.chaId as string));
+    for (const id of present) {
+        if (!persisted.has(characterKey(id))) {
+            noteWait(`record:${characterKey(id)}`, generation);
+        }
+    }
+    for (const key of persisted.keys()) {
+        if (key.startsWith(characterPrefix) && !present.has(key.slice(characterPrefix.length))) {
+            noteWait(`record:${key}`, generation);
+        }
+    }
+    if (quarantinedRecords.size > 0) {
+        notifyRefusals();
+    }
     permanentError = null;
     schedule();
 }
@@ -446,25 +479,349 @@ function settle(key: string, marked: number) {
     }
 }
 
-/** Whether anything waits to be saved or reloaded. */
-function hasPendingWork(): boolean {
-    if (
-        hasPendingMembership(true) ||
-        hasChatWork(canSaveCharacter) ||
-        hydrate.size > 0 ||
-        listRefresh.size > 0 ||
-        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
-        hasRemoteWork()
-    ) {
-        return true;
+/** The public chat obligations contain writes only; reload and idle refresh marks are separate. */
+function pendingChatWrites(): string[] {
+    const deferred = new Set(deferredReloads().map((ref) => `${ref.chaId}\u0000${ref.chatId}`));
+    const refused = new Set(
+        refusedChatItems().map((item) => (item.kind === "chat" ? `${item.chaId}\u0000${item.chatId}` : item.chaId)),
+    );
+    return unsettledChatObligations(captureChatObligations()).filter((key) => {
+        const id = key.split("\u0000")[0];
+        return (
+            canSaveCharacter(id) &&
+            !refused.has(key) &&
+            !deferred.has(key) &&
+            !isChatDeferred(key) &&
+            (key.includes("\u0000") || (!hydrate.has(id) && !listRefresh.has(id)))
+        );
+    });
+}
+
+type WaitReason = "inFlight" | "backoff" | "refresh" | "generating" | "conflict";
+type WaitMark = { seq: number; at: number; reason?: WaitReason };
+const saveWaits = new Map<string, WaitMark[]>();
+const collectedWaits = new Map<string, number>();
+
+function noteWait(key: string, seq: number) {
+    const marks = saveWaits.get(key) ?? [];
+    const last = marks.at(-1);
+    if (last && seq <= last.seq) {
+        return;
     }
-    for (const key of dirty.keys()) {
-        // A delete refused for a generating message stays unsaved but waits for its retry.
-        if (!recordQuarantine(key) && !isRecordJobBlocked(key)) {
-            return true;
+    if (last && last.seq > (collectedWaits.get(key) ?? -1)) {
+        last.seq = seq;
+    } else {
+        marks.push({ seq, at: Date.now() });
+    }
+    saveWaits.set(key, marks);
+}
+
+function noteChatWaits() {
+    const work = captureChatObligations();
+    for (const [key, seq] of work.chats) {
+        noteWait(`chat:${key}`, seq);
+    }
+    for (const [key, seq] of work.orders) {
+        noteWait(`order:${key}`, seq);
+    }
+}
+
+/** Record blockers when they occur; by dispatch time the reason may already have disappeared. */
+function noteWaitBlockers(reason?: WaitReason) {
+    for (const [key, marks] of saveWaits) {
+        const own = key.slice(key.indexOf(":") + 1);
+        const blocked =
+            reason ??
+            (key.startsWith("order:") && (hydrate.has(own) || listRefresh.has(own))
+                ? "refresh"
+                : ((key.startsWith("chat:") || key.startsWith("order:")) && isChatDeferred(own)) ||
+                    (key.startsWith("record:") && isRecordJobBlocked(own))
+                  ? "generating"
+                  : recoveringConflict
+                    ? "conflict"
+                    : inFlight
+                      ? "inFlight"
+                      : Date.now() < backoffUntil
+                        ? "backoff"
+                        : undefined);
+        if (blocked) {
+            for (const mark of marks) {
+                mark.reason = blocked;
+            }
         }
     }
-    return false;
+}
+
+function recordWaitSequence(op: PendingOp, captured: ReadonlyMap<string, number>, membership: number): number {
+    const marked = captured.get(op.key) ?? 0;
+    // A membership change can follow a field edit of the same character before either is collected.
+    return op.kind === RESOURCE_KIND.characters ? Math.max(marked, membership) : marked;
+}
+
+function captureWaits(
+    ops: readonly PendingOp[],
+    work: ChatWork,
+    captured: ReadonlyMap<string, number>,
+    membership: number,
+) {
+    for (const op of ops) {
+        collectedWaits.set(`record:${op.key}`, recordWaitSequence(op, captured, membership));
+    }
+    for (const group of work.groups) {
+        collectedWaits.set(`chat:${group.key}`, group.seq);
+    }
+    for (const order of work.orders) {
+        collectedWaits.set(`order:${order.characterId}`, order.seq);
+    }
+}
+
+function emitSaveWait(entries: { key: string; seq: number; category: "records" | "chats" | "orders" }[]) {
+    const now = Date.now();
+    const counts = { records: 0, chats: 0, orders: 0 };
+    let oldest: WaitMark | undefined;
+    for (const entry of entries) {
+        const mark = saveWaits
+            .get(entry.key)
+            ?.find((mark) => mark.seq <= entry.seq && mark.reason && now - mark.at > 2000);
+        if (!mark) {
+            continue;
+        }
+        counts[entry.category] += 1;
+        if (!oldest || mark.at < oldest.at) {
+            oldest = mark;
+        }
+    }
+    if (oldest) {
+        recordClientEvent({
+            kind: "sync",
+            phase: "saveWait",
+            reason: oldest.reason,
+            ...counts,
+            durationMs: now - oldest.at,
+        });
+    }
+}
+
+function recordSaveWait(batch: Batch, captured: ReadonlyMap<string, number>, membership: number) {
+    emitSaveWait([
+        ...batch.ops.map((op) => ({
+            key: `record:${op.key}`,
+            seq: recordWaitSequence(op, captured, membership),
+            category: "records" as const,
+        })),
+        ...batch.work.groups.map((group) => ({ key: `chat:${group.key}`, seq: group.seq, category: "chats" as const })),
+        ...batch.work.orders.map((order) => ({
+            key: `order:${order.characterId}`,
+            seq: order.seq,
+            category: "orders" as const,
+        })),
+    ]);
+}
+
+function recordSecretWait(id: number) {
+    collectedWaits.set(`secret:${id}`, id);
+    emitSaveWait([{ key: `secret:${id}`, seq: id, category: "records" }]);
+}
+
+function pruneWaits() {
+    for (const [key, marks] of saveWaits) {
+        const own = key.slice(key.indexOf(":") + 1);
+        const left = marks.filter((mark) => {
+            if (key.startsWith("secret:")) {
+                return llmSecretState.queue.some((op) => op.id === Number(own));
+            }
+            if (key.startsWith("record:")) {
+                return (
+                    mark.seq >
+                    Math.max(
+                        acked.get(own) ?? 0,
+                        own.startsWith(characterPrefix) && !dirty.has(own) ? membershipAcked : 0,
+                    )
+                );
+            }
+            return (
+                unsettledChatObligations({
+                    chats: new Map(key.startsWith("chat:") ? [[own, mark.seq]] : []),
+                    orders: new Map(key.startsWith("order:") ? [[own, mark.seq]] : []),
+                }).length > 0
+            );
+        });
+        if (left.length) {
+            saveWaits.set(key, left);
+        } else {
+            saveWaits.delete(key);
+            collectedWaits.delete(key);
+        }
+    }
+}
+
+/** Whether a cycle has writes to collect, including unchanged marks it must settle. */
+function hasPendingWork(): boolean {
+    return (
+        hasPendingMembership(true) ||
+        pendingChatWrites().length > 0 ||
+        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
+        [...dirty.keys()].some((key) => !recordQuarantine(key) && !isRecordJobBlocked(key))
+    );
+}
+
+function hasRefreshWork(): boolean {
+    return (
+        [...hydrate].some((id) => !isCharacterStreamedHere(id)) ||
+        listRefresh.size > 0 ||
+        [...parkedListRefresh].some((id) => findMirrorCharacter(id)) ||
+        hasRemoteWork() ||
+        deferredReloads().length > 0 ||
+        idleChatRefreshes().length > 0 ||
+        idleSummaryRefreshes().length > 0
+    );
+}
+
+/** A read deadline belongs to this adapter, including conflict dependencies, never to other readers. */
+async function deadlineRead<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    assertSaveAdmission();
+    const controller = new AbortController();
+    readControllers.add(controller);
+    const timeout = setTimeout(() => controller.abort(new Error("Resource refresh timed out")), READ_DEADLINE_MS);
+    let aborted!: () => void;
+    const cancellation = new Promise<never>((_, reject) => {
+        aborted = () => reject(controller.signal.reason);
+        controller.signal.addEventListener("abort", aborted, { once: true });
+    });
+    try {
+        return await Promise.race([read(controller.signal), cancellation]);
+    } finally {
+        controller.signal.removeEventListener("abort", aborted);
+        clearTimeout(timeout);
+        readControllers.delete(controller);
+    }
+}
+
+function queueCharacterRefresh(id: string, purpose: "hydrate" | "listRefresh") {
+    (purpose === "hydrate" ? hydrate : listRefresh).add(id);
+    listReadGenerations.set(id, (listReadGenerations.get(id) ?? 0) + 1);
+    noteWaitBlockers();
+    scheduleRefresh(0);
+}
+
+function scheduleRefresh(delay = DEBOUNCE_MS) {
+    if (!started || halted || !hasRefreshWork()) {
+        return;
+    }
+    const deadline = Math.max(Date.now() + delay, refreshBackoffUntil);
+    if (refreshTimer && refreshDeadline <= deadline) {
+        return;
+    }
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+    refreshDeadline = deadline;
+    refreshTimer = setTimeout(
+        () => {
+            refreshTimer = null;
+            void runRefresh();
+        },
+        Math.max(0, deadline - Date.now()),
+    );
+}
+
+function failedRefresh(error: unknown) {
+    if (halted) {
+        return;
+    }
+    if (typeof error === "object" && error !== null) {
+        if (reportedRefreshErrors.has(error)) {
+            return;
+        }
+        reportedRefreshErrors.add(error);
+    }
+    refreshFailures += 1;
+    refreshBackoffUntil = Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(refreshFailures, 5));
+    console.error("[Refresh]", error);
+    scheduleRefresh(0);
+}
+
+/** Each stage starts independently: a failed or stalled read cannot starve another kind of refresh. */
+function runRefresh(): Promise<void> {
+    if (refreshInFlight) {
+        return refreshInFlight;
+    }
+    if (halted || !hasRefreshWork()) {
+        return Promise.resolve();
+    }
+    if (Date.now() < refreshBackoffUntil) {
+        scheduleRefresh(0);
+        return Promise.resolve();
+    }
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+    refreshTimer = null;
+    refreshInFlight = (async () => {
+        const failuresBefore = refreshFailures;
+        const results = await Promise.allSettled(
+            [
+                reloadDeferredChats(),
+                hydrateCharacters(),
+                applyRemoteUpdates(),
+                refreshIdleSummaries(),
+                readIdleChats(
+                    idleChatRefreshes()
+                        .filter(
+                            (ref) =>
+                                !remoteCollections.has(ref.chaId) &&
+                                !hydrate.has(ref.chaId) &&
+                                !listRefresh.has(ref.chaId),
+                        )
+                        .slice(0, MAX_REMOTE_READS),
+                ),
+            ].map(async (stage) => {
+                const discardedWork = await stage;
+                if (discardedWork && !halted) {
+                    showReloadedNotice();
+                }
+                // A refresh may finish during the debounce of a local edit made while it was reading.
+                if (!halted && hasPendingWork()) {
+                    schedule(0);
+                }
+            }),
+        );
+        if (halted) {
+            return;
+        }
+        const failed = results.filter((result) => result.status === "rejected");
+        if (failed.length > 0) {
+            for (const result of failed) {
+                failedRefresh(result.reason);
+            }
+        } else if (refreshFailures === failuresBefore) {
+            refreshFailures = 0;
+            refreshBackoffUntil = 0;
+        }
+    })().finally(() => {
+        refreshInFlight = null;
+        scheduleTrim();
+        scheduleRefresh();
+    });
+    return refreshInFlight;
+}
+
+/** Dispatch and settlement both invalidate destructive list snapshots, even on an unanswered write. */
+function fenceCharacterWrites(ops: readonly PendingOp[], work: ChatWork, entering: boolean) {
+    const ids = new Set([
+        ...ops.filter((op) => op.kind === RESOURCE_KIND.characters).map((op) => op.id),
+        ...work.groups.map((group) => group.characterId),
+        ...work.orders.map((order) => order.characterId),
+    ]);
+    for (const id of ids) {
+        characterWriteSerials.set(id, (characterWriteSerials.get(id) ?? 0) + 1);
+        const count = (writingCharacters.get(id) ?? 0) + (entering ? 1 : -1);
+        if (count > 0) {
+            writingCharacters.set(id, count);
+        } else {
+            writingCharacters.delete(id);
+        }
+    }
 }
 
 /**
@@ -476,6 +833,8 @@ function schedule(delay = DEBOUNCE_MS) {
     if (!started || halted) {
         return;
     }
+    scheduleRefresh(delay);
+    noteWaitBlockers();
     // Watchers call schedule: avoid subscribing them to other records while checking quarantine.
     untrack(() => {
         if (hasUnsavedWork()) {
@@ -1062,30 +1421,48 @@ export async function discardRefused(key: string): Promise<void> {
     assertSaveAdmission();
     const item = refusedRecords().find((item) => item.key === key);
     if (!item) {
-        if (await discardRefusedChat(key, () => !halted)) schedule();
+        const chat = refusedChatItems().find((item) => item.key === key);
+        const serial = chat ? (characterWriteSerials.get(chat.chaId) ?? 0) : 0;
+        if (
+            await discardRefusedChat(
+                key,
+                () =>
+                    !halted &&
+                    (!chat ||
+                        ((characterWriteSerials.get(chat.chaId) ?? 0) === serial &&
+                            !writingCharacters.has(chat.chaId))),
+            )
+        ) {
+            schedule();
+        }
         return;
     }
     const refused = quarantinedRecords.get(key);
     const marked = dirty.get(key);
     const membership = membershipGeneration;
     const owner = item.resourceKind === RESOURCE_KIND.characters ? chatOwnerToken(item.id) : null;
-    const read = await readRefs([{ kind: item.resourceKind, id: item.id }]);
+    const read = await deadlineRead((signal) => readRefs([{ kind: item.resourceKind, id: item.id }], { signal }));
     if (
         halted ||
         quarantinedRecords.get(key) !== refused ||
         dirty.get(key) !== marked ||
         (owner !== null && (membershipGeneration !== membership || chatOwnerToken(item.id) !== owner)) ||
         (projectRecord(item.resourceKind, item.id) ?? null) !== refused?.text
-    )
+    ) {
         return;
+    }
     const server = read.items.find((record) => record.kind === item.resourceKind && record.id === item.id);
-    if (!server) return;
+    if (!server) {
+        return;
+    }
     if (server.kind === RESOURCE_KIND.characters && server.revision !== null && !findMirrorCharacter(server.id)) {
-        hydrate.add(server.id);
+        queueCharacterRefresh(server.id, "hydrate");
     }
     acceptRemote(server, true);
     schedule();
-    if (hydrate.size > 0) await hydrateCharacters();
+    if (hydrate.has(item.id)) {
+        await refreshCharacter(item.id);
+    }
 }
 
 type PendingOp = {
@@ -1422,7 +1799,10 @@ function collectOperations(): {
         captured,
         heldBack,
         membership,
-        chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS, holdOrders: listRefresh }),
+        chatWork: takeChatWork(creating, {
+            maxOps: MAX_BATCH_OPERATIONS,
+            holdOrders: new Set([...listRefresh, ...hydrate]),
+        }),
     };
 }
 
@@ -1522,10 +1902,11 @@ export function splitBatches<T extends { bytes: number; weight?: number }>(ops: 
     return batches;
 }
 
-function runCycle(): Promise<void> {
+function runCycle(): Promise<boolean> {
     if (inFlight) {
         return inFlight;
     }
+    cycleWrote = false;
     inFlight = (async () => {
         try {
             await cycle();
@@ -1538,6 +1919,8 @@ function runCycle(): Promise<void> {
         } finally {
             inFlight = null;
             sendingKeys.clear();
+            pruneWaits();
+            scheduleRefresh(0);
             // A record whose hydration waited for the batch: its ordering check runs again now.
             for (const record of [...deferredHydrations.values()]) {
                 deferredHydrations.delete(recordKey(record.kind, record.id));
@@ -1547,6 +1930,9 @@ function runCycle(): Promise<void> {
             // Chats whose protection ended in this cycle (saved, refreshed, released) may be evicted now.
             scheduleTrim();
             backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
+            if (lastError) {
+                noteWaitBlockers("backoff");
+            }
             const retryAt = jobRetryAt();
             if (retryAt === null) {
                 generatingNoticeShown = false;
@@ -1559,6 +1945,7 @@ function runCycle(): Promise<void> {
                 schedule(Math.max(0, retryAt - Date.now()));
             }
         }
+        return cycleWrote;
     })();
     return inFlight;
 }
@@ -1568,27 +1955,13 @@ async function cycle() {
     if (halted || trackedCharacters() === undefined) {
         return;
     }
-    const stages: (() => Promise<boolean | void>)[] = [
-        reloadDeferredChats,
-        hydrateCharacters,
-        applyRemoteUpdates,
-        refreshIdleChats,
-    ];
-    for (const stage of stages) {
-        const discardedWork = await stage();
-        if (halted) {
-            // A restore replaced the data meanwhile: nothing more is applied or sent.
-            return;
-        }
-        if (discardedWork) {
-            // At once: a later stage's failure must not swallow it.
-            showReloadedNotice();
-        }
-    }
+    applyRemotePatches();
+    scheduleRefresh(0);
     const { ops, captured, heldBack, membership, chatWork } = collectOperations();
     // The credential writes queued so far go after this batch; one queued while it is in flight
     // (say, the key of a preset created meanwhile) waits for the next cycle, after its resource.
     const capturedSecretOps = new Set(llmSecretState.queue.map((op) => op.id));
+    captureWaits(ops, chatWork, captured, membership);
     const { batches, oversized } = planBatches(ops, chatWork);
     for (const group of oversized) {
         const reason = `The chat ${group.chatId} is too large to save`;
@@ -1596,6 +1969,7 @@ async function cycle() {
     }
     if (batches.length > 0) {
         saving.state = true;
+        cycleWrote = true;
         for (const [index, batch] of batches.entries()) {
             if (halted) {
                 requeueChatWork(mergeWork(batches.slice(index).map((entry) => entry.work)));
@@ -1612,84 +1986,104 @@ async function cycle() {
                 sendingKeys.add(op.key);
             }
             try {
-                result = await applyBatchText(batchBody(batch));
-            } catch (error) {
-                // Nothing of this request or the later ones was saved.
-                requeueChatWork(later);
-                if (error instanceof ResourceConflictError) {
-                    await recoverFromConflict(error, batch.ops, batch.work);
-                    return;
-                }
-                if (quarantineRejectedChat(error, batch.work)) {
-                    return;
-                }
-                if (
-                    error instanceof ResourceRequestError &&
-                    (error.status === 400 || error.status === 413) &&
-                    batch.ops.length + batch.work.groups.length + batch.work.orders.length === 1
-                ) {
-                    // Quarantine before requeueing, so retained refused ops occur exactly once.
-                    if (batch.work.groups[0]) {
-                        quarantineChat(batch.work.groups[0], error.message);
+                fenceCharacterWrites(batch.ops, batch.work, true);
+                recordSaveWait(batch, captured, membership);
+                try {
+                    result = await applyBatchText(batchBody(batch));
+                } catch (error) {
+                    if (halted) {
                         return;
                     }
-                    if (batch.work.orders[0]) {
-                        quarantineChatOrder(batch.work.orders[0], error.message);
+                    // Nothing of this request or the later ones was saved.
+                    requeueChatWork(later);
+                    if (error instanceof ResourceConflictError) {
+                        await recoverFromConflict(error, batch.ops, batch.work);
                         return;
                     }
-                }
-                // No answer: the server may have committed the batch (a lost response). Its chat
-                // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
-                // in doubt.
-                const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
-                requeueChatWork(batch.work, { lost });
-                if (lost) {
-                    noteInDoubt(batch.ops);
-                }
-                if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
-                    const match = /^ops\[(\d+)\]/.exec(error.message);
-                    const op = match ? batch.ops[Number(match[1])] : undefined;
-                    if (op) {
-                        // The server refuses that text: it never held it.
-                        inDoubt.delete(op.key);
-                        quarantineRecord(op, error);
-                    } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
-                        // The error names no record (including order/envelope errors). Probe each
-                        // unit separately next cycle so unrelated records and chats can still save.
-                        isolateBatches = true;
-                    } else if (batch.ops[0]) {
-                        inDoubt.delete(batch.ops[0].key);
-                        quarantineRecord(batch.ops[0], error, false);
+                    if (quarantineRejectedChat(error, batch.work)) {
+                        return;
                     }
+                    if (
+                        error instanceof ResourceRequestError &&
+                        (error.status === 400 || error.status === 413) &&
+                        batch.ops.length + batch.work.groups.length + batch.work.orders.length === 1
+                    ) {
+                        // Quarantine before requeueing, so retained refused ops occur exactly once.
+                        if (batch.work.groups[0]) {
+                            quarantineChat(batch.work.groups[0], error.message);
+                            return;
+                        }
+                        if (batch.work.orders[0]) {
+                            quarantineChatOrder(batch.work.orders[0], error.message);
+                            return;
+                        }
+                    }
+                    // No answer: the server may have committed the batch (a lost response). Its chat
+                    // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
+                    // in doubt.
+                    const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
+                    requeueChatWork(batch.work, { lost });
+                    if (lost) {
+                        noteInDoubt(batch.ops);
+                    }
+                    if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
+                        const match = /^ops\[(\d+)\]/.exec(error.message);
+                        const op = match ? batch.ops[Number(match[1])] : undefined;
+                        if (op) {
+                            // The server refuses that text: it never held it.
+                            inDoubt.delete(op.key);
+                            quarantineRecord(op, error);
+                        } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
+                            // The error names no record (including order/envelope errors). Probe each
+                            // unit separately next cycle so unrelated records and chats can still save.
+                            isolateBatches = true;
+                        } else if (batch.ops[0]) {
+                            inDoubt.delete(batch.ops[0].key);
+                            quarantineRecord(batch.ops[0], error, false);
+                        }
+                        return;
+                    }
+                    throw error;
+                }
+                if (halted) {
                     return;
                 }
-                throw error;
-            }
-            batch.ops.forEach((op, opIndex) => {
-                inDoubt.delete(op.key);
-                const revision = result.results[opIndex]?.revision;
-                if (op.text === null || revision === null || revision === undefined) {
-                    persisted.delete(op.key);
-                    if (op.text === null && op.kind === RESOURCE_KIND.characters) {
-                        // The character's chats went with it: their state is forgotten now (a
-                        // character added again under the id meanwhile creates its chats anew).
-                        ackCharacterDelete(op.id);
-                        listRefresh.delete(op.id);
-                        parkedListRefresh.delete(op.id);
+                batch.ops.forEach((op, opIndex) => {
+                    inDoubt.delete(op.key);
+                    const revision = result.results[opIndex]?.revision;
+                    if (op.text === null || revision === null || revision === undefined) {
+                        persisted.delete(op.key);
+                        if (op.text === null && op.kind === RESOURCE_KIND.characters) {
+                            // The character's chats went with it: their state is forgotten now (a
+                            // character added again under the id meanwhile creates its chats anew).
+                            ackCharacterDelete(op.id);
+                            listRefresh.delete(op.id);
+                            parkedListRefresh.delete(op.id);
+                        }
+                    } else {
+                        persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                     }
-                } else {
-                    persisted.set(op.key, { revision, text: op.text, parts: op.parts });
+                });
+                for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
+                    queueCharacterRefresh(characterId, "listRefresh");
                 }
-            });
-            for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
-                listRefresh.add(characterId);
+            } finally {
+                fenceCharacterWrites(batch.ops, batch.work, false);
             }
         }
     }
     if (halted) {
         return;
     }
-    await sendSecretOps(capturedSecretOps);
+    try {
+        sendingKeys.add(collectionKey(SECTION_KIND.llmSecrets));
+        await sendSecretOps(capturedSecretOps);
+    } finally {
+        sendingKeys.delete(collectionKey(SECTION_KIND.llmSecrets));
+    }
+    if (halted) {
+        return;
+    }
     for (const [key, marked] of captured) {
         if (recordQuarantine(key) || heldBack.has(key)) {
             continue;
@@ -1706,7 +2100,7 @@ async function cycle() {
     if (membershipAcked < membership && !collectMembershipChanges()) {
         membershipAcked = membership;
     }
-    await refreshIdleChats();
+    scheduleRefresh(0);
 }
 
 /** Queued credential writes the server refused (400, 404): dropped and reported, by op id. */
@@ -1757,7 +2151,11 @@ function secretOpLabel(op: QueuedSecretOp): string {
  */
 function adoptSecretRecord(revision: string, masked: MaskedLlmSecrets, invalidate: SecretPath[] | "all") {
     const key = collectionKey(SECTION_KIND.llmSecrets);
-    const saved = persisted.get(key)?.text;
+    const held = persisted.get(key);
+    if (held && (compareRevision(revision, held.revision) ?? 0) < 0) {
+        return;
+    }
+    const saved = held?.text;
     const remote = llmSecretsText(masked);
     const local = projectCollection(SECTION_KIND.llmSecrets);
     if (local === saved) {
@@ -1774,7 +2172,12 @@ function adoptSecretRecord(revision: string, masked: MaskedLlmSecrets, invalidat
 }
 
 async function rereadSecrets() {
-    const item = await getResource<MaskedLlmSecrets>(SECTION_KIND.llmSecrets, SINGLETON_RESOURCE_ID);
+    const item = await deadlineRead((signal) =>
+        getResource<MaskedLlmSecrets>(SECTION_KIND.llmSecrets, SINGLETON_RESOURCE_ID, { signal }),
+    );
+    if (halted) {
+        return;
+    }
     if (item) {
         const before = persisted.get(collectionKey(SECTION_KIND.llmSecrets))?.revision;
         adoptSecretRecord(item.revision, item.data, item.revision === before ? [] : "all");
@@ -1812,6 +2215,8 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                 throw new Error("The llmSecrets record is not loaded");
             }
             saving.state = true;
+            cycleWrote = true;
+            recordSecretWait(op.id);
             try {
                 const reply = await sendSecretRequest(
                     {
@@ -1821,10 +2226,16 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                     },
                     base,
                 );
+                if (halted) {
+                    return;
+                }
                 removeSecretOp(op.id);
                 adoptSecretRecord(reply.revision, reply.data as MaskedLlmSecrets, [secretOpTarget(op.request)]);
                 break;
             } catch (error) {
+                if (halted) {
+                    return;
+                }
                 if (error instanceof ResourceConflictError && attempt < SECRET_CONFLICT_RETRIES) {
                     await rereadSecrets();
                     continue;
@@ -1959,6 +2370,13 @@ async function haltForRestore() {
         return;
     }
     halted = true;
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+    refreshTimer = null;
+    for (const controller of readControllers) {
+        controller.abort(new Error("Saving stopped: the server data was restored"));
+    }
     if (timer) {
         clearTimeout(timer);
         timer = null;
@@ -2641,9 +3059,12 @@ function rebuildConflictRecord(conflict: { kind: string; id: string; revision: s
  */
 async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
     const notice = { owed: false };
+    recoveringConflict = true;
+    noteWaitBlockers("conflict");
     try {
         await recoverConflictedWork(error, batch, work, notice);
     } finally {
+        recoveringConflict = false;
         if (notice.owed && !halted) {
             showReloadedNotice();
         }
@@ -2732,8 +3153,9 @@ async function recoverConflictedWork(
         notice.owed = true;
     }
     for (const characterId of immediateRecovery.refresh) {
-        hydrate.add(characterId);
+        queueCharacterRefresh(characterId, "hydrate");
     }
+    noteWaitBlockers();
     const remainingWork = {
         groups: work.groups.filter((group) => !generatingChats.has(group.key)),
         orders: work.orders.filter((order) => !conflictedOrders.has(order.characterId)),
@@ -2741,8 +3163,17 @@ async function recoverConflictedWork(
     let read: Awaited<ReturnType<typeof readRefs>>;
     const readStamp = issueChatReadStamp();
     try {
-        read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };
+        read =
+            refs.length + chatRefs.length > 0
+                ? await deadlineRead((signal) => readRefs(refs, { chats: chatRefs, signal }))
+                : { epoch: "", items: [] };
+        if (halted) {
+            return;
+        }
     } catch (readError) {
+        if (halted) {
+            return;
+        }
         // Only work outside the immediate recovery still needs to be requeued.
         requeueChatWork(remainingWork);
         throw readError;
@@ -2760,11 +3191,11 @@ async function recoverConflictedWork(
         notice.owed = true;
     }
     for (const characterId of recovered.refresh) {
-        // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
-        hydrate.add(characterId);
+        // The background queue retries the list independently of this refused batch.
+        queueCharacterRefresh(characterId, "hydrate");
     }
     for (const characterId of recovered.refreshOrders) {
-        listRefresh.add(characterId);
+        queueCharacterRefresh(characterId, "listRefresh");
     }
     for (const item of [...rebuilt, ...read.items]) {
         const key = recordKey(item.kind, item.id);
@@ -2776,7 +3207,7 @@ async function recoverConflictedWork(
             inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
             if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
-                listRefresh.add(item.id);
+                queueCharacterRefresh(item.id, "listRefresh");
             }
             continue;
         }
@@ -2791,35 +3222,33 @@ async function recoverConflictedWork(
         }
         if (item.kind === RESOURCE_KIND.characters && item.revision !== null && !findMirrorCharacter(item.id)) {
             // A character the mirror did not have: its chats come with their order.
-            hydrate.add(item.id);
+            queueCharacterRefresh(item.id, "hydrate");
         }
         acceptRemote(item);
         notice.owed = true;
     }
-    if (hydrate.size > 0 && (await hydrateCharacters())) {
-        notice.owed = true;
-    }
+    scheduleRefresh(0);
 }
 
 /**
  * Reads the chat lists of characters a recovery inserted or whose chats changed on the server (their
- * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
- * listed until its read succeeds. A recovery's character (`hydrate`) takes the server's list
- * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
- * generation of this tab runs on it, and one the read finds gone is removed with its chats unless
- * its held revision or its chats' lifetime moved during the read (then it stays listed for the next read);
- * an acknowledgement's or adopted create's (`listRefresh`) is applied as a live update that keeps
- * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
- * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
- * and stays listed while the list cannot be applied yet. A locally absent character's refresh is
- * parked until it is re-added, without scheduling reads. Returns whether anything was discarded
- * (the caller shows the reload notice), not whether anything was read.
+ * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays listed
+ * until its response can be applied. A recovery's character (`hydrate`) takes the server's list
+ * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a generation
+ * of this tab runs on it, and one the read finds gone is removed with its chats unless its held revision
+ * or its chats' lifetime moved during the read (then it stays listed for the next read); an
+ * acknowledgement's or adopted create's (`listRefresh`) is applied as a live update that keeps a queued
+ * reorder unless a kept chat with a held revision is missing from the server's list (then the reorder is
+ * discarded and reported), also during a generation (busy chats keep their copy), and stays listed while
+ * the list cannot be applied yet. A locally absent character's refresh is parked until it is re-added,
+ * without scheduling reads. Each character has its own joinable read; a snapshot from before a write's
+ * dispatch or settlement is retried without applying it.
  */
-async function hydrateCharacters(): Promise<boolean> {
+async function hydrateCharacters(): Promise<void> {
     for (const id of parkedListRefresh) {
         if (findMirrorCharacter(id)) {
             parkedListRefresh.delete(id);
-            listRefresh.add(id);
+            queueCharacterRefresh(id, "listRefresh");
         }
     }
     for (const id of listRefresh) {
@@ -2828,14 +3257,50 @@ async function hydrateCharacters(): Promise<boolean> {
             parkedListRefresh.add(id);
         }
     }
-    // A recovery waits for this tab's streamed text; a feed lock alone does not hold it back.
-    const ids = [
-        ...[...hydrate].filter((id) => !isCharacterStreamedHere(id)),
-        ...[...listRefresh].filter((id) => !hydrate.has(id)),
-    ];
-    if (ids.length === 0) {
-        return false;
+    const results = await Promise.allSettled([...new Set([...hydrate, ...listRefresh])].map(refreshCharacter));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+        throw failed.reason;
     }
+}
+
+/** Joins only this character's read; a flush need not wait for the rest of a refresh pass. */
+function refreshCharacter(id: string): Promise<boolean> {
+    const existing = characterRefreshes.get(id);
+    if (existing) {
+        return existing;
+    }
+    const purpose = hydrate.has(id) ? "hydrate" : "listRefresh";
+    if (
+        halted ||
+        (!hydrate.has(id) && !listRefresh.has(id)) ||
+        (purpose === "hydrate" && isCharacterStreamedHere(id))
+    ) {
+        return Promise.resolve(false);
+    }
+    const request = readCharacter(id, purpose)
+        .then((discardedWork) => {
+            if (discardedWork && !halted) {
+                showReloadedNotice();
+            }
+            if (!halted && hasPendingWork()) {
+                schedule(0);
+            }
+            return discardedWork;
+        })
+        .catch((error) => {
+            failedRefresh(error);
+            throw error;
+        })
+        .finally(() => characterRefreshes.delete(id));
+    characterRefreshes.set(id, request);
+    return request;
+}
+
+async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Promise<boolean> {
+    const ids = [id];
+    const requestGeneration = listReadGenerations.get(id);
+    const writeSerial = characterWriteSerials.get(id) ?? 0;
     const issued = heldChatRevisionsByCharacter(ids);
     // Taken before the read: a recovery's character found gone is removed only if neither its held
     // revision (a job hydration, a live update) nor its chats' lifetime (a same-id recreation) moved
@@ -2844,9 +3309,11 @@ async function hydrateCharacters(): Promise<boolean> {
         ids.map((id) => [id, persisted.get(recordKey(RESOURCE_KIND.characters, id))?.revision ?? null]),
     );
     const issuedOwners = new Map(ids.map((id) => [id, chatOwnerToken(id)]));
-    const read = await readRefs(
-        ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
-        { chatSummaryCollections: ids },
+    const read = await deadlineRead((signal) =>
+        readRefs(
+            ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
+            { chatSummaryCollections: ids, signal },
+        ),
     );
     if (halted) {
         return false;
@@ -2856,7 +3323,15 @@ async function hydrateCharacters(): Promise<boolean> {
     for (const collection of read.chatSummaryCollections ?? []) {
         const id = collection.characterId;
         const record = records.get(id);
-        if (!hydrate.has(id)) {
+        if (
+            listReadGenerations.get(id) !== requestGeneration ||
+            (characterWriteSerials.get(id) ?? 0) !== writeSerial ||
+            writingCharacters.has(id) ||
+            chatOwnerToken(id) !== issuedOwners.get(id)
+        ) {
+            continue;
+        }
+        if (purpose === "listRefresh") {
             if (!listRefresh.has(id)) {
                 continue;
             }
@@ -2908,20 +3383,48 @@ function findMirrorCharacter(id: string): (character | groupChat) | undefined {
 }
 
 /**
- * Reloads chats whose reload waited for a generation that has ended (part of the cycle). A chat
- * stays deferred until its read succeeds; one that is gone refreshes its character's chat list.
- * Returns whether a chat was replaced or removed (its work discarded: the cycle shows the reload
- * notice); false when every chat was skipped (a new job locked it, or the read did not list it).
+ * The refresh queue reloads chats whose generation has ended. Each chat stays deferred until its
+ * response can be applied; one that is gone queues its character's list. The queue shows the reload
+ * notice as soon as a response discards local work.
  */
-async function reloadDeferredChats(): Promise<boolean> {
-    const released = deferredReloads();
-    if (released.length === 0) {
-        return false;
+async function reloadDeferredChats(): Promise<void> {
+    const results = await Promise.allSettled(deferredReloads().map(refreshDeferredChat));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+        throw failed.reason;
     }
+}
+
+function refreshDeferredChat(ref: ChatRef): Promise<boolean> {
+    const key = `${ref.chaId}\u0000${ref.chatId}`;
+    const existing = deferredRefreshes.get(key);
+    if (existing) {
+        return existing;
+    }
+    const request = readDeferredChat(ref)
+        .then((discardedWork) => {
+            if (discardedWork && !halted) {
+                showReloadedNotice();
+            }
+            return discardedWork;
+        })
+        .catch((error) => {
+            failedRefresh(error);
+            throw error;
+        })
+        .finally(() => deferredRefreshes.delete(key));
+    deferredRefreshes.set(key, request);
+    return request;
+}
+
+async function readDeferredChat(ref: ChatRef): Promise<boolean> {
     const readStamp = issueChatReadStamp();
-    const read = await readRefs([], {
-        chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
-    });
+    const read = await deadlineRead((signal) =>
+        readRefs([], {
+            chats: [{ characterId: ref.chaId, id: ref.chatId }],
+            signal,
+        }),
+    );
     if (halted) {
         return false;
     }
@@ -2929,31 +3432,17 @@ async function reloadDeferredChats(): Promise<boolean> {
     for (const chat of read.chats ?? []) {
         const refresh = finishDeferredReload({ ...chat, readStamp } as RemoteChat);
         if (refresh) {
-            hydrate.add(refresh);
+            queueCharacterRefresh(refresh, "hydrate");
         }
     }
     return chatDiscardSequence() > discardsBefore;
 }
 
 /**
- * Stale acknowledgements and live notices rebase only idle chats, inside the cycle and without a
- * reload notice: loaded chats are read whole, chats that are not loaded through their character's
- * summary list (`refreshIdleSummaries`).
- */
-async function refreshIdleChats() {
-    await refreshIdleSummaries();
-    if (halted) {
-        return;
-    }
-    await readIdleChats(idleChatRefreshes().slice(0, MAX_REMOTE_READS));
-}
-
-/**
- * Reads `ref` whole now when it is a stale or noticed loaded chat that is idle (`idleChatRefreshes`),
- * as the save cycle's idle refresh would: a job is then created on the revision the server holds,
- * not on one this tab knows is old (a job chat patch that did not fit). Returns whether the chat is
- * then not known to be behind the server (`isChatBehind`): false when it was not idle, or the read
- * was not taken (a local change or a newer notice meanwhile).
+ * Refreshes only `ref` when it is a stale or noticed loaded chat that is idle, independently of
+ * other queue work. Its caller can then start a job on the server's revision. Returns whether
+ * the chat is no longer known to be behind the server; local work or a newer notice can prevent
+ * adoption and leave it behind.
  */
 export async function refreshStaleChat(ref: ChatRef): Promise<boolean> {
     if (halted) {
@@ -2965,7 +3454,10 @@ export async function refreshStaleChat(ref: ChatRef): Promise<boolean> {
     return !halted && !isChatBehind(ref);
 }
 
-/** The whole-chat reads of `refreshIdleChats`, for the given idle chats. */
+/**
+ * Reads eligible chats for the background queue or an explicit stale-chat refresh. Responses are
+ * checked against the notice, held revision and read stamp before they enter the mirror.
+ */
 async function readIdleChats(refs: readonly ChatRef[]) {
     if (refs.length === 0) {
         return;
@@ -2975,9 +3467,12 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
     const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, heldChatRevision(ref)]));
     const readStamp = issueChatReadStamp();
-    const read = await readRefs([], {
-        chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
-    });
+    const read = await deadlineRead((signal) =>
+        readRefs([], {
+            chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
+            signal,
+        }),
+    );
     if (halted) {
         return;
     }
@@ -2998,13 +3493,15 @@ async function readIdleChats(refs: readonly ChatRef[]) {
  * applies them as live updates; an applied list ends those chats' marks (`settleSummaryRefresh`).
  */
 async function refreshIdleSummaries() {
-    const ids = idleSummaryRefreshes().slice(0, MAX_REMOTE_READS);
+    const ids = idleSummaryRefreshes()
+        .filter((id) => !remoteCollections.has(id) && !hydrate.has(id) && !listRefresh.has(id))
+        .slice(0, MAX_REMOTE_READS);
     if (ids.length === 0) {
         return;
     }
     const notices = summaryRefreshNotices(ids);
     const issued = heldChatRevisionsByCharacter(ids);
-    const read = await readRefs([], { chatSummaryCollections: ids });
+    const read = await deadlineRead((signal) => readRefs([], { chatSummaryCollections: ids, signal }));
     if (halted) {
         return;
     }
@@ -3555,23 +4052,27 @@ function applyRemoteRecord(
     return discardedWork;
 }
 
-/**
- * Reads and applies the waiting live updates (part of the cycle, before its batch, so it never races
- * this client's own write): first every waiting field patch this client can now take without a read
- * (`applyRemotePatch`), then the records this client can take now and the chat lists of characters
- * with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again after the
- * read: a change made meanwhile keeps the update waiting. A read settles only the notice it was
- * issued for, or a later one its answer covers. A deletion applies only if the held revision is
- * unchanged since the read was issued; otherwise it is read again. Returns whether a character
- * deletion discarded unsent chat work (the cycle shows the reload notice).
- */
-async function applyRemoteUpdates(): Promise<boolean> {
+/** Applies eligible feed patches synchronously before either writes or whole-record refreshes. */
+function applyRemotePatches() {
     settleRemoteRecords();
     for (const entry of [...remoteRecords.values()]) {
         if (entry.patch) {
             applyRemotePatch(entry);
         }
     }
+}
+
+/**
+ * Reads and applies waiting live updates concurrently with writes: first every waiting field patch this
+ * client can now take without a read (`applyRemotePatch`), then the eligible records and the chat lists
+ * of characters with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again
+ * after the read: a change made meanwhile keeps the update waiting. A read settles only the notice it
+ * was issued for, or a later one its answer covers. A deletion applies only if the held revision is
+ * unchanged since the read was issued; otherwise it is read again. Returns whether a character deletion
+ * discarded unsent chat work (the refresh queue shows the reload notice).
+ */
+async function applyRemoteUpdates(): Promise<boolean> {
+    applyRemotePatches();
     const records = [...remoteRecords].filter(([key, entry]) => canApplyRemote(key, entry)).slice(0, MAX_REMOTE_READS);
     const newCharacters = new Set(
         records
@@ -3592,10 +4093,15 @@ async function applyRemoteUpdates(): Promise<boolean> {
     const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
     const issuedSeqs = new Map(collections.map((id) => [id, remoteCollections.get(id)]));
     const issuedChats = heldChatRevisionsByCharacter(collections);
-    const read = await readRefs(
-        records.map(([, entry]) => ({ kind: entry.kind, id: entry.id })),
-        { chatSummaryCollections: collections },
+    const read = await deadlineRead((signal) =>
+        readRefs(
+            records.map(([, entry]) => ({ kind: entry.kind, id: entry.id })),
+            { chatSummaryCollections: collections, signal },
+        ),
     );
+    if (halted) {
+        return false;
+    }
     await tick();
     if (halted) {
         return false;
@@ -3829,10 +4335,25 @@ function showGeneratingNotice() {
     alertNormal(language.chatGenerating);
 }
 
+/** A surviving page can wait for its keepalive answer, but cannot hold a flush indefinitely. */
+async function waitForUnload(write: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Could not save every change")), READ_DEADLINE_MS);
+    });
+    try {
+        await Promise.race([write, deadline]);
+    } finally {
+        clearTimeout(timer!);
+    }
+}
+
 /**
  * Settles changes queued before this call. Reports keys discarded since the call (with `scope`,
  * since the scope began), and every key still refused locally when the flush resolves;
  * rejects when saving fails or when a character that must be saved is still being generated.
+ * Writes and dependency reads that leave their dependency pending share a ten-attempt limit;
+ * an outstanding unload answer has a separate twenty-second bound on the caller's wait.
  */
 export async function flushResources(
     options: { scope?: MutationScope } = {},
@@ -3855,15 +4376,14 @@ export async function flushResources(
     const firstChatDiscard = options.scope?.chat ?? chatDiscardSequence();
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
-    const hydrating = new Set([...hydrate, ...listRefresh]);
     const secretTarget = new Set(llmSecretState.queue.map((op) => op.id));
     const pending = () =>
         llmSecretState.queue.some((op) => secretTarget.has(op.id)) ||
         unsettled().length > 0 ||
         membershipAcked < membershipTarget ||
-        unsettledChatObligations(chatObligations).length > 0 ||
-        [...hydrating].some((id) => hydrate.has(id) || listRefresh.has(id));
-    for (let attempt = 0; attempt < 10 && pending(); attempt += 1) {
+        unsettledChatObligations(chatObligations).length > 0;
+    let attempts = 0;
+    while (pending() && attempts < 10) {
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");
         }
@@ -3883,13 +4403,74 @@ export async function flushResources(
             clearTimeout(timer);
             timer = null;
         }
-        await runCycle();
+        const wrote = await runCycle();
+        if (wrote) {
+            attempts += 1;
+        }
+        assertSaveAdmission();
         const refused = quarantineReason();
         if (refused) {
             throw refused;
         }
         if (lastError || permanentError) {
             throw lastError ?? permanentError;
+        }
+        if (!pending()) {
+            break;
+        }
+        if (wrote && hasPendingWork()) {
+            continue;
+        }
+        const open = new Set(unsettledChatObligations(chatObligations));
+        const dependencies: Promise<unknown>[] = [];
+        const refreshing = new Set<string>();
+        const deferred = new Set<string>();
+        for (const id of new Set([...open].map((key) => key.split("\u0000")[0]))) {
+            if (
+                (hydrate.has(id) || listRefresh.has(id)) &&
+                (open.has(id) ||
+                    (!wrote && [...open].some((key) => key.startsWith(`${id}\u0000`) && !unloadWrites.has(key))))
+            ) {
+                if (isCharacterStreamedHere(id) && hydrate.has(id)) {
+                    throw new GenerationBlockedError([]);
+                }
+                refreshing.add(id);
+                dependencies.push(refreshCharacter(id));
+            }
+        }
+        for (const ref of deferredReloads()) {
+            const key = `${ref.chaId}\u0000${ref.chatId}`;
+            if (open.has(key)) {
+                deferred.add(key);
+                dependencies.push(refreshDeferredChat(ref));
+            }
+        }
+        for (const key of open) {
+            const unload = unloadWrites.get(key);
+            if (unload) {
+                dependencies.push(waitForUnload(unload));
+            }
+        }
+        if (dependencies.length > 0) {
+            // Only reads holding captured writes participate in the barrier or propagate failures.
+            await Promise.all(dependencies);
+            // A successful transport may still leave a stale snapshot or an ineligible list.
+            // Count that unsuccessful refresh so repeated read-only cycles cannot hold the flush.
+            if (
+                !wrote &&
+                ([...refreshing].some((id) => hydrate.has(id) || listRefresh.has(id)) ||
+                    deferredReloads().some((ref) => deferred.has(`${ref.chaId}\u0000${ref.chatId}`)))
+            ) {
+                attempts += 1;
+            }
+        } else if (!wrote && pending()) {
+            // A collection-only cycle may settle no-op generations, but cannot make an unavailable
+            // obligation runnable. Do not burn the write-attempt budget on empty cycles.
+            const waiting = unsettledChatObligations(chatObligations).filter(isChatDeferred);
+            if (waiting.length > 0 || [...jobBlockedRecords.keys()].some(isRecordJobBlocked)) {
+                continue;
+            }
+            throw new Error("Could not save every change");
         }
     }
     if (pending()) {
@@ -3942,10 +4523,15 @@ export function startResourceSync() {
     });
     setMutationAdmission(() => !halted);
     setSecretScheduler(() => {
+        for (const op of llmSecretState.queue) {
+            noteWait(`secret:${op.id}`, op.id);
+        }
         permanentError = null;
         schedule();
     });
     setChatWorkListener(() => {
+        pruneWaits();
+        noteChatWaits();
         schedule();
     });
     // The settings records mark themselves: every local write of one (`records.svelte.ts`).
@@ -3987,17 +4573,45 @@ export function startResourceSync() {
         if (bytes + unloadBytes > UNLOAD_BODY_LIMIT) {
             return;
         }
+        let finish!: () => void;
+        const pending = new Promise<void>((resolve) => {
+            finish = resolve;
+        });
+        fenceCharacterWrites([], request.work, true);
         if (
             sendBatchOnUnload(request.body, (result) => {
                 unloadBytes -= bytes;
-                settleUnloadWork(request.work, result?.chats ?? null);
+                try {
+                    if (!halted) {
+                        settleUnloadWork(request.work, result?.chats ?? null);
+                    }
+                } finally {
+                    fenceCharacterWrites([], request.work, false);
+                    for (const group of request.work.groups) {
+                        unloadWrites.delete(group.key);
+                    }
+                    finish();
+                    if (!halted) {
+                        schedule();
+                    }
+                }
             })
         ) {
             unloadBytes += bytes;
+            captureWaits([], request.work, new Map(), membershipGeneration);
+            recordSaveWait({ ops: [], work: request.work }, new Map(), membershipGeneration);
             trackUnloadWork(request.work);
+            for (const group of request.work.groups) {
+                unloadWrites.set(group.key, pending);
+            }
+        } else {
+            fenceCharacterWrites([], request.work, false);
         }
     }
     window.addEventListener("pagehide", () => {
+        if (halted) {
+            return;
+        }
         try {
             for (const request of unloadPendingChatWork(UNLOAD_BODY_LIMIT - unloadBytes)) {
                 sendUnload(request);
@@ -4009,6 +4623,7 @@ export function startResourceSync() {
             prepareUnloadAuth();
         }
     }, 60_000);
+    noteChatWaits();
     startChatDriftCheck();
     // Every local write of a character marks it at once; a membership change wakes the loop.
     setCharacterWriteListener({

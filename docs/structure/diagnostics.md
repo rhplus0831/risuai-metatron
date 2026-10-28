@@ -113,7 +113,10 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   used; `closedInFront` carries the second check's) and `focusedHidden` (some window focused but not
   visible), and `clicked`. The projection keeps a side's phases and fields only: a browser `push` has no
   `service`, `jobId`, `status`, or `reason`, a server one none of the browser's fields.
-- `sync` phases: `conflict` and `reload` from the save loop (`resourceSync.svelte.ts`); from the draft journal
+- `sync` phases: `conflict` and `reload` from the save loop (`resourceSync.svelte.ts`), and `saveWait` for a
+  dispatched batch whose work waited over 2 s since its first unsettled mark (`reason` `inFlight` | `backoff` |
+  `refresh` | `generating` | `conflict`: the blocker noted while it waited; `records`, `chats`, `orders` count the
+  delayed work; `durationMs` from the oldest mark to dispatch); from the draft journal
   (`src/ts/storage/draftJournal.ts`), `journalSkipped` (`reason` `tooLarge` | `budget` for a write it did not
   make, `format` for rows it cannot read and keeps, with `entries`), `journalFailed` (`unavailable`, `timeout`,
   `blocked`, `quota`, `write`, `readFailed`), and `journalRecovered` (`orphan`, the `entries` it took over from a

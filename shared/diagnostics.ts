@@ -117,12 +117,22 @@ export const FEED_PHASES = [
 
 /**
  * The save loop: a 409 it recovers from, a reload of the page (after a restore, or a service worker that
- * did not initialize). The draft journal (`src/ts/storage/draftJournal.ts`): `entries` it did not write
- * (`tooLarge`, `budget`) or found in a format it cannot read (`format`, kept as they are); a journal that
+ * did not initialize), or a dispatched batch that waited over two seconds (`saveWait`): counts of
+ * delayed records, chats and orders, `durationMs` since the oldest first unsettled edit, and the
+ * blocker recorded while it waited (`inFlight`, `backoff`, `refresh`, `generating`, `conflict`). The draft
+ * journal (`src/ts/storage/draftJournal.ts`): `entries` it did not write (`tooLarge`, `budget`) or found in
+ * a format it cannot read (`format`, kept as they are); a journal that
  * is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`, `readFailed`); and
  * `entries` it took over from a closed tab (`orphan`).
  */
-export const SYNC_PHASES = ["conflict", "reload", "journalSkipped", "journalFailed", "journalRecovered"] as const;
+export const SYNC_PHASES = [
+    "conflict",
+    "reload",
+    "journalSkipped",
+    "journalFailed",
+    "journalRecovered",
+    "saveWait",
+] as const;
 
 export const SYNC_REASONS = [
     "restore",
@@ -137,6 +147,11 @@ export const SYNC_REASONS = [
     "write",
     "readFailed",
     "orphan",
+    "inFlight",
+    "backoff",
+    "refresh",
+    "generating",
+    "conflict",
 ] as const;
 
 export const SERVICE_WORKER_PHASES = [
@@ -545,6 +560,7 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         code: closeCode,
     },
     sync: {
+        durationMs: count,
         phase: oneOf(SYNC_PHASES),
         reason: oneOf(SYNC_REASONS),
         records: count,

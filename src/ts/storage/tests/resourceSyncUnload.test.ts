@@ -322,7 +322,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("ignores the answer when an authoritative list discarded the chat's in-flight work meanwhile (another tab deleted the chat, and a reorder's conflict read the list): the deleted chat's revision is not held again", async () => {
+    it("applies no list over a chat's in-flight unload work (another tab deleted the chat, and a reorder's conflict read the list): the flush waits for the unload answer, the next list read removes the chat, and its revision is not held again", async () => {
         const h = await bootStore();
         const scope = h.sync.beginMutationScope();
         await holdUnloadAnswer(h);
@@ -330,15 +330,20 @@ describe("a late unload answer after the chat's character or work is gone", () =
             { characterId: "c", chatId: "k", baseRevision: h.fake.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
         ]);
         h.chat.reorderChats("c", ["j", "k"]);
-        // The server's order (`[j]`) differs from the sent reorder, so the reorder is reported too.
-        expect(await h.sync.flushResources({ scope })).toEqual({ discarded: ["chats/c", "chats/c/k"], refused: [] });
+        // The list read answered while the unload request is out is not applied: the chat stays.
+        const flushing = h.sync.flushResources({ scope });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.mirrorIds()).toContain("k");
+        // Once the unload work is answered (acknowledged, so not discarded), a fresh list read removes
+        // the chat. The server's order (`[j]`) differs from the sent reorder: that is reported.
+        await releaseUnloadAnswer(h);
+        expect(await flushing).toEqual({ discarded: ["chats/c"], refused: [] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(h.mirrorIds()).toEqual(["j"]);
         expect(h.chat.heldChatRevision(refK)).toBeNull();
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         const batches = h.fake.batchCount();
 
-        await releaseUnloadAnswer(h);
         await expectNothingLeft(h, batches);
         expect(h.mirrorIds()).toEqual(["j"]);
     });

@@ -118,6 +118,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
 });
@@ -259,6 +260,53 @@ describe("localized failures", () => {
 });
 
 describe("authFetch", () => {
+    it("aborts one caller waiting for shared authentication without dispatching it or cancelling the other caller", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        let enter!: () => void;
+        let release!: () => void;
+        const entered = new Promise<void>((resolve) => {
+            enter = resolve;
+        });
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const serverFetch = vi.mocked(fetch).getMockImplementation()!;
+        vi.mocked(fetch).mockImplementation(async (input, init) => {
+            if (input === "/api/test_auth") {
+                enter();
+                await held;
+            }
+            return serverFetch(input, init);
+        });
+        prompts.answers = ["pw"];
+        const cancelled = new AbortController();
+        const surviving = new AbortController();
+        const result = { settled: false, error: undefined as unknown };
+        const abandoned = auth$.authFetch("/api/ping", { signal: cancelled.signal });
+        void abandoned.then(
+            () => {
+                result.settled = true;
+            },
+            (error) => {
+                result.error = error;
+                result.settled = true;
+            },
+        );
+        const other = auth$.authFetch("/api/ping", { signal: surviving.signal });
+        await entered;
+        cancelled.abort();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(result.settled).toBe(true);
+        expect(result.error).toMatchObject({ name: "AbortError" });
+        expect(paths()).not.toContain("/api/ping");
+        release();
+        expect(await (await other).json()).toEqual({ ok: true });
+        expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(1);
+        const requests = vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/ping");
+        expect(requests).toHaveLength(1);
+        expect(requests[0][1]?.signal).toBe(surviving.signal);
+    });
+
     it("signs the request with the module's auth state and keeps the caller's headers and options", async () => {
         auth.password = "digest(pw)";
         prompts.answers = ["pw"];

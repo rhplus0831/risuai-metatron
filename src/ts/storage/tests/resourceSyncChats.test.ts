@@ -144,7 +144,7 @@ beforeEach(() => {
         addEventListener(type, listener, options);
     });
     localStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -803,7 +803,12 @@ describe("one chat's trouble does not block the rest", () => {
         selection.selectCharacterAt(0);
         await tick();
         chat.setChatMeta(refK, { note: "edit on a deleted character's chat" });
-        const result = await sync.flushResources();
+        const scope = sync.beginMutationScope();
+        // The flush settles the captured edit (discarded by its conflict); the character itself goes
+        // with the background list read that follows.
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
+        const result = await sync.flushResources({ scope });
         expect(result.discarded.sort()).toEqual(["characters/c", "chats/c/k"]);
         expect(characters()).toEqual([]);
         expect(selection.selectedIndex()).toBe(-1);
@@ -1006,10 +1011,14 @@ describe("one chat's trouble does not block the rest", () => {
         // The conflict read succeeds; the chat-list read after the discards fails.
         let reads = 0;
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" && ++reads === 2 };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        // Both captured edits were discarded by the conflict, so the flush resolves; the failed list
+        // read is the background queue's, retried after its backoff.
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: ["ui/main", "chats/c/j"], refused: [] });
+        await vi.advanceTimersByTimeAsync(0);
         expect(reads).toBe(2);
         expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
         expect(settings.ui.theme).toBe("theirs");
+        await vi.advanceTimersByTimeAsync(2500);
         const result = await sync.flushResources({ scope });
         expect(result.discarded.sort()).toEqual(["chats/c/j", "ui/main"]);
         expect(alerts.normal).toHaveBeenCalledTimes(1);
@@ -1537,6 +1546,8 @@ describe("group idempotency ids", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["chats/c/j"]);
+        // The list read that removes `j` runs in the background queue.
+        await vi.advanceTimersByTimeAsync(1000);
         expect(mirrorIds()).toEqual(["k"]);
         const sent = groupsOf(fake);
         // The first attempt, the one rolled back with the failed read, the one rolled back with j's
@@ -2012,10 +2023,10 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.fake.requests.length = 0;
         await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
-        // The create was never in doubt, so the re-add's reorder goes beside it on the stale order
-        // base and conflicts; the server's order (`[k]`) differs from the sent `[x]`, so that reorder
-        // is reported. Membership reconciliation then sends the order that lands.
-        expect(await h.sync.flushResources()).toEqual({ discarded: ["chats/c"], refused: [] });
+        // The create was never in doubt. The re-add's reorder waits for the character's list read
+        // instead of going on the stale order base, so nothing is discarded; membership
+        // reconciliation then sends the order that lands.
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({ ids: ["x"], texts: { x: "Rewritten transcript" } });
         // A fresh create of the replacement's chat, never the rolled-back payload or its id.
         const creates = groups(h.fake).filter((group: any) => group.chatId === "x");
@@ -2060,6 +2071,8 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.fake.set("characters", "c", { chaId: "c", name: "Edited elsewhere" });
         expect(h.characterStore.removeCharacter("c")).toBe(true);
         await h.sync.flushResources().catch(() => undefined);
+        // The restored character's chats come with the background list read.
+        await vi.advanceTimersByTimeAsync(1000);
         expect(h.characters().map((character) => character.name)).toEqual(["Edited elsewhere"]);
         expect(h.mirrorIds().sort()).toEqual(["j", "k", "x"]);
         expect(h.chat.heldChatRevision(refX)).toBe(h.fake.chat("c", "x")!.revision);
