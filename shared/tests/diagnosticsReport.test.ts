@@ -504,6 +504,39 @@ describe("buildDiagnosticReport: the v1 text", () => {
         expect(swapped).not.toBe(text);
         expect(canonicalDiagnosticReport(swapped)).toBeNull();
     });
+
+    it("round-trips the draft journal's sync phases byte for byte, each line keeping its reason and `entries`; a line without them is not that line", () => {
+        const text = buildDiagnosticReport(
+            input({
+                server: { state: state(), events: [] },
+                browser: [
+                    { at: AT, kind: "sync", phase: "journalSkipped", reason: "format", entries: 2 },
+                    { at: AT + 1, kind: "sync", phase: "journalSkipped", reason: "tooLarge", entries: 1 },
+                    { at: AT + 2, kind: "sync", phase: "journalFailed", reason: "timeout" },
+                    { at: AT + 3, kind: "sync", phase: "journalFailed", reason: "quota", message: PRIVATE },
+                    { at: AT + 4, kind: "sync", phase: "journalRecovered", reason: "orphan", entries: 5 },
+                    { at: AT + 5, kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 0, generating: 0 },
+                ],
+            }),
+        );
+        expect(eventLines(text)).toEqual([
+            `${ISO(AT)} browser sync {"phase":"journalSkipped","reason":"format","entries":2}`,
+            `${ISO(AT + 1)} browser sync {"phase":"journalSkipped","reason":"tooLarge","entries":1}`,
+            `${ISO(AT + 2)} browser sync {"phase":"journalFailed","reason":"timeout"}`,
+            `${ISO(AT + 3)} browser sync {"phase":"journalFailed","reason":"quota"}`,
+            `${ISO(AT + 4)} browser sync {"phase":"journalRecovered","reason":"orphan","entries":5}`,
+            `${ISO(AT + 5)} browser sync {"phase":"conflict","records":1,"chats":0,"orders":0,"generating":0}`,
+        ]);
+        expect(text).not.toContain(PRIVATE);
+        expect(canonicalDiagnosticReport(text)).toBe(text);
+        // Dropping `entries` or the reason gives another report, itself canonical, so a field that
+        // went missing would not pass as the same text.
+        const withoutEntries = text.replace(`,"entries":5}`, "}");
+        expect(withoutEntries).not.toBe(text);
+        expect(canonicalDiagnosticReport(withoutEntries)).toBe(withoutEntries);
+        const unknownReason = text.replace(`"reason":"orphan"`, `"reason":"Alice"`);
+        expect(canonicalDiagnosticReport(unknownReason)).toBeNull();
+    });
 });
 
 describe("projectDiagnosticsState", () => {

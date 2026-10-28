@@ -6,7 +6,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
 
 - [Durable Drafts](durable-drafts.md): unsaved changes survive a lost page (an IndexedDB journal
   recovered in the same epoch), conflicts keep the local version, and saves stop waiting for
-  unrelated reads (audit F02–F04).
+  unrelated reads (audit F02–F04). Slices 1 and 9 landed.
 - [Display Evaluation](display-evaluation.md): cached display transform results follow the stored
   transcript and the viewport, a row that showed an unsaved mix renders again after the save, a
   render burst loads once, snapshots are charged for what they hold, and a remounted row reuses its
