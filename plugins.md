@@ -790,7 +790,9 @@ await Risuai.setDatabaseLite(db);
 
 `getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), it first loads every chat of every character from the server and copies them all, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
 
-How `setDatabase`/`setDatabaseLite` apply what you hand back:
+In a [read-only transform continuation](#read-only-transform-continuations), both setters warn and return `undefined` without applying any keys, including custom keys. Use `pluginStorage` for plugin-private state.
+
+Outside those continuations, `setDatabase`/`setDatabaseLite` apply what you hand back as follows:
 
 - Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...` or `[Settings] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
 - `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
@@ -968,6 +970,28 @@ Risuai.removeRisuScriptHandler("display", handlerFunction);
 - `'process'` - Modify content during processing
 - `'input'` - Modify user input
 
+#### Read-only transform continuations
+
+Handlers invoked by a tab-side `editdisplay` or `editprocess` transform cannot write durable character, chat, settings or asset data through the v3 data APIs. This includes display rendering and `parseRisuChat(text, { processRegex: true })`'s process handlers. Job-callback hooks dispatched during generation keep their normal write behavior.
+
+Refusal logs `console.warn` naming the API, returns without writing, and does not throw or fail the transform:
+
+| API                                                                                              | Result while read-only                                                                             |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `setCharacter`, `setChar`, `setCharacterToIndex`, `setChatToIndex`                               | `undefined`; no changes                                                                            |
+| `setDatabase`, `setDatabaseLite`                                                                 | `undefined`; the entire call is skipped, including plugin custom keys; use `pluginStorage` instead |
+| `changeColorScheme`, `setColorScheme`, `changeTextTheme`, `setCustomTextTheme`, `checkCharOrder` | `undefined`; no changes                                                                            |
+| `setArg("another-plugin::key", value)`                                                           | `undefined`; no changes                                                                            |
+| `sendChat`                                                                                       | `false`; no message or job is started                                                              |
+| `saveAsset`                                                                                      | `""` (no saved path); no asset is written                                                          |
+| `parseRisuChat`                                                                                  | Parsed text as usual, with `runVar` forced to `false` even if requested                            |
+
+Plugin-private state remains writable: `pluginStorage` (including its `_…PluginStorage` host aliases), the object returned by `getLocalPluginStorage()`, `safeLocalStorage` and its aliases, and your own arguments through `setArgument` or `setArg("your-plugin::key", value)`.
+
+The host checks all active contexts of the calling plugin instance at API entry. An overlapping writable hook of that same instance is also refused while a transform handler is in flight; target selection still follows the innermost context. A timed-out handler remains read-only until it settles. Exact attribution would require a call id in sandbox RPC.
+
+Accepted exclusions: `runLLMModel` remains available and its transport can persist returned inlays; `postPluginChannelMessage` does not pass the context to its receiver; `loadPlugins` creates instances that do not inherit the old context. General networking (`nativeFetch` and legacy `risuFetch`) and permission-grant bookkeeping remain available. These rules constrain the host data setters, not all indirect effects. `installPlugin` only returns a list approved by the user; saving that list requires `setDatabase`, which is refused here.
+
 ### Text Replacers
 
 Replace or modify message arrays:
@@ -998,6 +1022,8 @@ const imageData = await Risuai.readImage("asset-id");
 // Save assets
 const savedPath = await Risuai.saveAsset(assetData);
 ```
+
+In a read-only transform continuation, `saveAsset` warns and resolves to `""` without writing. Check for a nonempty path before using it.
 
 #### Inlay Assets (user-attached images / audio / video)
 

@@ -598,7 +598,9 @@ describe("plugin handlers (the two calls)", () => {
             snapshotId: "snap-1",
             texts: [{ id: transformPosts()[0].body.targets[0].id, text: "pre(S)+1+2" }],
         });
-        expect(state.hookContexts).toEqual([captured.pluginContext, captured.pluginContext, captured.pluginContext]);
+        // The continuation is read-only: the captured context with the transform purpose.
+        const context = { ...captured.pluginContext, purpose: "transform" };
+        expect(state.hookContexts).toEqual([context, context, context]);
     });
 
     it("keeps a handler result that is the word `expired`, and fails only the target whose handler threw", async () => {
