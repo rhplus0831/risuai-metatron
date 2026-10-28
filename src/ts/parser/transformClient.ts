@@ -34,7 +34,7 @@ import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { recordClientEvent } from "../diagnostics/collector";
-import { markDisplayTransformFailed } from "./displayTransformRecovery.svelte";
+import { markDisplayTransformFailed, markDisplayTransformSucceeded } from "./displayTransformRecovery.svelte";
 import {
     advanceTransformResultsGeneration,
     confirmTransformResult,
@@ -143,6 +143,8 @@ type TransformOutcome = {
     identity: string;
     cacheGeneration: number;
     generation: number;
+    /** The originating render's install version, before any of its awaits. */
+    installVersion: number;
     /** The exact source also guards the handoff against a hash collision. */
     source: string;
     text: string;
@@ -388,6 +390,15 @@ async function runHandlers(
     deadline: number,
 ): Promise<{ id: string; text: string } | { id: string; error: string }> {
     const hooks = batch.handlers?.hooks ?? [];
+    // Both transform modes are read-only, even when called from a writable job hook.
+    const context: PluginCallContext = {
+        chatRef: batch.captured.chatRef,
+        presetId: batch.captured.context.presetId,
+        modelPresetId: batch.captured.context.modelPresetId,
+        personaId: batch.captured.context.personaId,
+        ...batch.captured.pluginContext,
+        purpose: "transform",
+    };
     let abandoned = false;
     const timeout = { id: entry.id, error: "A plugin handler took too long" };
     const run = async (): Promise<{ id: string; text: string } | { id: string; error: string }> => {
@@ -396,7 +407,7 @@ async function runHandlers(
             if (abandoned || Date.now() >= deadline) {
                 return timeout;
             }
-            const result = await invokeHook(hook, batch.captured.pluginContext, text);
+            const result = await invokeHook(hook, context, text);
             if (result !== null && result !== undefined) {
                 text = String(result);
             }
@@ -505,6 +516,14 @@ function isCurrent(captured: CapturedTransform): boolean {
     );
 }
 
+function isMixedDisplay(mode: TransformMode, captured: CapturedTransform): boolean {
+    return (
+        mode === "editdisplay" &&
+        !!captured.messageId &&
+        (captured.hadUnackedWork || chatInstallVersion(captured.chatRef) !== captured.installVersion)
+    );
+}
+
 /** A synchronous 53-bit UTF-16 hash (cyrb53); exact-source checks disambiguate collisions. */
 function sourceHash(source: string): string {
     let first = 0xdeadbeef;
@@ -584,6 +603,9 @@ export async function serverProcessScript(
             outcome.generation === captured.generation &&
             isCurrent(captured)
         ) {
+            if (isMixedDisplay(mode, captured) || outcome.installVersion !== captured.installVersion) {
+                captured.mixedDisplay = true;
+            }
             return { data: outcome.text, emoChanged: false };
         }
     }
@@ -591,7 +613,8 @@ export async function serverProcessScript(
     const entry = noCache ? undefined : getTransformResult(identity, data);
     const version = entry?.version ?? transformResultVersion(identity);
     if (entry && (char.type === "simple" || appliedEmotions.has(entry.key))) target.knownKey = entry.key;
-    const batchKey = JSON.stringify([mode, captured.context, handlers?.id ?? null, client]);
+    // A batch reuses its first plugin context; purpose, owner and job parent must also agree.
+    const batchKey = JSON.stringify([mode, captured.context, captured.pluginContext, handlers?.id ?? null, client]);
     let batch = batches.get(batchKey);
     if (!batch) {
         batch = { mode, captured, client, handlers, pending: [], shared: new Map(), reported: false };
@@ -627,10 +650,7 @@ export async function serverProcessScript(
     if (provisional) captured.pendingProvisional = (captured.pendingProvisional ?? 0) + 1;
     const completion = shared.answer.then((answered) => {
         const current = isCurrent(captured);
-        const mixed =
-            mode === "editdisplay" &&
-            !!captured.messageId &&
-            (captured.hadUnackedWork || chatInstallVersion(captured.chatRef) !== captured.installVersion);
+        const mixed = isMixedDisplay(mode, captured);
         if (current && mixed) captured.mixedDisplay = true;
         const failed = "ok" in answered && !answered.ok;
         let text = data;
@@ -672,6 +692,9 @@ export async function serverProcessScript(
                 emoChanged = true;
             }
         }
+        if (!failed && current && mode === "editdisplay" && captured.messageId) {
+            markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
+        }
         if (provisional && current) {
             captured.pendingProvisional -= 1;
             const replaced = failed || text !== shared.entry!.text;
@@ -684,6 +707,7 @@ export async function serverProcessScript(
                               identity,
                               cacheGeneration: captured.cacheGeneration,
                               generation: captured.generation,
+                              installVersion: captured.installVersion,
                               source: data,
                               text,
                           },

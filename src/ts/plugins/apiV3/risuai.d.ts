@@ -1351,6 +1351,7 @@ interface RisuaiPluginAPI {
      * char.name = 'New Name';
      * await risuai.setCharacter(char);
      * ```
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setCharacter(character: any): Promise<void>;
 
@@ -1361,6 +1362,7 @@ interface RisuaiPluginAPI {
 
     /**
      * @deprecated Use setCharacter() instead
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setChar(character: any): Promise<void>;
 
@@ -1378,6 +1380,7 @@ interface RisuaiPluginAPI {
      * character that is generating a reply is not replaced by one with another `chaId`.
      * @param index - Character index
      * @param character - Character object to save
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setCharacterToIndex(index: number, character: any): Promise<void>;
 
@@ -1417,7 +1420,7 @@ interface RisuaiPluginAPI {
          * plugin handlers; skipped for a chat not yet saved on the server).
          */
         processRegex?: boolean;
-        /** Enable chat variable writes from CBS macros. */
+        /** Enable chat variable writes from CBS macros; forced off in read-only transform/display continuations. */
         runVar?: boolean;
         /** Remove unresolved variable macros. */
         rmVar?: boolean;
@@ -1439,6 +1442,7 @@ interface RisuaiPluginAPI {
      * @param characterIndex - Character index
      * @param chatIndex - Chat index
      * @param chat - Chat object to save
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setChatToIndex(characterIndex: number, chatIndex: number, chat: any): Promise<void>;
 
@@ -1499,7 +1503,7 @@ interface RisuaiPluginAPI {
     getArgument(key: string): Promise<string | number | undefined>;
 
     /**
-     * Sets a plugin argument value
+     * Sets this plugin's own argument value; allowed in read-only transform/display continuations.
      * @param key - Argument key
      * @param value - Value to set
      */
@@ -1512,6 +1516,8 @@ interface RisuaiPluginAPI {
 
     /**
      * @deprecated Use setArgument() instead
+     * Read-only transform/display continuations allow this plugin's own arguments; another plugin's
+     * argument warns and returns undefined without writing or throwing.
      */
     setArg(arg: string, value: string | number): void;
 
@@ -1549,6 +1555,8 @@ interface RisuaiPluginAPI {
      * captured model preset. A refused key warns and keeps its old value; other keys still apply.
      * The `plugins` property is ignored; use setDatabase() to install plugins with user confirmation.
      * @param db - DatabaseSubset object to save
+     * In a read-only transform/display continuation the entire call warns and returns undefined,
+     * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
      */
     setDatabaseLite(db: Omit<DatabaseSubset, "plugins">): Promise<void>;
 
@@ -1556,6 +1564,8 @@ interface RisuaiPluginAPI {
      * Sets the database (full save with sync)
      * Model roots and per-key refusals follow the same rules as setDatabaseLite().
      * @param db - DatabaseSubset object to save
+     * In a read-only transform/display continuation the entire call warns and returns undefined,
+     * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
      */
     setDatabase(db: DatabaseSubset): Promise<void>;
 
@@ -1565,12 +1575,14 @@ interface RisuaiPluginAPI {
      * Change to a preset color scheme by name.
      * Available presets: 'default', 'dark', 'light', 'cherry', 'galaxy', 'nature', 'realblack', 'monokai-light', 'monokai-black'
      * @param name - Preset color scheme name
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     changeColorScheme(name: string): Promise<void>;
 
     /**
      * Apply a custom color scheme. Automatically sets colorSchemeName to 'custom'.
      * @param scheme - ColorScheme object with all color values
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setColorScheme(scheme: ColorScheme): Promise<void>;
 
@@ -1585,12 +1597,14 @@ interface RisuaiPluginAPI {
     /**
      * Change to a preset text theme.
      * @param name - 'standard' | 'highcontrast'
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     changeTextTheme(name: string): Promise<void>;
 
     /**
      * Apply a custom text theme. Automatically sets textTheme to 'custom'.
      * @param theme - CustomTextTheme object with all font color values
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setCustomTextTheme(theme: CustomTextTheme): Promise<void>;
 
@@ -1864,7 +1878,12 @@ interface RisuaiPluginAPI {
     // ========== Script Handlers ==========
 
     /**
-     * Adds a script handler for text processing
+     * Adds a script handler for text processing.
+     * Tab-side editdisplay/editprocess transform continuations are read-only: durable-data setters
+     * warn and return undefined without writing or throwing; sendChat returns false, saveAsset
+     * returns "", and parseRisuChat forces runVar off. Plugin storage and this plugin's own
+     * arguments remain writable. Job-callback hooks keep their normal write behavior, but an
+     * overlapping transform on the same plugin instance conservatively refuses their writes too.
      * @param mode - Handler mode
      * @param func - Handler function
      *
@@ -2076,7 +2095,7 @@ interface RisuaiPluginAPI {
     /**
      * Saves an asset
      * @param data - Asset data
-     * @returns Saved asset path
+     * @returns Saved asset path, or "" in a read-only transform/display continuation (warns, no write or throw).
      */
     saveAsset(data: any): Promise<string>;
 
@@ -2129,6 +2148,7 @@ interface RisuaiPluginAPI {
 
     /**
      * Checks and corrects character order in the database
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     checkCharOrder(): Promise<void>;
 
@@ -2216,6 +2236,7 @@ interface RisuaiPluginAPI {
 
     /**
      * Sends a chat message as if it were sent by the user, triggering the normal chat processing flow.
+     * Read-only transform/display continuations warn and return false without writing or throwing.
      * Inside a hook it sends in the hook's chat, else in the selected chat. Throws "A chat is already in
      * progress" while that chat generates or a job callback (a hook or a provider) runs in this tab.
      * @param message - The chat message to send, if string is a blank message, it will trigger the send action without adding a new message.

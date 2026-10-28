@@ -171,6 +171,24 @@ export async function getNodeServerProxyAuth() {
     return await createAuth();
 }
 
+/** Races one caller's wait against its signal; shared authentication and signing continue independently. */
+function abortable<T>(work: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+    if (!signal) {
+        return work;
+    }
+    return new Promise<T>((resolve, reject) => {
+        const aborted = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        if (signal.aborted) {
+            aborted();
+            // The work may already have started; its rejection still needs an observer.
+            void work.catch(() => {});
+            return;
+        }
+        signal.addEventListener("abort", aborted, { once: true });
+        work.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+    });
+}
+
 /**
  * `fetch` to the self-host server with a fresh `risu-auth` token. `beforeDispatch` runs after the
  * authentication and signing, right before the request goes out; a throw stops it.
@@ -180,9 +198,12 @@ export async function authFetch(
     init: RequestInit = {},
     options: { beforeDispatch?: () => void } = {},
 ): Promise<Response> {
-    await ensureAuth();
+    init.signal?.throwIfAborted();
+    await abortable(ensureAuth(), init.signal);
+    init.signal?.throwIfAborted();
     const headers = new Headers(init.headers);
-    headers.set("risu-auth", await createAuth());
+    headers.set("risu-auth", await abortable(createAuth(), init.signal));
+    init.signal?.throwIfAborted();
     options.beforeDispatch?.();
     return await fetch(input, { ...init, headers });
 }

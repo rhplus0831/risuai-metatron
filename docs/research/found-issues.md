@@ -9,6 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
+- [Save journal and recovery](#save-journal-and-recovery) (8)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (2)
@@ -30,6 +31,66 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
+
+## Save journal and recovery
+
+Found during the Durable Drafts plan run (2026-10-28 to 2026-10-29; archived, `git show bbc747f24:docs/plan/durable-drafts.md`); each was outside the slice that noticed it.
+
+### Journal close drops a same-tick call
+
+`src/ts/storage/draftJournal.ts` `close()` (~:1773) sets `closed` before draining, so a `write`/`remove` admitted in the same tick that has not yet reached `withDatabase`'s `closed` check fails as `unavailable` instead of being drained; only calls that reached their transaction are drained. The close tests flush two microtasks first. Flagged as minor by the Fable re-verification of Slice 1.
+
+**Why it matters:** the reload seam (`stopResourceSync`) and the restore snapshot call `close()` right after queuing work; a write queued in the same tick could be dropped.
+**Suggested handling:** let `close()` admit tracked calls that were already issued before flipping `closed`.
+
+### Uncloneable journal values fail silently
+
+`draftJournal.ts` `write()`: an item whose layers fail `structuredClone` (a Svelte `$state` proxy, a function) answers `"failed"` with only a `console.warn`: no `sync` `journalFailed` event and no fence for its layers. Callers pass plain snapshots today. Noted in Slice 1.
+
+**Why it matters:** a proxy slipping into a new caller would stop journaling that target with no diagnostics trail.
+**Suggested handling:** add a `journalFailed` reason for an uncloneable value, or clone through `$state.snapshot` at the boundary.
+
+### removeDraft resolves on a failed delete
+
+`draftJournal.ts` `removeDraft` (~:1602) catches every error, reports `journalFailed`, and resolves `undefined`; it also resolves as a no-op when the journal is off or closed. The recovery dialog (`recoveryDrafts.remove`, used by Discard and by `applyRecoveryDraft` after a confirmed save) drops the row from the view anyway, so a failed delete brings the draft back at the next boot. After an Apply, the same intent can then be applied twice. Noted while building the dialog (Slice 5).
+
+**Why it matters:** a duplicated apply of a recovered edit, with no error shown.
+**Suggested handling:** make `removeDraft` answer whether the row was deleted, and have `recoveryDrafts.remove` keep the row and show an error on failure.
+
+### Character eligibility parses the whole record
+
+`src/ts/storage/journalEligibility.ts` `isJournalEligible` (characters case, ~:94): the fast path only checks `mayHold(text, "apiKey")`, so a character carrying `oaiTTSConfig: { apiKey: "" }` (an export blanks it, `server/src/data/upstream/exportDatabase.ts` ~:697) or the word "apiKey" in lore or prompt text falls through to `JSON.parse` of the whole record. The Slice 3 challenger measured about 120 ms at a 4x CPU throttle for a 5 MiB character, paid synchronously on every journal write of that record (throttled to once per 5 s above 256 KiB).
+
+**Why it matters:** main-thread jank while typing in large TTS-configured characters.
+**Suggested handling:** scan each `"apiKey":` occurrence for a non-empty string value before parsing, keeping the one-boundary rule.
+
+### Chat drift check has no disposer
+
+`src/ts/storage/chatStore.svelte.ts` `startChatDriftCheck` (~:6624, dev builds only) starts a `setInterval` and returns nothing to stop it, so `stopResourceSync` (the simulated-reload teardown, Slice 4) cannot clear it; `src/ts/bootstrap.journalRecovery.test.ts` relies on `vi.clearAllTimers()` instead.
+
+**Why it matters:** the reload seam is meant to tear down every module listener and timer; a second boot in one realm runs two drift checks.
+**Suggested handling:** return a disposer and call it from `stopResourceSync`.
+
+### A new character's first chat is not journaled at hide
+
+`addCharacter` followed by a page hide journals the character's record create but not its first chat's pending create row; per the Slice 7 test writer, imported first chats are collected only by the save cycle. `bootstrap.journalRecovery.test.ts` ("recovers an undispatched character and its original first chat without a synthetic second chat") hand-writes the chat row. In production, after a crash before the first save cycle, recovery creates the character and `initializeChats` adds a fresh "Chat 1" under a new id, so anything keyed by the original chat id (a composer draft, the selection) no longer matches. Not verified beyond the test writer's note.
+
+**Why it matters:** a composer draft typed into a brand-new character's first chat is orphaned after a crash.
+**Suggested handling:** check how `addCharacter` and `normalizeNewCharacter` queue the first chat in `chatStore.svelte.ts` and whether the chat journal's queued layer sees it at hide.
+
+### Ops answered missing drop their content
+
+`ackChatWork` (`chatStore.svelte.ts`) settles by-id ops the server answers as `missing` (the target message is gone, for example deleted by another tab); the next idle refresh replaces the chat, and their local content is gone with no recovery draft, unlike the conflict paths Slice 10 covers. Pinned as current behavior by `src/ts/storage/tests/resourceSyncChats.test.ts` (~:1210).
+
+**Why it matters:** an edit typed into a message another tab deleted vanishes silently; the plan's "keep the local version at every conflict" goal does not cover it.
+**Suggested handling:** at acknowledgement, while the group still exists, capture the ops answered `missing` (with their befores) as a draft.
+
+### Reads outside the save adapter have no deadline
+
+Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/storage/resourceSync.svelte.ts`); the `resourceClient.ts` read functions take an optional `signal` but have no default deadline. Still unbounded: chat loads (`chatStore.svelte.ts` `loadChat` and unloaded loading), the socket reconcile's `listRevisions` (`src/ts/network/eventFeed.ts` ~:119), character-order repair (`src/ts/storage/characterOrder.ts` ~:221), job callback recovery (`src/ts/network/jobChannel.ts` ~:599), detached export reads (`src/ts/storage/chatEdits.ts` ~:109), and the boot read. Found while landing Slice 2.
+
+**Why it matters:** a stuck read hangs its caller (a chat that never finishes loading, a reconcile that never ends) with no error. It no longer blocks saving.
+**Suggested handling:** when touching one of these callers, pass a signal with a bound suited to its payload (a chat load can be large on a slow link, so 20 s may be too short).
 
 ## Server jobs and prompt assembly
 

@@ -48,6 +48,7 @@ import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
     enterContext,
+    hasReadOnlyContext,
     PluginTargetGoneError,
     takeHandoff,
     type PluginCallContext,
@@ -1299,6 +1300,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
     const hookWrappers = new WeakMap<Function, Function>();
     // The owner of this instance's context stack: a reloaded instance of the plugin gets its own.
     const contextOwner = {};
+    // Check synchronously at host entry, before validation, permission prompts or chat loading.
+    // Refusal must not throw: a failed transform would show raw text and schedule recovery retries.
+    const refuseTransformWrite = (api: string): boolean => {
+        if (!hasReadOnlyContext(contextOwner)) return false;
+        console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api} during a read-only transform continuation`);
+        return true;
+    };
     const withContext = <F extends Function>(hook: F): F => {
         const cached = hookWrappers.get(hook);
         if (cached) {
@@ -1394,7 +1402,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return fetchNative(url, { method, headers, body, signal: options.signal });
         },
         getChar: () => getChar(currentContext(contextOwner)),
-        setChar: (char: any) => setChar(currentContext(contextOwner), char),
+        setChar: async (char: any) => {
+            if (refuseTransformWrite("setChar")) return;
+            return setChar(currentContext(contextOwner), char);
+        },
         addProvider: (
             name: string,
             func: (
@@ -1507,8 +1518,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         removeRisuChatListener: (mode: string, func: ChatOutputListener) =>
             removeRisuChatListener(mode, registered(func)),
-        setDatabaseLite: (newDb: any) => setPluginDatabaseLite(newDb, currentContext(contextOwner)),
-        setDatabase: (newDb: any) => setPluginDatabase(newDb, currentContext(contextOwner)),
+        setDatabaseLite: async (newDb: any) => {
+            if (refuseTransformWrite("setDatabaseLite")) return;
+            return setPluginDatabaseLite(newDb, currentContext(contextOwner));
+        },
+        setDatabase: async (newDb: any) => {
+            if (refuseTransformWrite("setDatabase")) return;
+            return setPluginDatabase(newDb, currentContext(contextOwner));
+        },
         loadPlugins: loadPlugins,
         readImage: readAssetImage,
         readInlay: async (id: string) => {
@@ -1518,7 +1535,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             return await getInlayAsset(id);
         },
-        saveAsset: (data: Uint8Array) => {
+        saveAsset: async (data: Uint8Array) => {
+            if (refuseTransformWrite("saveAsset")) return "";
             return saveAsset(data);
         },
         //Same functionality, but new implementation
@@ -1549,9 +1567,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
         // --- Color Scheme APIs ---
         changeColorScheme: (name: string) => {
+            if (refuseTransformWrite("changeColorScheme")) return;
             changeColorScheme(name);
         },
         setColorScheme: (scheme: ColorScheme) => {
+            if (refuseTransformWrite("setColorScheme")) return;
             const requiredKeys = [
                 "bgcolor",
                 "darkbg",
@@ -1584,6 +1604,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
         // --- Text Theme APIs ---
         changeTextTheme: (name: string) => {
+            if (refuseTransformWrite("changeTextTheme")) return;
             if (!["standard", "highcontrast"].includes(name)) {
                 throw new Error(`Invalid text theme: ${name}`);
             }
@@ -1598,6 +1619,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             FontColorQuote1: string;
             FontColorQuote2: string;
         }) => {
+            if (refuseTransformWrite("setCustomTextTheme")) return;
             const requiredKeys = [
                 "FontColorStandard",
                 "FontColorBold",
@@ -1624,7 +1646,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         //Deprecated APIs
         //Use getArgument / setArgument instead if possible
         getArg: getArg,
-        setArg: setArg,
+        setArg: (arg: string, value: string | number) => {
+            if (arg.split("::")[0] !== identity.name && refuseTransformWrite("setArg")) return;
+            setArg(arg, value);
+        },
 
         //New APIs for v3
         getArgument: async (key: string) => {
@@ -1649,6 +1674,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             });
         },
         setCharacterToIndex: async (index: number, char: any) => {
+            if (refuseTransformWrite("setCharacterToIndex")) return;
             // The character at the index when the call came, found again by id after its chats load.
             const chaId = characterList()[index]?.chaId;
             if (chaId === undefined) {
@@ -1685,6 +1711,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 cbsConditions?: CbsConditions;
             },
         ) => {
+            const readOnly = hasReadOnlyContext(contextOwner);
             const context = currentContext(contextOwner);
             // The hook's chat (refused at once when it is gone), else the one selected when the call
             // came, loaded first; the target is found again after the load.
@@ -1730,7 +1757,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 chatRef,
                 chatID,
                 role,
-                runVar: options?.runVar,
+                runVar: readOnly ? false : options?.runVar,
                 rmVar: options?.rmVar,
                 tokenizeAccurate: options?.tokenizeAccurate,
                 cbsConditions,
@@ -1761,6 +1788,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 .data;
         },
         setChatToIndex: async (characterIndex: number, chatIndex: number, chat: any) => {
+            if (refuseTransformWrite("setChatToIndex")) return;
             // The chat at the indexes when the call came, by id, loaded first.
             const chaId = characterList()[characterIndex]?.chaId;
             const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
@@ -1827,7 +1855,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         //New names for character APIs, to match API naming conventions
         getCharacter: () => getChar(currentContext(contextOwner)),
-        setCharacter: (char: any) => setChar(currentContext(contextOwner), char),
+        setCharacter: async (char: any) => {
+            if (refuseTransformWrite("setCharacter")) return;
+            return setChar(currentContext(contextOwner), char);
+        },
 
         showContainer: (
             //more types may be added in future
@@ -2117,7 +2148,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         getLocalPluginStorage: () => {
             return new SafeLocalPluginStorage();
         },
-        checkCharOrder: checkCharOrder,
+        checkCharOrder: () => {
+            if (refuseTransformWrite("checkCharOrder")) return;
+            return checkCharOrder();
+        },
         requestPluginPermission: (permission: string) => {
             return getPluginPermission(identity, permission as any);
         },
@@ -2230,6 +2264,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             );
         },
         sendChat: async (message: string) => {
+            if (refuseTransformWrite("sendChat")) return false;
             const context = currentContext(contextOwner);
             const conf = await getPluginPermission(identity, "sendChat");
             if (!conf) {

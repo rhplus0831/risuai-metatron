@@ -30,10 +30,18 @@ import { isJournalEligible } from "./journalEligibility";
  *   acknowledged layer); a removal deletes a layer only through the version it captured, so a late
  *   delete never erases newer work. Versions only order the work of one page: a new page starts above
  *   its stored rows, and a page that is gone sends nothing late.
+ *   `write(items, removals)` applies captured-version removals and writes in one transaction, with
+ *   the same fences and budgets as separate calls; a replaced entry keeps its creation time.
+ *   Its optional conflict captures use stable draft ids and the source row's creation time, read
+ *   before cleanup. These drafts cannot evict one another or be evicted by this transaction's writes.
+ *   An over-budget draft is skipped and reported while the surrounding cleanup still commits.
+ *   Startup and adopted chat/order keys are reserved until recovery installs them and calls
+ *   `release`. A committed whole move to drafts or expiry also frees the reservation; a partial
+ *   move atomically drafts only its named layers and leaves the remaining row reserved.
  * - Eligibility: every record text goes through `isJournalEligible`. An ineligible layer is not
  *   written and its older value is removed (the journal never holds an older text than the one the tab
  *   would send); a kind that is never journaled loses its whole entry.
- * - Budgets (UTF-8 bytes of the stored value, `journalValueSize`): an entry over
+ * - Budgets (16 MiB per entry, 64 MiB total; UTF-8 bytes, `journalValueSize`): an entry over
  *   `MAX_JOURNAL_ENTRY_BYTES`, or a write that would take the store over `MAX_JOURNAL_TOTAL_BYTES` after
  *   eviction, is not written (`journalSkipped` `tooLarge` or `budget`; the layers it named are
  *   removed). Eviction for space removes recovery drafts and expired composer drafts, oldest first;
@@ -62,8 +70,8 @@ export const JOURNAL_DB_NAME = "risu-draft-journal";
 /** The rows' layout; a row of another format is kept untouched. */
 export const JOURNAL_FORMAT = 1;
 export const JOURNAL_ENTRY_TTL_MS = 48 * 60 * 60 * 1000;
-export const MAX_JOURNAL_ENTRY_BYTES = 4 * 1024 * 1024;
-export const MAX_JOURNAL_TOTAL_BYTES = 32 * 1024 * 1024;
+export const MAX_JOURNAL_ENTRY_BYTES = 16 * 1024 * 1024;
+export const MAX_JOURNAL_TOTAL_BYTES = 64 * 1024 * 1024;
 /** The deadline for an open, a startup or recovery transaction, and draining calls at close. */
 export const JOURNAL_OPEN_TIMEOUT_MS = 3000;
 /** How long `adoptOrphans` waits for the recover lock another tab holds. */
@@ -92,10 +100,20 @@ export type RecordLayerValues = {
     refused: { op: RecordOp; text: string | null; reason: string };
 };
 
-/** A by-id op's target before the edit: absent (no such message or field) or its value. */
+/**
+ * A local by-id edit's target before the mirror changed. Appends use `absent` for all appended ids;
+ * setText holds data, setMessage and a single-id remove the whole message, setTranslation its
+ * translation (or `absent`). patchMessage/meta hold only touched fields that existed, including
+ * whole prior maps for merge/mergeUnset; omitted touched fields were absent. Coalescing preserves
+ * the first before for each touched field. An unloaded summary can omit a raw value (pinned:false),
+ * so its before may conservatively fail a later recovery comparison.
+ */
 export type JournalBefore = { absent: true } | { value: unknown };
 
-/** A pending chat op; by-id ops carry `before`, whole-chat ops (`create`, `replace`, `delete`) none. */
+/**
+ * A pending op with its local before; never sent as this envelope. Whole-chat ops and multi-id
+ * removes carry none. Generation ops have no local producer and no invented before value.
+ */
 export type JournalChatOp = { op: ChatOp; before?: JournalBefore };
 
 /** A chat's layers: the earlier group to resend, the queued batch (with its pre-minted id), and refused intent. */
@@ -361,7 +379,7 @@ export type JournalWrite =
 /**
  * What became of one write: `written` (some named layer changed), `stale` (newer work or a later removal
  * covers every named layer), `ineligible` (a record text the journal may not hold: its layer was
- * removed), `skipped` (over a budget, or the key holds an unknown row), `failed` (the transaction or the
+ * removed), `skipped` (over a budget, or the key holds an unknown or reserved row), `failed` (the transaction or the
  * database failed), `off` (no journal).
  */
 export type WriteOutcome = "written" | "stale" | "ineligible" | "skipped" | "failed" | "off";
@@ -378,8 +396,14 @@ export type DraftInput = { epoch: string; target: string; createdAt?: number } &
     | { scope: "order"; layers: LayerWrites<"order"> }
 );
 
-/** Moves one of this tab's entries to a draft, unless a layer was written after `version`. */
-export type DraftMove = { epoch: string; scope: JournalScope; target: string; version: number };
+/** A conflict capture has a stable id across failed flushes and a restore snapshot. */
+export type ConflictDraft = DraftInput & { id: string };
+export type JournalWriteResult = { committed: boolean; writes: WriteOutcome[]; drafts: WriteOutcome[] };
+
+/** Moves the named layers (all when omitted) to a draft unless one was written after `version`. */
+export type DraftMove = JournalRemoval;
+
+export type JournalRelease = { epoch: string; scope: "chat" | "order"; target: string };
 
 export type ComposerRemoval = {
     userMessageId?: string;
@@ -396,8 +420,10 @@ export interface DraftJournal {
     readonly tabId: string | null;
     /** The next per-tab version; a caller captures it with what it writes. */
     nextVersion(): number;
-    /** Applies the writes in one transaction; the values are copied at the call. */
-    write(items: JournalWrite[]): Promise<WriteOutcome[]>;
+    /** Applies captured-version removals and writes in one transaction; values are copied at the call. */
+    write(items: JournalWrite[], removals?: JournalRemoval[]): Promise<WriteOutcome[]>;
+    /** Conflict drafts commit with cleanup; a budget skip still commits the surrounding removals. */
+    write(items: JournalWrite[], removals: JournalRemoval[], drafts: ConflictDraft[]): Promise<JournalWriteResult>;
     /** Applies the removals in one transaction. */
     remove(items: JournalRemoval[]): Promise<void>;
     /** This tab's mutation entries that have not expired. */
@@ -406,6 +432,8 @@ export interface DraftJournal {
     adoptOrphans(): Promise<number>;
     /** Converts entries to drafts, each in the same transaction as its removal; answers each draft's id or null. */
     moveToDrafts(items: DraftMove[]): Promise<(string | null)[]>;
+    /** Reads layers and frees keys after commit; expired rows are fenced/deleted. Empty answer on failure or off. */
+    release(items: JournalRelease[]): Promise<(StoredLayers<"chat"> | StoredLayers<"order"> | null)[]>;
     /** Stores a draft (reclaiming only expired drafts and composer rows); its id, or null when not stored. */
     putDraft(input: DraftInput): Promise<string | null>;
     listDrafts(): Promise<DraftEntry[]>;
@@ -497,6 +525,8 @@ async function inTransaction<T>(
             } catch {}
         };
     });
+    // An already aborted transaction can throw while obtaining its store, before work is raced.
+    void done.catch(() => {});
     transactions.set(tx, expire);
     const timer = timeoutMs === undefined ? undefined : setTimeout(expire, timeoutMs);
     try {
@@ -622,6 +652,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     const transactions = new Map<IDBTransaction, () => void>();
     /** Removal fences: `key` (every layer) or `key\0layer` → the version removed through. */
     const fences = new Map<string, number>();
+    /** Chat/order rows held before this page's writes still belong to recovery. */
+    const reserved = new Set<string>();
 
     const report = (event: DiagnosticEventInput) => {
         try {
@@ -768,6 +800,9 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     const row = checkJournalRow(cursor.value);
                     if (row?.type === "mutation") {
                         highest = Math.max(highest, row.version);
+                        if (row.scope === "chat" || row.scope === "order") {
+                            reserved.add(String(cursor.primaryKey));
+                        }
                     } else if (isPlainObject(cursor.value) && cursor.value.format === JOURNAL_FORMAT) {
                         malformed++;
                     }
@@ -847,6 +882,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         key: string,
         item: JournalWrite,
         eligible: Set<string>,
+        createdAt?: number,
     ): { row: MutationEntry | null; changed: boolean; ineligible: boolean; touched: string[] } {
         const layers: Record<string, StoredLayer<unknown>> = { ...(existing?.layers ?? {}) };
         let changed = false;
@@ -890,7 +926,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             tabId: tabId!,
             target: item.target,
             version: Math.max(...versions),
-            createdAt: existing?.createdAt ?? time,
+            createdAt: existing?.createdAt ?? createdAt ?? time,
             updatedAt: time,
             size: 0,
         };
@@ -952,10 +988,55 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return freed;
     }
 
-    function write(items: JournalWrite[]): Promise<WriteOutcome[]> {
+    function write(items: JournalWrite[], removals?: JournalRemoval[]): Promise<WriteOutcome[]>;
+    function write(
+        items: JournalWrite[],
+        removals: JournalRemoval[],
+        drafts: ConflictDraft[],
+    ): Promise<JournalWriteResult>;
+    function write(items: JournalWrite[], removals: JournalRemoval[] = [], drafts?: ConflictDraft[]) {
+        return writeBatch(items, removals, drafts ?? []).then((result) =>
+            drafts === undefined ? result.writes : result,
+        );
+    }
+
+    function writeBatch(
+        items: JournalWrite[],
+        removals: JournalRemoval[],
+        drafts: ConflictDraft[],
+    ): Promise<JournalWriteResult> {
+        const outcome = (value: WriteOutcome): JournalWriteResult => ({
+            committed: false,
+            writes: items.map(() => value),
+            drafts: drafts.map(() => value),
+        });
         if (!enabled || closed) {
-            return Promise.resolve(items.map(() => "off" as const));
+            return Promise.resolve(outcome("off"));
         }
+        let preparedDrafts: { row: DraftEntry; eligible: boolean }[];
+        try {
+            preparedDrafts = drafts.map((input) => {
+                const layers = Object.fromEntries(
+                    Object.entries(input.layers)
+                        .filter(([, value]) => value != null)
+                        .map(([name, value]) => [name, { version: 0, value }]),
+                );
+                const row = draftOf(
+                    { ...input, layers, createdAt: input.createdAt ?? now() } as ScopedLayers & {
+                        epoch: string;
+                        target: string;
+                        createdAt: number;
+                    },
+                    input.id,
+                );
+                if (!layersEligible(row)) return { row, eligible: false };
+                return { row: structuredClone(row), eligible: true };
+            });
+        } catch (error) {
+            reportFailure(error, "write");
+            return Promise.resolve(outcome("failed"));
+        }
+        const preparedRemovals = prepareRemovals(removals);
         // Copy at the call (the caller's objects may change while the database opens) and decide
         // eligibility and fences now, in call order.
         const prepared = items.map((item) => {
@@ -997,90 +1078,143 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             }
             return { item: copy, key, eligible, excluded };
         });
-        return tracked(
-            items.map(() => "off" as const),
-            async (): Promise<WriteOutcome[]> => {
-                const events: DiagnosticEventInput[] = [];
-                try {
-                    const outcomes = await withDatabase("readwrite", async (store) => {
-                        let total = await totalSize(store);
-                        const answers: WriteOutcome[] = [];
-                        for (const entry of prepared) {
-                            if (!entry) {
-                                answers.push("failed");
-                                continue;
-                            }
-                            const { item, key, eligible, excluded } = entry;
-                            const raw: unknown = await requestValue(store.get(key));
-                            let existing: MutationEntry | undefined;
-                            if (raw !== undefined) {
-                                const checked = checkJournalRow(raw);
-                                if (checked?.type !== "mutation") {
-                                    // An unknown row holds the key: it is kept as it is.
-                                    answers.push("skipped");
-                                    continue;
-                                }
-                                existing = checked;
-                            }
-                            if (excluded) {
-                                const kept = existing ? trimThrough(existing, item.version, null) : null;
-                                if (existing) {
-                                    total -= existing.size;
-                                    if (kept) {
-                                        store.put(kept, key);
-                                        total += kept.size;
-                                    } else {
-                                        store.delete(key);
-                                    }
-                                }
-                                answers.push("ineligible");
-                                continue;
-                            }
-                            const result = applyWrite(existing, key, item, eligible);
-                            let { row } = result;
-                            let skipped: SyncReason | null = null;
-                            if (row && result.touched.length > 0 && row.size > MAX_JOURNAL_ENTRY_BYTES) {
-                                skipped = "tooLarge";
-                            } else if (row && result.touched.length > 0) {
-                                const after = total - (existing?.size ?? 0) + row.size;
-                                if (after > MAX_JOURNAL_TOTAL_BYTES) {
-                                    total -= await evict(store, after - MAX_JOURNAL_TOTAL_BYTES, new Set([key]));
-                                    if (total - (existing?.size ?? 0) + row.size > MAX_JOURNAL_TOTAL_BYTES) {
-                                        skipped = "budget";
-                                    }
-                                }
-                            }
-                            if (skipped) {
-                                // The newer values are not written; their older values go too.
-                                for (const name of result.touched) {
-                                    raiseFence(`${key}${NUL}${name}`, item.version);
-                                }
-                                row = row ? trimThrough(row, item.version, result.touched) : null;
-                                events.push({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
-                            }
-                            if (!result.changed && !skipped) {
-                                answers.push(result.ineligible ? "ineligible" : "stale");
-                                continue;
-                            }
-                            total -= existing?.size ?? 0;
-                            if (row) {
-                                store.put(row, key);
-                                total += row.size;
-                            } else if (existing) {
-                                store.delete(key);
-                            }
-                            answers.push(skipped ? "skipped" : result.ineligible ? "ineligible" : "written");
+        return tracked(outcome("off"), async (): Promise<JournalWriteResult> => {
+            const events: DiagnosticEventInput[] = [];
+            try {
+                const outcomes = await withDatabase("readwrite", async (store) => {
+                    // Read provenance before cleanup, including when the row is removed in full.
+                    const captures = [];
+                    for (const draft of preparedDrafts) {
+                        const row = draft.row;
+                        const sourceKey = mutationKey(row.epoch, tabId!, row.scope, row.target);
+                        const source = checkJournalRow(await requestValue(store.get(sourceKey)));
+                        const key = draftKey(row.id);
+                        const raw: unknown = await requestValue(store.get(key));
+                        const previous = checkJournalRow(raw);
+                        row.createdAt =
+                            previous?.type === "draft"
+                                ? previous.createdAt
+                                : source?.type === "mutation"
+                                  ? source.createdAt
+                                  : row.createdAt;
+                        row.size = sizeOf(row);
+                        captures.push({
+                            ...draft,
+                            key,
+                            previous,
+                            blocked: raw !== undefined && previous?.type !== "draft",
+                        });
+                    }
+                    const removed = await removeRows(store, preparedRemovals);
+                    let total = await totalSize(store);
+                    const answers: WriteOutcome[] = [];
+                    const draftAnswers: WriteOutcome[] = [];
+                    const protectedDrafts = new Set(captures.map(({ key }) => key));
+                    for (const { row, key, previous, eligible, blocked } of captures) {
+                        if (blocked || !eligible) {
+                            draftAnswers.push(blocked ? "skipped" : "ineligible");
+                            continue;
                         }
-                        return answers;
-                    });
-                    events.forEach(report);
-                    return outcomes;
-                } catch (error) {
-                    reportFailure(error, "write");
-                    return prepared.map(() => "failed" as const);
-                }
-            },
-        );
+                        let skipped: SyncReason | null = row.size > MAX_JOURNAL_ENTRY_BYTES ? "tooLarge" : null;
+                        if (!skipped) {
+                            const needed = total - (previous?.size ?? 0) + row.size - MAX_JOURNAL_TOTAL_BYTES;
+                            if (needed > 0) total -= await evict(store, needed, protectedDrafts);
+                            if (total - (previous?.size ?? 0) + row.size > MAX_JOURNAL_TOTAL_BYTES) skipped = "budget";
+                        }
+                        if (skipped) {
+                            // Budgets bound recovery too: cleanup still commits when a draft cannot fit.
+                            events.push({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
+                            draftAnswers.push("skipped");
+                            continue;
+                        }
+                        store.put(row, key);
+                        total += row.size - (previous?.size ?? 0);
+                        draftAnswers.push("written");
+                    }
+                    for (const entry of prepared) {
+                        if (!entry) {
+                            answers.push("failed");
+                            continue;
+                        }
+                        const { item, key, eligible, excluded } = entry;
+                        const raw: unknown = await requestValue(store.get(key));
+                        // Adoption may have reserved it while this transaction waited to run.
+                        if (reserved.has(key)) {
+                            answers.push("skipped");
+                            continue;
+                        }
+                        let existing: MutationEntry | undefined;
+                        if (raw !== undefined) {
+                            const checked = checkJournalRow(raw);
+                            if (checked?.type !== "mutation") {
+                                // An unknown row holds the key: it is kept as it is.
+                                answers.push("skipped");
+                                continue;
+                            }
+                            existing = checked;
+                        }
+                        if (excluded) {
+                            const kept = existing ? trimThrough(existing, item.version, null) : null;
+                            if (existing) {
+                                total -= existing.size;
+                                if (kept) {
+                                    store.put(kept, key);
+                                    total += kept.size;
+                                } else {
+                                    store.delete(key);
+                                }
+                            }
+                            answers.push("ineligible");
+                            continue;
+                        }
+                        const result = applyWrite(existing, key, item, eligible, removed.get(key));
+                        let { row } = result;
+                        let skipped: SyncReason | null = null;
+                        if (row && result.touched.length > 0 && row.size > MAX_JOURNAL_ENTRY_BYTES) {
+                            skipped = "tooLarge";
+                        } else if (row && result.touched.length > 0) {
+                            const after = total - (existing?.size ?? 0) + row.size;
+                            if (after > MAX_JOURNAL_TOTAL_BYTES) {
+                                total -= await evict(
+                                    store,
+                                    after - MAX_JOURNAL_TOTAL_BYTES,
+                                    new Set([key, ...protectedDrafts]),
+                                );
+                                if (total - (existing?.size ?? 0) + row.size > MAX_JOURNAL_TOTAL_BYTES) {
+                                    skipped = "budget";
+                                }
+                            }
+                        }
+                        if (skipped) {
+                            // The newer values are not written; their older values go too.
+                            for (const name of result.touched) {
+                                raiseFence(`${key}${NUL}${name}`, item.version);
+                            }
+                            row = row ? trimThrough(row, item.version, result.touched) : null;
+                            events.push({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
+                        }
+                        if (!result.changed && !skipped) {
+                            answers.push(result.ineligible ? "ineligible" : "stale");
+                            continue;
+                        }
+                        total -= existing?.size ?? 0;
+                        if (row) {
+                            store.put(row, key);
+                            total += row.size;
+                        } else if (existing) {
+                            store.delete(key);
+                        }
+                        answers.push(skipped ? "skipped" : result.ineligible ? "ineligible" : "written");
+                    }
+                    return { committed: true, writes: answers, drafts: draftAnswers };
+                });
+                events.forEach(report);
+                return outcomes;
+            } catch (error) {
+                reportFailure(error, "write");
+                return outcome("failed");
+            }
+        });
     }
 
     /**
@@ -1108,11 +1242,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return trimmed;
     }
 
-    function remove(items: JournalRemoval[]): Promise<void> {
-        if (!enabled || closed) {
-            return Promise.resolve();
-        }
-        const prepared = items.map((item) => {
+    function prepareRemovals(items: JournalRemoval[]) {
+        return items.map((item) => {
             const key = mutationKey(item.epoch, tabId!, item.scope, item.target);
             if (item.layers) {
                 for (const name of item.layers) {
@@ -1123,22 +1254,35 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             }
             return { key, version: item.version, layers: item.layers ? [...item.layers] : null };
         });
+    }
+
+    /** Returns creation times of removed rows so a combined write preserves their retention window. */
+    async function removeRows(store: IDBObjectStore, items: ReturnType<typeof prepareRemovals>) {
+        const removed = new Map<string, number>();
+        for (const { key, version, layers } of items) {
+            const existing = checkJournalRow(await requestValue(store.get(key)));
+            if (reserved.has(key) || existing?.type !== "mutation") {
+                continue;
+            }
+            const kept = trimThrough(existing, version, layers);
+            if (!kept) {
+                removed.set(key, existing.createdAt);
+                store.delete(key);
+            } else if (kept !== existing) {
+                store.put(kept, key);
+            }
+        }
+        return removed;
+    }
+
+    function remove(items: JournalRemoval[]): Promise<void> {
+        if (!enabled || closed) {
+            return Promise.resolve();
+        }
+        const prepared = prepareRemovals(items);
         return tracked(undefined, async () => {
             try {
-                await withDatabase("readwrite", async (store) => {
-                    for (const { key, version, layers } of prepared) {
-                        const existing = checkJournalRow(await requestValue(store.get(key)));
-                        if (existing?.type !== "mutation") {
-                            continue;
-                        }
-                        const kept = trimThrough(existing, version, layers);
-                        if (!kept) {
-                            store.delete(key);
-                        } else if (kept !== existing) {
-                            store.put(kept, key);
-                        }
-                    }
-                });
+                await withDatabase("readwrite", (store) => removeRows(store, prepared));
             } catch (error) {
                 reportFailure(error, "write");
             }
@@ -1216,6 +1360,9 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         const id = mintId();
                         store.put(draftOf(row, id), draftKey(id));
                     } else {
+                        if (row.scope === "chat" || row.scope === "order") {
+                            reserved.add(target);
+                        }
                         const adopted = { ...row, tabId: own, version, layers, updatedAt: time } as MutationEntry;
                         adopted.size = sizeOf(adopted);
                         store.put(adopted, target);
@@ -1299,36 +1446,59 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         }
         const prepared = items.map((item) => {
             const key = mutationKey(item.epoch, tabId!, item.scope, item.target);
-            return { key, version: item.version };
+            return { key, version: item.version, layers: item.layers ? [...item.layers] : null };
         });
         return tracked(
             items.map(() => null),
             async () => {
                 try {
+                    const freed: string[] = [];
                     const ids = await withDatabase("readwrite", async (store) => {
                         const answers: (string | null)[] = [];
-                        for (const { key, version } of prepared) {
+                        for (const { key, version, layers } of prepared) {
                             const row = checkJournalRow(await requestValue(store.get(key)));
-                            raiseFence(key, version);
+                            for (const name of layers ?? [null])
+                                raiseFence(name === null ? key : `${key}${NUL}${name}`, version);
                             if (
                                 row?.type !== "mutation" ||
-                                Object.values(row.layers).some((layer) => layer && layer.version > version)
+                                Object.entries(row.layers).some(
+                                    ([name, layer]) => (!layers || layers.includes(name)) && layer.version > version,
+                                )
                             ) {
                                 answers.push(null);
                                 continue;
                             }
                             if (!layersEligible(row)) {
                                 store.delete(key);
+                                freed.push(key);
+                                answers.push(null);
+                                continue;
+                            }
+                            const selected = Object.fromEntries(
+                                Object.entries(row.layers).filter(([name]) => !layers || layers.includes(name)),
+                            );
+                            if (layers && Object.keys(selected).length === 0) {
                                 answers.push(null);
                                 continue;
                             }
                             const id = mintId();
-                            store.put(draftOf(row, id), draftKey(id));
-                            store.delete(key);
+                            store.put(draftOf({ ...row, layers: selected } as MutationEntry, id), draftKey(id));
+                            const remaining = Object.fromEntries(
+                                Object.entries(row.layers).filter(([name]) => layers && !layers.includes(name)),
+                            );
+                            if (Object.keys(remaining).length > 0) {
+                                const kept = { ...row, layers: remaining };
+                                kept.size = journalValueSize(kept);
+                                store.put(kept, key);
+                            } else {
+                                store.delete(key);
+                                freed.push(key);
+                            }
                             answers.push(id);
                         }
                         return answers;
                     });
+                    for (const key of freed) reserved.delete(key);
                     return ids;
                 } catch (error) {
                     reportFailure(error, "write");
@@ -1336,6 +1506,34 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                 }
             },
         );
+    }
+
+    function release(items: JournalRelease[]): Promise<(StoredLayers<"chat"> | StoredLayers<"order"> | null)[]> {
+        const version = counter;
+        const keys = items.map((item) => mutationKey(item.epoch, tabId!, item.scope, item.target));
+        return tracked([], async () => {
+            try {
+                const layers = await withDatabase("readwrite", async (store) => {
+                    const answers: (StoredLayers<"chat"> | StoredLayers<"order"> | null)[] = [];
+                    for (const key of keys) {
+                        const row = checkJournalRow(await requestValue(store.get(key)));
+                        if (row?.type === "mutation" && row.scope !== "record") {
+                            if (isExpired(row.createdAt, now())) {
+                                raiseFence(key, version);
+                                store.delete(key);
+                                answers.push(null);
+                            } else answers.push(row.layers);
+                        } else answers.push(null);
+                    }
+                    return answers;
+                });
+                for (const key of keys) reserved.delete(key);
+                return layers;
+            } catch (error) {
+                reportFailure(error, "write");
+                return [];
+            }
+        });
     }
 
     function putDraft(input: DraftInput): Promise<string | null> {
@@ -1586,7 +1784,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return tracked(0, async () => {
             const own = tabId!;
             try {
-                return await withDatabase("readwrite", async (store) => {
+                const expired = await withDatabase("readwrite", async (store) => {
                     const time = now();
                     const expired: string[] = [];
                     const collect = (request: IDBRequest<IDBCursorWithValue | null>, owned: boolean) =>
@@ -1613,8 +1811,10 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     for (const key of expired) {
                         store.delete(key);
                     }
-                    return expired.length;
+                    return expired;
                 });
+                for (const key of expired) reserved.delete(key);
+                return expired.length;
             } catch (error) {
                 reportFailure(error, "write");
                 return 0;
@@ -1670,6 +1870,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         readOwn,
         adoptOrphans,
         moveToDrafts,
+        release,
         putDraft,
         listDrafts,
         removeDraft,

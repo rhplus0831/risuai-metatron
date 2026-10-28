@@ -1,10 +1,13 @@
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
     checkJournalRow,
+    chatTarget,
+    orderTarget,
     createDraftJournal,
     type DraftJournal,
+    type ConflictDraft,
     type DraftJournalDeps,
     draftKey,
     isExpired,
@@ -604,6 +607,122 @@ describe("start and ownership", () => {
 });
 
 describe("writes, removals, and versions", () => {
+    it("combines writes and captured-version removals in one transaction, preserving newer layers and creation time", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const h = harness();
+        const { journal } = await started(h);
+        const v1 = journal.nextVersion();
+        const v2 = journal.nextVersion();
+        const v3 = journal.nextVersion();
+        const other = recordTarget("characters", "other");
+        await journal.write([
+            characterWrite(v1, { sent: sent("A"), latest: latest("B") }),
+            characterWrite(v1, { latest: latest("old") }, other),
+        ]);
+        await journal.write([characterWrite(v2, { latest: latest("newer B") })]);
+        h.clock.now += HOUR;
+        const transactions = vi.spyOn(IDBDatabase.prototype, "transaction");
+        expect(
+            await journal.write(
+                [
+                    characterWrite(v3, { refused: { op: "update", text: "refused", reason: "too big" } }),
+                    characterWrite(v3, { sent: sent("replacement") }, other),
+                ],
+                [
+                    { epoch: EPOCH, scope: "record", target: CHARACTER, version: v1 },
+                    { epoch: EPOCH, scope: "record", target: other, version: v1 },
+                ],
+            ),
+        ).toEqual(["written", "written"]);
+        expect(transactions.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(1);
+        const own = await journal.readOwn();
+        expect(own.find((row) => row.target === CHARACTER)).toMatchObject({
+            createdAt: T0,
+            version: v3,
+            layers: {
+                latest: { version: v2, value: latest("newer B") },
+                refused: { version: v3, value: { op: "update", text: "refused", reason: "too big" } },
+            },
+        });
+        expect(Object.keys(own.find((row) => row.target === CHARACTER)!.layers).sort()).toEqual(["latest", "refused"]);
+        expect(own.find((row) => row.target === other)).toMatchObject({
+            createdAt: T0,
+            layers: { sent: { version: v3, value: sent("replacement") } },
+        });
+        expect(Object.keys(own.find((row) => row.target === other)!.layers)).toEqual(["sent"]);
+        // The combined removal also fences a delayed write, just as remove() does.
+        expect(await journal.write([characterWrite(v1, { sent: sent("late A") })])).toEqual(["stale"]);
+        await journal.write([], [{ epoch: EPOCH, scope: "record", target: other, version: v3 }]);
+        expect((await journal.readOwn()).map((row) => row.target)).toEqual([CHARACTER]);
+        await journal.close();
+    });
+
+    it("commits a conflict draft and layer removal atomically, retrying the same draft id without losing newer work", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const h = harness();
+        const { journal } = await started(h);
+        const v1 = journal.nextVersion();
+        const v2 = journal.nextVersion();
+        const dropped = sent(JSON.stringify({ desc: "dropped local text" }));
+        const newer = latest(JSON.stringify({ desc: "surviving newer text" }));
+        await journal.write([characterWrite(v1, { sent: dropped })]);
+        const before = await journal.readOwn();
+        const removal = { epoch: EPOCH, scope: "record" as const, target: CHARACTER, version: v1, layers: ["sent"] };
+        const capture: ConflictDraft = {
+            id: "conflict-id",
+            epoch: EPOCH,
+            scope: "record",
+            target: CHARACTER,
+            layers: { sent: dropped },
+        };
+        // Abort at the actual draft write: its paired removal and the new mutation must roll back.
+        const put = IDBObjectStore.prototype.put;
+        const abort = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+            const request = put.apply(this, args);
+            if (args[1] === draftKey(capture.id)) this.transaction.abort();
+            return request;
+        });
+        expect(await journal.write([characterWrite(v2, { latest: newer })], [removal], [capture])).toEqual({
+            committed: false,
+            writes: ["failed"],
+            drafts: ["failed"],
+        });
+        abort.mockRestore();
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(await journal.readOwn()).toEqual(before);
+
+        const transactions = vi.spyOn(IDBDatabase.prototype, "transaction");
+        expect(await journal.write([characterWrite(v2, { latest: newer })], [removal], [capture])).toEqual({
+            committed: true,
+            writes: ["written"],
+            drafts: ["written"],
+        });
+        expect(transactions.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(1);
+        const drafts = await journal.listDrafts();
+        expect(drafts).toHaveLength(1);
+        expect(drafts[0]).toMatchObject({
+            id: "conflict-id",
+            epoch: EPOCH,
+            scope: "record",
+            target: CHARACTER,
+        });
+        expect(
+            Object.fromEntries(Object.entries(drafts[0].layers).map(([name, layer]) => [name, layer.value])),
+        ).toEqual({ sent: dropped });
+        expect((await rows(h.factory))[draftKey("conflict-id")]).toEqual(drafts[0]);
+        expect((await journal.readOwn())[0].layers).toEqual({ latest: { version: v2, value: newer } });
+        // Repeating an uncertain commit is idempotent; late cleanup cannot erase the draft or newer layer.
+        expect(await journal.write([], [removal], [capture])).toEqual({
+            committed: true,
+            writes: [],
+            drafts: ["written"],
+        });
+        await journal.remove([{ ...removal, layers: undefined }]);
+        expect(await journal.listDrafts()).toEqual(drafts);
+        expect((await journal.readOwn())[0].layers).toEqual({ latest: { version: v2, value: newer } });
+        await journal.close();
+    });
+
     it("round-trips a record entry: each layer with its own op and version, the row's version the newest, `createdAt` kept across writes, the key read back", async () => {
         const h = harness();
         const tab = await started(h);
@@ -881,7 +1000,7 @@ describe("writes, removals, and versions", () => {
 describe("budgets and expiry", () => {
     const big = (bytes: number) => "x".repeat(bytes);
 
-    it("does not write a layer that takes the entry over 4 MiB (`journalSkipped tooLarge`), removes its older value, fences the version, and keeps the entry's other layers", async () => {
+    it("does not write a layer that takes the entry over its budget (`journalSkipped tooLarge`), removes its older value, fences the version, and keeps the entry's other layers", async () => {
         const h = harness();
         const tab = await started(h);
         const v1 = tab.journal.nextVersion();
@@ -913,10 +1032,11 @@ describe("budgets and expiry", () => {
         expect(tab.events).toHaveLength(2);
     });
 
-    it("evicts recovery drafts (any age) and expired composer drafts, oldest first, for a mutation write over 32 MiB in all; never a mutation entry, an unexpired composer draft, or an unreadable row; still over: `journalSkipped budget`", async () => {
+    it("evicts recovery drafts (any age) and expired composer drafts, oldest first, for a mutation write over the total budget; never a mutation entry, an unexpired composer draft, or an unreadable row; still over: `journalSkipped budget`", async () => {
         const h = harness();
         const tab = await started(h);
-        const draftBytes = MAX_JOURNAL_ENTRY_BYTES - 1024;
+        // Eight such rows fill the total budget.
+        const draftBytes = MAX_JOURNAL_TOTAL_BYTES / 8 - 1024;
         const ids: string[] = [];
         for (let i = 0; i < 7; i++) {
             h.clock.now = T0 + i * HOUR;
@@ -942,7 +1062,7 @@ describe("budgets and expiry", () => {
         await rawPut(h.factory, "composer\0live", composer("live", T0));
         await rawPut(h.factory, "opaque", { ...UNKNOWN_FORMAT_ROW, size: draftBytes });
         h.clock.now = T0 + 8 * HOUR;
-        // 7 drafts + 2 composers + 1 opaque, each just under 4 MiB: over 36 MiB in all. A small
+        // 7 drafts + 2 composers + 1 opaque, each just under an eighth of the total: over it by a quarter. A small
         // mutation evicts the expired composer first (oldest), then drafts d0..., until it fits.
         const v1 = tab.journal.nextVersion();
         expect(await tab.journal.write([characterWrite(v1, { latest: latest("small") })])).toEqual(["written"]);
@@ -995,7 +1115,8 @@ describe("budgets and expiry", () => {
     it("stores a draft when it fits, reclaims expired drafts and expired composer drafts for it, but never evicts a live draft (`journalSkipped budget`)", async () => {
         const h = harness();
         const tab = await started(h);
-        const draftBytes = MAX_JOURNAL_ENTRY_BYTES - 512;
+        // Eight such drafts fill the total budget.
+        const draftBytes = MAX_JOURNAL_TOTAL_BYTES / 8 - 512;
         for (let i = 0; i < 8; i++) {
             h.clock.now = T0 + i;
             expect(
@@ -1341,5 +1462,207 @@ describe("adopting orphans", () => {
         expect(tab.events).toEqual([{ kind: "sync", phase: "journalFailed", reason: "timeout" }]);
         releaseHolder();
         expect(await drive(tab.journal.adoptOrphans(), 50)).toBe(1);
+    });
+});
+
+// Recovery owns prior-page chat/order rows, including after orphan adoption; record rows stay writable.
+describe("chat and order rows reserved for recovery", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    it.each(["reload", "orphan adoption"] as const)(
+        "preserves previous chat and order layers through new-page writes and removals after %s",
+        async (arrival) => {
+            const h = harness();
+            const old = await started(h);
+            const chatKey = chatTarget("c1", "chat");
+            const orderKey = orderTarget("c1");
+            await old.journal.write([
+                {
+                    epoch: EPOCH,
+                    scope: "chat",
+                    target: chatKey,
+                    version: old.journal.nextVersion(),
+                    layers: {
+                        resend: {
+                            groupId: "old-sent",
+                            baseRevision: "r1",
+                            seq: 1,
+                            inDoubt: true,
+                            ops: [{ op: "setText", id: "m", text: "sent" }],
+                        },
+                        pending: {
+                            groupId: "old-pending",
+                            baseRevision: "r1",
+                            ops: [{ op: { op: "setText", id: "m", text: "pending" }, before: { value: "sent" } }],
+                        },
+                    },
+                },
+                {
+                    epoch: EPOCH,
+                    scope: "order",
+                    target: orderKey,
+                    version: old.journal.nextVersion(),
+                    layers: {
+                        sent: { baseRevision: "o1", ids: ["chat", "other"] },
+                        latest: { baseRevision: "o1", ids: ["other", "chat"] },
+                    },
+                },
+                characterWrite(old.journal.nextVersion(), { latest: latest("old record") }),
+            ]);
+            const original = await old.journal.readOwn();
+            await old.journal.close();
+            const next = await started(h, arrival === "reload" ? { storage: () => old.storage } : {});
+            if (arrival === "orphan adoption") expect(await next.journal.adoptOrphans()).toBe(3);
+            else expect(next.journal.tabId).toBe(old.journal.tabId);
+            const reserved = (await next.journal.readOwn()).filter((row) => row.scope !== "record");
+            expect(
+                reserved.map((row) => [
+                    row.scope,
+                    row.target,
+                    Object.fromEntries(Object.entries(row.layers).map(([key, layer]) => [key, layer.value])),
+                ]),
+            ).toEqual(
+                original
+                    .filter((row) => row.scope !== "record")
+                    .map((row) => [
+                        row.scope,
+                        row.target,
+                        Object.fromEntries(Object.entries(row.layers).map(([key, layer]) => [key, layer.value])),
+                    ]),
+            );
+            expect(
+                await next.journal.write([
+                    {
+                        epoch: EPOCH,
+                        scope: "chat",
+                        target: chatKey,
+                        version: next.journal.nextVersion(),
+                        layers: {
+                            resend: null,
+                            pending: {
+                                groupId: "new-page",
+                                baseRevision: "r2",
+                                ops: [
+                                    { op: { op: "setText", id: "m", text: "new page" }, before: { value: "server" } },
+                                ],
+                            },
+                            refused: { ops: [], create: false, delete: true, reason: "new page" },
+                        },
+                    },
+                    {
+                        epoch: EPOCH,
+                        scope: "order",
+                        target: orderKey,
+                        version: next.journal.nextVersion(),
+                        layers: {
+                            sent: null,
+                            latest: { baseRevision: "o2", ids: ["chat", "other"] },
+                            refused: { ids: [], reason: "new page" },
+                        },
+                    },
+                    characterWrite(next.journal.nextVersion(), { latest: latest("new record") }),
+                ]),
+            ).toEqual(["skipped", "skipped", "written"]);
+            expect((await next.journal.readOwn()).filter((row) => row.scope !== "record")).toEqual(reserved);
+            const record = (await next.journal.readOwn()).find((row) => row.scope === "record");
+            expect(record?.scope === "record" && record.layers.latest?.value).toEqual(latest("new record"));
+            await next.journal.remove([
+                { epoch: EPOCH, scope: "chat", target: chatKey, version: next.journal.nextVersion() },
+                { epoch: EPOCH, scope: "order", target: orderKey, version: next.journal.nextVersion() },
+                { epoch: EPOCH, scope: "record", target: CHARACTER, version: next.journal.nextVersion() },
+            ]);
+            expect(await next.journal.readOwn()).toEqual(reserved);
+            await next.journal.close();
+        },
+    );
+});
+
+describe("partial recovery hand-over", () => {
+    it("drafts only pending chat work, releases the stored resend and order versions, and permits later writes", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const h = harness();
+        const old = await started(h);
+        const chatAddress = { epoch: EPOCH, scope: "chat" as const, target: chatTarget("c1", "chat") };
+        const orderAddress = { epoch: EPOCH, scope: "order" as const, target: orderTarget("c1") };
+        const resend = {
+            groupId: "sent-group",
+            baseRevision: "r1",
+            seq: 1,
+            inDoubt: true,
+            ops: [{ op: "setText" as const, id: "m", text: "sent" }],
+        };
+        const pending = {
+            groupId: "pending-group",
+            baseRevision: "r1",
+            ops: [{ op: { op: "setText" as const, id: "m", text: "newer" }, before: { value: "sent" } }],
+        };
+        await old.journal.write([
+            { ...chatAddress, version: old.journal.nextVersion(), layers: { resend, pending } },
+            {
+                ...orderAddress,
+                version: old.journal.nextVersion(),
+                layers: { latest: { baseRevision: "o1", ids: ["chat"] } },
+            },
+        ]);
+        const original = await old.journal.readOwn();
+        const chat = original.find((row) => row.scope === "chat")!;
+        const order = original.find((row) => row.scope === "order")!;
+        await old.journal.close();
+        const next = await started(h, { storage: () => old.storage });
+        try {
+            const [id] = await next.journal.moveToDrafts([
+                { ...chatAddress, version: chat.version, layers: ["pending"] },
+            ]);
+            expect(id).toEqual(expect.any(String));
+            expect(await next.journal.listDrafts()).toMatchObject([
+                {
+                    id,
+                    scope: "chat",
+                    target: chat.target,
+                    createdAt: chat.createdAt,
+                    layers: { pending: chat.layers.pending },
+                },
+            ]);
+            expect((await next.journal.listDrafts())[0].layers).toEqual({ pending: chat.layers.pending });
+            expect((await next.journal.readOwn()).find((row) => row.scope === "chat")!.layers).toEqual({
+                resend: chat.layers.resend,
+            });
+            // The surviving resend stays protected until the recovery queue adopts it.
+            await next.journal.remove([{ ...chatAddress, version: next.journal.nextVersion() }]);
+            expect((await next.journal.readOwn()).find((row) => row.scope === "chat")).toBeDefined();
+            expect(await next.journal.release([chatAddress, orderAddress])).toEqual([
+                { resend: chat.layers.resend },
+                order.layers,
+            ]);
+            await next.journal.remove([{ ...orderAddress, version: order.version }]);
+            const version = next.journal.nextVersion();
+            expect(
+                await next.journal.write([
+                    {
+                        ...chatAddress,
+                        version,
+                        layers: {
+                            resend: null,
+                            pending: { ...pending, baseRevision: "r2", groupId: "new-page-group" },
+                        },
+                    },
+                ]),
+            ).toEqual(["written"]);
+            // An old acknowledgement cannot erase the new page's pending layer.
+            await next.journal.remove([{ ...chatAddress, version: chat.version }]);
+            expect(await next.journal.readOwn()).toMatchObject([
+                {
+                    scope: "chat",
+                    createdAt: chat.createdAt,
+                    layers: { pending: { version, value: { groupId: "new-page-group", baseRevision: "r2" } } },
+                },
+            ]);
+            expect(await next.journal.readOwn()).toHaveLength(1);
+            await next.journal.remove([{ ...chatAddress, version }]);
+            expect(await next.journal.readOwn()).toEqual([]);
+        } finally {
+            await next.journal.close();
+        }
     });
 });

@@ -51,6 +51,35 @@ describe("requests", () => {
         expect(calls.map((call) => call.init.cache)).toEqual(["no-store", "no-store", "no-store"]);
     });
 
+    it("passes cancellation to every read transport without putting the signal in the JSON body", async () => {
+        fake.set("root", "main", { a: 1 });
+        const { signal } = new AbortController();
+        // The resource-only fake has no revision-list route; keep the other requests on it.
+        const transport = vi.fn((path: string, init?: RequestInit) =>
+            path === "/api/resources/revisions"
+                ? Promise.resolve(Response.json({ epoch: fake.epoch, resources: [], chats: [], chatOrders: [] }))
+                : fake.fetch(path, init),
+        );
+        server.current = { fetch: transport };
+        await client.readKinds(["root"], { signal });
+        await client.readRefs([{ kind: "root", id: "main" }], {
+            chats: [{ characterId: "c", id: "k" }],
+            chatCollections: ["c"],
+            chatSummaryCollections: ["d"],
+            signal,
+        });
+        await client.listRevisions({ signal });
+        await client.getResource("root", "main", { signal });
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal, signal, signal]);
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({
+            refs: [{ kind: "root", id: "main" }],
+            chats: [{ characterId: "c", id: "k" }],
+            chatCollections: ["c"],
+            chatSummaryCollections: ["d"],
+        });
+        expect(calls.filter(({ init }) => init.body !== undefined)).toHaveLength(1);
+    });
+
     it("encodes kind and id once, so path-shaped and non-ASCII ids reach the server intact", async () => {
         client.setResourceEpoch("epoch-1");
         await client.putResource("inlays", "assets/x y.png", { name: "x" }, null);

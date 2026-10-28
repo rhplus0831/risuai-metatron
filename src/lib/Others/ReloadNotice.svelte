@@ -1,18 +1,21 @@
 <script lang="ts">
+    import { language } from "src/lang";
     import { dismissReloadNotice, reloadNotice } from "../../ts/alert";
+    import { recoveryDrafts } from "../../ts/storage/recoveryDrafts.svelte";
+    import RecoveryDrafts from "./RecoveryDrafts.svelte";
     import Button from "../UI/GUI/Button.svelte";
+    let draftsDismissed = $state(false);
+    const showDrafts = $derived(!draftsDismissed && !recoveryDrafts.isOpen && recoveryDrafts.entries.length > 0);
 </script>
 
-<!-- The reload notice (a save conflict replaced a local change): above the alert overlay, so a
-     later alert does not hide it, and shown until its own OK dismisses it. Not modal. -->
-{#if $reloadNotice !== null}
+<!-- Conflict and draft notices stay above the alert overlay and dismiss independently. Not modal. -->
+{#if $reloadNotice !== null || showDrafts}
     <div
         class="fixed top-2 left-1/2 -translate-x-1/2 z-[60] w-max max-w-[calc(100%-1rem)] bg-darkbg border border-darkborderc p-4 break-any rounded-md flex flex-col shadow-lg"
         role="status"
         aria-live="polite"
     >
-        <span class="text-textcolor whitespace-pre-wrap">{$reloadNotice}</span>
-        <!-- A key on its OK stays here: Enter would otherwise reach `hotkey.ts`, which answers the
+        <!-- A key on these buttons stays here: Enter would otherwise reach `hotkey.ts`, which answers the
              alert underneath (an `alertConfirm` would resolve as yes). -->
         <div
             class="flex flex-col"
@@ -21,7 +24,21 @@
             onkeyup={(event) => event.stopPropagation()}
             onkeypress={(event) => event.stopPropagation()}
         >
-            <Button className="mt-4" onclick={dismissReloadNotice}>OK</Button>
+            {#if $reloadNotice !== null}
+                <span class="text-textcolor whitespace-pre-wrap">{$reloadNotice}</span>
+                <Button className="mt-4" onclick={dismissReloadNotice}>{language.resourceNoticeDismiss}</Button>
+            {/if}
+            {#if showDrafts}
+                <span class="text-textcolor whitespace-pre-wrap">{language.resourceRecoveryDrafts}</span>
+                <Button className="mt-4" onclick={() => recoveryDrafts.open()}>{language.recoveryDrafts.review}</Button>
+                <Button className="mt-4" onclick={() => (draftsDismissed = true)}
+                    >{language.resourceNoticeDismiss}</Button
+                >
+            {/if}
         </div>
     </div>
+{/if}
+
+{#if recoveryDrafts.isOpen}
+    <RecoveryDrafts />
 {/if}

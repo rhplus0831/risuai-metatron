@@ -48,6 +48,7 @@ git show 1fc70e547:docs/plan/chat-lore-override-states.md
 git show ae289ecf5:docs/plan/mobile-resume-reliability.md
 git show 802a4840a:docs/plan/hypav3-token-budget.md
 git show 1db8c10a8:docs/plan/display-evaluation.md
+git show bbc747f24:docs/plan/durable-drafts.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -97,6 +98,7 @@ it is not a current architecture guide.
 | Mobile Resume Reliability                | `ae289ecf5`: `docs/plan/mobile-resume-reliability.md`                     | [global API](../structure/global-api.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [build/test/platforms](../structure/build-test-platforms.md), [server](../structure/self-host-server.md), [diagnostics](../structure/diagnostics.md)                                                                                                                                                                                                   |
 | HypaV3 Token Budget                      | `802a4840a`: `docs/plan/hypav3-token-budget.md`                           | [memory](../structure/memory.md), [settings/i18n](../structure/settings-i18n.md), [UI/theming](../structure/ui-theming.md), [persistence](../structure/persistence.md), [backup sync hub](../structure/backup-sync-hub.md)                                                                                                                                                                                                                                                                   |
 | Display Evaluation                       | `1db8c10a8`: `docs/plan/display-evaluation.md`                            | [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                         |
+| Durable Drafts                           | `bbc747f24`: `docs/plan/durable-drafts.md`                                | [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [diagnostics](../structure/diagnostics.md), [UI/theming](../structure/ui-theming.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -671,6 +673,42 @@ generation without clearing it, and a synchronous source hash with an exact sour
 `sha256(source)` (8). Findings outside the plan went to `docs/research/found-issues.md` (Display
 transform). Still open: the device checks on the Android PWA over mobile data (A → B → A shows rows
 at once; no disturbing flicker after a send; repeated switches answer only `same`).
+
+Durable Drafts (audit findings F02, F03 and F04: unsaved changes survive a lost page through an
+IndexedDB journal recovered in the same epoch, conflicts keep the local version, and saves stop
+waiting for unrelated reads; planned on 2026-10-28 and reviewed by Sol; the user decided D2, D3 and
+D10 and answered Q1–Q4 as recommended, raising Q4's budgets to 16 MiB per entry and 64 MiB in total
+after Slice 3 measured them) landed all twelve slices on `dev` on 2026-10-29 through the plan runner
+(`delegate-implementation`, Codex implementer and challenger), one commit each: 1 the draft journal
+store, its tab ownership, and the eligibility boundary (`2a8ce1e83`); 9 composer drafts in the
+journal (`62277946b`); 2 saves no longer wait on reads of other records (`f5023bf8b`); 3 the save
+adapter journals unacknowledged record writes (`ca3e30b7b`); 4 boot recovery of records
+(`8a1ea95e9`); 5 the recovery dialog and the Settings → Advanced "Recovered changes" row
+(`cfb27e86c`); 6 chat work journaled with one group id per batch (`0814b3634`); 8 the restore
+snapshot (`f5ef5033e`); 7 boot recovery of chat and order work (`5d46c6e61`); 10 a recovery draft
+of the dropped local work at every conflict (`40b026930`); 11 field- and item-level merge at a 409
+(`recordMerge.ts`, `abbe42f87`); 12 the guides and the kill-and-relaunch driver
+`util/playwright/checkDurableDrafts.mjs` (`257a2a60c`). The user approved two plan changes during
+the run: D7 sends whole keepalive batches only and lets the front part of a split batch wait for its
+journal commit (`610f8d143`), and Slice 7 took the hand-over APIs and ran after Slice 8
+(`4845688fb`). `dev` moved during the run (the Display Evaluation run and its audit fixes, the Known
+Hazards split, the Job Protocol and Boot Bytes plans); it was merged in as `13355b1f5`, keeping both
+the chat journal maps and dev's unacknowledged-work flag in `chatStore.svelte.ts`, and as
+`9ba1af8a2`. The final checks on that tree passed: `pnpm check`, 7,715 unit tests (slow included),
+and all 38 e2e tests; the driver passed 31/31 (three cut points around `/api/resources/batch`, a
+browser kill without lifecycle events, and a relaunch on the same profile). Decisions made by the
+slices: Chrome discards IndexedDB writes begun in `pagehide` on unload, documented as a Limitation
+with no `localStorage` fallback; recovery drafts conservatively when a record's or chat's state is
+unclear (4, 7); an applied draft is removed only after its save commits (5); an expired chat group
+becomes refused work and a draft at the next boot (7); `llmSecrets` merges its readable sibling body
+as one unit, both sides reordering a collection conflicts, and a merged empty required collection
+conflicts (11). Q3 did not hold as planned: headless Chrome 156 restored the page from the
+back/forward cache while it held its journal owner lock (`pageshow.persisted`, `notRestoredReasons:
+null`; a persistence Gotcha), and pending writes across such a cached return were not driven.
+Findings outside the plan went to `docs/research/found-issues.md` (Save journal and recovery). Still
+open: the device checks (an Android PWA killed from the task switcher, the iOS Home Screen app,
+Safari including the bfcache return, Firefox), the recovery dialog at phone width, and the
+"Recovered changes" row shown while drafts exist (unit-tested only).
 
 ## Server-Owned Data Chronology
 

@@ -138,7 +138,11 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     } = {};
     try {
         body = await response.json();
-    } catch {}
+    } catch (error) {
+        if (init.signal?.aborted) {
+            throw error;
+        }
+    }
     if (response.status === 412 && body.error === "EpochMismatch") {
         throw epochMismatch(body.epoch ?? "");
     }
@@ -171,12 +175,12 @@ const jsonHeaders = { "content-type": "application/json" };
  */
 export async function readKinds(
     kinds: readonly string[],
-    options: { chats?: boolean; chatSummaries?: boolean } = {},
+    options: { chats?: boolean; chatSummaries?: boolean; signal?: AbortSignal } = {},
 ): Promise<ResourceReadKindsResult> {
     const query =
         `kinds=${kinds.map(encodeURIComponent).join(",")}` +
         `${options.chats ? "&chats=1" : ""}${options.chatSummaries ? "&chatSummaries=1" : ""}`;
-    return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`));
+    return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`, { signal: options.signal }));
 }
 
 /**
@@ -203,20 +207,25 @@ export async function readRefs(
         chats?: readonly { characterId: string; id: string }[];
         chatCollections?: readonly string[];
         chatSummaryCollections?: readonly string[];
+        signal?: AbortSignal;
     } = {},
 ): Promise<ResourceReadRefsResult> {
+    const { signal, ...bodyOptions } = options;
     return checkedEpoch(
         await sendJson<ResourceReadRefsResult>("/api/resources/read", {
             method: "POST",
             headers: jsonHeaders,
-            body: JSON.stringify({ refs, ...options }),
+            body: JSON.stringify({ refs, ...bodyOptions }),
+            signal,
         }),
     );
 }
 
 /** Every record's, chat's, and chat order's revision on the server (no data): the live-update reconcile. */
-export async function listRevisions(): Promise<ResourceRevisionListing> {
-    return checkedEpoch(await sendJson<ResourceRevisionListing>("/api/resources/revisions"));
+export async function listRevisions(options: { signal?: AbortSignal } = {}): Promise<ResourceRevisionListing> {
+    return checkedEpoch(
+        await sendJson<ResourceRevisionListing>("/api/resources/revisions", { signal: options.signal }),
+    );
 }
 
 function resourcePath(kind: string, id: string) {

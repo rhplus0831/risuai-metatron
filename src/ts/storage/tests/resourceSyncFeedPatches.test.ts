@@ -544,6 +544,8 @@ describe("the feed's generation locks", () => {
             b.chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "queued on the deleted sibling" });
             expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"], refused: [] });
             const recoveryReads = () => reads(b).filter((body) => body.chatSummaryCollections?.includes("c"));
+            // The recovery's list read runs in the background queue, not in the flush.
+            await vi.advanceTimersByTimeAsync(1000);
             expect(recoveryReads()).toHaveLength(owner === "feed" ? 1 : 0);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(owner === "feed" ? ["k"] : ["k", "j"]);
             expect(b.chat.isCharacterGenerating("c")).toBe(true);
@@ -552,6 +554,7 @@ describe("the feed's generation locks", () => {
             // Ending this tab's follow does not release the independent feed lock.
             expect(b.chat.isCharacterGenerating("c")).toBe(true);
             expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            await vi.advanceTimersByTimeAsync(1000);
             expect(recoveryReads()).toHaveLength(1);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["k"]);
             b.live.paused = false;

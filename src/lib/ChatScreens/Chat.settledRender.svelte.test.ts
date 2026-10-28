@@ -8,6 +8,7 @@ import type { TransformContinueRequest, TransformRequest, TransformResponse } fr
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
+import * as globalApi from "src/ts/globalApi.svelte";
 import { pluginHooks } from "src/ts/plugins/pluginHooks";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
@@ -479,6 +480,96 @@ describe("confirmed text on remount", () => {
         await settle(16);
         expect(targets().at(-1)!.knownKey).toBe("updated");
         expect(remounted.text()).toBe("Updated display");
+    });
+
+    it.each([
+        "an install during the correction's asset wait",
+        "an install before the correction captures",
+        "unacknowledged work when the correction captures",
+        "no intervening work",
+    ])("settles a handed-off answer with %s", async (gap) => {
+        const assetEntered = deferred<void>();
+        const assetRelease = deferred<void>();
+        let holdAsset = false;
+        vi.spyOn(globalApi, "getFileSrc").mockImplementation(async () => {
+            if (holdAsset) {
+                holdAsset = false;
+                assetEntered.resolve();
+                await assetRelease.promise;
+            }
+            return "data:image/png;base64,AA==";
+        });
+        characterList()[0].image = "assets/owner.png";
+        setMessageText(ref, "row", '<img src="{{source::char}}">[row]');
+        acknowledge();
+        await warm();
+
+        const answerRelease = deferred<void>();
+        answer = async (_body, result) => {
+            await answerRelease.promise;
+            return Response.json({
+                results: result.results.map((entry) => ({
+                    ...entry,
+                    text: entry.ok ? entry.text.replace("[stored history]", "[intermediate history]") : "",
+                    key: "intermediate",
+                })),
+            });
+        };
+        const row = render();
+        await settle(16);
+        expect(row.text()).toBe("[row][stored history]");
+        expect(targets()).toHaveLength(2);
+        const initialVersion = chatInstallVersion(ref);
+        holdAsset = true;
+
+        if (
+            gap === "an install before the correction captures" ||
+            gap === "unacknowledged work when the correction captures"
+        ) {
+            // Hold the scheduled Svelte correction after the transport answer completes, before
+            // it can capture. Promise continuations still run; no product function is replaced.
+            const tasks: VoidFunction[] = [];
+            const scheduler = vi.spyOn(globalThis, "queueMicrotask").mockImplementation((task) => {
+                tasks.push(task);
+            });
+            answerRelease.resolve();
+            // Drain the transport promises while the queued render tasks remain held.
+            await vi.advanceTimersByTimeAsync(0);
+            setMessageText(ref, "history", "[saved history]");
+            if (gap === "an install before the correction captures") acknowledge();
+            scheduler.mockRestore();
+            for (const task of tasks) queueMicrotask(task);
+        } else {
+            answerRelease.resolve();
+        }
+        await assetEntered.promise;
+        if (gap === "an install during the correction's asset wait") {
+            expect(chatInstallVersion(ref)).toBe(initialVersion);
+            setMessageText(ref, "history", "[saved history]");
+            acknowledge();
+        }
+        answer = (_body, result) => Response.json(result);
+        assetRelease.resolve();
+        await settle();
+        // The handoff itself must not issue a request, even when it reports mixed state.
+        expect(row.text()).toBe("[row][intermediate history]");
+        expect(targets()).toHaveLength(2);
+
+        if (gap === "unacknowledged work when the correction captures") {
+            expect(chatInstallVersion(ref)).toBe(initialVersion);
+            expect(chatHasUnackedWork(ref)).toBe(true);
+            await drain();
+            expect(targets()).toHaveLength(2);
+            acknowledge();
+        }
+        const changed = gap !== "no intervening work";
+        expect(chatInstallVersion(ref)).toBe(initialVersion + Number(changed));
+        expect(chatHasUnackedWork(ref)).toBe(false);
+        await drain();
+        expect(row.text()).toBe(changed ? "[row][saved history]" : "[row][intermediate history]");
+        expect(targets()).toHaveLength(changed ? 3 : 2);
+        await drain();
+        expect(targets()).toHaveLength(changed ? 3 : 2);
     });
 
     it("shows the raw input when a provisional answer fails without another correction request", async () => {

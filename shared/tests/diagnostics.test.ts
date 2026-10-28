@@ -58,6 +58,22 @@ const appPath = (file: string) =>
     /\/((?:server\/src|shared)\/[A-Za-z0-9_/-]{1,200}\.[cm]?[jt]s)$/.exec(file)?.[1] ?? null;
 
 describe("projectDiagnosticEvent", () => {
+    it("preserves saveWait reasons, category counts, and elapsed time in browser diagnostics", () => {
+        for (const reason of ["inFlight", "backoff", "refresh", "generating", "conflict"]) {
+            const event = {
+                at: AT,
+                kind: "sync",
+                phase: "saveWait",
+                reason,
+                records: 2,
+                chats: 3,
+                orders: 1,
+                durationMs: 2_501,
+            };
+            expect(projectDiagnosticEvent(event)).toEqual(event);
+        }
+    });
+
     it("refuses anything that is not an event: a non-object, an unknown kind, a time that is not a non-negative integer", () => {
         expect(projectDiagnosticEvent(null)).toBeNull();
         expect(projectDiagnosticEvent("http")).toBeNull();
@@ -454,7 +470,14 @@ describe("projectDiagnosticEvent", () => {
     });
 
     it("sync, the draft journal's phases: `journalSkipped`, `journalFailed`, and `journalRecovered` keep their reason and `entries` through the browser projection; an unlisted reason and a non-count `entries` are dropped", () => {
-        expect(SYNC_PHASES).toEqual(["conflict", "reload", "journalSkipped", "journalFailed", "journalRecovered"]);
+        expect(SYNC_PHASES).toEqual([
+            "conflict",
+            "reload",
+            "journalSkipped",
+            "journalFailed",
+            "journalRecovered",
+            "saveWait",
+        ]);
         for (const reason of ["tooLarge", "budget", "format"]) {
             const skipped = { at: AT, kind: "sync", phase: "journalSkipped", reason, entries: 3 };
             expect(projectBrowserEvent(skipped), reason).toEqual(skipped);

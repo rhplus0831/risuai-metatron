@@ -96,7 +96,8 @@ Data and persistence:
   and [LLM requests](docs/structure/llm-requests.md).
 - D3. Preserve persisted spellings, including `seperateModels`, `seperateParameters`,
   `moduleIntergration`, and `PresensePenalty`.
-- D4. Resource writes carry revision and epoch. Stale whole-record writes reload;
+- D4. Resource writes carry revision and epoch. Stale writes merge independent units;
+  same-unit conflicts reload, keeping eligible local work as a recovery draft;
   by-id message operations and per-field chat metadata can apply to an older chat
   revision while their targets exist. Preserve optimistic message ids and append
   collision refusal. Add/remove/replace characters through `characterStore`; a

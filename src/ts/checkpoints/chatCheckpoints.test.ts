@@ -236,20 +236,22 @@ describe("chat checkpoints over the server store", () => {
         mocks.reloadNotice.mockClear();
 
         // The sibling's conflict rolls back the replay batch and requires an authoritative
-        // collection read. Seeing the created id there must not acknowledge its lost answer.
+        // collection read, which runs in the background queue. Whether the replay goes before or
+        // after that read, it goes exactly as lost (its id, ops, and base, with `retry`): seeing the
+        // created id in the list never acknowledges its lost answer.
         const result = await tab.sync.flushResources();
         expect(result.discarded.sort()).toEqual(
             [`chats/${created.chaId}/${created.chatId}`, `chats/${sibling.chaId}/${sibling.chatId}`].sort(),
         );
+        await vi.advanceTimersByTimeAsync(1000);
         const readIndex = server.resources.requests.findIndex((request) =>
             request.body?.chatSummaryCollections?.includes(ref.chaId),
         );
         expect(readIndex).toBeGreaterThan(0);
-        const afterRead = server.resources.requests
-            .slice(readIndex + 1)
+        const replay = server.resources.requests
             .flatMap((request) => request.body?.chats ?? [])
-            .find((group) => group.chatId === created.chatId);
-        expect(afterRead).toEqual({ ...lost, retry: true });
+            .find((group) => group.chatId === created.chatId && group.retry);
+        expect(replay).toEqual({ ...lost, retry: true });
         expect(server.resources.chat(created.chaId, created.chatId)!.data.fmIndex).toBe(1);
         expect(mocks.reloadNotice).toHaveBeenCalledWith(tab.language.resourceReloaded);
     });

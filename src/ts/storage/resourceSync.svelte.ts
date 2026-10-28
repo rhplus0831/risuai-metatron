@@ -1,4 +1,29 @@
 import isEqual from "lodash/isEqual";
+import {
+    ABSENT,
+    fieldOf,
+    isItemMergeKind,
+    mergeCharacterFields,
+    mergeItemCollection,
+    mergeSectionFields,
+} from "./recordMerge";
+import { newId } from "../../../shared/ids.ts";
+import {
+    JOURNAL_FORMAT,
+    JOURNAL_LAYER_NAMES,
+    MAX_JOURNAL_ENTRY_BYTES,
+    journalValueSize,
+    pageDraftJournal,
+    recordTarget,
+    type JournalWrite,
+    type ConflictDraft,
+    type DraftInput,
+    type JournalRemoval,
+    type RecordLayerValues,
+    type StoredLayers,
+    type MutationEntry,
+} from "./draftJournal";
+import { isJournalEligible } from "./journalEligibility";
 import { tick, untrack } from "svelte";
 import { get } from "svelte/store";
 import type { ChatOrderRecord, ChatSummary } from "../../../shared/chats.ts";
@@ -65,6 +90,8 @@ import { flushClientDiagnostics, recordClientEvent } from "../diagnostics/collec
 import type { character, Chat, Database, groupChat } from "./database.svelte";
 import {
     type ChatRef,
+    type ChatJournalKey,
+    chatJournal,
     acceptRemoteCollection,
     ackChatWork,
     applyRemoteCollection,
@@ -86,7 +113,6 @@ import {
     forgetCharacter,
     settleCharacterDelete,
     ackCharacterDelete,
-    hasChatWork,
     hydrateChat,
     hydrateChatPatch,
     isChatBehind,
@@ -163,6 +189,9 @@ import {
  *   is diffed by `chaId` every cycle: a new id is created, a vanished one deleted.
  * - One batch per cycle, one cycle in flight. A key stays dirty if it was marked again while its
  *   batch was in flight.
+ * - Eligible record, chat, and order intent is mirrored to the page's draft journal. One serialized
+ *   queue coalesces pre-dispatch deltas and debounces later outcomes; hide flushes run independently
+ *   of the network. Creates wait at most 200 ms; a split chat batch waits for journal confirmation.
  * - A 409 reloads the conflicting records into the mirror (another tab or device wrote them) and
  *   shows `resourceReloaded` as the reload notice (`alertReloadNotice`: its own store, kept until the
  *   user dismisses it, so one notice per episode on screen); a 412 (the server was restored) stops saving and
@@ -174,7 +203,7 @@ import {
  *   entry names (`messageIds`) are dropped instead (`recoverChatConflicts`), with the reload notice.
  * - `applyHydration` applies a record a server job sent, without any outgoing write.
  * - Live updates (`noteRemoteChanges`, from the change feed, `network/eventFeed.ts`): records another
- *   writer committed are read and applied inside the cycle, before its batch, only while this client
+ *   writer committed are read by an independent refresh queue, only while this client
  *   has no unsent change of them; nothing is discarded and no notice is shown. A record with a local
  *   change waits: its save then lands (the update is older) or conflicts (the normal 409 path).
  *
@@ -220,7 +249,7 @@ const DEBOUNCE_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 /** Largest batch body the server accepts (its global body limit is 100 MiB), in UTF-8 bytes. */
 const MAX_BATCH_BYTES = 100 * 1024 * 1024 - 64 * 1024;
-const MAX_BATCH_OPERATIONS = 5000;
+export const MAX_BATCH_OPERATIONS = 5000;
 /** Bytes of the batch envelope around its parts: `{"ops":[],"chats":[],"chatOrders":[]}`. */
 const BATCH_FRAME_BYTES = 38;
 
@@ -249,7 +278,7 @@ const CHARACTER_TEXTS_MAX_UNITS = 64 * 1024 * 1024;
 
 export const saving = $state({ state: false });
 
-const recordKey = (kind: string, id: string) => `${kind}\u0000${id}`;
+const recordKey = recordTarget;
 const collectionKey = (collection: Collection) => recordKey(collection, SINGLETON_RESOURCE_ID);
 const characterPrefix = recordKey(RESOURCE_KIND.characters, "");
 const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
@@ -285,7 +314,10 @@ function notifyRefusals() {
 }
 
 function clearRecordRefusal(key: string) {
-    if (quarantinedRecords.delete(key)) notifyRefusals();
+    if (quarantinedRecords.delete(key)) {
+        queueJournalRecord(key);
+        notifyRefusals();
+    }
 }
 /** An unindexed refusal is isolated into one resource, chat group, or order per request. */
 let isolateBatches = false;
@@ -300,6 +332,9 @@ let membershipGeneration = 0;
 let membershipAcked = 0;
 let started = false;
 let halted = false;
+let stopped = false;
+let removeLifecycleListeners: (() => void) | null = null;
+let unloadAuthInterval: ReturnType<typeof setInterval> | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** When the scheduled cycle runs; a later mark never postpones it. */
 let timerDeadline = 0;
@@ -317,7 +352,23 @@ const hydrate = new Set<string>();
 const listRefresh = new Set<string>();
 /** List refreshes parked while the character is absent locally; a same-id re-add resumes them. */
 const parkedListRefresh = new Set<string>();
-let inFlight: Promise<void> | null = null;
+let inFlight: Promise<boolean> | null = null;
+let refreshInFlight: Promise<void> | null = null;
+let refreshFailures = 0;
+const reportedRefreshErrors = new WeakSet<object>();
+let refreshBackoffUntil = 0;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshDeadline = 0;
+const readControllers = new Set<AbortController>();
+const READ_DEADLINE_MS = 20_000;
+const characterRefreshes = new Map<string, Promise<boolean>>();
+const deferredRefreshes = new Map<string, Promise<boolean>>();
+const listReadGenerations = new Map<string, number>();
+const characterWriteSerials = new Map<string, number>();
+const writingCharacters = new Map<string, number>();
+let cycleWrote = false;
+let recoveringConflict = false;
+const unloadWrites = new Map<string, Promise<void>>();
 let failures = 0;
 /** The last cycle's failure that a retry may fix (network, 5xx, 429); retried with backoff. */
 let lastError: unknown = null;
@@ -350,7 +401,7 @@ export type PluginStorageDiscard = { pluginStorage: string[]; localPluginStorage
 type PluginStorageDiscardListener = (lost: PluginStorageDiscard) => void;
 const pluginStorageDiscardListeners = new Set<PluginStorageDiscardListener>();
 /**
- * Live updates waiting to be read and applied inside the cycle: record key → the newest revision
+ * Live updates waiting to be read and applied by the refresh queue: record key → the newest revision
  * another writer committed (null: deleted). `blockedLocal`: the `llmSecrets` siblings this client
  * held unsent when the server's siblings had changed too; the entry waits for that local text to
  * change (its save or a conflict settles it). `patch`: the notice's record patch, applied without a
@@ -373,6 +424,682 @@ const REMOTE_DELAY_MS = 50;
 /** Most records (and, separately, chat lists) one cycle reads for live updates; the rest wait for the next. */
 const MAX_REMOTE_READS = 1000;
 
+type JournalRecordLayers = Partial<RecordLayerValues>;
+type JournalRecordView = {
+    epoch: string;
+    desired: JournalRecordLayers;
+    written: StoredLayers<"record">;
+    dispatched?: RecordLayerValues["sent"];
+    projection?: {
+        generation: number;
+        character: character | groupChat | undefined;
+        value: Projection | undefined;
+        canonical: boolean;
+    };
+    largeWriteAt?: number;
+    skippedGeneration?: number;
+};
+/** Keys touched by this page, including captured layers handed over by boot recovery. */
+const journalRecords = new Map<string, JournalRecordView>();
+const journalPending = new Set<string>();
+const journalWritingRecords = new Set<string>();
+type JournalChatView = {
+    key: ChatJournalKey;
+    epoch: string;
+    written: Record<string, { version: number; value: unknown }>;
+    splitFailures?: { groupId: string; count: number };
+};
+/** Scope is part of identity; these keys never enter the record projection loop. */
+const journalChatViews = new Map<string, JournalChatView>();
+const journalChatPending = new Set<string>();
+/** Includes captures in a transaction until its commit is known, so restore can snapshot them too. */
+const conflictDrafts = new Map<string, ConflictDraft>();
+
+function queueConflictDraft(input: DraftInput) {
+    if (halted || journalOff) return;
+    if (input.scope === "record") {
+        const kind = input.target.split("\u0000")[0];
+        if (
+            !Object.values(input.layers).every(
+                (value) => !value || isJournalEligible({ scope: "record", kind, text: value.text }),
+            )
+        )
+            return;
+    } else if (!isJournalEligible({ scope: input.scope })) return;
+    const draft = structuredClone({ ...input, id: newId(), createdAt: Date.now() });
+    conflictDrafts.set(draft.id, draft);
+    scheduleJournal();
+}
+
+function captureJournalChat(projection: ReturnType<typeof chatJournal.project>) {
+    if (halted || journalOff) return;
+    const view = journalChatViews.get(`${projection.scope}\u0000${projection.target}`);
+    queueConflictDraft({ ...projection, epoch: view?.epoch ?? getResourceEpoch() });
+}
+
+/** The final local intent, before conflict recovery clears its in-doubt write or refusal. */
+function captureRecordConflict(key: string, op?: PendingOp, gone = false): DraftInput | undefined {
+    const view = journalView(key);
+    if (!view) return;
+    const [kind, id] = key.split("\u0000");
+    const base = persisted.get(key);
+    const text = journalProjection(key, kind, id)?.text ?? null;
+    const doubt = inDoubt.get(key);
+    const refusal = quarantinedRecords.get(key);
+    const sent = doubt
+        ? { ...journalOperation(doubt.text, doubt.baseRevision), dispatched: true as const, inDoubt: true }
+        : (view.dispatched ??
+          (op
+              ? { ...journalOperation(op.text, op.baseRevision), dispatched: true as const, inDoubt: false }
+              : undefined));
+    const membership = kind === RESOURCE_KIND.characters && (text === null) !== (base === undefined);
+    if (gone && text === null) return;
+    if ((!dirty.has(key) || text === (base?.text ?? null)) && !membership && !sent && !refusal) return;
+    const layers: Partial<RecordLayerValues> = {};
+    if (sent) layers.sent = sent;
+    if (refusal)
+        layers.refused = {
+            op: view.desired.refused?.op ?? journalOperation(refusal.text, base?.revision ?? null).op,
+            text: refusal.text,
+            reason: refusal.error.message,
+        };
+    if (sent ? text !== sent.text : !refusal || text !== refusal.text) {
+        layers.latest = journalOperation(text, base?.revision ?? null);
+    }
+    return { scope: "record", target: recordTarget(kind, id), epoch: view.epoch, layers };
+}
+
+function queueJournalChat(key: ChatJournalKey) {
+    if (halted) return;
+    if (journalOff) {
+        if (key.scope === "chat") {
+            const split = chatJournal.splitGroupId(key.target);
+            if (split) chatJournal.confirmSplit(key.target, split);
+        }
+        return;
+    }
+    const scoped = `${key.scope}\u0000${key.target}`;
+    if (!journalChatViews.has(scoped)) {
+        journalChatViews.set(scoped, { key, epoch: getResourceEpoch(), written: {} });
+    }
+    journalChatPending.add(scoped);
+    scheduleJournal();
+}
+
+function disableChatJournal() {
+    for (const { key } of journalChatViews.values()) {
+        if (key.scope === "chat") {
+            const split = chatJournal.splitGroupId(key.target);
+            if (split) chatJournal.confirmSplit(key.target, split);
+        }
+    }
+    journalChatPending.clear();
+    journalChatViews.clear();
+    conflictDrafts.clear();
+    chatJournal.setConflictListener(null);
+}
+
+function hasJournalPending() {
+    return journalPending.size > 0 || journalChatPending.size > 0 || conflictDrafts.size > 0;
+}
+let journalQueue: Promise<void> = Promise.resolve();
+let journalOff = false;
+let journalTimer: ReturnType<typeof setTimeout> | null = null;
+let journalDeadline = 0;
+const LARGE_JOURNAL_BYTES = 256 * 1024;
+const LARGE_JOURNAL_INTERVAL_MS = 5000;
+const JOURNAL_CREATE_WAIT_MS = 200;
+const JOURNAL_RESTORE_WAIT_MS = 1000;
+const RECORD_JOURNAL_LAYERS = ["sent", "latest", "refused"] as const;
+
+function journalView(key: string): JournalRecordView | undefined {
+    if (journalOff || halted) {
+        return;
+    }
+    const [kind] = key.split("\u0000");
+    // Excluded kinds never reach the journal's synchronous clone of the plaintext.
+    if (!isJournalEligible({ scope: "record", kind, text: null })) {
+        return;
+    }
+    let view = journalRecords.get(key);
+    if (!view) {
+        view = { epoch: getResourceEpoch(), desired: {}, written: {} };
+        journalRecords.set(key, view);
+    }
+    return view;
+}
+
+function scheduleJournal(delay = DEBOUNCE_MS) {
+    if (halted || journalOff || !hasJournalPending()) {
+        return;
+    }
+    const deadline = Date.now() + delay;
+    if (journalTimer && journalDeadline <= deadline) {
+        return;
+    }
+    if (journalTimer) {
+        clearTimeout(journalTimer);
+    }
+    journalDeadline = deadline;
+    journalTimer = setTimeout(() => {
+        journalTimer = null;
+        // A cycle due in this same turn absorbs the deltas into its pre-dispatch transaction.
+        if (timer && timerDeadline <= Date.now() && !inFlight) {
+            return;
+        }
+        void flushJournal();
+    }, delay);
+}
+
+function queueJournalRecord(key: string, invalidateProjection = false) {
+    const view = journalView(key);
+    if (!view) {
+        return;
+    }
+    if (invalidateProjection) {
+        view.projection = undefined;
+    }
+    journalPending.add(key);
+    scheduleJournal();
+}
+
+function rememberJournalProjection(
+    key: string,
+    value: Projection | undefined,
+    canonical = false,
+    character?: character | groupChat,
+) {
+    const view = journalView(key);
+    if (view) {
+        view.projection = {
+            generation: dirty.get(key) ?? acked.get(key) ?? 0,
+            character,
+            value,
+            canonical,
+        };
+    }
+    return value;
+}
+
+/** Collection and hide/timer snapshots share a projection until a local mark or raw replacement. */
+function journalProjection(
+    key: string,
+    kind: string,
+    id: string,
+    character = kind === RESOURCE_KIND.characters ? findMirrorCharacter(id) : undefined,
+): Projection | undefined {
+    const cached = journalView(key)?.projection;
+    if (cached && cached.generation === (dirty.get(key) ?? acked.get(key) ?? 0) && cached.character === character) {
+        return cached.value;
+    }
+    const projection =
+        kind === RESOURCE_KIND.characters
+            ? character
+                ? characterProjection(character)
+                : undefined
+            : projectEntry(kind, id);
+    return rememberJournalProjection(key, projection, false, character);
+}
+
+const journalOperation = (text: string | null, baseRevision: string | null): RecordLayerValues["latest"] => ({
+    op: text === null ? "delete" : baseRevision === null ? "create" : "update",
+    baseRevision,
+    text,
+});
+
+/**
+ * Record intent, separately from sendable operations: a blocked delete, a removed in-doubt create,
+ * and a revert behind a sent write still belong here. This never takes or settles chat work.
+ */
+function refreshJournalRecord(key: string, view: JournalRecordView) {
+    const [kind, id] = key.split("\u0000");
+    const current = persisted.get(key);
+    let projection = journalProjection(key, kind, id);
+    if (
+        kind === RESOURCE_KIND.characters &&
+        projection &&
+        projection.text !== current?.text &&
+        !inDoubt.has(key) &&
+        !view.projection?.canonical
+    ) {
+        projection = rememberJournalProjection(
+            key,
+            canonicalCharacter(id, projection),
+            true,
+            view.projection?.character,
+        );
+    }
+    const text = projection?.text ?? null;
+    const refusal = recordQuarantine(key, text);
+    // Hydration can make an old refusal's text the saved copy; it holds no unsaved intent then.
+    const refused = text !== (current?.text ?? null) ? refusal : null;
+    const doubt = inDoubt.get(key);
+    const sent = refused
+        ? undefined
+        : (view.dispatched ??
+          (doubt
+              ? { ...journalOperation(doubt.text, doubt.baseRevision), dispatched: true as const, inDoubt: true }
+              : undefined));
+    const held = projection !== undefined || (kind === RESOURCE_KIND.characters && (current || sent));
+    const intent = held ? journalOperation(text, current?.revision ?? null) : undefined;
+    const latest =
+        !refused &&
+        intent &&
+        (sent
+            ? intent.text !== sent.text || intent.baseRevision !== sent.baseRevision
+            : intent.text !== (current?.text ?? null))
+            ? intent
+            : undefined;
+    view.desired = {
+        sent,
+        latest,
+        refused: refused
+            ? {
+                  op: view.desired.refused?.op ?? journalOperation(text, current?.revision ?? null).op,
+                  text,
+                  reason: refused.message,
+              }
+            : undefined,
+    };
+}
+
+function journalDispatched(ops: readonly PendingOp[]) {
+    for (const op of ops) {
+        const view = journalView(op.key);
+        if (view) {
+            const doubt = inDoubt.get(op.key);
+            view.dispatched = {
+                ...journalOperation(op.text, op.baseRevision),
+                dispatched: true,
+                inDoubt: doubt?.text === op.text && doubt.baseRevision === op.baseRevision,
+            };
+            queueJournalRecord(op.key);
+        }
+    }
+}
+
+/** An answer (or a lost answer) leaves only the intent the adapter still holds. */
+function journalSettled(key: string) {
+    if (halted) return;
+    const view = journalRecords.get(key);
+    if (view) {
+        view.dispatched = undefined;
+        queueJournalRecord(key);
+    }
+}
+
+function journalDiscarded(key: string) {
+    if (halted) return;
+    const view = journalRecords.get(key);
+    if (view) {
+        view.dispatched = undefined;
+        view.desired = {};
+        queueJournalRecord(key, true);
+    }
+}
+
+function sameJournalLayer(a: RecordLayerValues[keyof RecordLayerValues] | undefined, b: typeof a): boolean {
+    if (!a || !b) {
+        return a === b;
+    }
+    return (
+        a.op === b.op &&
+        a.text === b.text &&
+        ("baseRevision" in a ? "baseRevision" in b && a.baseRevision === b.baseRevision : !("baseRevision" in b)) &&
+        ("inDoubt" in a ? "inDoubt" in b && a.inDoubt === b.inDoubt : !("inDoubt" in b)) &&
+        ("reason" in a ? "reason" in b && a.reason === b.reason : !("reason" in b))
+    );
+}
+
+/** Normal flushes are serialized after startup seeds the version counter, including removals. */
+function flushJournal(onHide = false): Promise<void> {
+    if (journalTimer) {
+        clearTimeout(journalTimer);
+        journalTimer = null;
+    }
+    if (halted || journalOff || !hasJournalPending()) {
+        return journalQueue;
+    }
+    journalQueue = journalQueue
+        .then(async () => {
+            if (halted || journalOff || !hasJournalPending()) {
+                return;
+            }
+            const journal = pageDraftJournal();
+            const enabled = await journal.start();
+            if (halted) {
+                return;
+            }
+            if (!enabled || !journal.enabled) {
+                journalOff = true;
+                if (journalTimer) {
+                    clearTimeout(journalTimer);
+                    journalTimer = null;
+                }
+                journalPending.clear();
+                journalRecords.clear();
+                disableChatJournal();
+                return;
+            }
+            const writes: JournalWrite[] = [];
+            const removals: JournalRemoval[] = [];
+            const recordChanges: {
+                key: string;
+                view: JournalRecordView;
+                written: StoredLayers<"record">;
+                largeWriteAt?: number;
+            }[] = [];
+            const drafts = [...conflictDrafts.values()];
+            let nextDelay = Infinity;
+            const now = Date.now();
+            for (const key of journalPending) {
+                const view = journalRecords.get(key)!;
+                const written = { ...view.written };
+                let largeWriteAt = view.largeWriteAt;
+                recordChanges.push({ key, view, written });
+                refreshJournalRecord(key, view);
+                const desired = view.desired;
+                const values = Object.values(desired).filter((value) => value !== undefined);
+                const tooLarge =
+                    values.reduce((sum, value) => sum + (value.text?.length ?? 0), 0) > MAX_JOURNAL_ENTRY_BYTES;
+                const contentGeneration = Math.max(
+                    dirty.get(key) ?? acked.get(key) ?? 0,
+                    key.startsWith(characterPrefix) ? membershipGeneration : 0,
+                );
+                if (tooLarge && view.skippedGeneration !== contentGeneration) {
+                    recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "tooLarge", entries: 1 });
+                    view.skippedGeneration = contentGeneration;
+                }
+                const changed = RECORD_JOURNAL_LAYERS.filter(
+                    (name) => !sameJournalLayer(desired[name], view.written[name]?.value),
+                );
+                const large =
+                    !tooLarge &&
+                    changed.some((name) => {
+                        const text = desired[name]?.text;
+                        return (
+                            text &&
+                            (text.length > LARGE_JOURNAL_BYTES ||
+                                (text.length * 3 > LARGE_JOURNAL_BYTES && utf8ByteLength(text) > LARGE_JOURNAL_BYTES))
+                        );
+                    });
+                const wait = (view.largeWriteAt ?? -Infinity) + LARGE_JOURNAL_INTERVAL_MS - now;
+                const deferred = !onHide && large && wait > 0 && !values.some((value) => value.op === "create");
+                const layers: JournalRecordLayers = {};
+                for (const name of RECORD_JOURNAL_LAYERS) {
+                    const stored = view.written[name];
+                    const value = desired[name];
+                    // Keep unchanged layers when a write is over budget, and keep a throttled
+                    // layer until replacement. Settled layers and older values of skipped changes
+                    // go through their captured versions.
+                    if (stored && (!value || (tooLarge && changed.includes(name)))) {
+                        removals.push({
+                            epoch: view.epoch,
+                            scope: "record",
+                            target: key,
+                            version: stored.version,
+                            layers: [name],
+                        });
+                        delete written[name];
+                    }
+                    if (!tooLarge && !deferred && value && changed.includes(name)) {
+                        Object.assign(layers, { [name]: value });
+                    }
+                }
+                if (Object.keys(layers).length > 0) {
+                    const version = journal.nextVersion();
+                    writes.push({ epoch: view.epoch, scope: "record", target: key, version, layers });
+                    for (const name of RECORD_JOURNAL_LAYERS) {
+                        if (layers[name]) {
+                            Object.assign(written, { [name]: { version, value: layers[name] } });
+                        }
+                    }
+                    if (large) {
+                        largeWriteAt = now;
+                    }
+                }
+                recordChanges[recordChanges.length - 1].largeWriteAt = largeWriteAt;
+                if (deferred) {
+                    nextDelay = Math.min(nextDelay, wait);
+                } else {
+                    journalPending.delete(key);
+                    if (values.length === 0) {
+                        view.projection = undefined;
+                    }
+                }
+            }
+            // Chat projections are detached and cached per layer by their owner. Failed writes
+            // retain their captured versions for retry; split confirmation needs the actual result.
+            const chatWrites: {
+                scoped: string;
+                view: JournalChatView;
+                index: number;
+                layers: Record<string, unknown>;
+                removed: string[];
+                version: number;
+                splitGroupId?: string;
+            }[] = [];
+            for (const scoped of journalChatPending) {
+                const view = journalChatViews.get(scoped)!;
+                const projection = chatJournal.project(view.key);
+                const desired: Record<string, unknown> = projection.layers;
+                const layers: Record<string, unknown> = {};
+                const removed: string[] = [];
+                for (const name of new Set([...Object.keys(view.written), ...Object.keys(desired)])) {
+                    const value = desired[name];
+                    const stored = view.written[name];
+                    if (value === undefined) {
+                        if (stored) {
+                            removals.push({ ...view.key, epoch: view.epoch, version: stored.version, layers: [name] });
+                            removed.push(name);
+                        }
+                    } else if (!stored || !isEqual(value, stored.value)) {
+                        layers[name] = value;
+                    }
+                }
+                const splitGroupId = projection.scope === "chat" ? projection.splitGroupId : undefined;
+                // Even an unchanged split must get a per-item outcome, not merely a resolved flush.
+                if (splitGroupId) Object.assign(layers, desired);
+                journalChatPending.delete(scoped);
+                if (Object.keys(layers).length === 0 && removed.length === 0) continue;
+                const version = journal.nextVersion();
+                chatWrites.push({ scoped, view, index: writes.length, layers, removed, version, splitGroupId });
+                writes.push({ ...view.key, epoch: view.epoch, version, layers } as JournalWrite);
+            }
+            if (writes.length > 0 || removals.length > 0 || drafts.length > 0) {
+                for (const { key } of recordChanges) journalWritingRecords.add(key);
+                const result = await journal.write(writes, removals, drafts);
+                journalWritingRecords.clear();
+                if (halted) return;
+                const outcomes = result.writes;
+                if (result.committed) {
+                    for (const item of recordChanges) {
+                        item.view.written = item.written;
+                        item.view.largeWriteAt = item.largeWriteAt;
+                    }
+                    for (const draft of drafts) conflictDrafts.delete(draft.id);
+                    if (result.drafts.includes("written")) {
+                        void import("./recoveryDrafts.svelte")
+                            .then(({ recoveryDrafts }) => {
+                                if (!halted) return recoveryDrafts.refresh();
+                            })
+                            .catch((error) => console.warn("[Save journal]", error));
+                    }
+                } else {
+                    for (const { key } of recordChanges) journalPending.add(key);
+                }
+                for (const item of chatWrites) {
+                    const outcome = outcomes[item.index];
+                    if (outcome === "off") {
+                        journalOff = true;
+                        journalPending.clear();
+                        journalRecords.clear();
+                        disableChatJournal();
+                        break;
+                    }
+                    if (outcome === "failed" || !outcome) {
+                        journalChatPending.add(item.scoped);
+                        if (item.splitGroupId) {
+                            const previous = item.view.splitFailures;
+                            const count = previous?.groupId === item.splitGroupId ? previous.count + 1 : 1;
+                            item.view.splitFailures = { groupId: item.splitGroupId, count };
+                            // Saving proceeds after repeated failure; a broken journal can retain
+                            // the older whole-batch row, so recovery has a documented loss window.
+                            if (count >= 2) chatJournal.confirmSplit(item.view.key.target, item.splitGroupId);
+                        }
+                        continue;
+                    }
+                    for (const name of item.removed) delete item.view.written[name];
+                    for (const [name, value] of Object.entries(item.layers)) {
+                        if (value !== undefined) item.view.written[name] = { version: item.version, value };
+                    }
+                    if (item.splitGroupId) {
+                        if (outcome === "written" || outcome === "skipped" || outcome === "ineligible") {
+                            chatJournal.confirmSplit(item.view.key.target, item.splitGroupId);
+                            item.view.splitFailures = undefined;
+                        } else {
+                            journalChatPending.add(item.scoped);
+                        }
+                    }
+                }
+            }
+            if (
+                journalChatPending.size > 0 ||
+                conflictDrafts.size > 0 ||
+                (journalPending.size > 0 && !Number.isFinite(nextDelay))
+            )
+                scheduleJournal();
+            if (Number.isFinite(nextDelay)) {
+                scheduleJournal(Math.max(0, now + nextDelay - Date.now()));
+            }
+        })
+        .catch((error) => {
+            // Journaling must never reject a save or leave a rejected queue behind it.
+            console.warn("[Save journal]", error);
+            recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
+        });
+    return journalQueue;
+}
+
+type RestoreJournalItem = {
+    write: JournalWrite;
+    changed?: (keyof RecordLayerValues)[];
+};
+
+/** Capture before halting: record projection can invalidate a refusal and queue more work. */
+function captureRestoreJournal(): RestoreJournalItem[] {
+    const snapshot: RestoreJournalItem[] = [];
+    for (const [key, view] of journalRecords) {
+        refreshJournalRecord(key, view);
+        if (
+            !journalWritingRecords.has(key) &&
+            !RECORD_JOURNAL_LAYERS.some((name) => view.desired[name] || view.written[name])
+        )
+            continue;
+        snapshot.push({
+            write: {
+                epoch: view.epoch,
+                scope: "record",
+                target: key,
+                version: 0,
+                layers: Object.fromEntries(RECORD_JOURNAL_LAYERS.map((name) => [name, view.desired[name] ?? null])),
+            },
+            changed: RECORD_JOURNAL_LAYERS.filter(
+                (name) => !sameJournalLayer(view.desired[name], view.written[name]?.value),
+            ),
+        });
+    }
+    // Written chat layers lag pending transactions. Even an empty projection must fence every
+    // absent layer, so an outstanding write cannot bring settled work back after the snapshot.
+    for (const view of journalChatViews.values()) {
+        const projection = chatJournal.project(view.key);
+        const desired: Record<string, unknown> = projection.layers;
+        snapshot.push({
+            write: {
+                ...view.key,
+                epoch: view.epoch,
+                version: 0,
+                layers: Object.fromEntries(
+                    JOURNAL_LAYER_NAMES[view.key.scope].map((name) => [name, desired[name] ?? null]),
+                ),
+            } as JournalWrite,
+        });
+    }
+    return structuredClone(snapshot);
+}
+
+async function writeRestoreJournal(snapshot: RestoreJournalItem[], drafts: ConflictDraft[]) {
+    if (journalOff || (snapshot.length === 0 && drafts.length === 0)) return;
+    const journal = pageDraftJournal();
+    if (!(await journal.start()) || !journal.enabled) return;
+    // Bypass the normal queue: it may be stuck. Startup must seed the counter before this version
+    // supersedes every pre-halt write and removal, even one that completes after the notice.
+    const version = journal.nextVersion();
+    const writes = snapshot.map(({ write, changed }) => {
+        write.version = version;
+        if (write.scope === "record") {
+            const layers = Object.fromEntries(
+                Object.entries(write.layers)
+                    .filter(([, value]) => value != null)
+                    .map(([name, value]) => [name, { version, value }]),
+            );
+            // Match the stored row's UTF-8 size, including its envelope. Rewriting an unchanged
+            // layer into an oversized row would let the journal trim it along with the changes.
+            const size = journalValueSize({
+                ...write,
+                layers,
+                format: JOURNAL_FORMAT,
+                type: "mutation",
+                tabId: journal.tabId,
+                createdAt: 0,
+                updatedAt: 0,
+                size: 0,
+            });
+            if (size > MAX_JOURNAL_ENTRY_BYTES) {
+                write.layers = Object.fromEntries(changed!.map((name) => [name, null]));
+                recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "tooLarge", entries: 1 });
+            }
+        }
+        return write;
+    });
+    await journal.write(writes, [], drafts);
+}
+
+async function waitForRestoreJournal(snapshot: RestoreJournalItem[], drafts: ConflictDraft[]) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            writeRestoreJournal(snapshot, drafts).catch((error) => {
+                console.warn("[Save journal]", error);
+                recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
+            }),
+            new Promise<void>((resolve) => {
+                timer = setTimeout(() => {
+                    console.warn("[Save journal] Restore snapshot timed out");
+                    recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "timeout" });
+                    resolve();
+                }, JOURNAL_RESTORE_WAIT_MS);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
+
+async function waitForCreateJournal(flush: Promise<void>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            flush,
+            new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, JOURNAL_CREATE_WAIT_MS);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 /** Records what the server holds, from the boot read. Call before the boot installs the records. */
 export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
@@ -389,6 +1116,57 @@ export function seedResources(result: ResourceReadKindsResult) {
             });
         }
     }
+}
+
+/** A detached view of the server baseline; recovery must never seed it with local intent. */
+export function heldRecordSnapshot(kind: string, id: string): { revision: string; text: string } | null {
+    const held = persisted.get(recordKey(kind, id));
+    return held ? { revision: held.revision, text: held.text } : null;
+}
+
+/**
+ * Takes ownership only after recovery installed the local value (or found it satisfied). The first
+ * journal flush replaces/removes captured layers atomically; an intervening reload keeps the row.
+ * An unresolved update retains the exact resend ahead of any newer local value.
+ */
+export function adoptRecoveredRecord(
+    entry: Extract<MutationEntry, { scope: "record" }>,
+    unresolvedSent?: RecordLayerValues["sent"],
+) {
+    if (started || halted || entry.epoch !== getResourceEpoch()) {
+        throw new Error("Record recovery requires the current boot before saving starts");
+    }
+    const written = structuredClone(entry.layers);
+    if (unresolvedSent) {
+        const held = persisted.get(entry.target);
+        if (
+            unresolvedSent.op !== "update" ||
+            unresolvedSent.text === null ||
+            !held ||
+            unresolvedSent.baseRevision !== held.revision
+        ) {
+            throw new Error("Only an unresolved update on the held base can be recovered as in doubt");
+        }
+        inDoubt.set(entry.target, { baseRevision: held.revision, text: unresolvedSent.text, parts: null });
+    }
+    journalRecords.set(entry.target, { epoch: entry.epoch, desired: {}, written });
+    // Do not start a timer before the service worker can request another reload. Startup's marks
+    // schedule this reconciliation together with the normal save cycle.
+    journalPending.add(entry.target);
+}
+
+/** Hands installed or settled boot intent to the journal queue before saving starts. */
+export function adoptRecoveredChat(
+    entry: Extract<MutationEntry, { scope: "chat" | "order" }>,
+    layers: StoredLayers<"chat"> | StoredLayers<"order">,
+) {
+    if (started || halted || entry.epoch !== getResourceEpoch()) {
+        throw new Error("Chat recovery requires the current boot before saving starts");
+    }
+    const key = { scope: entry.scope, target: entry.target };
+    const scoped = `${key.scope}\u0000${key.target}`;
+    journalChatViews.set(scoped, { key, epoch: entry.epoch, written: structuredClone(layers) });
+    journalChatPending.add(scoped);
 }
 
 /**
@@ -426,18 +1204,55 @@ export function onPluginStorageDiscarded(listener: PluginStorageDiscardListener)
 function markKey(key: string) {
     generation += 1;
     dirty.set(key, generation);
+    noteWait(`record:${key}`, generation);
     // Cached projections and whole-record replacements need a notification too.
-    if (quarantinedRecords.has(key)) notifyRefusals();
+    if (quarantinedRecords.has(key)) {
+        notifyRefusals();
+    }
     permanentError = null;
     schedule();
+    queueJournalRecord(key);
 }
 
 function markMembership() {
     generation += 1;
     membershipGeneration = generation;
-    if (quarantinedRecords.size > 0) notifyRefusals();
+    const present = new Set(characterData().map((character) => character.chaId as string));
+    const journalKeys = new Set<string>();
+    for (const id of present) {
+        const key = characterKey(id);
+        if (!persisted.has(key)) {
+            noteWait(`record:${key}`, generation);
+            journalKeys.add(key);
+        }
+    }
+    for (const key of persisted.keys()) {
+        if (key.startsWith(characterPrefix) && !present.has(key.slice(characterPrefix.length))) {
+            noteWait(`record:${key}`, generation);
+            journalKeys.add(key);
+        }
+    }
+    if (quarantinedRecords.size > 0) {
+        notifyRefusals();
+    }
     permanentError = null;
     schedule();
+    for (const key of inDoubt.keys()) {
+        if (key.startsWith(characterPrefix)) {
+            journalKeys.add(key);
+        }
+    }
+    for (const [key, view] of journalRecords) {
+        if (
+            key.startsWith(characterPrefix) &&
+            (view.dispatched || RECORD_JOURNAL_LAYERS.some((name) => view.desired[name] || view.written[name]))
+        ) {
+            journalKeys.add(key);
+        }
+    }
+    for (const key of journalKeys) {
+        queueJournalRecord(key);
+    }
 }
 
 function settle(key: string, marked: number) {
@@ -446,25 +1261,351 @@ function settle(key: string, marked: number) {
     }
 }
 
-/** Whether anything waits to be saved or reloaded. */
-function hasPendingWork(): boolean {
-    if (
-        hasPendingMembership(true) ||
-        hasChatWork(canSaveCharacter) ||
-        hydrate.size > 0 ||
-        listRefresh.size > 0 ||
-        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
-        hasRemoteWork()
-    ) {
-        return true;
+/** The public chat obligations contain writes only; reload and idle refresh marks are separate. */
+function pendingChatWrites(): string[] {
+    const deferred = new Set(deferredReloads().map((ref) => `${ref.chaId}\u0000${ref.chatId}`));
+    const refused = new Set(
+        refusedChatItems().map((item) => (item.kind === "chat" ? `${item.chaId}\u0000${item.chatId}` : item.chaId)),
+    );
+    return unsettledChatObligations(captureChatObligations()).filter((key) => {
+        const id = key.split("\u0000")[0];
+        return (
+            canSaveCharacter(id) &&
+            !refused.has(key) &&
+            !deferred.has(key) &&
+            !isChatDeferred(key) &&
+            (key.includes("\u0000") || (!hydrate.has(id) && !listRefresh.has(id)))
+        );
+    });
+}
+
+type WaitReason = "inFlight" | "backoff" | "refresh" | "generating" | "conflict";
+type WaitMark = { seq: number; at: number; reason?: WaitReason };
+const saveWaits = new Map<string, WaitMark[]>();
+const collectedWaits = new Map<string, number>();
+
+function noteWait(key: string, seq: number) {
+    const marks = saveWaits.get(key) ?? [];
+    const last = marks.at(-1);
+    if (last && seq <= last.seq) {
+        return;
     }
-    for (const key of dirty.keys()) {
-        // A delete refused for a generating message stays unsaved but waits for its retry.
-        if (!recordQuarantine(key) && !isRecordJobBlocked(key)) {
-            return true;
+    if (last && last.seq > (collectedWaits.get(key) ?? -1)) {
+        last.seq = seq;
+    } else {
+        marks.push({ seq, at: Date.now() });
+    }
+    saveWaits.set(key, marks);
+}
+
+function noteChatWaits() {
+    const work = captureChatObligations();
+    for (const [key, seq] of work.chats) {
+        noteWait(`chat:${key}`, seq);
+    }
+    for (const [key, seq] of work.orders) {
+        noteWait(`order:${key}`, seq);
+    }
+}
+
+/** Record blockers when they occur; by dispatch time the reason may already have disappeared. */
+function noteWaitBlockers(reason?: WaitReason) {
+    for (const [key, marks] of saveWaits) {
+        const own = key.slice(key.indexOf(":") + 1);
+        const blocked =
+            reason ??
+            (key.startsWith("order:") && (hydrate.has(own) || listRefresh.has(own))
+                ? "refresh"
+                : ((key.startsWith("chat:") || key.startsWith("order:")) && isChatDeferred(own)) ||
+                    (key.startsWith("record:") && isRecordJobBlocked(own))
+                  ? "generating"
+                  : recoveringConflict
+                    ? "conflict"
+                    : inFlight
+                      ? "inFlight"
+                      : Date.now() < backoffUntil
+                        ? "backoff"
+                        : undefined);
+        if (blocked) {
+            for (const mark of marks) {
+                mark.reason = blocked;
+            }
         }
     }
-    return false;
+}
+
+function recordWaitSequence(op: PendingOp, captured: ReadonlyMap<string, number>, membership: number): number {
+    const marked = captured.get(op.key) ?? 0;
+    // A membership change can follow a field edit of the same character before either is collected.
+    return op.kind === RESOURCE_KIND.characters ? Math.max(marked, membership) : marked;
+}
+
+function captureWaits(
+    ops: readonly PendingOp[],
+    work: ChatWork,
+    captured: ReadonlyMap<string, number>,
+    membership: number,
+) {
+    for (const op of ops) {
+        collectedWaits.set(`record:${op.key}`, recordWaitSequence(op, captured, membership));
+    }
+    for (const group of work.groups) {
+        collectedWaits.set(`chat:${group.key}`, group.seq);
+    }
+    for (const order of work.orders) {
+        collectedWaits.set(`order:${order.characterId}`, order.seq);
+    }
+}
+
+function emitSaveWait(entries: { key: string; seq: number; category: "records" | "chats" | "orders" }[]) {
+    const now = Date.now();
+    const counts = { records: 0, chats: 0, orders: 0 };
+    let oldest: WaitMark | undefined;
+    for (const entry of entries) {
+        const mark = saveWaits
+            .get(entry.key)
+            ?.find((mark) => mark.seq <= entry.seq && mark.reason && now - mark.at > 2000);
+        if (!mark) {
+            continue;
+        }
+        counts[entry.category] += 1;
+        if (!oldest || mark.at < oldest.at) {
+            oldest = mark;
+        }
+    }
+    if (oldest) {
+        recordClientEvent({
+            kind: "sync",
+            phase: "saveWait",
+            reason: oldest.reason,
+            ...counts,
+            durationMs: now - oldest.at,
+        });
+    }
+}
+
+function recordSaveWait(batch: Batch, captured: ReadonlyMap<string, number>, membership: number) {
+    emitSaveWait([
+        ...batch.ops.map((op) => ({
+            key: `record:${op.key}`,
+            seq: recordWaitSequence(op, captured, membership),
+            category: "records" as const,
+        })),
+        ...batch.work.groups.map((group) => ({ key: `chat:${group.key}`, seq: group.seq, category: "chats" as const })),
+        ...batch.work.orders.map((order) => ({
+            key: `order:${order.characterId}`,
+            seq: order.seq,
+            category: "orders" as const,
+        })),
+    ]);
+}
+
+function recordSecretWait(id: number) {
+    collectedWaits.set(`secret:${id}`, id);
+    emitSaveWait([{ key: `secret:${id}`, seq: id, category: "records" }]);
+}
+
+function pruneWaits() {
+    for (const [key, marks] of saveWaits) {
+        const own = key.slice(key.indexOf(":") + 1);
+        const left = marks.filter((mark) => {
+            if (key.startsWith("secret:")) {
+                return llmSecretState.queue.some((op) => op.id === Number(own));
+            }
+            if (key.startsWith("record:")) {
+                return (
+                    mark.seq >
+                    Math.max(
+                        acked.get(own) ?? 0,
+                        own.startsWith(characterPrefix) && !dirty.has(own) ? membershipAcked : 0,
+                    )
+                );
+            }
+            return (
+                unsettledChatObligations({
+                    chats: new Map(key.startsWith("chat:") ? [[own, mark.seq]] : []),
+                    orders: new Map(key.startsWith("order:") ? [[own, mark.seq]] : []),
+                }).length > 0
+            );
+        });
+        if (left.length) {
+            saveWaits.set(key, left);
+        } else {
+            saveWaits.delete(key);
+            collectedWaits.delete(key);
+        }
+    }
+}
+
+/** Whether a cycle has writes to collect, including unchanged marks it must settle. */
+function hasPendingWork(): boolean {
+    return (
+        hasPendingMembership(true) ||
+        pendingChatWrites().length > 0 ||
+        llmSecretState.queue.some((op) => !awaitsOwnerDeletion(op)) ||
+        [...dirty.keys()].some((key) => !recordQuarantine(key) && !isRecordJobBlocked(key))
+    );
+}
+
+function hasRefreshWork(): boolean {
+    return (
+        [...hydrate].some((id) => !isCharacterStreamedHere(id)) ||
+        listRefresh.size > 0 ||
+        [...parkedListRefresh].some((id) => findMirrorCharacter(id)) ||
+        hasRemoteWork() ||
+        deferredReloads().length > 0 ||
+        idleChatRefreshes().length > 0 ||
+        idleSummaryRefreshes().length > 0
+    );
+}
+
+/** A read deadline belongs to this adapter, including conflict dependencies, never to other readers. */
+async function deadlineRead<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    assertSaveAdmission();
+    const controller = new AbortController();
+    readControllers.add(controller);
+    const timeout = setTimeout(() => controller.abort(new Error("Resource refresh timed out")), READ_DEADLINE_MS);
+    let aborted!: () => void;
+    const cancellation = new Promise<never>((_, reject) => {
+        aborted = () => reject(controller.signal.reason);
+        controller.signal.addEventListener("abort", aborted, { once: true });
+    });
+    try {
+        return await Promise.race([read(controller.signal), cancellation]);
+    } finally {
+        controller.signal.removeEventListener("abort", aborted);
+        clearTimeout(timeout);
+        readControllers.delete(controller);
+    }
+}
+
+function queueCharacterRefresh(id: string, purpose: "hydrate" | "listRefresh") {
+    (purpose === "hydrate" ? hydrate : listRefresh).add(id);
+    listReadGenerations.set(id, (listReadGenerations.get(id) ?? 0) + 1);
+    noteWaitBlockers();
+    scheduleRefresh(0);
+}
+
+function scheduleRefresh(delay = DEBOUNCE_MS) {
+    if (!started || halted || !hasRefreshWork()) {
+        return;
+    }
+    const deadline = Math.max(Date.now() + delay, refreshBackoffUntil);
+    if (refreshTimer && refreshDeadline <= deadline) {
+        return;
+    }
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+    refreshDeadline = deadline;
+    refreshTimer = setTimeout(
+        () => {
+            refreshTimer = null;
+            void runRefresh();
+        },
+        Math.max(0, deadline - Date.now()),
+    );
+}
+
+function failedRefresh(error: unknown) {
+    if (halted) {
+        return;
+    }
+    if (typeof error === "object" && error !== null) {
+        if (reportedRefreshErrors.has(error)) {
+            return;
+        }
+        reportedRefreshErrors.add(error);
+    }
+    refreshFailures += 1;
+    refreshBackoffUntil = Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(refreshFailures, 5));
+    console.error("[Refresh]", error);
+    scheduleRefresh(0);
+}
+
+/** Each stage starts independently: a failed or stalled read cannot starve another kind of refresh. */
+function runRefresh(): Promise<void> {
+    if (refreshInFlight) {
+        return refreshInFlight;
+    }
+    if (halted || !hasRefreshWork()) {
+        return Promise.resolve();
+    }
+    if (Date.now() < refreshBackoffUntil) {
+        scheduleRefresh(0);
+        return Promise.resolve();
+    }
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+    refreshTimer = null;
+    refreshInFlight = (async () => {
+        const failuresBefore = refreshFailures;
+        const results = await Promise.allSettled(
+            [
+                reloadDeferredChats(),
+                hydrateCharacters(),
+                applyRemoteUpdates(),
+                refreshIdleSummaries(),
+                readIdleChats(
+                    idleChatRefreshes()
+                        .filter(
+                            (ref) =>
+                                !remoteCollections.has(ref.chaId) &&
+                                !hydrate.has(ref.chaId) &&
+                                !listRefresh.has(ref.chaId),
+                        )
+                        .slice(0, MAX_REMOTE_READS),
+                ),
+            ].map(async (stage) => {
+                const discardedWork = await stage;
+                if (discardedWork && !halted) {
+                    showReloadedNotice();
+                }
+                // A refresh may finish during the debounce of a local edit made while it was reading.
+                if (!halted && hasPendingWork()) {
+                    schedule(0);
+                }
+            }),
+        );
+        if (halted) {
+            return;
+        }
+        const failed = results.filter((result) => result.status === "rejected");
+        if (failed.length > 0) {
+            for (const result of failed) {
+                failedRefresh(result.reason);
+            }
+        } else if (refreshFailures === failuresBefore) {
+            refreshFailures = 0;
+            refreshBackoffUntil = 0;
+        }
+    })().finally(() => {
+        refreshInFlight = null;
+        if (!stopped) {
+            scheduleTrim();
+            scheduleRefresh();
+        }
+    });
+    return refreshInFlight;
+}
+
+/** Dispatch and settlement both invalidate destructive list snapshots, even on an unanswered write. */
+function fenceCharacterWrites(ops: readonly PendingOp[], work: ChatWork, entering: boolean) {
+    const ids = new Set([
+        ...ops.filter((op) => op.kind === RESOURCE_KIND.characters).map((op) => op.id),
+        ...work.groups.map((group) => group.characterId),
+        ...work.orders.map((order) => order.characterId),
+    ]);
+    for (const id of ids) {
+        characterWriteSerials.set(id, (characterWriteSerials.get(id) ?? 0) + 1);
+        const count = (writingCharacters.get(id) ?? 0) + (entering ? 1 : -1);
+        if (count > 0) {
+            writingCharacters.set(id, count);
+        } else {
+            writingCharacters.delete(id);
+        }
+    }
 }
 
 /**
@@ -476,6 +1617,8 @@ function schedule(delay = DEBOUNCE_MS) {
     if (!started || halted) {
         return;
     }
+    scheduleRefresh(delay);
+    noteWaitBlockers();
     // Watchers call schedule: avoid subscribing them to other records while checking quarantine.
     untrack(() => {
         if (hasUnsavedWork()) {
@@ -915,7 +2058,7 @@ function projectRecord(kind: string, id: string): string | undefined {
     return COLLECTIONS.includes(kind as Collection) ? projectCollection(kind as Collection) : undefined;
 }
 
-function recordQuarantine(key: string): ResourceRequestError | null {
+function recordQuarantine(key: string, projected?: string | null): ResourceRequestError | null {
     const refused = quarantinedRecords.get(key);
     if (!refused) {
         return null;
@@ -923,7 +2066,7 @@ function recordQuarantine(key: string): ResourceRequestError | null {
     const separator = key.indexOf("\u0000");
     const kind = key.slice(0, separator);
     const id = key.slice(separator + 1);
-    const text = projectRecord(kind, id) ?? null;
+    const text = projected === undefined ? (projectRecord(kind, id) ?? null) : projected;
     if (text === refused.text) {
         if (text !== null) {
             // The refused text stays held: the cache keeps that string, not an equal copy.
@@ -1005,6 +2148,15 @@ function hasUnsavedWork(): boolean {
 
 function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = true) {
     quarantinedRecords.set(op.key, { text: op.text, error });
+    const view = journalView(op.key);
+    if (view) {
+        view.desired.refused = {
+            op: journalOperation(op.text, op.baseRevision).op,
+            text: op.text,
+            reason: error.message,
+        };
+        journalSettled(op.key);
+    }
     notifyRefusals();
     // Indexed errors alert once per key per session. An isolated unindexed refusal alerts once
     // per content change; unchanged content never makes it back to this function.
@@ -1062,30 +2214,48 @@ export async function discardRefused(key: string): Promise<void> {
     assertSaveAdmission();
     const item = refusedRecords().find((item) => item.key === key);
     if (!item) {
-        if (await discardRefusedChat(key, () => !halted)) schedule();
+        const chat = refusedChatItems().find((item) => item.key === key);
+        const serial = chat ? (characterWriteSerials.get(chat.chaId) ?? 0) : 0;
+        if (
+            await discardRefusedChat(
+                key,
+                () =>
+                    !halted &&
+                    (!chat ||
+                        ((characterWriteSerials.get(chat.chaId) ?? 0) === serial &&
+                            !writingCharacters.has(chat.chaId))),
+            )
+        ) {
+            schedule();
+        }
         return;
     }
     const refused = quarantinedRecords.get(key);
     const marked = dirty.get(key);
     const membership = membershipGeneration;
     const owner = item.resourceKind === RESOURCE_KIND.characters ? chatOwnerToken(item.id) : null;
-    const read = await readRefs([{ kind: item.resourceKind, id: item.id }]);
+    const read = await deadlineRead((signal) => readRefs([{ kind: item.resourceKind, id: item.id }], { signal }));
     if (
         halted ||
         quarantinedRecords.get(key) !== refused ||
         dirty.get(key) !== marked ||
         (owner !== null && (membershipGeneration !== membership || chatOwnerToken(item.id) !== owner)) ||
         (projectRecord(item.resourceKind, item.id) ?? null) !== refused?.text
-    )
+    ) {
         return;
+    }
     const server = read.items.find((record) => record.kind === item.resourceKind && record.id === item.id);
-    if (!server) return;
+    if (!server) {
+        return;
+    }
     if (server.kind === RESOURCE_KIND.characters && server.revision !== null && !findMirrorCharacter(server.id)) {
-        hydrate.add(server.id);
+        queueCharacterRefresh(server.id, "hydrate");
     }
     acceptRemote(server, true);
     schedule();
-    if (hydrate.size > 0) await hydrateCharacters();
+    if (hydrate.has(item.id)) {
+        await refreshCharacter(item.id);
+    }
 }
 
 type PendingOp = {
@@ -1321,13 +2491,15 @@ function collectOperations(): {
             return;
         }
         ops.push(op);
+        queueJournalRecord(op.key);
     }
     for (const collection of COLLECTIONS) {
         const key = collectionKey(collection);
         if (!captured.has(key)) {
             continue;
         }
-        const projection = collectionProjection(collection);
+        const projection = journalProjection(key, collection, SINGLETON_RESOURCE_ID);
+        queueJournalRecord(key);
         if (resendInDoubt(key, collection, SINGLETON_RESOURCE_ID, projection?.text)) {
             continue;
         }
@@ -1360,17 +2532,27 @@ function collectOperations(): {
         const key = characterKey(id);
         // A character whose refused delete was undone: nothing waits any more.
         jobBlockedRecords.delete(key);
-        if (inDoubt.has(key) && resendInDoubt(key, RESOURCE_KIND.characters, id, characterProjection(character).text)) {
+        if (
+            inDoubt.has(key) &&
+            resendInDoubt(
+                key,
+                RESOURCE_KIND.characters,
+                id,
+                journalProjection(key, RESOURCE_KIND.characters, id, character)?.text,
+            )
+        ) {
             continue;
         }
         const current = persisted.get(key);
         if (current && !captured.has(key)) {
             continue;
         }
-        let projection = characterProjection(character);
+        let projection = journalProjection(key, RESOURCE_KIND.characters, id, character)!;
+        queueJournalRecord(key);
         let saved = projection.text === current?.text;
         if (!saved) {
             projection = canonicalCharacter(id, projection);
+            rememberJournalProjection(key, projection, true, character);
             saved = projection.text === current?.text;
         }
         if (saved) {
@@ -1406,6 +2588,9 @@ function collectOperations(): {
     for (const [key, current] of persisted) {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
+            if (!present.has(id)) {
+                queueJournalRecord(key);
+            }
             if (!present.has(id) && !isRecordJobBlocked(key)) {
                 // Its chats' work is settled now; the revisions held of them stay until the deletion
                 // is acknowledged, for a re-add of the id before that (`settleCharacterDelete`).
@@ -1422,7 +2607,10 @@ function collectOperations(): {
         captured,
         heldBack,
         membership,
-        chatWork: takeChatWork(creating, { maxOps: MAX_BATCH_OPERATIONS, holdOrders: listRefresh }),
+        chatWork: takeChatWork(creating, {
+            maxOps: MAX_BATCH_OPERATIONS,
+            holdOrders: new Set([...listRefresh, ...hydrate]),
+        }),
     };
 }
 
@@ -1522,10 +2710,14 @@ export function splitBatches<T extends { bytes: number; weight?: number }>(ops: 
     return batches;
 }
 
-function runCycle(): Promise<void> {
+function runCycle(): Promise<boolean> {
+    if (halted) {
+        return Promise.resolve(false);
+    }
     if (inFlight) {
         return inFlight;
     }
+    cycleWrote = false;
     inFlight = (async () => {
         try {
             await cycle();
@@ -1533,32 +2725,50 @@ function runCycle(): Promise<void> {
             lastError = null;
             permanentError = null;
         } catch (error) {
-            lastError = error;
-            handleCycleError(error);
+            if (!stopped) {
+                lastError = error;
+                handleCycleError(error);
+            }
         } finally {
             inFlight = null;
-            sendingKeys.clear();
-            // A record whose hydration waited for the batch: its ordering check runs again now.
-            for (const record of [...deferredHydrations.values()]) {
-                deferredHydrations.delete(recordKey(record.kind, record.id));
-                applyHydration(record);
-            }
-            saving.state = false;
-            // Chats whose protection ended in this cycle (saved, refreshed, released) may be evicted now.
-            scheduleTrim();
-            backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
-            const retryAt = jobRetryAt();
-            if (retryAt === null) {
-                generatingNoticeShown = false;
-            }
-            if (!halted && !permanentError && (hasPendingWork() || lastError)) {
-                schedule(DEBOUNCE_MS);
-            }
-            if (!halted && retryAt !== null) {
-                // Work refused for a generating message: one wakeup at its retry time.
-                schedule(Math.max(0, retryAt - Date.now()));
+            if (!stopped) {
+                sendingKeys.clear();
+                // Early returns also release conservative marks of batches that never dispatched.
+                for (const [key, view] of journalRecords) {
+                    if (view.dispatched) {
+                        journalSettled(key);
+                    }
+                }
+                // Chat transitions already invalidated their real layers, including early exits.
+                scheduleJournal();
+                pruneWaits();
+                scheduleRefresh(0);
+                // A record whose hydration waited for the batch: its ordering check runs again now.
+                for (const record of [...deferredHydrations.values()]) {
+                    deferredHydrations.delete(recordKey(record.kind, record.id));
+                    applyHydration(record);
+                }
+                saving.state = false;
+                // Chats whose protection ended in this cycle (saved, refreshed, released) may be evicted now.
+                scheduleTrim();
+                backoffUntil = lastError ? Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.min(failures, 5)) : 0;
+                if (lastError) {
+                    noteWaitBlockers("backoff");
+                }
+                const retryAt = jobRetryAt();
+                if (retryAt === null) {
+                    generatingNoticeShown = false;
+                }
+                if (!halted && !permanentError && (hasPendingWork() || lastError)) {
+                    schedule(DEBOUNCE_MS);
+                }
+                if (!halted && retryAt !== null) {
+                    // Work refused for a generating message: one wakeup at its retry time.
+                    schedule(Math.max(0, retryAt - Date.now()));
+                }
             }
         }
+        return cycleWrote;
     })();
     return inFlight;
 }
@@ -1568,34 +2778,33 @@ async function cycle() {
     if (halted || trackedCharacters() === undefined) {
         return;
     }
-    const stages: (() => Promise<boolean | void>)[] = [
-        reloadDeferredChats,
-        hydrateCharacters,
-        applyRemoteUpdates,
-        refreshIdleChats,
-    ];
-    for (const stage of stages) {
-        const discardedWork = await stage();
-        if (halted) {
-            // A restore replaced the data meanwhile: nothing more is applied or sent.
-            return;
-        }
-        if (discardedWork) {
-            // At once: a later stage's failure must not swallow it.
-            showReloadedNotice();
-        }
-    }
+    applyRemotePatches();
+    scheduleRefresh(0);
     const { ops, captured, heldBack, membership, chatWork } = collectOperations();
     // The credential writes queued so far go after this batch; one queued while it is in flight
     // (say, the key of a preset created meanwhile) waits for the next cycle, after its resource.
     const capturedSecretOps = new Set(llmSecretState.queue.map((op) => op.id));
+    captureWaits(ops, chatWork, captured, membership);
     const { batches, oversized } = planBatches(ops, chatWork);
     for (const group of oversized) {
         const reason = `The chat ${group.chatId} is too large to save`;
         quarantineChat(group, reason, reason);
     }
+    // Later batches are conservatively marked sent too: recovery treats an unanswered create
+    // as dispatched even if an earlier batch prevented its request from going out.
+    journalDispatched(ops);
+    const journalFlush = flushJournal();
+    if (
+        !journalOff &&
+        (ops.some((op) => op.text !== null && op.baseRevision === null && journalRecords.has(op.key)) ||
+            batches.some((batch) => batch.work.groups.some((group) => group.ops[0]?.op === "create")))
+    ) {
+        await waitForCreateJournal(journalFlush);
+    }
+    if (stopped) return;
     if (batches.length > 0) {
         saving.state = true;
+        cycleWrote = true;
         for (const [index, batch] of batches.entries()) {
             if (halted) {
                 requeueChatWork(mergeWork(batches.slice(index).map((entry) => entry.work)));
@@ -1606,90 +2815,122 @@ async function cycle() {
                 // An earlier request of this cycle may have created or deleted chats of a character
                 // whose reorder travels here: base it on the order revision that acknowledgement gave.
                 rebaseChatOrders(batch.work);
+                void flushJournal();
             }
             let result: ResourceBatchResult;
             for (const op of batch.ops) {
                 sendingKeys.add(op.key);
             }
+            // A remote replacement may have settled a conservative mark while an earlier batch
+            // waited; this request still carries its collected op.
+            journalDispatched(batch.ops);
             try {
-                result = await applyBatchText(batchBody(batch));
-            } catch (error) {
-                // Nothing of this request or the later ones was saved.
-                requeueChatWork(later);
-                if (error instanceof ResourceConflictError) {
-                    await recoverFromConflict(error, batch.ops, batch.work);
-                    return;
-                }
-                if (quarantineRejectedChat(error, batch.work)) {
-                    return;
-                }
-                if (
-                    error instanceof ResourceRequestError &&
-                    (error.status === 400 || error.status === 413) &&
-                    batch.ops.length + batch.work.groups.length + batch.work.orders.length === 1
-                ) {
-                    // Quarantine before requeueing, so retained refused ops occur exactly once.
-                    if (batch.work.groups[0]) {
-                        quarantineChat(batch.work.groups[0], error.message);
+                fenceCharacterWrites(batch.ops, batch.work, true);
+                recordSaveWait(batch, captured, membership);
+                try {
+                    result = await applyBatchText(batchBody(batch));
+                } catch (error) {
+                    if (halted) {
                         return;
                     }
-                    if (batch.work.orders[0]) {
-                        quarantineChatOrder(batch.work.orders[0], error.message);
+                    // Nothing of this request or the later ones was saved.
+                    requeueChatWork(later);
+                    // A known refusal returns records to collected intent before any conflict read.
+                    if (
+                        error instanceof ResourceConflictError ||
+                        (error instanceof ResourceRequestError && error.status > 0 && error.status < 500)
+                    ) {
+                        batch.ops.forEach((op) => journalSettled(op.key));
+                    }
+                    if (error instanceof ResourceConflictError) {
+                        await recoverFromConflict(error, batch.ops, batch.work);
                         return;
                     }
-                }
-                // No answer: the server may have committed the batch (a lost response). Its chat
-                // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
-                // in doubt.
-                const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
-                requeueChatWork(batch.work, { lost });
-                if (lost) {
-                    noteInDoubt(batch.ops);
-                }
-                if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
-                    const match = /^ops\[(\d+)\]/.exec(error.message);
-                    const op = match ? batch.ops[Number(match[1])] : undefined;
-                    if (op) {
-                        // The server refuses that text: it never held it.
-                        inDoubt.delete(op.key);
-                        quarantineRecord(op, error);
-                    } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
-                        // The error names no record (including order/envelope errors). Probe each
-                        // unit separately next cycle so unrelated records and chats can still save.
-                        isolateBatches = true;
-                    } else if (batch.ops[0]) {
-                        inDoubt.delete(batch.ops[0].key);
-                        quarantineRecord(batch.ops[0], error, false);
+                    if (quarantineRejectedChat(error, batch.work)) {
+                        return;
                     }
+                    if (
+                        error instanceof ResourceRequestError &&
+                        (error.status === 400 || error.status === 413) &&
+                        batch.ops.length + batch.work.groups.length + batch.work.orders.length === 1
+                    ) {
+                        // Quarantine before requeueing, so retained refused ops occur exactly once.
+                        if (batch.work.groups[0]) {
+                            quarantineChat(batch.work.groups[0], error.message);
+                            return;
+                        }
+                        if (batch.work.orders[0]) {
+                            quarantineChatOrder(batch.work.orders[0], error.message);
+                            return;
+                        }
+                    }
+                    // No answer: the server may have committed the batch (a lost response). Its chat
+                    // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
+                    // in doubt.
+                    const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
+                    requeueChatWork(batch.work, { lost });
+                    if (lost) {
+                        noteInDoubt(batch.ops);
+                    }
+                    if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 413)) {
+                        const match = /^ops\[(\d+)\]/.exec(error.message);
+                        const op = match ? batch.ops[Number(match[1])] : undefined;
+                        if (op) {
+                            // The server refuses that text: it never held it.
+                            inDoubt.delete(op.key);
+                            quarantineRecord(op, error);
+                        } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
+                            // The error names no record (including order/envelope errors). Probe each
+                            // unit separately next cycle so unrelated records and chats can still save.
+                            isolateBatches = true;
+                        } else if (batch.ops[0]) {
+                            inDoubt.delete(batch.ops[0].key);
+                            quarantineRecord(batch.ops[0], error, false);
+                        }
+                        return;
+                    }
+                    throw error;
+                }
+                if (halted) {
                     return;
                 }
-                throw error;
-            }
-            batch.ops.forEach((op, opIndex) => {
-                inDoubt.delete(op.key);
-                const revision = result.results[opIndex]?.revision;
-                if (op.text === null || revision === null || revision === undefined) {
-                    persisted.delete(op.key);
-                    if (op.text === null && op.kind === RESOURCE_KIND.characters) {
-                        // The character's chats went with it: their state is forgotten now (a
-                        // character added again under the id meanwhile creates its chats anew).
-                        ackCharacterDelete(op.id);
-                        listRefresh.delete(op.id);
-                        parkedListRefresh.delete(op.id);
+                batch.ops.forEach((op, opIndex) => {
+                    inDoubt.delete(op.key);
+                    const revision = result.results[opIndex]?.revision;
+                    if (op.text === null || revision === null || revision === undefined) {
+                        persisted.delete(op.key);
+                        if (op.text === null && op.kind === RESOURCE_KIND.characters) {
+                            // The character's chats went with it: their state is forgotten now (a
+                            // character added again under the id meanwhile creates its chats anew).
+                            ackCharacterDelete(op.id);
+                            listRefresh.delete(op.id);
+                            parkedListRefresh.delete(op.id);
+                        }
+                    } else {
+                        persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                     }
-                } else {
-                    persisted.set(op.key, { revision, text: op.text, parts: op.parts });
+                    journalSettled(op.key);
+                });
+                for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
+                    queueCharacterRefresh(characterId, "listRefresh");
                 }
-            });
-            for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
-                listRefresh.add(characterId);
+            } finally {
+                fenceCharacterWrites(batch.ops, batch.work, false);
             }
         }
     }
     if (halted) {
         return;
     }
-    await sendSecretOps(capturedSecretOps);
+    try {
+        sendingKeys.add(collectionKey(SECTION_KIND.llmSecrets));
+        await sendSecretOps(capturedSecretOps);
+    } finally {
+        sendingKeys.delete(collectionKey(SECTION_KIND.llmSecrets));
+    }
+    if (halted) {
+        return;
+    }
     for (const [key, marked] of captured) {
         if (recordQuarantine(key) || heldBack.has(key)) {
             continue;
@@ -1702,11 +2943,12 @@ async function cycle() {
         if (dirty.get(key) === marked) {
             dirty.delete(key);
         }
+        queueJournalRecord(key);
     }
     if (membershipAcked < membership && !collectMembershipChanges()) {
         membershipAcked = membership;
     }
-    await refreshIdleChats();
+    scheduleRefresh(0);
 }
 
 /** Queued credential writes the server refused (400, 404): dropped and reported, by op id. */
@@ -1757,24 +2999,47 @@ function secretOpLabel(op: QueuedSecretOp): string {
  */
 function adoptSecretRecord(revision: string, masked: MaskedLlmSecrets, invalidate: SecretPath[] | "all") {
     const key = collectionKey(SECTION_KIND.llmSecrets);
-    const saved = persisted.get(key)?.text;
-    const remote = llmSecretsText(masked);
-    const local = projectCollection(SECTION_KIND.llmSecrets);
-    if (local === saved) {
-        persisted.set(key, { revision, text: remote });
-        applySettingsRecord(SECTION_KIND.llmSecrets, masked, invalidate);
-    } else if (remote === saved) {
-        persisted.set(key, { revision, text: remote });
-        setMaskedSecrets(masked, invalidate);
-    } else {
+    const held = persisted.get(key);
+    if (held && (compareRevision(revision, held.revision) ?? 0) < 0) {
+        return;
+    }
+    if (!adoptSecretSiblings(revision, masked, invalidate)) {
         // Through `applySettingsRecord`, which invalidates every credential path.
         acceptRemote({ kind: SECTION_KIND.llmSecrets, id: SINGLETON_RESOURCE_ID, revision, data: masked });
         showReloadedNotice();
     }
 }
 
+/**
+ * The readable siblings are one unit for credential replies, live updates, and save conflicts:
+ * unchanged local siblings take remote; unchanged remote siblings keep local. Two changed bodies
+ * conflict without touching the mirror. Credential status is always the actual masked server copy.
+ */
+function adoptSecretSiblings(revision: string, masked: MaskedLlmSecrets, invalidate: SecretPath[] | "all"): boolean {
+    const key = collectionKey(SECTION_KIND.llmSecrets);
+    const saved = persisted.get(key)?.text;
+    const remote = llmSecretsText(masked);
+    const local = projectCollection(SECTION_KIND.llmSecrets);
+    if (local === saved) {
+        persisted.set(key, { revision, text: remote });
+        applySettingsRecord(SECTION_KIND.llmSecrets, masked, invalidate);
+        return true;
+    }
+    if (remote === saved) {
+        persisted.set(key, { revision, text: remote });
+        setMaskedSecrets(masked, invalidate);
+        return true;
+    }
+    return false;
+}
+
 async function rereadSecrets() {
-    const item = await getResource<MaskedLlmSecrets>(SECTION_KIND.llmSecrets, SINGLETON_RESOURCE_ID);
+    const item = await deadlineRead((signal) =>
+        getResource<MaskedLlmSecrets>(SECTION_KIND.llmSecrets, SINGLETON_RESOURCE_ID, { signal }),
+    );
+    if (halted) {
+        return;
+    }
     if (item) {
         const before = persisted.get(collectionKey(SECTION_KIND.llmSecrets))?.revision;
         adoptSecretRecord(item.revision, item.data, item.revision === before ? [] : "all");
@@ -1812,6 +3077,8 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                 throw new Error("The llmSecrets record is not loaded");
             }
             saving.state = true;
+            cycleWrote = true;
+            recordSecretWait(op.id);
             try {
                 const reply = await sendSecretRequest(
                     {
@@ -1821,10 +3088,16 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                     },
                     base,
                 );
+                if (halted) {
+                    return;
+                }
                 removeSecretOp(op.id);
                 adoptSecretRecord(reply.revision, reply.data as MaskedLlmSecrets, [secretOpTarget(op.request)]);
                 break;
             } catch (error) {
+                if (halted) {
+                    return;
+                }
                 if (error instanceof ResourceConflictError && attempt < SECRET_CONFLICT_RETRIES) {
                     await rereadSecrets();
                     continue;
@@ -1958,20 +3231,47 @@ async function haltForRestore() {
     if (halted) {
         return;
     }
+    let snapshot: RestoreJournalItem[] = [];
+    try {
+        snapshot = captureRestoreJournal();
+    } catch (error) {
+        console.warn("[Save journal]", error);
+        recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
+    }
+    const drafts = [...conflictDrafts.values()];
     halted = true;
+    if (journalTimer) {
+        clearTimeout(journalTimer);
+        journalTimer = null;
+    }
+    journalPending.clear();
+    journalChatPending.clear();
+    chatJournal.setListener(null);
+    chatJournal.setConflictListener(null);
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+    refreshTimer = null;
+    for (const controller of readControllers) {
+        controller.abort(new Error("Saving stopped: the server data was restored"));
+    }
     if (timer) {
         clearTimeout(timer);
         timer = null;
     }
+    const journalSnapshot =
+        !journalOff && (snapshot.length > 0 || drafts.length > 0) ? waitForRestoreJournal(snapshot, drafts) : null;
     try {
         restoreReloadHook?.();
     } catch (error) {
         console.error("[Save] Before restore reload:", error);
     }
     restoreReloadHook = null;
-    // The terminal notice: no other alert replaces or clears it, so the page reloads only after the
-    // user acknowledged it.
+    // The terminal notice opens synchronously after the hook; no other alert replaces or clears it.
+    // Any snapshot's bound starts above; an off or empty journal adds no wait after acknowledgement.
     await alertTerminal(language.resourceRestored);
+    if (journalSnapshot) await journalSnapshot;
+    if (stopped) return;
     recordClientEvent({ kind: "sync", phase: "reload", reason: "restore" });
     flushClientDiagnostics();
     location.reload();
@@ -1982,6 +3282,7 @@ const RESTORE_WATCH_MS = 120_000;
 const RESTORE_POLL_MS = 1_000;
 const RESTORE_READ_MS = 5_000;
 let restoreWatch: Promise<boolean> | null = null;
+let cancelRestorePoll: (() => void) | null = null;
 
 /**
  * A server job of this tab ended because a restore or import is replacing the data (its
@@ -2002,8 +3303,17 @@ export function watchForRestore(): Promise<boolean> {
         try {
             const until = Date.now() + RESTORE_WATCH_MS;
             while (Date.now() < until && !halted) {
-                await new Promise((resolve) => setTimeout(resolve, RESTORE_POLL_MS));
+                await new Promise<void>((resolve) => {
+                    const timer = setTimeout(resolve, RESTORE_POLL_MS);
+                    cancelRestorePoll = () => {
+                        clearTimeout(timer);
+                        resolve();
+                    };
+                });
+                cancelRestorePoll = null;
+                if (halted) return true;
                 const controller = new AbortController();
+                readControllers.add(controller);
                 const read = getResource(SECTION_KIND.ui, "main", { signal: controller.signal }).then(
                     () => false,
                     (error) => error instanceof ResourceEpochMismatchError,
@@ -2011,6 +3321,7 @@ export function watchForRestore(): Promise<boolean> {
                 const budget = Math.max(0, Math.min(RESTORE_READ_MS, until - Date.now()));
                 let timer: ReturnType<typeof setTimeout> | undefined;
                 const timedOut = new Promise<false>((resolve) => {
+                    controller.signal.addEventListener("abort", () => resolve(false), { once: true });
                     timer = setTimeout(() => {
                         controller.abort();
                         resolve(false);
@@ -2018,6 +3329,7 @@ export function watchForRestore(): Promise<boolean> {
                 });
                 const replaced = await Promise.race([read, timedOut]);
                 clearTimeout(timer);
+                readControllers.delete(controller);
                 if (replaced) {
                     return true;
                 }
@@ -2063,6 +3375,7 @@ function acceptRemote(item: RemoteItem, removeAbsentSingleton = false) {
     discarded.set(key, discardSequence);
     settle(key, generation);
     dirty.delete(key);
+    journalDiscarded(key);
     for (const listener of remoteChangeListeners) {
         try {
             listener(item.kind, item.id);
@@ -2111,31 +3424,14 @@ function storedFields(data: unknown): Record<string, unknown> | null {
     return copy;
 }
 
-const ABSENT = Symbol("absent");
-const fieldOf = (record: Record<string, unknown>, field: string): unknown =>
-    Object.hasOwn(record, field) ? record[field] : ABSENT;
 const isStamp = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 /** The `statics` counts (`incrementStatic`). */
 const STATIC_COUNTS = new Set(["imports", "messages"]);
 /**
- * What a conflicting record's server copy changed against the saved base, if every change is one
- * this client can take without losing or reinterpreting anything, else null. The changes are the
- * values the mirror must take (ABSENT: delete the field). Allowed, field by field (top level):
- * - a field the server holds as this client does (both made the same change);
- * - a field the base did not have and this client does not have either (another tab filled it in,
- *   such as a default its character screen binds); the server's value is taken;
- * - a character's `lastInteraction` (a send job stamped it while this client had an unsaved change):
- *   the server's finite stamp when this client left the field as saved (the server's clock wins, even
- *   over a later stamp an earlier client clock wrote), else the later of two finite stamps;
- * - a `statics` count: best effort, the server's count plus this client's increments since the
- *   base (`imports`, `messages`; a count both tabs raised to the same value, or one a lost answer
- *   already holds, may be off by those increments).
- * Anything else (a substantive remote edit, even of a field this client did not touch) is a
- * conflict as before, so related fields (a group's member arrays) are never combined from two
- * sources.
+ * Best-effort statics counts add this client's increments to the server's count. Other fields keep
+ * the existing equal/absent-field rule; a substantive remote change of one still conflicts.
  */
 function benignChanges(
-    kind: string,
     saved: Record<string, unknown>,
     remote: Record<string, unknown>,
     local: Record<string, unknown>,
@@ -2143,25 +3439,7 @@ function benignChanges(
     const changes = new Map<string, unknown>();
     for (const field of new Set([...Object.keys(saved), ...Object.keys(remote), ...Object.keys(local)])) {
         const [base, theirs, ours] = [fieldOf(saved, field), fieldOf(remote, field), fieldOf(local, field)];
-        if (kind === RESOURCE_KIND.characters && field === "lastInteraction") {
-            if (isEqual(theirs, ours) || (isStamp(theirs) && (ours === ABSENT || isEqual(ours, base)))) {
-                if (!isEqual(theirs, ours)) {
-                    changes.set(field, theirs);
-                }
-                continue;
-            }
-            if (!isStamp(theirs) && theirs === base) {
-                continue;
-            }
-            if (!isStamp(theirs) || !isStamp(ours)) {
-                return null;
-            }
-            if (theirs > ours) {
-                changes.set(field, theirs);
-            }
-            continue;
-        }
-        if (kind === COLLECTION_KIND.statics && STATIC_COUNTS.has(field)) {
+        if (STATIC_COUNTS.has(field)) {
             const counted = (value: unknown) => (value === ABSENT ? 0 : value);
             const [b, t, o] = [counted(base), counted(theirs), counted(ours)];
             if (!isStamp(b) || !isStamp(t) || !isStamp(o)) {
@@ -2336,23 +3614,21 @@ function pluginStorageLosses(key: string, item: RemoteItem): PluginStorageDiscar
 }
 
 /**
- * A conflicting character or `statics` record whose server change this client can take
- * (`benignChanges`): a send job stamped the character (its `lastInteraction`), filled in a
- * default its screen binds, or counted a send. The changes go into the mirror, the base moves
- * to the server's revision, and the key stays dirty, so the next cycle writes the merged record.
- * Nothing is discarded and no reload notice is shown; a field taken from the server is announced to
- * the remote-change listeners (caches derived from the record). Not for a create, a delete, another
- * kind, a character whose reload already waits for its generation, or a taken field the mirror object
- * only inherits (`assignsInherited`). A `pluginStorage` record is merged key by key instead
- * (`mergePluginStorageChange`), and an item list of `ITEM_LIST_MERGE_KINDS` item by item
- * (`mergeItemListChange`: this client's added items over the server's list), a create included.
+ * Merges independent fields or items against the saved base and the current local projection. All
+ * units must resolve before the mirror changes; otherwise normal conflict recovery keeps eligible
+ * local intent as a draft and accepts the server record. Successful merges rebase through
+ * `adoptMergedBase`, with no discard or reload notice. Character creates/deletes and taken fields
+ * the mirror only inherits remain conflicts; item collections also support concurrent creation.
  */
 function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     if (item.kind === RESOURCE_KIND.pluginStorage) {
         return mergePluginStorageChange(item, key);
     }
-    if (ITEM_LIST_MERGE_KINDS.has(item.kind)) {
+    if (isItemMergeKind(item.kind)) {
         return mergeItemListChange(item, key);
+    }
+    if (isSection(item.kind)) {
+        return mergeSectionChange(item, key);
     }
     const isCharacter = item.kind === RESOURCE_KIND.characters;
     if (!(isCharacter || item.kind === COLLECTION_KIND.statics) || item.revision === null) {
@@ -2371,7 +3647,18 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
     }
     const remote = storedFields(item.data);
     const local = storedFields(JSON.parse(projected));
-    const changes = remote && saved && local ? benignChanges(item.kind, saved, remote, local) : null;
+    if (!remote || !saved || !local) {
+        return false;
+    }
+    const merged = isCharacter ? mergeCharacterFields(saved, remote, local) : null;
+    const changes = isCharacter
+        ? merged &&
+          new Map(
+              [...new Set([...Object.keys(local), ...Object.keys(merged)])]
+                  .filter((field) => !isEqual(fieldOf(local, field), fieldOf(merged, field)))
+                  .map((field) => [field, fieldOf(merged, field)]),
+          )
+        : benignChanges(saved, remote, local);
     if (!changes) {
         return false;
     }
@@ -2435,6 +3722,13 @@ function adoptMergedBase(item: RemoteItem, revision: string, key: string, announ
             : { revision, text: recordText(item.kind, item.data) },
     );
     markKey(key);
+    journalSettled(key);
+    rememberJournalProjection(
+        key,
+        merged,
+        false,
+        item.kind === RESOURCE_KIND.characters ? findMirrorCharacter(item.id) : undefined,
+    );
     if (announce) {
         for (const listener of remoteChangeListeners) {
             try {
@@ -2474,86 +3768,28 @@ function mergePluginStorageChange(item: RemoteItem, key: string): boolean {
 }
 
 /**
- * The item lists whose items are independent records addressed by their id, including toggle presets,
- * so an item this client added can go over another writer's list (`mergeItemAdds`). Other lists that
- * pass `itemIds` are not here: `characterOrder`'s folders hold character membership, and `loreBook`,
- * `plugins`, `hotkeys`, and `authRefreshes` are addressed by page, name, action, or URL, whatever ids
- * their items carry.
+ * Sections merge by field and coupled tuple; llmSecrets keeps its entire readable sibling body as
+ * one unit. Masked credential status always comes from the server, never from the merged projection.
+ * No section merges without a saved base, and every value is detached before raw application.
  */
-const ITEM_LIST_MERGE_KINDS = new Set<string>([
-    RESOURCE_KIND.modules,
-    RESOURCE_KIND.presets,
-    COLLECTION_KIND.personas,
-    COLLECTION_KIND.credentials,
-    COLLECTION_KIND.modelPresets,
-    COLLECTION_KIND.modelProfiles,
-    COLLECTION_KIND.togglePresets,
-]);
-
-/**
- * An item list merged from a conflict, or null when it cannot be: the server's list (its items and
- * order) with the items this client added (an id neither the saved base nor the server's list has)
- * after it, in this client's order. Every other change of this client must be one the server already
- * holds: each saved item as saved or as the server has it (an edit or removal only the server made is
- * taken; one this client made conflicts, even of an item the server left alone), the saved items in
- * the saved order or the server's, and an item both added under one id equal on both sides. All three
- * lists need unique item ids (`itemIds`).
- */
-function mergeItemAdds(base: unknown, theirs: unknown, ours: unknown): Record<string, unknown>[] | null {
-    const [baseIds, theirIds, ourIds] = [itemIds(base), itemIds(theirs), itemIds(ours)];
-    if (!baseIds || !theirIds || !ourIds) {
-        return null;
-    }
-    const byId = (list: unknown, ids: string[]) =>
-        new Map(ids.map((id, index) => [id, (list as Record<string, unknown>[])[index]]));
-    const [saved, remote, local] = [byId(base, baseIds), byId(theirs, theirIds), byId(ours, ourIds)];
-    const valueOf = (items: Map<string, unknown>, id: string) => (items.has(id) ? items.get(id) : ABSENT);
-    for (const id of baseIds) {
-        const value = valueOf(local, id);
-        if (!isEqual(value, valueOf(saved, id)) && !isEqual(value, valueOf(remote, id))) {
-            return null;
-        }
-    }
-    const kept = ourIds.filter((id) => saved.has(id));
-    const savedOrder = baseIds.filter((id) => local.has(id));
-    const remoteOrder = theirIds.filter((id) => saved.has(id) && local.has(id));
-    if (!isEqual(kept, savedOrder) && !isEqual(kept, remoteOrder)) {
-        return null;
-    }
-    const added: Record<string, unknown>[] = [];
-    for (const id of ourIds) {
-        if (saved.has(id)) {
-            continue;
-        }
-        if (remote.has(id)) {
-            if (!isEqual(local.get(id), remote.get(id))) {
-                return null;
-            }
-            continue;
-        }
-        added.push(local.get(id)!);
-    }
-    return [...(theirs as Record<string, unknown>[]), ...added];
-}
-
-/**
- * A conflicting item list of `ITEM_LIST_MERGE_KINDS` (`mergeItemAdds`): a module this tab imported
- * while another tab renamed a different one keeps both. The merge goes into the mirror raw (the
- * selections are resolved against it, `applyToMirror`), and the key stays dirty (`adoptMergedBase`),
- * so the next cycle sends the added items on the server's revision: no discard, no notice. A list
- * both tabs created merges against an empty base.
- */
-function mergeItemListChange(item: RemoteItem, key: string): boolean {
+function mergeSectionChange(item: RemoteItem, key: string): boolean {
+    const base = persisted.get(key);
     const projected = projectRecord(item.kind, item.id);
-    if (item.revision === null || projected === undefined) {
+    if (!base || item.revision === null || projected === undefined || !isSection(item.kind)) {
         return false;
     }
-    const base = persisted.get(key);
-    let local: unknown;
-    let merged: Record<string, unknown>[] | null;
+    if (item.kind === SECTION_KIND.llmSecrets) {
+        if (!adoptSecretSiblings(item.revision, item.data as MaskedLlmSecrets, "all")) {
+            return false;
+        }
+        adoptMergedBase(item, item.revision, key, projected !== projectCollection(item.kind));
+        return true;
+    }
+    let merged: Record<string, unknown> | null;
+    const local = JSON.parse(projected);
     try {
-        local = JSON.parse(projected);
-        merged = mergeItemAdds(base ? JSON.parse(base.text) : [], item.data, local);
+        merged = mergeSectionFields(item.kind, JSON.parse(base.text), item.data, local);
+        if (merged) merged = structuredClone(merged);
     } catch {
         return false;
     }
@@ -2565,8 +3801,36 @@ function mergeItemListChange(item: RemoteItem, key: string): boolean {
     return true;
 }
 
-/** Whether two JSON texts hold the same value, key order aside (same-length texts are compared parsed). */
-function sameJson(a: string, b: string): boolean {
+/**
+ * Independent items merge whole by id, with explicit ordering, nonempty, and selection rules.
+ * The detached result goes into the mirror raw and the next cycle saves it on the server revision.
+ * Lists both tabs created merge against an empty base; any unresolved item leaves the mirror alone.
+ */
+function mergeItemListChange(item: RemoteItem, key: string): boolean {
+    const projected = projectRecord(item.kind, item.id);
+    if (item.revision === null || projected === undefined || !isItemMergeKind(item.kind)) {
+        return false;
+    }
+    const base = persisted.get(key);
+    let local: unknown;
+    let merged: Record<string, unknown>[] | Record<string, unknown> | null;
+    try {
+        local = JSON.parse(projected);
+        merged = mergeItemCollection(item.kind, base ? JSON.parse(base.text) : ABSENT, item.data, local);
+        if (merged) merged = structuredClone(merged);
+    } catch {
+        return false;
+    }
+    if (!merged) {
+        return false;
+    }
+    applyToMirror(item.kind, item.id, merged);
+    adoptMergedBase(item, item.revision, key, !isEqual(merged, local));
+    return true;
+}
+
+/** Compares adapter-produced compact JSON, key order aside; only equal-length texts are parsed. */
+export function sameJson(a: string, b: string): boolean {
     if (a === b) {
         return true;
     }
@@ -2589,6 +3853,7 @@ function noteInDoubt(ops: readonly PendingOp[]) {
         if (op.text !== null && !inDoubt.has(op.key)) {
             inDoubt.set(op.key, { baseRevision: op.baseRevision, text: op.text, parts: op.parts ?? null });
         }
+        journalSettled(op.key);
     }
 }
 
@@ -2605,6 +3870,7 @@ function adoptInDoubt(key: string, revision: string, text: string): boolean {
     inDoubt.delete(key);
     persisted.set(key, { revision, text: doubt.text, parts: doubt.parts });
     markKey(key);
+    journalSettled(key);
     return true;
 }
 
@@ -2641,9 +3907,12 @@ function rebuildConflictRecord(conflict: { kind: string; id: string; revision: s
  */
 async function recoverFromConflict(error: ResourceConflictError, batch: readonly PendingOp[], work: ChatWork) {
     const notice = { owed: false };
+    recoveringConflict = true;
+    noteWaitBlockers("conflict");
     try {
         await recoverConflictedWork(error, batch, work, notice);
     } finally {
+        recoveringConflict = false;
         if (notice.owed && !halted) {
             showReloadedNotice();
         }
@@ -2714,9 +3983,14 @@ async function recoverConflictedWork(
     // Counts only: the conflicting records' ids stay here.
     recordClientEvent({ kind: "sync", phase: "conflict", ...counted });
     // Drop refused locked edits and retain conflicting order snapshots before any read can fail.
+    const expiredRecovered = new Set(
+        work.groups
+            .filter((group) => group.recoveredAt !== undefined && expiredChats.has(group.key))
+            .map((group) => group.key),
+    );
     const immediateRecovery = recoverChatConflicts(
         {
-            groups: work.groups.filter((group) => generatingChats.has(group.key)),
+            groups: work.groups.filter((group) => generatingChats.has(group.key) || expiredRecovered.has(group.key)),
             orders: work.orders.filter((order) => conflictedOrders.has(order.characterId)),
         },
         new Set(),
@@ -2724,6 +3998,7 @@ async function recoverConflictedWork(
         [],
         generatingChats,
         lockedMessages,
+        expiredChats,
     );
     if (generating || immediateRecovery.blocked) {
         showGeneratingNotice();
@@ -2732,17 +4007,27 @@ async function recoverConflictedWork(
         notice.owed = true;
     }
     for (const characterId of immediateRecovery.refresh) {
-        hydrate.add(characterId);
+        queueCharacterRefresh(characterId, "hydrate");
     }
+    noteWaitBlockers();
     const remainingWork = {
-        groups: work.groups.filter((group) => !generatingChats.has(group.key)),
+        groups: work.groups.filter((group) => !generatingChats.has(group.key) && !expiredRecovered.has(group.key)),
         orders: work.orders.filter((order) => !conflictedOrders.has(order.characterId)),
     };
     let read: Awaited<ReturnType<typeof readRefs>>;
     const readStamp = issueChatReadStamp();
     try {
-        read = refs.length + chatRefs.length > 0 ? await readRefs(refs, { chats: chatRefs }) : { epoch: "", items: [] };
+        read =
+            refs.length + chatRefs.length > 0
+                ? await deadlineRead((signal) => readRefs(refs, { chats: chatRefs, signal }))
+                : { epoch: "", items: [] };
+        if (halted) {
+            return;
+        }
     } catch (readError) {
+        if (halted) {
+            return;
+        }
         // Only work outside the immediate recovery still needs to be requeued.
         requeueChatWork(remainingWork);
         throw readError;
@@ -2760,11 +4045,11 @@ async function recoverConflictedWork(
         notice.owed = true;
     }
     for (const characterId of recovered.refresh) {
-        // Read in `hydrateCharacters` (now, and again next cycle if the read fails).
-        hydrate.add(characterId);
+        // The background queue retries the list independently of this refused batch.
+        queueCharacterRefresh(characterId, "hydrate");
     }
     for (const characterId of recovered.refreshOrders) {
-        listRefresh.add(characterId);
+        queueCharacterRefresh(characterId, "listRefresh");
     }
     for (const item of [...rebuilt, ...read.items]) {
         const key = recordKey(item.kind, item.id);
@@ -2775,8 +4060,9 @@ async function recoverConflictedWork(
             // the server's key order, so the text may differ in order only).
             inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
+            journalSettled(key);
             if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
-                listRefresh.add(item.id);
+                queueCharacterRefresh(item.id, "listRefresh");
             }
             continue;
         }
@@ -2785,41 +4071,41 @@ async function recoverConflictedWork(
             // and this client's newer change goes next cycle.
             continue;
         }
+        const abandoned = captureRecordConflict(key, op, item.revision === null);
         inDoubt.delete(key);
         if (mergeConcurrentChange(item, key)) {
             continue;
         }
         if (item.kind === RESOURCE_KIND.characters && item.revision !== null && !findMirrorCharacter(item.id)) {
             // A character the mirror did not have: its chats come with their order.
-            hydrate.add(item.id);
+            queueCharacterRefresh(item.id, "hydrate");
         }
+        if (abandoned) queueConflictDraft(abandoned);
         acceptRemote(item);
         notice.owed = true;
     }
-    if (hydrate.size > 0 && (await hydrateCharacters())) {
-        notice.owed = true;
-    }
+    scheduleRefresh(0);
 }
 
 /**
  * Reads the chat lists of characters a recovery inserted or whose chats changed on the server (their
- * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays
- * listed until its read succeeds. A recovery's character (`hydrate`) takes the server's list
- * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a
- * generation of this tab runs on it, and one the read finds gone is removed with its chats unless
- * its held revision or its chats' lifetime moved during the read (then it stays listed for the next read);
- * an acknowledgement's or adopted create's (`listRefresh`) is applied as a live update that keeps
- * a queued reorder unless a kept chat with a held revision is missing from the server's list (then
- * the reorder is discarded and reported), also during a generation (busy chats keep their copy),
- * and stays listed while the list cannot be applied yet. A locally absent character's refresh is
- * parked until it is re-added, without scheduling reads. Returns whether anything was discarded
- * (the caller shows the reload notice), not whether anything was read.
+ * summaries: a chat is loaded only on demand), and puts them into the mirror. A character stays listed
+ * until its response can be applied. A recovery's character (`hydrate`) takes the server's list
+ * (`acceptRemoteCollection`, which discards what the list has no room for) and waits while a generation
+ * of this tab runs on it, and one the read finds gone is removed with its chats unless its held revision
+ * or its chats' lifetime moved during the read (then it stays listed for the next read); an
+ * acknowledgement's or adopted create's (`listRefresh`) is applied as a live update that keeps a queued
+ * reorder unless a kept chat with a held revision is missing from the server's list (then the reorder is
+ * discarded and reported), also during a generation (busy chats keep their copy), and stays listed while
+ * the list cannot be applied yet. A locally absent character's refresh is parked until it is re-added,
+ * without scheduling reads. Each character has its own joinable read; a snapshot from before a write's
+ * dispatch or settlement is retried without applying it.
  */
-async function hydrateCharacters(): Promise<boolean> {
+async function hydrateCharacters(): Promise<void> {
     for (const id of parkedListRefresh) {
         if (findMirrorCharacter(id)) {
             parkedListRefresh.delete(id);
-            listRefresh.add(id);
+            queueCharacterRefresh(id, "listRefresh");
         }
     }
     for (const id of listRefresh) {
@@ -2828,14 +4114,50 @@ async function hydrateCharacters(): Promise<boolean> {
             parkedListRefresh.add(id);
         }
     }
-    // A recovery waits for this tab's streamed text; a feed lock alone does not hold it back.
-    const ids = [
-        ...[...hydrate].filter((id) => !isCharacterStreamedHere(id)),
-        ...[...listRefresh].filter((id) => !hydrate.has(id)),
-    ];
-    if (ids.length === 0) {
-        return false;
+    const results = await Promise.allSettled([...new Set([...hydrate, ...listRefresh])].map(refreshCharacter));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+        throw failed.reason;
     }
+}
+
+/** Joins only this character's read; a flush need not wait for the rest of a refresh pass. */
+function refreshCharacter(id: string): Promise<boolean> {
+    const existing = characterRefreshes.get(id);
+    if (existing) {
+        return existing;
+    }
+    const purpose = hydrate.has(id) ? "hydrate" : "listRefresh";
+    if (
+        halted ||
+        (!hydrate.has(id) && !listRefresh.has(id)) ||
+        (purpose === "hydrate" && isCharacterStreamedHere(id))
+    ) {
+        return Promise.resolve(false);
+    }
+    const request = readCharacter(id, purpose)
+        .then((discardedWork) => {
+            if (discardedWork && !halted) {
+                showReloadedNotice();
+            }
+            if (!halted && hasPendingWork()) {
+                schedule(0);
+            }
+            return discardedWork;
+        })
+        .catch((error) => {
+            failedRefresh(error);
+            throw error;
+        })
+        .finally(() => characterRefreshes.delete(id));
+    characterRefreshes.set(id, request);
+    return request;
+}
+
+async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Promise<boolean> {
+    const ids = [id];
+    const requestGeneration = listReadGenerations.get(id);
+    const writeSerial = characterWriteSerials.get(id) ?? 0;
     const issued = heldChatRevisionsByCharacter(ids);
     // Taken before the read: a recovery's character found gone is removed only if neither its held
     // revision (a job hydration, a live update) nor its chats' lifetime (a same-id recreation) moved
@@ -2844,9 +4166,11 @@ async function hydrateCharacters(): Promise<boolean> {
         ids.map((id) => [id, persisted.get(recordKey(RESOURCE_KIND.characters, id))?.revision ?? null]),
     );
     const issuedOwners = new Map(ids.map((id) => [id, chatOwnerToken(id)]));
-    const read = await readRefs(
-        ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
-        { chatSummaryCollections: ids },
+    const read = await deadlineRead((signal) =>
+        readRefs(
+            ids.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
+            { chatSummaryCollections: ids, signal },
+        ),
     );
     if (halted) {
         return false;
@@ -2856,7 +4180,15 @@ async function hydrateCharacters(): Promise<boolean> {
     for (const collection of read.chatSummaryCollections ?? []) {
         const id = collection.characterId;
         const record = records.get(id);
-        if (!hydrate.has(id)) {
+        if (
+            listReadGenerations.get(id) !== requestGeneration ||
+            (characterWriteSerials.get(id) ?? 0) !== writeSerial ||
+            writingCharacters.has(id) ||
+            chatOwnerToken(id) !== issuedOwners.get(id)
+        ) {
+            continue;
+        }
+        if (purpose === "listRefresh") {
             if (!listRefresh.has(id)) {
                 continue;
             }
@@ -2886,7 +4218,9 @@ async function hydrateCharacters(): Promise<boolean> {
                 // The answer is older than what the mirror now holds: kept listed for the next read.
                 continue;
             }
-            // The character itself is gone on the server: remove it with its chats.
+            // The character itself is gone on the server: preserve intent before removing its chats.
+            const abandoned = captureRecordConflict(recordKey(record.kind, record.id), undefined, true);
+            if (abandoned) queueConflictDraft(abandoned);
             acceptRemote(record);
             discardedWork = true;
         } else if (collection.order) {
@@ -2908,20 +4242,48 @@ function findMirrorCharacter(id: string): (character | groupChat) | undefined {
 }
 
 /**
- * Reloads chats whose reload waited for a generation that has ended (part of the cycle). A chat
- * stays deferred until its read succeeds; one that is gone refreshes its character's chat list.
- * Returns whether a chat was replaced or removed (its work discarded: the cycle shows the reload
- * notice); false when every chat was skipped (a new job locked it, or the read did not list it).
+ * The refresh queue reloads chats whose generation has ended. Each chat stays deferred until its
+ * response can be applied; one that is gone queues its character's list. The queue shows the reload
+ * notice as soon as a response discards local work.
  */
-async function reloadDeferredChats(): Promise<boolean> {
-    const released = deferredReloads();
-    if (released.length === 0) {
-        return false;
+async function reloadDeferredChats(): Promise<void> {
+    const results = await Promise.allSettled(deferredReloads().map(refreshDeferredChat));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") {
+        throw failed.reason;
     }
+}
+
+function refreshDeferredChat(ref: ChatRef): Promise<boolean> {
+    const key = `${ref.chaId}\u0000${ref.chatId}`;
+    const existing = deferredRefreshes.get(key);
+    if (existing) {
+        return existing;
+    }
+    const request = readDeferredChat(ref)
+        .then((discardedWork) => {
+            if (discardedWork && !halted) {
+                showReloadedNotice();
+            }
+            return discardedWork;
+        })
+        .catch((error) => {
+            failedRefresh(error);
+            throw error;
+        })
+        .finally(() => deferredRefreshes.delete(key));
+    deferredRefreshes.set(key, request);
+    return request;
+}
+
+async function readDeferredChat(ref: ChatRef): Promise<boolean> {
     const readStamp = issueChatReadStamp();
-    const read = await readRefs([], {
-        chats: released.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
-    });
+    const read = await deadlineRead((signal) =>
+        readRefs([], {
+            chats: [{ characterId: ref.chaId, id: ref.chatId }],
+            signal,
+        }),
+    );
     if (halted) {
         return false;
     }
@@ -2929,31 +4291,17 @@ async function reloadDeferredChats(): Promise<boolean> {
     for (const chat of read.chats ?? []) {
         const refresh = finishDeferredReload({ ...chat, readStamp } as RemoteChat);
         if (refresh) {
-            hydrate.add(refresh);
+            queueCharacterRefresh(refresh, "hydrate");
         }
     }
     return chatDiscardSequence() > discardsBefore;
 }
 
 /**
- * Stale acknowledgements and live notices rebase only idle chats, inside the cycle and without a
- * reload notice: loaded chats are read whole, chats that are not loaded through their character's
- * summary list (`refreshIdleSummaries`).
- */
-async function refreshIdleChats() {
-    await refreshIdleSummaries();
-    if (halted) {
-        return;
-    }
-    await readIdleChats(idleChatRefreshes().slice(0, MAX_REMOTE_READS));
-}
-
-/**
- * Reads `ref` whole now when it is a stale or noticed loaded chat that is idle (`idleChatRefreshes`),
- * as the save cycle's idle refresh would: a job is then created on the revision the server holds,
- * not on one this tab knows is old (a job chat patch that did not fit). Returns whether the chat is
- * then not known to be behind the server (`isChatBehind`): false when it was not idle, or the read
- * was not taken (a local change or a newer notice meanwhile).
+ * Refreshes only `ref` when it is a stale or noticed loaded chat that is idle, independently of
+ * other queue work. Its caller can then start a job on the server's revision. Returns whether
+ * the chat is no longer known to be behind the server; local work or a newer notice can prevent
+ * adoption and leave it behind.
  */
 export async function refreshStaleChat(ref: ChatRef): Promise<boolean> {
     if (halted) {
@@ -2965,7 +4313,10 @@ export async function refreshStaleChat(ref: ChatRef): Promise<boolean> {
     return !halted && !isChatBehind(ref);
 }
 
-/** The whole-chat reads of `refreshIdleChats`, for the given idle chats. */
+/**
+ * Reads eligible chats for the background queue or an explicit stale-chat refresh. Responses are
+ * checked against the notice, held revision and read stamp before they enter the mirror.
+ */
 async function readIdleChats(refs: readonly ChatRef[]) {
     if (refs.length === 0) {
         return;
@@ -2975,9 +4326,12 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
     const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, heldChatRevision(ref)]));
     const readStamp = issueChatReadStamp();
-    const read = await readRefs([], {
-        chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
-    });
+    const read = await deadlineRead((signal) =>
+        readRefs([], {
+            chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
+            signal,
+        }),
+    );
     if (halted) {
         return;
     }
@@ -2998,13 +4352,15 @@ async function readIdleChats(refs: readonly ChatRef[]) {
  * applies them as live updates; an applied list ends those chats' marks (`settleSummaryRefresh`).
  */
 async function refreshIdleSummaries() {
-    const ids = idleSummaryRefreshes().slice(0, MAX_REMOTE_READS);
+    const ids = idleSummaryRefreshes()
+        .filter((id) => !remoteCollections.has(id) && !hydrate.has(id) && !listRefresh.has(id))
+        .slice(0, MAX_REMOTE_READS);
     if (ids.length === 0) {
         return;
     }
     const notices = summaryRefreshNotices(ids);
     const issued = heldChatRevisionsByCharacter(ids);
-    const read = await readRefs([], { chatSummaryCollections: ids });
+    const read = await deadlineRead((signal) => readRefs([], { chatSummaryCollections: ids, signal }));
     if (halted) {
         return;
     }
@@ -3347,6 +4703,7 @@ function applyRemotePatch(ref: {
     }
     const projection = projectEntry(ref.kind, ref.id)!;
     persisted.set(key, { revision: ref.revision, ...projection });
+    journalDiscarded(key);
     const waiting = remoteRecords.get(key);
     if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
         remoteRecords.delete(key);
@@ -3511,21 +4868,7 @@ function hasRemoteWork(): boolean {
  * changed server sibling, nothing is applied and false is returned: the save's 409 decides.
  */
 function adoptRemoteSecretRecord(revision: string, masked: MaskedLlmSecrets): boolean {
-    const key = collectionKey(SECTION_KIND.llmSecrets);
-    const saved = persisted.get(key)?.text;
-    const remote = llmSecretsText(masked);
-    const local = projectCollection(SECTION_KIND.llmSecrets);
-    if (local === saved) {
-        persisted.set(key, { revision, text: remote });
-        applySettingsRecord(SECTION_KIND.llmSecrets, masked, "all");
-        return true;
-    }
-    if (remote === saved) {
-        persisted.set(key, { revision, text: remote });
-        setMaskedSecrets(masked, "all");
-        return true;
-    }
-    return false;
+    return adoptSecretSiblings(revision, masked, "all");
 }
 
 /**
@@ -3548,6 +4891,7 @@ function applyRemoteRecord(
             ...(projectEntry(item.kind, item.id) ?? { text: recordText(item.kind, item.data) }),
         });
     }
+    journalDiscarded(key);
     if (isNew && collection) {
         applyRemoteCollection(collection);
     }
@@ -3555,23 +4899,27 @@ function applyRemoteRecord(
     return discardedWork;
 }
 
-/**
- * Reads and applies the waiting live updates (part of the cycle, before its batch, so it never races
- * this client's own write): first every waiting field patch this client can now take without a read
- * (`applyRemotePatch`), then the records this client can take now and the chat lists of characters
- * with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again after the
- * read: a change made meanwhile keeps the update waiting. A read settles only the notice it was
- * issued for, or a later one its answer covers. A deletion applies only if the held revision is
- * unchanged since the read was issued; otherwise it is read again. Returns whether a character
- * deletion discarded unsent chat work (the cycle shows the reload notice).
- */
-async function applyRemoteUpdates(): Promise<boolean> {
+/** Applies eligible feed patches synchronously before either writes or whole-record refreshes. */
+function applyRemotePatches() {
     settleRemoteRecords();
     for (const entry of [...remoteRecords.values()]) {
         if (entry.patch) {
             applyRemotePatch(entry);
         }
     }
+}
+
+/**
+ * Reads and applies waiting live updates concurrently with writes: first every waiting field patch this
+ * client can now take without a read (`applyRemotePatch`), then the eligible records and the chat lists
+ * of characters with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again
+ * after the read: a change made meanwhile keeps the update waiting. A read settles only the notice it
+ * was issued for, or a later one its answer covers. A deletion applies only if the held revision is
+ * unchanged since the read was issued; otherwise it is read again. Returns whether a character deletion
+ * discarded unsent chat work (the refresh queue shows the reload notice).
+ */
+async function applyRemoteUpdates(): Promise<boolean> {
+    applyRemotePatches();
     const records = [...remoteRecords].filter(([key, entry]) => canApplyRemote(key, entry)).slice(0, MAX_REMOTE_READS);
     const newCharacters = new Set(
         records
@@ -3592,10 +4940,15 @@ async function applyRemoteUpdates(): Promise<boolean> {
     const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
     const issuedSeqs = new Map(collections.map((id) => [id, remoteCollections.get(id)]));
     const issuedChats = heldChatRevisionsByCharacter(collections);
-    const read = await readRefs(
-        records.map(([, entry]) => ({ kind: entry.kind, id: entry.id })),
-        { chatSummaryCollections: collections },
+    const read = await deadlineRead((signal) =>
+        readRefs(
+            records.map(([, entry]) => ({ kind: entry.kind, id: entry.id })),
+            { chatSummaryCollections: collections, signal },
+        ),
     );
+    if (halted) {
+        return false;
+    }
     await tick();
     if (halted) {
         return false;
@@ -3757,6 +5110,7 @@ export function applyHydration(record: HydrationRecord): boolean {
         revision: record.revision,
         ...(projectEntry(record.kind, record.id) ?? { text: JSON.stringify(record.data) }),
     });
+    journalDiscarded(key);
     for (const listener of remoteChangeListeners) {
         try {
             listener(record.kind, record.id);
@@ -3829,10 +5183,25 @@ function showGeneratingNotice() {
     alertNormal(language.chatGenerating);
 }
 
+/** Keepalive answers and held journal splits cannot hold a flush caller indefinitely. */
+async function waitForWriteDependency(write: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Could not save every change")), READ_DEADLINE_MS);
+    });
+    try {
+        await Promise.race([write, deadline]);
+    } finally {
+        clearTimeout(timer!);
+    }
+}
+
 /**
  * Settles changes queued before this call. Reports keys discarded since the call (with `scope`,
  * since the scope began), and every key still refused locally when the flush resolves;
  * rejects when saving fails or when a character that must be saved is still being generated.
+ * Writes and dependency reads that leave their dependency pending share a ten-attempt limit;
+ * an outstanding unload answer has a separate twenty-second bound on the caller's wait.
  */
 export async function flushResources(
     options: { scope?: MutationScope } = {},
@@ -3855,15 +5224,14 @@ export async function flushResources(
     const firstChatDiscard = options.scope?.chat ?? chatDiscardSequence();
     const unsettled = () =>
         [...obligations].filter(([key, marked]) => (acked.get(key) ?? 0) < marked).map(([key]) => key);
-    const hydrating = new Set([...hydrate, ...listRefresh]);
     const secretTarget = new Set(llmSecretState.queue.map((op) => op.id));
     const pending = () =>
         llmSecretState.queue.some((op) => secretTarget.has(op.id)) ||
         unsettled().length > 0 ||
         membershipAcked < membershipTarget ||
-        unsettledChatObligations(chatObligations).length > 0 ||
-        [...hydrating].some((id) => hydrate.has(id) || listRefresh.has(id));
-    for (let attempt = 0; attempt < 10 && pending(); attempt += 1) {
+        unsettledChatObligations(chatObligations).length > 0;
+    let attempts = 0;
+    while (pending() && attempts < 10) {
         if (halted) {
             throw new Error("Saving stopped: the server data was restored");
         }
@@ -3883,13 +5251,79 @@ export async function flushResources(
             clearTimeout(timer);
             timer = null;
         }
-        await runCycle();
+        const wrote = await runCycle();
+        if (wrote) {
+            attempts += 1;
+        }
+        assertSaveAdmission();
         const refused = quarantineReason();
         if (refused) {
             throw refused;
         }
         if (lastError || permanentError) {
             throw lastError ?? permanentError;
+        }
+        if (!pending()) {
+            break;
+        }
+        const waitingOnSplit = unsettledChatObligations(chatObligations).some((key) => chatJournal.splitGroupId(key));
+        if (waitingOnSplit) {
+            await waitForWriteDependency(flushJournal());
+            continue;
+        }
+        if (wrote && hasPendingWork()) {
+            continue;
+        }
+        const open = new Set(unsettledChatObligations(chatObligations));
+        const dependencies: Promise<unknown>[] = [];
+        const refreshing = new Set<string>();
+        const deferred = new Set<string>();
+        for (const id of new Set([...open].map((key) => key.split("\u0000")[0]))) {
+            if (
+                (hydrate.has(id) || listRefresh.has(id)) &&
+                (open.has(id) ||
+                    (!wrote && [...open].some((key) => key.startsWith(`${id}\u0000`) && !unloadWrites.has(key))))
+            ) {
+                if (isCharacterStreamedHere(id) && hydrate.has(id)) {
+                    throw new GenerationBlockedError([]);
+                }
+                refreshing.add(id);
+                dependencies.push(refreshCharacter(id));
+            }
+        }
+        for (const ref of deferredReloads()) {
+            const key = `${ref.chaId}\u0000${ref.chatId}`;
+            if (open.has(key)) {
+                deferred.add(key);
+                dependencies.push(refreshDeferredChat(ref));
+            }
+        }
+        for (const key of open) {
+            const unload = unloadWrites.get(key);
+            if (unload) {
+                dependencies.push(waitForWriteDependency(unload));
+            }
+        }
+        if (dependencies.length > 0) {
+            // Only reads holding captured writes participate in the barrier or propagate failures.
+            await Promise.all(dependencies);
+            // A successful transport may still leave a stale snapshot or an ineligible list.
+            // Count that unsuccessful refresh so repeated read-only cycles cannot hold the flush.
+            if (
+                !wrote &&
+                ([...refreshing].some((id) => hydrate.has(id) || listRefresh.has(id)) ||
+                    deferredReloads().some((ref) => deferred.has(`${ref.chaId}\u0000${ref.chatId}`)))
+            ) {
+                attempts += 1;
+            }
+        } else if (!wrote && pending()) {
+            // A collection-only cycle may settle no-op generations, but cannot make an unavailable
+            // obligation runnable. Do not burn the write-attempt budget on empty cycles.
+            const waiting = unsettledChatObligations(chatObligations).filter(isChatDeferred);
+            if (waiting.length > 0 || [...jobBlockedRecords.keys()].some(isRecordJobBlocked)) {
+                continue;
+            }
+            throw new Error("Could not save every change");
         }
     }
     if (pending()) {
@@ -3933,7 +5367,7 @@ function collectMembershipChanges(): boolean {
  * the server; unchanged records compare equal and are not sent.
  */
 export function startResourceSync() {
-    if (started) {
+    if (started || halted) {
         return;
     }
     started = true;
@@ -3942,22 +5376,31 @@ export function startResourceSync() {
     });
     setMutationAdmission(() => !halted);
     setSecretScheduler(() => {
+        for (const op of llmSecretState.queue) {
+            noteWait(`secret:${op.id}`, op.id);
+        }
         permanentError = null;
         schedule();
     });
+    chatJournal.setListener(queueJournalChat);
+    chatJournal.setConflictListener(captureJournalChat);
     setChatWorkListener(() => {
+        pruneWaits();
+        noteChatWaits();
         schedule();
     });
     // The settings records mark themselves: every local write of one (`records.svelte.ts`).
     setRecordWriteListener((kind) => {
         markKey(collectionKey(kind));
     });
-    document.addEventListener("visibilitychange", () => {
+    function onVisibilityChange() {
         if (document.visibilityState !== "hidden" || halted) {
             return;
         }
+        void flushJournal(true);
         void (async () => {
             await tick();
+            if (halted) return;
             if (timer) {
                 clearTimeout(timer);
                 timer = null;
@@ -3969,15 +5412,15 @@ export function startResourceSync() {
                 await runCycle();
             }
         })();
-    });
-    window.addEventListener("beforeunload", (event) => {
+    }
+    function onBeforeUnload(event: BeforeUnloadEvent) {
         // A halted loop (the data was replaced) can save nothing more: no warning, so the reload after
         // the restore notice goes through.
         if (!halted && hasUnsavedWork()) {
             event.preventDefault();
             event.returnValue = "";
         }
-    });
+    }
     // One shared budget, including requests still in flight from an earlier pagehide: by-id chat work,
     // one request per chat. Resource writes use only normal cycles, so they never race a keepalive
     // write on the same revision.
@@ -3987,28 +5430,66 @@ export function startResourceSync() {
         if (bytes + unloadBytes > UNLOAD_BODY_LIMIT) {
             return;
         }
+        let finish!: () => void;
+        const pending = new Promise<void>((resolve) => {
+            finish = resolve;
+        });
+        fenceCharacterWrites([], request.work, true);
         if (
             sendBatchOnUnload(request.body, (result) => {
                 unloadBytes -= bytes;
-                settleUnloadWork(request.work, result?.chats ?? null);
+                try {
+                    if (!halted) {
+                        settleUnloadWork(request.work, result?.chats ?? null);
+                    }
+                } finally {
+                    fenceCharacterWrites([], request.work, false);
+                    for (const group of request.work.groups) {
+                        unloadWrites.delete(group.key);
+                    }
+                    finish();
+                    if (!halted) {
+                        schedule();
+                    }
+                }
             })
         ) {
             unloadBytes += bytes;
+            captureWaits([], request.work, new Map(), membershipGeneration);
+            recordSaveWait({ ops: [], work: request.work }, new Map(), membershipGeneration);
             trackUnloadWork(request.work);
+            for (const group of request.work.groups) {
+                unloadWrites.set(group.key, pending);
+            }
+        } else {
+            fenceCharacterWrites([], request.work, false);
         }
     }
-    window.addEventListener("pagehide", () => {
+    function onPageHide() {
+        if (halted) {
+            return;
+        }
+        void flushJournal(true);
         try {
             for (const request of unloadPendingChatWork(UNLOAD_BODY_LIMIT - unloadBytes)) {
                 sendUnload(request);
             }
         } catch {}
-    });
-    setInterval(() => {
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("pagehide", onPageHide);
+    removeLifecycleListeners = () => {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        window.removeEventListener("beforeunload", onBeforeUnload);
+        window.removeEventListener("pagehide", onPageHide);
+    };
+    unloadAuthInterval = setInterval(() => {
         if (!halted && hasUnsavedWork()) {
             prepareUnloadAuth();
         }
     }, 60_000);
+    noteChatWaits();
     startChatDriftCheck();
     // Every local write of a character marks it at once; a membership change wakes the loop.
     setCharacterWriteListener({
@@ -4022,4 +5503,38 @@ export function startResourceSync() {
         markKey(characterKey(character.chaId as string));
     }
     markMembership();
+}
+
+/** Terminal teardown of this adapter instance, without saving, alerting, or reloading the page. */
+export function stopResourceSync() {
+    stopped = true;
+    halted = true;
+    setMutationAdmission(() => false);
+    removeLifecycleListeners?.();
+    removeLifecycleListeners = null;
+    if (timer) clearTimeout(timer);
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (journalTimer) clearTimeout(journalTimer);
+    if (unloadAuthInterval) clearInterval(unloadAuthInterval);
+    timer = refreshTimer = journalTimer = null;
+    unloadAuthInterval = null;
+    cancelRestorePoll?.();
+    cancelRestorePoll = null;
+    for (const controller of readControllers) {
+        controller.abort(new Error("Resource sync stopped"));
+    }
+    journalPending.clear();
+    conflictDrafts.clear();
+    journalChatPending.clear();
+    chatJournal.setListener(null);
+    chatJournal.setConflictListener(null);
+    setRecordWriteListener(null);
+    setCharacterWriteListener(null);
+    setChatWorkListener(null);
+    setEpochMismatchListener(null);
+    setSecretScheduler(() => {});
+    restoreReloadHook = null;
+    remoteChangeListeners.clear();
+    pluginStorageDiscardListeners.clear();
+    saving.state = false;
 }

@@ -918,12 +918,12 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
-    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (a changed item still conflicts)", async () => {
+    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (an item both tabs changed conflicts)", async () => {
         const { fake, sync, settings, changed, record, reads, patchModules, agree } = await boot();
-        settings.modules[2].name = "mine";
+        settings.modules[1].name = "mine";
         await tick();
         const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
-        expect(plain(settings.modules[1]).name).toBe("m2");
+        expect(plain(settings.modules[1]).name).toBe("mine");
         expect(changed).toEqual([]);
         expect(await sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
@@ -937,7 +937,7 @@ describe("modules item patches another tab committed", () => {
         // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
         expect(reads()).toBe(0);
     });
-    // `mergeItemAdds` (persistence.md Save step 5): an item this tab added goes over another tab's
+    // `mergeItemCollection` (persistence.md Save step 5): an item this tab added goes over another tab's
     // list; the feed patch still waits behind the unsent add, and the conflict's recovery rebuilds the
     // server's record from it and merges.
     it("rebases an unsent module add over another tab's rename of a different module: both changes kept, the retry on the server's revision, no discard, no notice, no read, no echo; the added module is then patched like any other", async () => {

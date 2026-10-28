@@ -470,11 +470,13 @@ describe("chat hydration", () => {
         expect(mirrorChat()!.message.map((entry) => entry.chatId)).toEqual(["a", "b", "c", "d"]);
         await tick();
         await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
         expect(fake.batchCount()).toBe(0);
         expect(alerts.normal).not.toHaveBeenCalled();
         // A local op afterwards is based on the hydrated revision.
         chat.appendMessage(refK, m("e", "E"));
         await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
         expect(fake.batchCount()).toBe(1);
         expect(fake.batchBodies()[0].chats[0].baseRevision).toBe(
             fake
@@ -498,6 +500,8 @@ describe("chat hydration", () => {
         expect(sync.applyHydration({ ...chatEvent("J", []), job: undefined } as any)).toBe(false);
         expect(mirrorChat()!.message.map((entry) => entry.chatId)).toEqual(["a", "b", "c", "d", "e"]);
         await sync.flushResources();
+        // The flush settles the note; the background idle refresh brings the server copy after it.
+        await vi.advanceTimersByTimeAsync(1000);
         expect(fake.chat("c", "k")!.data.note).toBe("local note");
         expect(mirrorChat()!.message.map((entry) => entry.chatId)).toEqual(["a", "b", "c", "d", "e", "f"]);
         expect(mirrorChat()!.note).toBe("local note");
@@ -1159,6 +1163,7 @@ describe("a sibling chat deleted during this tab's generation", () => {
         deleteJ(fake);
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         const result = await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
         expect(result.discarded).toEqual(["chats/c/j"]);
         expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
         // The list read waits for the job: the chat is still shown.
@@ -1167,6 +1172,9 @@ describe("a sibling chat deleted during this tab's generation", () => {
         const scope = sync.beginMutationScope();
         chat.setChatMeta(refJ, { note: "later edit" });
         chat.endServerJob("J");
+        // The flush settles the captured edit; the list read runs in the background queue after it.
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
         const after = await sync.flushResources({ scope });
         expect(after.discarded).toEqual(["chats/c/j"]);
         expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded", "reloaded"]);
@@ -1180,9 +1188,12 @@ describe("a sibling chat deleted during this tab's generation", () => {
         deleteJ(fake);
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
         expect(alerts.normal).toHaveBeenCalledTimes(1);
         const scope = sync.beginMutationScope();
         chat.endServerJob("J");
+        // Nothing is left to save: the background queue reads the list after the job.
+        await vi.advanceTimersByTimeAsync(1000);
         const after = await sync.flushResources({ scope });
         expect(after.discarded).toEqual([]);
         expect(alerts.normal).toHaveBeenCalledTimes(1);
@@ -1722,9 +1733,10 @@ describe("a job's chat patch", () => {
         expect(locked("b")).toBe(false);
         expect(chat.heldChatRevision(refK)).toBe(r0);
         // The local note lands on an older revision (a stale acknowledgement keeps the held revision
-        // and the mark), and the same cycle's idle refresh then reads the chat whole: the job's text
-        // arrives with the note kept. (A flush with nothing to send runs no cycle: see the DEFECTS below.)
+        // and the mark), and the background idle refresh then reads the chat whole: the job's text
+        // arrives with the note kept.
         await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
         expect(fake.chat("c", "k")!.data.note).toBe("local note");
         expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toHaveLength(1);
         expect(text("b")).toBe("FINAL");
@@ -2193,9 +2205,10 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
         const reading = sync.refreshStaleChat(refK);
         await reads.untilHeld(1);
         // Meanwhile an edit is saved: on the held base `r0`, so its acknowledgement is stale (the
-        // base stays, the chat is marked), and the cycle's own idle read goes out (held too).
+        // base stays, the chat is marked), and the background idle read goes out (held too).
         chat.setChatMeta(refK, { note: "mine" });
         const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
         await reads.untilHeld(2);
         const r2 = fake.chat("c", "k")!.revision;
         expect(fake.chat("c", "k")!.data.note).toBe("mine");
@@ -2210,8 +2223,9 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
         expect(chat.isChatBehind(refK)).toBe(true);
         expect(chat.findChat(refK)!.note).toBe("mine");
         expect(text("a")).toBe("A");
-        // The cycle's read, issued after the acknowledgement: the copy at `r2` with both changes.
+        // The background read, issued after the acknowledgement: the copy at `r2` with both changes.
         reads.release();
+        await vi.advanceTimersByTimeAsync(0);
         await flushing;
         expect(chat.heldChatRevision(refK)).toBe(r2);
         expect(chat.isChatStale(refK)).toBe(false);
@@ -2332,9 +2346,11 @@ describe("an acknowledged-revision floor after a stale acknowledgement", () => {
         const r1 = serverWrite([{ op: "setText", id: "a", text: "theirs" }]);
         const copy1 = copyOf(fake);
         chat.setChatMeta(refK, { note: "mine" });
-        // The cycle's idle read after the stale acknowledgement fails: the floor and the mark stay.
+        // The background idle read after the stale acknowledgement fails: the floor and the mark stay.
+        // The flush settles its acknowledged write and does not wait for that read.
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(sync.flushResources()).rejects.toThrow(/failed 500/);
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
+        await vi.advanceTimersByTimeAsync(0);
         expect(fake.chat("c", "k")!.data.note).toBe("mine");
         expect(chat.heldChatRevision(refK)).toBe(r0);
         expect(chat.isChatStale(refK)).toBe(true);
@@ -2447,6 +2463,9 @@ describe("a recovery's list read that finds its character gone", () => {
         expect(await flushing).toEqual({ discarded: ["chats/c"], refused: [] });
         expect(readCount(fake)).toBe(2);
         expect(character()?.name).toBe("Again");
+        // The list taken left the character without chats, and the first chat made for it is new
+        // work after the flush captured its obligations: the next flush saves it.
+        await sync.flushResources();
         const ids = character()!.chats.map((entry: Chat) => entry.id);
         expect(ids).not.toContain("j");
         expect(ids).not.toContain("k");

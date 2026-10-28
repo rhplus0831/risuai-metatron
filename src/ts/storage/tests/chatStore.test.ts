@@ -1176,7 +1176,7 @@ describe("unload work (pagehide)", () => {
         expect(server.texts("c", "k")).toEqual(["third"]);
     });
 
-    it("takes only a by-id prefix, leaves a chat's request out whole when it does not fit the remaining budget, and skips a chat with a request in flight", async () => {
+    it("takes only whole by-id batches, leaves a chat's request out whole when it does not fit the remaining budget, and skips a chat with a request in flight", async () => {
         const { server, chat, ref, take, apply, ack, commit } = await boot();
         const refJ = { chaId: "c", chatId: "j" };
         const bytes = (body: string) => new TextEncoder().encode(body).length;
@@ -1184,40 +1184,45 @@ describe("unload work (pagehide)", () => {
         commit();
         const long = "long ".repeat(400);
         chat.setMessageText(ref, "a", long);
-        // A bulk removal needs the current revision: it and everything after it stay queued.
+        // A bulk removal needs the current revision: the whole batch it is in waits for a normal save.
         chat.removeMessages(ref, ["b", "c"]);
         chat.setChatMeta(ref, { note: "after the removal" });
         chat.setChatMeta(refJ, { note: "small" });
+        expect(chat.unloadPendingChatWork(LIMIT).map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
+        const saved = take();
+        expect(saved.groups.find((group) => group.chatId === "k")!.ops.map((op) => op.op)).toEqual([
+            "setText",
+            "remove",
+            "meta",
+        ]);
+        ack(saved, apply(saved));
+        expect(server.texts("c", "k")).toEqual([long]);
 
+        chat.setMessageText(ref, "a", "short");
+        chat.setChatMeta(ref, { note: long });
+        chat.setChatMeta(refJ, { note: "small again" });
         const both = chat.unloadPendingChatWork(LIMIT);
         expect(both.map((request) => request.work.groups[0].chatId)).toEqual(["k", "j"]);
         const [requestK, requestJ] = both;
-        expect(requestK.work.groups[0].ops).toEqual([{ op: "setText", id: "a", text: long }]);
-        // Part of the chat's queue: settling it settles nothing (sequence 0).
-        expect(requestK.work.groups[0].seq).toBe(0);
+        expect(requestK.work.groups[0].ops.map((op) => op.op)).toEqual(["setText", "meta"]);
 
         // A budget one byte short of k's request: k is left out whole (never a part of its ops), and
         // the next chat that fits still goes.
         const onlyJ = chat.unloadPendingChatWork(bytes(requestK.body) - 1);
         expect(onlyJ.map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
-        // Built again: the same request but for its fresh group id.
-        const withoutId = (body: string) => JSON.parse(body, (key, value) => (key === "groupId" ? undefined : value));
-        expect(withoutId(onlyJ[0].body)).toEqual(withoutId(requestJ.body));
-        expect(bytes(onlyJ[0].body)).toBe(bytes(requestJ.body));
+        // Built again: the same request, under the same batch id.
+        expect(onlyJ[0].body).toBe(requestJ.body);
         expect(chat.unloadPendingChatWork(bytes(requestJ.body) - 1)).toEqual([]);
 
-        // Sent: only the prefix leaves k's queue; the rest goes after the answer.
+        // Sent: the whole batch leaves k's queue, and its answer settles it.
         chat.trackUnloadWork(requestK.work);
         const workJ = take();
         expect(workJ.groups.map((group) => group.chatId)).toEqual(["j"]);
         ack(workJ, apply(workJ));
         const answer = server.store.applyChanges(JSON.parse(requestK.body));
         chat.settleUnloadWork(requestK.work, answer.chats);
-        const rest = take();
-        expect(rest.groups.map((group) => group.chatId)).toEqual(["k"]);
-        expect(rest.groups[0].ops.map((op) => op.op)).toEqual(["remove", "meta"]);
-        ack(rest, apply(rest));
-        expect(server.texts("c", "k")).toEqual([long]);
+        expect(take().groups).toEqual([]);
+        expect(server.texts("c", "k")).toEqual(["short"]);
 
         // A chat with a request in flight is skipped until its answer.
         chat.setChatMeta(ref, { note: "k again" });
