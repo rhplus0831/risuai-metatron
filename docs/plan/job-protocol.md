@@ -4,7 +4,10 @@ Status: drafted 2026-10-28. Landed: Slice 1 (`d0b6c096c`; the running request-id
 Slice 2, which first fills request ids), Slice 2 (`b532a95e2`; after an unanswered attempt, a
 412, 429, auth or 5xx answer stays `unknown`, since those come before the request-id lookup), Slice
 2b (`fdf7a1235`; composer rows store `requestEpoch` and a restore drops another epoch's request id,
-because a reloaded page posts with the current epoch, so D4's 412 does not refuse it). The user
+because a reloaded page posts with the current epoch, so D4's 412 does not refuse it), Slice 3
+(`d4586f152`; error and abort terminals also carry `sequence { total, sent }` so a `shutdown`
+outcome reports progress, and a done sequence takes one automatic checkpoint since the slot is held
+between parts). The user
 accepted every recommendation for Q1–Q4 the
 same day (see **Answered questions**). A Sol review of the first
 draft (24 points, 3 blockers) is folded in. Most notably, follow-ups run as one sequence job instead
