@@ -99,8 +99,8 @@ function run(command, args, options, log) {
     return child;
 }
 
-function stop(child) {
-    if (!child || child.exitCode !== null) {
+function stop(child, signal = "SIGTERM") {
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
         return Promise.resolve();
     }
     return new Promise((resolve) => {
@@ -109,21 +109,21 @@ function stop(child) {
             clearTimeout(timer);
             resolve();
         });
-        child.kill("SIGTERM");
+        child.kill(signal);
     });
 }
 
 /**
- * `restartServer` stops the server (SIGTERM, so it shuts down gracefully) and starts it again over
+ * `restartServer({ signal })` stops the server (SIGTERM by default, for graceful shutdown) and starts it again over
  * the same `save/`, leaving the dev server running: for checks of what a server start does to
- * stored data.
+ * stored data. Pass `signal: "SIGKILL"` to check crash recovery without a final checkpoint.
  *
  * `serverEnv` adds variables to the server's environment only (e.g. `NODE_OPTIONS` with an `--import`
  * preload for a check's harness). Without its own `NODE_OPTIONS` the server gets the egress guard:
  * no public service is reached (`deniedEgress()` lists what was refused).
  *
  * @param {{ serverPort?: number, vitePort?: number, log?: (text: string) => void, serverEnv?: Record<string, string> }} [options]
- * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, deniedEgress: () => Promise<string[]>, restartServer: () => Promise<void>, stop: () => Promise<void> }>}
+ * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, deniedEgress: () => Promise<string[]>, restartServer: (options?: { signal?: NodeJS.Signals }) => Promise<void>, stop: () => Promise<void> }>}
  */
 export async function startStack({ serverPort = 6101, vitePort = 5201, log, serverEnv = {} } = {}) {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-playwright-"));
@@ -183,8 +183,8 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
         async deniedEgress() {
             return (await readFile(deniedFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
         },
-        async restartServer() {
-            await stop(server);
+        async restartServer({ signal = "SIGTERM" } = {}) {
+            await stop(server, signal);
             server = startServer();
             await waitForHttp(`${serverURL}/api/test_auth`, server, 30_000);
         },

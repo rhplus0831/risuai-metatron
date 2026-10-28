@@ -521,6 +521,9 @@ and timing rules belong to [build-test-platforms](build-test-platforms.md).
   `generations.test.ts` covers the chat-slot lookup and stop routes (auth, epoch, `jobChanged`,
   `idle`, no attach or callback authority, first-abort attribution); `commandSequences.test.ts`
   covers another client's stop of a whole sequence with its live, kept, receipt, and diagnostic attribution.
+  The browser check `util/playwright/checkJobProtocol.mjs` drives request-id replay, a command
+  sequence across a reload, the chat-slot stop, owner absence, and a SIGKILL restart against the real
+  server ([build-test-platforms](build-test-platforms.md)).
 - LLM requests and tokenization: `llmRoutes.test.ts`, `llmRequests.test.ts`,
   `llmProviderAdapters.test.ts`, `llmResponsesApi.test.ts`, `tokens.test.ts`.
 - Memory and local models: `memoryTasks.test.ts`, `memoryTaskHost.test.ts`,
