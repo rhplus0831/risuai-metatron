@@ -43,6 +43,18 @@ uses a shared principal.
 | U1  | P2       | Pre-existing; outside the plan         | A same-origin window opened with an opener inherits the supposed per-tab job owner identity |
 | U2  | P3       | Pre-existing; previously recorded      | An unused resume helper and its documentation describe the wrong boot path                  |
 
+**Resolution (2026-10-29).** All six are fixed, each with regression tests except JP4 (a browser
+driver, rerun instead): JP1 in `9bfd29b73`, JP2 in `035a76416`, U1 in `0afb40afe`, U2 in
+`32bb411d2`, JP3 in `df393fcc0`, and JP4 in `72b221a26`. JP1 also keeps uncertainty for
+`chatBusy`, `chatBindingIncomplete` and `chatLoreOverrideOrphaned`, which a later probe showed
+the delayed original can pass as well. JP3 was fixed rather than scoped: a queued root now
+expires at its own job's absence deadline. The inbox's second absence-bound path (a provider
+disconnect ended through `endWith`, not bounded by the abort grace) remains unreproduced and is
+an `Unconfirmed` issue in the [self-host server guide](../structure/self-host-server.md#issues).
+U1 uses a synchronous live-page claim in `sessionStorage`, not a coordinated lease, because
+`generationClientId` is read synchronously; its accepted gaps are in the
+[global API guide](../structure/global-api.md#limitations).
+
 ## Plan-related findings
 
 ### JP1 — A negative lookup does not settle an earlier POST that has not reached admission
@@ -148,7 +160,7 @@ timeout. Keep cancellation addressed to the confirmed job ID; a retry must retai
 `holdDraining` and `dispatch`.
 
 This is a revalidation of **Owner absence bound is not universal** in the
-[findings inbox](../research/found-issues.md#owner-absence-bound-is-not-universal), also noted
+findings inbox (since moved to the [self-host server guide](../structure/self-host-server.md#issues)), also noted
 in the plan's archive. It is not a newly discovered regression.
 
 **Reproduction.** An injected-clock probe used the real channel hub with two jobs of the same
@@ -251,7 +263,7 @@ in code is its shared mock. The obsolete helper attaches even for a kept receipt
 job can no longer be attached. Its module comment and two guides still name it as reload recovery.
 
 This was already recorded in the
-[findings inbox](../research/found-issues.md#resumesavedgenerations-has-no-product-caller).
+findings inbox (deleted when U2 was fixed).
 It has no demonstrated current product effect, since it is unused. It can misdirect future
 maintenance and gives tests of a dead path the appearance of boot coverage. Remove the unused
 export and its dedicated tests, or explicitly repurpose it; point current guidance at the
