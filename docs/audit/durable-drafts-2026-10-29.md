@@ -36,6 +36,27 @@ working tree.
 | DD3 | P2       | Recovery Apply, slice 5                                               | Retrying Apply after a lost create acknowledgement duplicates the recovered chat |
 | U1  | P2       | Pre-existing chat loading                                             | A stalled on-demand read has no deadline, and subsequent loads join it           |
 
+## Resolution
+
+All four findings were fixed in `0b5e401e7` (`fix(storage): keep journaled chat work
+through recovery Apply, new characters, and stalled loads`), each with a regression test
+that failed before its fix:
+
+| ID  | Fix                                                                                                     | Regression test                                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DD1 | Apply creates the chat from the snapshot, then applies the ops queued after it                          | `bootstrap.journalRecovery.test.ts` "applies a missing chat's snapshot and every newer journaled edit after reload"                                                                                                                                |
+| DD2 | `addCharacter`/`replaceCharacterAt` queue the initial chat creates at once (`adoptCharacter`)           | `bootstrap.journalRecovery.test.ts` "journals imported history while another save is outstanding and recovers the original chat after reload"                                                                                                      |
+| DD3 | The recovered chat takes the draft's id; Apply checks that destination first                            | `RecoveryDrafts.test.ts` "retries Apply in the dialog after a lost create answer without duplicating the recovered chat"; `bootstrap.journalRecovery.test.ts` "retries a missing-chat Apply after reload without duplicating its committed create" |
+| U1  | On-demand chat reads abort after `CHAT_READ_DEADLINE_MS` (60 s per request) and the shared load settles | `bootstrap.journalRecovery.test.ts` "times out a stalled on-demand chat load after 60 seconds and lets a fresh read succeed"                                                                                                                       |
+
+The same commit closed two inbox entries (ops answered `missing` are kept as a draft;
+the dev drift check stops with the adapter) and a latent leak the DD2 fix exposed: a
+new character's create that loses to another tab's same-id character now keeps its
+local chats as recovery drafts instead of leaving their creates pending. Remaining
+limits (Apply still removes a draft whose ops it skipped; a deleted Apply destination
+is recreated by a retry after reload; the read deadline is per request) are in the
+[persistence guide's Known Hazards](../structure/persistence.md#known-hazards).
+
 ## Plan-related findings
 
 ### DD1 — Apply recreates an old snapshot and deletes the newer operations
