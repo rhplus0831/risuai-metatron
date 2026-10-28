@@ -269,6 +269,53 @@ describe("the requests", () => {
         },
     );
 
+    it.each([
+        ["lookup", "authentication"],
+        ["lookup", "fetch"],
+        ["lookup", "body"],
+        ["stop", "authentication"],
+        ["stop", "fetch"],
+        ["stop", "body"],
+    ] as const)("bounds the chat %s exchange including stalled %s to ten seconds", async (operation, phase) => {
+        vi.useFakeTimers();
+        const auth = await import("../storage/serverAuth");
+        const authentication = deferred();
+        const fetched = deferred<Response>();
+        const parsed = deferred<unknown>();
+        const response = json(200, {});
+        const parse = vi.spyOn(response, "json").mockImplementation(() => parsed.promise);
+        const dispatch = vi.fn(() => fetched.promise);
+        vi.spyOn(auth, "authFetch").mockImplementation(async () => {
+            await authentication.promise;
+            return dispatch();
+        });
+        const observed = vi.fn();
+        const request =
+            operation === "lookup"
+                ? transport.readChatGeneration({ chaId: "c", chatId: "k" })
+                : transport.stopChatGeneration({ chaId: "c", chatId: "k" }, "confirmed-job");
+        void request.then(observed, observed);
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (phase !== "authentication") authentication.resolve();
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (phase === "body") fetched.resolve(response);
+        await vi.advanceTimersByTimeAsync(3_999);
+        expect(dispatch).toHaveBeenCalledTimes(phase === "authentication" ? 0 : 1);
+        expect(parse).toHaveBeenCalledTimes(phase === "body" ? 1 : 0);
+        expect(observed).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(observed).toHaveBeenCalledExactlyOnceWith(expect.any(client.ResourceRequestError));
+        expect(observed.mock.calls[0][0]).toMatchObject({ status: 0 });
+        authentication.resolve();
+        fetched.resolve(response);
+        parsed.resolve(
+            operation === "lookup"
+                ? { jobId: "confirmed-job", kind: "send", owned: false, state: "running" }
+                : { aborted: true },
+        );
+        await vi.advanceTimersByTimeAsync(0);
+    });
+
     it("never saves, stages or holds a replay owned by another tab", async () => {
         vi.useFakeTimers();
         const { jobStages, chatStageOf } = await import("../process/jobStages");

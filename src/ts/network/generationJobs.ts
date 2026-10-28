@@ -329,7 +329,11 @@ function noAnswer(error: unknown): ResourceRequestError {
 }
 
 /** Bounds authentication and body consumption too; a late auth completion cannot dispatch. */
-async function boundedAttempt<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function boundedAttempt<T>(
+    work: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+    timeoutMessage = "The generation request timed out",
+): Promise<T> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stop!: () => void;
@@ -340,7 +344,7 @@ async function boundedAttempt<T>(work: (signal: AbortSignal) => Promise<T>, sign
         };
         timer = setTimeout(() => {
             controller.abort();
-            reject(noAnswer("The generation request timed out"));
+            reject(noAnswer(timeoutMessage));
         }, CREATE_DEADLINE_MS);
         signal?.addEventListener("abort", stop, { once: true });
         if (signal?.aborted) stop();
@@ -604,7 +608,11 @@ const jobPath = (jobId: string) =>
 export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurrent | null> {
     const query = new URLSearchParams({ characterId: ref.chaId, chatId: ref.chatId, clientId: generationClientId() });
     try {
-        const body: unknown = await (await request(`/api/generations/current?${query}`)).json();
+        const body: unknown = await boundedAttempt(
+            async (signal) => (await request(`/api/generations/current?${query}`, { signal })).json(),
+            undefined,
+            language.serverJob.stopOther.lookupTimedOut,
+        );
         if (
             !object(body) ||
             typeof body.jobId !== "string" ||
@@ -638,13 +646,19 @@ export async function stopChatGeneration(ref: ChatRef, jobId: string): Promise<"
         clientId: generationClientId(),
     };
     try {
-        const answer: unknown = await (
-            await request("/api/generations/stop", {
-                method: "POST",
-                headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-                body: JSON.stringify(body),
-            })
-        ).json();
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request("/api/generations/stop", {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify(body),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.stopOther.stopTimedOut,
+        );
         if (!object(answer) || typeof answer.aborted !== "boolean") {
             throw new ResourceRequestError(0, language.serverJob.stopOther.invalidStop);
         }

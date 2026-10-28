@@ -1659,6 +1659,8 @@ export const languageEnglish = {
             idle: "No job is running in this chat.",
             invalidCurrent: "The server returned an invalid job lookup response.",
             invalidStop: "The server returned an invalid job stop response.",
+            lookupTimedOut: "The current job lookup timed out. Try stopping the chat again.",
+            stopTimedOut: "The job stop request timed out. Try stopping the chat again.",
             running: "running",
             sequence: ", part {part} of {total}",
             kinds: {

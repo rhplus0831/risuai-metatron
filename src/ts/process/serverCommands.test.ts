@@ -108,6 +108,15 @@ vi.mock("src/lang", () => ({
         chatGenerating: "generating",
         serverJob: {
             stoppedElsewhere: "stopped elsewhere",
+            stopOther: {
+                idle: "idle",
+                confirm: "Stop {kind} ({stage}){sequence}?",
+                kinds: { send: "send" },
+                stages: { generating: "generating" },
+                running: "running",
+                lookupTimedOut: "Current job lookup timed out",
+                stopTimedOut: "Stop request timed out",
+            },
             lost: "job lost",
             endedAway: "ended away",
             sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
@@ -506,6 +515,52 @@ describe("resumeServerJobs (boot)", () => {
         expect(stubs.read).toHaveBeenCalledTimes(1);
         expect(stubs.release).not.toHaveBeenCalled();
     });
+});
+
+describe("stopChatJob", () => {
+    it.each(["lookup", "stop"] as const)(
+        "releases the chat after a %s timeout so another Stop looks it up again",
+        async (phase) => {
+            vi.useFakeTimers();
+            const actual = await vi.importActual<Transport>("../network/generationJobs");
+            const mocked = await import("../network/generationJobs");
+            vi.mocked(mocked.readChatGeneration).mockImplementation(actual.readChatGeneration);
+            vi.mocked(mocked.stopChatGeneration).mockImplementation(actual.stopChatGeneration);
+            const { alertConfirm } = await import("../alert");
+            vi.mocked(alertConfirm).mockResolvedValue(true);
+            const auth = await import("../storage/serverAuth");
+            const post = vi.spyOn(auth, "authFetch");
+            if (phase === "stop")
+                post.mockResolvedValueOnce(
+                    Response.json({ jobId: "confirmed-job", kind: "send", owned: false, state: "running" }),
+                );
+            post.mockImplementationOnce(() => new Promise<Response>(() => {}));
+            const ended = vi.fn();
+            const run = commands.stopChatJob(ref).then(ended);
+            try {
+                await vi.advanceTimersByTimeAsync(0);
+                const calls = phase === "lookup" ? 1 : 2;
+                expect(post).toHaveBeenCalledTimes(calls);
+                await commands.stopChatJob(ref);
+                expect(post).toHaveBeenCalledTimes(calls);
+                await vi.advanceTimersByTimeAsync(10_000);
+                expect(ended).toHaveBeenCalledTimes(1);
+                await run;
+                expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(
+                    phase === "lookup" ? "Current job lookup timed out" : "Stop request timed out",
+                );
+                post.mockResolvedValueOnce(Response.json({ error: "idle" }, { status: 404 }));
+                await commands.stopChatJob(ref);
+                expect(post).toHaveBeenCalledTimes(calls + 1);
+                expect(post.mock.calls.at(-1)![0]).toContain("/api/generations/current?");
+                expect(mocked.readChatGeneration).toHaveBeenNthCalledWith(2, ref);
+                if (phase === "stop")
+                    expect(mocked.stopChatGeneration).toHaveBeenCalledExactlyOnceWith(ref, "confirmed-job");
+            } finally {
+                vi.useRealTimers();
+            }
+        },
+    );
 });
 
 describe("runServerButton", () => {
