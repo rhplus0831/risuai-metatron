@@ -401,6 +401,7 @@ describe("dialog key gate", () => {
         gate.keydown(enter);
         expect(gate.accepts(enter)).toBe(true);
         expect(gate.accepts({ ...enter, isComposing: true })).toBe(false);
+        expect(gate.accepts({ ...enter, keyCode: 229 })).toBe(false);
         gate.keyup(escape);
         gate.keyup(enter);
         alerts.answer("");

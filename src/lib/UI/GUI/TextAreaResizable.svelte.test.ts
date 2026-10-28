@@ -85,22 +85,29 @@ describe("TextAreaResizable popup editor", () => {
         const plain = render({ value: "plain" });
         expect(plain.expandButton()).toBeNull();
         const hotkey = settings.hotkeys.find((hk) => hk.action === "popupEditor")!;
-        const press = (textarea: HTMLTextAreaElement) =>
-            textarea.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                    key: hotkey.key,
-                    ctrlKey: hotkey.ctrl,
-                    shiftKey: hotkey.shift,
-                    altKey: hotkey.alt,
-                    bubbles: true,
-                    cancelable: true,
-                }),
-            );
+        const press = (textarea: HTMLTextAreaElement, composing: { isComposing?: boolean; keyCode?: number } = {}) => {
+            const ev = new KeyboardEvent("keydown", {
+                key: hotkey.key,
+                ctrlKey: hotkey.ctrl,
+                shiftKey: hotkey.shift,
+                altKey: hotkey.alt,
+                bubbles: true,
+                cancelable: true,
+            });
+            for (const [name, value] of Object.entries(composing)) {
+                Object.defineProperty(ev, name, { value });
+            }
+            textarea.dispatchEvent(ev);
+        };
         press(plain.textarea());
         expect(popUpEditorStore.open).toBe(false);
 
         const popup = render({ value: "with popup", popupEditor: true });
         expect(popup.expandButton()).not.toBeNull();
+        // A stroke the IME is still composing, or Safari's commit key after it ended the composition.
+        press(popup.textarea(), { isComposing: true });
+        press(popup.textarea(), { keyCode: 229 });
+        expect(popUpEditorStore.open).toBe(false);
         press(popup.textarea());
         expect(popUpEditorStore).toMatchObject({ open: true, value: "with popup" });
     });

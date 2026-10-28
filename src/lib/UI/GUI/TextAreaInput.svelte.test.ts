@@ -21,6 +21,7 @@ vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: str
 
 import { language } from "src/lang";
 import type { Database } from "src/ts/storage/database.svelte";
+import { defaultHotkeys } from "src/ts/defaulthotkeys";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { closePopupEditorSession, openPopupEditorSession, popUpEditorStore } from "src/ts/stores.svelte";
@@ -63,7 +64,11 @@ async function closePopupWith(text: string) {
 
 beforeEach(() => {
     vi.useFakeTimers();
-    installFlatDatabase({ characters: [], personas: [] } as unknown as Database);
+    installFlatDatabase({
+        characters: [],
+        personas: [],
+        hotkeys: structuredClone(defaultHotkeys),
+    } as unknown as Database);
     settings.ui.longPressToPopupEditor = false;
 });
 
@@ -92,6 +97,31 @@ describe("TextAreaInput popup editor", () => {
         const off = render({ value: "no popup", popupEditor: false });
         off.textarea().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
         expect(popUpEditorStore.open).toBe(false);
+    });
+
+    it("takes the popup hotkey only once the IME composition ended", () => {
+        const hotkey = settings.hotkeys.find((hk) => hk.action === "popupEditor")!;
+        const ui = render({ value: "한글" });
+        const press = (composing: { isComposing?: boolean; keyCode?: number }) => {
+            const ev = new KeyboardEvent("keydown", {
+                key: hotkey.key,
+                ctrlKey: hotkey.ctrl,
+                shiftKey: hotkey.shift,
+                altKey: hotkey.alt,
+                bubbles: true,
+                cancelable: true,
+            });
+            for (const [name, value] of Object.entries(composing)) {
+                Object.defineProperty(ev, name, { value });
+            }
+            ui.textarea().dispatchEvent(ev);
+        };
+        // A stroke the IME is still composing, or Safari's commit key after it ended the composition.
+        press({ isComposing: true });
+        press({ keyCode: 229 });
+        expect(popUpEditorStore.open).toBe(false);
+        press({});
+        expect(popUpEditorStore).toMatchObject({ open: true, value: "한글" });
     });
 
     it("opens the popup on the field's text and language, and a close writes the text back and notifies", async () => {

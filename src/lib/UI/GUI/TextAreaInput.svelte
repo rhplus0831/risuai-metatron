@@ -13,6 +13,7 @@
     } from "src/ts/stores.svelte";
     import { isMobile } from "src/ts/platform";
     import { hotkeyMatches } from "src/ts/hotkey";
+    import { isImeComposing } from "src/ts/ime";
     import { language } from "src/lang";
     import { Maximize2Icon } from "@lucide/svelte";
     interface Props {
@@ -128,6 +129,7 @@
     function handlePopupEditorKeyDown(e: KeyboardEvent): boolean {
         if (
             popupEditor !== false &&
+            !isImeComposing(e) &&
             (e.ctrlKey || e.shiftKey || e.altKey) &&
             hotkeyMatches(
                 settings.hotkeys.find((hk) => hk.action === "popupEditor"),

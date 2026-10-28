@@ -1,5 +1,6 @@
 import { writable, type Readable } from "svelte/store";
 import type { alertData } from "./alert";
+import { isImeComposing } from "./ime";
 
 /** Loading, progress and toast: one status slot, the newest replaces it. */
 const STATUS_TYPES: ReadonlySet<alertData["type"]> = new Set(["wait", "progress", "toast"]);
@@ -198,7 +199,7 @@ export function createAlertQueue(initial: alertData, options: { gapMs?: number }
     };
 }
 
-type DialogKeyEvent = { key: string; repeat: boolean; isComposing?: boolean };
+type DialogKeyEvent = { key: string; repeat: boolean; isComposing?: boolean; keyCode?: number };
 
 /** The keys `hotkey.ts` answers a dialog with. */
 const DIALOG_KEYS = new Set(["Enter", "Escape"]);
@@ -247,7 +248,7 @@ export function createDialogKeyGate(queue: AlertQueue) {
             return (
                 shown !== null &&
                 !ev.repeat &&
-                !ev.isComposing &&
+                !isImeComposing(ev) &&
                 heldWhenShown.get(ev.key) !== (strokes.get(ev.key) ?? 0)
             );
         },

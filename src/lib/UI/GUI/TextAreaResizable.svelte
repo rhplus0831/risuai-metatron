@@ -4,6 +4,7 @@
     import { Maximize2Icon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { hotkeyMatches } from "src/ts/hotkey";
+    import { isImeComposing } from "src/ts/ime";
     import {
         closePopupEditorSession,
         isPopupEditorSessionCurrent,
@@ -117,6 +118,7 @@
         onkeydown={(e) => {
             if (
                 popupEditor &&
+                !isImeComposing(e) &&
                 (e.ctrlKey || e.shiftKey || e.altKey) &&
                 hotkeyMatches(
                     settings.hotkeys.find((hk) => hk.action === "popupEditor"),
