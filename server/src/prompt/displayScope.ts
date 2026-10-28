@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
     Chat,
     Database,
@@ -30,6 +31,8 @@ const MAX_CONFIGURATION_ENTRIES = 2;
 const MAX_CONFIGURATION_BYTES = 32 * 1024 * 1024;
 const MAX_TRANSCRIPT_ENTRIES = 8;
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+/** Digests of stored characters, by id and revision, shared by loads and result-cache probes. */
+const MAX_CHARACTER_IDENTITIES = 1_024;
 /** Object headers and storage slots include slack for V8's record and collection storage. */
 const SNAPSHOT_OBJECT_BYTES = 64;
 const SNAPSHOT_SLOT_BYTES = 32;
@@ -42,6 +45,7 @@ export type DisplayScopeEntry = {
 };
 type Entry<T> = DisplayScopeEntry & { readonly value: T };
 type CacheBounds = { maxEntries: number; maxBytes: number };
+type CharacterRead = ReturnType<ResourceStore["readRefs"]>["items"][number];
 
 /** Conservative retained data estimate, stopping above `cap`; shared objects are skipped by identity. */
 export function retainedBytes(
@@ -160,7 +164,8 @@ function chatCharacters(chat: Chat, owner: character | groupChat, context: Gener
 
 /**
  * The chat's owner, then the characters of `chatCharacters` and of `extra`, read by id (a missing
- * one left out); none when the chat or its owner is gone (the load then fails on the owner).
+ * one left out of the records but remembered); none when the chat or its owner is gone (the
+ * load then fails on the owner). `remember` sees stored data before `characterShell` adds chats.
  */
 function readCharacters(
     store: ResourceStore,
@@ -168,10 +173,10 @@ function readCharacters(
     context: GenerationContext,
     chat: unknown,
     extra: ((chat: Chat, owner: character | groupChat) => Iterable<string>) | undefined,
-    revisions: Map<string, string | null>,
+    remember: (record: CharacterRead) => void,
 ): StoredResource<unknown>[] {
     const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
-    revisions.set(context.characterId, ownerRead.revision);
+    remember(ownerRead);
     if (!chat || ownerRead.data === null || ownerRead.revision === null) {
         return [];
     }
@@ -188,7 +193,7 @@ function readCharacters(
     }
     const others = store.readRefs([...ids].map((id) => ({ kind: charactersKind, id }))).items;
     for (const item of others) {
-        revisions.set(item.id, item.revision);
+        remember(item);
         if (item.data !== null && item.revision !== null) {
             records.push({ id: item.id, revision: item.revision, data: item.data });
         }
@@ -216,10 +221,80 @@ export function createDisplayScopeLoader(
         maxBytes: MAX_TRANSCRIPT_BYTES,
         ...options.transcripts,
     });
+    const characterIdentities = new Map<string, string>();
+    const identityKey = (id: string, revision: string) => JSON.stringify([id, revision]);
+    const memoizedIdentity = (key: string): string | undefined => {
+        const identity = characterIdentities.get(key);
+        if (identity !== undefined) {
+            characterIdentities.delete(key);
+            characterIdentities.set(key, identity);
+        }
+        return identity;
+    };
+
+    /**
+     * Only the top-level send stamp is invisible to display. Preserve JSON property order: CBS
+     * `lorebook` serializes entries with JSON.stringify. Memoize under the revision returned with
+     * these data, never a token looked up before the read. Absence has the fixed identity `missing`.
+     */
+    const identityOf = (record: CharacterRead): string => {
+        if (record.data === null || record.revision === null) {
+            return "missing";
+        }
+        const key = identityKey(record.id, record.revision);
+        const memo = memoizedIdentity(key);
+        if (memo !== undefined) {
+            return memo;
+        }
+        const { lastInteraction, ...rest } = record.data as Record<string, unknown>;
+        const identity = createHash("sha256").update(JSON.stringify(rest)).digest("hex");
+        characterIdentities.set(key, identity);
+        if (characterIdentities.size > MAX_CHARACTER_IDENTITIES) {
+            characterIdentities.delete(characterIdentities.keys().next().value!);
+        }
+        return identity;
+    };
+
+    /**
+     * Current identities for a result-cache probe. An absent revision means `missing`; an evicted
+     * digest means unknown and must read the record. A stamp costs one read and digest, then hits
+     * the memo even when the display identity is unchanged.
+     */
+    const resolveIdentities = (
+        ids: Iterable<string>,
+        revisions: ReadonlyMap<string, string>,
+    ): ReadonlyMap<string, string> => {
+        const charactersKind = kinds.get(RESOURCE_KIND.characters);
+        if (!charactersKind) {
+            throw new Error(`Unknown resource kind ${RESOURCE_KIND.characters}`);
+        }
+        const identities = new Map<string, string>();
+        const unread: { kind: ResourceKind; id: string }[] = [];
+        for (const id of new Set(ids)) {
+            const revision = revisions.get(`${RESOURCE_KIND.characters}/${id}`);
+            if (revision === undefined || !isValidResourceId(id)) {
+                identities.set(id, "missing");
+                continue;
+            }
+            const memo = memoizedIdentity(identityKey(id, revision));
+            if (memo === undefined) {
+                unread.push({ kind: charactersKind, id });
+            } else {
+                identities.set(id, memo);
+            }
+        }
+        if (unread.length > 0) {
+            for (const record of store.readRefs(unread).items) {
+                identities.set(record.id, identityOf(record));
+            }
+        }
+        return identities;
+    };
+
     const load = (
         context: GenerationContext,
         options: { characters?: (chat: Chat, owner: character | groupChat) => Iterable<string> } = {},
-    ): { scope: JobScope; entries: readonly DisplayScopeEntry[] } => {
+    ): { scope: JobScope; entries: readonly DisplayScopeEntry[]; identities: ReadonlyMap<string, string> } => {
         const charactersKind = kinds.get(RESOURCE_KIND.characters);
         if (!charactersKind) {
             throw new Error(`Unknown resource kind ${RESOURCE_KIND.characters}`);
@@ -243,13 +318,17 @@ export function createDisplayScopeLoader(
             transcriptCache.insert(transcriptKey, store.readChatSource(context.characterId, context.chatId));
         const chatRecord = transcript.value;
         const characterRevisions = new Map<string, string | null>();
+        const identities = new Map<string, string>();
         const characterRecords = readCharacters(
             store,
             charactersKind,
             context,
             chatRecord.data,
             options.characters,
-            characterRevisions,
+            (record) => {
+                characterRevisions.set(record.id, record.revision);
+                identities.set(record.id, identityOf(record));
+            },
         );
         const single = (name: string): any =>
             configuration.value[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
@@ -358,14 +437,16 @@ export function createDisplayScopeLoader(
             effectivePersona,
             request,
         };
-        return { scope, entries: [configuration, transcript] };
+        return { scope, entries: [configuration, transcript], identities };
     };
 
     return {
         load,
+        resolveIdentities,
         clear() {
             configurationCache.clear();
             transcriptCache.clear();
+            characterIdentities.clear();
         },
         stats: () => ({ configuration: configurationCache.stats(), transcripts: transcriptCache.stats() }),
     };

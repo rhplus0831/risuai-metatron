@@ -664,10 +664,10 @@ describe("the transform cache's transcript, viewport, and speakers", () => {
         expect(await run("another-desktop", 800)).toMatchObject({ cached: true, key: wide.key });
     });
 
-    it("keys an earlier nonmember speaker by revision, including absence and return", async () => {
+    it("keys a removed member still speaking in stored messages by display identity, including absence and return", async () => {
         await batch({
             ops: [
-                character("speaker-group", { type: "group", characters: ["speaker-member"] }),
+                character("speaker-group", { type: "group", characters: ["speaker-member", "former-speaker"] }),
                 character("speaker-member"),
                 character("former-speaker", { name: "Before" }),
             ],
@@ -683,9 +683,34 @@ describe("the transform cache's transcript, viewport, and speakers", () => {
         const run = async () =>
             complete(await render("speaker-group", "k", [target("a", "speaker-member", "{{previouscharchat}}")]));
         const chat = await readChat("speaker-group", "k");
+        expect(await run()).toMatchObject({ ok: true, text: "earlier", cached: false });
+        expect(await run()).toMatchObject({ cached: true });
+
+        const group = (await api("/api/resources/characters/speaker-group")).body;
+        await batch({
+            ops: [
+                {
+                    kind: "characters",
+                    id: "speaker-group",
+                    baseRevision: group.revision,
+                    patch: { set: { characters: ["speaker-member"] } },
+                },
+            ],
+        });
         const first = await run();
         expect(first).toMatchObject({ ok: true, text: "earlier", cached: false });
-        expect(await run()).toMatchObject({ cached: true, key: first.key });
+        const speaker = (await api("/api/resources/characters/former-speaker")).body;
+        await batch({
+            ops: [
+                {
+                    kind: "characters",
+                    id: "former-speaker",
+                    baseRevision: speaker.revision,
+                    patch: { set: { lastInteraction: 123 } },
+                },
+            ],
+        });
+        expect(await run()).toMatchObject({ ok: true, text: "earlier", cached: true, key: first.key });
 
         const stored = (await api("/api/resources/characters/former-speaker")).body;
         await batch({
@@ -948,6 +973,55 @@ describe("the two-call protocol", () => {
 });
 
 describe("the transform's admission", () => {
+    it.each(["cold", "all-cached"] as const)(
+        "a deleted selected model preset refuses a %s request with 404",
+        async (state) => {
+            vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+            const models = await single("modelPresets");
+            const id = `model-admission-${state}`;
+            try {
+                await batch({
+                    ops: [
+                        {
+                            kind: "modelPresets",
+                            id: "main",
+                            baseRevision: models.revision,
+                            data: [...models.data, { ...models.data[0], id }],
+                        },
+                        character(id),
+                    ],
+                    chats: [chatCreate(id, "k", { modelPresetId: id })],
+                });
+                const targets = [
+                    target("a", id, "first row", { chatIndex: 0, messageId: "m1" }),
+                    target("b", id, "second row"),
+                ];
+                const run = () => render(id, "k", targets, { context: { ...context(id, "k"), modelPresetId: id } });
+                if (state === "all-cached") {
+                    expect((await run()).body.results).toMatchObject([
+                        { id: "a", ok: true, text: "first row", cached: false },
+                        { id: "b", ok: true, text: "second row", cached: false },
+                    ]);
+                    expect((await run()).body.results).toMatchObject([
+                        { id: "a", ok: true, cached: true },
+                        { id: "b", ok: true, cached: true },
+                    ]);
+                }
+                const current = await single("modelPresets");
+                await batch({
+                    ops: [{ kind: "modelPresets", id: "main", baseRevision: current.revision, data: models.data }],
+                });
+                expect((await run()).status).toBe(404);
+            } finally {
+                const current = await single("modelPresets");
+                await batch({
+                    ops: [{ kind: "modelPresets", id: "main", baseRevision: current.revision, data: models.data }],
+                });
+                vi.useRealTimers();
+            }
+        },
+    );
+
     it.each(["/api/transform", "/api/transform/continue"])(
         "%s answers 400, not 500, when the body stream fails without a declared length",
         async (route) => {

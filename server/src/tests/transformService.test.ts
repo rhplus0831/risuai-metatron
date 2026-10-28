@@ -10,6 +10,7 @@ import { ChatBindingError, jobScopeKinds } from "../jobs/jobScope.ts";
 import type { GenerationRunnerDeps } from "../jobs/runSetup.ts";
 import { createTransformService, TransformSnapshotError, TransformUnavailableError } from "../prompt/transform.ts";
 import { createDisplayScopeLoader } from "../prompt/displayScope.ts";
+import { DISPLAY_KIND_CLASSIFICATION, isDisplayKeyKind } from "../prompt/displayKinds.ts";
 import { createTransformCache } from "../prompt/transformCache.ts";
 import { createLuaBudget, createScriptWorkerPool } from "../scripts/workerPool.ts";
 
@@ -769,6 +770,168 @@ describe("the transform cache probe", () => {
         );
     };
 
+    describe("display result identities", () => {
+        beforeEach(() => {
+            vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        });
+
+        const setup = () => {
+            const h = open();
+            const characters = h.kinds.get("characters")!;
+            h.store.put(characters, "a", character("a"), h.store.get(characters, "a")!.revision);
+            h.store.put(characters, "source", character("source"), null);
+            const request = h.request("owner", {
+                mode: "editdisplay",
+                targets: [
+                    { id: "owner", sourceId: "a", kind: "text", chatIndex: -1, source: "owner row" },
+                    { id: "source", sourceId: "source", kind: "text", chatIndex: -1, source: "source row" },
+                ],
+            });
+            return { h, request, service: createTransformService(h.deps) };
+        };
+        const patchCharacter = (h: Harness, id: string, set: Record<string, unknown>) => {
+            h.store.applyChanges({
+                ops: [
+                    {
+                        kind: h.kinds.get("characters")!,
+                        id,
+                        baseRevision: h.store.revisionOf(h.kinds.get("characters")!, id),
+                        patch: { set },
+                    },
+                ],
+            });
+        };
+        const rows = (ownerCached: boolean, sourceCached = ownerCached) => [
+            { id: "owner", ok: true, text: "owner row", cached: ownerCached },
+            { id: "source", ok: true, text: "source row", cached: sourceCached },
+        ];
+
+        it.each(["editdisplay", "editprocess"] as const)(
+            "%s: lastInteraction-only patches keep every row in all-cached and mixed requests",
+            async (mode) => {
+                const { h, request, service } = setup();
+                request.mode = mode;
+                try {
+                    expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                    const transcript = vi.spyOn(h.store, "readChatSource");
+                    const reads = vi.spyOn(h.store, "readRefs");
+                    for (const id of ["a", "source"]) {
+                        reads.mockClear();
+                        patchCharacter(h, id, { lastInteraction: 123 });
+                        expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                        // A changed identity needs one record read; a scope reload would read the owner again.
+                        expect(ownerReads(reads, "a")).toBe(id === "a" ? 1 : 0);
+                    }
+                    expect(transcript).not.toHaveBeenCalled();
+
+                    patchCharacter(h, "a", { lastInteraction: 456 });
+                    const mixed = {
+                        ...request,
+                        targets: [...request.targets, { ...request.targets[0], id: "new", source: "new row" }],
+                    };
+                    expect((await service.transform(mixed, signal())).results).toMatchObject([
+                        ...rows(true),
+                        { id: "new", ok: true, text: "new row", cached: false },
+                    ]);
+                } finally {
+                    await service.close();
+                }
+            },
+        );
+
+        it.each([
+            { field: "description", set: { desc: "changed description" } },
+            { field: "lore", set: { globalLore: [{ key: "key", content: "changed lore" }] } },
+        ])("a $field edit invalidates the owner and each target's source", async ({ set }) => {
+            const { h, request, service } = setup();
+            try {
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                patchCharacter(h, "a", set);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                patchCharacter(h, "source", set);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true, false));
+            } finally {
+                await service.close();
+            }
+        });
+
+        it.each([
+            { kind: "providers", data: { requestRetrys: 7 } },
+            { kind: "loreBook", data: [{ name: "library", data: [{ key: "key", content: "lore" }] }] },
+            { kind: "globalscript", data: [{ comment: "library", in: "row", out: "changed", type: "editdisplay" }] },
+            { kind: "hotkeys", data: [{ key: "x", ctrl: true, alt: false, action: "reroll" }] },
+            { kind: "characterOrder", data: ["source", "a"] },
+            { kind: "authRefreshes", data: [{ url: "https://example.test", refreshToken: "refresh" }] },
+            {
+                kind: "translatorPresets",
+                data: { items: [{ id: "translation", name: "Changed" }], selectedId: "translation" },
+            },
+            { kind: "hypaV3Presets", data: { items: [{ id: "memory", name: "Changed" }], selectedId: "memory" } },
+            {
+                kind: "togglePresets",
+                data: [{ id: "toggles", name: "Changed", values: { choice: "1" }, kinds: { choice: "checkbox" } }],
+            },
+            { kind: "credentials", data: [{ id: "credential", name: "Changed", type: "openai" }] },
+            { kind: "statics", data: { messages: 1, imports: 0 } },
+        ])("a $kind write keeps cached display results", async ({ kind, data }) => {
+            const { h, request, service } = setup();
+            try {
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                const resourceKind = h.kinds.get(kind)!;
+                const before = h.store.get(resourceKind, "main")!;
+                h.store.put(resourceKind, "main", data, before.revision);
+                expect(h.store.get(resourceKind, "main")!.data).not.toEqual(before.data);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                // Exercise the loaded key as well as the all-cached probe.
+                const mixed = {
+                    ...request,
+                    targets: [...request.targets, { ...request.targets[0], id: "new", source: "new row" }],
+                };
+                expect((await service.transform(mixed, signal())).results).toMatchObject([
+                    ...rows(true),
+                    { id: "new", ok: true, text: "new row", cached: false },
+                ]);
+            } finally {
+                await service.close();
+            }
+        });
+
+        it.each([
+            { kind: "globalChatVariables", data: { legacy: "changed" } },
+            { kind: "ui", data: { language: "ko" } },
+        ])("a $kind write invalidates cached display results", async ({ kind, data }) => {
+            const { h, request, service } = setup();
+            try {
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                const resourceKind = h.kinds.get(kind)!;
+                const before = h.store.get(resourceKind, "main")!;
+                h.store.put(resourceKind, "main", { ...(before.data as object), ...data }, before.revision);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+            } finally {
+                await service.close();
+            }
+        });
+
+        it("classifies every default job scope kind and keeps admission and legacy global variables", () => {
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const actual = jobScopeKinds(kinds).map(({ name }) => name);
+            const classification: Readonly<Record<string, string>> = DISPLAY_KIND_CLASSIFICATION;
+            for (const name of actual) {
+                expect(Object.hasOwn(classification, name), name).toBe(true);
+                expect(["keep", "drop", "identity"], name).toContain(classification[name]);
+                expect(isDisplayKeyKind(name), name).toBe(classification[name] === "keep");
+            }
+            for (const name of ["presets", "modelPresets", "personas", "globalChatVariables"]) {
+                expect(actual).toContain(name);
+                expect(classification[name], name).toBe("keep");
+                expect(isDisplayKeyKind(name), name).toBe(true);
+            }
+        });
+    });
+
     it("answers an all-cached request without loading the scope, and loads it when any target must run", async () => {
         const h = open();
         h.setHold(false);
@@ -831,7 +994,8 @@ describe("the transform cache probe", () => {
         await service.close();
     });
 
-    it("keys a group's chat by its members: a member's change renders again, another character's does not load", async () => {
+    it("keys a group's member list and member display identities, leaving other characters out", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
         const h = open();
         h.setHold(false);
         const characters = h.kinds.get("characters")!;
@@ -868,12 +1032,37 @@ describe("the transform cache probe", () => {
         });
         expect(loads).not.toHaveBeenCalled();
 
+        h.store.applyChanges({
+            ops: [
+                {
+                    kind: characters,
+                    id: "b",
+                    baseRevision: h.store.revisionOf(characters, "b"),
+                    patch: { set: { lastInteraction: 123 } },
+                },
+            ],
+        });
+        expect((await service.transform(request, signal())).results[0]).toMatchObject({ ok: true, cached: true });
+
         // `b` is a member but not the target's source: only the group's key names it.
         touch(h, "b");
         const after = await service.transform(request, signal());
         expect(after.results[0]).toMatchObject({ ok: true, cached: false });
         expect(keyOf(after)).not.toBe(keyOf(first));
         expect(ownerReads(loads, "g")).toBe(1);
+
+        h.store.applyChanges({
+            ops: [
+                {
+                    kind: characters,
+                    id: "g",
+                    baseRevision: h.store.revisionOf(characters, "g"),
+                    // Keep the length so normalization does not also change member weights and flags.
+                    patch: { set: { characters: ["a", "outsider"] } },
+                },
+            ],
+        });
+        expect((await service.transform(request, signal())).results[0]).toMatchObject({ ok: true, cached: false });
         await service.close();
     });
 });
