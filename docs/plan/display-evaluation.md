@@ -1,6 +1,6 @@
 # Display Evaluation Plan
 
-Status: landed 1 (fd7f50766), 6 (15ed61b6c). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
 **Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
 Probe numbers are under **Measurements**.
 
@@ -415,6 +415,29 @@ Slice 6 notes: "did not match" is tested as an unchanged result (`replaced === d
 that replaces with the same string also skips the parse; a skipped parse also skips the CBS budget
 check. Two prompt-runner tests that observed stages through the first worker call gained a
 never-matching `editprocess` script, since an `editinput`-only list no longer reaches the worker.
+
+Slice 3 (the stock probe throws at `r.pending[0]` once no snapshot is kept; the after numbers come
+from a copy guarded with `?.`, and later runs need the same guard):
+
+| Label | Before | After Slice 3 |
+|---|---|---|
+| `four-tiny-snapshots` | 45.83 MiB, 4 snapshots, 16 B counted | no snapshot kept, all 4 targets fail raw; +0.12 MiB measured alone |
+| `cold-500-plain-8-batches` | 206.02 ms, 480, 4,849 | 200.31 ms, 480, 4,849 |
+| `hit-500-plain-8-batches` | 13.83 ms, 200, 8 | 15.92 ms, 200, 8 |
+
+Charged against measured retained heap per snapshot (Node 24.21, four snapshots, three runs): no
+scripts, 64 targets: 3.23 MB charged, 1.70 MB held; CBS calls, 64 targets: 3.23 / 2.80 MB; 10,000
+defaults, 8 targets: 8.13 / 6.06 MB; 10,000 `scriptstate` entries, 8 targets: 5.98 / 3.79 MB. The
+scope walk takes a median of 2.54 ms (p95 2.88 ms) over 2,000 messages (6.1 MB).
+
+Slice 3 notes: per target the charge is a 48 KiB setup overhead, the text, the source when it
+differs, 64 B per `scriptstate` entry plus changed variables, the character list copy, and 12× the
+largest default-variable text (the last two beyond D8's list, after the challenger's measurement).
+A scope over the budget fails every uncached target before its Lua runs and keeps no snapshot; a
+single target over the budget fails alone, as before. Over-budget failures reuse the existing
+error text. The 64 MiB global budget and the pin release paths are left to Slice 4 (D8's
+shared-entry reference count); until then only the 4-per-client and 16-total counts bound the
+total.
 
 ## Verification
 
