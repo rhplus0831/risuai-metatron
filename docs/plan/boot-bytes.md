@@ -288,6 +288,11 @@ The user answered these on 2026-10-29, each with the recommended option:
   - **If only the server time matters.** A summary projection that stops parsing whole `meta`
     (summary fields in their own column) goes under **Later** as its own plan, since it is a
     chat-store schema change.
+  - **Decided 2026-10-29: the bytes matter.** On the `audit` fixture's `warm` boot (176,254 bytes
+    compressed), the omission deltas are 75,417 for chat summaries, 69,173 for chat orders and
+    18,743 for inlays; `readSummaries` takes 80 ms for 3,000 chats (persistence guide, Gotchas).
+    The user chose to cache summaries and chat orders per character in Slice 8, and to add
+    `inlays` if it is eligible.
 - **Q5. A present but corrupt asset** (D7): counted as missing and uploaded again.
 - **Q6. Plugin data in the boot cache on disk** (Slice 8): `plugins` and `pluginStorage` stay out,
   whatever their size. The journal keeps them off disk too (`src/ts/storage/journalEligibility.ts:10`).
