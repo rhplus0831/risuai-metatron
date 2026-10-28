@@ -351,10 +351,18 @@ unload path), `src/ts/storage/draftJournal.ts`.
   split in two keeps distinct ids for the two parts; a revert, an order behind an in-flight
   order, and a remove/re-add with reused chat ids leave the right layers.
 
-### Slice 7: boot recovery of chat work (needs 4, 5, 6)
+### Slice 7: boot recovery of chat work (needs 4, 5, 6, 8)
 
 Files: `src/ts/storage/journalRecovery.ts`, `src/ts/storage/chatStore.svelte.ts` (a recovery
-queue that owns its base revision apart from `chatRevisions`), `src/ts/bootstrap.ts`.
+queue that owns its base revision apart from `chatRevisions`), `src/ts/bootstrap.ts`,
+`src/ts/storage/draftJournal.ts` and `src/ts/storage/resourceSync.svelte.ts` (the hand-over below;
+the user's decision of 2026-10-28, after Slice 6 left the page's reserved rows with no release).
+
+- Hand-over of the reserved rows: since Slice 6 the page reserves the chat and order rows it finds
+  or adopts at start, and its own writes and removals skip them. The journal gets a release that
+  frees reserved keys and returns their stored layers and versions, and the adapter gets an
+  adoption for chat and order rows (like `adoptRecoveredRecord`) that fills its journal views, so
+  a replayed or recovered chat is journaled again on this page and a settled row is removed.
 
 - D2 (a), (d), (e) and (f) for chats and orders, in the Slice 4 stage, staged with recovered
   characters. `initializeChats` does not add a first chat to a character whose chats are being
@@ -431,7 +439,7 @@ tables beside it, `shared/sections.ts` (read only).
 
 ## Recommended order
 
-1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 10 → 11, with 9 any time after 1, and 12 last. Slices 2, 3, 6 and
+1 → 2 → 3 → 4 → 5 → 6 → 8 → 7 → 10 → 11, with 9 any time after 1, and 12 last. Slices 2, 3, 6 and
 10 touch the same dispatch and acknowledgement code: run them one at a time, not in parallel
 worktrees.
 
