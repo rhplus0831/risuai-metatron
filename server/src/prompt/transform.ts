@@ -15,10 +15,11 @@ import {
 } from "../../../shared/transform.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import { GenerationRunnerError, type RunningJob } from "../jobs/generationJobs.ts";
-import { type JobScope, jobScopeKinds, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
+import { type JobScope, jobScopeKinds, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup, type GenerationRunnerDeps, type RunSetup } from "../jobs/runSetup.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import type { LuaBudget } from "../scripts/workerPool.ts";
+import { createDisplayScopeLoader, MAX_RETAINED_BYTES, retainedBytes, type DisplayScopeEntry } from "./displayScope.ts";
 import { runLuaEdit, runScriptTail } from "./scripts.ts";
 import { createTransformCache } from "./transformCache.ts";
 import { TriggerEffectLimitError } from "./triggers.ts";
@@ -45,12 +46,8 @@ const MAX_QUEUED = 32;
 /** Snapshots waiting for their second call, per client and in all. */
 const MAX_SNAPSHOTS_PER_CLIENT = 4;
 const MAX_SNAPSHOTS = 16;
-/** Conservative retained memory of one snapshot: its loaded scope and each target's setup, copies and texts. */
+/** Request-owned retained memory of one snapshot: its projection and each target's setup, copies and texts. */
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
-/** Object headers and storage slots include slack for V8's record and collection storage. */
-const SNAPSHOT_OBJECT_BYTES = 64;
-const SNAPSHOT_SLOT_BYTES = 32;
-const SNAPSHOT_SCALAR_BYTES = 16;
 /** Bindings, the CBS host and matcher table, trigger runtime, and run state. */
 const SNAPSHOT_TARGET_BYTES = 48 * 1024;
 /** The copied variable object's property storage; unchanged keys and values are paid by the scope. */
@@ -98,6 +95,8 @@ type Snapshot = {
     life: Lifecycle;
     shared: Shared;
     runs: Map<string, TargetRun>;
+    claimed: boolean;
+    release: () => void;
 };
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -122,61 +121,6 @@ function link(signal: AbortSignal, controller: AbortController): () => void {
     const onAbort = () => controller.abort(signal.reason ?? new Error("request aborted"));
     signal.addEventListener("abort", onAbort, { once: true });
     return () => signal.removeEventListener("abort", onAbort);
-}
-
-/** The loaded scope's retained data, shared by every pending target; stops once it exceeds `cap`. */
-function scopeRetainedBytes(scope: JobScope, cap: number): number {
-    let bytes = 0;
-    const seen = new Set<object>();
-    const stack: unknown[] = [scope];
-    // UTF-16 length is a lower bound on UTF-8 bytes: reject huge strings without scanning them.
-    const stringBytes = (text: string) => (text.length > cap - bytes ? cap + 1 : Buffer.byteLength(text));
-    while (stack.length > 0 && bytes <= cap) {
-        const value = stack.pop();
-        if (typeof value === "string") {
-            bytes += stringBytes(value);
-        } else if (typeof value !== "object" || value === null) {
-            if (typeof value === "number" || typeof value === "boolean") {
-                bytes += SNAPSHOT_SCALAR_BYTES;
-            }
-        } else if (!seen.has(value)) {
-            seen.add(value);
-            bytes += SNAPSHOT_OBJECT_BYTES;
-            if (bytes > cap) {
-                break;
-            }
-            if (value instanceof Map) {
-                for (const [key, entry] of value) {
-                    bytes += SNAPSHOT_SLOT_BYTES;
-                    if (bytes > cap) {
-                        return bytes;
-                    }
-                    stack.push(key, entry);
-                }
-            } else if (value instanceof Set) {
-                for (const entry of value) {
-                    bytes += SNAPSHOT_SLOT_BYTES;
-                    if (bytes > cap) {
-                        return bytes;
-                    }
-                    stack.push(entry);
-                }
-            } else {
-                const record = value as Record<string, unknown>;
-                for (const key in record) {
-                    if (Object.hasOwn(record, key)) {
-                        bytes += SNAPSHOT_SLOT_BYTES;
-                        bytes += stringBytes(key);
-                        if (bytes > cap) {
-                            return bytes;
-                        }
-                        stack.push(record[key]);
-                    }
-                }
-            }
-        }
-    }
-    return bytes;
 }
 
 /** Per-target retained memory beyond the shared scope, including allowances for lazy setup allocations. */
@@ -207,9 +151,10 @@ function targetRetainedBytes(run: TargetRun): number {
 
 /**
  * The script transform: `processScriptFull`'s `editdisplay` and `editprocess` stages for targets
- * the tab sends, read-only. One `loadJobScope` per request the cache does not answer whole (the ids
- * the tab captured; a missing record fails the request, 404), then per target an isolated run on a
- * copy of that snapshot: its own chat object (`scriptstate` copied: a Lua or CBS variable write
+ * the tab sends, read-only. A fresh display projection per request the result cache does not answer
+ * whole, using raw configuration and transcript entries cached by epoch and revisions (the ids
+ * the tab captured; a missing record fails the request, 404), then per target an isolated run on
+ * that projection: its own chat object (`scriptstate` copied: a Lua or CBS variable write
  * changes it for the target's later stages and is never stored), its own owner object and character
  * list, its own regex and dynamic-asset caches, and a setup built as a job's (`createRunSetup`) on
  * a job that cannot write, ask, or call the tab, with frozen bindings (no character or chat
@@ -224,8 +169,12 @@ function targetRetainedBytes(run: TargetRun): number {
  * next trigger; the display trigger: the text kept); an abort, a spent limit, a latched host
  * failure, a worker failure, or a refused write fails the target (`{ ok: false }`, nothing cached).
  * A text after the stages before the plugin handlers is bounded as the second call's texts are.
- * A kept snapshot is charged its loaded scope once, plus each target's setup, copied containers,
- * texts, changed variables and default-variable map allowance. Targets that do not fit fail alone.
+ * A kept snapshot is charged its request-owned projection plus each target's setup, copied
+ * containers, texts, changed variables and default-variable map allowance, up to 8 MiB. Shared raw
+ * entries are charged once while pinned, alongside snapshots and in-progress reservations against
+ * a 64 MiB global limit. Oldest waiting snapshots give way first (this client's, then all clients').
+ * Continuations keep their pins through queueing and execution; every end path releases them.
+ * Targets that still do not fit fail alone.
  *
  * Results are cached (`transformCache.ts`) under a digest of the epoch, the target, the context,
  * the handler set, the viewport and browser language, the stored chat revision the load read,
@@ -234,12 +183,13 @@ function targetRetainedBytes(run: TargetRun): number {
  * and the chat's variables, author's note, local lore, name, modules, bound persona, bound presets,
  * and greeting index. `noCache` replaces the entry. A cached result keeps its emotions;
  * the tab applies a key's emotions once. A request whose every target has an entry is answered
- * before the load (`cachedResults`: revisions and the chat's metadata only, no record parsed).
+ * before the load (`cachedResults`: revisions and the chat's metadata, no configuration or messages parsed).
  *
  * Lifecycle: a request is registered (its controller, its deadline, the epoch, the maintenance
  * count) when it is admitted, before it waits for one of `MAX_ACTIVE` slots (`MAX_QUEUED` may wait;
  * more are refused). `pause` (maintenance) aborts every request, queued or running, and every
- * snapshot, and empties the cache; a request admitted before a maintenance never runs after it.
+ * snapshot, and empties the result and scope caches; a request admitted before maintenance never
+ * runs after it.
  * `close` (shutdown) refuses new work, aborts, and waits for the runs. One deadline,
  * `TRANSFORM_SNAPSHOT_TTL_MS` from the first call's admission, covers both calls of a snapshot.
  */
@@ -248,6 +198,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
     const deps: GenerationRunnerDeps = { ...runnerDeps, mcp: undefined };
     const { store, kinds } = deps;
     const cache = createTransformCache();
+    const displayScopes = createDisplayScopeLoader(store, kinds);
+    const pins = new Map<DisplayScopeEntry, number>();
+    let retained = 0;
     const snapshots = new Map<string, Snapshot>();
     const lives = new Set<Lifecycle>();
     const running = new Set<Promise<unknown>>();
@@ -374,10 +327,63 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         if (snapshots.get(snapshot.id) === snapshot) {
             snapshots.delete(snapshot.id);
         }
+        if (!snapshot.claimed) {
+            snapshot.release();
+        }
         if (reason) {
             snapshot.life.controller.abort(reason);
             retire(snapshot.life);
         }
+    };
+
+    /** Reservations are synchronous: another head can await without making this charge available again. */
+    const reservationFor = (entries: readonly DisplayScopeEntry[]) => {
+        let ownBytes = 0;
+        let pinned = false;
+        let released = false;
+        const sharedBytes = () =>
+            pinned ? 0 : entries.reduce((sum, entry) => sum + (pins.has(entry) ? 0 : entry.bytes), 0);
+        return {
+            reserve(bytes: number, clientId: string): boolean {
+                while (retained + sharedBytes() + bytes > MAX_RETAINED_BYTES) {
+                    // Claimed continuations and other requests' reservations are never in this map.
+                    const oldest =
+                        [...snapshots.values()].find((entry) => entry.clientId === clientId) ??
+                        snapshots.values().next().value;
+                    if (!oldest) {
+                        return false;
+                    }
+                    dropSnapshot(oldest, new TransformSnapshotError("The render's snapshot was replaced"));
+                }
+                retained += sharedBytes() + bytes;
+                ownBytes += bytes;
+                if (!pinned) {
+                    for (const entry of entries) {
+                        pins.set(entry, (pins.get(entry) ?? 0) + 1);
+                    }
+                    pinned = true;
+                }
+                return true;
+            },
+            release() {
+                if (released) {
+                    return;
+                }
+                released = true;
+                retained -= ownBytes;
+                if (pinned) {
+                    for (const entry of entries) {
+                        const count = pins.get(entry)!;
+                        if (count === 1) {
+                            pins.delete(entry);
+                            retained -= entry.bytes;
+                        } else {
+                            pins.set(entry, count - 1);
+                        }
+                    }
+                }
+            },
+        };
     };
 
     /** A job that cannot write, ask, or call the tab: what the setup needs of one. */
@@ -508,12 +514,11 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         );
 
     /**
-     * The request's results from the cache alone, when every target has an entry: it reads the
-     * revisions and the chat's metadata (no record's data, no message), so a render the cache
-     * answers never loads the job scope (the sections, presets, modules, and rendered characters
-     * parsed). Null when a target must run, the chat's characters are not known for its owner and
-     * chat revisions, or the chat is gone: the request then loads as before (and its load reports a
-     * missing record or a binding refusal).
+     * The request's results from the cache alone, when every target has an entry: it reads only
+     * revisions and chat metadata, so a render the cache answers never builds a display scope.
+     * Null when a target must run, the chat's characters are not known for its owner and chat
+     * revisions, or the chat is gone: the request then loads and reports any missing record or
+     * binding refusal.
      */
     const cachedResults = (request: TransformRequest, epoch: string): TransformResult[] | null => {
         if (request.targets.length === 0 || request.targets.some((target) => target.noCache)) {
@@ -680,6 +685,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         const life = admit();
         const unlink = link(signal, life.controller);
         let kept: Snapshot | null = null;
+        let reservation: ReturnType<typeof reservationFor> | null = null;
         let release: (() => void) | null = null;
         try {
             release = await acquire(life);
@@ -704,11 +710,11 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             };
             // A render, read-only: the chat's bound fields that exist must be the ones sent; an
             // unset or gone field renders with the tab's.
-            const scope = loadJobScope(store, kinds, context, {
-                binding: "display",
+            const { scope, entries } = displayScopes.load(context, {
                 // Besides the chat's characters, each target's source.
                 characters: () => request.targets.map((target) => target.sourceId),
             });
+            reservation = reservationFor(entries);
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: deps.scriptWorkers.createBudget(), cbsUsage: { usedMs: 0 } };
             const base = baseKey(
@@ -722,8 +728,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             );
             const results: TransformResult[] = [];
             const pending: TargetRun[] = [];
-            let retained = 0;
-            let scopeCharged = false;
+            let ownBytes = 0;
+            let scopeBytes: number | undefined;
             for (const target of request.targets) {
                 const key = targetKey(base, scope.revisions, target);
                 if (target.noCache) {
@@ -744,11 +750,11 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 }
                 try {
                     if (request.handlers !== undefined) {
-                        if (!scopeCharged) {
-                            retained = scopeRetainedBytes(scope, MAX_SNAPSHOT_BYTES);
-                            scopeCharged = true;
-                        }
-                        if (retained + SNAPSHOT_TARGET_BYTES > MAX_SNAPSHOT_BYTES) {
+                        scopeBytes ??= retainedBytes(scope, MAX_SNAPSHOT_BYTES, { exclude: entries });
+                        if (
+                            (pending.length ? ownBytes : scopeBytes) + SNAPSHOT_TARGET_BYTES > MAX_SNAPSHOT_BYTES ||
+                            entries.some((entry) => entry.bytes > MAX_RETAINED_BYTES)
+                        ) {
                             throw new Error("The render's texts are over the limit of one request");
                         }
                     }
@@ -759,15 +765,19 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                         continue;
                     }
                     // The texts sent back together stay within the second call's limit, and the snapshot within its budget.
-                    const bytes = targetRetainedBytes(run);
+                    const bytes = targetRetainedBytes(run) + (pending.length === 0 ? scopeBytes! : 0);
                     const pendingText = pending.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
                     if (
-                        retained + bytes > MAX_SNAPSHOT_BYTES ||
+                        ownBytes + bytes > MAX_SNAPSHOT_BYTES ||
                         pendingText + Buffer.byteLength(run.text) > MAX_TRANSFORM_REQUEST_TEXT_BYTES
                     ) {
                         throw new Error("The render's texts are over the limit of one request");
                     }
-                    retained += bytes;
+                    stillValid(life);
+                    if (!reservation.reserve(bytes, request.clientId)) {
+                        throw new Error("The render's texts are over the limit of one request");
+                    }
+                    ownBytes += bytes;
                     pending.push(run);
                 } catch (error) {
                     results.push(failure(life, error, target.id));
@@ -777,21 +787,24 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             if (pending.length === 0) {
                 return { results };
             }
-            kept = {
+            const snapshot: Snapshot = {
                 id: randomUUID(),
                 clientId: request.clientId,
                 mode: request.mode,
                 life,
                 shared,
                 runs: new Map(pending.map((run) => [run.target.id, run])),
+                claimed: false,
+                release: reservation.release,
             };
-            const snapshot = kept;
             // The deadline (or a maintenance) ends the snapshot too: it is no longer claimable once its runs' time is over.
             life.controller.signal.addEventListener(
                 "abort",
                 () => {
-                    dropSnapshot(snapshot);
-                    retire(life);
+                    if (!snapshot.claimed) {
+                        dropSnapshot(snapshot);
+                        retire(life);
+                    }
                 },
                 { once: true },
             );
@@ -804,6 +817,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 dropSnapshot(old, new TransformSnapshotError("The render's snapshot was replaced"));
             }
             snapshots.set(snapshot.id, snapshot);
+            kept = snapshot;
             return {
                 results,
                 snapshotId: snapshot.id,
@@ -813,6 +827,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             unlink();
             release?.();
             if (!kept) {
+                reservation?.release();
                 retire(life);
             }
         }
@@ -839,7 +854,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         ) {
             throw new TransformRequestError("texts must name every pending target once");
         }
-        // Claimed now: a second call for the same snapshot finds nothing.
+        // Claimed now: a second call finds nothing, but its data stays charged until this call ends.
+        snapshot.claimed = true;
         dropSnapshot(snapshot);
         const { life } = snapshot;
         const unlink = link(signal, life.controller);
@@ -871,6 +887,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         } finally {
             unlink();
             release?.();
+            snapshot.release();
             retire(life);
         }
     };
@@ -894,6 +911,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             pauses++;
             abortAll(reason);
             cache.clear();
+            displayScopes.clear();
             let resumed = false;
             return () => {
                 if (!resumed) {
@@ -906,10 +924,19 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         async close(): Promise<void> {
             closed = true;
             abortAll("The server is shutting down");
+            displayScopes.clear();
             await Promise.allSettled([...running]);
         },
         /** For tests and diagnostics. */
-        stats: () => ({ active, queued: queue.length, snapshots: snapshots.size, cached: cache.size }),
+        stats: () => ({
+            active,
+            queued: queue.length,
+            snapshots: snapshots.size,
+            cached: cache.size,
+            retainedBytes: retained,
+            pinnedEntries: pins.size,
+            displayScope: displayScopes.stats(),
+        }),
     };
 }
 
