@@ -354,10 +354,11 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         await expect(reply.locator("strong").filter({ hasText: "slow" })).toHaveCount(1);
         expect(await reply.innerText()).not.toContain("**");
         const targets = count(targeted(s, from));
-        // The new reply once (when its lock ended), the new user message at most once (its mount),
+        // The new reply once (when its lock ended), the new user message at most twice (its mount,
+        // and once more after the chat settles when the reply's install landed during that render),
         // and nothing else: no seeded row, no greeting.
         expect(targets[replyMessage.id], JSON.stringify(targets)).toBe(1);
-        expect(targets[userMessage.id] ?? 0, JSON.stringify(targets)).toBeLessThanOrEqual(1);
+        expect(targets[userMessage.id] ?? 0, JSON.stringify(targets)).toBeLessThanOrEqual(2);
         expect(Object.keys(targets).filter((k) => k !== replyMessage.id && k !== userMessage.id)).toEqual([]);
         expect(await mutations(page, "m-c2")).toBe(0);
         expect(

@@ -21,7 +21,15 @@ import { generationClientId } from "../network/generationJobs";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
-import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLocked } from "../storage/chatStore.svelte";
+import {
+    type ChatRef,
+    chatHasUnackedWork,
+    chatInstallVersion,
+    currentChatRef,
+    findChat,
+    heldChatRevision,
+    isMessageLocked,
+} from "../storage/chatStore.svelte";
 import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
@@ -96,6 +104,11 @@ export type CapturedTransform = {
      */
     noCache: boolean;
     locked: boolean;
+    /** The chat's installed state and unsaved-work flag when this render began. */
+    installVersion: number;
+    hadUnackedWork: boolean;
+    /** An editdisplay answer may have mixed the render's text with a different stored transcript. */
+    mixedDisplay: boolean;
 };
 
 const generations = new Map<string, number>();
@@ -153,6 +166,9 @@ function readTransformContext(
         generation,
         noCache: false,
         locked: isMessageLocked(chatRef, messageId),
+        installVersion: chatInstallVersion(chatRef),
+        hadUnackedWork: chatHasUnackedWork(chatRef),
+        mixedDisplay: false,
     };
 }
 
@@ -489,6 +505,13 @@ export async function serverProcessScript(
         schedule();
     }
     const answered = await result;
+    if (
+        mode === "editdisplay" &&
+        captured.messageId &&
+        (captured.hadUnackedWork || chatInstallVersion(captured.chatRef) !== captured.installVersion)
+    ) {
+        captured.mixedDisplay = true;
+    }
     const current = key === null || (generations.get(key) ?? 0) === captured.generation;
     if (answered.ok === false) {
         console.warn("[Transform]", answered.error);

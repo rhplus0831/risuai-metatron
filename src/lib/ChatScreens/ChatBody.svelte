@@ -18,7 +18,7 @@
 </script>
 
 <script lang="ts">
-    import { tick } from "svelte";
+    import { onDestroy, tick } from "svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
     import { sleep } from "src/ts/util";
@@ -55,6 +55,8 @@
         translating: boolean;
         retranslate: boolean;
         renderRevision?: number;
+        /** Reports a completed render whose server display transform may have mixed chat states. */
+        onMixedRender?: (capture: CapturedTransform) => void;
         bodyRoot?: HTMLElement | null;
         modelShortName: string;
         /** The row's message is streaming: the rendered path shows the original and translates once it ends. */
@@ -94,6 +96,7 @@
         translating = $bindable(false),
         retranslate = $bindable(false),
         renderRevision = 0,
+        onMixedRender,
         bodyRoot,
         modelShortName = "",
         streaming = false,
@@ -121,6 +124,10 @@
      * next render is pending.
      */
     let parseRun = 0;
+    let destroyed = false;
+    onDestroy(() => {
+        destroyed = true;
+    });
     let pendingAutoTranslate: Promise<void> | undefined;
 
     function getCbsCondition() {
@@ -334,9 +341,11 @@
             return retried;
         } finally {
             //since trimMarkdown is fast, we don't need to cache it
-            if (run === parseRun) {
+            if (!destroyed && run === parseRun) {
                 lastParsed = lastParsedQueue;
                 lastRenderedRevision = requestedRevision;
+                // Retries share the capture; only their outer call reports the completed render.
+                if (tries === undefined && transform?.mixedDisplay) onMixedRender?.(transform);
             }
         }
     };

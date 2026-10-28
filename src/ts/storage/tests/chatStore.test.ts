@@ -184,6 +184,155 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+describe("display install state", () => {
+    afterEach(() => vi.clearAllMocks());
+
+    it("advances only when an acknowledgment empties the chat's work and keeps quarantine unacknowledged until discard", async () => {
+        const { server, chat, ref, take, apply, ack } = await boot();
+        const initial = chat.chatInstallVersion(ref);
+        const other = { chaId: "c", chatId: "unrelated" };
+        const otherVersion = chat.chatInstallVersion(other);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        chat.setMessageText(ref, "a", "first edit");
+        expect(chat.chatInstallVersion(ref)).toBe(initial);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        expect(chat.chatHasUnackedWork(other)).toBe(false);
+        const first = take();
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        const firstAnswer = apply(first);
+        chat.setMessageText(ref, "b", "second edit");
+        ack(first, firstAnswer);
+        expect(chat.chatInstallVersion(ref)).toBe(initial);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        const last = take();
+        ack(last, apply(last));
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
+        expect(chat.chatInstallVersion(other)).toBe(otherVersion);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+
+        chat.setMessageText(ref, "a", "refused edit");
+        const refused = take();
+        chat.quarantineChat(refused.groups[0], "refused");
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        expect(take().groups).toEqual([]);
+        expect(await chat.discardRefusedChat(chat.refusedChatItems()[0].key, () => true)).toBe(true);
+        expect(chat.findChat(ref)!.message[0].data).toBe(server.texts("c", "k")[0]);
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 2);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+    });
+
+    it("does not advance for a stale acknowledgment that only requests a refresh", async () => {
+        const { server, chat, ref, commit } = await boot();
+        const initial = chat.chatInstallVersion(ref);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "a", text: "remote edit" }],
+            },
+        ]);
+        chat.setMessageText(ref, "b", "local edit");
+        const { result } = commit();
+        expect(result.chats[0].stale).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(true);
+        expect(chat.chatInstallVersion(ref)).toBe(initial);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        expect(chat.finishIdleChatRefresh(server.chat("c", "k")!)).toBe(true);
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
+    });
+
+    it("keeps a deferred collection reload unacknowledged after the job unlocks", async () => {
+        const { server, chat, ref, take } = await boot();
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "delete" }],
+            },
+        ]);
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]);
+        expect(chat.isChatDeferred("c\u0000k")).toBe(true);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        expect(take().groups).toEqual([]);
+        chat.endServerJob("J");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        chat.finishDeferredReload({ characterId: "c", id: "k", revision: null, data: null });
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+    });
+
+    it("advances for remote installs, authoritative patches, job hydration, whole collections, and loaded reads, but not stream chunks", async () => {
+        const { server, chat, ref } = await boot();
+        const initial = chat.chatInstallVersion(ref);
+        const remote = (text: string) => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "a", text }],
+                },
+            ]);
+            return server.chat("c", "k")!;
+        };
+        const other = { chaId: "c", chatId: "unrelated" };
+        const otherVersion = chat.chatInstallVersion(other);
+        chat.acceptRemoteChat(remote("remote"));
+        expect(chat.chatInstallVersion(ref), "remote install").toBe(initial + 1);
+        const baseRevision = chat.heldChatRevision(ref)!;
+        const patched = remote("patch");
+        expect(
+            chat.hydrateChatPatch({
+                characterId: "c",
+                id: "k",
+                baseRevision,
+                revision: patched.revision,
+                count: 3,
+                messages: [{ after: null, message: patched.data.message[0] }],
+            }),
+        ).toBe("applied");
+        expect(chat.chatInstallVersion(ref), "authoritative patch").toBe(initial + 2);
+        expect(chat.hydrateChat(remote("job"), { jobId: "J", streaming: [] })).toBe(true);
+        expect(chat.chatInstallVersion(ref), "job hydration").toBe(initial + 3);
+        remote("collection");
+        expect(
+            chat.applyRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]),
+        ).toBe(true);
+        expect(chat.chatInstallVersion(ref), "whole collection install").toBe(initial + 4);
+        remote("accepted collection");
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]);
+        expect(chat.chatInstallVersion(ref), "accepted whole collection").toBe(initial + 5);
+        remote("read");
+        expect((await chat.loadChat(ref))!.message[0].data).toBe("read");
+        expect(chat.chatInstallVersion(ref), "installed read").toBe(initial + 6);
+
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });
+        expect(
+            chat.applyServerGenerationChunk(ref, "J", {
+                type: "chunk",
+                epoch: server.store.epoch(),
+                messageId: "a",
+                generationId: "g",
+                seq: 1,
+                base: 0,
+                keep: 6,
+                text: " chunk",
+            }),
+        ).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.findChat(ref)!.message[0].data).toBe("stream chunk");
+        expect(chat.chatInstallVersion(ref), "stream chunks and unlock").toBe(initial + 6);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        expect(chat.chatInstallVersion(other)).toBe(otherVersion);
+        expect(chat.chatHasUnackedWork(other)).toBe(false);
+    });
+});
+
 describe("mirror and queue", () => {
     it("updates the mirror synchronously from detached copies of the input and the anchor", async () => {
         const { server, chat, ref, commit } = await boot();

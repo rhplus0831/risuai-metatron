@@ -78,6 +78,8 @@ vi.mock("../../storage/chatStore.svelte", async () => {
                 : undefined,
         findChat: (ref: { chaId: string; chatId: string }) => state.chats.get(key(ref)),
         heldChatRevision: (ref: { chaId: string; chatId: string }) => (state.held.has(key(ref)) ? "rev-1" : null),
+        chatInstallVersion: () => 0,
+        chatHasUnackedWork: () => false,
         isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) => {
             void lockSource.version;
             return ref !== null && messageId !== undefined && state.locked.has(`${key(ref)}/${messageId}`);
