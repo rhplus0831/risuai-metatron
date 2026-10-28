@@ -8,7 +8,6 @@ import {
 import type {
     GenerationCommand,
     GenerationContext,
-    GenerationFollowUp,
     GenerationKind,
     GenerationTerminalEvent,
     GenerationStatus,
@@ -55,6 +54,8 @@ import {
 import { sleep } from "../util";
 import { recordClientEvent } from "../diagnostics/collector";
 import { chatStatusKey as chatKeyOf, noteJobDone, noteJobLost } from "src/ts/process/chatStatus.svelte";
+import { installReplyAlternatives } from "./serverGeneration";
+import { incrementStatic } from "../storage/collectionStore.svelte";
 import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
 
@@ -87,12 +88,6 @@ function errorText(error: unknown): string {
 function withError(message: string, error: unknown): string {
     return message.replace("{0}", () => errorText(error));
 }
-
-/**
- * The jobs whose `/multisend` follow-ups this tab has started: a job's are started once, however
- * often its terminal is seen. Kept for the tab's lifetime (only jobs that had follow-ups).
- */
-const followedUp = new Set<string>();
 
 /** The one lifecycle of each job this tab follows to its end, shared by every caller. */
 const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
@@ -198,29 +193,8 @@ export function followJobToEnd(
                         noteJobDone(target, end);
                     }
                 }
-                // Before the follow-ups: they clear and append on the chat as the job left it, so a
-                // chat this tab could not read again runs none of them.
-                const current =
-                    target === "lost" ||
-                    (!replayedStatuses.has(jobId) && !needsChatRead(result, target)) ||
-                    (await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome"));
-                if (end !== "lost" && end.type === "done" && target !== "lost" && !followedUp.has(jobId)) {
-                    if (end.followUpsDropped || (end.followUps?.length && !current)) {
-                        // A kept outcome whose `/multisend` parts were too large to keep, or whose chat
-                        // could not be read again: none is sent.
-                        followedUp.add(jobId);
-                        alertError(language.serverJob.followUpsNotRun);
-                    } else if (end.followUps?.length) {
-                        // `/multisend` of a command job: sent now, once per job in this tab (a job
-                        // followed again later gets the same terminal), not awaited by the job's
-                        // caller. A reload meanwhile drops what is left.
-                        followedUp.add(jobId);
-                        // Pinned before the follow-ups' first await (this follow's pin ends below).
-                        const followUpRelease = pinChat(target);
-                        void runFollowUps(target, end.followUps)
-                            .catch((error) => console.error("[Generation]", error))
-                            .finally(followUpRelease);
-                    }
+                if (target !== "lost" && (replayedStatuses.has(jobId) || needsChatRead(result, target))) {
+                    await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome");
                 }
                 return end;
             } finally {
@@ -372,19 +346,6 @@ async function loadJobChat(ref: ChatRef): Promise<boolean> {
     return false;
 }
 
-/** The parts a command job's `/multisend` queued, sent as the tab's own `/multisend` sends them (the caller pinned the chat). */
-async function runFollowUps(ref: ChatRef, followUps: readonly GenerationFollowUp[]): Promise<void> {
-    const { runMultisend } = await import("./command");
-    if (!(await ensureChatLoaded(ref))) {
-        return;
-    }
-    for (const followUp of followUps) {
-        if (!(await runMultisend(ref, followUp.clear, followUp.parts))) {
-            return;
-        }
-    }
-}
-
 /**
  * The chat of a saved job from its status: `"gone"` when the server does not know it, `"lost"` after
  * the retries (each read bounded by `STEP_DEADLINE_MS`).
@@ -434,9 +395,15 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<FollowEnd> {
             }
             recordClientEvent({ kind: "jobLink", phase: "reattach", jobId, attempt: attach });
         }
-        const follow: GenerationFollow = followGenerationJob(jobId, (event) =>
-            applyGenerationEvent(jobId, ref, event, follow),
-        );
+        const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
+            applyGenerationEvent(jobId, ref, event, follow);
+            if (event.type === "sequence") {
+                incrementStatic("messages");
+                if (event.messageId && event.alternatives) {
+                    installReplyAlternatives(ref, event.messageId, event.alternatives);
+                }
+            }
+        });
         const closed = await follow.closed;
         if (closed.terminal) {
             return { terminal: closed.terminal, applied: true, kept: false };
@@ -478,6 +445,16 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     if (end === "lost") {
         alertError(language.serverJob.lost);
         recordClientEvent({ kind: "notice", notice: "serverJobLost" });
+    } else if (end.type === "done" && end.sequence?.stopped) {
+        const { sent, total, stopped } = end.sequence;
+        const reasons = language.serverJob.sequenceReasons;
+        const reason = Object.hasOwn(reasons, stopped) ? reasons[stopped as keyof typeof reasons] : stopped;
+        alertError(
+            language.serverJob.sequenceStopped.replace(
+                /\{(sent|total|reason)\}/g,
+                (_, key: "sent" | "total" | "reason") => String({ sent, total, reason }[key]),
+            ),
+        );
     } else if (end.type === "error" && end.reason === "maintenance") {
         // The debug info's time is the end's, not the alert's (the restore watch may take minutes).
         const at = Date.now();

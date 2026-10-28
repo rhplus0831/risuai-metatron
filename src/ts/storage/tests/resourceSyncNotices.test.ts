@@ -48,7 +48,7 @@ vi.mock("src/lang", () => ({
         resourceReloaded: "reloaded",
         resourceRestored: "restored",
         chatGenerating: "generating",
-        serverJob: { lost: "job lost", endedAway: "ended away", followUpsNotRun: "follow-ups not run" },
+        serverJob: { lost: "job lost", endedAway: "ended away" },
     },
     changeLanguage: vi.fn(),
 }));

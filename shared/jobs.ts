@@ -279,17 +279,8 @@ export type GenerationTerminalEvent =
            * chat, nothing to continue): the tab's `sendChat` returns false.
            */
           stopped?: true;
-          /**
-           * `/multisend` commands a command job ran, in order: the tab sends each part after the
-           * job (the user message appended, then a send), `clear` removing the chat's messages
-           * before each part, and stops at the first part that does not send.
-           */
-          followUps?: GenerationFollowUp[];
-          /**
-           * Only in a kept outcome (`GenerationStatus.kept`): the job's `/multisend` follow-ups were
-           * too large to keep after the job was collected, so none of them is sent.
-           */
-          followUpsDropped?: true;
+          /** Progress of the command job's server-run `/multisend` sequence. */
+          sequence?: GenerationSequence;
       }
     | {
           type: "error";
@@ -297,6 +288,7 @@ export type GenerationTerminalEvent =
           message: string;
           status: number;
           reason: GenerationErrorReason;
+          sequence?: GenerationSequence;
           /**
            * A runner's failure only (an abort, a timeout, shutdown, or maintenance has none): where
            * it failed, the LLM request that failed when it was one (the request history's id), and
@@ -307,12 +299,12 @@ export type GenerationTerminalEvent =
           providerCode?: string;
       };
 
-/** One `/multisend` of a command job: the texts to send in turn. */
-export type GenerationFollowUp = { clear: boolean; parts: string[] };
+/** A command job's sequence progress, retained with its terminal. */
+export type GenerationSequence = { total: number; sent: number; stopped?: string };
 
-/** The most parts all the follow-ups of one job carry, and the longest part in characters. */
-export const MAX_FOLLOW_UP_PARTS = 64;
-export const MAX_FOLLOW_UP_PART_CHARS = 100_000;
+/** The most queued parts of one command job, and the longest part in characters. */
+export const MAX_SEQUENCE_PARTS = 64;
+export const MAX_SEQUENCE_PART_CHARS = 100_000;
 
 // ---------------------------------------------------------------------------------------------
 // The job channel (`job-channel`): notices one way; questions and plugin callbacks are requests
@@ -703,13 +695,23 @@ export type GenerationEvent =
     | GenerationChatPatchEvent
     | { type: "progress"; epoch: string; payload: unknown }
     | GenerationChannelEvent
+    /** A completed sequence part, sent live only; it does not end the job. */
+    | {
+          type: "sequence";
+          epoch: string;
+          index: number;
+          total: number;
+          sent: number;
+          messageId?: string;
+          alternatives?: string[];
+      }
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
 
 /**
  * `GET /api/generations/:id`: what the owner needs to attach again. After an ended job is collected,
  * the server keeps its outcome for a while (`kept`): the job can no longer be attached, and its
- * terminal is trimmed (no preview `result`, large `alternatives` and `followUps` dropped, an error
+ * terminal is trimmed (no preview `result`, large `alternatives` dropped, an error
  * message cut).
  */
 export type GenerationStatus = {

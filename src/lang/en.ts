@@ -1622,7 +1622,17 @@ export const languageEnglish = {
         requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",
-        followUpsNotRun: "The command's /multisend did not run: the command ended while this page was away",
+        sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
+        sequenceReasons: {
+            shutdown: "the server is shutting down",
+            maintenance: "the server is under maintenance",
+            EpochMismatch: "the server data was replaced",
+            chatNotFound: "the chat no longer exists",
+            chatBindingIncomplete: "the chat's settings are incomplete",
+            chatBindingMismatch: "the chat's settings changed",
+            chatLoreOverrideOrphaned: "the chat has orphaned lore overrides",
+            notSent: "the part did not finish sending",
+        },
         discarded: {
             send: "A conflict discarded local changes; the send did not run",
             button: "A conflict discarded local changes; the button did not run",

@@ -1079,7 +1079,17 @@ export const languageKorean = {
         requestIdReused: "이 요청 ID는 이미 다른 작업에 사용되었습니다. 다시 보내면 새 요청이 시작됩니다.",
         lost: "서버 작업과의 연결이 끊겼습니다. 변경 사항을 보려면 채팅을 다시 불러와 주세요.",
         endedAway: "페이지가 꺼져 있는 동안 응답 작업이 끝나 채팅을 다시 불러왔습니다",
-        followUpsNotRun: "페이지가 꺼져 있는 동안 명령이 끝나 명령의 /multisend를 실행하지 않았습니다.",
+        sequenceStopped: "/multisend가 전체 {total}개 중 {sent}개를 보낸 뒤 중단되었습니다: {reason}",
+        sequenceReasons: {
+            shutdown: "서버를 종료하고 있습니다",
+            maintenance: "서버가 유지보수 중입니다",
+            EpochMismatch: "서버 데이터가 교체되었습니다",
+            chatNotFound: "채팅이 더 이상 존재하지 않습니다",
+            chatBindingIncomplete: "채팅 설정이 완전하지 않습니다",
+            chatBindingMismatch: "채팅 설정이 변경되었습니다",
+            chatLoreOverrideOrphaned: "원본이 없는 로어 오버라이드가 있습니다",
+            notSent: "해당 부분의 전송이 완료되지 않았습니다",
+        },
         discarded: {
             send: "충돌로 로컬 변경 사항이 버려져 메시지를 보내지 않았습니다.",
             button: "충돌로 로컬 변경 사항이 버려져 버튼을 실행하지 않았습니다.",

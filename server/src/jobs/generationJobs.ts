@@ -25,6 +25,7 @@ import {
     type GenerationEvent,
     type GenerationKind,
     type GenerationStage,
+    type GenerationSequence,
     type GenerationStatus,
     type GenerationTerminalEvent,
     HIDDEN_HYDRATION_KINDS,
@@ -68,9 +69,9 @@ export const JOB_DONE_GRACE_MS = 60_000;
 export { KEPT_OUTCOME_MS, MAX_KEPT_OUTCOMES };
 /** A kept error's message is cut to this many UTF-8 bytes. */
 export const MAX_KEPT_MESSAGE_BYTES = 4096;
-/** A kept done's `followUps` and `alternatives` are each kept only while their JSON fits this many bytes. */
+/** A kept done's `alternatives` are kept only while their JSON fits this many bytes. */
 export const MAX_KEPT_LIST_BYTES = 64 * 1024;
-/** A running job is aborted (`timeout`) after this long. */
+/** A running job, or each part of a command sequence, is aborted (`timeout`) after this long. */
 export const JOB_MAX_DURATION_MS = 30 * 60_000;
 const JOB_GC_INTERVAL_MS = 30_000;
 const JOB_HEARTBEAT_MS = 15_000;
@@ -221,6 +222,14 @@ export type RunningJob = {
         build: () => JobChanges,
         options?: { covers?: readonly { messageId: string; generationId: string; seq: number }[] },
     ): AppliedChanges;
+    /** Sequence coordination, available on registry jobs (absent on read-only render facades). */
+    sequence?: {
+        /** Synchronous preflight immediately before the part's write. An absent stop code means aborted. */
+        beginPart(): { ok: true } | { ok: false; stopped?: string };
+        progress(value: Pick<GenerationSequence, "total" | "sent">): void;
+        /** Releases only deleted messages, keeping the job's token and slot alive. */
+        releaseRemovedReplies(): void;
+    };
     /** Parsed JSON messages from the owner's socket (the job channel answers through it). */
     onClientMessage(listener: (message: unknown) => void): () => void;
     /**
@@ -325,6 +334,10 @@ type Job = {
     abortReason: GenerationErrorReason | null;
     abortTimer: ReturnType<typeof setTimeout> | null;
     startedAt: number;
+    /** The duration limit starts anew for each sequence part; diagnostics use startedAt. */
+    deadlineFrom: number;
+    sequence?: Pick<GenerationSequence, "total" | "sent">;
+    sequenceAttempted: boolean;
     ended: boolean;
     endedAt: number;
     sockets: Set<WebSocket>;
@@ -337,7 +350,7 @@ type Job = {
     preset: Extract<GenerationEvent, { type: "preset" }> | null;
     /** The current presentation stage, retained for attach while the job runs. */
     stage: GenerationStage | null;
-    /** What the job's callbacks act on (its preset can change once: `setCallbackPreset`). */
+    /** What the job's callbacks act on (each send can pick a preset: `setCallbackPreset`). */
     targets: CallbackTargets;
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
@@ -382,12 +395,11 @@ function keptTerminal(terminal: GenerationTerminalEvent): GenerationTerminalEven
     if (terminal.type === "error") {
         return { ...terminal, message: cutUtf8(terminal.message, MAX_KEPT_MESSAGE_BYTES) };
     }
-    const { result: _result, followUps, alternatives, ...rest } = terminal;
+    const { result: _result, alternatives, ...rest } = terminal;
     const fits = (value: unknown) => Buffer.byteLength(JSON.stringify(value)) <= MAX_KEPT_LIST_BYTES;
     return {
         ...rest,
         ...(alternatives && fits(alternatives) ? { alternatives } : {}),
-        ...(followUps ? (fits(followUps) ? { followUps } : { followUpsDropped: true as const }) : {}),
     };
 }
 
@@ -510,7 +522,7 @@ export function createGenerationJobs(options: {
     /** The JWT check for the socket handshake. */
     authorize: (token: string | undefined) => Promise<boolean>;
     runner?: GenerationRunner;
-    /** Runs synchronously after a send, continue, reroll, or group job ends done; a throw is only logged. */
+    /** Runs after a send or an attempted command sequence ends done; a throw is only logged. */
     onChatJobDone?: (characterId: string, chatId: string, kind: GenerationKind) => void;
     /** The channel hub (tests inject one with a fake clock). */
     hub?: ChannelHub;
@@ -854,7 +866,13 @@ export function createGenerationJobs(options: {
         } catch (error) {
             logEvent("generation.channelClose", { job: job.id }, error, diagnostics);
         }
-        let terminal = { ...(job.abortReason ? abortTerminal(job.abortReason) : requested), epoch: job.epoch };
+        let terminal: GenerationTerminalEvent = {
+            ...(job.abortReason ? abortTerminal(job.abortReason) : requested),
+            epoch: job.epoch,
+        };
+        if (terminal.type === "error" && job.sequence) {
+            terminal.sequence = { ...job.sequence };
+        }
         let text: string;
         try {
             text = JSON.stringify(terminal);
@@ -863,6 +881,7 @@ export function createGenerationJobs(options: {
             terminal = {
                 ...errorTerminal(new Error(`The job's result could not be sent: ${reason}`)),
                 epoch: job.epoch,
+                ...(job.sequence ? { sequence: { ...job.sequence } } : {}),
             };
             text = JSON.stringify(terminal);
         }
@@ -938,7 +957,11 @@ export function createGenerationJobs(options: {
         }
         if (
             terminal.type === "done" &&
-            (job.kind === "send" || job.kind === "continue" || job.kind === "reroll" || job.kind === "group")
+            (job.kind === "send" ||
+                job.kind === "continue" ||
+                job.kind === "reroll" ||
+                job.kind === "group" ||
+                (job.kind === "command" && terminal.sequence && job.sequenceAttempted))
         ) {
             try {
                 options.onChatJobDone?.(job.context.characterId, job.context.chatId, job.kind);
@@ -1242,6 +1265,74 @@ export function createGenerationJobs(options: {
                     throw markFailure(error, { stage: "persist" });
                 }
             },
+            sequence: {
+                beginPart() {
+                    if (job.ended || job.controller.signal.aborted) return { ok: false };
+                    if (clock() - job.deadlineFrom >= JOB_MAX_DURATION_MS) {
+                        abort(job, "timeout");
+                        return { ok: false };
+                    }
+                    if (closed) return { ok: false, stopped: "shutdown" };
+                    if (maintenancePending > 0 || gate.active) return { ok: false, stopped: "maintenance" };
+                    if (job.epoch !== store.epoch()) return { ok: false, stopped: "EpochMismatch" };
+                    const { characterId, chatId } = job.context;
+                    const binding = readChatBindingState(store, kinds, { characterId, chatId });
+                    if (!binding.chat) return { ok: false, stopped: "chatNotFound" };
+                    const refusal = checkChatBinding(binding.chat, binding.lookup, job.context, "send");
+                    if (refusal) return { ok: false, stopped: refusal.error };
+                    if (readOrphanedOverrideEntries(store, kinds, { characterId, chatId }).length > 0) {
+                        return { ok: false, stopped: "chatLoreOverrideOrphaned" };
+                    }
+                    job.deadlineFrom = clock();
+                    job.sequenceAttempted = true;
+                    job.targets.presetId = job.context.presetId ?? "";
+                    job.preset = null;
+                    return { ok: true };
+                },
+                progress(value) {
+                    assertLive(job);
+                    job.sequence = { total: value.total, sent: value.sent };
+                    try {
+                        receipts?.progress(job.id, job.sequence);
+                    } catch (error) {
+                        logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
+                    }
+                },
+                releaseRemovedReplies() {
+                    assertLive(job);
+                    const chats = new Map<
+                        string,
+                        { characterId: string; chatId: string; ids: Set<string | undefined> }
+                    >();
+                    for (const ref of lock.ownedBy(job.token)) {
+                        const key = chatKey(ref.characterId, ref.chatId);
+                        let chat = chats.get(key);
+                        if (!chat) {
+                            const stored = store.readChatSource(ref.characterId, ref.chatId);
+                            chat = {
+                                characterId: ref.characterId,
+                                chatId: ref.chatId,
+                                ids: new Set(
+                                    (stored.data as Chat | null)?.message.map((message) => message.chatId) ?? [],
+                                ),
+                            };
+                            chats.set(key, chat);
+                        }
+                        if (!chat.ids.has(ref.messageId)) {
+                            lock.release(ref, job.token, ref.generationId);
+                            if (
+                                job.current?.messageId === ref.messageId &&
+                                job.current.generationId === ref.generationId
+                            ) {
+                                job.current = null;
+                            }
+                        }
+                    }
+                    store.publishStreaming(
+                        [...chats.values()].map(({ characterId, chatId }) => chatStreaming(characterId, chatId)),
+                    );
+                },
+            },
             setCallbackPreset(presetId) {
                 job.targets.presetId = presetId;
             },
@@ -1350,6 +1441,7 @@ export function createGenerationJobs(options: {
         const finished = new Promise<void>((resolve) => {
             resolveFinished = resolve;
         });
+        const startedAt = clock();
         const job: Job = {
             id: randomUUID(),
             clientId: body.clientId,
@@ -1365,7 +1457,9 @@ export function createGenerationJobs(options: {
             controller: new AbortController(),
             abortReason: null,
             abortTimer: null,
-            startedAt: clock(),
+            startedAt,
+            deadlineFrom: startedAt,
+            sequenceAttempted: false,
             ended: false,
             endedAt: 0,
             sockets: new Set(),
@@ -1858,7 +1952,7 @@ export function createGenerationJobs(options: {
                         keepOutcome(job, now);
                         if (job.requestId && requestJobs.get(job.requestId) === id) requestJobs.delete(job.requestId);
                         jobs.delete(id);
-                    } else if (!job.ended && now - job.startedAt >= JOB_MAX_DURATION_MS) {
+                    } else if (!job.ended && now - job.deadlineFrom >= JOB_MAX_DURATION_MS) {
                         abort(job, "timeout");
                     }
                 }

@@ -292,10 +292,29 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * (`JobRunState.stage`: setup, input, assembly, request, tail).
  */
 export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
-    const state = createJobRunState(job, deps.scriptWorkers.createBudget());
+    const result = await runPromptSend(job, deps);
+    if (result.type === "preview") {
+        const { characterId, chatId } = job.context;
+        job.emit({ type: "done", revision: deps.store.chatRevision(characterId, chatId), result: result.result });
+    } else {
+        const { type, ...reply } = result;
+        job.emit({ type: "done", ...reply });
+    }
+}
+
+export type PromptSendResult =
+    | { type: "preview"; result: unknown }
+    | { type: "reply"; revision: string | null; messageId?: string; alternatives?: string[]; stopped?: true };
+
+/** Runs one send, including its failure metadata and hand-offs, without ending the registry job. */
+export async function runPromptSend(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    state: JobRunState = createJobRunState(job, deps.scriptWorkers.createBudget()),
+): Promise<PromptSendResult> {
     let setup: RunSetup | null = null;
     try {
-        await runSend(job, deps, state, (next) => {
+        return await runSend(job, deps, state, (next) => {
             setup = next;
         });
     } catch (error) {
@@ -358,7 +377,7 @@ async function runSend(
     deps: GenerationRunnerDeps,
     state: JobRunState,
     onSetup: (setup: RunSetup) => void,
-): Promise<void> {
+): Promise<PromptSendResult> {
     const { store, kinds } = deps;
     const { characterId, chatId } = job.context;
     const random = deps.random ?? Math.random;
@@ -545,8 +564,7 @@ async function runSend(
             });
             if (result.type === "preview") {
                 flushChatMetadata(job);
-                job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result: result.result });
-                return;
+                return { type: "preview", result: result.result };
             }
             if (result.type === "stop") {
                 stopped = true;
@@ -590,13 +608,13 @@ async function runSend(
     flushChatMetadata(job);
     handOffTranslations(job, deps, [...replyIds, ...(sentUserMessageId ? [sentUserMessageId] : [])]);
     handOffMemory(job, deps, memoryTask);
-    job.emit({
-        type: "done",
+    return {
+        type: "reply",
         revision: store.chatRevision(characterId, chatId),
         ...(last ? { messageId: last.messageId } : {}),
         ...(last?.alternatives ? { alternatives: last.alternatives } : {}),
         ...(stopped ? { stopped: true as const } : {}),
-    });
+    };
 }
 
 /**

@@ -1,9 +1,8 @@
 import type { CbsUsage } from "../../../shared/cbs/limits.ts";
 import {
     type GenerationErrorStage,
-    type GenerationFollowUp,
-    MAX_FOLLOW_UP_PART_CHARS,
-    MAX_FOLLOW_UP_PARTS,
+    MAX_SEQUENCE_PART_CHARS,
+    MAX_SEQUENCE_PARTS,
     type MemoryGapChoice,
     type MemoryTaskService,
 } from "../../../shared/jobs.ts";
@@ -102,7 +101,7 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
 }
 
 /**
- * What every run of one job shares, whatever its speaker: one aggregate Lua budget, its CBS
+ * What one send or command shares across its speakers and scripts: one aggregate Lua budget, its CBS
  * evaluation time, the effect count of its native triggers, the fatal abort (the first fatal host failure stops the run in progress at
  * once: the Lua hook raises, so a script that catches it cannot go on writing), and the regex
  * scripts' cache.
@@ -136,14 +135,14 @@ export type JobRunState = {
      * `context.client.emotions`, plus every emotion the job showed since), oldest first.
      */
     emotions: Map<string, string[]>;
-    /** The `/multisend` commands a command job ran: its tab sends their parts after the job. */
-    followUps: GenerationFollowUp[];
+    /** The `/multisend` commands queued for this command job to send in order. */
+    sequence: { clear: boolean; parts: string[] }[];
     /** The auto-continue and resend rounds the job has run (at most `MAX_SEND_ROUNDS`). */
     rounds: { count: number; noticed?: boolean };
     /** The job's MCP tool sets and the tool calls its models asked for. */
     tools: JobToolState;
     /**
-     * Where the send runner is: the stage a failure that names none gets (`runPromptJob`).
+     * Where the send runner is: the stage a failure that names none gets (`runPromptSend`).
      */
     stage: GenerationErrorStage;
 };
@@ -198,7 +197,7 @@ export function createJobRunState(job: RunningJob, budget: LuaBudget = createLua
         scriptCache: createScriptCache(),
         assetMatches: new Map(),
         emotions: new Map(Object.entries(job.context.client?.emotions ?? {}).map(([id, names]) => [id, [...names]])),
-        followUps: [],
+        sequence: [],
         rounds: { count: 0 },
         tools: createJobToolState(),
         stage: "setup",
@@ -392,10 +391,10 @@ export function createRunSetup(
             if (job.kind !== "command") {
                 return;
             }
-            const queued = state.followUps.reduce((count, entry) => count + entry.parts.length, 0);
+            const queued = state.sequence.reduce((count, entry) => count + entry.parts.length, 0);
             if (
-                queued + parts.length > MAX_FOLLOW_UP_PARTS ||
-                parts.some((part) => part.length > MAX_FOLLOW_UP_PART_CHARS)
+                queued + parts.length > MAX_SEQUENCE_PARTS ||
+                parts.some((part) => part.length > MAX_SEQUENCE_PART_CHARS)
             ) {
                 services.notice({
                     kind: "alertError",
@@ -403,7 +402,7 @@ export function createRunSetup(
                 });
                 return;
             }
-            state.followUps.push({ clear, parts: [...parts] });
+            state.sequence.push({ clear, parts: [...parts] });
         },
     });
     const runtime = createTriggerRuntime({

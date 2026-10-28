@@ -193,8 +193,14 @@ export function createGenerationReceipts(options: {
             open.prepare(
                 "UPDATE receipts SET ended_at = ?, status = json_object(" +
                     "'jobId', job_id, 'kind', kind, 'characterId', character_id, 'chatId', chat_id, 'epoch', epoch, " +
-                    "'state', 'ended', 'terminal', json_object('type', 'error', 'epoch', epoch, 'status', 503, " +
-                    "'reason', 'shutdown', 'message', 'The server stopped while this job ran'), 'kept', json('true')) " +
+                    "'state', 'ended', 'terminal', json_patch(json_object('type', 'error', 'epoch', epoch, 'status', 503, " +
+                    "'reason', 'shutdown', 'message', 'The server stopped while this job ran'), " +
+                    "CASE WHEN json_valid(progress) THEN CASE WHEN json_type(progress) = 'object' " +
+                    "AND json_type(progress, '$.total') = 'integer' AND json_type(progress, '$.sent') = 'integer' " +
+                    "AND json_extract(progress, '$.total') >= 0 AND json_extract(progress, '$.sent') >= 0 " +
+                    "AND json_extract(progress, '$.sent') <= json_extract(progress, '$.total') " +
+                    "THEN json_object('sequence', json_object('total', json_extract(progress, '$.total'), " +
+                    "'sent', json_extract(progress, '$.sent'))) ELSE '{}' END ELSE '{}' END), 'kept', json('true')) " +
                     "WHERE ended_at IS NULL",
             ).run(now());
         });

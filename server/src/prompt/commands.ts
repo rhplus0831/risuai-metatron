@@ -13,8 +13,8 @@ export type CommandHost = {
     runManualTrigger(name: string): Promise<void>;
     /**
      * `/multisend`: the parts to send in turn, with the tab's `clear` mode. A command job queues them
-     * for its tab to send after the job; inside a send nothing happens, as in the tab while a send
-     * runs.
+     * to send on the server after its scripts finish; inside a send nothing happens, as in the tab
+     * while a send runs.
      */
     multisend(clear: boolean, parts: string[]): void;
 };

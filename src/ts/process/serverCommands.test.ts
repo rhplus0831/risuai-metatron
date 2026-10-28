@@ -29,6 +29,9 @@ type Transport = typeof import("../network/generationJobs");
 
 const stubs = vi.hoisted(() => ({
     follows: [] as unknown[],
+    attached: undefined as (() => void) | undefined,
+    chat: vi.fn<() => unknown>(() => undefined),
+    current: vi.fn<() => typeof ref | null>(() => null),
     create: vi.fn<Transport["createGenerationJob"]>(),
     abort: vi.fn<(jobId: string) => Promise<void>>(async () => {}),
     read: vi.fn<Transport["readGenerationJob"]>(),
@@ -106,7 +109,8 @@ vi.mock("src/lang", () => ({
         serverJob: {
             lost: "job lost",
             endedAway: "ended away",
-            followUpsNotRun: "follow-ups not run",
+            sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
+            sequenceReasons: { chatBindingMismatch: "binding changed" },
             discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
             saveFailed: "save failed: {0}",
             chatLoadFailed: "load failed: {0}",
@@ -143,6 +147,7 @@ vi.mock("../network/generationJobs", async () => {
         followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
             const stub = createFollowStub(jobId);
             stubs.follows.push({ ...stub, onEvent });
+            stubs.attached?.();
             return stub.follow;
         },
         readGenerationJob: stubs.read,
@@ -153,8 +158,9 @@ vi.mock("../network/generationJobs", async () => {
 vi.mock("../storage/chatStore.svelte", () => ({
     endServerJob: vi.fn(),
     chatEntry: stubs.entry,
-    /** No chat open: every reply lands away from the open chat. */
-    currentChatRef: () => null,
+    /** By default no chat is open: replies land away from the open chat. */
+    currentChatRef: stubs.current,
+    findChat: stubs.chat,
     ensureChatLoaded: stubs.load,
     heldChatRevision: stubs.held,
     isChatStale: stubs.stale,
@@ -220,6 +226,9 @@ beforeAll(
 beforeEach(async () => {
     vi.resetModules();
     stubs.follows.length = 0;
+    stubs.attached = undefined;
+    stubs.chat.mockReset().mockReturnValue(undefined);
+    stubs.current.mockReset().mockReturnValue(null);
     stubs.read.mockReset();
     stubs.create.mockReset();
     stubs.saved.mockReset().mockReturnValue([]);
@@ -1210,96 +1219,11 @@ describe("runServerJob", () => {
     });
 });
 
-const followUpStubs = vi.hoisted(() => ({
+// The tab's own `/multisend` loop: a command job's parts never reach it.
+const multisendStubs = vi.hoisted(() => ({
     runMultisend: vi.fn<(ref: unknown, clear: boolean, parts: readonly string[]) => Promise<boolean>>(),
 }));
-vi.mock("./command", () => ({ runMultisend: followUpStubs.runMultisend }));
-
-describe("`/multisend` follow-ups of a command job", () => {
-    /** Lets the follow-up chain (a dynamic import, one await per part) run out. */
-    const settle = async () => {
-        for (let round = 0; round < 8; round += 1) {
-            await flush();
-        }
-    };
-    const withParts = (...followUps: { clear: boolean; parts: string[] }[]): GenerationTerminalEvent => ({
-        ...done,
-        followUps,
-    });
-
-    beforeEach(() => {
-        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
-    });
-
-    it("sends a done terminal's follow-ups through the tab's `/multisend` in order on the job's chat, stopping at the first that does not send, and hands the terminal to the caller unchanged", async () => {
-        const terminal = withParts(
-            { clear: false, parts: ["one", "two"] },
-            { clear: true, parts: ["three"] },
-            { clear: false, parts: ["never"] },
-        );
-        followUpStubs.runMultisend.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-        const end = commands.followJobToEnd("j", ref);
-        await flush();
-        endWith(follows()[0], terminal);
-        expect(await end).toEqual(terminal);
-        await settle();
-        expect(followUpStubs.runMultisend.mock.calls).toEqual([
-            [ref, false, ["one", "two"]],
-            [ref, true, ["three"]],
-        ]);
-        expect(stubs.alertError).not.toHaveBeenCalled();
-    });
-
-    it("starts a job's follow-ups once per tab: the same terminal seen again (a later follow of the job) does not send them again, another job's do; none for a done without follow-ups", async () => {
-        const terminal = withParts({ clear: false, parts: ["a"] });
-        const first = commands.followJobToEnd("j", ref);
-        await flush();
-        endWith(follows()[0], terminal);
-        await first;
-        await settle();
-        // The job is followed again (its terminal is retained on the server): nothing is resent.
-        const again = commands.followJobToEnd("j", ref);
-        await flush();
-        endWith(follows()[1], terminal);
-        expect(await again).toEqual(terminal);
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
-        // Two callers of one follow share the one start.
-        const shared = commands.followJobToEnd("j2", ref);
-        const sharing = commands.followJobToEnd("j2", ref);
-        await flush();
-        endWith(follows()[2], withParts({ clear: true, parts: ["b"] }));
-        await Promise.all([shared, sharing]);
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(2);
-        expect(followUpStubs.runMultisend).toHaveBeenLastCalledWith(ref, true, ["b"]);
-        const plain = commands.followJobToEnd("j3", ref);
-        await flush();
-        endWith(follows()[3], done);
-        await plain;
-        const errored = commands.followJobToEnd("j4", ref);
-        await flush();
-        endWith(follows()[4], failed);
-        await errored;
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(2);
-    });
-
-    it("runs the follow-ups of a job discovered at boot on the chat its status names, and logs a send that throws", async () => {
-        stubs.read.mockResolvedValue(status);
-        followUpStubs.runMultisend.mockRejectedValueOnce(new Error("send broke"));
-        const end = commands.followJobToEnd("j");
-        await flush();
-        await flush();
-        endWith(follows()[0], withParts({ clear: false, parts: ["x"] }, { clear: false, parts: ["y"] }));
-        expect(await end).toMatchObject({ type: "done" });
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
-        expect(followUpStubs.runMultisend).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, false, ["x"]);
-        expect(console.error).toHaveBeenCalledWith("[Generation]", expect.any(Error));
-        expect(stubs.release).not.toHaveBeenCalled();
-    });
-});
+vi.mock("./command", () => ({ runMultisend: multisendStubs.runMultisend }));
 
 // After a socket closed without the terminal, the follow reads the job's status: the server's kept
 // outcome of a collected job is the end (applied as the socket's terminal would be), a job the server
@@ -1319,10 +1243,6 @@ describe("the end read from the job's status, and the chat read after the follow
         follows().at(-1)!.end(null);
     };
     const unseen = async () => get((await import("src/ts/process/chatStatus.svelte")).unseenChatKeys);
-
-    beforeEach(() => {
-        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
-    });
 
     it("applies a kept `done` as the job's end: the unseen reply marked, the chat read again only when the terminal's revision is newer than the held one, no notice", async () => {
         // Real revision tokens, so the comparison is the shared one (not "incomparable, so newer").
@@ -1384,22 +1304,6 @@ describe("the end read from the job's status, and the chat read after the follow
         expect(stubs.release).not.toHaveBeenCalled();
         expect(stubs.refresh).toHaveBeenCalledWith(ref);
         expect(links()).toEqual([{ kind: "jobLink", phase: "kept", jobId: "j" }]);
-    });
-
-    it("refuses a kept outcome's follow-ups when the server dropped them (`followUpsDropped`), with a notice instead of a send", async () => {
-        stubs.read.mockResolvedValueOnce(kept({ ...done, followUpsDropped: true }));
-        const end = commands.followJobToEnd("j", ref);
-        await closeLatest();
-        expect(await end).toEqual({ ...done, followUpsDropped: true });
-        await settle();
-        expect(followUpStubs.runMultisend).not.toHaveBeenCalled();
-        expect(stubs.alertError.mock.calls).toEqual([["follow-ups not run"]]);
-        // Once per job: the terminal seen again does not alert again.
-        stubs.read.mockResolvedValueOnce(kept({ ...done, followUpsDropped: true }));
-        const again = commands.followJobToEnd("j", ref);
-        await closeLatest();
-        await again;
-        expect(stubs.alertError).toHaveBeenCalledTimes(1);
     });
 
     it("keeps an ended status's terminal as the end when a later read finds the job unknown (the server restarted) or the attaches run out, applying it once; another epoch's terminal is not kept", async () => {
@@ -1578,27 +1482,25 @@ describe("the end read from the job's status, and the chat read after the follow
         expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
     });
 
-    it("bounds the chat's read to 10 s: a kept command whose chat is not current by then runs no follow-ups, a lost follow's late read still counts", async () => {
+    it("bounds the chat's read to 10 s: a kept outcome's follow ends at the deadline while its read has not taken, a lost follow's late read still counts", async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         try {
             const tick = () => vi.advanceTimersByTimeAsync(0);
             let answer!: (current: boolean) => void;
             stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
-            const followUps = [{ clear: true, parts: ["next"] }];
-            stubs.read.mockResolvedValueOnce(kept({ ...done, followUps }));
+            stubs.read.mockResolvedValueOnce(kept(done));
             const end = commands.followJobToEnd("j", ref);
+            let ended = false;
+            void end.then(() => (ended = true));
             await tick();
             follows()[0].end(null);
             await vi.advanceTimersByTimeAsync(9_999);
-            expect(stubs.alertError).not.toHaveBeenCalled();
+            expect(ended).toBe(false);
             await vi.advanceTimersByTimeAsync(1);
-            expect(await end).toEqual({ ...done, followUps });
-            expect(followUpStubs.runMultisend).not.toHaveBeenCalled();
-            expect(stubs.alertError.mock.calls).toEqual([["follow-ups not run"]]);
-            // The read that lands later takes, but the refused follow-ups stay refused.
+            expect(await end).toEqual(done);
+            expect(stubs.alertError).not.toHaveBeenCalled();
             answer(true);
             await tick();
-            expect(followUpStubs.runMultisend).not.toHaveBeenCalled();
 
             stubs.refresh.mockReset();
             let late!: (current: boolean) => void;
@@ -1703,21 +1605,18 @@ describe("the job's chat", () => {
         expect(pinsBalanced()).toBe(true);
     });
 
-    it("a job discovered at boot pins its chat once the status names it; the follow-ups take their own pin, released after they ran", async () => {
+    it("a job discovered at boot pins its chat once the status names it, and releases the pin at the end", async () => {
         stubs.read.mockResolvedValue(status);
-        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
         const end = commands.followJobToEnd("j");
         await settle();
         expect(stubs.pin).toHaveBeenCalledTimes(1);
         expect(stubs.pin).toHaveBeenCalledWith({ chaId: "c", chatId: "k" });
         expect(order(stubs.read)).toBeLessThan(order(stubs.pin));
         expect(stubs.load).toHaveBeenCalledWith({ chaId: "c", chatId: "k" });
-        endWith(follows()[0], { ...done, followUps: [{ clear: false, parts: ["x"] }] });
+        endWith(follows()[0], done);
         await end;
         await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
-        // The follow's pin and the follow-ups' pin, both released.
-        expect(stubs.pin).toHaveBeenCalledTimes(2);
+        expect(stubs.pin).toHaveBeenCalledTimes(1);
         expect(pinsBalanced()).toBe(true);
     });
 });
@@ -1867,5 +1766,94 @@ describe("followedJobs", () => {
         await boot;
         expect(get(commands.followedJobs).size).toBe(0);
         expect(get(jobStages).has("gone")).toBe(false);
+    });
+});
+
+describe("server sequence events", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+    afterEach(() => vi.useRealTimers());
+    function attached() {
+        return new Promise<void>((resolve) => {
+            stubs.attached = resolve;
+        });
+    }
+
+    it("installs every part's alternatives and counts each received part once while following one job", async () => {
+        const { settings } = await import("../storage/settingsViews.svelte");
+        const { Prereroll } = await import("./prereroll");
+        settings.statics = { imports: 0, messages: 7 };
+        stubs.current.mockReturnValue(ref);
+        stubs.chat.mockReturnValue({
+            message: [
+                { role: "char", chatId: "r1", data: "first", generationInfo: { generationId: "g1" } },
+                { role: "char", chatId: "r2", data: "second", generationInfo: { generationId: "g2" } },
+            ],
+        });
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "sequence" });
+        const ready = attached();
+        const run = commands.runServerJob({ chaId: "c", type: "character" } as never, ref, {
+            kind: "command",
+            label: "button",
+            command: { type: "button", data: "go" },
+        });
+        await ready;
+        const follow = follows()[0];
+        follow.onEvent({
+            type: "sequence",
+            epoch: EPOCH,
+            index: 0,
+            total: 2,
+            sent: 1,
+            messageId: "r1",
+            alternatives: ["first", "first alternative"],
+        });
+        expect(settings.statics.messages).toBe(8);
+        expect(Prereroll("g1")).toBe("first alternative");
+        expect(get(commands.followedJobs).has("sequence")).toBe(true);
+        follow.onEvent({
+            type: "sequence",
+            epoch: EPOCH,
+            index: 1,
+            total: 2,
+            sent: 2,
+            messageId: "r2",
+            alternatives: ["second", "second alternative"],
+        });
+        expect(settings.statics.messages).toBe(9);
+        expect(Prereroll("g2")).toBe("second alternative");
+        endWith(follow, { ...done, messageId: "r2", sequence: { total: 2, sent: 2 } });
+        expect((await run).terminal).toMatchObject({ type: "done", sequence: { total: 2, sent: 2 } });
+        expect(settings.statics.messages).toBe(9);
+        expect(stubs.create).toHaveBeenCalledTimes(1);
+        expect(multisendStubs.runMultisend).not.toHaveBeenCalled();
+    });
+
+    it.each(["live", "kept"])("shows the stopped sequence notice from a %s terminal", async (source) => {
+        const terminal: GenerationTerminalEvent = {
+            ...done,
+            sequence: { total: 3, sent: 1, stopped: "chatBindingMismatch" },
+        };
+        const ready = attached();
+        const end = commands.followJobToEnd("sequence", ref);
+        await ready;
+        if (source === "kept") {
+            stubs.read.mockResolvedValue(kept(terminal));
+            follows()[0].end(null);
+        } else endWith(follows()[0], terminal);
+        expect(await end).toEqual(terminal);
+        expect(stubs.alertError.mock.calls).toEqual([["/multisend stopped after 1 of 3 parts: binding changed"]]);
+        expect(multisendStubs.runMultisend).not.toHaveBeenCalled();
+    });
+
+    it("a done without sequence or queued parts starts no tab send", async () => {
+        const ready = attached();
+        const end = commands.followJobToEnd("old", ref);
+        await ready;
+        endWith(follows()[0], done);
+        expect(await end).toEqual(done);
+        await vi.dynamicImportSettled();
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(multisendStubs.runMultisend).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
     });
 });

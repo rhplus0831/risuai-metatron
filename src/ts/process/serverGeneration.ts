@@ -154,11 +154,16 @@ async function sendPinned(
         };
     }
     if (terminal.alternatives && terminal.messageId && kind !== "continue") {
-        const reply = findChat(ref)?.message.find((message) => message.chatId === terminal.messageId);
-        const generationId = reply?.generationInfo?.generationId;
-        if (generationId) {
-            addRerolls(generationId, terminal.alternatives, ref, terminal.messageId);
-        }
+        installReplyAlternatives(ref, terminal.messageId, terminal.alternatives);
     }
     return { ok: !terminal.stopped, outcome, settled: true, result: terminal.result };
+}
+
+/** Installs a reply's alternatives when its generation is present in this tab's chat copy. */
+export function installReplyAlternatives(ref: ChatRef, messageId: string, alternatives: string[]): void {
+    const reply = findChat(ref)?.message.find((message) => message.chatId === messageId);
+    const generationId = reply?.generationInfo?.generationId;
+    if (generationId) {
+        addRerolls(generationId, alternatives, ref, messageId);
+    }
 }

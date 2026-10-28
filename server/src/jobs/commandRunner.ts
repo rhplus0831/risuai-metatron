@@ -1,8 +1,9 @@
-import type { character } from "../../../shared/database.ts";
+import { randomUUID } from "node:crypto";
+import type { Chat, character } from "../../../shared/database.ts";
 import type { GenerationCommand } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
-import { runPromptJob } from "../prompt/runner.ts";
+import { runPromptJob, runPromptSend } from "../prompt/runner.ts";
 import { localModelRefusal } from "../prompt/transformers.ts";
 import {
     failureOf,
@@ -110,8 +111,8 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
  * aggregate budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error
  * (the client's `doString` throws out of the loop), as do a spent budget and a worker failure; a
  * failure inside the handler is logged and the next trigger runs (the client's catch); a fatal host
- * failure (a write conflict, a lost owner, an abort) ends the job. `accepted` and `done` carry no
- * message.
+ * failure (a write conflict, a lost owner, an abort) ends the job. `accepted` carries no message;
+ * queued sequence parts run after the handlers and supply the final reply when there is one.
  */
 async function runLuaInteractionTrigger(
     job: RunningJob,
@@ -175,11 +176,7 @@ async function runLuaInteractionTrigger(
         }
     }
     flushChatMetadata(job);
-    job.emit({
-        type: "done",
-        revision: store.chatRevision(characterId, chatId),
-        ...(state.followUps.length > 0 ? { followUps: state.followUps } : {}),
-    });
+    await finishCommand(job, deps, state);
 }
 
 /**
@@ -193,7 +190,6 @@ async function runLuaInteractionTrigger(
  * job with it; a fatal host failure or an abort ends it as in a button.
  */
 async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, name: string): Promise<void> {
-    const { characterId, chatId } = job.context;
     const { setup, state, character } = prepare(job, deps);
     try {
         await setup.runOnCopy(character, "manual", { manualName: name });
@@ -214,9 +210,95 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
     }
     setup.check();
     flushChatMetadata(job);
-    job.emit({
-        type: "done",
-        revision: deps.store.chatRevision(characterId, chatId),
-        ...(state.followUps.length > 0 ? { followUps: state.followUps } : {}),
-    });
+    await finishCommand(job, deps, state);
+}
+
+/** Sends the queued parts under the command's one registry lifetime. */
+async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, commandState: JobRunState): Promise<void> {
+    const { characterId, chatId } = job.context;
+    const parts = commandState.sequence.flatMap(({ clear, parts }) => parts.map((part) => ({ clear, part })));
+    if (parts.length === 0) {
+        job.emit({ type: "done", revision: deps.store.chatRevision(characterId, chatId) });
+        return;
+    }
+    const sequence = job.sequence;
+    if (!sequence) throw new Error("A command sequence needs a registry job");
+    const total = parts.length;
+    let sent = 0;
+    let messageId: string | undefined;
+    let previous = job;
+    const finish = (stopped?: string) => {
+        const chat = deps.store.readChatSource(characterId, chatId);
+        const present =
+            messageId && (chat.data as Chat | null)?.message.some((message) => message.chatId === messageId);
+        job.emit({
+            type: "done",
+            revision: chat.revision,
+            ...(present ? { messageId } : {}),
+            sequence: { total, sent, ...(stopped ? { stopped } : {}) },
+        });
+    };
+    sequence.progress({ total, sent });
+    for (const [index, { clear, part }] of parts.entries()) {
+        // Metadata belongs to the facade that queued it; no batch crosses into the next send's scope.
+        flushChatMetadata(previous);
+        job.setPendingFlush?.(null);
+        const boundary = sequence.beginPart();
+        if (!boundary.ok) {
+            if (boundary.stopped) finish(boundary.stopped);
+            return;
+        }
+        job.write(() => {
+            const chat = deps.store.readChatSource(characterId, chatId);
+            const ids = (chat.data as Chat).message.map((message) => message.chatId!);
+            return {
+                chats: [
+                    {
+                        characterId,
+                        chatId,
+                        baseRevision: chat.revision,
+                        ops: [
+                            ...(clear && ids.length > 0 ? [{ op: "remove" as const, ids }] : []),
+                            {
+                                op: "append",
+                                messages: [{ role: "user", data: part, chatId: randomUUID() }],
+                                anchor: { end: true },
+                            },
+                        ],
+                    },
+                ],
+            };
+        });
+        job.emitRecords({ chats: [{ characterId, id: chatId }] });
+        const { userMessageId, continueMessageId, triggerId, speakerChaId, ...context } = job.context;
+        const send: RunningJob = {
+            ...job,
+            kind: "send",
+            command: null,
+            context: { ...context, input: "", mode: "send" },
+        };
+        const state = createJobRunState(send, deps.scriptWorkers.createBudget());
+        state.emotions = commandState.emotions;
+        previous = send;
+        const result = await runPromptSend(send, deps, state);
+        if (result.type !== "reply") throw new Error("A sequence send returned a preview");
+        flushChatMetadata(send);
+        sequence.releaseRemovedReplies();
+        messageId = result.messageId;
+        if (!result.stopped) sent += 1;
+        sequence.progress({ total, sent });
+        job.emit({
+            type: "sequence",
+            index,
+            total,
+            sent,
+            ...(messageId ? { messageId } : {}),
+            ...(result.alternatives ? { alternatives: result.alternatives } : {}),
+        });
+        if (result.stopped) {
+            finish("notSent");
+            return;
+        }
+    }
+    finish();
 }

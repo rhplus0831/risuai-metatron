@@ -1311,7 +1311,7 @@ describe("the kept outcome of a collected job", () => {
         const s = setup();
         const { jobs, store, revision, follow } = s;
         jobs.startGc();
-        const followUps = [{ clear: false, parts: ["next"] }];
+        const sequence = { total: 2, sent: 1, stopped: "notSent" };
         const jobId = await endJob(s, (job) =>
             job.emit({
                 type: "done",
@@ -1319,7 +1319,7 @@ describe("the kept outcome of a collected job", () => {
                 messageId: "r",
                 result: { assembled: "x".repeat(10_000) },
                 alternatives: ["alt"],
-                followUps,
+                sequence,
             }),
         );
         // Still live inside the grace: the whole terminal, not kept.
@@ -1344,7 +1344,7 @@ describe("the kept outcome of a collected job", () => {
                 revision: revision(),
                 messageId: "r",
                 alternatives: ["alt"],
-                followUps,
+                sequence,
             },
             kept: true,
         });
@@ -1354,44 +1354,29 @@ describe("the kept outcome of a collected job", () => {
         await expect(follow(jobId)).rejects.toThrow();
     });
 
-    it("trims a kept terminal: follow-ups or alternatives whose JSON exceeds 64 KiB are dropped (follow-ups flagged), and an error message is cut to 4 KiB at a code point boundary", async () => {
+    it("trims a kept terminal: alternatives whose JSON exceeds 64 KiB are dropped while a sequence summary is kept, and an error message is cut to 4 KiB at a code point boundary", async () => {
         fakeClock();
         const s = setup();
         const { jobs, revision } = s;
         jobs.startGc();
         const big = "y".repeat(MAX_KEPT_LIST_BYTES);
-        const largeFollowUps = await endJob(s, (job) =>
-            job.emit({
-                type: "done",
-                revision: revision(),
-                alternatives: ["alt"],
-                followUps: [{ clear: true, parts: [big] }],
-            }),
-        );
         const largeAlternatives = await endJob(s, (job) =>
             job.emit({
                 type: "done",
                 revision: revision(),
                 alternatives: [big],
-                followUps: [{ clear: false, parts: ["small"] }],
+                sequence: { total: 2, sent: 2 },
             }),
         );
         // 4095 one-byte characters, then a three-byte one that the 4096-byte limit cuts through.
         const message = "x".repeat(MAX_KEPT_MESSAGE_BYTES - 1) + "\u20ac" + "z".repeat(10);
         const longError = await endJob(s, (job) => job.emit({ type: "error", message, status: 500, reason: "failed" }));
         await collect();
-        expect(jobs.status(largeFollowUps, "tab")?.terminal).toEqual({
-            type: "done",
-            epoch: expect.any(String),
-            revision: expect.any(String),
-            alternatives: ["alt"],
-            followUpsDropped: true,
-        });
         expect(jobs.status(largeAlternatives, "tab")?.terminal).toEqual({
             type: "done",
             epoch: expect.any(String),
             revision: expect.any(String),
-            followUps: [{ clear: false, parts: ["small"] }],
+            sequence: { total: 2, sent: 2 },
         });
         const kept = jobs.status(longError, "tab")?.terminal;
         expect(kept).toMatchObject({ type: "error", status: 500, reason: "failed" });

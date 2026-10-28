@@ -755,7 +755,7 @@ describe("`/multisend` in a command job", () => {
     // quoted form keeps its quotes in the parts, as the tab's own `/multisend` does.
     const sep = "{{u::7b}}{{u::7b}}u::7c}}".repeat(3);
     it(
-        "queues the parts for the tab (`done.followUps`: the clear mode, in order) instead of sending, and refuses too many parts with an alertError and no follow-ups",
+        "sends the queued parts on the server after the trigger's own effects, in order and with the quoted form's quotes kept, and refuses too many parts with an alertError and no sequence",
         async () => {
             const chaId = await seedCharacter({
                 triggers: [
@@ -771,19 +771,14 @@ describe("`/multisend` in a command job", () => {
                 ],
             });
             const { events, terminal } = await runManual(chaId, "ms");
-            expect(terminal).toMatchObject({
-                type: "done",
-                followUps: [
-                    { clear: false, parts: ['"one', 'two"'] },
-                    { clear: true, parts: [" three"] },
-                ],
-            });
-            // Nothing was sent inside the job: the trigger's own effects landed, no user message.
-            expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:second", "char:after"]);
+            // Three parts across both commands. This harness has no provider, so the first part's send
+            // fails after its user message was appended behind the trigger's own effects.
+            expect(terminal).toMatchObject({ type: "error", sequence: { total: 3, sent: 0 } });
+            expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:second", "char:after", 'user:"one']);
             expect(notices(events, "alertError")).toEqual([]);
             const many = await runManual(chaId, "many");
             expect(many.terminal?.type).toBe("done");
-            expect((many.terminal as { followUps?: unknown }).followUps).toBeUndefined();
+            expect((many.terminal as { sequence?: unknown }).sequence).toBeUndefined();
             expect(notices(many.events, "alertError").map((event) => event.payload.message)).toEqual([
                 expect.stringMatching(/multisend/),
             ]);

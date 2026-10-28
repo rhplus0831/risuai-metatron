@@ -592,7 +592,7 @@ describe("the registry's disk fallback", () => {
         clock();
         const s = registryFixture();
         const epoch = s.store.epoch();
-        const small = [{ clear: false, parts: ["next"] }];
+        const sequence = { total: 3, sent: 1, stopped: "notSent" };
         const big = "é".repeat(32 * 1024); // Under 64 Ki characters, over 64 KiB once JSON encoded.
         const terminals: GenerationTerminalEvent[] = [
             {
@@ -601,17 +601,29 @@ describe("the registry's disk fallback", () => {
                 revision: "r",
                 result: { preview: "private" },
                 alternatives: ["alt"],
-                followUps: small,
+                sequence,
             },
-            { type: "done", epoch, revision: "r", alternatives: ["alt"], followUps: [{ clear: true, parts: [big] }] },
-            { type: "done", epoch, revision: "r", alternatives: [big], followUps: small },
-            { type: "error", epoch, reason: "failed", status: 500, message: "x".repeat(4095) + "€tail" },
+            { type: "done", epoch, revision: "r", alternatives: [big], sequence },
+            {
+                type: "error",
+                epoch,
+                reason: "failed",
+                status: 500,
+                message: "x".repeat(4095) + "€tail",
+                sequence: { total: 3, sent: 1 },
+            },
         ];
         const expected: GenerationTerminalEvent[] = [
-            { type: "done", epoch, revision: "r", alternatives: ["alt"], followUps: small },
-            { type: "done", epoch, revision: "r", alternatives: ["alt"], followUpsDropped: true },
-            { type: "done", epoch, revision: "r", followUps: small },
-            { type: "error", epoch, reason: "failed", status: 500, message: "x".repeat(4095) },
+            { type: "done", epoch, revision: "r", alternatives: ["alt"], sequence },
+            { type: "done", epoch, revision: "r", sequence },
+            {
+                type: "error",
+                epoch,
+                reason: "failed",
+                status: 500,
+                message: "x".repeat(4095),
+                sequence: { total: 3, sent: 1 },
+            },
         ];
         let current = 0;
         const jobs = s.registry(s.receipts, async (job) => {
@@ -795,7 +807,7 @@ it("measures receipt admission, terminal writes, and event-loop delay", { tags: 
                           epoch: "epoch",
                           revision: "r",
                           alternatives: ["a".repeat(16 * 1024)],
-                          followUps: [{ clear: false, parts: ["next".repeat(2048)] }],
+                          sequence: { total: 64, sent: 64 },
                       };
             const payload = outcome(id, "epoch", terminal);
             let start = performance.now();

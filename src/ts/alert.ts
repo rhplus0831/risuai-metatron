@@ -119,10 +119,19 @@ export function alertError(msg: string | Error) {
 
 /**
  * A server job's error: the message as `alertError` shows it, with the job's failure fields for the
- * alert's debug actions. `at`: when the tab received the job's end.
+ * alert's debug actions. Sequence progress prefixes only the shown message, leaving the failure intact.
+ * `at`: when the tab received the job's end.
  */
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
-    const data = errorAlert(end.message);
+    const message =
+        end.sequence && end.reason !== "aborted"
+            ? language.serverJob.sequenceStopped.replace(
+                  /\{(sent|total|reason)\}/g,
+                  (_, key: "sent" | "total" | "reason") =>
+                      String({ sent: end.sequence!.sent, total: end.sequence!.total, reason: end.message }[key]),
+              )
+            : end.message;
+    const data = errorAlert(message);
     if (data) {
         void openDialog({ ...data, jobFailure: { jobId, at, end } });
     }

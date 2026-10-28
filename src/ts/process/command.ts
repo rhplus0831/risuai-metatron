@@ -25,8 +25,8 @@ import { refuseOrphanedOverrides } from "./loreOverrides";
  * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
  * other chats' work does not refuse it. Orphaned lore overrides refuse a part before its chat is
  * cleared or appended to. Stops when a part's chat is gone, busy, or refused, or its send returns
- * false (refused, failed, lost, or stopped); false then. A server command job's `/multisend` runs it
- * too, after the job (`serverCommands.ts`).
+ * false (refused, failed, lost, or stopped); false then. This is the typed command's page-owned loop;
+ * command jobs run their queued parts on the server (`server/src/jobs/commandRunner.ts`).
  */
 export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
     for (const e of parts) {
