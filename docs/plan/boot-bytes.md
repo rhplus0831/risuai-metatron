@@ -1,6 +1,6 @@
 # Boot Bytes Plan
 
-Status: drafted 2026-10-29; landed: 6 (db31dc70f). An Astra review of the first draft (17 points, 2
+Status: drafted 2026-10-29; landed: 2 (761d41c52), 6 (db31dc70f). An Astra review of the first draft (17 points, 2
 blockers) is folded in (see **Review record**). The user answered Q1–Q6 the same day (see
 **Answered questions**); Q3 and Q4 are settled by Slice 1's numbers as recorded there.
 
