@@ -159,8 +159,12 @@ Settings:
 
 ## Known Hazards
 
-- `src/lib/UI/3DLoader.svelte`, `src/ts/3d/threeload.ts`, and `src/ts/voice.ts` have no importers; confirm intent before wiring them into a feature.
+### Issues
 
 - `translatorType: 'none'` has no branch in `translateMain` and falls through to Google.
 - `sayTTS` passes no hook timeout, so a hanging plugin hook stalls speech.
 - `compressImage` labels its input as PNG regardless of the detected type.
+
+### Gotchas
+
+- `src/lib/UI/3DLoader.svelte`, `src/ts/3d/threeload.ts`, and `src/ts/voice.ts` have no importers; confirm intent before wiring them into a feature.

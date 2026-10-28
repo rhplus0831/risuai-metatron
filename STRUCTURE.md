@@ -287,7 +287,21 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
   `Recipes`, `Tests`, `Known Hazards`, in that order. Use subordinate headings for detail.
 - Keep only cross-cutting rules in this file. Put subsystem contracts and focused
   test anchors in their owner; link across domains instead of copying inventories.
-- `Known Hazards` records observed remaining defects or unwired code, not fixed issues.
+- `Known Hazards` records what can still catch someone working in the subsystem, under
+  up to three subordinate headings, in this order (omit an empty one). One bullet holds
+  one kind: split a bullet that mixes them. Fixed issues are deleted.
+  - `Issues`: remaining defects and advertised but unwired features, to fix. This is
+    the default when no decision to keep the behavior is recorded; mark an
+    unreproduced claim `Unconfirmed:`. Delete an entry in the commit that fixes it.
+  - `Limitations`: behavior the owner chose to keep, or a direct consequence of a
+    recorded design choice. Each entry names where that decision is recorded; when the
+    decision is reversed, the entry moves to `Issues`.
+  - `Gotchas`: facts that are not defects but cause mistakes: ordering and
+    test-environment rules, unused files that look live, measured costs.
+- [Found issues](docs/research/found-issues.md) is the inbox for out-of-scope findings
+  that a session could not verify or place. Once an entry is re-checked in code and
+  has an owning guide, move it to that guide's `Issues` (or `Limitations`, once the
+  owner accepts it) and delete it from the inbox.
 - Use paths plus identifiers, without stale line numbers, test counts, or pass guarantees.
 - `db.<field>` is a flat persisted `Database` name: client views and server request
   projections can expose it without holding a whole-database object.

@@ -148,6 +148,8 @@ export interface HypaV3Data {
         lastRecentSummaries: number[];
         lastSimilarSummaries: number[];
         lastRandomSummaries: number[];
+        /** The summaries the last selection deferred (stored, not yet needed); absent when none was. */
+        lastDeferredSummaries?: number[];
     };
     modalSettings?: {
         displayMode: DisplayMode;
@@ -214,7 +216,7 @@ function summaryTail(summaries: readonly SerializableSummary[]): string {
 type HypaV3Metrics = NonNullable<HypaV3Data["metrics"]>;
 
 /** Each valid index of `metrics` through `map`; invalid or unresolved indices are dropped. */
-function remapMetrics(
+export function remapHypaV3Metrics(
     metrics: HypaV3Metrics,
     summaryCount: number,
     map: (index: number) => number | undefined,
@@ -226,11 +228,13 @@ function remapMetrics(
                   return mapped === undefined ? [] : [mapped];
               })
             : [];
+    const deferred = each(metrics.lastDeferredSummaries);
     return {
         lastImportantSummaries: each(metrics.lastImportantSummaries),
         lastRecentSummaries: each(metrics.lastRecentSummaries),
         lastSimilarSummaries: each(metrics.lastSimilarSummaries),
         lastRandomSummaries: each(metrics.lastRandomSummaries),
+        ...(deferred.length > 0 ? { lastDeferredSummaries: deferred } : {}),
     };
 }
 
@@ -256,7 +260,7 @@ export function remapHypaV3MetricsByIdentity(
     const uniqueInFrom = unique(fromKeys);
     const uniqueInTo = unique(toKeys);
     const toIndex = new Map(toKeys.map((key, index) => [key, index]));
-    return remapMetrics(metrics, from.length, (index) => {
+    return remapHypaV3Metrics(metrics, from.length, (index) => {
         const key = fromKeys[index];
         return uniqueInFrom(key) && uniqueInTo(key) ? toIndex.get(key) : undefined;
     });
@@ -358,11 +362,11 @@ export function mergeHypaV3Write(
 
     let metrics: HypaV3Metrics | undefined;
     if (metricsRecomputed && result.metrics) {
-        metrics = remapMetrics(result.metrics, result.summaries.length, (index) =>
+        metrics = remapHypaV3Metrics(result.metrics, result.summaries.length, (index) =>
             index < keptCount ? mergedIndexOf.get(summaryKey(result.summaries[index])) : addedStart + index - keptCount,
         );
     } else if (stored?.metrics) {
-        metrics = remapMetrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
+        metrics = remapHypaV3Metrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
     }
 
     const merged: SerializableHypaV3Data = { ...stored, summaries };
@@ -430,9 +434,11 @@ export function mergeHypaV3SelectionWrite(
 
     let metrics: HypaV3Metrics | undefined;
     if (options.selectionMade && data.metrics) {
-        metrics = remapMetrics(data.metrics, data.summaries.length, (index) => mergedIndexOf.get(dataKeys[index]));
+        metrics = remapHypaV3Metrics(data.metrics, data.summaries.length, (index) =>
+            mergedIndexOf.get(dataKeys[index]),
+        );
     } else if (stored?.metrics) {
-        metrics = remapMetrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
+        metrics = remapHypaV3Metrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
     }
 
     const merged: SerializableHypaV3Data = { ...stored, summaries };

@@ -167,17 +167,24 @@ Display:
 
 ## Known Hazards
 
-- A CSS-only change to a shared sheet does not mutate the row's DOM, so `Chats` does not re-observe a `.far` row. Its remembered `contain-intrinsic-block-size` updates when the row renders near the viewport through `content-visibility: auto`.
-- `src/ts/gui/codearea/cbsMonaco.ts` has an empty `registerCBSMonaco`; active CBS highlighting lives in `src/ts/gui/highlight.ts`.
+### Issues
 
 - `escapes.test.ts` documents a known broken `cbr` repetition case.
-- The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content. A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails the job where the old shared call counter answered a short text with error strings.
 - `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
-- The no-argument date and time functions do not pad: `YYYY-M-D` and `H:m:s`.
-- The legacy `lastmessage` returns the last message's stored `data` without parsing its CBS, and `""` with no character selected.
+- Unconfirmed: a transform's tab-side plugin handlers run with a captured plugin context whose API still has the persistent setters; the server transform itself writes nothing, but no test pins a setter called from a handler, so the text-only contract is not enforced.
+- Unconfirmed follow-ups, deferred and not reproduced since: a hang in the additional-asset passes and a duplicate render after "Re-render" (`rerenderMessage` bypasses the transform cache). Both code paths remain.
+
+### Limitations
+
 - The transform's invalidation guarantee does not cover inlay records or file existence read by Lua `getCharacterImage`/`getPersonaImage`; those inputs are not keyed.
 - The tab's plugin handlers are opaque: their output is cached under the server key and handler-set identity, refreshed by a chat change, a viewport change or Re-render, but not by plugin-private state or records outside the key. They can still read `lastInteraction` through `getCharacter()`. A `{{random}}` or clock row may change when it remounts after its chat changed. After eviction or Re-render elsewhere, a random/clock/plugin row can be refilled with different text under the same key, and `same` can still confirm the tab's older text: the key names inputs, not output. Resize and rotation do not re-render rows; the new viewport takes effect on the next remount.
 - A screenshot taken while a provisional display awaits a replacing answer can capture the cached text: `ChatBody.svelte`'s `whenRendered` waits for current parses and auto-translation, not the transform confirmation.
-- Unconfirmed: a transform's tab-side plugin handlers run with a captured plugin context whose API still has the persistent setters; the server transform itself writes nothing, but no test pins a setter called from a handler, so the text-only contract is not enforced.
-- Unconfirmed follow-ups, deferred and not reproduced since: a hang in the additional-asset passes and a duplicate render after "Re-render" (`rerenderMessage` bypasses the transform cache). Both code paths remain.
+- The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content. A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails the job where the old shared call counter answered a short text with error strings. Decision: the limits are policy (`server/src/jobs/cbsHost.ts`); the `call::` trade-off is pinned in `server/src/tests/cbsCallDepth.test.ts`.
+
+### Gotchas
+
+- A CSS-only change to a shared sheet does not mutate the row's DOM, so `Chats` does not re-observe a `.far` row. Its remembered `contain-intrinsic-block-size` updates when the row renders near the viewport through `content-visibility: auto`.
+- `src/ts/gui/codearea/cbsMonaco.ts` has an empty `registerCBSMonaco`; active CBS highlighting lives in `src/ts/gui/highlight.ts`.
+- The no-argument date and time functions do not pad: `YYYY-M-D` and `H:m:s`.
+- The legacy `lastmessage` returns the last message's stored `data` without parsing its CBS, and `""` with no character selected.

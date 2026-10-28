@@ -935,6 +935,7 @@ export const languageEnglish = {
         messageGone: "That message is no longer in the chat.",
     },
     longPressToPopupEditor: "Long Press to Open Popup Editor",
+    popupEditorMonaco: "Code editor (Monaco)",
     disableAutoPopupMessageEditor: "Disable Auto Popup Editor When Editing Messages",
     UiLanguage: "UI Language",
     createfromScratch: "Create from Scratch",
@@ -2195,6 +2196,9 @@ export const languageEnglish = {
         doNotSummarizeUserMessageLabel: "Do Not Summarize User Message",
     },
     hypaV3Modal: {
+        readyBadge: "Ready",
+        readyBadgeHelp:
+            "Left out of the last prompt: a ready summary waits while the messages it covers are still sent in full, and takes their place once the prompt fills the context.",
         titleLabel: "HypaV3",
         resetConfirmMessage: "This action cannot be undone. Do you want to reset HypaV3 data?",
         resetConfirmSecondMessage: "This action is irreversible. Do you really, really want to reset HypaV3 data?",

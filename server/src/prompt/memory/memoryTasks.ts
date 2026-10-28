@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Chat, character, groupChat } from "../../../../shared/database.ts";
+import { greetingText } from "../../../../shared/greetings.ts";
 import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type {
     GenerationContext,
@@ -608,7 +609,7 @@ export function createMemoryTasks(deps: {
             if (!stored || stored.type === "group") {
                 return null;
             }
-            greeting = chat.fmIndex === -1 ? stored.firstMessage : stored.alternateGreetings?.[chat.fmIndex as number];
+            greeting = greetingText(stored, chat.fmIndex);
         }
         return { messages: chat.message, fmIndex: chat.fmIndex, greeting };
     };

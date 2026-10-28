@@ -48,7 +48,7 @@
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
-    import { summaryKey } from "../../../shared/memory.ts";
+    import { remapHypaV3Metrics, summaryKey } from "../../../shared/memory.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
@@ -375,6 +375,20 @@
         tagManagerState.editingTagIndex = -1;
     }
 
+    /**
+     * The last selection's `metrics` (indices into the summaries) moved through `map` before a change
+     * of the list made here, so its badges stay on their summaries; a summary that leaves loses them.
+     */
+    function moveMetrics(map: (index: number) => number | undefined) {
+        if (hypaV3Data.metrics) {
+            hypaV3Data.metrics = remapHypaV3Metrics(
+                $state.snapshot(hypaV3Data.metrics),
+                hypaV3Data.summaries.length,
+                map,
+            );
+        }
+    }
+
     function deleteSummaries(target: SerializableSummary, after: boolean) {
         const index = hypaV3Data.summaries.indexOf(target);
         if (index === -1) return;
@@ -387,6 +401,7 @@
                 .map((index) => (index < start ? index : index - count)),
         );
         if (tagManagerState.currentSummaryIndex >= start) closeTagManager();
+        moveMetrics((index) => (index < start ? index : index >= start + count ? index - count : undefined));
         hypaV3Data.summaries.splice(start, count);
     }
 
@@ -556,6 +571,13 @@
         }
         const minIndex = targets[0].index;
         closeTagManager();
+        // The merged summary is new: no target keeps the last selection's badges. The first target's
+        // place stays (the merge goes there); the later targets leave.
+        const merged = new Set(targets.map((target) => target.index));
+        const removed = targets.slice(1).map((target) => target.index);
+        moveMetrics((index) =>
+            merged.has(index) ? undefined : index - removed.filter((other) => other < index).length,
+        );
 
         hypaV3Data.summaries[minIndex] = {
             text: bulkResummaryState.result,

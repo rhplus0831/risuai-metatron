@@ -1444,6 +1444,16 @@ export async function selectHypaV3(
 }
 
 /**
+ * The `metrics` entry for the summaries a selection defers: the stored ones after the `applied`
+ * prefix (`appliedHypaV3Summaries`), which the modal marks; none when every summary is in.
+ */
+function deferredMetric(summaryCount: number, applied: number): { lastDeferredSummaries?: number[] } {
+    return applied < summaryCount
+        ? { lastDeferredSummaries: Array.from({ length: summaryCount - applied }, (_, i) => applied + i) }
+        : {};
+}
+
+/**
  * The summaries of an execution the prompt uses: the prepared step's applied ones and every new one
  * (a step makes summaries only once every stored one is in).
  */
@@ -1541,6 +1551,7 @@ async function selectStandard(
     let availableMemoryTokens = prepared.ledger.availableMemoryTokens;
     // Deferred summaries stay out of the selection; the returned memory keeps them.
     const summaries = appliedHypaV3Summaries(prepared, execution);
+    const deferred = deferredMetric(data.summaries.length, summaries.length);
 
     // Early return if no summaries
     if (summaries.length === 0) {
@@ -1550,6 +1561,7 @@ async function selectStandard(
                 lastRecentSummaries: [],
                 lastSimilarSummaries: [],
                 lastRandomSummaries: [],
+                ...deferred,
             };
         }
         // Generate final memory prompt
@@ -1854,6 +1866,7 @@ async function selectStandard(
         lastRandomSummaries: selectedRandomSummaries.map((selected) =>
             data.summaries.findIndex((sum) => sum === selected),
         ),
+        ...deferred,
     };
 
     const newChats: OpenAIChat[] = [
@@ -1888,6 +1901,7 @@ async function selectExperimental(
     let availableMemoryTokens = prepared.ledger.availableMemoryTokens;
     // Deferred summaries stay out of the selection; the returned memory keeps them.
     const summaries = appliedHypaV3Summaries(prepared, execution);
+    const deferred = deferredMetric(data.summaries.length, summaries.length);
 
     // Early return if no summaries
     if (summaries.length === 0) {
@@ -1897,6 +1911,7 @@ async function selectExperimental(
                 lastRecentSummaries: [],
                 lastSimilarSummaries: [],
                 lastRandomSummaries: [],
+                ...deferred,
             };
         }
         if (options?.trimUncovered) {
@@ -2205,6 +2220,7 @@ async function selectExperimental(
         lastRandomSummaries: selectedRandomSummaries.map((selected) =>
             data.summaries.findIndex((sum) => sum === selected),
         ),
+        ...deferred,
     };
 
     const newChats: OpenAIChat[] = [

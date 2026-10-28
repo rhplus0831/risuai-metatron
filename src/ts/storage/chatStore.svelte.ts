@@ -520,6 +520,25 @@ export function setRemoteChatListener(listener: ((ref: ChatRef) => void) | null)
     remoteListener = listener;
 }
 
+export type ChatRemoval = { chaId: string; chatId: string | null };
+const removalListeners = new Set<(removal: ChatRemoval) => void>();
+
+/** Observes deletions here and on the server; null chatId means every chat of the character. */
+export function onChatRemoved(listener: (removal: ChatRemoval) => void): () => void {
+    removalListeners.add(listener);
+    return () => removalListeners.delete(listener);
+}
+
+function notifyRemoval(removal: ChatRemoval) {
+    for (const listener of removalListeners) {
+        try {
+            listener(removal);
+        } catch (error) {
+            console.warn("[Chat removal]", error);
+        }
+    }
+}
+
 function nextSeq() {
     localSeq += 1;
     return localSeq;
@@ -2303,6 +2322,7 @@ export function deleteChat(ref: ChatRef) {
         throw new Error("This chat is being generated; wait until it finishes");
     }
     removeChat(ref.chaId, ref.chatId);
+    notifyRemoval(ref);
     const key = keyOf(ref.chaId, ref.chatId);
     changed(key);
     const entry = pending.get(key);
@@ -3729,6 +3749,7 @@ export function forgetCharacterChats(chaId: string) {
     delete chosen[slot(chaId)];
     dropLoadState(chaId);
     renewLifetime(chaId);
+    notifyRemoval({ chaId, chatId: null });
 }
 
 /** Drops a character's pins (character and chat pins), recency stamps, and loads in flight (a reset of its chats). */
@@ -3801,6 +3822,7 @@ export function forgetCharacter(chaId: string, options: { discard?: boolean } = 
     retireCharacterGroups(chaId);
     parkedResends.delete(chaId);
     forgetCharacterRevisions(chaId);
+    notifyRemoval({ chaId, chatId: null });
     return discardedWork;
 }
 
@@ -4826,6 +4848,9 @@ function applyRemoteChat(server: RemoteChat) {
     } else {
         holdChatRevision(key, server.revision);
     }
+    if (server.revision === null || !server.data) {
+        notifyRemoval({ chaId: server.characterId, chatId: server.id });
+    }
     remoteListener?.({ chaId: server.characterId, chatId: server.id });
 }
 
@@ -5013,6 +5038,7 @@ function removeRemoteChat(chaId: string, chatId: string) {
     const ids = findCharacter(chaId) ? memberIds(chaId) : [];
     const index = ids.indexOf(chatId);
     if (index !== -1 && ids.length === 1) {
+        notifyRemoval({ chaId, chatId });
         return;
     }
     if (index !== -1) {
@@ -5021,6 +5047,7 @@ function removeRemoteChat(chaId: string, chatId: string) {
         syncSelection(chaId);
     }
     dropChatRevision(key);
+    notifyRemoval({ chaId, chatId });
     remoteListener?.({ chaId, chatId });
 }
 
@@ -5274,6 +5301,9 @@ export function applyRemoteCollection(
         if (localIds.length === 0) {
             orderRevisions.set(chaId, collection.order.revision);
         }
+        for (const key of removed) {
+            notifyRemoval({ chaId, chatId: key.slice(prefix.length) });
+        }
         return true;
     }
     let entries = next;
@@ -5316,6 +5346,9 @@ export function applyRemoteCollection(
     setChatList(chaId, entries);
     for (const { key, whole } of adopted) {
         if (whole) recordChatInstall(key);
+    }
+    for (const key of removed) {
+        notifyRemoval({ chaId, chatId: key.slice(prefix.length) });
     }
     mutationToken += 1;
     syncSelection(chaId);
@@ -5472,6 +5505,7 @@ export function acceptRemoteCollection(collection: {
             }
             dropChatRevision(key);
             changed(key);
+            notifyRemoval({ chaId, chatId: id });
         }
     }
     const local = new Set(localIds);

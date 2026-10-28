@@ -113,6 +113,11 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   used; `closedInFront` carries the second check's) and `focusedHidden` (some window focused but not
   visible), and `clicked`. The projection keeps a side's phases and fields only: a browser `push` has no
   `service`, `jobId`, `status`, or `reason`, a server one none of the browser's fields.
+- `sync` phases: `conflict` and `reload` from the save loop (`resourceSync.svelte.ts`); from the draft journal
+  (`src/ts/storage/draftJournal.ts`), `journalSkipped` (`reason` `tooLarge` | `budget` for a write it did not
+  make, `format` for rows it cannot read and keeps, with `entries`), `journalFailed` (`unavailable`, `timeout`,
+  `blocked`, `quota`, `write`, `readFailed`), and `journalRecovered` (`orphan`, the `entries` it took over from a
+  closed tab).
 - `notice` events (`notice` `serverJobLost` | `serverJobEndedAway` | `resourceReloaded` |
   `transformFailed`) are recorded where those alerts are shown: `serverCommands.ts` `reportEnd` and
   `recoverJobChat`, and `resourceSync.svelte.ts` `showReloadedNotice` (only when the latched notice
@@ -276,12 +281,23 @@ job, and saving a phone browser report. The automated tests above do not cover t
 
 ## Known Hazards
 
+### Issues
+
+- Daily event appends are unsynced, so a power loss can lose recent events; whole-file
+  state, report, and share writes flush their staged files before rename.
+
+### Limitations
+
 - Sharing can redact only credentials still stored then; deleted credentials are
   unavailable. Encoding limits belong to [llm-requests](llm-requests.md).
+  Decision: the Request History and Diagnostics plan (`ab11ea9d0`,
+  [archive](../archived-plan/README.md)).
 - Auxiliary `/proxy2` operations are outside durable LLM history; failures can appear
   as checked HTTP diagnostics. A plugin iframe's runtime faults are outside the
   window collector.
+  Decision: Out of scope of the Request History and Diagnostics plan (`ab11ea9d0`,
+  [archive](../archived-plan/README.md)).
 - Journal/share work is synchronous. Folder write failures leave in-memory diagnostics
   available. A client timeout after report dispatch can leave a successfully saved file.
-- Daily event appends are unsynced, so a power loss can lose recent events; whole-file
-  state, report, and share writes flush their staged files before rename.
+  Decision: synchronous journal writes are an accepted trade-off
+  (`server/src/diagnostics/journal.ts`).

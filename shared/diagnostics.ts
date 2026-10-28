@@ -115,10 +115,29 @@ export const FEED_PHASES = [
     "resumeReconnect",
 ] as const;
 
-/** The save loop: a 409 it recovers from, a reload of the page (after a restore, or a service worker that did not initialize). */
-export const SYNC_PHASES = ["conflict", "reload"] as const;
+/**
+ * The save loop: a 409 it recovers from, a reload of the page (after a restore, or a service worker that
+ * did not initialize). The draft journal (`src/ts/storage/draftJournal.ts`): `entries` it did not write
+ * (`tooLarge`, `budget`) or found in a format it cannot read (`format`, kept as they are); a journal that
+ * is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`, `readFailed`); and
+ * `entries` it took over from a closed tab (`orphan`).
+ */
+export const SYNC_PHASES = ["conflict", "reload", "journalSkipped", "journalFailed", "journalRecovered"] as const;
 
-export const SYNC_REASONS = ["restore", "serviceWorker"] as const;
+export const SYNC_REASONS = [
+    "restore",
+    "serviceWorker",
+    "tooLarge",
+    "budget",
+    "format",
+    "unavailable",
+    "timeout",
+    "blocked",
+    "quota",
+    "write",
+    "readFailed",
+    "orphan",
+] as const;
 
 export const SERVICE_WORKER_PHASES = [
     "registered",
@@ -532,6 +551,7 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         chats: count,
         orders: count,
         generating: count,
+        entries: count,
     },
     serviceWorker: {
         phase: oneOf(SERVICE_WORKER_PHASES),

@@ -433,70 +433,86 @@ and timing rules belong to [build-test-platforms](build-test-platforms.md).
 
 ## Known Hazards
 
-- The SQLite resource store assumes one server process and a local filesystem.
-  Network filesystems are unsupported. Snapshots cover `save/data/`, not assets;
-  retained snapshots can keep references to assets that are never deleted, so
+Runtime limits of other subsystems live with their owners:
+[chat-pipeline](chat-pipeline.md), [LLM requests](llm-requests.md),
+[memory](memory.md) (the vector cache included), [scripts and triggers](scripts-triggers.md),
+[plugins and MCP](plugins-mcp.md), and [CBS/rendering](cbs-rendering.md).
+
+### Issues
+
+- Snapshots (`save/backups/`) copy `resources.sqlite`, not assets; retained
+  snapshots can keep references to assets that are never deleted, so
   `save/assets/` can grow.
-- Restore and version-2 import validate and install the database on the serving
-  thread, which can block other requests for a large store. Upstream conversion is
-  in a worker, but its heap cap does not cover Buffers or SQLite memory.
-- Upstream export holds its records, projected database, and encoded save in memory;
-  staged exports are capped at four. An asset over 4 GiB cannot fit an archive
-  record and is reported as missing.
 - Server CBS evaluation runs on the main thread under cooperative limits, with no
   hard deadline or heap bound. Some surrounding prompt work, including Jinja
   rendering, tokenizer calls after model load, and non-worker lore matching, also
   runs there. See [CBS/rendering](cbs-rendering.md) and [chat-pipeline](chat-pipeline.md).
-- A Lua call stuck in native code cannot reach the abort hook; the worker is
-  terminated after its abort grace and queued work waits for a replacement.
-  `server/src/lua/runtime.ts` also uses wasmoon 1.16's private engine extension table and C API,
-  which must be rechecked on a wasmoon upgrade ([scripts and triggers](scripts-triggers.md)).
-- `server/src/data/vectorCache.ts` bounds stored vector bytes, not the SQLite file size; eviction
-  runs on the main thread, with at most 256 rows removed per `set` in its insert transaction.
-  Trimming continues toward 90% on later inserts; a vector that cannot fit after that budget is
-  skipped, so writes never exceed the byte bound. Startup reaches 90% in batches before serving
-  when the stored bytes exceed the bound ([memory](memory.md)).
-- Backup, module, and CharX uploads share Node's four-hour whole-request timeout.
-  Staging under `save/.tmp/` must share a filesystem with asset targets for atomic
-  rename. Only one process should use a save directory.
 - `/api/remove` deletes sequentially: a filesystem error stops the batch with 500
   and leaves earlier deletions in place.
-- Resource depth validation runs on parsed JSON after serialization; the HTTP body
-  cap bounds uploads, but in-process callers can spend more work before rejection.
-  Opening the store normalizes every record, so startup cost grows with the data
-  and a refused record stops startup with its kind and id.
 - `normalizeCharacterOrder` and `normalizeCustomModels` do not deduplicate entries.
   The former accepts folder objects without validating their fields; the latter
   requires string `id` and `internalId` and strips retired credential fields.
+- `/api/asset/*` verification is in memory and stat-based; it starts empty after
+  restart and cannot detect an outside same-size edit that restores the full stat.
+- The thumbnail cache has no byte cap.
+- JWT validation does not check issuer, audience, `typ`, or `iat`, and a token
+  without `exp` does not expire.
+- `/hub-proxy` is unauthenticated and forwards request headers other than
+  `risu-auth` to the configured hub.
+
+### Limitations
+
+- The SQLite resource store assumes one server process and a local filesystem.
+  Network filesystems are unsupported. Decision: one local `save/` directory and
+  one process (Invariants).
+- Restore and version-2 import validate and install the database on the serving
+  thread, which can block other requests for a large store. Upstream conversion is
+  in a worker, but its heap cap does not cover Buffers or SQLite memory.
+  Decision: restore and import run under maintenance (Invariants).
+- Upstream export holds its records, projected database, and encoded save in memory;
+  staged exports are capped at four. An asset of 4 GiB or more cannot fit an archive
+  record and is reported as missing. Decision: the staging cap
+  (`shared/upstreamExportReport.ts`) and the archive record ceiling
+  (`server/src/data/archive.ts`).
+- A Lua call stuck in native code cannot reach the abort hook; the worker is
+  terminated after its abort grace and queued work waits for a replacement.
+  Decision: the pool's watchdog is the bound for a C-level runaway
+  (`server/src/lua/runtime.ts` header).
 - Directory fsync may be unsupported on a mount (`EINVAL`/`EPERM`); in that case a
   successful rename or link is not guaranteed to survive power loss. This includes
   the auth password and known-key files, which `writeFileDurableSync`
   (`server/src/data/durableWrite.ts`) writes through a flushed temporary file renamed
   into place.
-- Storage namespace folders are trusted: a symlinked `save/assets` directory is
-  followed, although individual file opens reject symlinks where the OS supports it.
-  `/api/asset/*` verification is in memory and stat-based; it starts empty after
-  restart and cannot detect an outside same-size edit that restores the full stat.
+  Decision: `EINVAL` and `EPERM` from directory sync are tolerated (Invariants).
 - Replacing bytes under an already cached immutable content name does not update a
   browser's cached asset. The browser may also serve a fresh immutable same-origin
   asset response without reaching server authentication.
+  Decision: the owner accepted this exposure on 2026-10-23 (Invariants).
+- `/api/set_password` and `/api/crypto` are unauthenticated by design and rate
+  limited. A server has one password and registered browser keys, not separate
+  users. Decision: the server's auth model (`server/src/routes/auth.ts` header).
+
+### Gotchas
+
+- `server/src/lua/runtime.ts` uses wasmoon 1.16's private engine extension table and
+  C API, which must be rechecked on a wasmoon upgrade
+  ([scripts and triggers](scripts-triggers.md)).
+- Backup, module, and CharX uploads share Node's four-hour whole-request timeout.
+  Staging under `save/.tmp/` must share a filesystem with asset targets for atomic
+  rename. Only one process should use a save directory.
+- Resource depth validation runs on parsed JSON after serialization; the HTTP body
+  cap bounds uploads, but in-process callers can spend more work before rejection.
+  Opening the store normalizes every record, so startup cost grows with the data
+  and a refused record stops startup with its kind and id.
+- Storage namespace folders are trusted: a symlinked `save/assets` directory is
+  followed, although individual file opens reject symlinks where the OS supports it.
 - `/api/asset/*` serves one byte range. Thumbnail transforms are versioned by
-  `THUMBNAIL_VERSION`; bump it when transform output or input policy changes. The
-  thumbnail cache has no byte cap, and animation detection covers multi-page formats
-  reported by `sharp` plus PNG `acTL`.
+  `THUMBNAIL_VERSION`; bump it when transform output or input policy changes.
+  Animation detection covers multi-page formats reported by `sharp` plus PNG `acTL`.
 - Static serving precedes the asset route. A file emitted under `dist/api/asset/`
   would be served before asset authentication and headers; the current build emits
   no `api/` directory.
-- `/api/set_password` and `/api/crypto` are unauthenticated by design and rate
-  limited. A server has one password and registered browser keys, not separate
-  users. JWT validation does not check issuer, audience, `typ`, or `iat`, and a token without
-  `exp` does not expire.
 - `/proxy` and `/proxy2` can reach arbitrary targets; the local-network restriction
-  applies to server streaming jobs. `/hub-proxy` is unauthenticated and forwards
-  request headers other than `risu-auth` to the configured hub.
+  applies to server streaming jobs.
 - Reverse proxies must preserve encoded path segments: decoding `%2F` can split a
   resource id containing a slash. Deployment behavior remains unverified.
-- Other runtime limits and unresolved behavior belong to their subsystem owners:
-  [chat-pipeline](chat-pipeline.md), [LLM requests](llm-requests.md),
-  [memory](memory.md), [scripts and triggers](scripts-triggers.md),
-  [plugins and MCP](plugins-mcp.md), and [CBS/rendering](cbs-rendering.md).

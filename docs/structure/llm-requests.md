@@ -208,17 +208,23 @@ the write runs is used. `modelId` and `credentialId` are not forwarded profile r
 
 ## Known Hazards
 
-- An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text, like other streamed provider errors. There is no in-stream retry; `outer.ts` `requestChatDataOuter` owns the retry policy and honors `antiServerOverloads`.
+### Issues
 
-- The `/proxy2` media, memory, and count rows and the Google/Anthropic/OpenAI discovery lists keep flat default keys; they do not accept a profile. `openrouter.ts` `getFreeOpenRouterModels` also keeps the default key.
-- NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on different accounts share subscription state and endpoint selection.
+- The `/proxy2` media, memory, and count rows and the Google/Anthropic/OpenAI discovery lists keep flat default keys; they do not accept a profile. `openrouter.ts` `getFreeOpenRouterModels` also keeps the default key. A model-profile follow-up (Remaining Follow-Ups in the [archive](../archived-plan/README.md)).
+- NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on different accounts share subscription state and endpoint selection. A model-profile follow-up (Remaining Follow-Ups in the [archive](../archived-plan/README.md)).
 - A profile whose `modelId` names a catalogue id that is later renamed or removed keeps it: unless the id matches a dynamic template, the profile resolves as an as-is OpenAI-compatible model until the user picks another model.
-- Auxiliary requests still tokenize with the main model (`shared/llm/request.ts`), not their own profile's tokenizer.
-
 - The server counter's `selectTokenizer` maps a `llama3` custom or plugin tokenizer override to `llama`; the playground route uses the `llama3` family.
-- A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and in server requests; its `tokenizerFunc` is never called.
-- `CustomModelsSettings` does not expose every format or tokenizer value (Plugin, Ollama, Horde, Echo, NanoGPT variants, and `Local` are missing).
+- `CustomModelsSettings` does not expose every format or tokenizer value (Plugin, Ollama, Horde, Echo, NanoGPT variants, WebLLM, and `Local` are missing).
 - Multimodal counts remain approximate: Claude/Gemini images use the GPT-4o fallback; video/audio/signature entries use a flat 85 tokens.
-- The server's `gemma` tokenizer loads `llama/llama3.json`, so Gemma counts are Llama 3 counts (also for on-screen counts).
-- Local tokenizer families encode synchronously on the server thread. Encoders stay loaded per server context until disposal; the web-tokenizer module loader is process-wide and serialized, and disposal does not guarantee that the memory returns to the OS.
 - `server/src/llm/redact.ts` matches a credential's stored, JSON-escaped, and `encodeURIComponent` forms. Its exact string matcher does not normalize lowercase percent escapes; designated `key`, `api_key`, and `token` query parameters are still redacted by name.
+
+### Limitations
+
+- An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text, like other streamed provider errors. There is no in-stream retry; `outer.ts` `requestChatDataOuter` owns the retry policy and honors `antiServerOverloads`. Decision: the retry policy belongs to `requestChatDataOuter` (`server/src/llm/anthropic.ts`).
+- Auxiliary requests still tokenize with the main model (`shared/llm/request.ts`), not their own profile's tokenizer. Decision: bias strings tokenize with the main model whatever model the request uses (`shared/llm/request.ts` `tokenizer`).
+- A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and in server requests; its `tokenizerFunc` is never called. Decision: recorded in `shared/tokenizerChoice.ts` (`pluginFunction`); the plugin tokenizer map was accepted as untracked by Combine Audit Fixes ([archive](../archived-plan/README.md)).
+- The server's `gemma` tokenizer loads `llama/llama3.json`, so Gemma counts are Llama 3 counts (also for on-screen counts). Decision: kept for parity with the frozen browser ids (`server/src/prompt/tokenizers/gemma.ts`).
+
+### Gotchas
+
+- Local tokenizer families encode synchronously on the server thread. Encoders stay loaded per server context until disposal; the web-tokenizer module loader is process-wide and serialized, and disposal does not guarantee that the memory returns to the OS.
