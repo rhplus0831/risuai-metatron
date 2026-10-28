@@ -935,6 +935,7 @@ export const languageEnglish = {
         messageGone: "That message is no longer in the chat.",
     },
     longPressToPopupEditor: "Long Press to Open Popup Editor",
+    popupEditorMonaco: "Code editor (Monaco)",
     disableAutoPopupMessageEditor: "Disable Auto Popup Editor When Editing Messages",
     UiLanguage: "UI Language",
     createfromScratch: "Create from Scratch",
