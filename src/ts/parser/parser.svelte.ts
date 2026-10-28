@@ -2,7 +2,7 @@ import { boundedDistance } from "./assetSearch";
 import type { ChatStyle } from "./chatStyles";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
+import { currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { isFrozenAssetList, isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
 import {
@@ -586,12 +586,9 @@ async function parseAdditionalAssets(
     data: string,
     char: simpleCharacterArgument | character | AnyClientCharacter,
     mode: "normal" | "back",
-    /** `chatRef`: the chat the render captured (its persona's icon), else the selected chat's. */
-    arg: { ch: number; chatRef?: ChatRef | null },
+    /** Source icons resolved before the render's first await, shared by both asset passes. */
+    arg: { ch: number; charIcon?: string; userIcon?: string },
 ) {
-    // Read before the first await (the selected chat can change meanwhile), untracked as the read
-    // after the awaits was: a render must not rerun on a persona change elsewhere.
-    const userIcon = untrack(() => getUserIcon(arg.chatRef));
     const assetWidthString =
         (settings.ui.assetWidth && settings.ui.assetWidth !== -1) || settings.ui.assetWidth === 0
             ? `max-width:${settings.ui.assetWidth}rem;`
@@ -702,12 +699,9 @@ async function parseAdditionalAssets(
     });
 
     if (needsSourceAccess) {
-        const chara = selectedCharacter();
-        if (chara.image) {
-        }
-        data = data.replace(/\uE9b4CHAR\uE9b4/g, chara.image ? await getFileSrc(chara.image) : "");
+        data = data.replace(/\uE9b4CHAR\uE9b4/g, arg.charIcon ? await getFileSrc(arg.charIcon) : "");
 
-        data = data.replace(/\uE9b4USER\uE9b4/g, userIcon ? await getFileSrc(userIcon) : "");
+        data = data.replace(/\uE9b4USER\uE9b4/g, arg.userIcon ? await getFileSrc(arg.userIcon) : "");
     }
 
     return data;
@@ -950,11 +944,22 @@ export async function ParseMarkdown(
     const transform = char ? (capturedTransform === undefined ? captureTransform(chatID) : capturedTransform) : null;
     // The chat this render is for, also when the server path does not apply (no transform).
     const renderRef = transform?.chatRef ?? untrack(() => currentChatRef());
+    // Resolve the chat owner's source icon before either asset pass can await, including group chats.
+    // Untracked: a render must not rerun on a persona change elsewhere.
+    const sourceIcons = untrack(() => {
+        const sourceChar =
+            (renderRef ? characterList().find((entry) => entry.chaId === renderRef.chaId) : null) ??
+            selectedCharacter();
+        return {
+            charIcon: sourceChar?.image,
+            userIcon: char && char.type !== "group" ? getUserIcon(renderRef) : undefined,
+        };
+    });
 
     if (char && char.type !== "group") {
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID,
-            chatRef: renderRef,
+            ...sourceIcons,
         });
         firstParsed = data;
     }
@@ -977,7 +982,7 @@ export async function ParseMarkdown(
     if (firstParsed !== data && char && char.type !== "group") {
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID,
-            chatRef: renderRef,
+            ...sourceIcons,
         });
     }
 

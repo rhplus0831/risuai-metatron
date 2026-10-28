@@ -92,7 +92,15 @@ function renderChat(message = markup, row: { messageId?: string; idx?: number } 
     });
     mounted.push(instance);
     flushSync();
-    return { element, instance };
+    return {
+        element,
+        instance,
+        remove: async () => {
+            mounted.splice(mounted.indexOf(instance), 1);
+            await unmount(instance);
+            element.remove();
+        },
+    };
 }
 
 function renderChats() {
@@ -418,6 +426,88 @@ describe("display transform recovery", () => {
             requests.push(body);
             return respond(body);
         });
+    });
+
+    it("keeps a newer successful render and its cached result when another failed row retries", async () => {
+        const source = 'Raw reply <input name="draft" value="initial">';
+        appendMessage(ref, { chatId: "pending", role: "char", data: "Still failed" });
+        const targets = (messageId: string) =>
+            requests.flatMap((request) => request.targets).filter((target) => target.messageId === messageId);
+        respond = () => Response.json({ error: "Unavailable" }, { status: 503 });
+        const failed = renderChat(source);
+        const pending = renderChat("Still failed", { messageId: "pending", idx: 1 });
+        await settle(16);
+        expect(targets("message")).toHaveLength(1);
+        expect(targets("pending")).toHaveLength(1);
+        expect(failed.element.querySelector(".chattext")!.textContent).not.toContain("Rendered:");
+
+        rerenderMessage(ref, "message");
+        await failed.remove();
+        respond = success;
+        const current = renderChat(source);
+        await settle(16);
+        expect(current.element.querySelector(".chattext")!.textContent).toContain("Rendered: Raw reply");
+        expect(targets("message").map((target) => !!target.noCache)).toEqual([false, true]);
+        const goodKey = targets("message")[1].id;
+        const input = current.element.querySelector<HTMLInputElement>('input[name="draft"]')!;
+        input.value = "keep my typing";
+
+        // The other row still needs recovery, so this must exercise an actual retry round.
+        await settle(5_000);
+        await settle(16);
+        expect(targets("pending").map((target) => !!target.noCache)).toEqual([false, true]);
+        expect(pending.element.querySelector(".chattext")!.textContent).toContain("Rendered: Still failed");
+        expect(targets("message").map((target) => !!target.noCache)).toEqual([false, true]);
+        expect(current.element.querySelector('input[name="draft"]')).toBe(input);
+        expect(input.value).toBe("keep my typing");
+
+        // A later ordinary mount must still confirm the good result through the tab cache.
+        await current.remove();
+        respond = (body) =>
+            Response.json({
+                results: [],
+                same: body.targets.map((target) => ({ id: target.id, key: target.knownKey })),
+            });
+        const remounted = renderChat(source);
+        await settle(16);
+        expect(targets("message")).toHaveLength(3);
+        expect(targets("message")[2]).toMatchObject({ knownKey: goodKey });
+        expect(targets("message")[2].noCache).toBeUndefined();
+        expect(remounted.element.querySelector(".chattext")!.textContent).toContain("Rendered: Raw reply");
+    });
+
+    it("retries a failed target after a different target of the same row succeeds in the same generation", async () => {
+        const targets = (source: string) =>
+            requests.flatMap((request) => request.targets).filter((target) => target.source === source);
+        respond = (body) =>
+            Response.json({
+                results: body.targets.map((target) => ({ id: target.id, ok: false, error: "Unavailable" })),
+            });
+        const failed = renderChat("Failed display");
+        await settle(16);
+        expect(failed.element.querySelector(".chattext")!.textContent).toContain("Failed display");
+        expect(failed.element.querySelector(".chattext")!.textContent).not.toContain("Rendered:");
+
+        // A later translation target belongs to this message, without a Re-render.
+        respond = success;
+        const sibling = serverProcessScript(
+            { chaId: ref.chaId, type: "simple" },
+            "Successful display",
+            "editdisplay",
+            0,
+            {},
+            captureTransform(0)!,
+            "translation",
+        );
+        await settle(16);
+        expect((await sibling).data).toBe("Rendered: Successful display");
+        expect(targets("Failed display").map((target) => !!target.noCache)).toEqual([false]);
+        expect(targets("Successful display").map((target) => !!target.noCache)).toEqual([false]);
+
+        await settle(5_000);
+        await settle(16);
+        expect(targets("Failed display").map((target) => !!target.noCache)).toEqual([false, true]);
+        expect(failed.element.querySelector(".chattext")!.textContent).toContain("Rendered: Failed display");
     });
 
     it("retries only failed mounted rows once per round with 5s doubling backoff capped at 60s", async () => {

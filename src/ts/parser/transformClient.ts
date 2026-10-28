@@ -34,7 +34,7 @@ import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { recordClientEvent } from "../diagnostics/collector";
-import { markDisplayTransformFailed } from "./displayTransformRecovery.svelte";
+import { markDisplayTransformFailed, markDisplayTransformSucceeded } from "./displayTransformRecovery.svelte";
 import {
     advanceTransformResultsGeneration,
     confirmTransformResult,
@@ -691,6 +691,9 @@ export async function serverProcessScript(
                 CharEmotion.set(charemotions);
                 emoChanged = true;
             }
+        }
+        if (!failed && current && mode === "editdisplay" && captured.messageId) {
+            markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
         }
         if (provisional && current) {
             captured.pendingProvisional -= 1;

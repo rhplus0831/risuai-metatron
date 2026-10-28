@@ -1,5 +1,6 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TransformRequest } from "../../../../shared/transform.ts";
 
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
@@ -13,15 +14,18 @@ vi.mock("../../globalApi.svelte", () => ({
     aiWatermarkingLawApplies: () => false,
     getFileSrc: vi.fn(async (path: string) => path),
 }));
-vi.mock("../transformClient", () => ({ captureTransform: () => null, serverProcessScript: vi.fn() }));
 
 import { getDistance, ParseMarkdown, resetAssetsCache, type simpleCharacterArgument } from "../parser.svelte";
 import { boundedDistance, findAssetPrefix } from "../assetSearch";
-import { selectedCharacter } from "../../storage/characterStore.svelte";
+import { captureTransform } from "../transformClient";
+import * as globalApi from "../../globalApi.svelte";
+import { characterList, selectedCharacter } from "../../storage/characterStore.svelte";
+import { currentChatRef, seedChats, selectChat } from "../../storage/chatStore.svelte";
 import { isRecordWrapper } from "../../storage/records.svelte";
-import { selectCharacter } from "../../storage/selection.svelte";
+import { selectCharacter, selectPersona } from "../../storage/selection.svelte";
+import * as serverAuth from "../../storage/serverAuth";
 import { settings } from "../../storage/settingsViews.svelte";
-import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "../../storage/tests/installFlatDatabase";
 import { createProbe } from "../../storage/tests/reactiveProbe.svelte";
 import { moduleBackgroundEmbedding } from "../../stores.svelte";
 
@@ -106,6 +110,147 @@ describe("parser asset inputs", () => {
         const live = parse("module");
         expect(text(await live)).toBe("assets/live.png");
         expect(text(await parse("override"))).toBe("");
+    });
+});
+
+describe("source images for a captured render", () => {
+    let fixtureId = 0;
+
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((done) => {
+            resolve = done;
+        });
+        return { promise, resolve };
+    }
+
+    function installSources(withChats = true) {
+        // The parser retains resolved asset URLs, so each held lookup needs its own asset key.
+        const pausePath = `assets/source-pause-${++fixtureId}.png`;
+        installFlatDatabaseWithChats({
+            legacyMediaFindings: false,
+            assetMaxDifference: 0,
+            enabledModules: [],
+            modules: [],
+            characters: ["a", "b", "group"].map((id) => ({
+                chaId: id,
+                type: id === "group" ? "group" : "character",
+                name: id,
+                image: `assets/${id}.png`,
+                ...(id === "group" ? { characters: ["a"] } : {}),
+                additionalAssets: [asset("pause", pausePath)],
+                emotionImages: [],
+                customscript: [],
+                chats: withChats
+                    ? [{ id: `chat-${id}`, bindedPersona: `persona-${id}`, message: [], localLore: [] }]
+                    : [],
+            })),
+            personas: ["a", "b", "group"].map((id) => ({
+                id: `persona-${id}`,
+                name: id,
+                icon: `assets/user-${id}.png`,
+                personaPrompt: "",
+            })),
+            botPresets: [{ id: "preset", name: "Preset" }],
+        });
+        seedChats(
+            withChats ? ["a", "b", "group"].map((id) => ({ characterId: id, id: `chat-${id}`, revision: "r1" })) : [],
+            [],
+        );
+        selectCharacter("a");
+        selectPersona("persona-a");
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        vi.spyOn(globalApi, "getFileSrc").mockImplementation(async (path) => {
+            if (path === pausePath) {
+                entered.resolve();
+                await release.promise;
+            }
+            return path;
+        });
+        return { entered, release, speaker: char() };
+    }
+
+    const sources = (pass: string) =>
+        `<img alt="${pass}-char" src="{{source::char}}"><img alt="${pass}-user" src="{{source::user}}">`;
+    function imageSources(html: string) {
+        const result = document.createElement("div");
+        result.innerHTML = html;
+        return Object.fromEntries(
+            [...result.querySelectorAll("img[alt]")]
+                .filter((img) => /^(before|after)-/.test(img.getAttribute("alt")!))
+                .map((img) => [img.getAttribute("alt"), img.getAttribute("src")]),
+        );
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(0);
+        vi.spyOn(serverAuth, "authFetch").mockImplementation(async (path, init) => {
+            expect(path).toBe("/api/transform");
+            const body = JSON.parse(init!.body as string) as TransformRequest;
+            return Response.json({
+                results: body.targets.map((target) => ({
+                    id: target.id,
+                    ok: true,
+                    text: `${target.source}${sources("after")}`,
+                    emotions: [],
+                    key: target.id,
+                    cached: false,
+                })),
+            });
+        });
+    });
+
+    afterEach(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    it.each(["a", "group"])(
+        "keeps the captured %s chat owner's and persona's starting images across both asset passes",
+        async (ownerId) => {
+            const { speaker, entered, release } = installSources();
+            const ref = { chaId: ownerId, chatId: `chat-${ownerId}` };
+            selectChat(ref.chaId, ref.chatId);
+            selectCharacter(ownerId);
+            const captured = captureTransform(-1, { chatRef: ref });
+            expect(captured).not.toBeNull();
+            // A group message is parsed with its speaking member, and may already be off screen.
+            if (ownerId === "group") selectCharacter("b");
+            const pending = ParseMarkdown(`{{img::pause}}${sources("before")}`, speaker, "normal", -1, {}, captured);
+            await entered.promise;
+
+            selectCharacter(ownerId === "group" ? "a" : "b");
+            selectPersona("persona-b");
+            characterList().find((entry) => entry.chaId === ownerId)!.image = "assets/changed-owner.png";
+            settings.personas.find((entry) => entry.id === `persona-${ownerId}`)!.icon = "assets/changed-user.png";
+            release.resolve();
+            await vi.advanceTimersByTimeAsync(16);
+
+            expect(imageSources(await pending)).toEqual({
+                "before-char": `assets/${ownerId}.png`,
+                "before-user": `assets/user-${ownerId}.png`,
+                "after-char": `assets/${ownerId}.png`,
+                "after-user": `assets/user-${ownerId}.png`,
+            });
+        },
+    );
+
+    it("captures the selected fallback images before the asset await with no render chat", async () => {
+        const { speaker, entered, release } = installSources(false);
+        expect(currentChatRef()).toBeNull();
+        const pending = ParseMarkdown(`{{img::pause}}${sources("before")}`, speaker, "normal", -1, {}, null);
+        await entered.promise;
+        selectCharacter("b");
+        selectPersona("persona-b");
+        release.resolve();
+        await vi.advanceTimersByTimeAsync(16);
+
+        expect(imageSources(await pending)).toMatchObject({
+            "before-char": "assets/a.png",
+            "before-user": "assets/user-a.png",
+        });
     });
 });
 
