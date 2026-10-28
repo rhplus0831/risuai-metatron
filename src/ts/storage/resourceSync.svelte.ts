@@ -1,4 +1,5 @@
 import isEqual from "lodash/isEqual";
+import { newId } from "../../../shared/ids.ts";
 import {
     JOURNAL_FORMAT,
     JOURNAL_LAYER_NAMES,
@@ -7,6 +8,8 @@ import {
     pageDraftJournal,
     recordTarget,
     type JournalWrite,
+    type ConflictDraft,
+    type DraftInput,
     type JournalRemoval,
     type RecordLayerValues,
     type StoredLayers,
@@ -431,6 +434,7 @@ type JournalRecordView = {
 /** Keys touched by this page, including captured layers handed over by boot recovery. */
 const journalRecords = new Map<string, JournalRecordView>();
 const journalPending = new Set<string>();
+const journalWritingRecords = new Set<string>();
 type JournalChatView = {
     key: ChatJournalKey;
     epoch: string;
@@ -440,6 +444,62 @@ type JournalChatView = {
 /** Scope is part of identity; these keys never enter the record projection loop. */
 const journalChatViews = new Map<string, JournalChatView>();
 const journalChatPending = new Set<string>();
+/** Includes captures in a transaction until its commit is known, so restore can snapshot them too. */
+const conflictDrafts = new Map<string, ConflictDraft>();
+
+function queueConflictDraft(input: DraftInput) {
+    if (halted || journalOff) return;
+    if (input.scope === "record") {
+        const kind = input.target.split("\u0000")[0];
+        if (
+            !Object.values(input.layers).every(
+                (value) => !value || isJournalEligible({ scope: "record", kind, text: value.text }),
+            )
+        )
+            return;
+    } else if (!isJournalEligible({ scope: input.scope })) return;
+    const draft = structuredClone({ ...input, id: newId(), createdAt: Date.now() });
+    conflictDrafts.set(draft.id, draft);
+    scheduleJournal();
+}
+
+function captureJournalChat(projection: ReturnType<typeof chatJournal.project>) {
+    if (halted || journalOff) return;
+    const view = journalChatViews.get(`${projection.scope}\u0000${projection.target}`);
+    queueConflictDraft({ ...projection, epoch: view?.epoch ?? getResourceEpoch() });
+}
+
+/** The final local intent, before conflict recovery clears its in-doubt write or refusal. */
+function captureRecordConflict(key: string, op?: PendingOp, gone = false): DraftInput | undefined {
+    const view = journalView(key);
+    if (!view) return;
+    const [kind, id] = key.split("\u0000");
+    const base = persisted.get(key);
+    const text = journalProjection(key, kind, id)?.text ?? null;
+    const doubt = inDoubt.get(key);
+    const refusal = quarantinedRecords.get(key);
+    const sent = doubt
+        ? { ...journalOperation(doubt.text, doubt.baseRevision), dispatched: true as const, inDoubt: true }
+        : (view.dispatched ??
+          (op
+              ? { ...journalOperation(op.text, op.baseRevision), dispatched: true as const, inDoubt: false }
+              : undefined));
+    const membership = kind === RESOURCE_KIND.characters && (text === null) !== (base === undefined);
+    if (gone && text === null) return;
+    if ((!dirty.has(key) || text === (base?.text ?? null)) && !membership && !sent && !refusal) return;
+    const layers: Partial<RecordLayerValues> = {};
+    if (sent) layers.sent = sent;
+    if (refusal)
+        layers.refused = {
+            op: view.desired.refused?.op ?? journalOperation(refusal.text, base?.revision ?? null).op,
+            text: refusal.text,
+            reason: refusal.error.message,
+        };
+    if (sent ? text !== sent.text : !refusal || text !== refusal.text) {
+        layers.latest = journalOperation(text, base?.revision ?? null);
+    }
+    return { scope: "record", target: recordTarget(kind, id), epoch: view.epoch, layers };
+}
 
 function queueJournalChat(key: ChatJournalKey) {
     if (halted) return;
@@ -467,10 +527,12 @@ function disableChatJournal() {
     }
     journalChatPending.clear();
     journalChatViews.clear();
+    conflictDrafts.clear();
+    chatJournal.setConflictListener(null);
 }
 
 function hasJournalPending() {
-    return journalPending.size > 0 || journalChatPending.size > 0;
+    return journalPending.size > 0 || journalChatPending.size > 0 || conflictDrafts.size > 0;
 }
 let journalQueue: Promise<void> = Promise.resolve();
 let journalOff = false;
@@ -713,10 +775,20 @@ function flushJournal(onHide = false): Promise<void> {
             }
             const writes: JournalWrite[] = [];
             const removals: JournalRemoval[] = [];
+            const recordChanges: {
+                key: string;
+                view: JournalRecordView;
+                written: StoredLayers<"record">;
+                largeWriteAt?: number;
+            }[] = [];
+            const drafts = [...conflictDrafts.values()];
             let nextDelay = Infinity;
             const now = Date.now();
             for (const key of journalPending) {
                 const view = journalRecords.get(key)!;
+                const written = { ...view.written };
+                let largeWriteAt = view.largeWriteAt;
+                recordChanges.push({ key, view, written });
                 refreshJournalRecord(key, view);
                 const desired = view.desired;
                 const values = Object.values(desired).filter((value) => value !== undefined);
@@ -760,7 +832,7 @@ function flushJournal(onHide = false): Promise<void> {
                             version: stored.version,
                             layers: [name],
                         });
-                        delete view.written[name];
+                        delete written[name];
                     }
                     if (!tooLarge && !deferred && value && changed.includes(name)) {
                         Object.assign(layers, { [name]: value });
@@ -771,13 +843,14 @@ function flushJournal(onHide = false): Promise<void> {
                     writes.push({ epoch: view.epoch, scope: "record", target: key, version, layers });
                     for (const name of RECORD_JOURNAL_LAYERS) {
                         if (layers[name]) {
-                            Object.assign(view.written, { [name]: { version, value: layers[name] } });
+                            Object.assign(written, { [name]: { version, value: layers[name] } });
                         }
                     }
                     if (large) {
-                        view.largeWriteAt = now;
+                        largeWriteAt = now;
                     }
                 }
+                recordChanges[recordChanges.length - 1].largeWriteAt = largeWriteAt;
                 if (deferred) {
                     nextDelay = Math.min(nextDelay, wait);
                 } else {
@@ -825,9 +898,28 @@ function flushJournal(onHide = false): Promise<void> {
                 chatWrites.push({ scoped, view, index: writes.length, layers, removed, version, splitGroupId });
                 writes.push({ ...view.key, epoch: view.epoch, version, layers } as JournalWrite);
             }
-            if (writes.length > 0 || removals.length > 0) {
-                const outcomes = await journal.write(writes, removals);
+            if (writes.length > 0 || removals.length > 0 || drafts.length > 0) {
+                for (const { key } of recordChanges) journalWritingRecords.add(key);
+                const result = await journal.write(writes, removals, drafts);
+                journalWritingRecords.clear();
                 if (halted) return;
+                const outcomes = result.writes;
+                if (result.committed) {
+                    for (const item of recordChanges) {
+                        item.view.written = item.written;
+                        item.view.largeWriteAt = item.largeWriteAt;
+                    }
+                    for (const draft of drafts) conflictDrafts.delete(draft.id);
+                    if (result.drafts.includes("written")) {
+                        void import("./recoveryDrafts.svelte")
+                            .then(({ recoveryDrafts }) => {
+                                if (!halted) return recoveryDrafts.refresh();
+                            })
+                            .catch((error) => console.warn("[Save journal]", error));
+                    }
+                } else {
+                    for (const { key } of recordChanges) journalPending.add(key);
+                }
                 for (const item of chatWrites) {
                     const outcome = outcomes[item.index];
                     if (outcome === "off") {
@@ -863,7 +955,12 @@ function flushJournal(onHide = false): Promise<void> {
                     }
                 }
             }
-            if (journalChatPending.size > 0) scheduleJournal();
+            if (
+                journalChatPending.size > 0 ||
+                conflictDrafts.size > 0 ||
+                (journalPending.size > 0 && !Number.isFinite(nextDelay))
+            )
+                scheduleJournal();
             if (Number.isFinite(nextDelay)) {
                 scheduleJournal(Math.max(0, now + nextDelay - Date.now()));
             }
@@ -886,7 +983,11 @@ function captureRestoreJournal(): RestoreJournalItem[] {
     const snapshot: RestoreJournalItem[] = [];
     for (const [key, view] of journalRecords) {
         refreshJournalRecord(key, view);
-        if (!RECORD_JOURNAL_LAYERS.some((name) => view.desired[name] || view.written[name])) continue;
+        if (
+            !journalWritingRecords.has(key) &&
+            !RECORD_JOURNAL_LAYERS.some((name) => view.desired[name] || view.written[name])
+        )
+            continue;
         snapshot.push({
             write: {
                 epoch: view.epoch,
@@ -919,8 +1020,8 @@ function captureRestoreJournal(): RestoreJournalItem[] {
     return structuredClone(snapshot);
 }
 
-async function writeRestoreJournal(snapshot: RestoreJournalItem[]) {
-    if (journalOff || snapshot.length === 0) return;
+async function writeRestoreJournal(snapshot: RestoreJournalItem[], drafts: ConflictDraft[]) {
+    if (journalOff || (snapshot.length === 0 && drafts.length === 0)) return;
     const journal = pageDraftJournal();
     if (!(await journal.start()) || !journal.enabled) return;
     // Bypass the normal queue: it may be stuck. Startup must seed the counter before this version
@@ -953,14 +1054,14 @@ async function writeRestoreJournal(snapshot: RestoreJournalItem[]) {
         }
         return write;
     });
-    await journal.write(writes);
+    await journal.write(writes, [], drafts);
 }
 
-async function waitForRestoreJournal(snapshot: RestoreJournalItem[]) {
+async function waitForRestoreJournal(snapshot: RestoreJournalItem[], drafts: ConflictDraft[]) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
         await Promise.race([
-            writeRestoreJournal(snapshot).catch((error) => {
+            writeRestoreJournal(snapshot, drafts).catch((error) => {
                 console.warn("[Save journal]", error);
                 recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
             }),
@@ -3115,6 +3216,7 @@ async function haltForRestore() {
         console.warn("[Save journal]", error);
         recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
     }
+    const drafts = [...conflictDrafts.values()];
     halted = true;
     if (journalTimer) {
         clearTimeout(journalTimer);
@@ -3123,6 +3225,7 @@ async function haltForRestore() {
     journalPending.clear();
     journalChatPending.clear();
     chatJournal.setListener(null);
+    chatJournal.setConflictListener(null);
     if (refreshTimer) {
         clearTimeout(refreshTimer);
     }
@@ -3134,7 +3237,8 @@ async function haltForRestore() {
         clearTimeout(timer);
         timer = null;
     }
-    const journalSnapshot = !journalOff && snapshot.length > 0 ? waitForRestoreJournal(snapshot) : null;
+    const journalSnapshot =
+        !journalOff && (snapshot.length > 0 || drafts.length > 0) ? waitForRestoreJournal(snapshot, drafts) : null;
     try {
         restoreReloadHook?.();
     } catch (error) {
@@ -4001,6 +4105,7 @@ async function recoverConflictedWork(
             // and this client's newer change goes next cycle.
             continue;
         }
+        const abandoned = captureRecordConflict(key, op, item.revision === null);
         inDoubt.delete(key);
         if (mergeConcurrentChange(item, key)) {
             continue;
@@ -4009,6 +4114,7 @@ async function recoverConflictedWork(
             // A character the mirror did not have: its chats come with their order.
             queueCharacterRefresh(item.id, "hydrate");
         }
+        if (abandoned) queueConflictDraft(abandoned);
         acceptRemote(item);
         notice.owed = true;
     }
@@ -4146,7 +4252,9 @@ async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Pr
                 // The answer is older than what the mirror now holds: kept listed for the next read.
                 continue;
             }
-            // The character itself is gone on the server: remove it with its chats.
+            // The character itself is gone on the server: preserve intent before removing its chats.
+            const abandoned = captureRecordConflict(recordKey(record.kind, record.id), undefined, true);
+            if (abandoned) queueConflictDraft(abandoned);
             acceptRemote(record);
             discardedWork = true;
         } else if (collection.order) {
@@ -5323,6 +5431,7 @@ export function startResourceSync() {
         schedule();
     });
     chatJournal.setListener(queueJournalChat);
+    chatJournal.setConflictListener(captureJournalChat);
     setChatWorkListener(() => {
         pruneWaits();
         noteChatWaits();
@@ -5463,8 +5572,10 @@ export function stopResourceSync() {
         controller.abort(new Error("Resource sync stopped"));
     }
     journalPending.clear();
+    conflictDrafts.clear();
     journalChatPending.clear();
     chatJournal.setListener(null);
+    chatJournal.setConflictListener(null);
     setRecordWriteListener(null);
     setCharacterWriteListener(null);
     setChatWorkListener(null);

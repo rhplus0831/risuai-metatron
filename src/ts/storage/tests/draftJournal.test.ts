@@ -1,4 +1,4 @@
-import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
@@ -7,6 +7,7 @@ import {
     orderTarget,
     createDraftJournal,
     type DraftJournal,
+    type ConflictDraft,
     type DraftJournalDeps,
     draftKey,
     isExpired,
@@ -653,6 +654,72 @@ describe("writes, removals, and versions", () => {
         expect(await journal.write([characterWrite(v1, { sent: sent("late A") })])).toEqual(["stale"]);
         await journal.write([], [{ epoch: EPOCH, scope: "record", target: other, version: v3 }]);
         expect((await journal.readOwn()).map((row) => row.target)).toEqual([CHARACTER]);
+        await journal.close();
+    });
+
+    it("commits a conflict draft and layer removal atomically, retrying the same draft id without losing newer work", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const h = harness();
+        const { journal } = await started(h);
+        const v1 = journal.nextVersion();
+        const v2 = journal.nextVersion();
+        const dropped = sent(JSON.stringify({ desc: "dropped local text" }));
+        const newer = latest(JSON.stringify({ desc: "surviving newer text" }));
+        await journal.write([characterWrite(v1, { sent: dropped })]);
+        const before = await journal.readOwn();
+        const removal = { epoch: EPOCH, scope: "record" as const, target: CHARACTER, version: v1, layers: ["sent"] };
+        const capture: ConflictDraft = {
+            id: "conflict-id",
+            epoch: EPOCH,
+            scope: "record",
+            target: CHARACTER,
+            layers: { sent: dropped },
+        };
+        // Abort at the actual draft write: its paired removal and the new mutation must roll back.
+        const put = IDBObjectStore.prototype.put;
+        const abort = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+            const request = put.apply(this, args);
+            if (args[1] === draftKey(capture.id)) this.transaction.abort();
+            return request;
+        });
+        expect(await journal.write([characterWrite(v2, { latest: newer })], [removal], [capture])).toEqual({
+            committed: false,
+            writes: ["failed"],
+            drafts: ["failed"],
+        });
+        abort.mockRestore();
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(await journal.readOwn()).toEqual(before);
+
+        const transactions = vi.spyOn(IDBDatabase.prototype, "transaction");
+        expect(await journal.write([characterWrite(v2, { latest: newer })], [removal], [capture])).toEqual({
+            committed: true,
+            writes: ["written"],
+            drafts: ["written"],
+        });
+        expect(transactions.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(1);
+        const drafts = await journal.listDrafts();
+        expect(drafts).toHaveLength(1);
+        expect(drafts[0]).toMatchObject({
+            id: "conflict-id",
+            epoch: EPOCH,
+            scope: "record",
+            target: CHARACTER,
+        });
+        expect(
+            Object.fromEntries(Object.entries(drafts[0].layers).map(([name, layer]) => [name, layer.value])),
+        ).toEqual({ sent: dropped });
+        expect((await rows(h.factory))[draftKey("conflict-id")]).toEqual(drafts[0]);
+        expect((await journal.readOwn())[0].layers).toEqual({ latest: { version: v2, value: newer } });
+        // Repeating an uncertain commit is idempotent; late cleanup cannot erase the draft or newer layer.
+        expect(await journal.write([], [removal], [capture])).toEqual({
+            committed: true,
+            writes: [],
+            drafts: ["written"],
+        });
+        await journal.remove([{ ...removal, layers: undefined }]);
+        expect(await journal.listDrafts()).toEqual(drafts);
+        expect((await journal.readOwn())[0].layers).toEqual({ latest: { version: v2, value: newer } });
         await journal.close();
     });
 

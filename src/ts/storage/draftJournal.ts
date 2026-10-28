@@ -32,6 +32,9 @@ import { isJournalEligible } from "./journalEligibility";
  *   its stored rows, and a page that is gone sends nothing late.
  *   `write(items, removals)` applies captured-version removals and writes in one transaction, with
  *   the same fences and budgets as separate calls; a replaced entry keeps its creation time.
+ *   Its optional conflict captures use stable draft ids and the source row's creation time, read
+ *   before cleanup. These drafts cannot evict one another or be evicted by this transaction's writes.
+ *   An over-budget draft is skipped and reported while the surrounding cleanup still commits.
  *   Startup and adopted chat/order keys are reserved until recovery installs them and calls
  *   `release`. A committed whole move to drafts or expiry also frees the reservation; a partial
  *   move atomically drafts only its named layers and leaves the remaining row reserved.
@@ -389,6 +392,10 @@ export type DraftInput = { epoch: string; target: string; createdAt?: number } &
     | { scope: "order"; layers: LayerWrites<"order"> }
 );
 
+/** A conflict capture has a stable id across failed flushes and a restore snapshot. */
+export type ConflictDraft = DraftInput & { id: string };
+export type JournalWriteResult = { committed: boolean; writes: WriteOutcome[]; drafts: WriteOutcome[] };
+
 /** Moves the named layers (all when omitted) to a draft unless one was written after `version`. */
 export type DraftMove = JournalRemoval;
 
@@ -406,6 +413,8 @@ export interface DraftJournal {
     nextVersion(): number;
     /** Applies captured-version removals and writes in one transaction; values are copied at the call. */
     write(items: JournalWrite[], removals?: JournalRemoval[]): Promise<WriteOutcome[]>;
+    /** Conflict drafts commit with cleanup; a budget skip still commits the surrounding removals. */
+    write(items: JournalWrite[], removals: JournalRemoval[], drafts: ConflictDraft[]): Promise<JournalWriteResult>;
     /** Applies the removals in one transaction. */
     remove(items: JournalRemoval[]): Promise<void>;
     /** This tab's mutation entries that have not expired. */
@@ -501,6 +510,8 @@ async function inTransaction<T>(
             } catch {}
         };
     });
+    // An already aborted transaction can throw while obtaining its store, before work is raced.
+    void done.catch(() => {});
     transactions.set(tx, expire);
     const timer = timeoutMs === undefined ? undefined : setTimeout(expire, timeoutMs);
     try {
@@ -962,9 +973,53 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return freed;
     }
 
-    function write(items: JournalWrite[], removals: JournalRemoval[] = []): Promise<WriteOutcome[]> {
+    function write(items: JournalWrite[], removals?: JournalRemoval[]): Promise<WriteOutcome[]>;
+    function write(
+        items: JournalWrite[],
+        removals: JournalRemoval[],
+        drafts: ConflictDraft[],
+    ): Promise<JournalWriteResult>;
+    function write(items: JournalWrite[], removals: JournalRemoval[] = [], drafts?: ConflictDraft[]) {
+        return writeBatch(items, removals, drafts ?? []).then((result) =>
+            drafts === undefined ? result.writes : result,
+        );
+    }
+
+    function writeBatch(
+        items: JournalWrite[],
+        removals: JournalRemoval[],
+        drafts: ConflictDraft[],
+    ): Promise<JournalWriteResult> {
+        const outcome = (value: WriteOutcome): JournalWriteResult => ({
+            committed: false,
+            writes: items.map(() => value),
+            drafts: drafts.map(() => value),
+        });
         if (!enabled || closed) {
-            return Promise.resolve(items.map(() => "off" as const));
+            return Promise.resolve(outcome("off"));
+        }
+        let preparedDrafts: { row: DraftEntry; eligible: boolean }[];
+        try {
+            preparedDrafts = drafts.map((input) => {
+                const layers = Object.fromEntries(
+                    Object.entries(input.layers)
+                        .filter(([, value]) => value != null)
+                        .map(([name, value]) => [name, { version: 0, value }]),
+                );
+                const row = draftOf(
+                    { ...input, layers, createdAt: input.createdAt ?? now() } as ScopedLayers & {
+                        epoch: string;
+                        target: string;
+                        createdAt: number;
+                    },
+                    input.id,
+                );
+                if (!layersEligible(row)) return { row, eligible: false };
+                return { row: structuredClone(row), eligible: true };
+            });
+        } catch (error) {
+            reportFailure(error, "write");
+            return Promise.resolve(outcome("failed"));
         }
         const preparedRemovals = prepareRemovals(removals);
         // Copy at the call (the caller's objects may change while the database opens) and decide
@@ -1008,96 +1063,143 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             }
             return { item: copy, key, eligible, excluded };
         });
-        return tracked(
-            items.map(() => "off" as const),
-            async (): Promise<WriteOutcome[]> => {
-                const events: DiagnosticEventInput[] = [];
-                try {
-                    const outcomes = await withDatabase("readwrite", async (store) => {
-                        const removed = await removeRows(store, preparedRemovals);
-                        let total = await totalSize(store);
-                        const answers: WriteOutcome[] = [];
-                        for (const entry of prepared) {
-                            if (!entry) {
-                                answers.push("failed");
-                                continue;
-                            }
-                            const { item, key, eligible, excluded } = entry;
-                            const raw: unknown = await requestValue(store.get(key));
-                            // Adoption may have reserved it while this transaction waited to run.
-                            if (reserved.has(key)) {
+        return tracked(outcome("off"), async (): Promise<JournalWriteResult> => {
+            const events: DiagnosticEventInput[] = [];
+            try {
+                const outcomes = await withDatabase("readwrite", async (store) => {
+                    // Read provenance before cleanup, including when the row is removed in full.
+                    const captures = [];
+                    for (const draft of preparedDrafts) {
+                        const row = draft.row;
+                        const sourceKey = mutationKey(row.epoch, tabId!, row.scope, row.target);
+                        const source = checkJournalRow(await requestValue(store.get(sourceKey)));
+                        const key = draftKey(row.id);
+                        const raw: unknown = await requestValue(store.get(key));
+                        const previous = checkJournalRow(raw);
+                        row.createdAt =
+                            previous?.type === "draft"
+                                ? previous.createdAt
+                                : source?.type === "mutation"
+                                  ? source.createdAt
+                                  : row.createdAt;
+                        row.size = sizeOf(row);
+                        captures.push({
+                            ...draft,
+                            key,
+                            previous,
+                            blocked: raw !== undefined && previous?.type !== "draft",
+                        });
+                    }
+                    const removed = await removeRows(store, preparedRemovals);
+                    let total = await totalSize(store);
+                    const answers: WriteOutcome[] = [];
+                    const draftAnswers: WriteOutcome[] = [];
+                    const protectedDrafts = new Set(captures.map(({ key }) => key));
+                    for (const { row, key, previous, eligible, blocked } of captures) {
+                        if (blocked || !eligible) {
+                            draftAnswers.push(blocked ? "skipped" : "ineligible");
+                            continue;
+                        }
+                        let skipped: SyncReason | null = row.size > MAX_JOURNAL_ENTRY_BYTES ? "tooLarge" : null;
+                        if (!skipped) {
+                            const needed = total - (previous?.size ?? 0) + row.size - MAX_JOURNAL_TOTAL_BYTES;
+                            if (needed > 0) total -= await evict(store, needed, protectedDrafts);
+                            if (total - (previous?.size ?? 0) + row.size > MAX_JOURNAL_TOTAL_BYTES) skipped = "budget";
+                        }
+                        if (skipped) {
+                            // Budgets bound recovery too: cleanup still commits when a draft cannot fit.
+                            events.push({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
+                            draftAnswers.push("skipped");
+                            continue;
+                        }
+                        store.put(row, key);
+                        total += row.size - (previous?.size ?? 0);
+                        draftAnswers.push("written");
+                    }
+                    for (const entry of prepared) {
+                        if (!entry) {
+                            answers.push("failed");
+                            continue;
+                        }
+                        const { item, key, eligible, excluded } = entry;
+                        const raw: unknown = await requestValue(store.get(key));
+                        // Adoption may have reserved it while this transaction waited to run.
+                        if (reserved.has(key)) {
+                            answers.push("skipped");
+                            continue;
+                        }
+                        let existing: MutationEntry | undefined;
+                        if (raw !== undefined) {
+                            const checked = checkJournalRow(raw);
+                            if (checked?.type !== "mutation") {
+                                // An unknown row holds the key: it is kept as it is.
                                 answers.push("skipped");
                                 continue;
                             }
-                            let existing: MutationEntry | undefined;
-                            if (raw !== undefined) {
-                                const checked = checkJournalRow(raw);
-                                if (checked?.type !== "mutation") {
-                                    // An unknown row holds the key: it is kept as it is.
-                                    answers.push("skipped");
-                                    continue;
-                                }
-                                existing = checked;
-                            }
-                            if (excluded) {
-                                const kept = existing ? trimThrough(existing, item.version, null) : null;
-                                if (existing) {
-                                    total -= existing.size;
-                                    if (kept) {
-                                        store.put(kept, key);
-                                        total += kept.size;
-                                    } else {
-                                        store.delete(key);
-                                    }
-                                }
-                                answers.push("ineligible");
-                                continue;
-                            }
-                            const result = applyWrite(existing, key, item, eligible, removed.get(key));
-                            let { row } = result;
-                            let skipped: SyncReason | null = null;
-                            if (row && result.touched.length > 0 && row.size > MAX_JOURNAL_ENTRY_BYTES) {
-                                skipped = "tooLarge";
-                            } else if (row && result.touched.length > 0) {
-                                const after = total - (existing?.size ?? 0) + row.size;
-                                if (after > MAX_JOURNAL_TOTAL_BYTES) {
-                                    total -= await evict(store, after - MAX_JOURNAL_TOTAL_BYTES, new Set([key]));
-                                    if (total - (existing?.size ?? 0) + row.size > MAX_JOURNAL_TOTAL_BYTES) {
-                                        skipped = "budget";
-                                    }
-                                }
-                            }
-                            if (skipped) {
-                                // The newer values are not written; their older values go too.
-                                for (const name of result.touched) {
-                                    raiseFence(`${key}${NUL}${name}`, item.version);
-                                }
-                                row = row ? trimThrough(row, item.version, result.touched) : null;
-                                events.push({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
-                            }
-                            if (!result.changed && !skipped) {
-                                answers.push(result.ineligible ? "ineligible" : "stale");
-                                continue;
-                            }
-                            total -= existing?.size ?? 0;
-                            if (row) {
-                                store.put(row, key);
-                                total += row.size;
-                            } else if (existing) {
-                                store.delete(key);
-                            }
-                            answers.push(skipped ? "skipped" : result.ineligible ? "ineligible" : "written");
+                            existing = checked;
                         }
-                        return answers;
-                    });
-                    events.forEach(report);
-                    return outcomes;
-                } catch (error) {
-                    reportFailure(error, "write");
-                    return prepared.map(() => "failed" as const);
-                }
-            },
-        );
+                        if (excluded) {
+                            const kept = existing ? trimThrough(existing, item.version, null) : null;
+                            if (existing) {
+                                total -= existing.size;
+                                if (kept) {
+                                    store.put(kept, key);
+                                    total += kept.size;
+                                } else {
+                                    store.delete(key);
+                                }
+                            }
+                            answers.push("ineligible");
+                            continue;
+                        }
+                        const result = applyWrite(existing, key, item, eligible, removed.get(key));
+                        let { row } = result;
+                        let skipped: SyncReason | null = null;
+                        if (row && result.touched.length > 0 && row.size > MAX_JOURNAL_ENTRY_BYTES) {
+                            skipped = "tooLarge";
+                        } else if (row && result.touched.length > 0) {
+                            const after = total - (existing?.size ?? 0) + row.size;
+                            if (after > MAX_JOURNAL_TOTAL_BYTES) {
+                                total -= await evict(
+                                    store,
+                                    after - MAX_JOURNAL_TOTAL_BYTES,
+                                    new Set([key, ...protectedDrafts]),
+                                );
+                                if (total - (existing?.size ?? 0) + row.size > MAX_JOURNAL_TOTAL_BYTES) {
+                                    skipped = "budget";
+                                }
+                            }
+                        }
+                        if (skipped) {
+                            // The newer values are not written; their older values go too.
+                            for (const name of result.touched) {
+                                raiseFence(`${key}${NUL}${name}`, item.version);
+                            }
+                            row = row ? trimThrough(row, item.version, result.touched) : null;
+                            events.push({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
+                        }
+                        if (!result.changed && !skipped) {
+                            answers.push(result.ineligible ? "ineligible" : "stale");
+                            continue;
+                        }
+                        total -= existing?.size ?? 0;
+                        if (row) {
+                            store.put(row, key);
+                            total += row.size;
+                        } else if (existing) {
+                            store.delete(key);
+                        }
+                        answers.push(skipped ? "skipped" : result.ineligible ? "ineligible" : "written");
+                    }
+                    return { committed: true, writes: answers, drafts: draftAnswers };
+                });
+                events.forEach(report);
+                return outcomes;
+            } catch (error) {
+                reportFailure(error, "write");
+                return outcome("failed");
+            }
+        });
     }
 
     /**

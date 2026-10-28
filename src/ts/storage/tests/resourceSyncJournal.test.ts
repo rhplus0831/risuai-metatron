@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import {
     chatTarget,
+    recordTarget,
     orderTarget,
     MAX_JOURNAL_ENTRY_BYTES,
     type DraftJournal,
@@ -39,7 +40,7 @@ const pendingTransactions = new Set<Promise<void>>();
 const openReleases: (() => void)[] = [];
 const listeners = new Map<string, EventListenerOrEventListenerObject[]>();
 const batchPath = (path: string) => path === "/api/resources/batch";
-const target = (kind: string, id = "main") => `${kind}\0${id}`;
+const target = (kind: string, id = "main") => recordTarget(kind, id);
 const UI = target("ui");
 const CHARACTER = target("characters", "c");
 const latest = (text: string | null, baseRevision: string | null): RecordLayerValues["latest"] => ({
@@ -109,6 +110,26 @@ async function orderLayers(): Promise<Partial<OrderLayerValues>> {
     return row?.scope === "order"
         ? Object.fromEntries(Object.entries(row.layers).map(([name, layer]) => [name, layer.value]))
         : {};
+}
+
+/** Inspect the dialog's public rows, including the persisted layer values Apply consumes. */
+async function draft(scope: "record" | "chat" | "order", target: string, epoch: string, expected: unknown) {
+    const matches = (await journal.listDrafts()).filter((row) => row.scope === scope && row.target === target);
+    expect(matches).toHaveLength(1);
+    const row = matches[0];
+    expect(row).toMatchObject({ id: expect.any(String), epoch, scope, target });
+    expect(Object.fromEntries(Object.entries(row.layers).map(([name, layer]) => [name, layer.value]))).toEqual(
+        expected,
+    );
+    return row;
+}
+
+/** Run the cleanup and later scheduled saves, then cross the IndexedDB completion barrier again. */
+async function cleanup(sync: typeof import("../resourceSync.svelte")) {
+    await flushJournal();
+    await vi.advanceTimersByTimeAsync(6000);
+    await sync.flushResources();
+    await flushJournal();
 }
 
 /** Keep a real IndexedDB transaction active until release, so no split write can commit early. */
@@ -354,21 +375,283 @@ describe("resource save journal", () => {
         expect(await layers(CHARACTER)).toEqual({ latest: latest(null, base) });
     });
 
-    it("clears discarded layers when a conflict accepts the server copy", async () => {
-        const { fake, settings } = await boot();
+    it("keeps the sent and newer local record text as a draft after accepting the server copy and cleaning up", async () => {
+        const { fake, settings, sync } = await boot();
         const base = fake.record("ui", "main")!;
+        const text = (theme: string) => JSON.stringify({ ...plain(base.data), theme });
         fake.set("ui", "main", { ...plain(base.data), theme: "remote" });
         fake.holdNextBatch = true;
-        settings.ui.theme = "local";
+        settings.ui.theme = "sent local";
         await vi.advanceTimersByTimeAsync(500);
-        expect((await layers(UI)).sent).toEqual(
-            sent(JSON.stringify({ ...plain(base.data), theme: "local" }), base.revision),
-        );
+        expect((await layers(UI)).sent).toEqual(sent(text("sent local"), base.revision));
+        settings.ui.theme = "newer local";
+        await flushJournal();
         fake.releaseBatch!();
         await vi.advanceTimersByTimeAsync(0);
-        await vi.advanceTimersByTimeAsync(500);
+        await flushJournal();
+        const expected = {
+            sent: sent(text("sent local"), base.revision),
+            latest: latest(text("newer local"), base.revision),
+        };
+        const captured = await draft("record", UI, fake.store.epoch(), expected);
+        await cleanup(sync);
+        expect(await draft("record", UI, fake.store.epoch(), expected)).toEqual(captured);
         expect(settings.ui.theme).toBe("remote");
         expect(await layers(UI)).toEqual({});
+    });
+
+    it("keeps a conflicting chat group and its queued operations after replacing the chat and cleaning up", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        fake.chatBatch([
+            { characterId: "c", chatId: "k", baseRevision: base, ops: [{ op: "setText", id: "a", text: "remote" }] },
+        ]);
+        fake.holdNextBatch = true;
+        chat.removeMessages(refK, ["b", "c"]);
+        await vi.advanceTimersByTimeAsync(500);
+        const groupId = fake.batchBodies()[0].chats[0].groupId;
+        chat.setChatMeta(refK, { note: "queued local note" });
+        await flushJournal();
+        const pendingId = (await chatLayers()).pending!.groupId;
+        fake.releaseBatch!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        const expected = {
+            resend: {
+                ops: [{ op: "remove", ids: ["b", "c"] }],
+                baseRevision: base,
+                groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            },
+            pending: {
+                ops: [
+                    {
+                        op: { op: "meta", set: { note: "queued local note" }, unset: [] },
+                        before: { value: { note: "" } },
+                    },
+                ],
+                baseRevision: base,
+                groupId: pendingId,
+            },
+        };
+        const captured = await draft("chat", chatTarget("c", "k"), fake.store.epoch(), expected);
+        await cleanup(sync);
+        expect(await draft("chat", chatTarget("c", "k"), fake.store.epoch(), expected)).toEqual(captured);
+        expect(await chatLayers()).toEqual({});
+        expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["remote", "B", "C"]);
+        expect(chat.findChat(refK)!.note).toBe("");
+    });
+
+    it("keeps a gone chat's sent and queued work with its local snapshot after discard and collection cleanup", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!;
+        fake.chatBatch([{ characterId: "c", chatId: "k", baseRevision: base.revision, ops: [{ op: "delete" }] }]);
+        fake.holdNextBatch = true;
+        chat.setMessageText(refK, "a", "sent local text");
+        await vi.advanceTimersByTimeAsync(500);
+        const groupId = fake.batchBodies()[0].chats[0].groupId;
+        chat.setMessageText(refK, "b", "queued local text");
+        await flushJournal();
+        const pendingId = (await chatLayers()).pending!.groupId;
+        const snapshot = {
+            ...plain(base.data),
+            message: [m("a", "sent local text", "char"), m("b", "queued local text"), m("c", "C", "char")],
+        };
+        fake.releaseBatch!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        const expected = {
+            resend: {
+                ops: [{ op: "setText", id: "a", text: "sent local text" }],
+                baseRevision: base.revision,
+                groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            },
+            pending: {
+                ops: [{ op: { op: "setText", id: "b", text: "queued local text" }, before: { value: "B" } }],
+                baseRevision: base.revision,
+                groupId: pendingId,
+                createSnapshot: snapshot,
+            },
+        };
+        const captured = await draft("chat", chatTarget("c", "k"), fake.store.epoch(), expected);
+        await cleanup(sync);
+        expect(await draft("chat", chatTarget("c", "k"), fake.store.epoch(), expected)).toEqual(captured);
+        expect(await chatLayers()).toEqual({});
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
+    });
+
+    it("drafts the discarded order during collection recovery while a newer reorder survives", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.order("c")!.revision;
+        // Move the revision twice so the server ends at the original order on a newer base.
+        fake.store.applyChanges({ chatOrders: [{ characterId: "c", baseRevision: base, ids: ["j", "k"] }] });
+        fake.store.applyChanges({
+            chatOrders: [{ characterId: "c", baseRevision: fake.order("c")!.revision, ids: ["k", "j"] }],
+        });
+        fake.holdNextBatch = true;
+        chat.reorderChats("c", ["j", "k"]);
+        await vi.advanceTimersByTimeAsync(500);
+        expect(await orderLayers()).toEqual({ sent: { baseRevision: base, ids: ["j", "k"] } });
+        chat.reorderChats("c", ["k", "j"]);
+        await flushJournal();
+        fake.releaseBatch!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        const expected = { sent: { baseRevision: base, ids: ["j", "k"] } };
+        const captured = await draft("order", orderTarget("c"), fake.store.epoch(), expected);
+        await cleanup(sync);
+        expect(await draft("order", orderTarget("c"), fake.store.epoch(), expected)).toEqual(captured);
+        expect(await orderLayers()).toEqual({});
+        expect(fake.order("c")!.ids).toEqual(["k", "j"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+    });
+
+    it("drafts only the sent and queued edits removed by a generating refusal and saves the retained edits", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const fetch = fake.fetch.bind(fake);
+        let sentGroup: { groupId: string } | undefined;
+        vi.spyOn(fake, "fetch").mockImplementation(async (path, init) => {
+            if (batchPath(path) && !sentGroup) {
+                sentGroup = JSON.parse(String(init?.body)).chats[0];
+                await gate;
+                return Response.json(
+                    {
+                        error: "ResourceConflict",
+                        conflicts: [
+                            {
+                                kind: "chat",
+                                characterId: "c",
+                                id: "k",
+                                revision: base,
+                                reason: "generating",
+                                messageIds: ["a"],
+                            },
+                        ],
+                    },
+                    { status: 409 },
+                );
+            }
+            return fetch(path, init);
+        });
+        chat.setMessageText(refK, "a", "removed sent edit");
+        chat.setMessageText(refK, "b", "retained sent edit");
+        await vi.advanceTimersByTimeAsync(500);
+        expect(sentGroup).toBeDefined();
+        chat.setMessageText(refK, "a", "removed queued edit");
+        chat.setChatMeta(refK, { note: "retained queued note" });
+        await flushJournal();
+        const pendingId = (await chatLayers()).pending!.groupId;
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        const expected = {
+            resend: {
+                ops: [{ op: "setText", id: "a", text: "removed sent edit" }],
+                baseRevision: base,
+                groupId: sentGroup!.groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            },
+            pending: {
+                ops: [
+                    {
+                        op: { op: "setText", id: "a", text: "removed queued edit" },
+                        before: { value: "removed sent edit" },
+                    },
+                ],
+                baseRevision: base,
+                groupId: pendingId,
+            },
+        };
+        const captured = await draft("chat", chatTarget("c", "k"), fake.store.epoch(), expected);
+        expect((await chatLayers()).pending!.ops.map(({ op }) => op)).toEqual([
+            { op: "setText", id: "b", text: "retained sent edit" },
+            { op: "meta", set: { note: "retained queued note" }, unset: [] },
+        ]);
+        await cleanup(sync);
+        expect(await draft("chat", chatTarget("c", "k"), fake.store.epoch(), expected)).toEqual(captured);
+        expect(await chatLayers()).toEqual({});
+        expect(fake.texts("c", "k")).toEqual(["A", "retained sent edit", "C"]);
+        expect(fake.chat("c", "k")!.data.note).toBe("retained queued note");
+    });
+
+    it("keeps queued chat work and order as drafts when another writer removes their character", async () => {
+        const { fake, chat, sync, characterList } = await boot();
+        const base = fake.chat("c", "k")!;
+        const orderBase = fake.order("c")!.revision;
+        chat.setMessageText(refK, "a", "unsent local text");
+        chat.reorderChats("c", ["j", "k"]);
+        const groupId = expect.any(String);
+        fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);
+        sync.noteRemoteChanges({
+            resources: [{ kind: "characters", id: "c", revision: null }],
+            chats: [],
+            chatOrders: [],
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await flushJournal();
+        const chatExpected = {
+            pending: {
+                ops: [{ op: { op: "setText", id: "a", text: "unsent local text" }, before: { value: "A" } }],
+                baseRevision: base.revision,
+                groupId,
+                createSnapshot: {
+                    ...plain(base.data),
+                    message: [m("a", "unsent local text", "char"), m("b", "B"), m("c", "C", "char")],
+                },
+            },
+        };
+        const orderExpected = { latest: { baseRevision: orderBase, ids: ["j", "k"] } };
+        const captured = await draft("chat", chatTarget("c", "k"), fake.store.epoch(), chatExpected);
+        const order = await draft("order", orderTarget("c"), fake.store.epoch(), orderExpected);
+        await cleanup(sync);
+        expect(await draft("chat", chatTarget("c", "k"), fake.store.epoch(), chatExpected)).toEqual(captured);
+        expect(await draft("order", orderTarget("c"), fake.store.epoch(), orderExpected)).toEqual(order);
+        expect(await chatLayers()).toEqual({});
+        expect(await orderLayers()).toEqual({});
+        expect(characterList()).toEqual([]);
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("preserves the exact refused record text when a gone chat's recovery removes its character", async () => {
+        const { fake, characterStore, chat, sync, characterList } = await boot();
+        const base = fake.record("characters", "c")!;
+        const text = JSON.stringify({ ...plain(base.data), desc: "refused local description" });
+        fake.failNext = { status: 400, times: 1, match: batchPath, body: { error: "ops[0] is refused" } };
+        characterStore.updateCharacter("c", { desc: "refused local description" });
+        await vi.advanceTimersByTimeAsync(1000);
+        const expected = { refused: { op: "update", text, reason: "ops[0] is refused" } };
+        expect(await layers(CHARACTER)).toEqual(expected);
+        fake.store.delete(fake.kind("characters"), "c", base.revision);
+        chat.setChatMeta(refK, { note: "local note" });
+        await vi.advanceTimersByTimeAsync(1500);
+        await cleanup(sync);
+        await draft("record", CHARACTER, fake.store.epoch(), expected);
+        expect(await layers(CHARACTER)).toEqual({});
+        expect(characterList()).toEqual([]);
+    });
+
+    it("does not draft credential-bearing character text discarded by a conflict", async () => {
+        const { fake, characterStore, sync, character } = await boot();
+        const base = fake.record("characters", "c")!;
+        fake.set("characters", "c", { ...plain(base.data), desc: "remote description" });
+        characterStore.updateCharacter("c", {
+            desc: "local description",
+            oaiTTSConfig: { apiKey: "never-draft-this-key", voice: "alloy" },
+        });
+        expect((await sync.flushResources()).discarded).toContain("characters/c");
+        await cleanup(sync);
+        expect(character("c").desc).toBe("remote description");
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(await layers(CHARACTER)).toEqual({});
     });
 
     it("releases refusals on edit and Retry and removes them on Discard", async () => {
@@ -404,7 +687,9 @@ describe("resource save journal", () => {
         await sync.discardRefused(sync.refusedItems()[0].key);
         await vi.advanceTimersByTimeAsync(500);
         expect(settings.ui.theme).toBe("refused C");
+        await cleanup(sync);
         expect(await layers(UI)).toEqual({});
+        expect(await journal.listDrafts()).toEqual([]);
     });
 
     it("excludes credential-bearing records while keeping ordinary free text", async () => {

@@ -515,6 +515,7 @@ type LayerCache<T> = {
 const journalChats = new Map<string, LayerCache<ChatLayerValues>>();
 const journalOrders = new Map<string, LayerCache<OrderLayerValues>>();
 let journalListener: ((key: ChatJournalKey) => void) | null = null;
+let conflictListener: ((projection: JournalProjection) => void) | null = null;
 const createSnapshots = new WeakMap<Chat, { version: number; value: Chat }>();
 
 function dirtyLayer<T>(views: Map<string, LayerCache<T>>, target: string, layer: keyof T) {
@@ -564,10 +565,7 @@ function projectedLayer<T, K extends keyof T>(view: LayerCache<T>, name: K, proj
 function queuedChatLayer(key: string): ChatLayerValues["pending"] | undefined {
     const entry = pending.get(key);
     if (!entry || (!entry.create && entry.ops.length === 0)) return;
-    const ops: JournalChatOp[] = entry.ops.map((op) => ({
-        op,
-        ...(beforeValues.has(op) ? { before: beforeValues.get(op) } : {}),
-    }));
+    const ops = journalOps(entry.ops);
     let createSnapshot: Chat | undefined;
     if (entry.create) {
         const chat = heldChat({ chaId: entry.characterId, chatId: entry.chatId });
@@ -582,7 +580,7 @@ function queuedChatLayer(key: string): ChatLayerValues["pending"] | undefined {
         }
     }
     return {
-        ops: clone(ops),
+        ops,
         baseRevision: chatRevisions.get(key) ?? null,
         groupId: entry.groupId,
         ...(createSnapshot ? { createSnapshot } : {}),
@@ -590,11 +588,104 @@ function queuedChatLayer(key: string): ChatLayerValues["pending"] | undefined {
     };
 }
 
+/** Take the WeakMap sidecar before cloning the original operation objects. */
+function journalOps(ops: readonly ChatOp[]): JournalChatOp[] {
+    return clone(ops.map((op) => ({ op, ...(beforeValues.has(op) ? { before: beforeValues.get(op) } : {}) })));
+}
+
+function resendLayer(group: Resend | SentChatGroup): ChatLayerValues["resend"] {
+    return clone({
+        ops: group.ops,
+        baseRevision: group.baseRevision,
+        groupId: group.groupId,
+        seq: group.seq,
+        inDoubt: !!group.inDoubt,
+    });
+}
+
+/** Capture only abandoned work, while its mirror and operation sidecars still exist. */
+function captureChatConflict(
+    key: string,
+    options: { group?: SentChatGroup; gone?: boolean; fulfilledDelete?: boolean } = {},
+) {
+    if (!conflictListener) return;
+    const [chaId, chatId] = key.split("\u0000");
+    const entry = pending.get(key);
+    const refusal = quarantined.get(key);
+    const groups = [
+        ...new Map(
+            [options.group, inflight.get(key), entry?.resend, parkedResends.get(chaId)?.get(key)?.resend]
+                .filter((group) => group != null)
+                .map((group) => [group.groupId, group]),
+        ).values(),
+    ];
+    const keep = (op: ChatOp) => !options.fulfilledDelete || op.op !== "delete";
+    const layers: Partial<ChatLayerValues> = {};
+    for (const group of groups) {
+        const ops = group.ops.filter(keep);
+        if (!ops.length) continue;
+        if (layers.resend) conflictListener({ scope: "chat", target: key, layers: { resend: layers.resend } });
+        layers.resend = resendLayer({ ...group, ops });
+    }
+    const queued = queuedChatLayer(key);
+    if (queued) {
+        queued.ops = queued.ops.filter(({ op }) => keep(op));
+        if (options.fulfilledDelete) delete queued.delete;
+        if (queued.ops.length || queued.createSnapshot) layers.pending = queued;
+    }
+    if (refusal) {
+        const ops = refusal.ops.filter(keep);
+        if (ops.length || refusal.create)
+            layers.refused = clone({ ...refusal, ops, delete: !options.fulfilledDelete && refusal.delete });
+    }
+    if (!Object.keys(layers).length) return;
+    // Recovered resends are not installed in the mirror. A loaded server copy cannot stand in for
+    // their final local transcript; those gone chats retain operations for Export only.
+    const mirrorHoldsIntent = !groups.some((group) => group.recoveredAt !== undefined) && !refusal?.recovered;
+    if (options.gone && !mirrorHoldsIntent && layers.pending) delete layers.pending.createSnapshot;
+    if (options.gone && mirrorHoldsIntent) {
+        const chat = heldChat({ chaId, chatId });
+        if (chat)
+            layers.pending = {
+                ...(layers.pending ?? {
+                    ops: [],
+                    baseRevision: chatRevisions.get(key) ?? null,
+                    groupId: entry?.groupId ?? groups[0]?.groupId ?? uuidv4(),
+                }),
+                createSnapshot: projectChat(chat),
+            };
+    }
+    conflictListener({ scope: "chat", target: key, layers });
+}
+
+function captureQueuedOrder(chaId: string) {
+    if (!conflictListener) return;
+    const refused = quarantinedOrders.get(chaId);
+    const layers: Partial<OrderLayerValues> = refused
+        ? { refused: { ids: JSON.parse(refused.ids), reason: refused.reason } }
+        : pendingOrders.has(chaId)
+          ? { latest: { baseRevision: orderRevisions.get(chaId) ?? null, ids: [...memberIds(chaId)] } }
+          : {};
+    if (Object.keys(layers).length) conflictListener({ scope: "order", target: orderTarget(chaId), layers });
+}
+
+function captureSentOrder(order: SentChatOrder | undefined) {
+    if (order)
+        conflictListener?.({
+            scope: "order",
+            target: orderTarget(order.characterId),
+            layers: { sent: { baseRevision: order.baseRevision, ids: [...order.ids] } },
+        });
+}
+
 /**
  * Detached, cached journal layers owned by the chat module. Subscription includes work queued
  * before the adapter starts. Projection never takes work, clears a refusal, or changes the mirror.
  */
 export const chatJournal = {
+    setConflictListener(listener: ((projection: JournalProjection) => void) | null) {
+        conflictListener = listener;
+    },
     setListener(listener: ((key: ChatJournalKey) => void) | null) {
         journalListener = listener;
         if (listener) {
@@ -3857,7 +3948,7 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
         if (!canApply() || chatOwnerToken(item.chaId) !== owner || quarantined.get(chatKey) !== refused) return false;
         const server = read.chats?.find((chat) => chat.characterId === item.chaId && chat.id === item.chatId);
         if (!server) return false;
-        acceptRemoteChat({ ...server, readStamp } as RemoteChat);
+        acceptRemoteChat({ ...server, readStamp } as RemoteChat, 0, { capture: false });
         clearChatRefusal(chatKey);
     } else {
         const refused = quarantinedOrders.get(item.chaId);
@@ -3873,7 +3964,7 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
             return false;
         const collection = read.chatSummaryCollections?.find((collection) => collection.characterId === item.chaId);
         if (!collection) return false;
-        acceptRemoteCollection(collection);
+        acceptRemoteCollection(collection, { captureOrder: false });
         clearOrderRefusal(item.chaId);
     }
     notifyWork();
@@ -4128,6 +4219,21 @@ export function adoptCharacter(chaId: string) {
  * (`retireCharacterGroups`) and the parked resends dropped: the chats are gone on the server.
  */
 export function forgetCharacter(chaId: string, options: { discard?: boolean } = {}): boolean {
+    if (options.discard && conflictListener) {
+        const prefix = `${chaId}\u0000`;
+        const keys = new Set([
+            ...pending.keys(),
+            ...inflight.keys(),
+            ...quarantined.keys(),
+            ...(parkedResends.get(chaId)?.keys() ?? []),
+        ]);
+        for (const key of keys) {
+            if (key.startsWith(prefix)) captureChatConflict(key, { gone: true, fulfilledDelete: true });
+        }
+        captureQueuedOrder(chaId);
+        captureSentOrder(recoveringOrders.get(chaId));
+        captureSentOrder(inflightOrders.get(chaId));
+    }
     const discardedWork = dropCharacterWork(chaId, options.discard === true);
     retireCharacterGroups(chaId);
     parkedResends.delete(chaId);
@@ -4960,6 +5066,7 @@ export function recoverChatConflicts(
         if (server.revision === null) {
             // Gone on the server (another tab deleted it): the character's list is read again. Its
             // work is discarded now, with the notice, also when that read waits for a generation.
+            captureChatConflict(group.key, { group, gone: true });
             discardChatWork(group.key, group.seq);
             dropChatRevision(group.key);
             refresh.add(group.characterId);
@@ -4969,13 +5076,14 @@ export function recoverChatConflicts(
         if (!isMember(ref)) {
             // Deleted here but kept on the server (the delete conflicted): the character's list is
             // read again, which puts the chat back at its server position.
+            captureChatConflict(group.key, { group });
             discardChatWork(group.key, group.seq);
             holdChatRevision(group.key, server.revision);
             refresh.add(group.characterId);
             reloaded = true;
             continue;
         }
-        acceptRemoteChat(server, group.seq);
+        acceptRemoteChat(server, group.seq, { group });
         reloaded = true;
     }
     requeueRecovered(retry);
@@ -5097,6 +5205,26 @@ function dropLockedEdits(
     if (!dropped) {
         return { kept: group.ops, dropped: false, waiting: true };
     }
+    if (conflictListener) {
+        const removed = group.ops.filter((op) => targetsLocked(op, locked));
+        const removedPending = newer?.ops.filter((op) => targetsLocked(op, locked)) ?? [];
+        conflictListener({
+            scope: "chat",
+            target: group.key,
+            layers: {
+                ...(removed.length ? { resend: resendLayer({ ...group, ops: removed }) } : {}),
+                ...(removedPending.length
+                    ? {
+                          pending: {
+                              ops: journalOps(removedPending),
+                              baseRevision: chatRevisions.get(group.key) ?? null,
+                              groupId: newer!.groupId,
+                          },
+                      }
+                    : {}),
+            },
+        });
+    }
     discardSequence += 1;
     discarded.set(group.key, discardSequence);
     staleChats.add(group.key);
@@ -5156,8 +5284,13 @@ function discardChatWork(key: string, seq: number) {
  * Replaces a chat in the mirror with the server's copy and discards its local work. A chat that is
  * gone on the server is removed (a character left without chats gets a new one).
  */
-export function acceptRemoteChat(server: RemoteChat, seq = 0) {
+export function acceptRemoteChat(
+    server: RemoteChat,
+    seq = 0,
+    options: { group?: SentChatGroup; capture?: boolean } = {},
+) {
     const key = keyOf(server.characterId, server.id);
+    if (options.capture !== false) captureChatConflict(key, { group: options.group, gone: server.revision === null });
     discardChatWork(key, seq);
     applyRemoteChat(server);
 }
@@ -5653,6 +5786,7 @@ export function applyRemoteCollection(
     let entries = next;
     if (rebase) {
         if (next.some((entry) => !placed.has(entry.id) && chatRevisions.has(keyOf(chaId, entry.id)))) {
+            captureQueuedOrder(chaId);
             markOrderDiscarded(chaId, pendingOrders.get(chaId)!);
             pendingOrders.delete(chaId);
         } else {
@@ -5717,11 +5851,14 @@ export function applyRemoteCollection(
  * `markDiscarded`: the flush and `MutationScope` reports); returns whether there was any.
  * A dropped idle chat discards nothing.
  */
-export function acceptRemoteCollection(collection: {
-    characterId: string;
-    order: ChatOrderRecord | null;
-    chats: readonly ListedChat[];
-}): boolean {
+export function acceptRemoteCollection(
+    collection: {
+        characterId: string;
+        order: ChatOrderRecord | null;
+        chats: readonly ListedChat[];
+    },
+    options: { captureOrder?: boolean } = {},
+): boolean {
     const chaId = collection.characterId;
     const character = findCharacter(chaId);
     const recoveringOrder = recoveringOrders.get(chaId);
@@ -5729,6 +5866,10 @@ export function acceptRemoteCollection(collection: {
     if (!collection.order || !character) {
         if (orderSeq === undefined && !recoveringOrder) {
             return false;
+        }
+        if (options.captureOrder !== false) {
+            captureQueuedOrder(chaId);
+            captureSentOrder(recoveringOrder);
         }
         markOrderDiscarded(chaId, Math.max(orderSeq ?? 0, recoveringOrder?.seq ?? 0));
         pendingOrders.delete(chaId);
@@ -5743,16 +5884,21 @@ export function acceptRemoteCollection(collection: {
         ) {
             settleOrder(chaId, recoveringOrder.seq);
         } else {
+            if (options.captureOrder !== false) captureSentOrder(recoveringOrder);
             markOrderDiscarded(chaId, recoveringOrder.seq);
             discardedWork = true;
         }
         recoveringOrders.delete(chaId);
     } else if (orderSeq !== undefined) {
+        if (options.captureOrder !== false) captureQueuedOrder(chaId);
         markOrderDiscarded(chaId, orderSeq);
         pendingOrders.delete(chaId);
         discardedWork = true;
     }
-    // The server's list supersedes what a deletion of the character kept for a re-add.
+    // The list cannot establish whether a parked group landed; preserve its exact identity.
+    for (const [key, { resend }] of parkedResends.get(chaId) ?? []) {
+        conflictListener?.({ scope: "chat", target: key, layers: { resend: resendLayer(resend) } });
+    }
     parkedResends.delete(chaId);
     orderRevisions.set(chaId, collection.order.revision);
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
@@ -5836,6 +5982,7 @@ export function acceptRemoteCollection(collection: {
             absent.push(key);
         } else {
             if (pending.has(key) || inflight.has(key)) {
+                captureChatConflict(key, { gone: true });
                 discardChatWork(key, 0);
                 discardedWork = true;
             } else {
@@ -6297,6 +6444,7 @@ export function finishDeferredReload(server: RemoteChat): string | null {
         if (entry?.create || isCreateResend(entry)) {
             quarantineRefusedCreate({ key, seq: workSeq(key), ops: [] });
         } else {
+            captureChatConflict(key, { gone: true });
             discardChatWork(key, 0);
         }
         dropChatRevision(key);

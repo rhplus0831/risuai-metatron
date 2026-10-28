@@ -460,7 +460,12 @@ describe("recovery drafts", () => {
         if (outcome === "conflict") {
             await recovery.applyRecoveryDraft(entry);
             expect(h.fake.record("ui", "main")!.data.theme).toBe("recovered");
-            expect(await journal.listDrafts()).toEqual([]);
+            // The applied draft is gone; the first Apply's conflict kept its dropped text as a draft of its own.
+            const left = await journal.listDrafts();
+            expect(left).toEqual([expect.objectContaining({ scope: "record", target: "ui\0main" })]);
+            expect(left[0].id).not.toBe(entry.id);
+            const kept = Object.values(left[0].layers)[0] as { value: { text: string } };
+            expect(JSON.parse(kept.value.text).theme).toBe("recovered");
         }
     });
 

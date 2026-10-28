@@ -1,3 +1,5 @@
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { createFakeLockManager } from "./fakeLockManager";
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { secretPathKey } from "../../../../shared/llmSecrets.ts";
@@ -321,25 +323,55 @@ describe("records another writer committed", () => {
     });
 
     it("does not apply a copy read while this tab edited the record; its save then conflicts through the 409 path with the notice", async () => {
-        const { fake, settings, intercept } = await boot();
-        const iconsize = settings.ui.iconsize;
-        intercept.hold = (path) => path === "/api/resources/read";
-        editUi(fake, { zoomsize: 200 });
-        await vi.advanceTimersByTimeAsync(100);
-        expect(intercept.release).not.toBeNull();
-        // The local edit lands while the read is out.
-        settings.ui.iconsize = 77;
-        intercept.release!();
-        await vi.advanceTimersByTimeAsync(0);
-        // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
-        const batch = fake.batchBodies()[0];
-        expect(batch?.ops?.[0]?.patch?.set?.iconsize).toBe(77);
-        await vi.advanceTimersByTimeAsync(3000);
-        // Two tabs edited one whole-record section: the later saver's edit goes, with the notice.
-        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-        expect(settings.ui.zoomsize).toBe(200);
-        expect(settings.ui.iconsize).toBe(iconsize);
-        expect(fake.record("ui", "main")!.data.iconsize).toBe(iconsize);
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, settings, intercept, sync } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        const base = fake.record("ui", "main")!;
+        const text = JSON.stringify({ ...base.data, iconsize: 77 });
+        try {
+            const iconsize = settings.ui.iconsize;
+            intercept.hold = (path) => path === "/api/resources/read";
+            editUi(fake, { zoomsize: 200 });
+            await vi.advanceTimersByTimeAsync(100);
+            expect(intercept.release).not.toBeNull();
+            // The local edit lands while the read is out.
+            settings.ui.iconsize = 77;
+            intercept.release!();
+            await vi.advanceTimersByTimeAsync(0);
+            // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
+            const batch = fake.batchBodies()[0];
+            expect(batch?.ops?.[0]?.patch?.set?.iconsize).toBe(77);
+            await vi.advanceTimersByTimeAsync(3000);
+            // Two tabs edited one whole-record section: the later saver's edit goes, with the notice.
+            expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+            expect(settings.ui.zoomsize).toBe(200);
+            expect(settings.ui.iconsize).toBe(iconsize);
+            expect(fake.record("ui", "main")!.data.iconsize).toBe(iconsize);
+            const drafts = await journal.listDrafts();
+            expect(drafts).toHaveLength(1);
+            expect(drafts[0]).toMatchObject({
+                id: expect.any(String),
+                epoch: fake.store.epoch(),
+                scope: "record",
+                target: "ui\0main",
+            });
+            expect(
+                Object.fromEntries(Object.entries(drafts[0].layers).map(([name, layer]) => [name, layer.value])),
+            ).toEqual({
+                sent: { op: "update", baseRevision: base.revision, text, dispatched: true, inDoubt: false },
+            });
+            await settle(fake);
+            await sync.flushResources();
+            await vi.advanceTimersByTimeAsync(500);
+            expect(await journal.listDrafts()).toEqual(drafts);
+            expect((await journal.readOwn()).filter((row) => row.target === "ui\0main")).toEqual([]);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
     });
 
     it("leaves a record alone while its save is in flight and applies a later commit after the acknowledgement", async () => {
