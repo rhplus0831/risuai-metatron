@@ -58,6 +58,10 @@ import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.
 
 /** After its first abort, a job has this long to persist its text and end before it is ended for it. */
 export const JOB_ABORT_GRACE_MS = 5000;
+/** A negotiated owner socket stops counting after this long without an incoming frame. */
+export const OWNER_SILENT_MS = 45_000;
+/** A dispatched channel request waits at most this long while its job has no effective owner. */
+export const OWNER_ABSENT_MS = 120_000;
 /** An ended job stays readable (status, reconnect) this long. */
 export const JOB_DONE_GRACE_MS = 60_000;
 /**
@@ -341,6 +345,8 @@ type Job = {
     ended: boolean;
     endedAt: number;
     sockets: Set<WebSocket>;
+    /** Admission or the last effective owner's departure; null while an owner is present. */
+    ownerAbsentSince: number | null;
     /** The latest `accepted`, its text kept current by `chunk`; null once its final write applied. */
     current: Extract<GenerationEvent, { type: "accepted" }> | null;
     /** Per message id: the newest chunk the stored text includes (the last applied write's `covers`). */
@@ -532,15 +538,22 @@ export function createGenerationJobs(options: {
     receipts?: GenerationReceipts;
     /** How long an aborted job's runner may take before the job is ended for it (default `JOB_ABORT_GRACE_MS`; tests raise it). */
     abortGraceMs?: number;
-    /** Clock for admission/end timestamps and identity retention (defaults to Date.now). */
+    /** Owner absence allowance for channel requests (default `OWNER_ABSENT_MS`; tests shorten it). */
+    ownerAbsentMs?: number;
+    /** Negotiated socket silence allowance (default `OWNER_SILENT_MS`; tests shorten it). */
+    ownerSilentMs?: number;
+    /** Clock for job timestamps, owner liveness, channel deadlines and identity retention (defaults to Date.now). */
     now?: () => number;
 }) {
     const { store, kinds, gate, snapshots, lock, authorize, diagnostics, receipts } = options;
     const abortGraceMs = options.abortGraceMs ?? JOB_ABORT_GRACE_MS;
+    const ownerAbsentMs = options.ownerAbsentMs ?? OWNER_ABSENT_MS;
+    const ownerSilentMs = options.ownerSilentMs ?? OWNER_SILENT_MS;
     const clock = options.now ?? (() => Date.now());
     const runner = options.runner ?? unavailableRunner;
-    const hub = options.hub ?? createChannelHub();
+    const hub = options.hub ?? createChannelHub({ now: clock });
     const jobs = new Map<string, Job>();
+    const liveness = new WeakMap<WebSocket, { lastFrameAt: number; timer: ReturnType<typeof setTimeout> | null }>();
     /** Chat → its running job. */
     const chatSlots = new Map<string, string>();
     const wsServer = new WebSocketServer({ noServer: true });
@@ -562,12 +575,57 @@ export function createGenerationJobs(options: {
     /** A `job` event to the journal; a recorder's throw never reaches the job. */
     const record = (input: DiagnosticEventInput) => recordSafely(diagnostics, input);
 
+    function removeOwner(job: Job, ws: WebSocket, at: number) {
+        const live = liveness.get(ws);
+        if (live?.timer) clearTimeout(live.timer);
+        if (!job.sockets.delete(ws)) return;
+        if (job.sockets.size === 0) {
+            job.ownerAbsentSince = at;
+            job.channelLink.ownerChanged();
+        }
+    }
+
+    /** Silence ends ownership at its deadline, even when the timer or close is processed late. */
+    function expireSilentOwners(job: Job) {
+        let dropped = false;
+        for (const ws of job.sockets) {
+            const live = liveness.get(ws);
+            if (live && clock() >= live.lastFrameAt + ownerSilentMs) {
+                removeOwner(job, ws, live.lastFrameAt + ownerSilentMs);
+                dropped = true;
+                ws.close();
+            }
+        }
+        if (dropped) job.channelLink.expireOverdue();
+    }
+
+    function ownerAttached(job: Job): boolean {
+        expireSilentOwners(job);
+        return job.sockets.size > 0;
+    }
+
+    function armSilence(job: Job, ws: WebSocket) {
+        const live = liveness.get(ws);
+        if (!live || !job.sockets.has(ws)) return;
+        if (live.timer) clearTimeout(live.timer);
+        live.timer = setTimeout(
+            () => {
+                live.timer = null;
+                expireSilentOwners(job);
+                armSilence(job, ws);
+            },
+            Math.max(1, live.lastFrameAt + ownerSilentMs - clock()),
+        );
+        live.timer.unref?.();
+    }
+
     function send(job: Job, event: GenerationEvent): boolean {
         return sendText(job, JSON.stringify(event));
     }
 
     /** Sends to every open owner socket; one failing socket never stops the others. Whether one took it. */
     function sendText(job: Job, text: string): boolean {
+        expireSilentOwners(job);
         let taken = false;
         for (const ws of job.sockets) {
             try {
@@ -1145,7 +1203,7 @@ export function createGenerationJobs(options: {
             command: job.command,
             hooks: job.hooks,
             channel: job.channelLink.channel,
-            ownerAttached: () => job.sockets.size > 0,
+            ownerAttached: () => ownerAttached(job),
             epoch: job.epoch,
             signal: job.controller.signal,
             emit(input) {
@@ -1237,7 +1295,7 @@ export function createGenerationJobs(options: {
                     track(job, `chats\u0000${ref.characterId}\u0000${ref.id}`, { kind: "chats", ...ref });
                     if (ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
                         // Nothing is buffered here. Leave sentChat alone; attach rebuilds from it.
-                        if (![...job.sockets].some((ws) => ws.readyState === ws.OPEN)) {
+                        if (!ownerAttached(job) || ![...job.sockets].some((ws) => ws.readyState === ws.OPEN)) {
                             continue;
                         }
                         // The job chat: what changed since the last copy a socket took.
@@ -1463,6 +1521,7 @@ export function createGenerationJobs(options: {
             ended: false,
             endedAt: 0,
             sockets: new Set(),
+            ownerAbsentSince: startedAt,
             current: null,
             watermarks: new Map(),
             attachStamp: -1,
@@ -1497,7 +1556,11 @@ export function createGenerationJobs(options: {
                 return !job.ended && send(job, event);
             },
             hydrate: () => hydrateAll(job),
-            ownerAttached: () => job.sockets.size > 0,
+            ownerAttached: () => ownerAttached(job),
+            ownerAbsentDeadline: () => {
+                expireSilentOwners(job);
+                return job.ownerAbsentSince === null ? Infinity : job.ownerAbsentSince + ownerAbsentMs;
+            },
         });
         try {
             snapshots.track(() => finished);
@@ -1654,14 +1717,25 @@ export function createGenerationJobs(options: {
         };
     }
 
-    function attach(job: Job, ws: WebSocket) {
+    function attach(job: Job, ws: WebSocket, negotiated: boolean) {
+        expireSilentOwners(job);
+        job.channelLink.expireOverdue();
         // One delivery stream per job: a new attach of the owner replaces the older sockets, so a
         // chunk still queued on one cannot arrive after this one's snapshot.
-        for (const old of job.sockets) {
-            old.close(4001, "Superseded by a newer connection");
-        }
+        const previous = [...job.sockets];
         job.sockets.clear();
         job.sockets.add(ws);
+        job.ownerAbsentSince = null;
+        if (negotiated) {
+            liveness.set(ws, { lastFrameAt: clock(), timer: null });
+            armSilence(job, ws);
+        }
+        job.channelLink.ownerChanged();
+        for (const old of previous) {
+            const live = liveness.get(old);
+            if (live?.timer) clearTimeout(live.timer);
+            old.close(4001, "Superseded by a newer connection");
+        }
         // What the owner needs to resume: the job chat (what changed since the last copy a socket
         // took while the job runs: the owner applies it only at exactly that copy's revision or the
         // current one, and asks for the chat whole otherwise; whole once it ended) and every record
@@ -1695,15 +1769,26 @@ export function createGenerationJobs(options: {
             job.channelLink.handleAttach();
         }
         const ping = setInterval(() => {
-            if (ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+            expireSilentOwners(job);
+            if (job.sockets.has(ws) && ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ type: "ping", ts: clock() }));
             }
         }, JOB_HEARTBEAT_MS);
-        ws.on("message", (data) => {
+        const frame = () => {
+            expireSilentOwners(job);
             // Only the job's current socket speaks for the owner (a superseded one may still deliver).
-            if (!job.sockets.has(ws)) {
-                return;
+            if (!job.sockets.has(ws)) return false;
+            const live = liveness.get(ws);
+            if (live) {
+                live.lastFrameAt = clock();
+                armSilence(job, ws);
             }
+            return true;
+        };
+        ws.on("ping", frame);
+        ws.on("pong", frame);
+        ws.on("message", (data) => {
+            if (!frame()) return;
             let message: unknown;
             try {
                 message = JSON.parse(String(data));
@@ -1740,10 +1825,12 @@ export function createGenerationJobs(options: {
         });
         ws.on("close", () => {
             clearInterval(ping);
-            job.sockets.delete(ws);
+            expireSilentOwners(job);
+            removeOwner(job, ws, clock());
         });
         ws.on("error", () => {
             clearInterval(ping);
+            expireSilentOwners(job);
         });
     }
 
@@ -1794,7 +1881,7 @@ export function createGenerationJobs(options: {
                         ws.close();
                         return;
                     }
-                    attach(job, ws);
+                    attach(job, ws, url.searchParams.get("liveness") === "1");
                 });
             } catch {
                 socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");

@@ -120,7 +120,7 @@ Routing is non-strict (a trailing slash matches).
 | POST       | `/api/memory/tasks`                                    | JWT + epoch                                                                  | 2000/min                                                                                                       | a manual memory task start (`{ characterId, chatId }`, 4 KiB): `{ outcome: "running" \| "queued", status }` or `{ outcome: "pendingManual" }`; 400, 404, 412, 413, 429 `queueFull`, 503 `notEnabled` (the runner's service disabled or replaced, tests), 503 `Retry-After: 5` (shutdown, maintenance); `no-store`                                                                                                               |
 | DELETE     | `/api/memory/tasks/:characterId/:chatId`               | JWT + epoch                                                                  | 2000/min                                                                                                       | cancels the chat's memory task: `{ cancelled }`; 400, 404, 412, 503 `notEnabled`; `no-store`                                                                                                                                                                                                                                                                                                                                    |
 | POST       | `/api/transform/continue`                              | JWT + epoch                                                                  | 2000/min                                                                                                       | the second call after the tab's plugin handlers (`TransformContinueRequest`): `{ results }`, always full answers; `same` belongs only to the first call. 400, 409 `SnapshotExpired`, 412, 503                                                                                                                                                                                                                                   |
-| WS upgrade | `/api/generations/:id/ws?clientId=&attach=`            | JWT in the `risu-auth` query or header (never the password)                  | none                                                                                                           | the owner's `GenerationEvent` stream                                                                                                                                                                                                                                                                                                                                                                                            |
+| WS upgrade | `/api/generations/:id/ws?clientId=&attach=&liveness=`  | JWT in the `risu-auth` query or header (never the password)                  | none                                                                                                           | the owner's `GenerationEvent` stream; with `liveness=1` the tab answers each `ping` with a `pong` (Generation channels)                                                                                                                                                                                                                                                                                                         |
 | POST       | `/api/llm/request`                                     | JWT + epoch                                                                  | 2000/min                                                                                                       | one provider request on the server (`LlmRequestBody`, `shared/llm/request.ts`); an SSE stream of `LlmRequestEvent`s; 400, 409 (`channelCall` not running; with `args.chatRef`, `chatBindingIncomplete { problems }` or `chatBindingMismatch`), 412, 429 (32 per client), 503                                                                                                                                                    |
 | POST       | `/api/llm/request/:id/answer`                          | JWT                                                                          | 2000/min                                                                                                       | answers one of the request's callbacks (`{ clientId, callbackId, outcome, value \| error }`): `{ accepted }` or `{ ignored }`; 404 for another client's or an ended request                                                                                                                                                                                                                                                     |
 | POST       | `/api/tokens/count`                                    | JWT                                                                          | 2000/min                                                                                                       | `{ scope: TabTokenScope, texts }` (2 MiB, 512 texts): `{ counts }`, null only for a refused text; 400, 413, 429, 500, 503 `Retry-After: 5` (maintenance, shutdown); `no-store`                                                                                                                                                                                                                                                  |
@@ -307,6 +307,31 @@ Command sequences:
 
 Generation channels:
 
+- The tab attaches `/api/generations/:id/ws` with `liveness=1` and answers every
+  `{ type: "ping", ts }` with `{ type: "pong", ts }`, echoing `ts` before checking the
+  event epoch. The registry uses its own clock: a negotiated socket with no incoming
+  frame for `OWNER_SILENT_MS` (45 s from attach, then its last frame) is removed from
+  the owner set before being closed. Socket events and owner-presence reads check
+  silence too, so a late timer or frame cannot revive it. MCP sees the same effective
+  owner presence. Sockets without the query retain the compatibility rule below.
+- `ownerAbsentSince` starts at admission, clears at attach, and starts again when
+  the last effective socket leaves. Silence starts absence at the silence deadline,
+  even if detected later; a superseded socket's close does not change it. Each
+  dispatched question or callback uses the minimum of its own deadline, the job's
+  absence deadline (`ownerAbsentSince + OWNER_ABSENT_MS`, 120 s), and its parent's
+  effective deadline. Owner transitions re-arm channel wakeups. The registry and
+  its default hub share the injected `now` clock; `ownerAbsentMs` / `ownerSilentMs`
+  are test overrides, forwarded by `app.ts` as `generationOwnerAbsentMs` /
+  `generationOwnerSilentMs`.
+- Answers, chunks, dispatch, attach, parent lookup and `watchCallback` check the
+  effective deadline. Attach expires overdue requests while still absent, then
+  clears absence, sends its snapshot and replays requests still open. Reconnecting
+  within the wait removes the absence cap without extending a request's own
+  allowance. Absence expiry settles `disconnected` through the existing path,
+  including that client's ownerless queued roots opened no later than the expired
+  root's dispatch. Delivered callbacks keep their drain holds; socket departure
+  never releases them or changes `/drained`. There is no job-wide absence abort:
+  callback-free sequence parts and detached memory tasks keep running.
 - On attach, buffered notices, outstanding request replays, and first deliveries
   of requests promoted by an expiry are sent in their original request/notice
   order. A promoted request joins that ordered batch and is sent once.
@@ -531,6 +556,10 @@ Runtime limits of other subsystems live with their owners:
 
 ### Limitations
 
+- An older tab's generation socket without `liveness=1` is never dropped for
+  silence. A frozen older tab can therefore hold a provider callback until its own
+  deadline (30 minutes) and keep the chat busy. Decision: owner liveness is
+  negotiated for compatibility (Generation channels above).
 - A restart does not resume a running generation: its job reads as ended by `shutdown`, the reply's text since its last successful checkpoint (a 3 s target, `CHECKPOINT_INTERVAL_MS` in `prompt/runner.ts`) is lost, and that message's generation fence stays open until the next ordinary write to the message. A degraded receipt store keeps outcomes in memory only, so a restart then forgets them (the tab shows `serverJob.endedAway`). With degraded or absent receipts, request deduplication lasts only through live/kept memory retention and the tombstone cap; it cannot survive a restart; WAL with `synchronous=NORMAL` can also lose the last receipt writes on a power loss.
   Decision: receipts record how a job ended and never refuse or fail a job (`data/generationReceipts.ts` header); resuming a generation across a restart is out of scope.
 - The SQLite resource store assumes one server process and a local filesystem.

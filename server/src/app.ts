@@ -133,7 +133,9 @@ export type RouteLimits = {
  * (tests inject a latch). `realmStagingTimer`, `generationEffectClock`, `generationAbortGraceMs`, and
  * `generationHypaV3SeparatorLimits` replace the staged Realm imports' expiry timer, the trigger effect
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
- * defaults are the production ones). `routeLimits` lowers the rate limits and the asset batch, backup
+ * defaults are the production ones). `generationOwnerAbsentMs` and `generationOwnerSilentMs` replace
+ * the owner absence and negotiated socket silence allowances (tests shorten them). `routeLimits`
+ * lowers the rate limits and the asset batch, backup
  * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
  * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
  * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
@@ -183,6 +185,10 @@ export function createServerContext(options: {
     generationEffectClock?: () => number;
     /** An aborted generation job's grace before it is ended for it (default `JOB_ABORT_GRACE_MS`, 5 s). */
     generationAbortGraceMs?: number;
+    /** Owner absence allowance for generation callbacks (default `OWNER_ABSENT_MS`, 120 s; tests shorten it). */
+    generationOwnerAbsentMs?: number;
+    /** Negotiated generation socket silence allowance (default `OWNER_SILENT_MS`, 45 s; tests shorten it). */
+    generationOwnerSilentMs?: number;
     /** The default runner's HypaV3 summary separator limits (default 5 s chunking, 1 s per split). */
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
     /** Lower route caps (tests reach them in a few requests); each default is the production value. */
@@ -323,6 +329,8 @@ export function createServerContext(options: {
         diagnostics,
         receipts: generationReceipts,
         abortGraceMs: options.generationAbortGraceMs,
+        ownerAbsentMs: options.generationOwnerAbsentMs,
+        ownerSilentMs: options.generationOwnerSilentMs,
     });
     // The request layer and token routes share one counter and tokenizers, loaded on first use.
     const tokenizers = createTokenizers({ rootDir: options.rootDir });

@@ -21,7 +21,14 @@ import {
     QUESTION_TIMEOUT_MS,
 } from "../jobs/channel.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import {
+    allowListenerOrigin,
+    createSigner,
+    createTestServer,
+    json,
+    waitFor,
+    type TestServerOptions,
+} from "./testSupport.ts";
 
 // The server side of the job channel. First the hub in isolation (`server/src/jobs/channel.ts`) over
 // a recording transport with an injected clock: the hook list validation, notices, the request
@@ -130,13 +137,19 @@ function harness() {
     const delivering = { value: true };
     const open = (
         jobId: string,
-        options: { clientId?: string; hooks?: Partial<GenerationHooks>; attached?: { value: boolean } } = {},
+        options: {
+            clientId?: string;
+            hooks?: Partial<GenerationHooks>;
+            attached?: { value: boolean };
+            ownerAbsentDeadline?: () => number;
+            chatId?: string;
+        } = {},
     ): Link =>
         hub.open({
             jobId,
             clientId: options.clientId ?? "tab",
             epoch: "e",
-            targets,
+            targets: { ...targets, chatRef: { ...targets.chatRef, chatId: options.chatId ?? "k" } },
             hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], ...options.hooks },
             send: (event) => {
                 sent.push({ ...event, job: jobId });
@@ -147,6 +160,7 @@ function harness() {
                 return [receipt];
             },
             ownerAttached: () => (options.attached ?? attached).value,
+            ownerAbsentDeadline: options.ownerAbsentDeadline,
         });
     const ofType = <T extends Sent["type"]>(type: T) =>
         sent.filter((event) => event.type === type) as (Sent & {
@@ -572,6 +586,134 @@ describe("the hub: deadlines", () => {
         expect(await parent).toMatchObject({ outcome: "timedOut" });
         expect(await child).toMatchObject({ outcome: "aborted" });
         expect(settled).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("the hub: owner absence", () => {
+    it.each(["timer", "attach", "answer", "chunk"] as const)(
+        "disconnects an abandoned callback at the absence deadline on %s",
+        async (gate) => {
+            const h = harness();
+            let absentSince: number | null = null;
+            const link = h.open("a", {
+                ownerAbsentDeadline: () => (absentSince === null ? Infinity : absentSince + 120_000),
+            });
+            const onChunk = vi.fn();
+            const pending = link.channel.callback("editoutput", { text: "partial" }, { timeoutMs: 300_000, onChunk });
+            const request = h.last("callback");
+            h.clock.value += 10_000;
+            h.attached.value = false;
+            absentSince = h.clock.value;
+            link.ownerChanged();
+            h.clock.value += 119_999;
+            expect(link.watchCallback(request.id, () => {})).not.toBeNull();
+            expect(await h.state(pending)).toBe("pending");
+            // Move only the authoritative clock: traffic must enforce a deadline even if no timer ran.
+            h.clock.value += 1;
+            if (gate === "timer") await vi.advanceTimersByTimeAsync(120_000);
+            if (gate === "attach") link.handleAttach();
+            if (gate === "answer") h.answer(link, request.id, "too late");
+            if (gate === "chunk") link.handleMessage({ type: "chunk", id: request.id, text: "too late" });
+            expect(await h.state(pending)).toMatchObject({ outcome: "disconnected" });
+            expect(onChunk).not.toHaveBeenCalled();
+            expect(h.ofType("callback")).toHaveLength(1);
+            expect(h.last("cancel").id).toBe(request.id);
+        },
+    );
+
+    it("replays a callback when the owner returns inside the wait without extending its own deadline", async () => {
+        const h = harness();
+        let absentSince: number | null = null;
+        const link = h.open("a", {
+            ownerAbsentDeadline: () => (absentSince === null ? Infinity : absentSince + 120_000),
+        });
+        const pending = link.channel.callback("editoutput", { text: "again" }, { timeoutMs: 300_000 });
+        const request = h.last("callback");
+        h.attached.value = false;
+        absentSince = h.clock.value;
+        link.ownerChanged();
+        h.clock.value += 119_999;
+        link.expireOverdue();
+        h.attached.value = true;
+        absentSince = null;
+        link.ownerChanged();
+        link.handleAttach();
+        expect(h.ofType("callback")).toEqual([request, { ...request, replay: true }]);
+        // The old absence wakeup must not end a request after the owner returned.
+        await h.tick(1);
+        expect(await h.state(pending)).toBe("pending");
+        h.clock.value = request.deadline;
+        h.answer(link, request.id);
+        expect(await h.state(pending)).toMatchObject({ outcome: "timedOut" });
+    });
+
+    it("settles the same client's ownerless queued chat roots but keeps a delivered callback's drain hold", async () => {
+        const h = harness();
+        let absenceDeadline = Infinity;
+        const a = h.open("a", { chatId: "first", ownerAbsentDeadline: () => absenceDeadline });
+        const b = h.open("b", { chatId: "second", ownerAbsentDeadline: () => absenceDeadline });
+        const delivered = a.channel.callback("editoutput", { text: "running" }, { timeoutMs: 300_000 });
+        const id = h.last("callback").id;
+        const queuedCallback = b.channel.callback("editoutput", { text: "queued" });
+        const queuedQuestion = b.channel.ask({ kind: "alertConfirm", payload: { message: "queued?" } });
+        h.attached.value = false;
+        absenceDeadline = h.clock.value + 120_000;
+        a.ownerChanged();
+        h.clock.value = absenceDeadline;
+        a.expireOverdue();
+        for (const pending of [delivered, queuedCallback, queuedQuestion]) {
+            expect(await h.state<QuestionResult | CallbackResult>(pending)).toMatchObject({ outcome: "disconnected" });
+        }
+        expect(h.ofType("cancel").map((event) => event.id)).toEqual([id]);
+        h.attached.value = true;
+        absenceDeadline = Infinity;
+        a.handleAttach();
+        b.handleAttach();
+        expect(h.ofType("callback")).toHaveLength(1);
+        expect(h.ofType("question")).toHaveLength(0);
+        const next = b.channel.ask({ kind: "alertConfirm", payload: { message: "fresh?" } });
+        expect(await h.state(next)).toBe("pending");
+        expect(h.ofType("question")).toHaveLength(0);
+        expect(a.drained(id)).toBe(true);
+        expect(h.ofType("question")).toHaveLength(1);
+        h.answer(b, h.last("question").id, true);
+        expect(await next).toEqual({ outcome: "answered", value: true });
+    });
+
+    it("caps a child by its absent parent's deadline and refuses nesting in that parent after expiry", async () => {
+        const h = harness();
+        let absenceDeadline = Infinity;
+        const parentAttached = { value: true };
+        const a = h.open("a", { attached: parentAttached, ownerAbsentDeadline: () => absenceDeadline });
+        // Another job of the same client remains attached, so only inheritance can cap this child.
+        const b = h.open("b");
+        const parent = a.channel.callback("editoutput", { text: "parent" }, { timeoutMs: 300_000 });
+        const parentId = h.last("callback").id;
+        parentAttached.value = false;
+        absenceDeadline = h.clock.value + 120_000;
+        a.ownerChanged();
+        h.clock.value += 1_000;
+        const child = b.channel.callback("editoutput", { text: "child" }, { parentId, timeoutMs: 300_000 });
+        expect(h.last("callback")).toMatchObject({ parentId, deadline: absenceDeadline });
+        h.clock.value = absenceDeadline;
+        h.answer(b, h.last("callback").id);
+        expect(await h.state(child)).toMatchObject({ outcome: "disconnected" });
+        const lateChild = b.channel.callback("editoutput", { text: "late" }, { parentId });
+        expect(await h.state(parent)).toMatchObject({ outcome: "disconnected" });
+        expect(await lateChild).toMatchObject({ outcome: "refused", refusal: "nesting" });
+        expect(h.ofType("callback")).toHaveLength(2);
+    });
+
+    it("refuses to dispatch work after an owner that never attached exhausted its absence allowance", async () => {
+        const h = harness();
+        h.attached.value = false;
+        const admittedAt = h.clock.value;
+        const link = h.open("a", { ownerAbsentDeadline: () => admittedAt + 120_000 });
+        h.clock.value += 120_000;
+        const pending = link.channel.callback("editoutput", { text: "late request" }, { timeoutMs: 300_000 });
+        expect(await h.state(pending)).toMatchObject({ outcome: "disconnected" });
+        expect(h.ofType("callback")).toHaveLength(0);
+        expect(h.hydrations).toEqual([]);
     });
 });
 
@@ -1189,12 +1331,13 @@ describe("the registry over a real socket", () => {
             await new Promise((resolve) => node?.close(resolve));
             node = undefined;
         }
+        vi.restoreAllMocks();
     });
 
-    async function listen() {
+    async function listen(options: TestServerOptions = {}) {
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
-        server = createTestServer({ password: "pw", generationRunner: runner });
+        server = createTestServer({ password: "pw", generationRunner: runner, ...options });
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
@@ -1346,6 +1489,210 @@ describe("the registry over a real socket", () => {
         };
     }
     const types = (events: GenerationEvent[]) => events.map((event) => event.type);
+
+    /** Real socket events are latches; only the server clock and deadline timers are faked. */
+    async function ownerSocket(jobId: string, stamp: number, negotiated = true) {
+        const sends = vi.spyOn(WsSocket.prototype, "send");
+        const ws = new WsSocket(
+            `${base.replace("http", "ws")}/api/generations/${jobId}/ws?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${stamp}${negotiated ? "&liveness=1" : ""}`,
+        );
+        const events: GenerationEvent[] = [];
+        const waiters = new Set<() => void>();
+        ws.on("message", (raw) => {
+            events.push(JSON.parse(String(raw)));
+            for (const notify of waiters) notify();
+        });
+        const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+        let peer: WsSocket;
+        try {
+            await new Promise<void>((resolve, reject) => {
+                ws.once("open", resolve);
+                ws.once("error", reject);
+            });
+            // The attach's snapshot was sent before the client open event. Keep that real server
+            // socket solely to await its frame/close events, including a delayed close handshake.
+            peer = sends.mock.contexts.find((socket) => socket !== ws) as WsSocket;
+            expect(peer).toBeDefined();
+        } finally {
+            sends.mockRestore();
+        }
+        const peerClosed = new Promise<void>((resolve) => peer.once("close", () => resolve()));
+        return {
+            ws,
+            peer,
+            events,
+            closed,
+            peerClosed,
+            async until(predicate: (events: GenerationEvent[]) => boolean) {
+                if (predicate(events)) return;
+                await new Promise<void>((resolve) => {
+                    const notify = () => {
+                        if (predicate(events)) {
+                            waiters.delete(notify);
+                            resolve();
+                        }
+                    };
+                    waiters.add(notify);
+                });
+            },
+            async send(message: unknown) {
+                const handled = new Promise<void>((resolve) => peer.once("message", () => resolve()));
+                ws.send(JSON.stringify(message));
+                await handled;
+            },
+            async close() {
+                ws.resume();
+                ws.close();
+                await Promise.all([closed, peerClosed]);
+            },
+        };
+    }
+
+    const pendingState = <T>(promise: Promise<T>) =>
+        Promise.race([promise, new Promise<"pending">((resolve) => setImmediate(() => resolve("pending")))]);
+
+    async function waitingOwner(options: TestServerOptions = {}) {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await listen({ generationOwnerSilentMs: 450, generationOwnerAbsentMs: 1_200, ...options });
+        let expose!: (job: RunningJob) => void;
+        const running = new Promise<RunningJob>((resolve) => {
+            expose = resolve;
+        });
+        let settle!: (result: CallbackResult) => void;
+        const result = new Promise<CallbackResult>((resolve) => {
+            settle = resolve;
+        });
+        step(async (job) => {
+            expose(job);
+            settle(await job.channel.callback("editoutput", { text: "waiting" }, { timeoutMs: 300_000 }));
+            return "end" as never;
+        });
+        const admittedAt = Date.now();
+        const created = await create();
+        expect(created.status).toBe(200);
+        return { id: created.body.jobId as string, job: await running, result, admittedAt };
+    }
+
+    it.each(["timer", "late frame"] as const)(
+        "drops a negotiated socket silent from attach at its deadline on %s before its close handshake",
+        async (gate) => {
+            const h = await waitingOwner();
+            const owner = await ownerSocket(h.id, 1);
+            await owner.until((events) => events.some((event) => event.type === "callback"));
+            owner.ws.pause();
+            try {
+                if (gate === "timer") {
+                    await vi.advanceTimersByTimeAsync(449);
+                    expect(h.job.ownerAttached()).toBe(true);
+                    await vi.advanceTimersByTimeAsync(1);
+                } else {
+                    vi.setSystemTime(h.admittedAt + 449);
+                    expect(h.job.ownerAttached()).toBe(true);
+                    // No timer runs: a late frame must not refresh the socket before checking silence.
+                    vi.setSystemTime(h.admittedAt + 450);
+                    await owner.send({ type: "pong", ts: Number.MAX_SAFE_INTEGER });
+                }
+                expect(owner.peer.readyState).toBe(WsSocket.CLOSING);
+                expect(h.job.ownerAttached()).toBe(false);
+                expect(await pendingState(h.result)).toBe("pending");
+                await vi.advanceTimersByTimeAsync(1_199);
+                expect(await pendingState(h.result)).toBe("pending");
+                await vi.advanceTimersByTimeAsync(1);
+                expect(await pendingState(h.result)).toMatchObject({ outcome: "disconnected" });
+            } finally {
+                await owner.close();
+            }
+        },
+    );
+
+    it("keeps a negotiated owner that answers pings and counts silence from its last frame using server time", async () => {
+        const h = await waitingOwner({ generationOwnerSilentMs: 45_000 });
+        const job = h.job;
+        const owner = await ownerSocket(h.id, 1);
+        try {
+            for (let heartbeat = 1; heartbeat <= 4; heartbeat++) {
+                await vi.advanceTimersByTimeAsync(15_000);
+                expect(job.ownerAttached()).toBe(true);
+                await owner.until((events) => events.filter((event) => event.type === "ping").length === heartbeat);
+                const ping = owner.events.filter((event) => event.type === "ping").at(-1)!;
+                await owner.send({ type: "pong", ts: ping.ts });
+                expect(job.ownerAttached()).toBe(true);
+            }
+            const lastFrameAt = Date.now();
+            // The timestamp is opaque to the server; a stale value still counts as a frame now.
+            vi.setSystemTime(lastFrameAt + 44_999);
+            await owner.send({ type: "pong", ts: -1 });
+            vi.setSystemTime(lastFrameAt + 45_000);
+            expect(job.ownerAttached()).toBe(true);
+            expect(owner.peer.readyState).toBe(WsSocket.OPEN);
+        } finally {
+            await owner.close();
+        }
+    });
+
+    it("keeps a legacy socket as an owner despite silence beyond both liveness allowances", async () => {
+        const h = await waitingOwner();
+        const owner = await ownerSocket(h.id, 1, false);
+        await owner.until((events) => events.some((event) => event.type === "callback"));
+        try {
+            vi.setSystemTime(h.admittedAt + 450 + 1_200);
+            await vi.advanceTimersByTimeAsync(1_650);
+            expect(h.job.ownerAttached()).toBe(true);
+            expect(owner.peer.readyState).toBe(WsSocket.OPEN);
+            const callback = owner.events.find((event) => event.type === "callback")!;
+            await owner.send({ type: "answer", id: callback.id, outcome: "answered", value: "still here" });
+            expect(await pendingState(h.result)).toEqual({ outcome: "answered", value: "still here" });
+        } finally {
+            await owner.close();
+        }
+    });
+
+    it("does not start absence when a superseded socket closes after its replacement attached", async () => {
+        const h = await waitingOwner();
+        const first = await ownerSocket(h.id, 1, false);
+        await first.until((events) => events.some((event) => event.type === "callback"));
+        first.ws.pause();
+        const second = await ownerSocket(h.id, 2, false);
+        await second.until((events) => events.some((event) => event.type === "callback"));
+        try {
+            first.ws.resume();
+            await first.peerClosed;
+            vi.setSystemTime(h.admittedAt + 1_201);
+            const callback = second.events.find((event) => event.type === "callback")!;
+            expect(callback.replay).toBe(true);
+            await second.send({ type: "answer", id: callback.id, outcome: "answered", value: "replacement" });
+            expect(await pendingState(h.result)).toEqual({ outcome: "answered", value: "replacement" });
+        } finally {
+            await first.close();
+            await second.close();
+        }
+    });
+
+    it.each(["first attach", "reattach"] as const)(
+        "settles expired absence before a late %s can replay or revive a callback",
+        async (attach) => {
+            const h = await waitingOwner();
+            let absentAt = h.admittedAt;
+            if (attach === "reattach") {
+                const first = await ownerSocket(h.id, 1, false);
+                await first.until((events) => events.some((event) => event.type === "callback"));
+                vi.setSystemTime(h.admittedAt + 100);
+                await first.close();
+                absentAt = Date.now();
+            }
+            // Timers remain unfired: attach must expire the old absence before clearing it.
+            vi.setSystemTime(absentAt + 1_200);
+            const late = await ownerSocket(h.id, 2, false);
+            try {
+                expect(await pendingState(h.result)).toMatchObject({ outcome: "disconnected" });
+                // A round trip ensures all frames from the attach have been delivered.
+                await late.send({ type: "pong", ts: 0 });
+                expect(late.events.filter((event) => event.type === "callback")).toEqual([]);
+            } finally {
+                await late.close();
+            }
+        },
+    );
 
     it("answers 400 for a malformed hook list and admits a job without one", async () => {
         await listen();

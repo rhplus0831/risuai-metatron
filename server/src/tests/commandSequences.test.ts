@@ -10,6 +10,7 @@ import { WebSocket } from "ws";
 import type { Chat, Message } from "../../../shared/database.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { NO_GENERATION_HOOKS, type GenerationEvent, type GenerationHooks } from "../../../shared/jobs.ts";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
 import { createChangeFeed } from "../data/changeFeed.ts";
 import { createGenerationReceipts } from "../data/generationReceipts.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -60,7 +61,7 @@ const sep = "{{u::7b}}{{u::7b}}u::7c}}".repeat(3);
 const commands = ["/multisend one", `/multisend clear ${sep}two${sep}three`];
 const trigger = (type: string, effect: unknown[]) => ({ comment: "go", type, conditions: [], effect });
 
-function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean } = {}) {
+function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean; modelId?: string } = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-command-sequence-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -89,7 +90,7 @@ function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean } = {}) 
     singleton("modelProfiles", (rows) => [
         {
             ...rows[0],
-            modelId: "reverse_proxy",
+            modelId: options.modelId ?? "reverse_proxy",
             maxContext: 4000,
             forceReplaceUrl: "https://provider.invalid/v1/chat/completions",
             customProxyRequestModel: "m",
@@ -588,6 +589,71 @@ describe("a running sequence part", () => {
         });
         expect(h.providerCalls).toHaveLength(3);
         expect(textOf(h.messages())).toEqual(["user:three", "char:reply-3"]);
+    });
+
+    it("saves a plugin provider's partial text and frees the chat when owner absence disconnects its callback", async () => {
+        const modelId = "pluginmodel:::prov";
+        const h = fixture({
+            modelId,
+            hooks: {
+                ...NO_GENERATION_HOOKS,
+                providers: [
+                    {
+                        name: "prov",
+                        model: {
+                            id: modelId,
+                            name: "prov",
+                            shortName: "prov",
+                            fullName: "prov",
+                            internalID: modelId,
+                            provider: LLMProvider.AsIs,
+                            format: LLMFormat.Plugin,
+                            flags: [LLMFlags.hasStreaming, LLMFlags.hasFullSystemPrompt],
+                            parameters: [],
+                            tokenizer: LLMTokenizer.Unknown,
+                        },
+                    },
+                ],
+            },
+        });
+        const id = h.create();
+        const sends = vi.spyOn(WebSocket.prototype, "send");
+        const owner = await h.follow(id);
+        const peer = sends.mock.contexts.find((socket) => socket !== owner.ws) as WebSocket;
+        sends.mockRestore();
+        const peerClosed = new Promise<void>((resolve) => peer.once("close", () => resolve()));
+        h.start.resolve();
+        await owner.until((events) => events.some((event) => event.type === "callback" && event.name === "provider"));
+        const callback = owner.events
+            .filter((event) => event.type === "callback")
+            .find((event) => event.name === "provider")!;
+        owner.ws.send(JSON.stringify({ type: "chunk", id: callback.id, text: "Unfinished reply" }));
+        await owner.until((events) =>
+            events.some((event) => event.type === "chunk" && event.text === "Unfinished reply"),
+        );
+        // No checkpoint timer has run: the failure path itself must persist the in-flight text.
+        expect(h.messages().some((message) => message.data === "Unfinished reply")).toBe(false);
+        await owner.close();
+        await peerClosed;
+        h.setNow(1_000_000 + 120_000);
+        // A new attach enforces the elapsed absence without running any timers, including checkpoints.
+        const late = await h.follow(id);
+        await late.until((events) => events.some((event) => event.type === "error"));
+        await h.jobs.drain();
+        expect(h.jobs.status(id, "owner")?.terminal).toMatchObject({
+            type: "error",
+            message: expect.stringContaining("provider callback disconnected"),
+            sequence: { total: 3, sent: 0 },
+        });
+        expect(h.messages().at(-1)?.data).toBe("Unfinished reply");
+        const replyId = h.messages().at(-1)!.chatId!;
+        // An ordinary write proves the reply's generation lock was released as well as the slot.
+        h.write([{ op: "setText", id: replyId, text: "recovered" }]);
+        expect(h.messages().at(-1)?.data).toBe("recovered");
+        const next = h.create();
+        expect(next).not.toBe(id);
+        h.jobs.abort(next, "owner");
+        await h.jobs.drain();
     });
 
     it("ends with the missing-owner reason when the next part needs a script callback", async () => {

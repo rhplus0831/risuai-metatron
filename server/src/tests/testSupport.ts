@@ -56,6 +56,8 @@ export type TestServerOptions = {
     generationEffectClock?: () => number;
     /** An aborted generation job's grace before it is ended for it (default 5 s). */
     generationAbortGraceMs?: number;
+    generationOwnerAbsentMs?: number;
+    generationOwnerSilentMs?: number;
     /** The default runner's HypaV3 separator limits (default 5 s chunking, 1 s per split). */
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
     /** Lower rate limits and asset batch, backup archive, and CharX entry caps (default the production ones). */
@@ -100,6 +102,8 @@ export function createTestServer(options: TestServerOptions = {}) {
         realmStagingTimer: options.realmStagingTimer,
         generationEffectClock: options.generationEffectClock,
         generationAbortGraceMs: options.generationAbortGraceMs,
+        generationOwnerAbsentMs: options.generationOwnerAbsentMs,
+        generationOwnerSilentMs: options.generationOwnerSilentMs,
         generationHypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits,
         routeLimits: options.routeLimits,
         cbsTimeLimits: options.cbsTimeLimits,

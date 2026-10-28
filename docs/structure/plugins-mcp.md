@@ -121,6 +121,22 @@ MCP:
 
 - The v3 database setters apply key by key: a `MutationValidationError` warns and keeps that key's old value while the later keys still run; a gone target and any unexpected error propagate to the plugin.
 - `GoogleSearchClient.initializeCredentials` refuses a missing, cancelled, or blank API key or engine id before anything is written, and trims accepted values before `googleSearchCredentials` is saved.
+- Generation sockets negotiate owner liveness with `liveness=1`; the tab answers each
+  server `ping` with `pong`, echoing its `ts`. The registry drops a negotiated socket
+  after 45 s without an incoming frame, using the server clock. MCP owner checks
+  exclude these silent sockets. A dispatched question or callback is bounded by
+  its own deadline, 120 s of job owner absence (from admission or the last effective
+  socket's departure), and its parent's effective deadline. A live tab answering
+  pings can keep a long non-streaming provider call running without progress frames.
+- An attach first expires overdue requests while still absent, then replays those
+  still open. Reconnecting within the wait removes the absence cap without restarting
+  the callback's own allowance; the same page's callback cache answers a replay once,
+  while a reloaded page refuses an unknown replay. Absence expiry settles
+  `disconnected`, also settling that client's eligible ownerless queued roots. A
+  provider failure follows the existing partial-save and job-end path; tail hooks
+  that skip on `disconnected` can continue. Delivered callbacks retain their drain
+  holds until reported drained or their bound expires. See [generation channels and
+  older-tab compatibility](self-host-server.md#flows) for the registry contract.
 
 ## State
 

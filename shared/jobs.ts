@@ -265,6 +265,9 @@ export type ChatResyncRequest = { type: "resync" };
  */
 export type ReplyResyncRequest = { type: "resyncReply" };
 
+/** A generation socket's liveness reply, echoing the server ping's timestamp. */
+export type GenerationPong = { type: "pong"; ts: number };
+
 export type GenerationTerminalEvent =
     | {
           type: "done";

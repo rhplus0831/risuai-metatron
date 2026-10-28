@@ -476,6 +476,28 @@ describe("the requests", () => {
 });
 
 describe("following a job", () => {
+    it("negotiates owner liveness and echoes each ping timestamp even across an epoch filter", async () => {
+        vi.useFakeTimers();
+        const seen = vi.fn();
+        const follow = startFollow("j1", seen);
+        stubs.auth[0].resolve("jwt");
+        await microtasks();
+        const [socket] = FakeSocket.instances;
+        expect(new URL(socket.url).searchParams.get("liveness")).toBe("1");
+        socket.open();
+        // The pong uses the server timestamp, not this tab's clock or its loaded resource epoch.
+        vi.setSystemTime(new Date("2030-01-01"));
+        socket.message({ type: "ping", ts: 17 });
+        socket.message({ type: "ping", ts: 29, epoch: "another-epoch" });
+        expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+            { type: "pong", ts: 17 },
+            { type: "pong", ts: 29 },
+        ]);
+        expect(seen).not.toHaveBeenCalled();
+        follow.close();
+        await follow.closed;
+    });
+
     it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
         const { jobStages } = await import("../process/jobStages");
         const ref = { chaId: "c", chatId: "k" };

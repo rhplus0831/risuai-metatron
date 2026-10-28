@@ -5,6 +5,7 @@ import {
     type ChannelDrainedBody,
     type ChatResyncRequest,
     type ReplyResyncRequest,
+    type GenerationPong,
     type GenerationCreateBody,
     type GenerationCreated,
     type GenerationCancelled,
@@ -705,7 +706,8 @@ export type GenerationFollow = {
 /**
  * Follows a job over its socket: on every attach the server sends the job chat and the records it
  * changed (fresh), the chosen preset, the current reply with its text, and the result if the job
- * ended. Events of another epoch than the loaded one are dropped, as are pings. The follow gives its
+ * ended. Pings are answered with pongs before events of another epoch than the loaded one are
+ * dropped. The follow gives its
  * socket up, as its own `close()` would (the job is not released), when it has not opened within
  * 10 s of the follow's start (authentication included), when it has had no frame (pings included)
  * for 45 s while the page is visible, and when the page comes back (`socketLiveness.ts`); a terminal
@@ -779,7 +781,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         const url =
             `${protocol}//${location.host}/api/generations/${encodeURIComponent(jobId)}/ws` +
             `?risu-auth=${encodeURIComponent(auth)}&clientId=${encodeURIComponent(generationClientId())}` +
-            `&attach=${stamp}`;
+            `&attach=${stamp}&liveness=1`;
         const socket = new WebSocket(url);
         ws = socket;
         socket.onopen = () => {
@@ -801,7 +803,12 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             } catch {
                 return;
             }
-            if (!event || typeof event !== "object" || event.type === "ping") {
+            if (!event || typeof event !== "object") {
+                return;
+            }
+            if (event.type === "ping") {
+                const pong: GenerationPong = { type: "pong", ts: event.ts };
+                if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(pong));
                 return;
             }
             if (event.epoch !== getResourceEpoch()) {

@@ -48,6 +48,8 @@ export type ChannelTransport = {
     /** Persists synchronous setters before a notice or request leaves the runner. */
     flushPending?(): void;
     ownerAttached(): boolean;
+    /** The job's absence bound, or Infinity while an effective owner is present. */
+    ownerAbsentDeadline?(): number;
 };
 
 export type JobChannel = {
@@ -85,7 +87,7 @@ type Request = {
     /** Builds the event to send; a callback hydrates first (the barrier). Set at dispatch. */
     build: ((replay: boolean) => GenerationChannelEvent) | null;
     timeoutMs: number;
-    /** Set at dispatch (`timeoutMs` from then, capped by the parent's); `Infinity` while queued. */
+    /** Its own allowance, set at dispatch (`timeoutMs` from then); `Infinity` while queued. */
     deadline: number;
     parent: Request | null;
     children: Set<Request>;
@@ -264,7 +266,8 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
  * client has none outstanding; a child (an aux request's callback, `parentId` = the client's
  * outstanding callback) runs at once, one level deep; anything else is refused. Notices are never
  * queued. Every request has one deadline from the moment it is dispatched (it takes the client's
- * slot, with or without an owner socket attached), capped by its parent's; at the deadline it is
+ * slot, with or without an owner socket attached), capped by owner absence and its parent's
+ * effective deadline; at the deadline it is
  * `timedOut` with an owner socket attached, else `disconnected`. A queued root has no deadline: it
  * waits until it is dispatched, its job ends, or the signal it was given aborts. When a dispatched
  * root expires `disconnected`, queued roots of that client whose own jobs have no owner and were
@@ -283,6 +286,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     const now = options.now ?? Date.now;
     const lanes = new Map<string, ClientLane>();
     const attachSends = new Map<string, OrderedSend[]>();
+    const deferredPumps = new Set<string>();
 
     function laneOf(clientId: string): ClientLane {
         let lane = lanes.get(clientId);
@@ -387,13 +391,45 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         return true;
     }
 
+    function absenceDeadline(request: Request): number {
+        return Math.min(
+            request.channel.transport.ownerAbsentDeadline?.() ?? Infinity,
+            request.parent ? absenceDeadline(request.parent) : Infinity,
+        );
+    }
+
+    function effectiveDeadline(request: Request): number {
+        return Math.min(
+            request.deadline,
+            absenceDeadline(request),
+            request.parent ? effectiveDeadline(request.parent) : Infinity,
+        );
+    }
+
+    /** A wakeup only: every deadline check reads the clock and current owner absence again. */
+    function armDeadline(request: Request) {
+        const deadline = effectiveDeadline(request);
+        if (request.timer) clearTimeout(request.timer);
+        if (request.settled) return;
+        request.timer = setTimeout(
+            () => {
+                request.timer = null;
+                if (!expireIfDue(request)) armDeadline(request);
+            },
+            Math.max(1, deadline - now()),
+        );
+    }
+
     /** The deadline decides, not the timer: an expired request settles as its timer would. */
     function expireIfDue(request: Request): boolean {
-        if (request.settled || now() < request.deadline) {
+        if (request.settled) return true;
+        const deadline = effectiveDeadline(request);
+        if (request.settled || now() < deadline) {
             return request.settled;
         }
         const attached = request.channel.transport.ownerAttached();
-        if (!attached && request.parent === null && request.dispatched) {
+        const disconnected = !attached || now() >= absenceDeadline(request);
+        if (!attached && request.parent === null && request.dispatchedAt !== Infinity) {
             const lane = laneOf(request.channel.transport.clientId);
             const queued = lane.queue.filter(
                 (entry) =>
@@ -413,9 +449,9 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         }
         settle(
             request,
-            attached
-                ? { outcome: "timedOut", error: "No answer before the deadline" }
-                : { outcome: "disconnected", error: "No owner was connected before the deadline" },
+            disconnected
+                ? { outcome: "disconnected", error: "No owner was connected before the deadline" }
+                : { outcome: "timedOut", error: "No answer before the deadline" },
             true,
         );
         return true;
@@ -424,24 +460,18 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     function dispatch(request: Request, lane: ClientLane) {
         // The deadline starts now: time spent behind other requests in the queue is not counted.
         request.dispatchedAt = now();
-        const deadline = Math.min(request.dispatchedAt + request.timeoutMs, request.parent?.deadline ?? Infinity);
-        request.deadline = deadline;
-        const build = request.makeBuild(request.id, deadline);
-        request.build = build;
-        // A wakeup only: `expireIfDue` compares the clock, so a late timer and an early one agree.
-        const wake = () => {
-            if (!expireIfDue(request)) {
-                request.timer = setTimeout(wake, Math.max(1, request.deadline - now()));
-            }
-        };
-        request.timer = setTimeout(wake, Math.max(0, deadline - now()));
+        request.deadline = request.dispatchedAt + request.timeoutMs;
+        // Keep the slot through initial expiry, including settlement of ownerless queued roots.
+        lane.stack.push(request);
         // Every dispatch path (a queued root, a child) stops here when the deadline passed (a zero
         // timeout, an overdue parent): an expired request never hydrates or sends.
         if (expireIfDue(request)) {
             return;
         }
         request.dispatched = true;
-        lane.stack.push(request);
+        const build = (replay: boolean) => request.makeBuild(request.id, effectiveDeadline(request))(replay);
+        request.build = build;
+        armDeadline(request);
         const send = () => {
             if (request.settled || expireIfDue(request)) {
                 return;
@@ -468,6 +498,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     }
 
     function pump(clientId: string) {
+        if (deferredPumps.has(clientId)) return;
         const lane = laneOf(clientId);
         const draining = releaseDue(lane);
         while (!draining && lane.stack.length === 0 && lane.queue.length > 0) {
@@ -649,6 +680,30 @@ export function createChannelHub(options: { now?: () => number } = {}) {
             return {
                 channel,
 
+                /** Owner presence changed: children also inherit the parent's new absence bound. */
+                ownerChanged() {
+                    for (const request of lanes.get(transport.clientId)?.stack ?? []) {
+                        if (request.dispatched && !request.settled) armDeadline(request);
+                    }
+                },
+
+                /** Settle before an attach clears absence, without consuming notices or replaying. */
+                expireOverdue() {
+                    const clientId = transport.clientId;
+                    const deferred = deferredPumps.has(clientId);
+                    deferredPumps.add(clientId);
+                    try {
+                        for (const request of [...state.requests]) {
+                            if (request.dispatched) expireIfDue(request);
+                        }
+                    } finally {
+                        if (!deferred) {
+                            deferredPumps.delete(clientId);
+                            queueMicrotask(() => pump(clientId));
+                        }
+                    }
+                },
+
                 /** An owner message: an answer to an outstanding request of this job (anything else is ignored). */
                 handleMessage(message: unknown) {
                     if (
@@ -736,6 +791,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                                 },
                             });
                         }
+                        pump(transport.clientId);
                         if (active) {
                             return;
                         }
