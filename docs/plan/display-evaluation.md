@@ -1,6 +1,6 @@
 # Display Evaluation Plan
 
-Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
 **Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
 Probe numbers are under **Measurements**.
 
@@ -438,6 +438,30 @@ single target over the budget fails alone, as before. Over-budget failures reuse
 error text. The 64 MiB global budget and the pin release paths are left to Slice 4 (D8's
 shared-entry reference count); until then only the 4-per-client and 16-total counts bound the
 total.
+
+Slice 4 (three alternating runs against the Slice 3 tree; counts exact, times as ranges):
+
+| Label | Before | After Slice 4 |
+|---|---|---|
+| `cold-500-plain-8-batches` | 203–211 ms, 480 selects, 4,849 parses | 177–182 ms, 425, 1,116 |
+| `hit-500-plain-8-batches` | 13.5–14.4 ms, 200, 8 | 14.3–14.8 ms, 200, 8 |
+| `after-variable-500-8-batches` | 153–155 ms, 480, 4,848 | 127–134 ms, 402, 1,093 |
+| `after-stamp-500-8-batches` | 145–148 ms, 480, 4,848 | 139–144 ms, 400, 592 |
+| `500-targets-10-no-match-regex` | 293–300 ms, 480, 4,848 | 273–274 ms, 400, 592 |
+| `one-loadJobScope` | 35, 605 | 35, 605 (generation unchanged) |
+| `four-tiny-snapshots` | no snapshot kept, 4 targets fail raw | 4 snapshots kept, 2 shared entries pinned, the 15.6 MiB chat charged once (16,898,012 B); +16.44 MiB measured alone |
+
+About 74 parses per batch remain, from the per-request projection (`forwardPresetRoots` copies) and
+the character reads. Time falls only 10–15 %: per-target runs dominate.
+
+Slice 4 bounds: configuration cache 2 entries / 32 MiB (the plan gave no byte start), transcript
+cache 8 entries / 64 MiB, global retained budget 64 MiB, 8 MiB per snapshot for request-owned bytes
+only. Slice 4 notes: sizes use Slice 3's object walk (renamed `retainedBytes`) instead of UTF-8 row
+lengths, since the store returns parsed data; the projection walk excludes the shared objects so
+nothing is charged twice. Over the global budget the oldest waiting snapshots give way (this
+client's first), then the target fails with the existing error; that loop can drop every waiting
+snapshot when a running continuation holds the budget (accepted as rare). `loadRequestDb` now
+delegates to a pure `buildRequestDb`; generation's reads are unchanged.
 
 ## Verification
 
