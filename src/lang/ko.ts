@@ -1085,6 +1085,8 @@ export const languageKorean = {
             idle: "이 채팅에서 실행 중인 작업이 없습니다.",
             invalidCurrent: "서버에서 올바르지 않은 작업 조회 응답을 받았습니다.",
             invalidStop: "서버에서 올바르지 않은 작업 중지 응답을 받았습니다.",
+            lookupTimedOut: "현재 작업을 조회하는 요청의 시간이 초과되었습니다. 채팅 중지를 다시 시도하세요.",
+            stopTimedOut: "작업 중지 요청의 시간이 초과되었습니다. 채팅 중지를 다시 시도하세요.",
             running: "실행 중",
             sequence: ", 전체 {total}개 중 {part}번째",
             kinds: {
@@ -1836,6 +1838,7 @@ export const languageKorean = {
     },
     resourceNoticeDismiss: "닫기",
     chatLoadFailed: "이 채팅을 불러오지 못했습니다: {0}",
+    chatLoadTimedOut: "채팅 요청의 시간이 초과되었습니다. 다시 시도하세요.",
     chatLoadRetry: "다시 시도",
     maxSupaChunkSize: "최대 수파메모리 청크 크기",
     addCharacter: "캐릭터 추가",
