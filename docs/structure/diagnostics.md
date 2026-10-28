@@ -113,14 +113,17 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   used; `closedInFront` carries the second check's) and `focusedHidden` (some window focused but not
   visible), and `clicked`. The projection keeps a side's phases and fields only: a browser `push` has no
   `service`, `jobId`, `status`, or `reason`, a server one none of the browser's fields.
-- `sync` phases: `conflict` and `reload` from the save loop (`resourceSync.svelte.ts`), and `saveWait` for a
+- `sync` phases: `conflict` from the save loop (`resourceSync.svelte.ts`), `reload` with `restore` from its restore halt or
+  `serviceWorker` from `bootstrap.ts`, and `saveWait` for a
   dispatched batch whose work waited over 2 s since its first unsettled mark (`reason` `inFlight` | `backoff` |
   `refresh` | `generating` | `conflict`: the blocker noted while it waited; `records`, `chats`, `orders` count the
   delayed work; `durationMs` from the oldest mark to dispatch); from the draft journal
   (`src/ts/storage/draftJournal.ts`), `journalSkipped` (`reason` `tooLarge` | `budget` for a write it did not
-  make, `format` for rows it cannot read and keeps, with `entries`), `journalFailed` (`unavailable`, `timeout`,
+  make, `format` for rows it cannot read and keeps or recovery intent it cannot install, with `entries`), `journalFailed` (`unavailable`, `timeout`,
   `blocked`, `quota`, `write`, `readFailed`), and `journalRecovered` (`orphan`, the `entries` it took over from a
-  closed tab).
+  closed tab). `journalRecovery.ts` also emits `journalRecovered` with the boot decision count in `entries`
+  and no reason, and `journalFailed` with `timeout` or `readFailed` when recovery fails. The adapter also
+  emits journal budget skips and write/restore-snapshot failures.
 - `notice` events (`notice` `serverJobLost` | `serverJobEndedAway` | `resourceReloaded` |
   `transformFailed`) are recorded where those alerts are shown: `serverCommands.ts` `reportEnd` and
   `recoverJobChat`, and `resourceSync.svelte.ts` `showReloadedNotice` (only when the latched notice
