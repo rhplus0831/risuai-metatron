@@ -1,9 +1,9 @@
 # Display Evaluation Plan
 
 Status: landed 1 (fd7f50766), 6 (15ed61b6c), 3 (6b0d485f5), 4 (3b0e047ff), 5 (cf326ef1e),
-2 (4a1d870f3), 7 (f5eda0ff6), 8 (aa4f2a68a). The user answered Q1–Q3 on 2026-10-28, all as
-recommended (see **Answered questions**). A Sol review of the first draft is folded in (see
-**Review record**). Probe numbers are under **Measurements**.
+2 (4a1d870f3), 7 (f5eda0ff6), 8 (aa4f2a68a), 9 (31b75a1e3); every slice has landed. The user
+answered Q1–Q3 on 2026-10-28, all as recommended (see **Answered questions**). A Sol review of
+the first draft is folded in (see **Review record**). Probe numbers are under **Measurements**.
 
 Sources: findings TJ02, TJ03, TJ05 and ST05 of the
 [server migration deep audit](../research/deep-audit-with-fable/server-migration-audit.md)
@@ -514,6 +514,55 @@ digest stalls fake-timer render tests. A call that may still need its emotions s
 Only the final display stage shows cached text early; translation inputs and auto-translate probes
 wait. Accepted limit: a screenshot taken while a replacing render is still in flight can capture
 the cached text (`whenRendered` does not wait for the confirmation, per Q2).
+
+Slice 9 (after all slices; baseline `2f38c2e7b` and the tip alternated on one machine, three runs
+each; the probe is a `?.`-guarded scratch copy; `other-stage` is the Slice 6 scratch variant):
+
+| Label | Baseline | After all slices |
+|---|---|---|
+| `cold-500-plain-8-batches` | 208–211 ms, 480 selects, 4,849 parses | 171–215 ms, 425, 1,116 |
+| `hit-500-plain-8-batches` | 13.0–15.4 ms, 200, 8, 500 hits | 12.0–17.6 ms, 200, 8, 500 hits |
+| `after-variable-500-8-batches` | 149–167 ms, 480, 4,848 | 125–148 ms, 402, 1,093 |
+| `after-stamp-500-8-batches` | 143–154 ms, 480, 4,848, 0 hits | 10.7–14.2 ms, 201, 9, 500 hits |
+| `one-loadJobScope` | 2.5–3.7 ms, 35, 605 | 3.2–5.4 ms, 35, 605 (generation unchanged) |
+| `500-whole-chat-hydrations-local-model` | 2,114–2,297 ms, 1,000, 250,500 | 2,173–2,512 ms, 1,000, 250,500 |
+| `worker-warmup` | 131–141 ms | 151–163 ms |
+| `500-targets-10-no-match-regex` | 1,033–1,193 ms, 480, 4,848, 500 regex tasks, 5,000 host parses | 274–314 ms, 401, 593, 500, 0 |
+| `500-targets-10-other-stage-regex` | 302–314 ms, 500 regex tasks | 125–135 ms, 0 |
+| `mixed-revision-cache` | after the save: cached, old text, same key | after the save: not cached, stored text, new key |
+| `viewport-cross-client` | narrow client gets `800`, cached | narrow client gets `320`, not cached |
+| `four-tiny-snapshots` | 16 B counted; 62.9–63.2 MiB freed on close | 2 shared entries pinned, 16,898,012 B charged; 15.94 MiB freed on close |
+
+The in-probe `heapDeltaMiB` is noise now (−1.16 to +1.05 MiB, earlier garbage collected inside the
+window), so the snapshot rows measure the heap freed by `service.close()` and a gc after four
+calls.
+
+Remount after a send (D1's price), from a scratch driver on the real service and store: chats A and
+B of 200 rows (1.5 KB each) with an `editdisplay` regex matching every row; the tab sends the last
+30 rows (`DEFAULT_CHAT_LOAD_INITIAL_PAGES`) with `knownKey`; a send appends two rows and stamps
+`lastInteraction`, then B → A; three rounds.
+
+| Case | `same` | Full | Text downloaded | Server time |
+|---|---|---|---|---|
+| B → A, nothing changed | 30 / 30 | 0 | 0 B | 0.8–1.5 ms |
+| First remount after a send (30 rows) | 2 | 28 (93 %) | 89–95 KB | 30–37 ms |
+| Same, 10 rows | 2 | 8 (80 %) | 21–27 KB | 11–13 ms |
+| The next remount | 30 / 30 | 0 | 0 B | about 1 ms |
+| After a variable write only | 0 | 30 (100 %) | about 93 KB | 35 ms |
+
+**Later** is not needed now: the miss costs one remount after each save (about 35 ms of server
+time and 90 KB per 30 rows, one transcript load), and the tab shows its cached text at once (Q2),
+so nobody waits. Revisit if the device checks show the mobile re-download or the replacing render
+is noticeable. Device checks (Android PWA over mobile data: A → B → A shows rows at once; after a
+send, no disturbing flicker; repeated switches answer only `same`) are the user's and not run
+(V5).
+
+Slice 9 notes: the cache comment moved from `transform.ts:147-153` to the `baseKey`/`targetKey`
+paragraph near `transform.ts:195`. Two existing guide lines were corrected beside the planned ones:
+persistence's `togglePresetId` (a link change moves the chat revision and so the transform key)
+and self-host-server's `/api/transform` row (`{ snapshotId, pending }` only while a target waits
+on handlers). The Known Hazards entry went into cbs-rendering's single list, since this branch
+predates the Issues/Limitations/Gotchas split on `dev` (`24f6651f3`).
 
 ## Verification
 
