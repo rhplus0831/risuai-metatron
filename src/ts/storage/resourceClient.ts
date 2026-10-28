@@ -11,6 +11,7 @@ import {
     type ResourceRevisionListing,
 } from "../../../shared/resources.ts";
 import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
+import { clearTransformResults } from "../parser/transformResults";
 
 /**
  * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends
@@ -62,6 +63,7 @@ export function setMutationAdmission(check: (() => boolean) | null) {
 }
 
 export function setResourceEpoch(epoch: string) {
+    if (epoch !== currentEpoch) clearTransformResults();
     currentEpoch = epoch;
 }
 
@@ -83,6 +85,8 @@ export function setEpochMismatchListener(listener: ((epoch: string) => void) | n
  * transports to the server, such as the generation jobs, report a 412 through it too).
  */
 export function epochMismatch(epoch: string): ResourceEpochMismatchError {
+    // A live restore waits on a notice before reloading; pending transform answers are already stale.
+    clearTransformResults();
     try {
         epochMismatchListener?.(epoch);
     } catch (error) {

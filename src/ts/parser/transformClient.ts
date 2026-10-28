@@ -35,6 +35,16 @@ import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { recordClientEvent } from "../diagnostics/collector";
 import { markDisplayTransformFailed } from "./displayTransformRecovery.svelte";
+import {
+    advanceTransformResultsGeneration,
+    confirmTransformResult,
+    dropMessageTransformResults,
+    getTransformResult,
+    replaceTransformResult,
+    transformResultVersion,
+    transformResultsGeneration,
+    type TransformResultEntry,
+} from "./transformResults";
 
 /**
  * The client of the script transform (`shared/transform.ts`): the `editdisplay` stage of
@@ -50,9 +60,10 @@ import { markDisplayTransformFailed } from "./displayTransformRecovery.svelte";
  * the stages and retries of a message's render, passed down to `ParseMarkdown` and `translateHTML`):
  * the chat, the message id at `chatID`, the preset and persona ids, the plugin call context, and the
  * message's Re-render generation (the first transform sent at a Re-render's generation skips the
- * server cache, for every later stage of that render too). Calls are batched per context, mode, and
- * handler set on the next animation frame (or after 16 ms when frames are withheld). While the
- * message is locked by a generation (it streams), the transform is skipped: the text goes through
+ * server and tab caches, for every later stage of that render too). Calls are batched per context,
+ * mode, handler set, and captured viewport/language on the next animation frame (or after 16 ms
+ * when frames are withheld). While the message is locked by a generation (it streams), the
+ * transform is skipped: the text goes through
  * the browser steps raw, and the row renders again when the lock ends. Each target is answered as
  * soon as its result is known; a failed target or request leaves its text unprocessed, and a batch
  * shows one toast on its first failure; there is no browser fallback on the server path. With the
@@ -63,10 +74,19 @@ import { markDisplayTransformFailed } from "./displayTransformRecovery.svelte";
  * still running then fails its own target (it is not stopped, but no later handler of its text is
  * started; its result is ignored), and the finished texts go out in the second call.
  *
- * `@@emo` effects are applied once per tab and result key (as the tab's process cache applies
- * them once), and only when the caller's character argument is not `simple` (today's
- * `applyScriptEffect` skips a simple one); a response older than a "Re-render" of its message
- * applies none.
+ * A bounded tab LRU keeps confirmed text. A matching target sends `knownKey` when it does not need
+ * emotions; `same` confirms the retained text without downloading it. ChatBody's final display stage
+ * may show this text while confirmation is pending and render again on a changed or failed answer,
+ * handing a non-mixed answer or a raw failure to that correction without another request. A changed
+ * mixed answer instead makes the correction request fresh state. Source hashing and enqueueing are
+ * synchronous; a cache hit also requires the exact source, so a hash collision is a miss.
+ * Translation inputs always wait. Re-render drops the message's entries, GUI resets keep entries,
+ * and epoch changes clear them. Both the cache generation captured before any await and the message's
+ * Re-render generation fence every answer's cache changes, replacement callback, and effects.
+ * Overlapping answers condition their writes on the entry version they read.
+ *
+ * `@@emo` effects apply only from full answers, once per tab and result key, and only when the
+ * caller's character argument is not `simple`; cached text and `same` never apply emotions.
  */
 
 /** A per-document value: the handler-set identity never repeats across reloads. */
@@ -98,6 +118,8 @@ export type CapturedTransform = {
     pluginContext: PluginCallContext | undefined;
     /** The message's render generation when the call began ("Re-render" raises it). */
     generation: number;
+    /** The tab cache's generation before the render's first await. */
+    cacheGeneration: number;
     /**
      * Whether this render skips the server cache: claimed by its first transform sent at the generation a
      * "Re-render" marked (then every later stage with this capture skips it too).
@@ -109,6 +131,21 @@ export type CapturedTransform = {
     hadUnackedWork: boolean;
     /** An editdisplay answer may have mixed the render's text with a different stored transcript. */
     mixedDisplay: boolean;
+    /** Installed only for ChatBody's final display stage, never for translation inputs. */
+    onProvisional?: (answer: { replaced: boolean; mixed: boolean; outcome?: TransformOutcome }) => void;
+    /** Final display answers still pending; mixed reporting waits for their replacement decision. */
+    pendingProvisional?: number;
+    /** A provisional answer handed to the next local render, consumed at its final stage. */
+    provisionalOutcome?: TransformOutcome;
+};
+
+type TransformOutcome = {
+    identity: string;
+    cacheGeneration: number;
+    generation: number;
+    /** The exact source also guards the handoff against a hash collision. */
+    source: string;
+    text: string;
 };
 
 const generations = new Map<string, number>();
@@ -164,6 +201,7 @@ function readTransformContext(
         ...(messageId ? { messageId } : {}),
         pluginContext: options.pluginContext ?? capturePluginContext(chatRef),
         generation,
+        cacheGeneration: transformResultsGeneration(),
         noCache: false,
         locked: isMessageLocked(chatRef, messageId),
         installVersion: chatInstallVersion(chatRef),
@@ -178,6 +216,7 @@ export function rerenderMessage(chatRef: ChatRef, messageId: string): void {
     const generation = (generations.get(key) ?? 0) + 1;
     generations.set(key, generation);
     noCacheNext.set(key, generation);
+    dropMessageTransformResults(key);
 }
 
 /** The keys whose emotions this tab applied (cleared with the process cache, on `ReloadGUIPointer`). */
@@ -186,20 +225,32 @@ const MAX_APPLIED = 4096;
 
 export function resetTransformEffects(): void {
     appliedEmotions.clear();
+    advanceTransformResultsGeneration();
 }
+
+type Answer = TransformResult | NonNullable<TransformResponse["same"]>[number];
 
 type Pending = {
     target: TransformTarget;
-    resolve: (result: TransformResult) => void;
+    captured: CapturedTransform;
+    resolve: (result: Answer) => void;
+};
+
+type Operation = {
+    target: TransformTarget;
+    entry: TransformResultEntry | undefined;
+    version: symbol | undefined;
+    answer: Promise<Answer>;
 };
 
 type Batch = {
     mode: TransformMode;
     captured: CapturedTransform;
+    client: { viewport: { width: number; height: number }; browserLanguage: string };
     handlers: ReturnType<typeof handlerSet>;
     pending: Pending[];
     /** Identical targets share one entry (by their inputs). */
-    shared: Map<string, Promise<TransformResult>>;
+    shared: Map<string, Operation>;
     /**
      * Whether this batch's failure toast was shown (one per batch, its chunks included) or is
      * suppressed (a restore refused it: the terminal notice tells the user).
@@ -319,9 +370,9 @@ function reportFailure(batch: Batch, error: string): void {
 }
 
 /** Answers a caller once; a failed target is reported. */
-function settle(batch: Batch, entry: Pending, result: TransformResult): void {
+function settle(batch: Batch, entry: Pending, result: Answer): void {
     entry.resolve(result);
-    if (result.ok === false) {
+    if ("ok" in result && result.ok === false && isCurrent(entry.captured)) {
         reportFailure(batch, result.error);
     }
 }
@@ -392,10 +443,12 @@ async function sendBatch(batch: Batch): Promise<void> {
 async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
     const deadline = Date.now() + CHUNK_DEADLINE_MS;
     const open = new Map(entries.map((entry) => [entry.target.id, entry]));
-    const answer = (results: TransformResult[]) => {
+    const answer = (results: Answer[]) => {
         for (const result of results) {
             const entry = open.get(result.id);
             if (entry) {
+                // An unrecognized confirmation leaves the target unanswered, like a missing result.
+                if (!("ok" in result) && result.key !== entry.target.knownKey) continue;
                 open.delete(result.id);
                 settle(batch, entry, result);
             }
@@ -409,16 +462,14 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
                 clientId,
                 mode: batch.mode,
                 context: batch.captured.context,
-                client: {
-                    viewport: { width: window.innerWidth, height: window.innerHeight },
-                    browserLanguage: navigator.language,
-                },
+                client: batch.client,
                 targets: entries.map((entry) => entry.target),
                 ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
             },
             deadline,
         );
         answer(first.results);
+        answer(first.same ?? []);
         if (first.snapshotId && first.pending && first.pending.length > 0) {
             // Each text's handlers run in order; the texts run side by side, as the tab renders messages.
             // They end before the second call's reserve, so the finished texts still go out with a hung
@@ -446,6 +497,28 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
     answer([...open.keys()].map((id) => ({ id, ok: false as const, error: "The render did not answer" })));
 }
 
+function isCurrent(captured: CapturedTransform): boolean {
+    return (
+        captured.cacheGeneration === transformResultsGeneration() &&
+        (!captured.messageId ||
+            (generations.get(messageKey(captured.chatRef, captured.messageId)) ?? 0) === captured.generation)
+    );
+}
+
+/** A synchronous 53-bit UTF-16 hash (cyrb53); exact-source checks disambiguate collisions. */
+function sourceHash(source: string): string {
+    let first = 0xdeadbeef;
+    let second = 0x41c6ce57;
+    for (let i = 0; i < source.length; i++) {
+        const code = source.charCodeAt(i);
+        first = Math.imul(first ^ code, 2654435761);
+        second = Math.imul(second ^ code, 1597334677);
+    }
+    first = Math.imul(first ^ (first >>> 16), 2246822507) ^ Math.imul(second ^ (second >>> 13), 3266489909);
+    second = Math.imul(second ^ (second >>> 16), 2246822507) ^ Math.imul(first ^ (first >>> 13), 3266489909);
+    return (4294967296 * (second & 0x1fffff) + (first >>> 0)).toString(36);
+}
+
 /**
  * `processScriptFull(char, data, mode, chatID, cbsConditions)` on the server for a captured call:
  * `{ data, emoChanged }`. A locked message, a failed request, or a failed target answers the text as
@@ -466,11 +539,16 @@ export async function serverProcessScript(
     const handlers = handlerSet(mode);
     const key = captured.messageId ? messageKey(captured.chatRef, captured.messageId) : null;
     // The bypass is taken by a transform actually sent at the marked generation (never by an older render).
-    if (!captured.noCache && key !== null && noCacheNext.get(key) === captured.generation) {
+    if (!captured.noCache && key !== null && isCurrent(captured) && noCacheNext.get(key) === captured.generation) {
         noCacheNext.delete(key);
         captured.noCache = true;
     }
     const noCache = captured.noCache;
+    const client = {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        browserLanguage: navigator.language,
+    };
+    const onProvisional = captured.onProvisional;
     const target: TransformTarget = {
         id: uuidv4(),
         kind: kind === "message" && !captured.messageId ? "text" : kind,
@@ -483,63 +561,142 @@ export async function serverProcessScript(
         ),
         ...(noCache ? { noCache: true } : {}),
     };
-    const batchKey = JSON.stringify([mode, captured.context, handlers?.id ?? null]);
+    const identity = JSON.stringify([
+        captured.chatRef,
+        mode,
+        target.kind,
+        captured.messageId ?? null,
+        target.chatIndex,
+        target.sourceId,
+        sourceHash(data),
+        target.cbsConditions,
+        captured.context,
+        handlers?.id ?? null,
+        client,
+    ]);
+    const outcome = captured.provisionalOutcome;
+    if (onProvisional && outcome) {
+        delete captured.provisionalOutcome;
+        if (
+            outcome.identity === identity &&
+            outcome.source === data &&
+            outcome.cacheGeneration === captured.cacheGeneration &&
+            outcome.generation === captured.generation &&
+            isCurrent(captured)
+        ) {
+            return { data: outcome.text, emoChanged: false };
+        }
+    }
+    // No await between this lookup and enqueue: a frame may flush and remove the batch at any await.
+    const entry = noCache ? undefined : getTransformResult(identity, data);
+    const version = entry?.version ?? transformResultVersion(identity);
+    if (entry && (char.type === "simple" || appliedEmotions.has(entry.key))) target.knownKey = entry.key;
+    const batchKey = JSON.stringify([mode, captured.context, handlers?.id ?? null, client]);
     let batch = batches.get(batchKey);
     if (!batch) {
-        batch = { mode, captured, handlers, pending: [], shared: new Map(), reported: false };
+        batch = { mode, captured, client, handlers, pending: [], shared: new Map(), reported: false };
         batches.set(batchKey, batch);
     }
     const inputs = JSON.stringify([
-        target.kind,
-        target.sourceId,
-        target.chatIndex,
-        target.messageId ?? null,
+        identity,
         data,
-        target.cbsConditions,
         noCache,
+        captured.cacheGeneration,
+        captured.generation,
+        target.knownKey ?? null,
     ]);
-    let result = batch.shared.get(inputs);
-    if (!result) {
-        result = new Promise<TransformResult>((resolve) => batch!.pending.push({ target, resolve }));
-        batch.shared.set(inputs, result);
+    let operation = batch.shared.get(inputs);
+    if (!operation) {
+        operation = {
+            target,
+            entry,
+            version,
+            answer: new Promise<Answer>((resolve) => batch!.pending.push({ target, captured, resolve })),
+        };
+        batch.shared.set(inputs, operation);
         schedule();
     }
-    const answered = await result;
-    if (
+    const shared = operation;
+    const provisional =
+        onProvisional &&
+        shared.entry &&
+        shared.target.kind === "message" &&
         mode === "editdisplay" &&
-        captured.messageId &&
-        (captured.hadUnackedWork || chatInstallVersion(captured.chatRef) !== captured.installVersion)
-    ) {
-        captured.mixedDisplay = true;
-    }
-    const current = key === null || (generations.get(key) ?? 0) === captured.generation;
-    if (answered.ok === false) {
-        console.warn("[Transform]", answered.error);
-        if (mode === "editdisplay") {
-            recordClientEvent({ kind: "notice", notice: "transformFailed" });
-            if (captured.messageId && current) {
-                markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+        !captured.hadUnackedWork &&
+        isCurrent(captured);
+    if (provisional) captured.pendingProvisional = (captured.pendingProvisional ?? 0) + 1;
+    const completion = shared.answer.then((answered) => {
+        const current = isCurrent(captured);
+        const mixed =
+            mode === "editdisplay" &&
+            !!captured.messageId &&
+            (captured.hadUnackedWork || chatInstallVersion(captured.chatRef) !== captured.installVersion);
+        if (current && mixed) captured.mixedDisplay = true;
+        const failed = "ok" in answered && !answered.ok;
+        let text = data;
+        let emoChanged = false;
+        if (!("ok" in answered)) {
+            // The response belongs to the shared operation's dispatched target, not this caller's id.
+            text = shared.entry!.text;
+            if (current) confirmTransformResult(identity, shared.entry!.version);
+        } else if (answered.ok === false) {
+            console.warn("[Transform]", answered.error);
+            if (current) {
+                replaceTransformResult(identity, shared.version, key);
+            }
+            if (mode === "editdisplay") {
+                recordClientEvent({ kind: "notice", notice: "transformFailed" });
+                if (captured.messageId && current) {
+                    markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+                }
+            }
+        } else {
+            text = answered.text;
+            if (current) replaceTransformResult(identity, shared.version, key, { ...answered, source: data });
+            if (
+                char.type !== "simple" &&
+                current &&
+                answered.emotions.length > 0 &&
+                !appliedEmotions.has(answered.key)
+            ) {
+                if (appliedEmotions.size >= MAX_APPLIED) appliedEmotions.clear();
+                appliedEmotions.add(answered.key);
+                const charemotions = get(CharEmotion);
+                for (const emotion of answered.emotions) {
+                    const list = charemotions[char.chaId] ?? [];
+                    if (list.length > 4) list.splice(0, 1);
+                    list.push([emotion.name, emotion.image, Date.now()]);
+                    charemotions[char.chaId] = list;
+                }
+                CharEmotion.set(charemotions);
+                emoChanged = true;
             }
         }
-        return { data, emoChanged: false };
-    }
-    let emoChanged = false;
-    if (char.type !== "simple" && current && answered.emotions.length > 0 && !appliedEmotions.has(answered.key)) {
-        if (appliedEmotions.size >= MAX_APPLIED) {
-            appliedEmotions.clear();
+        if (provisional && current) {
+            captured.pendingProvisional -= 1;
+            const replaced = failed || text !== shared.entry!.text;
+            onProvisional({
+                replaced,
+                mixed,
+                ...(replaced && (!mixed || failed)
+                    ? {
+                          outcome: {
+                              identity,
+                              cacheGeneration: captured.cacheGeneration,
+                              generation: captured.generation,
+                              source: data,
+                              text,
+                          },
+                      }
+                    : {}),
+            });
         }
-        appliedEmotions.add(answered.key);
-        const charemotions = get(CharEmotion);
-        for (const emotion of answered.emotions) {
-            const list = charemotions[char.chaId] ?? [];
-            if (list.length > 4) {
-                list.splice(0, 1);
-            }
-            list.push([emotion.name, emotion.image, Date.now()]);
-            charemotions[char.chaId] = list;
-        }
-        CharEmotion.set(charemotions);
-        emoChanged = true;
+        return { data: text, emoChanged };
+    });
+    if (provisional) {
+        // The row settles without waiting for confirmation; the callback schedules any correction.
+        void completion.catch((error) => console.error("[Transform]", error));
+        return { data: shared.entry!.text, emoChanged: false };
     }
-    return { data: answered.text, emoChanged };
+    return completion;
 }

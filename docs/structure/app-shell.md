@@ -117,7 +117,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   - `PlaygroundStore`, `OpenRealmStore`.
   - `CharConfigSubMenu`, `botMakerMode`.
 - Reload signals:
-  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
+  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions and its result cache's generation, `cbs-rendering.md`).
   - `ReloadChatPointer`.
 - The message search panel's open state and scope (`messageSearchPanel`, `openMessageSearch`) and the pending jump to a message live in `src/ts/messageSearch.svelte.ts`, not here ([ui-theming](ui-theming.md) `MessageSearch.svelte`): a jump is dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is another one at any flush (so coming back never runs it again) or when its chat closes. Selecting the same chat again keeps it: closing the catalog over that chat makes the router re-apply its URL with `selectChat`, which bumps `chatSelectionVersion` without a move. A move away and back inside one flush is not seen.
 - The Checkpoints dialog and its busy state live in `src/ts/checkpoints/chatCheckpoints.svelte.ts`, not here; see [ui-theming](ui-theming.md). Its load blocks global hotkeys until the save, request, and refresh finish.

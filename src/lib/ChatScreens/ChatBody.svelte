@@ -124,6 +124,8 @@
      * next render is pending.
      */
     let parseRun = 0;
+    let confirmedRevision = $state(0);
+    let pendingTransformOutcome: { run: number; outcome: CapturedTransform["provisionalOutcome"] } | undefined;
     let destroyed = false;
     onDestroy(() => {
         destroyed = true;
@@ -165,6 +167,7 @@
             shownStored: boolean;
             pairing: { source: string; options: BilingualInterleaveOptions } | null;
         },
+        display = { finished: false, mixed: false, reported: false, replaced: false },
     ): Promise<string> => {
         // track 'translated' and 'retranslate' state
         translated;
@@ -175,6 +178,43 @@
         const pairing = retryStored ? retryStored.pairing : bilingual;
         // The server transform's context, captured once for every stage and retry of this render (flag on).
         const transform = retryTransform !== undefined ? retryTransform : captureTransform(chatID);
+        if (tries === undefined && pendingTransformOutcome) {
+            if (transform && pendingTransformOutcome.run === run - 1) {
+                transform.provisionalOutcome = pendingTransformOutcome.outcome;
+            }
+            pendingTransformOutcome = undefined;
+        }
+        // A retry starts before any translation probes again; only its final display may opt in.
+        if (transform) transform.onProvisional = undefined;
+        const reportMixed = () => {
+            if (
+                destroyed ||
+                run !== parseRun ||
+                !display.finished ||
+                display.replaced ||
+                display.reported ||
+                transform?.pendingProvisional
+            )
+                return;
+            if (transform && (display.mixed || transform.mixedDisplay)) {
+                display.reported = true;
+                onMixedRender?.(transform);
+            }
+        };
+        const enableProvisional = () => {
+            if (!transform) return;
+            transform.onProvisional = ({ replaced, mixed, outcome }) => {
+                if (destroyed || run !== parseRun || display.replaced) return;
+                display.mixed ||= mixed;
+                if (replaced) {
+                    display.replaced = true;
+                    pendingTransformOutcome = outcome ? { run, outcome } : undefined;
+                    confirmedRevision += 1;
+                } else {
+                    reportMixed();
+                }
+            };
+        };
         const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
         let lastParsedQueue = "";
         let mode = "notrim" as const;
@@ -186,12 +226,14 @@
                     // The display scripts see the pairs' wrappers between the lines.
                     text = bilingualInterleave(pairing.source, text, pairing.options);
                 }
+                enableProvisional();
                 const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 return marked;
             }
             if (streaming) {
                 lastAutoTranslate = null;
+                enableProvisional();
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 return marked;
@@ -306,6 +348,7 @@
 
                 return transResult;
             } else {
+                enableProvisional();
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 lastCharArg = charArg;
@@ -334,6 +377,7 @@
                     shownStored,
                     pairing,
                 },
+                display,
             );
             if (retried !== undefined) {
                 lastParsedQueue = retried;
@@ -345,7 +389,10 @@
                 lastParsed = lastParsedQueue;
                 lastRenderedRevision = requestedRevision;
                 // Retries share the capture; only their outer call reports the completed render.
-                if (tries === undefined && transform?.mixedDisplay) onMixedRender?.(transform);
+                if (tries === undefined) {
+                    display.finished = true;
+                    reportMixed();
+                }
             }
         }
     };
@@ -428,6 +475,7 @@
     let markParsingResult = $derived.by(() => {
         // Translation can await before ParseMarkdown reads the parser's asset inputs.
         moduleAssets;
+        confirmedRevision;
         return markParsing(msgDisplay, character, idx, renderRevision, ++parseRun);
     });
 

@@ -99,17 +99,20 @@ vi.mock("../../storage/settingsViews.svelte", () => ({
         personaId: state.persona ?? "",
     }),
 }));
-vi.mock("../../storage/serverAuth", () => ({
-    authFetch: async (path: string, init: { body: string; headers: Record<string, string> }) => {
-        const body = JSON.parse(init.body);
-        state.calls.push({ path, body, headers: init.headers });
-        const reply = (await state.handler(path, body)) as Reply;
-        const status = reply.status ?? 200;
-        return { status, ok: status < 400, json: async () => reply.body };
-    },
-}));
-vi.mock("../../storage/resourceClient", () => ({
-    getResourceEpoch: () => "epoch-1",
+vi.mock("../../storage/serverAuth", async () =>
+    (await import("../../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: async (path, init) => {
+            const body = JSON.parse(init!.body as string);
+            state.calls.push({ path, body, headers: init!.headers as Record<string, string> });
+            const reply = (await state.handler(path, body)) as Reply;
+            return Response.json(reply.body, { status: reply.status ?? 200 });
+        },
+    }),
+);
+// The pre-existing HTTP refusal tests isolate toast handling from the restore lifecycle.
+// Cache-fence tests below call the real resource client hooks directly.
+vi.mock("../../storage/resourceClient", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../storage/resourceClient")>()),
     epochMismatch: (epoch: string) => {
         state.epochs.push(epoch);
         return new Error(`EpochMismatch ${epoch}`);
@@ -127,6 +130,8 @@ import {
 } from "../transformClient";
 import { createProbe } from "../../storage/tests/reactiveProbe.svelte";
 import { lockSource } from "./transformReactive.svelte";
+const { epochMismatch, setEpochMismatchListener, setResourceEpoch } =
+    await vi.importActual<typeof import("../../storage/resourceClient")>("../../storage/resourceClient");
 
 const ok = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
     id,
@@ -199,6 +204,8 @@ beforeEach(() => {
     state.hookContexts.length = 0;
     state.toasts.length = 0;
     state.epochs.length = 0;
+    setResourceEpoch("epoch-1");
+    setEpochMismatchListener((epoch) => state.epochs.push(epoch));
     state.hooks.editdisplay.clear();
     state.hooks.editprocess.clear();
     state.handler = defaultHandler;
@@ -211,6 +218,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    setEpochMismatchListener(null);
     vi.useRealTimers();
     vi.unstubAllGlobals();
 });
@@ -780,6 +788,152 @@ describe("Re-render (the cache bypass)", () => {
         await Promise.all([pretranslate, translation]);
         expect(transformPosts()[0].body.targets.map((t: any) => t.noCache)).toEqual([true, true]);
         expect(captured.noCache).toBe(true);
+    });
+});
+
+describe("confirmed display results", () => {
+    const full =
+        (text: string, resultKey = text): Handler =>
+        (_path, body) => ({
+            body: { results: body.targets.map((target: any) => ok(target.id, text, { key: resultKey })) },
+        });
+    const same: Handler = (_path, body) => ({
+        body: { results: [], same: body.targets.map((target: any) => ({ id: target.id, key: target.knownKey })) },
+    });
+    const send = (ref: { chaId: string }, captured = captureTransform(0)!, source = "raw") =>
+        serverProcessScript(char(ref.chaId, "simple"), source, "editdisplay", 0, {}, captured, "message");
+    async function complete(ref: { chaId: string }, source = "raw") {
+        const pending = send(ref, captureTransform(0)!, source);
+        await flush();
+        return pending;
+    }
+    const lastTarget = () => transformPosts().at(-1)!.body.targets[0];
+
+    it("Re-render discards the message's source variants, bypasses both caches, and retains the new answer", async () => {
+        const ref = newChat();
+        state.handler = full("confirmed", "original-key");
+        await complete(ref);
+        await complete(ref, "earlier edit");
+        state.handler = same;
+        expect((await complete(ref)).data).toBe("confirmed");
+        expect(lastTarget().knownKey).toBe("original-key");
+
+        rerenderMessage(ref, "m0");
+        state.handler = full("rerendered", "replacement-key");
+        const replaced = settledFlag(send(ref));
+        expect(replaced.done).toBe(false);
+        await flush();
+        expect(lastTarget()).toMatchObject({ noCache: true });
+        expect(lastTarget().knownKey).toBeUndefined();
+        expect(replaced.value?.data).toBe("rerendered");
+
+        state.handler = same;
+        expect((await complete(ref)).data).toBe("rerendered");
+        expect(lastTarget().knownKey).toBe("replacement-key");
+        expect(lastTarget().noCache).toBeUndefined();
+        state.handler = full("other edit");
+        await complete(ref, "earlier edit");
+        expect(lastTarget().knownKey).toBeUndefined();
+    });
+
+    const fences = ["Re-render", "GUI reset", "epoch change", "live restore"] as const;
+    for (const fence of fences) {
+        it.each(["same", "full"] as const)(`ignores a late %s answer after ${fence}`, async (answer) => {
+            const ref = newChat();
+            state.handler = full("confirmed", "original-key");
+            await complete(ref);
+            // Setting the already loaded epoch must keep a remount's confirmed text.
+            setResourceEpoch("epoch-1");
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => (release = resolve));
+            state.handler = async (path, body) => {
+                await held;
+                return (answer === "same" ? same : full("obsolete", "obsolete-key"))(path, body);
+            };
+            const captured = captureTransform(0)!;
+            captured.onProvisional = vi.fn();
+            const provisional = settledFlag(send(ref, captured));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(provisional).toEqual({ done: true, value: { data: "confirmed", emoChanged: false } });
+            await flush();
+            expect(lastTarget().knownKey).toBe("original-key");
+
+            if (fence === "Re-render") rerenderMessage(ref, "m0");
+            else if (fence === "GUI reset") resetTransformEffects();
+            else if (fence === "epoch change") setResourceEpoch("epoch-2");
+            else {
+                epochMismatch("restored-epoch");
+                expect(state.epochs).toEqual(["restored-epoch"]);
+            }
+            release();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(captured.onProvisional).not.toHaveBeenCalled();
+
+            // A GUI reset keeps the confirmed entry; the other fences drop it.
+            state.handler = full("fresh", "fresh-key");
+            await complete(ref);
+            expect(lastTarget().knownKey).toBe(fence === "GUI reset" ? "original-key" : undefined);
+            expect(lastTarget().noCache).toBe(fence === "Re-render" ? true : undefined);
+            state.handler = same;
+            expect((await complete(ref)).data).toBe("fresh");
+            expect(lastTarget().knownKey).toBe("fresh-key");
+        });
+    }
+
+    it("waits for a full answer's emotions after a simple render and applies them once per key", async () => {
+        const ref = newChat();
+        const emotional: Handler = (_path, body) => ({
+            body: {
+                results: body.targets.map((target: any) =>
+                    ok(target.id, "confirmed", {
+                        key: "emotional-key",
+                        emotions: [{ name: "happy", image: "happy.png" }],
+                    }),
+                ),
+            },
+        });
+        state.handler = emotional;
+        await complete(ref);
+        expect(get(CharEmotion)).toEqual({});
+
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        state.handler = async (path, body) => {
+            await held;
+            return emotional(path, body);
+        };
+        const captured = captureTransform(0)!;
+        captured.onProvisional = vi.fn();
+        const provisional = settledFlag(
+            serverProcessScript(char(ref.chaId), "raw", "editdisplay", 0, {}, captured, "message"),
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(provisional).toEqual({ done: true, value: { data: "confirmed", emoChanged: false } });
+        await flush();
+        expect(lastTarget().knownKey).toBeUndefined();
+        expect(get(CharEmotion)).toEqual({});
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+        const emotions = () => get(CharEmotion)[ref.chaId]?.map(([name, image]) => [name, image]);
+        expect(emotions()).toEqual([["happy", "happy.png"]]);
+
+        // Both a textless confirmation and a repeated full result leave the effects alone.
+        for (const handler of [same, emotional]) {
+            state.handler = handler;
+            const pending = serverProcessScript(
+                char(ref.chaId),
+                "raw",
+                "editdisplay",
+                0,
+                {},
+                captureTransform(0)!,
+                "message",
+            );
+            await flush();
+            expect(lastTarget().knownKey).toBe("emotional-key");
+            expect(await pending).toEqual({ data: "confirmed", emoChanged: false });
+            expect(emotions()).toEqual([["happy", "happy.png"]]);
+        }
     });
 });
 

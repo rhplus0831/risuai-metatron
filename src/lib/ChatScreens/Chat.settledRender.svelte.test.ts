@@ -29,9 +29,11 @@ import {
 } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import * as serverAuth from "src/ts/storage/serverAuth";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
-import { createSimpleCharacter } from "src/ts/stores.svelte";
+import { createSimpleCharacter, ReloadGUIPointer } from "src/ts/stores.svelte";
 import Chat from "./Chat.svelte";
+import ChatBody from "./ChatBody.svelte";
 
 const epoch = "00000000-0000-0000-0000-000000000000";
 const revision = (n: number) => `${epoch}:1:${n}`;
@@ -124,7 +126,14 @@ function render(id = "row") {
     });
     mounted.push(instance);
     flushSync();
-    return { text: () => target.querySelector(".chattext")?.textContent?.trim() };
+    return {
+        text: () => target.querySelector(".chattext")?.textContent?.trim(),
+        remove: async () => {
+            mounted.splice(mounted.indexOf(instance), 1);
+            await unmount(instance);
+            target.remove();
+        },
+    };
 }
 
 function acknowledge(work = takeChatWork(new Set())) {
@@ -409,5 +418,176 @@ describe("settled display renders", () => {
         expect(row.text()).toBe("[row][stored history]");
         await drain();
         expect(targets()).toHaveLength(1);
+    });
+});
+
+describe("confirmed text on remount", () => {
+    async function warm() {
+        const row = render();
+        await settle(16);
+        expect(row.text()).toBe("[row][stored history]");
+        await row.remove();
+        // The real chat switch reset retains confirmed text but fences the outgoing renders.
+        ReloadGUIPointer.update((value) => value + 1);
+    }
+
+    it("shows confirmed text while a remount's same answer is held and downloads no replacement text", async () => {
+        await warm();
+        const release = deferred<void>();
+        answer = async (body) => {
+            await release.promise;
+            return Response.json({
+                results: [],
+                same: body.targets.map((target) => ({ id: target.id, key: target.knownKey })),
+            });
+        };
+        const row = render();
+        await settle(16);
+        expect(targets()).toHaveLength(2);
+        expect(targets()[1].knownKey).toBe("1/row/[row]");
+        expect(row.text()).toBe("[row][stored history]");
+        release.resolve();
+        await drain();
+        expect(row.text()).toBe("[row][stored history]");
+        expect(targets()).toHaveLength(2);
+    });
+
+    it("replaces provisional text with a differing full answer without requesting it again", async () => {
+        await warm();
+        const release = deferred<void>();
+        answer = async (_body, result) => {
+            await release.promise;
+            return Response.json({
+                results: result.results.map((entry) => ({ ...entry, text: "**Updated display**", key: "updated" })),
+            });
+        };
+        const row = render();
+        await settle(16);
+        expect(row.text()).toBe("[row][stored history]");
+        release.resolve();
+        await drain();
+        expect(row.text()).toBe("Updated display");
+        expect(targets()).toHaveLength(2);
+
+        await row.remove();
+        answer = (body) =>
+            Response.json({
+                results: [],
+                same: body.targets.map((target) => ({ id: target.id, key: target.knownKey })),
+            });
+        const remounted = render();
+        await settle(16);
+        expect(targets().at(-1)!.knownKey).toBe("updated");
+        expect(remounted.text()).toBe("Updated display");
+    });
+
+    it("shows the raw input when a provisional answer fails without another correction request", async () => {
+        await warm();
+        const release = deferred<void>();
+        answer = async () => {
+            await release.promise;
+            return Response.json({ error: "Unavailable" }, { status: 503 });
+        };
+        const row = render();
+        await settle(16);
+        expect(row.text()).toBe("[row][stored history]");
+        release.resolve();
+        await drain();
+        expect(row.text()).toBe("[row]");
+        expect(targets()).toHaveLength(2);
+    });
+
+    it("waits for the confirmed transform before using cached display text as a translation input", async () => {
+        await warm();
+        settings.memoryTranslateMedia.translatorType = "google";
+        settings.memoryTranslateMedia.legacyTranslation = true;
+        settings.memoryTranslateMedia.translateBeforeHTMLFormatting = false;
+        settings.memoryTranslateMedia.useExperimentalGoogleTranslator = false;
+        settings.memoryTranslateMedia.combineTranslation = false;
+        const translatedInputs: string[] = [];
+        vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+            const url = new URL(String(input));
+            expect(url.hostname).toBe("translate.googleapis.com");
+            translatedInputs.push(url.searchParams.get("q")!);
+            return Response.json([[["Translated fresh display"]]]);
+        });
+        const release = deferred<void>();
+        answer = async (_body, result) => {
+            await release.promise;
+            return Response.json({
+                results: result.results.map((entry) => ({
+                    ...entry,
+                    text: "Fresh translation input",
+                    key: "fresh-input",
+                })),
+            });
+        };
+        const target = document.createElement("div");
+        document.body.append(target);
+        const instance = mount(ChatBody, {
+            target,
+            props: {
+                character: createSimpleCharacter(characterList()[0]),
+                idx: 1,
+                msgDisplay: "[row]",
+                role: "char",
+                translated: true,
+                autoTranslate: true,
+                translating: false,
+                retranslate: false,
+                modelShortName: "",
+            },
+        });
+        mounted.push(instance);
+        await settle(16);
+        expect(targets()).toHaveLength(2);
+        expect(targets()[1].knownKey).toBe("1/row/[row]");
+        expect(translatedInputs).toEqual([]);
+        release.resolve();
+        await drain();
+        await instance.whenRendered();
+        expect(translatedInputs.map((text) => text.trim())).toEqual(["Fresh translation input"]);
+        expect(target.textContent?.trim()).toBe("Translated fresh display");
+    });
+
+    it("requests settled state for both same and replaced provisional answers when the chat moved while they waited", async () => {
+        const initial = [render(), render("peer")];
+        await settle(16);
+        expect(initial.map((row) => row.text())).toEqual(["[row][stored history]", "[peer][stored history]"]);
+        for (const row of initial) await row.remove();
+        const release = deferred<void>();
+        answer = async (body, result) => {
+            await release.promise;
+            return Response.json({
+                results: result.results
+                    .filter((entry) => body.targets.find((t) => t.id === entry.id)?.messageId === "peer")
+                    .map((entry) => ({ ...entry, text: "[peer][intermediate history]", key: "intermediate" })),
+                same: body.targets
+                    .filter((target) => target.messageId === "row")
+                    .map((target) => ({ id: target.id, key: target.knownKey })),
+            });
+        };
+        const row = render();
+        const peer = render("peer");
+        await settle(16);
+        expect(row.text()).toBe("[row][stored history]");
+        expect(peer.text()).toBe("[peer][stored history]");
+        setMessageText(ref, "history", "[saved history]");
+        acknowledge();
+        remoteAppend("remote");
+        await drain();
+        expect(targets()).toHaveLength(2);
+        expect(targets("peer")).toHaveLength(2);
+
+        answer = (_body, result) => Response.json(result);
+        release.resolve();
+        await drain();
+        expect(row.text()).toBe("[row][saved history]");
+        expect(peer.text()).toBe("[peer][saved history]");
+        expect(targets()).toHaveLength(3);
+        expect(targets("peer")).toHaveLength(3);
+        await drain();
+        expect(targets()).toHaveLength(3);
+        expect(targets("peer")).toHaveLength(3);
     });
 });
