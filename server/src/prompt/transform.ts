@@ -192,19 +192,33 @@ function partitionKnownResults(targets: TransformTarget[], results: TransformRes
  * Continuations keep their pins through queueing and execution; every end path releases them.
  * Targets that still do not fit fail alone.
  *
- * Results are cached (`transformCache.ts`) under a digest of the epoch, the target, the context,
- * the handler set, the viewport and browser language, the stored chat revision the load read,
- * the revisions of the kinds kept by `displayKinds.ts` (including every admission kind; kinds
- * unreachable from display are dropped), and the display identities of the owner, the source,
- * a group's members and the chat's earlier speakers (stored JSON without top-level
- * `lastInteraction`, preserving property order; missing characters use `missing`),
- * and the chat's variables, author's note, local lore, name, modules, bound persona, bound presets,
- * and greeting index. `noCache` replaces the entry. A cached result keeps its emotions;
- * the tab applies a key's emotions once. A request whose every target has an entry is answered
- * before the load (`cachedResults`: revisions and chat metadata, plus character reads on identity
- * memo misses; no configuration or messages parsed).
- * On the first call, an ordinary cache hit matching the target's `knownKey` is answered in `same`
- * with only its id and key; fresh results and continuations are always answered in full.
+ * Results are cached (`transformCache.ts`) under `targetKey`: a digest of the epoch, the stored
+ * chat revision the load read, the mode, the full request context, browser language (empty when
+ * absent), viewport width and height (null without a client), and handler-set identity (null
+ * without handlers). It includes the loaded non-character record revisions kept by
+ * `displayKinds.ts` (all admission kinds and `globalChatVariables` stay; unclassified kinds stay),
+ * plus the display identities of the owner, valid group members and every valid stored message
+ * speaker besides the owner. An identity is the digest of stored JSON before runtime chats are
+ * attached, without top-level `lastInteraction`, preserving property order; absence is `missing`.
+ * A separate canonical metadata digest includes `scriptstate`, `GLGlobalVariables`, `note`,
+ * `localLore`, `loreOverrides`, `name`, `modules`, `bindedPersona`, `promptPresetId`, `modelPresetId`
+ * and `fmIndex`, with the defaults in `baseKey`. Each target adds its kind, message id for a
+ * message (null otherwise), chat index, source id and that source's display identity (`missing`
+ * when absent), `cbsConditions` (empty when absent), and the source text's digest. Sources named
+ * only by other targets stay out of its key, so batching does not change it; the correlation id,
+ * `knownKey` and `noCache` are not key inputs. A result stays under the loaded chat revision even
+ * if the chat changes while it runs. `noCache` invalidates that entry and prevents an older fill
+ * from replacing it. A cached result keeps its emotions; the tab applies a key's emotions once.
+ *
+ * `cachedResults` can answer every target before building a display projection: it reads the
+ * current job-scope kind revisions and chat metadata (including its revision), then the
+ * `chatCharacters` memo under owner id, chat id and chat revision. That memo remembers member and
+ * speaker ids, including missing ones, and is validated against the owner's current display
+ * identity; a missing memo or changed owner identity requires a load. Character records are read
+ * only on identity-memo misses; no configuration data or message rows are parsed by the probe.
+ * On the first call, `partitionKnownResults` answers an ordinary cache hit matching the target's
+ * `knownKey` in `same` with only its id and key, present only when non-empty. A different key,
+ * a miss, `noCache`, a failure and every continuation answer in full (or await plugin handlers).
  * The key identifies inputs, not output, so random, clock, or plugin output refilled under the
  * same key after eviction or Re-render can differ while `same` still confirms that key.
  *
