@@ -9,10 +9,10 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (2)
-- [Test mocks](#test-mocks) (3)
+- [Test mocks](#test-mocks) (4)
 
 ## Chat store, sync, and change feeds
 
@@ -46,6 +46,23 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** the client's feed-lock rules (whole-read lock lists, the revision rule for older copies) assume a released generation does not re-lock a message.
 **Suggested handling:** if a reply ever shows locked after its job finished its write, check for a replayed `begin`; a fix would retire released generation ids per job in `generationLock` or refuse a `begin` whose message exists.
+
+### Owner absence bound is not universal
+
+The Job Protocol plan's D6 said a negotiated tab's chat is free within `OWNER_SILENT_MS + OWNER_ABSENT_MS + JOB_ABORT_GRACE_MS` (45 + 120 + 5 s). Found 2026-10-29 while landing owner liveness (Job Protocol Slice 4, `31dd5c2f0`); the guides do not state the bound as a guarantee. Two paths miss it:
+
+- `server/src/jobs/channel.ts` `expireIfDue` (~:424) settles `disconnected` for queued roots whose job opened no later than the expired root's dispatch. A newer ownerless job of the same client stays queued past 170 s (a Codex probe), and a delivered callback's drain hold (`CANCELLED_CALLBACK_DRAIN_MS`) adds up to 60 s more.
+- A provider callback that ends `disconnected` fails through `endWith` and the runner's finalize, not the registry's `abort()`, so `JOB_ABORT_GRACE_MS` does not bound that end (`server/src/jobs/generationJobs.ts` `abort`).
+
+**Why it matters:** a user waiting on an absent owner's chat can wait longer than the documented absence wait suggests.
+**Suggested handling:** scope any stated bound to a dispatched callback of the job itself; if the newer-job case matters, give queued roots of an absent client the job-level absence deadline too.
+
+### resumeSavedGenerations has no product caller
+
+`src/ts/network/generationJobs.ts` exports `resumeSavedGenerations` (~:1176), but only tests call it (`generationJobs.test.ts` ~:723 and ~:1311, plus `tests/generationJobsMock.ts`). Boot resumes through `resumeServerJobs` (`src/ts/process/serverCommands.ts`, called from `src/ts/bootstrap.ts`). Unlike that path it does not handle a kept outcome (`GenerationStatus.kept`), and the module comment near :127 still names it as the reload path. Found 2026-10-28 during the Job Protocol receipt store (Slice 1).
+
+**Why it matters:** its tests protect a path the app no longer uses, and the stale comment can lead later job-resume work to edit the wrong function.
+**Suggested handling:** confirm the caller before touching tab job resume; remove the export and its tests, or point the comment at `resumeServerJobs`.
 
 ## Display transform
 
@@ -108,3 +125,10 @@ About 25 test files under `src/` mock `src/ts/storage/chatStore.svelte.ts` inlin
 
 **Why it matters:** each new chatStore export a mocked module imports breaks unrelated suites, which then look like regressions and cost a stale-test round.
 **Suggested handling:** a typed `chatStoreMock()` factory under the test helpers, adopted file by file.
+
+### resourceClient mock has no shared factory
+
+`src/ts/storage/resourceClient` is mocked inline in about 16 test files (2026-10-29; `rg -l 'vi.mock\(.*resourceClient' src`), for example `src/ts/process/serverCommands.test.ts` near :172, `chatStatus.test.ts`, `network/eventFeed.test.ts`, `network/jobChannel.test.ts`, `plugins/apiV3/hostApiChats.test.ts`. There is no `resourceClientMock.ts`; STRUCTURE.md V7 asks for one shared typed factory. Found 2026-10-28 by Job Protocol Slice 2: product code began importing `ResourceEpochMismatchError`, and the inline mock in `serverCommands.test.ts` failed 17 tests at run time; a local class was added to that one mock as a stopgap.
+
+**Why it matters:** a new resourceClient export breaks unrelated suites at run time, which `pnpm check` cannot catch.
+**Suggested handling:** add `src/ts/storage/tests/resourceClientMock.ts` with defaults that `satisfies` the module's export type, and move the inline mocks onto it file by file.
