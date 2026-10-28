@@ -207,6 +207,68 @@ describe("the requests", () => {
         },
     };
 
+    it.each([
+        { status: 503, refusal: { error: "The server is not accepting generations now" }, uncertain: true },
+        { status: 503, refusal: { error: "The server is shutting down" }, uncertain: true },
+        { status: 409, refusal: { error: "chatBusy", jobId: "busy-job" }, uncertain: true },
+        {
+            status: 409,
+            refusal: { error: "chatBindingIncomplete", problems: [{ field: "personaId", reason: "gone" }] },
+            uncertain: true,
+        },
+        {
+            status: 409,
+            refusal: { error: "chatLoreOverrideOrphaned", entries: [{ id: "lost", name: "Lost entry" }] },
+            uncertain: true,
+        },
+        { status: 409, refusal: { error: "requestCancelled" }, uncertain: false },
+        { status: 409, refusal: { error: "requestIdReused" }, uncertain: false },
+        { status: 409, refusal: { error: "stale" }, uncertain: false },
+        { status: 409, refusal: { error: "chatBindingMismatch" }, uncertain: false },
+        { status: 404, refusal: { error: "Chat not found" }, uncertain: false },
+    ])(
+        "keeps uncertainty=$uncertain after an unanswered create followed by $status $refusal.error",
+        async ({ status, refusal, uncertain }) => {
+            vi.useFakeTimers();
+            const auth = await import("../storage/serverAuth");
+            vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
+                options?.beforeDispatch?.();
+                return stubs.fetch(path, init);
+            });
+            const first = deferred<Response>();
+            stubs.fetch.mockImplementationOnce(() => first.promise).mockResolvedValueOnce(json(status, refusal));
+            const result = transport
+                .createGenerationJob({ ...body, requestId: "same-request", hooks: NO_GENERATION_HOOKS })
+                .then(
+                    () => undefined,
+                    (error: unknown) => error,
+                );
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stubs.fetch).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(11_000);
+            expect(stubs.fetch).toHaveBeenCalledTimes(2);
+            const error = await result;
+            const cause = error instanceof transport.GenerationCreateError ? error.cause : error;
+            expect(error).toBeInstanceOf(uncertain ? transport.GenerationCreateError : Error);
+            expect(error instanceof transport.GenerationCreateError && error.uncertain).toBe(uncertain);
+            const expected =
+                status === 409 && refusal.error === "chatBusy"
+                    ? { name: "GenerationBusyError", jobId: "busy-job" }
+                    : refusal.error === "stale"
+                      ? { name: "GenerationStaleError" }
+                      : refusal.error === "chatBindingIncomplete" || refusal.error === "chatBindingMismatch"
+                        ? { name: "ChatBindingRefusedError", code: refusal.error }
+                        : refusal.error === "chatLoreOverrideOrphaned"
+                          ? { name: "ChatLoreOverrideOrphanedError", entries: refusal.entries }
+                          : { name: "ResourceRequestError", status, message: refusal.error };
+            expect(cause).toMatchObject(expected);
+            expect(stubs.fetch.mock.calls[1][1]!.body).toBe(stubs.fetch.mock.calls[0][1]!.body);
+            expect(JSON.parse(String(stubs.fetch.mock.calls[1][1]!.body)).requestId).toBe("same-request");
+            first.resolve(json(200, { jobId: "late-job" }));
+            await vi.advanceTimersByTimeAsync(0);
+        },
+    );
+
     it("never saves, stages or holds a replay owned by another tab", async () => {
         vi.useFakeTimers();
         const { jobStages, chatStageOf } = await import("../process/jobStages");

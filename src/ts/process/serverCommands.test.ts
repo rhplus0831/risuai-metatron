@@ -731,6 +731,42 @@ describe("runServerJob", () => {
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
 
+    it.each([
+        { refusal: "maintenance", message: "The server is not accepting generations now" },
+        { refusal: "shutdown", message: "The server is shutting down" },
+        { refusal: "busy", message: "generating" },
+        { refusal: "binding", message: "cannot send\nPrompt preset: deleted" },
+        { refusal: "orphaned override", message: "overrides lost their entries\nLost entry\n\ndelete or move them" },
+    ])(
+        "keeps an uncertain $refusal refusal and its own alert without following another job",
+        async ({ refusal, message }) => {
+            const { GenerationCreateError } = await import("../network/generationJobs");
+            const cause =
+                refusal === "busy"
+                    ? new BusyError("busy-job")
+                    : refusal === "binding"
+                      ? new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }])
+                      : refusal === "orphaned override"
+                        ? new LoreOverrideOrphanedError([{ id: "lost", name: "Lost entry" }])
+                        : new RequestError(503, message);
+            stubs.create.mockRejectedValueOnce(new GenerationCreateError(cause, true));
+            // Even if the busy job is this tab's, this request must stay an ambiguous refusal.
+            stubs.read.mockResolvedValue({ ...status, jobId: "busy-job" });
+            const onStart = vi.fn();
+            const result = await send({ input: "same text" }, { onStart });
+            expect(result).toEqual({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: true,
+                ...(refusal === "busy" ? { blockedChats: [ref] } : {}),
+            });
+            expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(message);
+            expect(stubs.read).not.toHaveBeenCalled();
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+        },
+    );
+
     it("follows a running replay once and calls onStart once after a lost create answer", async () => {
         vi.useFakeTimers();
         const transport = await vi.importActual<Transport>("../network/generationJobs");

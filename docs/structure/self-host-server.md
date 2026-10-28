@@ -271,8 +271,11 @@ Generation admission and request identity:
   again preserves the timestamp. An abort acknowledgement is not a terminal; the runner still
   has its existing abort grace to save and end. Cancel also works during maintenance/shutdown.
 - A retry's auth, limiter or body-reader failure happens before lookup. After an unanswered
-  create, only a decoded registry success/replay or recognized registry refusal resolves that
-  exchange: 412, 429, auth/body-limit errors and generic errors remain uncertain on the client.
+  create, only a decoded registry success/replay or a refusal that fences the delayed original
+  resolves that exchange: `requestCancelled`, `requestIdReused`, `stale`, `chatBindingMismatch`
+  and 404. A refusal installs no identity, so after one the original can still be admitted:
+  the 503s, `chatBusy`, `chatBindingIncomplete` and `chatLoreOverrideOrphaned` keep the request
+  uncertain, as do 412, 429, auth/body-limit errors and generic errors.
   This does not bypass the shared limiter or promise connectivity after the listener closes.
 
 Command sequences:

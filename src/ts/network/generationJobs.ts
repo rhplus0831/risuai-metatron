@@ -152,7 +152,7 @@ export class GenerationStaleError extends Error {
 
 /**
  * 409 `chatBindingIncomplete` (with the chat's binding `problems`) or `chatBindingMismatch`: the job's
- * ids are not its chat's complete binding. Nothing ran.
+ * ids are not its chat's complete binding. This attempt was refused.
  */
 export class ChatBindingRefusedError extends Error {
     readonly code: "chatBindingIncomplete" | "chatBindingMismatch";
@@ -165,7 +165,7 @@ export class ChatBindingRefusedError extends Error {
     }
 }
 
-/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries. Nothing ran. */
+/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries; this attempt was refused. */
 export class ChatLoreOverrideOrphanedError extends Error {
     readonly entries: readonly OrphanedOverrideEntry[];
     constructor(entries: readonly OrphanedOverrideEntry[]) {
@@ -404,18 +404,12 @@ function validCancelled(value: unknown): value is GenerationCancelled {
     );
 }
 
+/** Registry identity evidence or a permanent chat refusal resolves earlier create uncertainty. */
 function registryRefusal(status: number, body: FailureBody): boolean {
     if (status === 409) {
-        if (body.error === "chatBusy") return typeof body.jobId === "string";
-        if (body.error === "chatBindingIncomplete") return Array.isArray(body.problems);
-        if (body.error === "chatLoreOverrideOrphaned") return Array.isArray(body.entries);
         return ["stale", "chatBindingMismatch", "requestIdReused", "requestCancelled"].includes(body.error ?? "");
     }
-    return (
-        (status === 404 && body.error === "Chat not found") ||
-        (status === 503 &&
-            ["The server is not accepting generations now", "The server is shutting down"].includes(body.error ?? ""))
-    );
+    return status === 404 && body.error === "Chat not found";
 }
 
 function validFailure(status: number, body: unknown): body is FailureBody {
@@ -427,7 +421,7 @@ function validFailure(status: number, body: unknown): body is FailureBody {
     return true;
 }
 
-/** Retries an unanswered frozen request within bounded attempts, preserving uncertainty across pre-lookup failures. */
+/** Retries an unanswered frozen request within bounded attempts, until an answer fences delayed creates. */
 async function exchange<T>(options: {
     path: string;
     body: string;
