@@ -18,6 +18,7 @@ import { mkdirDurableSync } from "./data/durableWrite.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
+import { createGenerationReceipts } from "./data/generationReceipts.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
 import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "./diagnostics/journal.ts";
 import { createRequestShares } from "./diagnostics/share.ts";
@@ -301,6 +302,12 @@ export function createServerContext(options: {
         memoryTasks?.pause();
         return () => memoryTasks?.resume();
     });
+    // Job receipts are diagnostic-style data in a file of their own, in no snapshot or archive.
+    const generationReceipts = createGenerationReceipts({
+        file: path.join(savePath, "data", "generation-jobs.sqlite"),
+        epoch: resources.epoch(),
+        diagnostics,
+    });
     const generationJobs = createGenerationJobs({
         store: resources,
         kinds: resourceKinds,
@@ -314,6 +321,7 @@ export function createServerContext(options: {
         // The checkpoint service is built below; a job starts only after the context exists.
         onChatJobDone: (characterId, chatId) => checkpoints.autoSave(characterId, chatId),
         diagnostics,
+        receipts: generationReceipts,
         abortGraceMs: options.generationAbortGraceMs,
     });
     // The request layer and token routes share one counter and tokenizers, loaded on first use.
@@ -384,6 +392,7 @@ export function createServerContext(options: {
     // The vectors belong to the data: when a maintenance replaced it (a new epoch), the cache is
     // emptied as the maintenance ends, and a write of work that began before is dropped.
     snapshots.onMaintenance(async () => () => vectorCache.sync(resources.epoch()));
+    snapshots.onMaintenance(async () => () => generationReceipts.sync(resources.epoch()));
     // The remote MCP clients of the jobs: their sessions and tokens live in this process and belong
     // to the data they were made with.
     const mcpRegistry = createMcpRegistry({ store: resources, kinds: resourceKinds });
@@ -927,6 +936,7 @@ export function createServerContext(options: {
         scriptWorkers,
         beginShutdown,
         generationJobs,
+        generationReceipts,
         llmRequests,
         requestHistory,
         translationRunner,
@@ -1003,6 +1013,7 @@ export function createServerContext(options: {
                 .then(() => mcpRegistry.dispose())
                 .then(() => vectorCache.close())
                 .then(() => requestHistory.close())
+                .then(() => generationReceipts.close())
                 .then(() => resources.close())
                 .catch((error: unknown) => {
                     diagnostics.close();

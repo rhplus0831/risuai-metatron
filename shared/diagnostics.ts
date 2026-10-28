@@ -72,6 +72,7 @@ export const RUNTIME_ORIGINS = [
     "generation.runnerSettle",
     "generation.listener",
     "generation.release",
+    "generation.receipts",
     "checkpoint.auto",
     "error",
     "unhandledrejection",

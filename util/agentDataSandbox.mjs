@@ -35,7 +35,8 @@ const SQLITE_FILES = ["data/resources.sqlite", "data/vectors.sqlite"];
 const LINKED_DIRS = ["assets"];
 // Left behind on purpose: `server/` (password, known keys, Web Push keys and subscriptions; the agent
 // server bypasses auth), `backups/`, `diagnostics/`, `data/request-history.sqlite` (diagnostic data
-// with request content), `models/` (a download cache), and loose files at the top level.
+// with request content), `data/generation-jobs.sqlite` (receipts belong to the source server's jobs;
+// the sandbox server starts with none), `models/` (a download cache), and loose files at the top level.
 
 /**
  * Prepares `sandboxDir` from `sourceDir` and returns a one-line summary for the runner's log. The

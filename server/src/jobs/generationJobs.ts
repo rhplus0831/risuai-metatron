@@ -29,6 +29,7 @@ import {
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
+import { KEPT_OUTCOME_MS, MAX_KEPT_OUTCOMES, type GenerationReceipts } from "../data/generationReceipts.ts";
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import {
     type AppliedChanges,
@@ -52,10 +53,10 @@ export const JOB_DONE_GRACE_MS = 60_000;
 /**
  * After that, its outcome (`GenerationStatus.kept`) stays readable this long, at most
  * `MAX_KEPT_OUTCOMES` of them (the oldest goes first), so an owner that comes back late still learns
- * how its job ended. Kept in memory only: a restart forgets them, and an epoch change clears them.
+ * how its job ended. The memory view expires from collection; disk receipts expire from the end.
+ * An epoch change clears both.
  */
-export const KEPT_OUTCOME_MS = 24 * 60 * 60_000;
-export const MAX_KEPT_OUTCOMES = 500;
+export { KEPT_OUTCOME_MS, MAX_KEPT_OUTCOMES };
 /** A kept error's message is cut to this many UTF-8 bytes. */
 export const MAX_KEPT_MESSAGE_BYTES = 4096;
 /** A kept done's `followUps` and `alternatives` are each kept only while their JSON fits this many bytes. */
@@ -329,6 +330,21 @@ function keptTerminal(terminal: GenerationTerminalEvent): GenerationTerminalEven
     };
 }
 
+/** The same trimmed outcome for memory and disk. */
+function keptStatus(job: Job, terminal: GenerationTerminalEvent): GenerationStatus {
+    return {
+        jobId: job.id,
+        kind: job.kind,
+        characterId: job.context.characterId,
+        chatId: job.context.chatId,
+        epoch: job.epoch,
+        state: "ended",
+        ...(job.current?.messageId ? { messageId: job.current.messageId } : {}),
+        terminal: keptTerminal(terminal),
+        kept: true,
+    };
+}
+
 function isResyncRequest(message: unknown): message is ChatResyncRequest {
     return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "resync";
 }
@@ -439,10 +455,12 @@ export function createGenerationJobs(options: {
     hub?: ChannelHub;
     /** The diagnostics journal: a `job` event at admission and at the end, and the caught faults. */
     diagnostics?: DiagnosticsRecorder;
+    /** Best-effort disk receipts; memory remains authoritative. */
+    receipts?: GenerationReceipts;
     /** How long an aborted job's runner may take before the job is ended for it (default `JOB_ABORT_GRACE_MS`; tests raise it). */
     abortGraceMs?: number;
 }) {
-    const { store, kinds, gate, snapshots, lock, authorize, diagnostics } = options;
+    const { store, kinds, gate, snapshots, lock, authorize, diagnostics, receipts } = options;
     const abortGraceMs = options.abortGraceMs ?? JOB_ABORT_GRACE_MS;
     const runner = options.runner ?? unavailableRunner;
     const hub = options.hub ?? createChannelHub();
@@ -782,6 +800,14 @@ export function createGenerationJobs(options: {
         job.endedAt = Date.now();
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
+        try {
+            if (receipts) {
+                receipts.end(job.id, job.endedAt, keptStatus(job, job.terminal));
+            }
+        } catch (error) {
+            // Even building a receipt must never strand the job's locks, slot, or finished promise.
+            logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
+        }
         record({
             kind: "job",
             phase: terminal.type === "error" ? "error" : "done",
@@ -1295,6 +1321,16 @@ export function createGenerationJobs(options: {
         lock.addToken(job.token);
         jobs.set(job.id, job);
         chatSlots.set(chatKey(characterId, chatId), job.id);
+        keptOutcomes();
+        receipts?.admit({
+            jobId: job.id,
+            clientId: job.clientId,
+            epoch: job.epoch,
+            kind: job.kind,
+            characterId,
+            chatId,
+            admittedAt: job.startedAt,
+        });
         record({ kind: "job", phase: "accepted", jobId: job.id, jobKind: job.kind });
         start(job);
         return { ok: true, jobId: job.id };
@@ -1311,6 +1347,7 @@ export function createGenerationJobs(options: {
         if (epoch !== keptEpoch) {
             kept.clear();
             keptEpoch = epoch;
+            receipts?.sync(epoch);
         }
         return kept;
     }
@@ -1325,17 +1362,7 @@ export function createGenerationJobs(options: {
         outcomes.set(job.id, {
             clientId: job.clientId,
             keptAt: now,
-            status: {
-                jobId: job.id,
-                kind: job.kind,
-                characterId: job.context.characterId,
-                chatId: job.context.chatId,
-                epoch: job.epoch,
-                state: "ended",
-                ...(job.current?.messageId ? { messageId: job.current.messageId } : {}),
-                terminal: keptTerminal(job.terminal),
-                kept: true,
-            },
+            status: keptStatus(job, job.terminal),
         });
         for (const id of outcomes.keys()) {
             if (outcomes.size <= MAX_KEPT_OUTCOMES) {
@@ -1587,9 +1614,16 @@ export function createGenerationJobs(options: {
             if (job) {
                 return status(job);
             }
+            if (jobs.has(jobId)) {
+                return null;
+            }
             expireOutcomes(Date.now());
             const outcome = kept.get(jobId);
-            return outcome && outcome.clientId === clientId ? outcome.status : null;
+            if (outcome) {
+                return outcome.clientId === clientId ? outcome.status : null;
+            }
+            const receipt = receipts?.read(jobId);
+            return receipt && receipt.clientId === clientId && receipt.epoch === store.epoch() ? receipt.status : null;
         },
 
         /**
@@ -1649,6 +1683,7 @@ export function createGenerationJobs(options: {
             gcTimer = setInterval(() => {
                 const now = Date.now();
                 expireOutcomes(now);
+                receipts?.prune(now);
                 for (const [id, job] of jobs) {
                     if (job.ended && now - job.endedAt >= JOB_DONE_GRACE_MS) {
                         for (const ws of job.sockets) {
