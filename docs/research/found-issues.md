@@ -34,7 +34,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Save journal and recovery
 
-Found during the Durable Drafts plan run (2026-10-28 to 2026-10-29, `docs/plan/durable-drafts.md`); each was outside the slice that noticed it.
+Found during the Durable Drafts plan run (2026-10-28 to 2026-10-29; archived, `git show bbc747f24:docs/plan/durable-drafts.md`); each was outside the slice that noticed it.
 
 ### Journal close drops a same-tick call
 
