@@ -1,8 +1,8 @@
 # Display Evaluation Plan
 
-Status: planned 2026-10-28, no slice landed. The user answered Q1–Q3 the same day, all as
-recommended (see **Answered questions**). A Sol review of the first draft is folded in (see
-**Review record**).
+Status: landed 1 (fd7f50766). The user answered Q1–Q3 on 2026-10-28, all as recommended (see
+**Answered questions**). A Sol review of the first draft is folded in (see **Review record**).
+Probe numbers are under **Measurements**.
 
 Sources: findings TJ02, TJ03, TJ05 and ST05 of the
 [server migration deep audit](../research/deep-audit-with-fable/server-migration-audit.md)
@@ -374,6 +374,32 @@ Overlap with the Durable Drafts plan:
   when none of those is in flight, or rebase onto them.
 - `resourceClient.ts`: Slice 8 here, and Durable Drafts Slice 2.
 - Guides: chat-pipeline and persistence, in Slice 9 here and Durable Drafts Slice 12.
+
+## Measurements
+
+Probe (`transform-jobs-probe.mjs`), baseline at `2f38c2e7b` and after Slice 1. Times vary by run;
+select and parse counts are exact.
+
+| Label | Baseline | After Slice 1 |
+|---|---|---|
+| `cold-500-plain-8-batches` | 205.54 ms, 480 selects, 4,849 parses | 215.16 ms, 480, 4,849 |
+| `hit-500-plain-8-batches` | 13.8 ms, 200 selects, 8 parses, 500 hits | 14.6 ms, 200, 8, 500 |
+| `after-variable-500-8-batches` | 159.82 ms, 480, 4,848 | 168 ms, 480, 4,848 |
+| `after-stamp-500-8-batches` | 138.67 ms, 480, 4,848 | 148.49 ms, 480, 4,848 |
+| `one-loadJobScope` | 2.32 ms, 35 selects, 605 parses | 2.69 ms, 35, 605 |
+| `500-whole-chat-hydrations-local-model` | 2,094.15 ms, 1,000 selects, 250,500 parses | 2,480.51 ms, 1,000, 250,500 |
+| `worker-warmup` | 139.22 ms | 153.84 ms |
+| `500-targets-10-no-match-regex` | 1,044.6 ms, 500 regex tasks, 5,000 host parses | 1,071.54 ms, 500, 5,000 |
+| `mixed-revision-cache` | after the save: cached, old text, same key | after the save: not cached, stored text, new key |
+| `viewport-cross-client` | narrow client gets the `800` result, cached | narrow client gets `320`, not cached |
+| `four-tiny-snapshots` | 45.86 MiB heap for 16 pending bytes | 45.83 MiB, 16 B |
+
+Slice 1 notes: the probe memo became `chatCharacters` (group members and message speakers, by owner
+and chat revisions); a missing speaker enters the key as `null`; other targets' sources stay out of
+the shared key so a row's key does not depend on its batch. Known limit (challenger): a batch that
+loaded revision R and is still waiting on its first target can still serve R-keyed hits to later
+targets after a save; a request that arrives after the save misses. This follows D1 (store under
+the loaded revision); Slice 2 re-renders the shown row.
 
 ## Verification
 
