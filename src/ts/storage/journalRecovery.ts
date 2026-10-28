@@ -729,6 +729,7 @@ export function recoveryDraftDetails(entry: DraftEntry): {
     } catch {
         reason = language.recoveryDrafts.invalid;
     }
+    if (recoveryDrafts.isApplied(entry.id)) reason = language.recoveryDrafts.appliedNotRemoved;
     if (entry.epoch !== getResourceEpoch()) reason = language.recoveryDrafts.otherEpoch;
     return { name, canApply: reason === undefined, blocked: reason === language.chatGenerating, reason };
 }
@@ -859,7 +860,13 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
         if (result.discarded.some(affected) || result.refused.some(affected)) {
             throw new Error(language.recoveryDrafts.notSaved);
         }
-        await recoveryDrafts.remove(entry.id);
+        try {
+            await recoveryDrafts.remove(entry.id);
+        } catch {
+            // The changes are saved; applying the kept draft again would repeat them.
+            recoveryDrafts.markApplied(entry.id);
+            throw new Error(language.recoveryDrafts.appliedNotRemoved);
+        }
         return { skipped };
     } finally {
         release?.();

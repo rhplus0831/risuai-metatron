@@ -1626,6 +1626,9 @@ export const languageEnglish = {
         skipped: "Skipped operations (missing targets, whole-chat changes, or a translation whose source changed):",
         failed: "Could not complete this action. The recovery draft has been kept.",
         refreshFailed: "Could not refresh recovery drafts.",
+        removeFailed: "The recovery draft could not be removed.",
+        appliedNotRemoved:
+            "The recovered changes were saved, but the draft could not be removed. Discard it instead of applying it again.",
     },
     resourceNoticeDismiss: "Dismiss",
     chatLoadFailed: "This chat could not be loaded: {0}",

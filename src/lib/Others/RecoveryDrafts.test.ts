@@ -469,6 +469,35 @@ describe("recovery drafts", () => {
         }
     });
 
+    it("keeps a draft whose delete fails: Discard alerts and keeps the row, and an Apply that saved says not to apply it again", async () => {
+        const entry = await put(recordInput());
+        const removeDraft = vi.spyOn(journal, "removeDraft").mockResolvedValue(false);
+        await render();
+        button(language.recoveryDrafts.discard, row()).click();
+        await settle();
+        expect(io.error).toHaveBeenCalledWith(
+            `${language.recoveryDrafts.failed}\nError: ${language.recoveryDrafts.removeFailed}`,
+        );
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        expect(row()).not.toBeNull();
+
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.record("ui", "main")!.data.theme).toBe("recovered");
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        // Applying it again would repeat the saved changes: Apply is off for it while the page lives.
+        await settle();
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        expect([...row().querySelectorAll("button")].some((node) => node.textContent === language.apply)).toBe(false);
+        const batches = h.fake.batchCount();
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.batchCount()).toBe(batches);
+        removeDraft.mockRestore();
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+    });
+
     it("opens the recovery dialog from Review and the Advanced settings row only while drafts exist", async () => {
         const { advancedSettingsItems, advancedSettingsSections } = await import("src/ts/setting/advancedSettingsData");
         const item = advancedSettingsItems.find((item) => item.id === "adv.recoveredChanges")!;

@@ -123,7 +123,8 @@ export const FEED_PHASES = [
  * blocker recorded while it waited (`inFlight`, `backoff`, `refresh`, `generating`, `conflict`). The draft
  * journal (`src/ts/storage/draftJournal.ts`): `entries` it did not write (`tooLarge`, `budget`) or found in
  * a format it cannot read (`format`, kept as they are); a journal that
- * is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`, `readFailed`); and
+ * is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`, `readFailed`), or a
+ * value it could not copy (`uncloneable`: a proxy or a function, so that write is not journaled); and
  * `entries` it took over from a closed tab (`orphan`).
  */
 export const SYNC_PHASES = [
@@ -147,6 +148,7 @@ export const SYNC_REASONS = [
     "quota",
     "write",
     "readFailed",
+    "uncloneable",
     "orphan",
     "inFlight",
     "backoff",

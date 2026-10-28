@@ -29,11 +29,28 @@ export type JournalSubject =
 
 const HEADER_MARKER = "header::";
 /**
- * JSON can spell any character of a key as a `\u` escape, so a text without the field's name may still
- * hold it when it has one; such a text is parsed. Without one, a text that lacks the name cannot hold
- * the field, and is not parsed (a large character is checked on every journal write).
+ * A `"apiKey"` member whose value is a non-empty string. Inside a JSON string every quote is escaped, so
+ * an unescaped `"apiKey"` before a colon is a member name, at whatever depth.
  */
-const UNICODE_ESCAPE = "\\u";
+const NON_EMPTY_API_KEY = /"apiKey"[ \t\n\r]*:[ \t\n\r]*"(?!")/;
+
+/**
+ * Whether `text` holds a `\u` escape. JSON can spell any character of a name that way, so a text with
+ * one is parsed; one without is decided from the text alone (a large character is checked on every
+ * journal write). A `\\u` is an escaped backslash before a plain `u`, as regex scripts often hold.
+ */
+function hasUnicodeEscape(text: string): boolean {
+    for (let at = text.indexOf("\\u"); at !== -1; at = text.indexOf("\\u", at + 1)) {
+        let backslashes = 1;
+        while (at - backslashes >= 0 && text[at - backslashes] === "\\") {
+            backslashes++;
+        }
+        if (backslashes % 2 === 1) {
+            return true;
+        }
+    }
+    return false;
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -48,7 +65,7 @@ function parse(text: string): unknown {
     }
 }
 
-const mayHold = (text: string, name: string) => text.includes(name) || text.includes(UNICODE_ESCAPE);
+const mayHold = (text: string, name: string) => text.includes(name) || hasUnicodeEscape(text);
 
 const namesHeader = (key: unknown) => typeof key === "string" && key.includes(HEADER_MARKER);
 
@@ -91,7 +108,7 @@ export function isJournalEligible(subject: JournalSubject): boolean {
     }
     switch (kind) {
         case RESOURCE_KIND.characters: {
-            if (!mayHold(text, "apiKey")) {
+            if (!NON_EMPTY_API_KEY.test(text) && !hasUnicodeEscape(text)) {
                 return true;
             }
             const data = parse(text);

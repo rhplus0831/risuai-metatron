@@ -10,6 +10,8 @@ let epoch = $state("");
 let now = $state(Date.now());
 let isOpen = $state(false);
 let refreshing = $state(false);
+/** Drafts applied and saved whose delete failed; Apply stays off for them while the page lives. */
+let applied = $state.raw(new Set<string>());
 let timer: ReturnType<typeof setInterval> | undefined;
 let refreshVersion = 0;
 const entries = $derived(
@@ -82,9 +84,18 @@ export const recoveryDrafts = {
     close() {
         isOpen = false;
     },
-    /** Called after confirmation for Discard, or after Apply has saved successfully. */
+    isApplied(id: string) {
+        return applied.has(id);
+    },
+    markApplied(id: string) {
+        applied = new Set(applied).add(id);
+    },
+    /**
+     * Called after confirmation for Discard, or after Apply has saved successfully. A failed delete keeps
+     * the row, which would otherwise come back at the next boot, and throws.
+     */
     async remove(id: string) {
-        await pageDraftJournal().removeDraft(id);
+        if (!(await pageDraftJournal().removeDraft(id))) throw new Error(language.recoveryDrafts.removeFailed);
         refreshVersion += 1;
         drafts = drafts.filter((entry) => entry.id !== id);
         expire();

@@ -1830,6 +1830,9 @@ export const languageKorean = {
         skipped: "건너뛴 작업 (대상 없음, 채팅 전체 변경 또는 번역 원문 변경):",
         failed: "작업을 완료하지 못했습니다. 복구 초안은 보관됩니다.",
         refreshFailed: "복구 초안 목록을 새로 불러오지 못했습니다.",
+        removeFailed: "복구 초안을 삭제하지 못했습니다.",
+        appliedNotRemoved:
+            "복구된 변경 사항은 저장되었지만 초안을 삭제하지 못했습니다. 다시 적용하지 말고 초안을 버려 주세요.",
     },
     resourceNoticeDismiss: "닫기",
     chatLoadFailed: "이 채팅을 불러오지 못했습니다: {0}",
