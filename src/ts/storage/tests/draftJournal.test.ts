@@ -1,4 +1,4 @@
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
@@ -604,6 +604,56 @@ describe("start and ownership", () => {
 });
 
 describe("writes, removals, and versions", () => {
+    it("combines writes and captured-version removals in one transaction, preserving newer layers and creation time", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const h = harness();
+        const { journal } = await started(h);
+        const v1 = journal.nextVersion();
+        const v2 = journal.nextVersion();
+        const v3 = journal.nextVersion();
+        const other = recordTarget("characters", "other");
+        await journal.write([
+            characterWrite(v1, { sent: sent("A"), latest: latest("B") }),
+            characterWrite(v1, { latest: latest("old") }, other),
+        ]);
+        await journal.write([characterWrite(v2, { latest: latest("newer B") })]);
+        h.clock.now += HOUR;
+        const transactions = vi.spyOn(IDBDatabase.prototype, "transaction");
+        expect(
+            await journal.write(
+                [
+                    characterWrite(v3, { refused: { op: "update", text: "refused", reason: "too big" } }),
+                    characterWrite(v3, { sent: sent("replacement") }, other),
+                ],
+                [
+                    { epoch: EPOCH, scope: "record", target: CHARACTER, version: v1 },
+                    { epoch: EPOCH, scope: "record", target: other, version: v1 },
+                ],
+            ),
+        ).toEqual(["written", "written"]);
+        expect(transactions.mock.calls.filter(([, mode]) => mode === "readwrite")).toHaveLength(1);
+        const own = await journal.readOwn();
+        expect(own.find((row) => row.target === CHARACTER)).toMatchObject({
+            createdAt: T0,
+            version: v3,
+            layers: {
+                latest: { version: v2, value: latest("newer B") },
+                refused: { version: v3, value: { op: "update", text: "refused", reason: "too big" } },
+            },
+        });
+        expect(Object.keys(own.find((row) => row.target === CHARACTER)!.layers).sort()).toEqual(["latest", "refused"]);
+        expect(own.find((row) => row.target === other)).toMatchObject({
+            createdAt: T0,
+            layers: { sent: { version: v3, value: sent("replacement") } },
+        });
+        expect(Object.keys(own.find((row) => row.target === other)!.layers)).toEqual(["sent"]);
+        // The combined removal also fences a delayed write, just as remove() does.
+        expect(await journal.write([characterWrite(v1, { sent: sent("late A") })])).toEqual(["stale"]);
+        await journal.write([], [{ epoch: EPOCH, scope: "record", target: other, version: v3 }]);
+        expect((await journal.readOwn()).map((row) => row.target)).toEqual([CHARACTER]);
+        await journal.close();
+    });
+
     it("round-trips a record entry: each layer with its own op and version, the row's version the newest, `createdAt` kept across writes, the key read back", async () => {
         const h = harness();
         const tab = await started(h);
@@ -881,7 +931,7 @@ describe("writes, removals, and versions", () => {
 describe("budgets and expiry", () => {
     const big = (bytes: number) => "x".repeat(bytes);
 
-    it("does not write a layer that takes the entry over 4 MiB (`journalSkipped tooLarge`), removes its older value, fences the version, and keeps the entry's other layers", async () => {
+    it("does not write a layer that takes the entry over its budget (`journalSkipped tooLarge`), removes its older value, fences the version, and keeps the entry's other layers", async () => {
         const h = harness();
         const tab = await started(h);
         const v1 = tab.journal.nextVersion();
@@ -913,10 +963,11 @@ describe("budgets and expiry", () => {
         expect(tab.events).toHaveLength(2);
     });
 
-    it("evicts recovery drafts (any age) and expired composer drafts, oldest first, for a mutation write over 32 MiB in all; never a mutation entry, an unexpired composer draft, or an unreadable row; still over: `journalSkipped budget`", async () => {
+    it("evicts recovery drafts (any age) and expired composer drafts, oldest first, for a mutation write over the total budget; never a mutation entry, an unexpired composer draft, or an unreadable row; still over: `journalSkipped budget`", async () => {
         const h = harness();
         const tab = await started(h);
-        const draftBytes = MAX_JOURNAL_ENTRY_BYTES - 1024;
+        // Eight such rows fill the total budget.
+        const draftBytes = MAX_JOURNAL_TOTAL_BYTES / 8 - 1024;
         const ids: string[] = [];
         for (let i = 0; i < 7; i++) {
             h.clock.now = T0 + i * HOUR;
@@ -942,7 +993,7 @@ describe("budgets and expiry", () => {
         await rawPut(h.factory, "composer\0live", composer("live", T0));
         await rawPut(h.factory, "opaque", { ...UNKNOWN_FORMAT_ROW, size: draftBytes });
         h.clock.now = T0 + 8 * HOUR;
-        // 7 drafts + 2 composers + 1 opaque, each just under 4 MiB: over 36 MiB in all. A small
+        // 7 drafts + 2 composers + 1 opaque, each just under an eighth of the total: over it by a quarter. A small
         // mutation evicts the expired composer first (oldest), then drafts d0..., until it fits.
         const v1 = tab.journal.nextVersion();
         expect(await tab.journal.write([characterWrite(v1, { latest: latest("small") })])).toEqual(["written"]);
@@ -995,7 +1046,8 @@ describe("budgets and expiry", () => {
     it("stores a draft when it fits, reclaims expired drafts and expired composer drafts for it, but never evicts a live draft (`journalSkipped budget`)", async () => {
         const h = harness();
         const tab = await started(h);
-        const draftBytes = MAX_JOURNAL_ENTRY_BYTES - 512;
+        // Eight such drafts fill the total budget.
+        const draftBytes = MAX_JOURNAL_TOTAL_BYTES / 8 - 512;
         for (let i = 0; i < 8; i++) {
             h.clock.now = T0 + i;
             expect(

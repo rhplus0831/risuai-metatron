@@ -1,4 +1,14 @@
 import isEqual from "lodash/isEqual";
+import {
+    MAX_JOURNAL_ENTRY_BYTES,
+    pageDraftJournal,
+    recordTarget,
+    type JournalWrite,
+    type JournalRemoval,
+    type RecordLayerValues,
+    type StoredLayers,
+} from "./draftJournal";
+import { isJournalEligible } from "./journalEligibility";
 import { tick, untrack } from "svelte";
 import { get } from "svelte/store";
 import type { ChatOrderRecord, ChatSummary } from "../../../shared/chats.ts";
@@ -162,6 +172,9 @@ import {
  *   is diffed by `chaId` every cycle: a new id is created, a vanished one deleted.
  * - One batch per cycle, one cycle in flight. A key stays dirty if it was marked again while its
  *   batch was in flight.
+ * - Eligible record intent is mirrored to the page's draft journal: sent, newer local, and refused
+ *   layers. One serialized queue coalesces the pre-dispatch deltas and debounces later outcomes;
+ *   hide flushes run independently of the network. Only a create waits, for at most 200 ms.
  * - A 409 reloads the conflicting records into the mirror (another tab or device wrote them) and
  *   shows `resourceReloaded` as the reload notice (`alertReloadNotice`: its own store, kept until the
  *   user dismisses it, so one notice per episode on screen); a 412 (the server was restored) stops saving and
@@ -248,7 +261,7 @@ const CHARACTER_TEXTS_MAX_UNITS = 64 * 1024 * 1024;
 
 export const saving = $state({ state: false });
 
-const recordKey = (kind: string, id: string) => `${kind}\u0000${id}`;
+const recordKey = recordTarget;
 const collectionKey = (collection: Collection) => recordKey(collection, SINGLETON_RESOURCE_ID);
 const characterPrefix = recordKey(RESOURCE_KIND.characters, "");
 const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
@@ -285,6 +298,7 @@ function notifyRefusals() {
 
 function clearRecordRefusal(key: string) {
     if (quarantinedRecords.delete(key)) {
+        queueJournalRecord(key);
         notifyRefusals();
     }
 }
@@ -390,6 +404,364 @@ const REMOTE_DELAY_MS = 50;
 /** Most records (and, separately, chat lists) one cycle reads for live updates; the rest wait for the next. */
 const MAX_REMOTE_READS = 1000;
 
+type JournalRecordLayers = Partial<RecordLayerValues>;
+type JournalRecordView = {
+    epoch: string;
+    desired: JournalRecordLayers;
+    written: StoredLayers<"record">;
+    dispatched?: RecordLayerValues["sent"];
+    projection?: {
+        generation: number;
+        character: character | groupChat | undefined;
+        value: Projection | undefined;
+        canonical: boolean;
+    };
+    largeWriteAt?: number;
+    skippedGeneration?: number;
+};
+/** Only keys touched by this page; old journal rows are never read or removed here. */
+const journalRecords = new Map<string, JournalRecordView>();
+const journalPending = new Set<string>();
+let journalQueue: Promise<void> = Promise.resolve();
+let journalOff = false;
+let journalTimer: ReturnType<typeof setTimeout> | null = null;
+let journalDeadline = 0;
+const LARGE_JOURNAL_BYTES = 256 * 1024;
+const LARGE_JOURNAL_INTERVAL_MS = 5000;
+const JOURNAL_CREATE_WAIT_MS = 200;
+const RECORD_JOURNAL_LAYERS = ["sent", "latest", "refused"] as const;
+
+function journalView(key: string): JournalRecordView | undefined {
+    if (journalOff || halted) {
+        return;
+    }
+    const [kind] = key.split("\u0000");
+    // Excluded kinds never reach the journal's synchronous clone of the plaintext.
+    if (!isJournalEligible({ scope: "record", kind, text: null })) {
+        return;
+    }
+    let view = journalRecords.get(key);
+    if (!view) {
+        view = { epoch: getResourceEpoch(), desired: {}, written: {} };
+        journalRecords.set(key, view);
+    }
+    return view;
+}
+
+function scheduleJournal(delay = DEBOUNCE_MS) {
+    if (halted || journalOff || journalPending.size === 0) {
+        return;
+    }
+    const deadline = Date.now() + delay;
+    if (journalTimer && journalDeadline <= deadline) {
+        return;
+    }
+    if (journalTimer) {
+        clearTimeout(journalTimer);
+    }
+    journalDeadline = deadline;
+    journalTimer = setTimeout(() => {
+        journalTimer = null;
+        // A cycle due in this same turn absorbs the deltas into its pre-dispatch transaction.
+        if (timer && timerDeadline <= Date.now() && !inFlight) {
+            return;
+        }
+        void flushJournal();
+    }, delay);
+}
+
+function queueJournalRecord(key: string, invalidateProjection = false) {
+    const view = journalView(key);
+    if (!view) {
+        return;
+    }
+    if (invalidateProjection) {
+        view.projection = undefined;
+    }
+    journalPending.add(key);
+    scheduleJournal();
+}
+
+function rememberJournalProjection(
+    key: string,
+    value: Projection | undefined,
+    canonical = false,
+    character?: character | groupChat,
+) {
+    const view = journalView(key);
+    if (view) {
+        view.projection = {
+            generation: dirty.get(key) ?? acked.get(key) ?? 0,
+            character,
+            value,
+            canonical,
+        };
+    }
+    return value;
+}
+
+/** Collection and hide/timer snapshots share a projection until a local mark or raw replacement. */
+function journalProjection(
+    key: string,
+    kind: string,
+    id: string,
+    character = kind === RESOURCE_KIND.characters ? findMirrorCharacter(id) : undefined,
+): Projection | undefined {
+    const cached = journalView(key)?.projection;
+    if (cached && cached.generation === (dirty.get(key) ?? acked.get(key) ?? 0) && cached.character === character) {
+        return cached.value;
+    }
+    const projection =
+        kind === RESOURCE_KIND.characters
+            ? character
+                ? characterProjection(character)
+                : undefined
+            : projectEntry(kind, id);
+    return rememberJournalProjection(key, projection, false, character);
+}
+
+const journalOperation = (text: string | null, baseRevision: string | null): RecordLayerValues["latest"] => ({
+    op: text === null ? "delete" : baseRevision === null ? "create" : "update",
+    baseRevision,
+    text,
+});
+
+/**
+ * Record intent, separately from sendable operations: a blocked delete, a removed in-doubt create,
+ * and a revert behind a sent write still belong here. This never takes or settles chat work.
+ */
+function refreshJournalRecord(key: string, view: JournalRecordView) {
+    const [kind, id] = key.split("\u0000");
+    const current = persisted.get(key);
+    let projection = journalProjection(key, kind, id);
+    if (
+        kind === RESOURCE_KIND.characters &&
+        projection &&
+        projection.text !== current?.text &&
+        !inDoubt.has(key) &&
+        !view.projection?.canonical
+    ) {
+        projection = rememberJournalProjection(
+            key,
+            canonicalCharacter(id, projection),
+            true,
+            view.projection?.character,
+        );
+    }
+    const text = projection?.text ?? null;
+    const refusal = recordQuarantine(key, text);
+    // Hydration can make an old refusal's text the saved copy; it holds no unsaved intent then.
+    const refused = text !== (current?.text ?? null) ? refusal : null;
+    const doubt = inDoubt.get(key);
+    const sent = refused
+        ? undefined
+        : (view.dispatched ??
+          (doubt
+              ? { ...journalOperation(doubt.text, doubt.baseRevision), dispatched: true as const, inDoubt: true }
+              : undefined));
+    const held = projection !== undefined || (kind === RESOURCE_KIND.characters && (current || sent));
+    const intent = held ? journalOperation(text, current?.revision ?? null) : undefined;
+    const latest =
+        !refused &&
+        intent &&
+        (sent
+            ? intent.text !== sent.text || intent.baseRevision !== sent.baseRevision
+            : intent.text !== (current?.text ?? null))
+            ? intent
+            : undefined;
+    view.desired = {
+        sent,
+        latest,
+        refused: refused
+            ? {
+                  op: view.desired.refused?.op ?? journalOperation(text, current?.revision ?? null).op,
+                  text,
+                  reason: refused.message,
+              }
+            : undefined,
+    };
+}
+
+function journalDispatched(ops: readonly PendingOp[]) {
+    for (const op of ops) {
+        const view = journalView(op.key);
+        if (view) {
+            const doubt = inDoubt.get(op.key);
+            view.dispatched = {
+                ...journalOperation(op.text, op.baseRevision),
+                dispatched: true,
+                inDoubt: doubt?.text === op.text && doubt.baseRevision === op.baseRevision,
+            };
+            queueJournalRecord(op.key);
+        }
+    }
+}
+
+/** An answer (or a lost answer) leaves only the intent the adapter still holds. */
+function journalSettled(key: string) {
+    const view = journalRecords.get(key);
+    if (view) {
+        view.dispatched = undefined;
+        queueJournalRecord(key);
+    }
+}
+
+function journalDiscarded(key: string) {
+    const view = journalRecords.get(key);
+    if (view) {
+        view.dispatched = undefined;
+        view.desired = {};
+        queueJournalRecord(key, true);
+    }
+}
+
+function sameJournalLayer(a: RecordLayerValues[keyof RecordLayerValues] | undefined, b: typeof a): boolean {
+    if (!a || !b) {
+        return a === b;
+    }
+    return (
+        a.op === b.op &&
+        a.text === b.text &&
+        ("baseRevision" in a ? "baseRevision" in b && a.baseRevision === b.baseRevision : !("baseRevision" in b)) &&
+        ("inDoubt" in a ? "inDoubt" in b && a.inDoubt === b.inDoubt : !("inDoubt" in b)) &&
+        ("reason" in a ? "reason" in b && a.reason === b.reason : !("reason" in b))
+    );
+}
+
+/** All adapter calls are serialized after startup seeds the version counter, including removals. */
+function flushJournal(onHide = false): Promise<void> {
+    if (journalTimer) {
+        clearTimeout(journalTimer);
+        journalTimer = null;
+    }
+    if (halted || journalOff || journalPending.size === 0) {
+        return journalQueue;
+    }
+    journalQueue = journalQueue
+        .then(async () => {
+            if (halted || journalOff || journalPending.size === 0) {
+                return;
+            }
+            const journal = pageDraftJournal();
+            const enabled = await journal.start();
+            if (halted) {
+                return;
+            }
+            if (!enabled) {
+                journalOff = true;
+                if (journalTimer) {
+                    clearTimeout(journalTimer);
+                    journalTimer = null;
+                }
+                journalPending.clear();
+                journalRecords.clear();
+                return;
+            }
+            const writes: JournalWrite[] = [];
+            const removals: JournalRemoval[] = [];
+            let nextDelay = Infinity;
+            const now = Date.now();
+            for (const key of journalPending) {
+                const view = journalRecords.get(key)!;
+                refreshJournalRecord(key, view);
+                const desired = view.desired;
+                const values = Object.values(desired).filter((value) => value !== undefined);
+                const tooLarge =
+                    values.reduce((sum, value) => sum + (value.text?.length ?? 0), 0) > MAX_JOURNAL_ENTRY_BYTES;
+                const contentGeneration = Math.max(
+                    dirty.get(key) ?? acked.get(key) ?? 0,
+                    key.startsWith(characterPrefix) ? membershipGeneration : 0,
+                );
+                if (tooLarge && view.skippedGeneration !== contentGeneration) {
+                    recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "tooLarge", entries: 1 });
+                    view.skippedGeneration = contentGeneration;
+                }
+                const changed = RECORD_JOURNAL_LAYERS.filter(
+                    (name) => !sameJournalLayer(desired[name], view.written[name]?.value),
+                );
+                const large =
+                    !tooLarge &&
+                    changed.some((name) => {
+                        const text = desired[name]?.text;
+                        return (
+                            text &&
+                            (text.length > LARGE_JOURNAL_BYTES ||
+                                (text.length * 3 > LARGE_JOURNAL_BYTES && utf8ByteLength(text) > LARGE_JOURNAL_BYTES))
+                        );
+                    });
+                const wait = (view.largeWriteAt ?? -Infinity) + LARGE_JOURNAL_INTERVAL_MS - now;
+                const deferred = !onHide && large && wait > 0 && !values.some((value) => value.op === "create");
+                const layers: JournalRecordLayers = {};
+                for (const name of RECORD_JOURNAL_LAYERS) {
+                    const stored = view.written[name];
+                    const value = desired[name];
+                    // Keep unchanged layers when a write is over budget, and keep a throttled
+                    // layer until replacement. Settled layers and older values of skipped changes
+                    // go through their captured versions.
+                    if (stored && (!value || (tooLarge && changed.includes(name)))) {
+                        removals.push({
+                            epoch: view.epoch,
+                            scope: "record",
+                            target: key,
+                            version: stored.version,
+                            layers: [name],
+                        });
+                        delete view.written[name];
+                    }
+                    if (!tooLarge && !deferred && value && changed.includes(name)) {
+                        Object.assign(layers, { [name]: value });
+                    }
+                }
+                if (Object.keys(layers).length > 0) {
+                    const version = journal.nextVersion();
+                    writes.push({ epoch: view.epoch, scope: "record", target: key, version, layers });
+                    for (const name of RECORD_JOURNAL_LAYERS) {
+                        if (layers[name]) {
+                            Object.assign(view.written, { [name]: { version, value: layers[name] } });
+                        }
+                    }
+                    if (large) {
+                        view.largeWriteAt = now;
+                    }
+                }
+                if (deferred) {
+                    nextDelay = Math.min(nextDelay, wait);
+                } else {
+                    journalPending.delete(key);
+                    if (values.length === 0) {
+                        view.projection = undefined;
+                    }
+                }
+            }
+            if (writes.length > 0 || removals.length > 0) {
+                await journal.write(writes, removals);
+            }
+            if (Number.isFinite(nextDelay)) {
+                scheduleJournal(Math.max(0, now + nextDelay - Date.now()));
+            }
+        })
+        .catch((error) => {
+            // Journaling must never reject a save or leave a rejected queue behind it.
+            console.warn("[Save journal]", error);
+            recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
+        });
+    return journalQueue;
+}
+
+async function waitForCreateJournal(flush: Promise<void>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            flush,
+            new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, JOURNAL_CREATE_WAIT_MS);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 /** Records what the server holds, from the boot read. Call before the boot installs the records. */
 export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
@@ -450,20 +822,25 @@ function markKey(key: string) {
     }
     permanentError = null;
     schedule();
+    queueJournalRecord(key);
 }
 
 function markMembership() {
     generation += 1;
     membershipGeneration = generation;
     const present = new Set(characterData().map((character) => character.chaId as string));
+    const journalKeys = new Set<string>();
     for (const id of present) {
-        if (!persisted.has(characterKey(id))) {
-            noteWait(`record:${characterKey(id)}`, generation);
+        const key = characterKey(id);
+        if (!persisted.has(key)) {
+            noteWait(`record:${key}`, generation);
+            journalKeys.add(key);
         }
     }
     for (const key of persisted.keys()) {
         if (key.startsWith(characterPrefix) && !present.has(key.slice(characterPrefix.length))) {
             noteWait(`record:${key}`, generation);
+            journalKeys.add(key);
         }
     }
     if (quarantinedRecords.size > 0) {
@@ -471,6 +848,22 @@ function markMembership() {
     }
     permanentError = null;
     schedule();
+    for (const key of inDoubt.keys()) {
+        if (key.startsWith(characterPrefix)) {
+            journalKeys.add(key);
+        }
+    }
+    for (const [key, view] of journalRecords) {
+        if (
+            key.startsWith(characterPrefix) &&
+            (view.dispatched || RECORD_JOURNAL_LAYERS.some((name) => view.desired[name] || view.written[name]))
+        ) {
+            journalKeys.add(key);
+        }
+    }
+    for (const key of journalKeys) {
+        queueJournalRecord(key);
+    }
 }
 
 function settle(key: string, marked: number) {
@@ -1274,7 +1667,7 @@ function projectRecord(kind: string, id: string): string | undefined {
     return COLLECTIONS.includes(kind as Collection) ? projectCollection(kind as Collection) : undefined;
 }
 
-function recordQuarantine(key: string): ResourceRequestError | null {
+function recordQuarantine(key: string, projected?: string | null): ResourceRequestError | null {
     const refused = quarantinedRecords.get(key);
     if (!refused) {
         return null;
@@ -1282,7 +1675,7 @@ function recordQuarantine(key: string): ResourceRequestError | null {
     const separator = key.indexOf("\u0000");
     const kind = key.slice(0, separator);
     const id = key.slice(separator + 1);
-    const text = projectRecord(kind, id) ?? null;
+    const text = projected === undefined ? (projectRecord(kind, id) ?? null) : projected;
     if (text === refused.text) {
         if (text !== null) {
             // The refused text stays held: the cache keeps that string, not an equal copy.
@@ -1364,6 +1757,15 @@ function hasUnsavedWork(): boolean {
 
 function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = true) {
     quarantinedRecords.set(op.key, { text: op.text, error });
+    const view = journalView(op.key);
+    if (view) {
+        view.desired.refused = {
+            op: journalOperation(op.text, op.baseRevision).op,
+            text: op.text,
+            reason: error.message,
+        };
+        journalSettled(op.key);
+    }
     notifyRefusals();
     // Indexed errors alert once per key per session. An isolated unindexed refusal alerts once
     // per content change; unchanged content never makes it back to this function.
@@ -1698,13 +2100,15 @@ function collectOperations(): {
             return;
         }
         ops.push(op);
+        queueJournalRecord(op.key);
     }
     for (const collection of COLLECTIONS) {
         const key = collectionKey(collection);
         if (!captured.has(key)) {
             continue;
         }
-        const projection = collectionProjection(collection);
+        const projection = journalProjection(key, collection, SINGLETON_RESOURCE_ID);
+        queueJournalRecord(key);
         if (resendInDoubt(key, collection, SINGLETON_RESOURCE_ID, projection?.text)) {
             continue;
         }
@@ -1737,17 +2141,27 @@ function collectOperations(): {
         const key = characterKey(id);
         // A character whose refused delete was undone: nothing waits any more.
         jobBlockedRecords.delete(key);
-        if (inDoubt.has(key) && resendInDoubt(key, RESOURCE_KIND.characters, id, characterProjection(character).text)) {
+        if (
+            inDoubt.has(key) &&
+            resendInDoubt(
+                key,
+                RESOURCE_KIND.characters,
+                id,
+                journalProjection(key, RESOURCE_KIND.characters, id, character)?.text,
+            )
+        ) {
             continue;
         }
         const current = persisted.get(key);
         if (current && !captured.has(key)) {
             continue;
         }
-        let projection = characterProjection(character);
+        let projection = journalProjection(key, RESOURCE_KIND.characters, id, character)!;
+        queueJournalRecord(key);
         let saved = projection.text === current?.text;
         if (!saved) {
             projection = canonicalCharacter(id, projection);
+            rememberJournalProjection(key, projection, true, character);
             saved = projection.text === current?.text;
         }
         if (saved) {
@@ -1783,6 +2197,9 @@ function collectOperations(): {
     for (const [key, current] of persisted) {
         if (key.startsWith(characterPrefix)) {
             const id = key.slice(characterPrefix.length);
+            if (!present.has(id)) {
+                queueJournalRecord(key);
+            }
             if (!present.has(id) && !isRecordJobBlocked(key)) {
                 // Its chats' work is settled now; the revisions held of them stay until the deletion
                 // is acknowledged, for a re-add of the id before that (`settleCharacterDelete`).
@@ -1919,6 +2336,12 @@ function runCycle(): Promise<boolean> {
         } finally {
             inFlight = null;
             sendingKeys.clear();
+            // Early returns also release conservative marks of batches that never dispatched.
+            for (const [key, view] of journalRecords) {
+                if (view.dispatched) {
+                    journalSettled(key);
+                }
+            }
             pruneWaits();
             scheduleRefresh(0);
             // A record whose hydration waited for the batch: its ordering check runs again now.
@@ -1967,6 +2390,13 @@ async function cycle() {
         const reason = `The chat ${group.chatId} is too large to save`;
         quarantineChat(group, reason, reason);
     }
+    // Later batches are conservatively marked sent too: recovery treats an unanswered create
+    // as dispatched even if an earlier batch prevented its request from going out.
+    journalDispatched(ops);
+    const journalFlush = flushJournal();
+    if (!journalOff && ops.some((op) => op.text !== null && op.baseRevision === null && journalRecords.has(op.key))) {
+        await waitForCreateJournal(journalFlush);
+    }
     if (batches.length > 0) {
         saving.state = true;
         cycleWrote = true;
@@ -1985,6 +2415,9 @@ async function cycle() {
             for (const op of batch.ops) {
                 sendingKeys.add(op.key);
             }
+            // A remote replacement may have settled a conservative mark while an earlier batch
+            // waited; this request still carries its collected op.
+            journalDispatched(batch.ops);
             try {
                 fenceCharacterWrites(batch.ops, batch.work, true);
                 recordSaveWait(batch, captured, membership);
@@ -1996,6 +2429,13 @@ async function cycle() {
                     }
                     // Nothing of this request or the later ones was saved.
                     requeueChatWork(later);
+                    // A known refusal returns records to collected intent before any conflict read.
+                    if (
+                        error instanceof ResourceConflictError ||
+                        (error instanceof ResourceRequestError && error.status > 0 && error.status < 500)
+                    ) {
+                        batch.ops.forEach((op) => journalSettled(op.key));
+                    }
                     if (error instanceof ResourceConflictError) {
                         await recoverFromConflict(error, batch.ops, batch.work);
                         return;
@@ -2063,6 +2503,7 @@ async function cycle() {
                     } else {
                         persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                     }
+                    journalSettled(op.key);
                 });
                 for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
                     queueCharacterRefresh(characterId, "listRefresh");
@@ -2096,6 +2537,7 @@ async function cycle() {
         if (dirty.get(key) === marked) {
             dirty.delete(key);
         }
+        queueJournalRecord(key);
     }
     if (membershipAcked < membership && !collectMembershipChanges()) {
         membershipAcked = membership;
@@ -2370,6 +2812,11 @@ async function haltForRestore() {
         return;
     }
     halted = true;
+    if (journalTimer) {
+        clearTimeout(journalTimer);
+        journalTimer = null;
+    }
+    journalPending.clear();
     if (refreshTimer) {
         clearTimeout(refreshTimer);
     }
@@ -2481,6 +2928,7 @@ function acceptRemote(item: RemoteItem, removeAbsentSingleton = false) {
     discarded.set(key, discardSequence);
     settle(key, generation);
     dirty.delete(key);
+    journalDiscarded(key);
     for (const listener of remoteChangeListeners) {
         try {
             listener(item.kind, item.id);
@@ -2853,6 +3301,13 @@ function adoptMergedBase(item: RemoteItem, revision: string, key: string, announ
             : { revision, text: recordText(item.kind, item.data) },
     );
     markKey(key);
+    journalSettled(key);
+    rememberJournalProjection(
+        key,
+        merged,
+        false,
+        item.kind === RESOURCE_KIND.characters ? findMirrorCharacter(item.id) : undefined,
+    );
     if (announce) {
         for (const listener of remoteChangeListeners) {
             try {
@@ -3007,6 +3462,7 @@ function noteInDoubt(ops: readonly PendingOp[]) {
         if (op.text !== null && !inDoubt.has(op.key)) {
             inDoubt.set(op.key, { baseRevision: op.baseRevision, text: op.text, parts: op.parts ?? null });
         }
+        journalSettled(op.key);
     }
 }
 
@@ -3023,6 +3479,7 @@ function adoptInDoubt(key: string, revision: string, text: string): boolean {
     inDoubt.delete(key);
     persisted.set(key, { revision, text: doubt.text, parts: doubt.parts });
     markKey(key);
+    journalSettled(key);
     return true;
 }
 
@@ -3206,6 +3663,7 @@ async function recoverConflictedWork(
             // the server's key order, so the text may differ in order only).
             inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
+            journalSettled(key);
             if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
                 queueCharacterRefresh(item.id, "listRefresh");
             }
@@ -3844,6 +4302,7 @@ function applyRemotePatch(ref: {
     }
     const projection = projectEntry(ref.kind, ref.id)!;
     persisted.set(key, { revision: ref.revision, ...projection });
+    journalDiscarded(key);
     const waiting = remoteRecords.get(key);
     if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
         remoteRecords.delete(key);
@@ -4045,6 +4504,7 @@ function applyRemoteRecord(
             ...(projectEntry(item.kind, item.id) ?? { text: recordText(item.kind, item.data) }),
         });
     }
+    journalDiscarded(key);
     if (isNew && collection) {
         applyRemoteCollection(collection);
     }
@@ -4263,6 +4723,7 @@ export function applyHydration(record: HydrationRecord): boolean {
         revision: record.revision,
         ...(projectEntry(record.kind, record.id) ?? { text: JSON.stringify(record.data) }),
     });
+    journalDiscarded(key);
     for (const listener of remoteChangeListeners) {
         try {
             listener(record.kind, record.id);
@@ -4542,6 +5003,7 @@ export function startResourceSync() {
         if (document.visibilityState !== "hidden" || halted) {
             return;
         }
+        void flushJournal(true);
         void (async () => {
             await tick();
             if (timer) {
@@ -4612,6 +5074,7 @@ export function startResourceSync() {
         if (halted) {
             return;
         }
+        void flushJournal(true);
         try {
             for (const request of unloadPendingChatWork(UNLOAD_BODY_LIMIT - unloadBytes)) {
                 sendUnload(request);
