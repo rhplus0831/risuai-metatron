@@ -1632,6 +1632,7 @@ export const languageEnglish = {
     },
     resourceNoticeDismiss: "Dismiss",
     chatLoadFailed: "This chat could not be loaded: {0}",
+    chatLoadTimedOut: "The chat request timed out. Try again.",
     chatLoadRetry: "Try again",
     selectChatToOpen: "Select a chat from the list to start.",
     openMostRecentChat: "Open most recent chat",

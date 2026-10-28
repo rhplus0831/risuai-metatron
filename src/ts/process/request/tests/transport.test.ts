@@ -1154,30 +1154,26 @@ describe("the request's chats", () => {
     it("loads a `cbs` callback's other chat before the parse when it is not loaded, and fails the callback for a chat that is not listed", async () => {
         assembleFixture(["other"]);
         expect(findChat({ chaId: "other", chatId: "k" })).toBeUndefined();
-        stubs.fetch.mockResolvedValueOnce(
-            sseResponse([
-                accepted,
-                {
-                    type: "callback",
-                    id: "cb-1",
-                    name: "cbs",
-                    payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "k" } },
-                },
-                {
-                    type: "callback",
-                    id: "cb-2",
-                    name: "cbs",
-                    payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "zz" } },
-                },
-                success,
-            ]),
-        );
-        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
-            type: "success",
-            result: "ok",
+        // As on the server, the result follows the callbacks' answers.
+        const controlled = controlledResponse();
+        stubs.fetch.mockResolvedValueOnce(controlled.response);
+        const pending = requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo);
+        controlled.event(accepted);
+        controlled.event({
+            type: "callback",
+            id: "cb-1",
+            name: "cbs",
+            payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "k" } },
         });
-        await flushTick();
-        await flushTick();
+        controlled.event({
+            type: "callback",
+            id: "cb-2",
+            name: "cbs",
+            payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "zz" } },
+        });
+        await vi.waitFor(() => expect(answers()).toHaveLength(2));
+        controlled.event(success);
+        expect(await pending).toEqual({ type: "success", result: "ok" });
         expect(stubs.readRefs).toHaveBeenCalledTimes(1);
         expect((stubs.readRefs.mock.calls[0][1] as { chats: unknown }).chats).toEqual([
             { characterId: "other", id: "k" },
