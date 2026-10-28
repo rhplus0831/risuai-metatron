@@ -113,11 +113,11 @@ Routing is non-strict (a trailing slash matches).
 | DELETE     | `/api/generations/:id?clientId=`                       | JWT                                                                          | 2000/min                                                                                                       | aborts the owner's job: `{ aborted }`                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST       | `/api/generations/:id/memory-stop?clientId=`           | JWT + epoch                                                                  | 2000/min                                                                                                       | stops the owner's job's initial memory summarization run (`{ runId }`) after its summary in progress, the job going on: `{ stopped: true }`; 400, 404, 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`, 412                                                                                                                                                                                                                  |
 | POST       | `/api/generations/:id/drained?clientId=`               | JWT                                                                          | 2000/min                                                                                                       | the owner reports a callback of its job the server cancelled as no longer running in the tab (`ChannelDrainedBody` `{ callbackId }`), freeing the client's channel lane: `{ drained }` (false when it held none; also for an ended job still kept); 400, 404                                                                                                                                                                    |
-| POST       | `/api/transform`                                       | JWT + epoch                                                                  | 2000/min                                                                                                       | the script transform (`TransformRequest`, `shared/transform.ts`): `{ results }`, or with `handlers` `{ results, snapshotId, pending }`; 400, 404, 409 `chatBindingMismatch`, 412, 413, 503 `Retry-After: 5`                                                                                                                                                                                                                     |
+| POST       | `/api/transform`                                       | JWT + epoch                                                                  | 2000/min                                                                                                       | the script transform (`TransformRequest`, `shared/transform.ts`): `{ results, same? }`, with `{ snapshotId, pending }` added when targets await the tab's plugin handlers; optional target `knownKey` (64 lowercase hex characters, else 400) and exact cache-hit `same` confirmations (below). 400, 404, 409 `chatBindingMismatch`, 412, 413, 503 `Retry-After: 5`                                                             |
 | POST       | `/api/translate/message`                               | JWT + epoch                                                                  | 2000/min                                                                                                       | translates one stored message on the server: `{ outcome, translation }` (`applied`, `ignored`, `fresh`); 400, 404, 409 `generating`/`chatBindingMismatch`, 412, 413, 429, 502, 503 `Retry-After: 5`, 504                                                                                                                                                                                                                        |
 | POST       | `/api/memory/tasks`                                    | JWT + epoch                                                                  | 2000/min                                                                                                       | a manual memory task start (`{ characterId, chatId }`, 4 KiB): `{ outcome: "running" \| "queued", status }` or `{ outcome: "pendingManual" }`; 400, 404, 412, 413, 429 `queueFull`, 503 `notEnabled` (the runner's service disabled or replaced, tests), 503 `Retry-After: 5` (shutdown, maintenance); `no-store`                                                                                                               |
 | DELETE     | `/api/memory/tasks/:characterId/:chatId`               | JWT + epoch                                                                  | 2000/min                                                                                                       | cancels the chat's memory task: `{ cancelled }`; 400, 404, 412, 503 `notEnabled`; `no-store`                                                                                                                                                                                                                                                                                                                                    |
-| POST       | `/api/transform/continue`                              | JWT + epoch                                                                  | 2000/min                                                                                                       | the second call after the tab's plugin handlers (`TransformContinueRequest`): `{ results }`; 400, 409 `SnapshotExpired`, 412, 503                                                                                                                                                                                                                                                                                               |
+| POST       | `/api/transform/continue`                              | JWT + epoch                                                                  | 2000/min                                                                                                       | the second call after the tab's plugin handlers (`TransformContinueRequest`): `{ results }`, always full answers; `same` belongs only to the first call. 400, 409 `SnapshotExpired`, 412, 503                                                                                                                                                                                                                                   |
 | WS upgrade | `/api/generations/:id/ws?clientId=&attach=`            | JWT in the `risu-auth` query or header (never the password)                  | none                                                                                                           | the owner's `GenerationEvent` stream                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST       | `/api/llm/request`                                     | JWT + epoch                                                                  | 2000/min                                                                                                       | one provider request on the server (`LlmRequestBody`, `shared/llm/request.ts`); an SSE stream of `LlmRequestEvent`s; 400, 409 (`channelCall` not running; with `args.chatRef`, `chatBindingIncomplete { problems }` or `chatBindingMismatch`), 412, 429 (32 per client), 503                                                                                                                                                    |
 | POST       | `/api/llm/request/:id/answer`                          | JWT                                                                          | 2000/min                                                                                                       | answers one of the request's callbacks (`{ clientId, callbackId, outcome, value \| error }`): `{ accepted }` or `{ ignored }`; 404 for another client's or an ended request                                                                                                                                                                                                                                                     |
@@ -172,6 +172,8 @@ Routing is non-strict (a trailing slash matches).
 | POST       | `/api/import/realm/cancel`                             | `checkAuth`                                                                  | 2000/min                                                                                                       | `{ token }` (4 KiB cap): removes the staged card; 204 whether it still waited or not; 400, 413, 503                                                                                                                                                                                                                                                                                                                             |
 
 "+ epoch" means the `x-resource-epoch` header must name the current database epoch (412 `{ error: "EpochMismatch", epoch }` otherwise). Mutations answer 503 with `Retry-After` while a restore or an import runs. During shutdown, new resource requests (including reads), backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed store-closed error maps to the same retryable response. Every `/api/resources` and `/api/llm-secrets` response is `Cache-Control: no-store`. Every read route (`/api/resources?kinds=`, `/api/resources/read`, `/api/resources/:kind`, `/api/resources/:kind/:id`) and the PUT response answer a kind with `project` in its projected form: `llmSecrets` is masked. Every whole chat a read returns (`/api/resources/read` `chats` and `chatCollections`, `/api/resources?chats=1`) carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`, `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none). The tab replaces the chat's feed locks with it ([persistence](persistence.md) Save step 9); a client must treat the field as optional.
+
+Transform confirmations (`routes/transform.ts`, `prompt/transform.ts` `partitionKnownResults`): a target's `knownKey` only changes the answer for an ordinary successful cache hit with exactly that key. The first call returns `same` as a separate `{ id, key }[]` field, present only when non-empty, with no text or emotions; each target is answered once in `results`, `same` or `pending`. A different key, an evicted entry, a fresh run, `noCache`, a failure and every continuation answer in full (or await handlers on the first call). Admission and refusals are unchanged.
 
 The resource, proxy, and job rows marked "2000/min" share one limiter; `test_auth` has its own. Login has its own. The storage rows marked "2000/min (storage)" have their own bucket with the same threshold, so an asset burst (a module import or export) cannot starve resource sync.
 
@@ -312,6 +314,7 @@ Process memory: the module-level `assetVerification` singleton holds bounded ver
 
 - `password` and the known key hashes.
 - The generation jobs (registry, chat slots, sockets) and the generation lock. A restart loses both: running jobs end with the process, and the message generation fence of their messages closes on the next ordinary write. An ended job stays readable for 60 s (`JOB_DONE_GRACE_MS`); once collected, its kept outcome (`GenerationStatus.kept`, the terminal trimmed: no `result`, `alternatives` or `followUps` over 64 KiB of JSON dropped (`followUpsDropped`), an error message cut to 4 KiB) answers the owner's status for 24 h (`KEPT_OUTCOME_MS`), at most 500 of them (`MAX_KEPT_OUTCOMES`, the oldest dropped first). An epoch change clears them, and a restart forgets them.
+- The transform service (`prompt/transform.ts`): its result LRU, pending two-call snapshots and pins, plus `prompt/displayScope.ts`'s `createDisplayScopeLoader` (raw configuration and transcript caches, shared read-only, with a fresh projection per request). Maintenance aborts renders and empties these caches; shutdown aborts renders and clears the loader ([CBS rendering](cbs-rendering.md), [chat pipeline](chat-pipeline.md)).
 - Rate-limit counters.
 - The resource store's epoch and committed-write counter, the snapshot lock, the maintenance gate, the backup import slot (the version-2 import and the upstream prepare and commit), the import slot the module, CharX, and Realm imports share, the staged Realm imports (`realmStaging`), and the prepared upstream imports (`upstreamStaging`).
 - The change feed's listeners and the live-update sockets (nothing is buffered; a restart loses them, and every client reconciles at its reconnect).
@@ -430,70 +433,86 @@ and timing rules belong to [build-test-platforms](build-test-platforms.md).
 
 ## Known Hazards
 
-- The SQLite resource store assumes one server process and a local filesystem.
-  Network filesystems are unsupported. Snapshots cover `save/data/`, not assets;
-  retained snapshots can keep references to assets that are never deleted, so
+Runtime limits of other subsystems live with their owners:
+[chat-pipeline](chat-pipeline.md), [LLM requests](llm-requests.md),
+[memory](memory.md) (the vector cache included), [scripts and triggers](scripts-triggers.md),
+[plugins and MCP](plugins-mcp.md), and [CBS/rendering](cbs-rendering.md).
+
+### Issues
+
+- Snapshots (`save/backups/`) copy `resources.sqlite`, not assets; retained
+  snapshots can keep references to assets that are never deleted, so
   `save/assets/` can grow.
-- Restore and version-2 import validate and install the database on the serving
-  thread, which can block other requests for a large store. Upstream conversion is
-  in a worker, but its heap cap does not cover Buffers or SQLite memory.
-- Upstream export holds its records, projected database, and encoded save in memory;
-  staged exports are capped at four. An asset over 4 GiB cannot fit an archive
-  record and is reported as missing.
 - Server CBS evaluation runs on the main thread under cooperative limits, with no
   hard deadline or heap bound. Some surrounding prompt work, including Jinja
   rendering, tokenizer calls after model load, and non-worker lore matching, also
   runs there. See [CBS/rendering](cbs-rendering.md) and [chat-pipeline](chat-pipeline.md).
-- A Lua call stuck in native code cannot reach the abort hook; the worker is
-  terminated after its abort grace and queued work waits for a replacement.
-  `server/src/lua/runtime.ts` also uses wasmoon 1.16's private engine extension table and C API,
-  which must be rechecked on a wasmoon upgrade ([scripts and triggers](scripts-triggers.md)).
-- `server/src/data/vectorCache.ts` bounds stored vector bytes, not the SQLite file size; eviction
-  runs on the main thread, with at most 256 rows removed per `set` in its insert transaction.
-  Trimming continues toward 90% on later inserts; a vector that cannot fit after that budget is
-  skipped, so writes never exceed the byte bound. Startup reaches 90% in batches before serving
-  when the stored bytes exceed the bound ([memory](memory.md)).
-- Backup, module, and CharX uploads share Node's four-hour whole-request timeout.
-  Staging under `save/.tmp/` must share a filesystem with asset targets for atomic
-  rename. Only one process should use a save directory.
 - `/api/remove` deletes sequentially: a filesystem error stops the batch with 500
   and leaves earlier deletions in place.
-- Resource depth validation runs on parsed JSON after serialization; the HTTP body
-  cap bounds uploads, but in-process callers can spend more work before rejection.
-  Opening the store normalizes every record, so startup cost grows with the data
-  and a refused record stops startup with its kind and id.
 - `normalizeCharacterOrder` and `normalizeCustomModels` do not deduplicate entries.
   The former accepts folder objects without validating their fields; the latter
   requires string `id` and `internalId` and strips retired credential fields.
+- `/api/asset/*` verification is in memory and stat-based; it starts empty after
+  restart and cannot detect an outside same-size edit that restores the full stat.
+- The thumbnail cache has no byte cap.
+- JWT validation does not check issuer, audience, `typ`, or `iat`, and a token
+  without `exp` does not expire.
+- `/hub-proxy` is unauthenticated and forwards request headers other than
+  `risu-auth` to the configured hub.
+
+### Limitations
+
+- The SQLite resource store assumes one server process and a local filesystem.
+  Network filesystems are unsupported. Decision: one local `save/` directory and
+  one process (Invariants).
+- Restore and version-2 import validate and install the database on the serving
+  thread, which can block other requests for a large store. Upstream conversion is
+  in a worker, but its heap cap does not cover Buffers or SQLite memory.
+  Decision: restore and import run under maintenance (Invariants).
+- Upstream export holds its records, projected database, and encoded save in memory;
+  staged exports are capped at four. An asset of 4 GiB or more cannot fit an archive
+  record and is reported as missing. Decision: the staging cap
+  (`shared/upstreamExportReport.ts`) and the archive record ceiling
+  (`server/src/data/archive.ts`).
+- A Lua call stuck in native code cannot reach the abort hook; the worker is
+  terminated after its abort grace and queued work waits for a replacement.
+  Decision: the pool's watchdog is the bound for a C-level runaway
+  (`server/src/lua/runtime.ts` header).
 - Directory fsync may be unsupported on a mount (`EINVAL`/`EPERM`); in that case a
   successful rename or link is not guaranteed to survive power loss. This includes
   the auth password and known-key files, which `writeFileDurableSync`
   (`server/src/data/durableWrite.ts`) writes through a flushed temporary file renamed
   into place.
-- Storage namespace folders are trusted: a symlinked `save/assets` directory is
-  followed, although individual file opens reject symlinks where the OS supports it.
-  `/api/asset/*` verification is in memory and stat-based; it starts empty after
-  restart and cannot detect an outside same-size edit that restores the full stat.
+  Decision: `EINVAL` and `EPERM` from directory sync are tolerated (Invariants).
 - Replacing bytes under an already cached immutable content name does not update a
   browser's cached asset. The browser may also serve a fresh immutable same-origin
   asset response without reaching server authentication.
+  Decision: the owner accepted this exposure on 2026-10-23 (Invariants).
+- `/api/set_password` and `/api/crypto` are unauthenticated by design and rate
+  limited. A server has one password and registered browser keys, not separate
+  users. Decision: the server's auth model (`server/src/routes/auth.ts` header).
+
+### Gotchas
+
+- `server/src/lua/runtime.ts` uses wasmoon 1.16's private engine extension table and
+  C API, which must be rechecked on a wasmoon upgrade
+  ([scripts and triggers](scripts-triggers.md)).
+- Backup, module, and CharX uploads share Node's four-hour whole-request timeout.
+  Staging under `save/.tmp/` must share a filesystem with asset targets for atomic
+  rename. Only one process should use a save directory.
+- Resource depth validation runs on parsed JSON after serialization; the HTTP body
+  cap bounds uploads, but in-process callers can spend more work before rejection.
+  Opening the store normalizes every record, so startup cost grows with the data
+  and a refused record stops startup with its kind and id.
+- Storage namespace folders are trusted: a symlinked `save/assets` directory is
+  followed, although individual file opens reject symlinks where the OS supports it.
 - `/api/asset/*` serves one byte range. Thumbnail transforms are versioned by
-  `THUMBNAIL_VERSION`; bump it when transform output or input policy changes. The
-  thumbnail cache has no byte cap, and animation detection covers multi-page formats
-  reported by `sharp` plus PNG `acTL`.
+  `THUMBNAIL_VERSION`; bump it when transform output or input policy changes.
+  Animation detection covers multi-page formats reported by `sharp` plus PNG `acTL`.
 - Static serving precedes the asset route. A file emitted under `dist/api/asset/`
   would be served before asset authentication and headers; the current build emits
   no `api/` directory.
-- `/api/set_password` and `/api/crypto` are unauthenticated by design and rate
-  limited. A server has one password and registered browser keys, not separate
-  users. JWT validation does not check issuer, audience, `typ`, or `iat`, and a token without
-  `exp` does not expire.
 - `/proxy` and `/proxy2` can reach arbitrary targets; the local-network restriction
-  applies to server streaming jobs. `/hub-proxy` is unauthenticated and forwards
-  request headers other than `risu-auth` to the configured hub.
+  applies to server streaming jobs.
 - Reverse proxies must preserve encoded path segments: decoding `%2F` can split a
   resource id containing a slash. Deployment behavior remains unverified.
-- Other runtime limits and unresolved behavior belong to their subsystem owners:
-  [chat-pipeline](chat-pipeline.md), [LLM requests](llm-requests.md),
-  [memory](memory.md), [scripts and triggers](scripts-triggers.md),
-  [plugins and MCP](plugins-mcp.md), and [CBS/rendering](cbs-rendering.md).

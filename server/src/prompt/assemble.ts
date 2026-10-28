@@ -17,6 +17,7 @@ import type {
     MessageGenerationInfo,
     MessagePresetInfo,
 } from "../../../shared/database.ts";
+import { greetingText } from "../../../shared/greetings.ts";
 import type { HypaV3Budget, HypaV3BudgetReduction } from "../../../shared/hypaV3Presets.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
@@ -1413,10 +1414,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     let greetingSource: { fmIndex: Chat["fmIndex"]; text: string; generation: number | undefined } | null = null;
 
     if (nowChatroom.type !== "group" && !msReseted) {
-        const firstMsg =
-            currentChat.fmIndex === -1
-                ? nowChatroom.firstMessage
-                : nowChatroom.alternateGreetings[currentChat.fmIndex as number];
+        const firstMsg = greetingText(nowChatroom, currentChat.fmIndex);
         greetingSource = { fmIndex: currentChat.fmIndex, text: firstMsg ?? "", generation: currentChatGeneration };
         const chat: OpenAIChat = {
             role: "assistant",

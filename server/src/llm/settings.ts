@@ -127,6 +127,38 @@ export function loadRequestDb(
         personas,
         ...characters
     ] = read.items.map((item) => item.data as any);
+    const nameOf = (id: string | null): string | null => {
+        if (!id) {
+            return null;
+        }
+        const record = characters[characterIds.indexOf(id)];
+        return record ? `${record.name}` : null;
+    };
+    return buildRequestDb(
+        [providers, llmSecrets, ui, customModels, credentials, presets, modelPresets, modelProfiles, personas],
+        ids,
+        names ?? { selectedCharacterName: nameOf(ids.selectedCharacterId), speakerName: nameOf(ids.speakerId) },
+    );
+}
+
+/** Builds fresh request settings from captured records, without reading or changing them. */
+export function buildRequestDb(
+    records: readonly [
+        providers: unknown,
+        llmSecrets: unknown,
+        ui: unknown,
+        customModels: unknown,
+        credentials: unknown,
+        presets: unknown,
+        modelPresets: unknown,
+        modelProfiles: unknown,
+        personas: unknown,
+    ],
+    ids: RequestScopeIds,
+    names: Pick<LoadedRequestDb, "selectedCharacterName" | "speakerName">,
+): LoadedRequestDb {
+    const [providers, llmSecrets, ui, customModels, credentials, presets, modelPresets, modelProfiles, personas] =
+        records.map((record) => record as any);
     if (!providers || !llmSecrets || !ui || !customModels || !presets || !modelPresets || !modelProfiles || !personas) {
         throw new Error("The server has no settings records yet");
     }
@@ -170,17 +202,10 @@ export function loadRequestDb(
     db.customModels = customModels;
     db.credentials = mergeCredentials(credentials ?? [], llmSecrets);
 
-    const nameOf = (id: string | null): string | null => {
-        if (!id) {
-            return null;
-        }
-        const record = characters[characterIds.indexOf(id)];
-        return record ? `${record.name}` : null;
-    };
     return {
         db: db as unknown as RequestDb,
-        selectedCharacterName: names ? names.selectedCharacterName : nameOf(ids.selectedCharacterId),
-        speakerName: names ? names.speakerName : nameOf(ids.speakerId),
+        selectedCharacterName: names.selectedCharacterName,
+        speakerName: names.speakerName,
         userName: typeof effective.name === "string" ? effective.name : PERSONA_DEFAULTS.name,
     };
 }

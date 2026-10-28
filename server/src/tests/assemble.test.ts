@@ -1294,6 +1294,19 @@ describe("the context report", () => {
         expect(texts).toEqual(["MAIN"]);
     });
 
+    it("a greeting index past the alternate greetings (one deleted after the chat chose it) sends the first message", async () => {
+        const { run, chat } = contextAssembly({
+            template: [CHAT_CARD],
+            promptSettings: { trimStartNewChat: true },
+            character: { alternateGreetings: ["Alt"] },
+            messages: [{ chatId: "u1", data: "hello" }],
+        });
+        chat.fmIndex = 3;
+
+        const { texts } = await run();
+        expect(texts).toEqual(["Hi!", "hello"]);
+    });
+
     it("a continue records its target as the reply prefix and leaves that message out of the digest", async () => {
         const { run, chat } = contextAssembly({
             messages: [

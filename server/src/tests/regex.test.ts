@@ -136,6 +136,76 @@ describe("the script loop", () => {
     });
 });
 
+describe("CBS after ordinary replacements", () => {
+    function countingParser(deferred = "") {
+        const db = {
+            username: "Uma",
+            personas: [],
+            globalChatVariables: {},
+            templateDefaultVariables: "",
+            characters: [
+                {
+                    type: "character",
+                    chaId: "c",
+                    name: "Risu",
+                    chatPage: 0,
+                    chats: [{ id: "chat", message: [], scriptstate: { $deferred: deferred } }],
+                },
+            ],
+        } as unknown as Database;
+        const evaluator = createNodeCbsEvaluator(db, { selectedCharID: 0 });
+        return vi.fn((text: string) => evaluator.risuChatParser(text));
+    }
+
+    it("leaves plain text unchanged without parsing when ordinary replacements miss", () => {
+        const parse = countingParser();
+        const text = "Plain prose <b>with HTML</b> and {one brace}.";
+        const result = run(text, [script({ in: "absent", out: "replacement" })], { parse });
+        expect(result).toEqual({ data: text, effects: [] });
+        expect(parse).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["{{user}}", "Uma"],
+        ["{#if 1\nkept#}", "kept"],
+        ["<USER>", "Uma"],
+        ["<Char>", "Risu"],
+        ["<bot>", "Risu"],
+    ])("parses CBS text %j even when an ordinary replacement misses", (text, expected) => {
+        const parse = countingParser();
+        expect(run(text, [script({ in: "absent", out: "replacement" })], { parse })).toEqual({
+            data: expected,
+            effects: [],
+        });
+        expect(parse).toHaveBeenCalledExactlyOnceWith(text);
+    });
+
+    it("parses a changed ordinary replacement even when its result is plain text", () => {
+        const parse = countingParser();
+        expect(run("before", [script({ in: "before", out: "after" })], { parse })).toEqual({
+            data: "after",
+            effects: [],
+        });
+        expect(parse).toHaveBeenCalledExactlyOnceWith("after");
+    });
+
+    it.each([
+        ["{#if 1\nkept#}", "kept"],
+        ["{{user}}", "Uma"],
+    ])("parses CBS %j introduced by an earlier replacement when a later script misses", (deferred, expected) => {
+        const parse = countingParser(deferred);
+        const scripts = [
+            script({ in: "seed", out: "{{getvar::deferred}}" }),
+            script({ in: "absent", out: "replacement" }),
+        ];
+        // getvar returns the variable's literal CBS text for the next script to evaluate.
+        expect(run("seed", scripts, { parse })).toEqual({ data: expected, effects: [] });
+        expect(parse).toHaveBeenCalledTimes(2);
+        expect(parse).toHaveBeenNthCalledWith(1, "{{getvar::deferred}}");
+        expect(parse).toHaveBeenNthCalledWith(2, deferred);
+    });
+});
+
 describe("the effects", () => {
     it("returns @@emo and @@inject in script order and removes an injected match", () => {
         const scripts = [

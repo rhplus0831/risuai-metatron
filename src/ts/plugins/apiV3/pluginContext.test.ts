@@ -840,17 +840,18 @@ describe("the runners", () => {
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
+        // The continuation reads its context's preset; its write is refused (read-only transform).
         const withContext = captureTransform(-1, { chatRef: refB1, pluginContext: context })!;
         const passed = await serverProcessScript(beta, "t", "editprocess", -1, {}, withContext, "text");
         expect(passed.data).toBe("t:10:1/1");
-        expect(preset("a").temperature).toBe(11);
+        expect(preset("a").temperature).toBe(10);
         expect(preset("b").temperature).toBe(20);
 
         const atEntry = captureTransform(-1, { chatRef: refB1 })!;
         const captured = await serverProcessScript(beta, "t", "editprocess", -1, {}, atEntry, "text");
         expect(captured.data).toBe("t:20:1/1");
-        expect(preset("b").temperature).toBe(21);
-        expect(preset("a").temperature).toBe(11);
+        expect(preset("b").temperature).toBe(20);
+        expect(preset("a").temperature).toBe(10);
         expect(where(api)).toEqual([0, 0]);
     });
 

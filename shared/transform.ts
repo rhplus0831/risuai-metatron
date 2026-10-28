@@ -9,6 +9,7 @@
  * keeps the targets' state as a snapshot, and answers `snapshotId` with the pending texts; the tab
  * runs `pluginHooks[mode]` on each and sends `POST /api/transform/continue` with a
  * `TransformContinueRequest`, which answers the rest. Both answer `TransformResponse`.
+ * A target's `knownKey` confirms an exact cache hit in `same`, without downloading its text again.
  */
 import type { CbsConditions } from "./cbs/types.ts";
 import type { GenerationClientEnv } from "./jobs.ts";
@@ -48,6 +49,11 @@ export type TransformTarget = {
     cbsConditions?: CbsConditions;
     /** Skips the cache and replaces its entry ("Re-render"). */
     noCache?: boolean;
+    /**
+     * The `key` of this target's earlier result (64 lowercase hex characters): when the server's
+     * cache holds exactly that key, the target is answered in `same` instead of `results`.
+     */
+    knownKey?: string;
 };
 
 export type TransformRequest = {
@@ -85,6 +91,12 @@ export type TransformResult =
 
 export type TransformResponse = {
     results: TransformResult[];
+    /**
+     * Targets whose `knownKey` the cache holds, answered without text or emotions; present only
+     * when non-empty. Each target of a first call is answered exactly once: in `results`, in
+     * `same`, or (with `handlers`) in `pending`.
+     */
+    same?: { id: string; key: string }[];
     /** Present when targets wait for the tab's plugin handlers (`POST /api/transform/continue`). */
     snapshotId?: string;
     pending?: { id: string; text: string }[];

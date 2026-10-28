@@ -2,15 +2,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TransformRequest, TransformResponse } from "../../../shared/transform.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
-import { ChatBindingError } from "../jobs/jobScope.ts";
+import { ChatBindingError, jobScopeKinds } from "../jobs/jobScope.ts";
 import type { GenerationRunnerDeps } from "../jobs/runSetup.ts";
 import { createTransformService, TransformSnapshotError, TransformUnavailableError } from "../prompt/transform.ts";
+import { createDisplayScopeLoader } from "../prompt/displayScope.ts";
+import { DISPLAY_KIND_CLASSIFICATION, isDisplayKeyKind } from "../prompt/displayKinds.ts";
 import { createTransformCache } from "../prompt/transformCache.ts";
-import { createLuaBudget } from "../scripts/workerPool.ts";
+import { createLuaBudget, createScriptWorkerPool } from "../scripts/workerPool.ts";
 
 // The script transform's service (`server/src/prompt/transform.ts`) and its cache
 // (`server/src/prompt/transformCache.ts`) on a real resource store, with script workers the test
@@ -21,8 +23,13 @@ import { createLuaBudget } from "../scripts/workerPool.ts";
 // second call waiting for a slot, the clock read even when the timer was held back), the snapshot
 // caps, the cache's generation fence against an older fill (a "Re-render" while an earlier two-call
 // render waits; the forgotten generations of the floor), and the cache probe (an all-cached request
-// answered without loading the scope, only while the load's checks would still pass). The route and
-// the real workers are `transform.test.ts`.
+// answered without loading the scope, only while the load's checks would still pass); the snapshot's
+// memory budget (the request's own projection once, each target's setup, unchanged variable copies,
+// distinct source and default-variable maps; an oversized projection runs no Lua and still answers
+// cached targets); and the shared display scopes (configuration and transcript read once per burst,
+// both caches' bounds, each pinned entry charged once against the global budget, pins released on
+// every end path, display writes kept out of the shared entries, with real workers).
+// The route and the remaining real-worker paths are `transform.test.ts`.
 
 type Held = { task: { data: string }; release: (suffix?: string) => void };
 
@@ -169,7 +176,14 @@ describe("the transform service's lifetime", () => {
         }
         // The queued request did not start its run after the maintenance ended.
         expect(h.counts.regex).toBe(4);
-        expect(service.stats()).toEqual({ active: 0, queued: 0, snapshots: 0, cached: 0 });
+        expect(service.stats()).toMatchObject({
+            active: 0,
+            queued: 0,
+            snapshots: 0,
+            cached: 0,
+            retainedBytes: 0,
+            pinnedEntries: 0,
+        });
         // New work runs after the maintenance.
         h.setHold(false);
         expect(okText(await service.transform(h.request("after"), new AbortController().signal))).toEqual([
@@ -200,7 +214,14 @@ describe("the transform service's lifetime", () => {
             Array(5).fill("The server is shutting down"),
         );
         expect(h.counts.regex).toBe(4);
-        expect(service.stats()).toEqual({ active: 0, queued: 0, snapshots: 0, cached: 0 });
+        expect(service.stats()).toMatchObject({
+            active: 0,
+            queued: 0,
+            snapshots: 0,
+            cached: 0,
+            retainedBytes: 0,
+            pinnedEntries: 0,
+        });
         await expect(service.transform(h.request("x"), new AbortController().signal)).rejects.toBeInstanceOf(
             TransformUnavailableError,
         );
@@ -242,7 +263,14 @@ describe("the transform service's lifetime", () => {
         controller.abort(new Error("gone before"));
         await expect(service.transform(h.request("a"), controller.signal)).rejects.toThrow("gone before");
         expect(h.counts.regex).toBe(0);
-        expect(service.stats()).toEqual({ active: 0, queued: 0, snapshots: 0, cached: 0 });
+        expect(service.stats()).toMatchObject({
+            active: 0,
+            queued: 0,
+            snapshots: 0,
+            cached: 0,
+            retainedBytes: 0,
+            pinnedEntries: 0,
+        });
         await service.close();
     });
 
@@ -327,7 +355,14 @@ describe("the transform service's deadline and snapshots", () => {
             run.release();
         }
         expect((await Promise.all(busy)).every((entry) => !entry.ok)).toBe(true);
-        expect(service.stats()).toEqual({ active: 0, queued: 0, snapshots: 0, cached: 0 });
+        expect(service.stats()).toMatchObject({
+            active: 0,
+            queued: 0,
+            snapshots: 0,
+            cached: 0,
+            retainedBytes: 0,
+            pinnedEntries: 0,
+        });
         await service.close();
     });
 
@@ -336,11 +371,11 @@ describe("the transform service's deadline and snapshots", () => {
         h.setHold(false);
         let clock = Date.now();
         vi.spyOn(Date, "now").mockImplementation(() => clock);
-        // The scope read takes 31 s by the clock while no timer can run.
+        // The character read every load makes takes 31 s by the clock while no timer can run.
         const slowStore = {
             ...h.store,
-            readKinds(...args: Parameters<typeof h.store.readKinds>) {
-                const result = h.store.readKinds(...args);
+            readRefs(...args: Parameters<typeof h.store.readRefs>) {
+                const result = h.store.readRefs(...args);
                 clock += 31_001;
                 return result;
             },
@@ -352,7 +387,14 @@ describe("the transform service's deadline and snapshots", () => {
         await expect(service.transform(h.request("e"), new AbortController().signal)).rejects.toThrow(
             "The render took too long",
         );
-        expect(service.stats()).toEqual({ active: 0, queued: 0, snapshots: 0, cached: 0 });
+        expect(service.stats()).toMatchObject({
+            active: 0,
+            queued: 0,
+            snapshots: 0,
+            cached: 0,
+            retainedBytes: 0,
+            pinnedEntries: 0,
+        });
         await service.close();
     });
 
@@ -425,6 +467,226 @@ describe("the transform service's deadline and snapshots", () => {
     });
 });
 
+describe("the transform snapshot's memory budget", () => {
+    beforeEach(() => {
+        // Neither fixture size nor a continuation gap races the render deadline or the CBS clock.
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    });
+    const signal = () => new AbortController().signal;
+    const patchCharacter = (h: Harness, fields: Record<string, unknown>) => {
+        const kind = h.kinds.get("characters")!;
+        const stored = h.store.get(kind, "a")!;
+        h.store.put(kind, "a", { ...(stored.data as object), ...fields }, stored.revision);
+    };
+    const patchChat = (h: Harness, set: Record<string, unknown>) => {
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "a",
+                    chatId: "k",
+                    baseRevision: h.store.chatRevision("a", "k"),
+                    ops: [{ op: "meta", set }],
+                },
+            ],
+        });
+    };
+    /** Every requested target is either pending or failed, and the accepted set can still finish. */
+    const finishPending = async (
+        service: ReturnType<typeof createTransformService>,
+        request: TransformRequest,
+        first: TransformResponse,
+    ) => {
+        expect(first.snapshotId).toEqual(expect.any(String));
+        const pending = first.pending ?? [];
+        const pendingIds = new Set(pending.map(({ id }) => id));
+        expect(first.results).toEqual(
+            request.targets
+                .filter(({ id }) => !pendingIds.has(id))
+                .map(({ id }) => ({ id, ok: false, error: expect.any(String) })),
+        );
+        expect(service.stats().snapshots).toBe(1);
+        const second = await service.resume(
+            { clientId: request.clientId, snapshotId: first.snapshotId!, texts: pending },
+            signal(),
+        );
+        expect(second.results).toEqual(
+            pending.map(({ id }) => expect.objectContaining({ id, ok: true, cached: false })),
+        );
+        expect(service.stats().snapshots).toBe(0);
+    };
+
+    it("a request's own projection over the snapshot budget fails every uncached target without running Lua or retaining a snapshot", async () => {
+        const h = open();
+        h.setHold(false);
+        // The targets are tiny; it is the owner character, read for each request, that exceeds 8 MiB.
+        patchCharacter(h, { desc: "x".repeat(9 * 1024 * 1024) });
+        const service = createTransformService(h.deps);
+        try {
+            for (let i = 0; i < 4; i++) {
+                const request = h.request(`tiny${i}`, {
+                    mode: "editdisplay",
+                    handlers: "display",
+                    targets: [...h.request(`tiny${i}`).targets, ...h.request(`other${i}`).targets],
+                });
+                const first = await service.transform(request, signal());
+                expect(first.snapshotId).toBeUndefined();
+                expect(first.pending ?? []).toEqual([]);
+                expect(first.results).toEqual(
+                    request.targets.map(({ id }) => ({ id, ok: false, error: expect.any(String) })),
+                );
+                expect(service.stats().snapshots).toBe(0);
+            }
+            expect(h.counts.lua).toBe(0);
+            expect(h.counts.regex).toBe(0);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("each pending target pays for its unchanged chat-variable entries", async () => {
+        const h = open();
+        h.setHold(false);
+        patchChat(h, {
+            scriptstate: Object.fromEntries(Array.from({ length: 8192 }, (_, i) => [`$v${i}`, "0"])),
+        });
+        // All 32 tiny texts fit if unchanged entries are charged only with the shared scope.
+        const request = h.request("v", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: Array.from({ length: 32 }, (_, i) => h.request(`v${i}`).targets[0]),
+        });
+        const service = createTransformService(h.deps);
+        try {
+            const first = await service.transform(request, signal());
+            expect(first.pending?.length).toBeGreaterThan(0);
+            expect(first.pending?.length).toBeLessThan(request.targets.length);
+            await finishPending(service, request, first);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("a tiny Lua head result still pays for its large source, with the loaded character charged once", async () => {
+        const h = open();
+        h.setHold(false);
+        patchCharacter(h, { desc: "d".repeat(5 * 1024 * 1024) });
+        // The input texts total just under 4 MiB, while every head result is only four bytes.
+        const lua = vi.spyOn(h.deps.scriptWorkers, "runLua").mockResolvedValue({
+            res: "tiny",
+            stopSending: false,
+            cpuMs: 0,
+            memory: { used: 0, max: 0 },
+        });
+        const request = h.request("source", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: [
+                ...Array.from(
+                    { length: 8 },
+                    (_, i) => h.request(`source${i}`, {}, "s".repeat(512 * 1024 - 2) + i).targets[0],
+                ),
+                ...h.request("small", {}, "fits").targets,
+            ],
+        });
+        const service = createTransformService(h.deps);
+        try {
+            const first = await service.transform(request, signal());
+            // More than one fits because the loaded character is shared; all eight large sources do not.
+            expect(first.pending?.length).toBeGreaterThan(1);
+            expect(first.pending?.length).toBeLessThan(request.targets.length);
+            expect(first.pending).toContainEqual({ id: "small", text: "tiny" });
+            expect(first.pending?.every(({ text }) => text === "tiny")).toBe(true);
+            expect(lua).toHaveBeenCalled();
+            await finishPending(service, request, first);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("target setup costs limit tiny targets, and cached targets survive an oversized loaded scope", async () => {
+        const h = open();
+        h.setHold(false);
+        patchCharacter(h, { desc: "d".repeat(6 * 1024 * 1024) });
+        // This character is loaded only when a target names it, so the primed cache key stays valid.
+        const kind = h.kinds.get("characters")!;
+        const owner = h.store.get(kind, "a")!.data as object;
+        h.store.put(kind, "extra", { ...owner, chaId: "extra", desc: "e".repeat(3 * 1024 * 1024) }, null);
+        const request = h.request("setup", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: Array.from({ length: 64 }, (_, i) => h.request(`setup${i}`).targets[0]),
+        });
+        const service = createTransformService(h.deps);
+        try {
+            const first = await service.transform(request, signal());
+            // The scope fits once and these texts are tiny, but 64 individual setups do not fit.
+            expect(first.pending?.length).toBeGreaterThan(1);
+            expect(first.pending?.length).toBeLessThan(request.targets.length);
+            await finishPending(service, request, first);
+            const cached = request.targets.find(({ id }) => id === first.pending![0].id)!;
+            const luaBefore = h.counts.lua;
+            const mixed = await service.transform(
+                {
+                    ...request,
+                    targets: [
+                        h.request("fresh").targets[0],
+                        { ...h.request("extra").targets[0], sourceId: "extra" },
+                        cached,
+                    ],
+                },
+                signal(),
+            );
+            expect(mixed.results).toEqual([
+                { id: "fresh", ok: false, error: expect.any(String) },
+                { id: "extra", ok: false, error: expect.any(String) },
+                expect.objectContaining({ id: cached.id, ok: true, cached: true }),
+            ]);
+            expect(mixed.snapshotId).toBeUndefined();
+            expect(mixed.pending ?? []).toEqual([]);
+            expect(service.stats().snapshots).toBe(0);
+            expect(h.counts.lua).toBe(luaBefore);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("each pending target reserves space for character and template default-variable maps", async () => {
+        const h = open();
+        h.setHold(false);
+        const defaults = Array.from({ length: 4096 }, (_, i) => `v${i}=0`).join("\n");
+        const kind = h.kinds.get("presets")!;
+        // Default maps are lazy: their allowance must apply even before a missing variable is read.
+        const request = h.request("defaults", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: Array.from({ length: 32 }, (_, i) => h.request(`defaults${i}`, {}, "{{getvar::v0}}").targets[0]),
+        });
+        const service = createTransformService(h.deps);
+        try {
+            for (const source of ["character", "template"]) {
+                patchCharacter(h, { defaultVariables: source === "character" ? defaults : "" });
+                const stored = h.store.get(kind, "main")!;
+                const presets = stored.data as { id: string }[];
+                h.store.put(
+                    kind,
+                    "main",
+                    presets.map((preset) => ({
+                        ...preset,
+                        templateDefaultVariables: source === "template" ? defaults : "",
+                    })),
+                    stored.revision,
+                );
+                const first = await service.transform(request, signal());
+                expect(first.pending?.length, source).toBeGreaterThan(0);
+                expect(first.pending?.length, source).toBeLessThan(request.targets.length);
+                await finishPending(service, request, first);
+            }
+        } finally {
+            await service.close();
+        }
+    });
+});
+
 describe("the transform cache", () => {
     const entry = (text: string) => ({ text, emotions: [] });
 
@@ -493,6 +755,10 @@ describe("the transform cache probe", () => {
         triggerscript: [],
         ...fields,
     });
+    /** Loads so far: every load reads its chat owner's record. */
+    const ownerReads = (spy: { mock: { calls: Parameters<Harness["store"]["readRefs"]>[] } }, owner: string) =>
+        spy.mock.calls.filter(([refs]) => refs.some((ref) => ref.kind.name === "characters" && ref.id === owner))
+            .length;
     const touch = (h: Harness, chaId: string) => {
         const kind = h.kinds.get("characters")!;
         const stored = h.store.get(kind, chaId)!;
@@ -504,13 +770,203 @@ describe("the transform cache probe", () => {
         );
     };
 
+    it("answers an evicted knownKey in full even when recomputing the same key", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        const h = open();
+        h.setHold(false);
+        const service = createTransformService(h.deps);
+        try {
+            const request = h.request("known");
+            const first = await service.transform(request, signal());
+            expect(first.results[0]).toMatchObject({ ok: true, text: "Xknown!", cached: false });
+            const key = keyOf(first);
+            const known = { ...request, targets: request.targets.map((target) => ({ ...target, knownKey: key })) };
+            expect(await service.transform(known, signal())).toEqual({ results: [], same: [{ id: "known", key }] });
+
+            // Fill the 512-entry cache with other results, leaving this row least recently used.
+            for (let batch = 0; batch < 8; batch++) {
+                const targets = Array.from({ length: 64 }, (_, i) => h.request(`fill-${batch * 64 + i}`).targets[0]);
+                const filled = await service.transform({ ...request, targets }, signal());
+                expect(filled.results).toHaveLength(64);
+                expect(filled.results.every((result) => result.ok && !result.cached)).toBe(true);
+            }
+            expect(await service.transform(known, signal())).toEqual({
+                results: [{ id: "known", ok: true, text: "Xknown!", emotions: [], key, cached: false }],
+            });
+        } finally {
+            await service.close();
+        }
+    });
+
+    describe("display result identities", () => {
+        beforeEach(() => {
+            vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+        });
+
+        const setup = () => {
+            const h = open();
+            const characters = h.kinds.get("characters")!;
+            h.store.put(characters, "a", character("a"), h.store.get(characters, "a")!.revision);
+            h.store.put(characters, "source", character("source"), null);
+            const request = h.request("owner", {
+                mode: "editdisplay",
+                targets: [
+                    { id: "owner", sourceId: "a", kind: "text", chatIndex: -1, source: "owner row" },
+                    { id: "source", sourceId: "source", kind: "text", chatIndex: -1, source: "source row" },
+                ],
+            });
+            return { h, request, service: createTransformService(h.deps) };
+        };
+        const patchCharacter = (h: Harness, id: string, set: Record<string, unknown>) => {
+            h.store.applyChanges({
+                ops: [
+                    {
+                        kind: h.kinds.get("characters")!,
+                        id,
+                        baseRevision: h.store.revisionOf(h.kinds.get("characters")!, id),
+                        patch: { set },
+                    },
+                ],
+            });
+        };
+        const rows = (ownerCached: boolean, sourceCached = ownerCached) => [
+            { id: "owner", ok: true, text: "owner row", cached: ownerCached },
+            { id: "source", ok: true, text: "source row", cached: sourceCached },
+        ];
+
+        it.each(["editdisplay", "editprocess"] as const)(
+            "%s: lastInteraction-only patches keep every row in all-cached and mixed requests",
+            async (mode) => {
+                const { h, request, service } = setup();
+                request.mode = mode;
+                try {
+                    expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                    const transcript = vi.spyOn(h.store, "readChatSource");
+                    const reads = vi.spyOn(h.store, "readRefs");
+                    for (const id of ["a", "source"]) {
+                        reads.mockClear();
+                        patchCharacter(h, id, { lastInteraction: 123 });
+                        expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                        // A changed identity needs one record read; a scope reload would read the owner again.
+                        expect(ownerReads(reads, "a")).toBe(id === "a" ? 1 : 0);
+                    }
+                    expect(transcript).not.toHaveBeenCalled();
+
+                    patchCharacter(h, "a", { lastInteraction: 456 });
+                    const mixed = {
+                        ...request,
+                        targets: [...request.targets, { ...request.targets[0], id: "new", source: "new row" }],
+                    };
+                    expect((await service.transform(mixed, signal())).results).toMatchObject([
+                        ...rows(true),
+                        { id: "new", ok: true, text: "new row", cached: false },
+                    ]);
+                } finally {
+                    await service.close();
+                }
+            },
+        );
+
+        it.each([
+            { field: "description", set: { desc: "changed description" } },
+            { field: "lore", set: { globalLore: [{ key: "key", content: "changed lore" }] } },
+        ])("a $field edit invalidates the owner and each target's source", async ({ set }) => {
+            const { h, request, service } = setup();
+            try {
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                patchCharacter(h, "a", set);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                patchCharacter(h, "source", set);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true, false));
+            } finally {
+                await service.close();
+            }
+        });
+
+        it.each([
+            { kind: "providers", data: { requestRetrys: 7 } },
+            { kind: "loreBook", data: [{ name: "library", data: [{ key: "key", content: "lore" }] }] },
+            { kind: "globalscript", data: [{ comment: "library", in: "row", out: "changed", type: "editdisplay" }] },
+            { kind: "hotkeys", data: [{ key: "x", ctrl: true, alt: false, action: "reroll" }] },
+            { kind: "characterOrder", data: ["source", "a"] },
+            { kind: "authRefreshes", data: [{ url: "https://example.test", refreshToken: "refresh" }] },
+            {
+                kind: "translatorPresets",
+                data: { items: [{ id: "translation", name: "Changed" }], selectedId: "translation" },
+            },
+            { kind: "hypaV3Presets", data: { items: [{ id: "memory", name: "Changed" }], selectedId: "memory" } },
+            {
+                kind: "togglePresets",
+                data: [{ id: "toggles", name: "Changed", values: { choice: "1" }, kinds: { choice: "checkbox" } }],
+            },
+            { kind: "credentials", data: [{ id: "credential", name: "Changed", type: "openai" }] },
+            { kind: "statics", data: { messages: 1, imports: 0 } },
+        ])("a $kind write keeps cached display results", async ({ kind, data }) => {
+            const { h, request, service } = setup();
+            try {
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                const resourceKind = h.kinds.get(kind)!;
+                const before = h.store.get(resourceKind, "main")!;
+                h.store.put(resourceKind, "main", data, before.revision);
+                expect(h.store.get(resourceKind, "main")!.data).not.toEqual(before.data);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                // Exercise the loaded key as well as the all-cached probe.
+                const mixed = {
+                    ...request,
+                    targets: [...request.targets, { ...request.targets[0], id: "new", source: "new row" }],
+                };
+                expect((await service.transform(mixed, signal())).results).toMatchObject([
+                    ...rows(true),
+                    { id: "new", ok: true, text: "new row", cached: false },
+                ]);
+            } finally {
+                await service.close();
+            }
+        });
+
+        it.each([
+            { kind: "globalChatVariables", data: { legacy: "changed" } },
+            { kind: "ui", data: { language: "ko" } },
+        ])("a $kind write invalidates cached display results", async ({ kind, data }) => {
+            const { h, request, service } = setup();
+            try {
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(true));
+                const resourceKind = h.kinds.get(kind)!;
+                const before = h.store.get(resourceKind, "main")!;
+                h.store.put(resourceKind, "main", { ...(before.data as object), ...data }, before.revision);
+                expect((await service.transform(request, signal())).results).toMatchObject(rows(false));
+            } finally {
+                await service.close();
+            }
+        });
+
+        it("classifies every default job scope kind and keeps admission and legacy global variables", () => {
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const actual = jobScopeKinds(kinds).map(({ name }) => name);
+            const classification: Readonly<Record<string, string>> = DISPLAY_KIND_CLASSIFICATION;
+            for (const name of actual) {
+                expect(Object.hasOwn(classification, name), name).toBe(true);
+                expect(["keep", "drop", "identity"], name).toContain(classification[name]);
+                expect(isDisplayKeyKind(name), name).toBe(classification[name] === "keep");
+            }
+            for (const name of ["presets", "modelPresets", "personas", "globalChatVariables"]) {
+                expect(actual).toContain(name);
+                expect(classification[name], name).toBe("keep");
+                expect(isDisplayKeyKind(name), name).toBe(true);
+            }
+        });
+    });
+
     it("answers an all-cached request without loading the scope, and loads it when any target must run", async () => {
         const h = open();
         h.setHold(false);
         const service = createTransformService(h.deps);
         const first = await service.transform(h.request("c"), signal());
         expect(first.results[0]).toMatchObject({ ok: true, text: "Xc!", cached: false });
-        const loads = vi.spyOn(h.store, "readKinds");
+        const loads = vi.spyOn(h.store, "readRefs");
 
         const again = await service.transform(h.request("c"), signal());
         expect(again.results[0]).toMatchObject({ ok: true, text: "Xc!", cached: true, key: keyOf(first) });
@@ -526,7 +982,7 @@ describe("the transform cache probe", () => {
             { id: "c", ok: true, cached: true },
             { id: "d", ok: true, text: "Xd!", cached: false },
         ]);
-        expect(loads).toHaveBeenCalledTimes(1);
+        expect(ownerReads(loads, "a")).toBe(1);
 
         // `noCache` always loads and renders again.
         const fresh = await service.transform(
@@ -534,7 +990,7 @@ describe("the transform cache probe", () => {
             signal(),
         );
         expect(fresh.results[0]).toMatchObject({ ok: true, cached: false });
-        expect(loads).toHaveBeenCalledTimes(2);
+        expect(ownerReads(loads, "a")).toBe(2);
         expect(h.counts.regex).toBe(3);
         await service.close();
     });
@@ -566,7 +1022,8 @@ describe("the transform cache probe", () => {
         await service.close();
     });
 
-    it("keys a group's chat by its members: a member's change renders again, another character's does not load", async () => {
+    it("keys a group's member list and member display identities, leaving other characters out", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
         const h = open();
         h.setHold(false);
         const characters = h.kinds.get("characters")!;
@@ -593,7 +1050,7 @@ describe("the transform cache probe", () => {
         const service = createTransformService(h.deps);
         const first = await service.transform(request, signal());
         expect(first.results[0]).toMatchObject({ ok: true, text: "Xc!", cached: false });
-        const loads = vi.spyOn(h.store, "readKinds");
+        const loads = vi.spyOn(h.store, "readRefs");
 
         expect((await service.transform(request, signal())).results[0]).toMatchObject({ cached: true });
         touch(h, "outsider");
@@ -603,12 +1060,37 @@ describe("the transform cache probe", () => {
         });
         expect(loads).not.toHaveBeenCalled();
 
+        h.store.applyChanges({
+            ops: [
+                {
+                    kind: characters,
+                    id: "b",
+                    baseRevision: h.store.revisionOf(characters, "b"),
+                    patch: { set: { lastInteraction: 123 } },
+                },
+            ],
+        });
+        expect((await service.transform(request, signal())).results[0]).toMatchObject({ ok: true, cached: true });
+
         // `b` is a member but not the target's source: only the group's key names it.
         touch(h, "b");
         const after = await service.transform(request, signal());
         expect(after.results[0]).toMatchObject({ ok: true, cached: false });
         expect(keyOf(after)).not.toBe(keyOf(first));
-        expect(loads).toHaveBeenCalledTimes(1);
+        expect(ownerReads(loads, "g")).toBe(1);
+
+        h.store.applyChanges({
+            ops: [
+                {
+                    kind: characters,
+                    id: "g",
+                    baseRevision: h.store.revisionOf(characters, "g"),
+                    // Keep the length so normalization does not also change member weights and flags.
+                    patch: { set: { characters: ["a", "outsider"] } },
+                },
+            ],
+        });
+        expect((await service.transform(request, signal())).results[0]).toMatchObject({ ok: true, cached: false });
         await service.close();
     });
 });
@@ -686,5 +1168,611 @@ describe("the transform load", () => {
         );
         expect(read).toEqual(new Set(["g", "a", "b", "source", "former"]));
         await service.close();
+    });
+});
+
+describe("shared display scopes", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    });
+    const signal = () => new AbortController().signal;
+    const MiB = 1024 * 1024;
+    const createChat = (h: Harness, chatId: string, data = "stored") => {
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "a",
+                    chatId,
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: { id: chatId, name: chatId, message: [{ role: "char", chatId: "m", data }] },
+                        },
+                    ],
+                },
+            ],
+        });
+    };
+    const requestFor = (h: Harness, id: string, chatId = "k", handlers?: string): TransformRequest => {
+        const request = h.request(id, { handlers });
+        return {
+            ...request,
+            context: { ...request.context, chatId },
+            targets: request.targets.map((target) => ({ ...target, noCache: true })),
+        };
+    };
+    const continueWith = (first: TransformResponse, clientId = "tab") => ({
+        clientId,
+        snapshotId: first.snapshotId!,
+        texts: first.pending!,
+    });
+    const expectReleased = (service: ReturnType<typeof createTransformService>) => {
+        expect(service.stats()).toMatchObject({ snapshots: 0, retainedBytes: 0, pinnedEntries: 0 });
+    };
+    const editPreset = (h: Harness, name: string) => {
+        const kind = h.kinds.get("presets")!;
+        const record = h.store.get(kind, "main")!;
+        h.store.put(
+            kind,
+            "main",
+            (record.data as object[]).map((preset) => ({ ...preset, name })),
+            record.revision,
+        );
+    };
+    const loaderContext = (h: Harness, chatId = "k") => ({
+        ...h.request("context").context,
+        chatId,
+        mode: "transform" as const,
+        input: "",
+        chatRevision: "",
+    });
+
+    it("eight uncached batches reuse all configuration and the transcript while reading characters each time", async () => {
+        const h = open();
+        h.setHold(false);
+        const configuration = vi.spyOn(h.store, "readKinds");
+        const transcript = vi.spyOn(h.store, "readChatSource");
+        const characters = vi.spyOn(h.store, "readRefs");
+        const service = createTransformService(h.deps);
+        try {
+            for (let i = 0; i < 8; i++) {
+                const response = await service.transform(requestFor(h, `batch${i}`), signal());
+                expect(response.results).toMatchObject([{ ok: true, cached: false }]);
+            }
+            expect(h.counts.regex).toBe(8);
+            expect(configuration).toHaveBeenCalledTimes(1);
+            expect(configuration.mock.calls[0][0].map((kind) => kind.name).sort()).toEqual(
+                jobScopeKinds(h.kinds)
+                    .map((kind) => kind.name)
+                    .filter((name) => name !== "characters")
+                    .sort(),
+            );
+            expect(transcript).toHaveBeenCalledTimes(1);
+            expect(characters.mock.calls.flatMap(([refs]) => refs).every((ref) => ref.kind.name === "characters")).toBe(
+                true,
+            );
+            expect(
+                characters.mock.calls
+                    .flatMap(([refs]) => refs)
+                    .filter((ref) => ref.kind.name === "characters" && ref.id === "a"),
+            ).toHaveLength(8);
+            expectReleased(service);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("a chat write reloads only the transcript and a preset edit reloads only configuration", async () => {
+        const h = open();
+        h.setHold(false);
+        const configuration = vi.spyOn(h.store, "readKinds");
+        const transcript = vi.spyOn(h.store, "readChatSource");
+        const service = createTransformService(h.deps);
+        try {
+            await service.transform(requestFor(h, "before"), signal());
+            h.store.applyChanges({
+                chats: [
+                    {
+                        characterId: "a",
+                        chatId: "k",
+                        baseRevision: h.store.chatRevision("a", "k"),
+                        ops: [{ op: "meta", set: { scriptstate: { $v: "written" } } }],
+                    },
+                ],
+            });
+            const changed = requestFor(h, "chat");
+            changed.targets[0].source = "{{getvar::v}}";
+            expect(okText(await service.transform(changed, signal()))).toEqual(["chat=written!"]);
+            expect(configuration).toHaveBeenCalledTimes(1);
+            expect(transcript).toHaveBeenCalledTimes(2);
+            editPreset(h, "edited");
+            await service.transform(requestFor(h, "preset"), signal());
+            expect(configuration).toHaveBeenCalledTimes(2);
+            expect(transcript).toHaveBeenCalledTimes(2);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it.each(["entry count", "bytes"] as const)("configuration eviction respects its %s bound", (bound) => {
+        const h = open();
+        editPreset(h, "version0");
+        const context = loaderContext(h);
+        const measured = createDisplayScopeLoader(h.store, h.kinds);
+        measured.load(context);
+        const oneEntry = measured.stats().configuration.bytes;
+        const maxBytes = bound === "bytes" ? 2 * oneEntry : 32 * MiB;
+        const loader = createDisplayScopeLoader(h.store, h.kinds, {
+            configuration: { maxEntries: bound === "entry count" ? 2 : 8, maxBytes },
+        });
+        const reads = vi.spyOn(h.store, "readKinds");
+        for (let i = 0; i < 3; i++) {
+            if (i > 0) editPreset(h, `version${i}`);
+            loader.load(context);
+            expect(loader.stats().configuration.entries).toBe(Math.min(i + 1, 2));
+            expect(loader.stats().configuration.bytes).toBeLessThanOrEqual(maxBytes);
+        }
+        loader.load(context);
+        expect(reads).toHaveBeenCalledTimes(3);
+        loader.clear();
+        expect(loader.stats()).toEqual({
+            configuration: { entries: 0, bytes: 0 },
+            transcripts: { entries: 0, bytes: 0 },
+        });
+        loader.load(context);
+        expect(reads).toHaveBeenCalledTimes(4);
+    });
+
+    it.each(["entry count", "bytes"] as const)(
+        "transcript eviction respects its %s bound and retains the most recently used chat",
+        (bound) => {
+            const h = open();
+            for (const id of ["one", "two", "new"]) createChat(h, id, "x".repeat(1024));
+            const measured = createDisplayScopeLoader(h.store, h.kinds);
+            measured.load(loaderContext(h, "one"));
+            const oneEntry = measured.stats().transcripts.bytes;
+            const maxBytes = bound === "bytes" ? 2 * oneEntry : 64 * MiB;
+            const loader = createDisplayScopeLoader(h.store, h.kinds, {
+                transcripts: { maxEntries: bound === "entry count" ? 2 : 8, maxBytes },
+            });
+            const reads = vi.spyOn(h.store, "readChatSource");
+            for (const id of ["one", "two", "one", "new", "one"]) loader.load(loaderContext(h, id));
+            expect(reads.mock.calls.map(([, id]) => id)).toEqual(["one", "two", "new"]);
+            expect(loader.stats().transcripts.entries).toBe(2);
+            expect(loader.stats().transcripts.bytes).toBeLessThanOrEqual(maxBytes);
+            loader.load(loaderContext(h, "two"));
+            expect(reads.mock.calls.map(([, id]) => id)).toEqual(["one", "two", "new", "two"]);
+            expect(loader.stats().transcripts.entries).toBe(2);
+            expect(loader.stats().transcripts.bytes).toBeLessThanOrEqual(maxBytes);
+        },
+    );
+
+    it("large transcripts are charged once across snapshots and remain pinned after cache eviction", async () => {
+        const h = open();
+        h.setHold(false);
+        createChat(h, "large", "x".repeat(10 * MiB));
+        const service = createTransformService(h.deps);
+        try {
+            const kept: TransformResponse[] = [];
+            for (let i = 0; i < 4; i++) {
+                const first = await service.transform(requestFor(h, `large${i}`, "large", "hooks"), signal());
+                expect(first.results).toEqual([]);
+                expect(first.pending).toHaveLength(1);
+                expect(first.snapshotId).toEqual(expect.any(String));
+                kept.push(first);
+            }
+            const charged = service.stats().retainedBytes;
+            expect(service.stats()).toMatchObject({ snapshots: 4, pinnedEntries: 2 });
+            expect(charged).toBeGreaterThan(10 * MiB);
+            expect(charged).toBeLessThan(12 * MiB);
+            for (let i = 0; i < 8; i++) {
+                createChat(h, `other${i}`);
+                await service.transform(requestFor(h, `other${i}`, `other${i}`), signal());
+            }
+            expect(service.stats().displayScope.transcripts.entries).toBe(8);
+            expect(service.stats().displayScope.transcripts.bytes).toBeLessThan(MiB);
+            expect(service.stats()).toMatchObject({ retainedBytes: charged, pinnedEntries: 2 });
+            for (let i = 0; i < kept.length; i++) {
+                expect((await service.resume(continueWith(kept[i]), signal())).results[0]).toMatchObject({ ok: true });
+                if (i < kept.length - 1) {
+                    expect(service.stats().pinnedEntries).toBe(2);
+                    expect(service.stats().retainedBytes).toBeGreaterThan(10 * MiB);
+                }
+            }
+            expectReleased(service);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it.each(["success", "target error", "abort"] as const)(
+        "a claimed continuation holds its pins through %s and releases them when finished",
+        async (ending) => {
+            const h = open();
+            const service = createTransformService(h.deps);
+            try {
+                const first = await service.transform(requestFor(h, "held", "k", "hooks"), signal());
+                const charged = service.stats().retainedBytes;
+                expect(charged).toBeGreaterThan(0);
+                expect(service.stats().pinnedEntries).toBe(2);
+                const controller = new AbortController();
+                const second = settle(
+                    service.resume(
+                        {
+                            ...continueWith(first),
+                            texts:
+                                ending === "target error" ? [{ id: "held", error: "plugin exploded" }] : first.pending!,
+                        },
+                        controller.signal,
+                    ),
+                );
+                // Claiming removes the waiting snapshot synchronously, before the slot is granted.
+                expect(service.stats()).toMatchObject({ snapshots: 0, retainedBytes: charged, pinnedEntries: 2 });
+                if (ending !== "target error") {
+                    await vi.advanceTimersByTimeAsync(0);
+                    expect(h.held).toHaveLength(1);
+                    expect(service.stats()).toMatchObject({
+                        active: 1,
+                        snapshots: 0,
+                        retainedBytes: charged,
+                        pinnedEntries: 2,
+                    });
+                    if (ending === "abort") controller.abort(new Error("tab left"));
+                    h.held.shift()!.release();
+                }
+                const outcome = await second;
+                if (ending === "abort") {
+                    expect(outcome).toMatchObject({ ok: false, error: { message: "tab left" } });
+                } else {
+                    expect(outcome.ok).toBe(true);
+                    if (outcome.ok)
+                        expect(outcome.value.results[0]).toMatchObject(
+                            ending === "target error"
+                                ? { ok: false, error: "A plugin handler failed: plugin exploded" }
+                                : { ok: true },
+                        );
+                }
+                expectReleased(service);
+            } finally {
+                h.setHold(false);
+                for (const held of h.held.splice(0)) held.release();
+                await service.close();
+            }
+        },
+    );
+
+    it.each(["expiry", "replacement", "maintenance", "shutdown"] as const)(
+        "waiting snapshot pins are released on %s",
+        async (ending) => {
+            const h = open();
+            h.setHold(false);
+            const reads = vi.spyOn(h.store, "readKinds");
+            const service = createTransformService(h.deps);
+            try {
+                const first = await service.transform(requestFor(h, "old", "k", "hooks"), signal());
+                expect(service.stats()).toMatchObject({ snapshots: 1, pinnedEntries: 2 });
+                expect(service.stats().retainedBytes).toBeGreaterThan(0);
+                if (ending === "expiry") {
+                    await vi.advanceTimersByTimeAsync(30_000);
+                } else if (ending === "replacement") {
+                    const replacements: TransformResponse[] = [];
+                    for (let i = 0; i < 4; i++) {
+                        createChat(h, `replacement${i}`);
+                        replacements.push(
+                            await service.transform(
+                                requestFor(h, `replacement${i}`, `replacement${i}`, "hooks"),
+                                signal(),
+                            ),
+                        );
+                    }
+                    expect(service.stats()).toMatchObject({ snapshots: 4, pinnedEntries: 5 });
+                    for (const replacement of replacements) await service.resume(continueWith(replacement), signal());
+                } else if (ending === "maintenance") {
+                    const reopen = service.pause("maintenance");
+                    expect(service.stats().displayScope).toEqual({
+                        configuration: { entries: 0, bytes: 0 },
+                        transcripts: { entries: 0, bytes: 0 },
+                    });
+                    reopen();
+                } else {
+                    await service.close();
+                    expect(service.stats().displayScope).toEqual({
+                        configuration: { entries: 0, bytes: 0 },
+                        transcripts: { entries: 0, bytes: 0 },
+                    });
+                }
+                expectReleased(service);
+                if (ending !== "shutdown")
+                    await expect(service.resume(continueWith(first), signal())).rejects.toBeInstanceOf(
+                        TransformSnapshotError,
+                    );
+                if (ending === "maintenance") {
+                    await service.transform(requestFor(h, "after"), signal());
+                    expect(reads).toHaveBeenCalledTimes(2);
+                    expect(service.stats().displayScope.configuration.entries).toBe(1);
+                }
+            } finally {
+                await service.close();
+            }
+        },
+    );
+
+    it.each(["queue full", "aborted while queued"] as const)(
+        "a continuation releases its pins when %s",
+        async (ending) => {
+            const h = open();
+            const service = createTransformService(h.deps);
+            const work: ReturnType<typeof settle<TransformResponse>>[] = [];
+            try {
+                const first = await service.transform(requestFor(h, "pending", "k", "hooks"), signal());
+                const charged = service.stats().retainedBytes;
+                for (let i = 0; i < (ending === "queue full" ? 36 : 4); i++) {
+                    work.push(settle(service.transform(requestFor(h, `busy${i}`), signal())));
+                }
+                await vi.advanceTimersByTimeAsync(0);
+                expect(h.held).toHaveLength(4);
+                const controller = new AbortController();
+                const second = service.resume(continueWith(first), controller.signal);
+                if (ending === "aborted while queued") {
+                    expect(service.stats()).toMatchObject({
+                        snapshots: 0,
+                        queued: 1,
+                        retainedBytes: charged,
+                        pinnedEntries: 2,
+                    });
+                    controller.abort(new Error("queued tab left"));
+                }
+                await expect(second).rejects.toThrow(
+                    ending === "queue full" ? "Too many renders are waiting" : "queued tab left",
+                );
+                expectReleased(service);
+            } finally {
+                h.setHold(false);
+                for (const held of h.held.splice(0)) held.release();
+                await Promise.all(work);
+                await service.close();
+            }
+        },
+    );
+
+    it("the global budget replaces this client's oldest waiter before other clients and refuses a target when a continuation holds the space", async () => {
+        const h = open();
+        // One 21-Mi-character string is 63 MiB in UTF-8: shared data leaves less than 1 MiB
+        // for projections. A 512 KiB character lets one larger projection fit, but not two.
+        createChat(h, "large", "界".repeat(21 * MiB));
+        const service = createTransformService(h.deps);
+        let running: ReturnType<typeof settle<TransformResponse>> | undefined;
+        try {
+            const olderOther = await service.transform(
+                { ...requestFor(h, "other", "large", "hooks"), clientId: "other" },
+                signal(),
+            );
+            const characters = h.kinds.get("characters")!;
+            const character = h.store.get(characters, "a")!;
+            h.store.put(
+                characters,
+                "a",
+                { ...(character.data as object), desc: "d".repeat(512 * 1024) },
+                character.revision,
+            );
+            const olderOwn = await service.transform(requestFor(h, "own", "large", "hooks"), signal());
+            expect(olderOther.pending).toHaveLength(1);
+            expect(olderOwn.pending).toHaveLength(1);
+            expect(service.stats()).toMatchObject({ snapshots: 2, pinnedEntries: 2 });
+            const newer = await service.transform(requestFor(h, "new", "large", "hooks"), signal());
+            expect(newer.results).toEqual([]);
+            expect(newer.pending).toHaveLength(1);
+            expect(service.stats()).toMatchObject({ snapshots: 2, pinnedEntries: 2 });
+            expect(service.stats().retainedBytes).toBeGreaterThan(63 * MiB);
+            expect(service.stats().retainedBytes).toBeLessThan(64 * MiB);
+            await expect(service.resume(continueWith(olderOwn), signal())).rejects.toBeInstanceOf(
+                TransformSnapshotError,
+            );
+            // The older other-client snapshot survived; a plugin failure consumes it without a held worker.
+            expect(
+                (
+                    await service.resume(
+                        { ...continueWith(olderOther, "other"), texts: [{ id: "other", error: "finished" }] },
+                        signal(),
+                    )
+                ).results,
+            ).toEqual([{ id: "other", ok: false, error: "A plugin handler failed: finished" }]);
+            const outsider = await service.transform(
+                { ...requestFor(h, "outsider", "large", "hooks"), clientId: "outsider" },
+                signal(),
+            );
+            expect(outsider.results).toEqual([]);
+            expect(outsider.pending).toHaveLength(1);
+            expect(service.stats().snapshots).toBe(1);
+            await expect(service.resume(continueWith(newer), signal())).rejects.toBeInstanceOf(TransformSnapshotError);
+            running = settle(service.resume(continueWith(outsider, "outsider"), signal()));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(h.held).toHaveLength(1);
+            expect(service.stats()).toMatchObject({ snapshots: 0, pinnedEntries: 2 });
+            const charged = service.stats().retainedBytes;
+            const refused = await service.transform(requestFor(h, "refused", "large", "hooks"), signal());
+            expect(refused.snapshotId).toBeUndefined();
+            expect(refused.pending).toBeUndefined();
+            expect(refused.results).toEqual([
+                { id: "refused", ok: false, error: "The render's texts are over the limit of one request" },
+            ]);
+            expect(service.stats()).toMatchObject({ snapshots: 0, retainedBytes: charged, pinnedEntries: 2 });
+            h.held.shift()!.release();
+            expect(await running).toMatchObject({ ok: true, value: { results: [{ ok: true }] } });
+            expectReleased(service);
+        } finally {
+            for (const held of h.held.splice(0)) held.release();
+            await running;
+            await service.close();
+        }
+    });
+
+    it("Lua, trigger locals and nested CBS writes stay in each target overlay across requests and a continuation", async () => {
+        const h = open();
+        const chars = h.kinds.get("characters")!;
+        const original = h.store.get(chars, "a")!;
+        const effect = (type: string, fields: Record<string, unknown>) => ({ type, indent: 0, ...fields });
+        h.store.put(
+            chars,
+            "a",
+            {
+                ...(original.data as object),
+                customscript: [],
+                triggerscript: [
+                    {
+                        comment: "lua",
+                        type: "start",
+                        conditions: [],
+                        effect: [
+                            {
+                                type: "triggerlua",
+                                code: `
+                    listenEdit("editDisplay", function(id, data, meta)
+                        local before = getChatVar(id, "v") .. "/" .. getChatVar(id, "nested")
+                        setChatVar(id, "v", tostring(meta.index))
+                        return before .. ">" .. data
+                    end)`,
+                            },
+                        ],
+                    },
+                    {
+                        comment: "display",
+                        type: "display",
+                        conditions: [],
+                        effect: [
+                            effect("v2GetDisplayState", { outputVar: "d" }),
+                            effect("v2SetVar", { var: "localOnly", operator: "=", value: "9", valueType: "value" }),
+                            effect("v2ConcatString", {
+                                source1: "d",
+                                source1Type: "var",
+                                source2: "localOnly",
+                                source2Type: "var",
+                                outputVar: "out",
+                            }),
+                            effect("v2SetDisplayState", { value: "out", valueType: "var" }),
+                        ],
+                    },
+                ],
+            },
+            original.revision,
+        );
+        const personas = h.kinds.get("personas")!;
+        const persona = h.store.get(personas, "main")!;
+        h.store.put(
+            personas,
+            "main",
+            (persona.data as object[]).map((value) => ({
+                ...value,
+                personaPrompt: "{{settempvar::nested::local}}{{tempvar::nested}}",
+            })),
+            persona.revision,
+        );
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "a",
+                    chatId: "k",
+                    baseRevision: h.store.chatRevision("a", "k"),
+                    ops: [
+                        {
+                            op: "meta",
+                            set: { scriptstate: { $v: "stored", $nested: "stored-nested", $tv: "stored-tv" } },
+                        },
+                    ],
+                },
+            ],
+        });
+
+        // Capture the actual objects returned to the loader, before any projection or target can write.
+        const raw: { value: unknown; before: unknown }[] = [];
+        const readKinds = h.store.readKinds.bind(h.store);
+        const readChatSource = h.store.readChatSource.bind(h.store);
+        const configuration = vi.spyOn(h.store, "readKinds").mockImplementation((...args) => {
+            const result = readKinds(...args);
+            raw.push({ value: result, before: structuredClone(result) });
+            return result;
+        });
+        const transcript = vi.spyOn(h.store, "readChatSource").mockImplementation((...args) => {
+            const result = readChatSource(...args);
+            raw.push({ value: result, before: structuredClone(result) });
+            return result;
+        });
+        // Freeze the main-thread deadlines; the worker's injectable CPU and synchronous host
+        // allowances exceed the test's hang guard, so this checks writes, never execution speed.
+        const allowance = 2 ** 40;
+        const pool = createScriptWorkerPool({
+            rootDir: path.resolve(import.meta.dirname, "../../.."),
+            size: 1,
+            maxSize: 1,
+            luaCpuMs: allowance,
+            prepareCpuMs: allowance,
+            regexScriptsCpuMs: allowance,
+            luaBudgetMs: allowance,
+            syncHostTimeoutMs: allowance,
+        });
+        const service = createTransformService({ ...h.deps, scriptWorkers: pool });
+        const source = "{{getvar::v}}|{{getvar::nested}}|{{persona}}|{{tempvar::nested}}|{{getvar::tv}}";
+        const request = (ids: number[], handlers?: string) =>
+            h.request("unused", {
+                mode: "editdisplay",
+                handlers,
+                targets: ids.map((index) => ({
+                    id: String(index),
+                    sourceId: "a",
+                    kind: "text",
+                    chatIndex: index,
+                    source,
+                    noCache: true,
+                })),
+            });
+        const expected = (ids: number[]) =>
+            ids.map((index) =>
+                expect.objectContaining({
+                    id: String(index),
+                    ok: true,
+                    cached: false,
+                    text: `stored/stored-nested>${index}|stored-nested|local||stored-tv9`,
+                }),
+            );
+        try {
+            await pool.warm();
+            for (const ids of [
+                [1, 2, 3],
+                [3, 2, 1],
+            ]) {
+                expect((await service.transform(request(ids), signal())).results).toEqual(expected(ids));
+                for (const entry of raw) expect(entry.value).toEqual(entry.before);
+            }
+            const first = await service.transform(request([1, 2], "hooks"), signal());
+            expect(first.pending).toEqual(
+                [1, 2].map((index) => ({ id: String(index), text: `stored/stored-nested>${source}9` })),
+            );
+            for (const entry of raw) expect(entry.value).toEqual(entry.before);
+            expect((await service.resume(continueWith(first), signal())).results).toEqual(expected([1, 2]));
+            for (const entry of raw) expect(entry.value).toEqual(entry.before);
+            const later = h.request("later", {
+                targets: [
+                    {
+                        id: "later",
+                        sourceId: "a",
+                        kind: "text",
+                        chatIndex: -1,
+                        source: "{{getvar::v}}/{{getvar::nested}}/{{getvar::tv}}",
+                        noCache: true,
+                    },
+                ],
+            });
+            expect((await service.transform(later, signal())).results).toMatchObject([
+                { ok: true, cached: false, text: "stored/stored-nested/stored-tv" },
+            ]);
+            expect(configuration).toHaveBeenCalledTimes(1);
+            expect(transcript).toHaveBeenCalledTimes(1);
+            for (const entry of raw) expect(entry.value).toEqual(entry.before);
+            expectReleased(service);
+        } finally {
+            await service.close();
+            await pool.dispose();
+        }
     });
 });

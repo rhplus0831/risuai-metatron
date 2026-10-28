@@ -1,3 +1,5 @@
+import type { TransformMode, TransformRequest, TransformContinueRequest } from "../../../../shared/transform.ts";
+import type { ChannelAnswer } from "../../../../shared/jobs.ts";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, refJ, refK, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 
@@ -38,18 +40,12 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-// The real parser module installs a module-level `$effect.root` over the selection, which is still
-// uninitialized here because the modules import each other. Nothing under test parses CBS.
-vi.mock("src/ts/parser/parser.svelte", () => ({
-    hasher: vi.fn(async () => ""),
-    risuChatParser: vi.fn((text: string) => text),
-}));
 vi.mock("src/ts/globalApi.svelte", () => ({
     checkCharOrder: vi.fn(),
     getFetchLogs: vi.fn(() => []),
     globalFetch: vi.fn(),
     fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
+    saveAsset: vi.fn(async () => "assets/saved.png"),
     readImage: vi.fn(),
     getFileSrc: vi.fn(),
     downloadFile: vi.fn(),
@@ -78,9 +74,11 @@ vi.mock("./permissionStore", () => ({
  * Boots the harness (a fresh module graph), loads the host API on that graph, captures the API
  * object of one plugin, and registers `hook` as its `chatOutput` listener. `runWith` invokes the
  * listener as the output-listener runner does, with a context `capture(ref)` captured earlier (the
- * send captures at its start); `run(ref)` captures at the call.
+ * send captures at its start); `run(ref)` captures at the call. Script tests register through the
+ * real API wrapper and run through either the transform continuation or the job-channel dispatcher.
+ * Only transform HTTP responses are doubled; saves still reach the store-backed server.
  */
-async function boot(hook: (api: CapturedApi) => Promise<void>) {
+async function boot(hook: (api: CapturedApi) => Promise<void> = async () => {}) {
     vi.resetModules();
     const booted = await bootMutations((fake) => {
         server.current = fake;
@@ -106,7 +104,84 @@ async function boot(hook: (api: CapturedApi) => Promise<void>) {
             messageIndex: 0,
         });
     const run = (ref: { chaId: string; chatId: string }) => runWith(capture(ref));
-    return { ...booted, api, capture, runWith, run };
+    const transform = await import("src/ts/parser/transformClient");
+    const channel = await import("src/ts/network/jobChannel");
+    server.current = {
+        close: () => booted.fake.close(),
+        fetch: (path: string, init?: RequestInit) => {
+            if (path === "/api/transform") {
+                const body = JSON.parse(init!.body as string) as TransformRequest;
+                expect(body.handlers).toBeTruthy();
+                return Response.json({
+                    results: [],
+                    snapshotId: "snapshot",
+                    pending: body.targets.map((target) => ({ id: target.id, text: target.source })),
+                });
+            }
+            if (path === "/api/transform/continue") {
+                const body = JSON.parse(init!.body as string) as TransformContinueRequest;
+                return Response.json({
+                    results: body.texts.map((entry) =>
+                        "error" in entry
+                            ? { ...entry, ok: false }
+                            : { ...entry, ok: true, key: "handled", emotions: [], cached: false },
+                    ),
+                });
+            }
+            return booted.fake.fetch(path, init);
+        },
+    };
+    const registerScript = (mode: TransformMode, handler: (text: string) => Promise<string>) =>
+        api.addRisuScriptHandler(mode === "editdisplay" ? "display" : "process", handler);
+    const startTransform = async (mode: TransformMode = "editdisplay") => {
+        const captured = transform.captureTransform(0, { chatRef: refK });
+        expect(captured).not.toBeNull();
+        const result = transform.serverProcessScript(
+            booted.stores.createSimpleCharacter(booted.characterList()[0]),
+            "input",
+            mode,
+            0,
+            {},
+            captured!,
+            "message",
+        );
+        await vi.advanceTimersByTimeAsync(16);
+        return { result };
+    };
+    let callbackId = 0;
+    const runJob = (name: "editdisplay" | "chatOutput" = "editdisplay") => {
+        const received = deferred<ChannelAnswer>();
+        channel.handleChannelEvent(
+            "job",
+            {
+                type: "callback",
+                epoch: booted.fake.store.epoch(),
+                jobId: "job",
+                id: `callback-${++callbackId}`,
+                name,
+                targets: capture(refK)!,
+                revisions: [],
+                payload: { text: "input", speakerId: "c", messageId: "c" },
+                deadline: Date.now() + 60_000,
+            },
+            {
+                send: (message) => {
+                    if (message.type === "answer") received.resolve(message);
+                    return true;
+                },
+            },
+        );
+        return received.promise;
+    };
+    return { ...booted, api, capture, runWith, run, registerScript, startTransform, runJob };
+}
+
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
 }
 
 beforeAll(
@@ -120,7 +195,8 @@ beforeAll(
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.spyOn(globalThis, "requestAnimationFrame").mockReturnValue(0);
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -224,5 +300,129 @@ describe("the callback persistence contract (beginMutationScope + flushResources
         expect(record("ui").theme).toBe("quiet");
         expect(record("characters", "c").desc).toBe("quiet too");
         expect((characterStore.findCharacter("c") as any).desc).toBe("quiet too");
+    });
+});
+
+describe("script handlers in transform continuations", () => {
+    it.each(["editdisplay", "editprocess"] as const)(
+        "%s leaves the saved character unchanged while private storage and own arguments persist",
+        async (mode) => {
+            const b = await boot();
+            const before = b.record("characters", "c");
+            await b.registerScript(mode, async (text) => {
+                const character = await b.api.getCharacter();
+                await b.api.setCharacter({ ...character, desc: "persisted by transform" });
+                await b.api._setPluginStorage("private", { count: 1 });
+                await b.api.setArgument("a", "own argument");
+                await b.api.setArg("plug::legacy", "own legacy argument");
+                return `${text} handled`;
+            });
+            const { result } = await b.startTransform(mode);
+            expect(await result).toMatchObject({ data: "input handled" });
+            await b.sync.flushResources();
+            expect(b.record("characters", "c")).toEqual(before);
+            expect(b.record("pluginStorage")._pluginStorage.private).toEqual({ count: 1 });
+            expect(b.record("plugins").find((plugin: any) => plugin.name === "plug").realArg).toMatchObject({
+                a: "own argument",
+                legacy: "own legacy argument",
+            });
+            expect(console.warn).toHaveBeenCalled();
+        },
+    );
+
+    it("refuses durable setters with warnings and non-throwing return values", async () => {
+        const b = await boot();
+        b.collectionStore.upsertPlugin({ name: "other", realArg: { a: "original" } } as any);
+        await b.sync.flushResources();
+        const before = b.serverText();
+        const returns: Record<string, unknown> = {};
+        await b.registerScript("editdisplay", async (text) => {
+            const character = await b.api.getCharacter();
+            const calls: Record<string, () => unknown> = {
+                setChar: () => b.api.setChar({ ...character, desc: "refused" }),
+                setCharacterToIndex: () => b.api.setCharacterToIndex(0, { ...character, desc: "refused" }),
+                setChatToIndex: () => b.api.setChatToIndex(0, 0, { ...character.chats[0], note: "refused" }),
+                setDatabase: () => b.api.setDatabase({ theme: "refused", custom: "refused" }),
+                setDatabaseLite: () => b.api.setDatabaseLite({ theme: "refused", custom: "refused" }),
+                changeColorScheme: () => b.api.changeColorScheme("light"),
+                setColorScheme: () => b.api.setColorScheme({}),
+                changeTextTheme: () => b.api.changeTextTheme("highcontrast"),
+                setCustomTextTheme: () => b.api.setCustomTextTheme({}),
+                checkCharOrder: () => b.api.checkCharOrder(),
+                setArg: () => b.api.setArg("other::a", "refused"),
+                sendChat: () => b.api.sendChat("refused"),
+                saveAsset: () => b.api.saveAsset(new Uint8Array([1, 2, 3])),
+            };
+            for (const [name, call] of Object.entries(calls)) {
+                const warnings = vi.mocked(console.warn).mock.calls.length;
+                returns[name] = await call();
+                expect(vi.mocked(console.warn).mock.calls.length, `${name} must warn`).toBeGreaterThan(warnings);
+            }
+            return `${text} handled`;
+        });
+        const { result } = await b.startTransform();
+        expect(await result).toMatchObject({ data: "input handled" });
+        expect(returns).toMatchObject({ sendChat: false, saveAsset: "" });
+        await b.sync.flushResources();
+        expect(b.serverText()).toBe(before);
+    });
+
+    it("parses CBS in a transform without saving variable writes even with runVar enabled", async () => {
+        const b = await boot();
+        b.chat.setChatMeta(refK, { scriptstate: { $guarded: "saved" } });
+        await b.sync.flushResources();
+        await b.registerScript("editdisplay", async () => {
+            await b.api.parseRisuChat("{{setvar::guarded::changed}}", { runVar: true });
+            return b.api.parseRisuChat("{{getvar::guarded}}");
+        });
+        const { result } = await b.startTransform();
+        const parsed = await result;
+        await b.sync.flushResources();
+        expect(b.fake.chat("c", "k")!.data.scriptstate).toEqual({ $guarded: "saved" });
+        expect(parsed).toMatchObject({ data: "saved" });
+    });
+
+    it("allows the same registered display handler to save through a job-channel callback", async () => {
+        const b = await boot();
+        await b.registerScript("editdisplay", async (text) => {
+            await b.api.setCharacter({ ...(await b.api.getCharacter()), desc: "written by job" });
+            return `${text} handled`;
+        });
+        expect(await b.runJob()).toMatchObject({ outcome: "answered", value: "input handled" });
+        await b.sync.flushResources();
+        expect(b.record("characters", "c").desc).toBe("written by job");
+    });
+
+    it("refuses writes while a transform is active beneath an overlapping writable hook and permits them after it ends", async () => {
+        const releaseTransform = deferred();
+        const transformEntered = deferred();
+        const releaseJob = deferred();
+        const jobEntered = deferred();
+        const b = await boot(async (api) => {
+            jobEntered.resolve();
+            await releaseJob.promise;
+            await api.setCharacter({ ...(await api.getCharacter()), desc: "written after transform" });
+        });
+        const before = b.record("characters", "c");
+        await b.registerScript("editdisplay", async (text) => {
+            transformEntered.resolve();
+            await releaseTransform.promise;
+            return `${text} handled`;
+        });
+        const { result } = await b.startTransform();
+        await transformEntered.promise;
+        const job = b.runJob("chatOutput");
+        await jobEntered.promise;
+        // This instance's innermost context is now writable, while its transform is still alive.
+        await b.api.setCharacter({ ...(await b.api.getCharacter()), desc: "escaped through inner hook" });
+        await b.sync.flushResources();
+        expect(b.record("characters", "c")).toEqual(before);
+        expect(console.warn).toHaveBeenCalled();
+        releaseTransform.resolve();
+        expect(await result).toMatchObject({ data: "input handled" });
+        releaseJob.resolve();
+        expect(await job).toMatchObject({ outcome: "answered" });
+        await b.sync.flushResources();
+        expect(b.record("characters", "c").desc).toBe("written after transform");
     });
 });

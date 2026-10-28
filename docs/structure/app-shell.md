@@ -117,7 +117,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   - `PlaygroundStore`, `OpenRealmStore`.
   - `CharConfigSubMenu`, `botMakerMode`.
 - Reload signals:
-  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions, `cbs-rendering.md`).
+  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script transform's applied emotions and its result cache's generation, `cbs-rendering.md`).
   - `ReloadChatPointer`.
 - The message search panel's open state and scope (`messageSearchPanel`, `openMessageSearch`) and the pending jump to a message live in `src/ts/messageSearch.svelte.ts`, not here ([ui-theming](ui-theming.md) `MessageSearch.svelte`): a jump is dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is another one at any flush (so coming back never runs it again) or when its chat closes. Selecting the same chat again keeps it: closing the catalog over that chat makes the router re-apply its URL with `selectChat`, which bumps `chatSelectionVersion` without a move. A move away and back inside one flush is not seen.
 - The Checkpoints dialog and its busy state live in `src/ts/checkpoints/chatCheckpoints.svelte.ts`, not here; see [ui-theming](ui-theming.md). Its load blocks global hotkeys until the save, request, and refresh finish.
@@ -183,19 +183,24 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Known Hazards
 
-- Safe boot's counter is a heuristic shared by the tabs of a browser: a user who reloads twice within 10 s of loading trips it once, two tabs booting at once can overwrite each other's count (the read and the write are not atomic), and a boot that settles only clears its own record. A plugin whose script throws at start fails every boot it runs in, so a normal start with it enabled is safe again every third boot until it is fixed or disabled.
+### Issues
 
-- `src/etc/patchNote.ts` has no importers; it does not drive the current release UI.
+- A user-defined `send` hotkey clicks `.button-icon-send` without the popup-editor guard of the preset hotkeys, so it can send (and run `presetChain`) while a popup editor is open.
 
-- The router's accepted limits (it waits for nothing, never loops, never traverses to an entry the Navigation API does not list, and the URL catches up by the next store change):
+### Limitations
+
+- Safe boot's counter is a heuristic shared by the tabs of a browser: a user who reloads twice within 10 s of loading trips it once, two tabs booting at once can overwrite each other's count (the read and the write are not atomic), and a boot that settles only clears its own record. A plugin whose script throws at start fails every boot it runs in, so a normal start with it enabled is safe again every third boot until it is fixed or disabled. Decision: D5 (once per page load) and D6 (two boots, 10 s) of RisuNest Small Wins ([archive](../archived-plan/README.md)).
+- The router's accepted limits (recorded in the `router.svelte.ts` header: it waits for nothing, never loops, never traverses to an entry the Navigation API does not list, and the URL catches up by the next store change):
   - a click made between a back and its landing is undone by the landing;
   - a back can do nothing (an entry dropped at the browser's session history cap, 50 entries in Chromium and Firefox, 100 in WebKit); the URL then stays one step behind until the next store change;
   - overlapping navigations (the user's back, another script's history write, a router step) have no defined winner;
   - without the Navigation API (iOS before 26.2, older Firefox) the router never goes back, so the history grows and a back after a close shows the same screen again;
   - after a back and a forward inside settings, a close replaces instead of going back (the entries beneath may name another base).
-- A back pressed before any interaction on a directly opened settings or grid link leaves the app, like any first page.
+- A back pressed before any interaction on a directly opened settings or grid link leaves the app, like any first page. Decision: the router adds the root entry only at the first activation (`router.svelte.ts`).
+- BGM stop detection is marker-based. If a message re-render keeps its BGM marker out of the DOM for more than 1 s (for example a slow re-parse), the track stops and restarts from the beginning. Decision: the grace period `BGM_STOP_GRACE_MS` (`observer.svelte.ts`).
 
-- BGM stop detection is marker-based. If a message re-render keeps its BGM marker out of the DOM for more than 1 s (for example a slow re-parse), the track stops and restarts from the beginning.
+### Gotchas
+
+- `src/etc/patchNote.ts` has no importers; it does not drive the current release UI.
 - `isInStandaloneMode` has no consumers. `bootstrap.ts` recomputes standalone mode locally before calling `navigator.storage.persist`.
-- A user-defined `send` hotkey clicks `.button-icon-send` without the popup-editor guard of the preset hotkeys, so it can send (and run `presetChain`) while a popup editor is open.
 - The `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first call: `subscribe` calls back at once while the module is still evaluating, and `stores.svelte.ts` and `parser/transformClient.ts` import each other, so that call could reach `resetTransformEffects` before `transformClient`'s bindings exist. Keep the skip while the cycle remains (`stores.importOrder.test.ts`).

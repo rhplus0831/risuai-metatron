@@ -196,6 +196,67 @@ const chatRevisions = new Map<string, string>();
  * the rows rendered before it without a server transform context render again.
  */
 const savedVersions = $state<Record<string, number>>({});
+/** Per chat: authoritative installs and acknowledgements that finish its queued work. */
+const installVersions = $state<Record<string, number>>({});
+const unackedWork = $state<Record<string, boolean>>({});
+
+function recordChatInstall(key: string) {
+    untrack(() => {
+        installVersions[key] = (installVersions[key] ?? 0) + 1;
+    });
+}
+
+function syncUnackedWork(key: string) {
+    untrack(() => {
+        const busy = isBusy(key);
+        if ((unackedWork[key] ?? false) !== busy) {
+            if (busy) unackedWork[key] = true;
+            else delete unackedWork[key];
+        }
+    });
+}
+
+// Keep the reactive read in sync at every work transition. Consumers drain asynchronously,
+// after transfers between these collections (for example, in-flight work into quarantine).
+class ChatWorkMap<T> extends Map<string, T> {
+    override set(key: string, value: T): this {
+        super.set(key, value);
+        syncUnackedWork(key);
+        return this;
+    }
+
+    override delete(key: string): boolean {
+        const removed = super.delete(key);
+        if (removed) syncUnackedWork(key);
+        return removed;
+    }
+
+    override clear(): void {
+        const keys = [...this.keys()];
+        super.clear();
+        for (const key of keys) syncUnackedWork(key);
+    }
+}
+
+class ChatWorkSet extends Set<string> {
+    override add(key: string): this {
+        super.add(key);
+        syncUnackedWork(key);
+        return this;
+    }
+
+    override delete(key: string): boolean {
+        const removed = super.delete(key);
+        if (removed) syncUnackedWork(key);
+        return removed;
+    }
+
+    override clear(): void {
+        const keys = [...this];
+        super.clear();
+        for (const key of keys) syncUnackedWork(key);
+    }
+}
 
 /**
  * Per chat (`keyOf`): the newest revision an acknowledgement of this client's work reported while
@@ -278,12 +339,26 @@ export function chatSaveVersion(ref: ChatRef): number {
     return savedVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
 }
 
+/** The chat's installed-state version (reactive); local edits and stream chunks do not advance it. */
+export function chatInstallVersion(ref: ChatRef): number {
+    return installVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
+}
+
+/** Whether the chat has unacknowledged work (reactive), including refused, deferred, or job-blocked work. */
+export function chatHasUnackedWork(ref: ChatRef): boolean {
+    return unackedWork[keyOf(ref.chaId, ref.chatId)] ?? false;
+}
+
 const orderRevisions = new JournalMap<string>((id) => dirtyOrderJournal(id, "latest"));
 const pending = new JournalMap<Pending>((key, before, after) => {
     dirtyChatJournal(key, "pending");
     if ((before?.resend ?? null) !== (after?.resend ?? null)) dirtyChatJournal(key, "resend");
+    syncUnackedWork(key);
 });
-const inflight = new JournalMap<SentChatGroup>((key) => dirtyChatJournal(key, "resend"));
+const inflight = new JournalMap<SentChatGroup>((key) => {
+    dirtyChatJournal(key, "resend");
+    syncUnackedWork(key);
+});
 const pendingOrders = new JournalMap<number>((id) => dirtyOrderJournal(id, "latest"));
 const inflightOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
 /** Conflicting sent orders whose outcome waits for an authoritative collection read. */
@@ -296,7 +371,10 @@ const discarded = new Map<string, number>();
 let discardSequence = 0;
 /** Refused intent, retained until an explicit local edit, retry, or discard. Identity fences discards. */
 type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean; recovered?: true };
-const quarantined = new JournalMap<ChatRefusal>((key) => dirtyChatJournal(key, "refused"));
+const quarantined = new JournalMap<ChatRefusal>((key) => {
+    dirtyChatJournal(key, "refused");
+    syncUnackedWork(key);
+});
 /** Refused reorders wait until the ordered ids change. */
 const quarantinedOrders = new JournalMap<{ ids: string; reason: string }>((id) => {
     dirtyOrderJournal(id, "refused");
@@ -320,7 +398,7 @@ function clearOrderRefusal(chaId: string) {
     if (quarantinedOrders.delete(chaId)) notifyRefusals();
 }
 /** Chats whose conflict reload waits for the server job streaming into them. */
-const deferred = new Set<string>();
+const deferred = new ChatWorkSet();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
 const staleChats = new Set<string>();
 /**
@@ -374,7 +452,7 @@ export function issueChatReadStamp(): number {
  */
 const jobMetadata = new Map<string, { revision: string }>();
 /** Chats whose work the server refused for a generating message → when it may be sent again. */
-const jobBlocked = new Map<string, number>();
+const jobBlocked = new ChatWorkMap<number>();
 /** Chat keys → local version, bumped by every change of the chat in the mirror. */
 const versions = new Map<string, number>();
 let localSeq = 0;
@@ -2182,6 +2260,9 @@ function applyChatHydration(server: {
     holdChatRevision(key, server.revision);
     staleChats.delete(key);
     changed(key);
+    if (heldRevision !== server.revision) {
+        recordChatInstall(key);
+    }
     remoteListener?.(ref);
     return "applied";
 }
@@ -2275,8 +2356,12 @@ function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number
         }
     }
     const key = keyOf(patch.characterId, patch.id);
+    const heldRevision = chatRevisions.get(key);
     holdChatRevision(key, patch.revision);
     changed(key);
+    if (heldRevision !== patch.revision) {
+        recordChatInstall(key);
+    }
     remoteListener?.({ chaId: patch.characterId, chatId: patch.id });
 }
 
@@ -4684,6 +4769,7 @@ export function ackChatWork(
     const refresh = new Set<string>();
     const placedByOrders = new Map(orders.map((order) => [order.characterId, new Set(order.ids)]));
     work.groups.forEach((group, index) => {
+        const previousRevision = chatRevisions.get(group.key);
         inflight.delete(group.key);
         jobBlocked.delete(group.key);
         const result = results[index];
@@ -4742,6 +4828,14 @@ export function ackChatWork(
             }
         }
         settleKey(group.key, group.seq);
+        if (
+            result &&
+            !pending.has(group.key) &&
+            !inflight.has(group.key) &&
+            (!result.stale || chatRevisions.get(group.key) !== previousRevision)
+        ) {
+            recordChatInstall(group.key);
+        }
     });
     for (const order of orders) {
         const prefix = `${order.characterId}\u0000`;
@@ -5319,6 +5413,7 @@ function applyRemoteChat(server: RemoteChat) {
         changed(key);
         ensureChat(server.characterId);
         syncSelection(server.characterId);
+        recordChatInstall(key);
     }
     if (server.revision === null) {
         dropChatRevision(key);
@@ -5690,7 +5785,7 @@ export function applyRemoteCollection(
     const localIds = memberIds(chaId);
     const next: ChatEntry[] = [];
     const placed = new Set<string>();
-    const adopted: { key: string; revision: string }[] = [];
+    const adopted: { key: string; revision: string; whole: boolean }[] = [];
     const outdated: string[] = [];
     for (const id of collection.order.ids) {
         const record = byId.get(id);
@@ -5727,7 +5822,7 @@ export function applyRemoteCollection(
             continue;
         }
         next.push(mine?.chat && data ? { id, chat: data } : { id, meta: listedMeta(record) });
-        adopted.push({ key, revision: record.revision });
+        adopted.push({ key, revision: record.revision, whole: !!(mine?.chat && data) });
     }
     const removed: string[] = [];
     const absent: string[] = [];
@@ -5822,6 +5917,9 @@ export function applyRemoteCollection(
         changed(key);
     }
     setChatList(chaId, entries);
+    for (const { key, whole } of adopted) {
+        if (whole) recordChatInstall(key);
+    }
     for (const key of removed) {
         notifyRemoval({ chaId, chatId: key.slice(prefix.length) });
     }
@@ -5905,6 +6003,7 @@ export function acceptRemoteCollection(
     const localIds = memberIds(chaId);
     const next: ChatEntry[] = [];
     const placed = new Set<string>();
+    const installed: string[] = [];
     let outdated = false;
     for (const id of collection.order.ids) {
         const record = byId.get(id);
@@ -5953,6 +6052,7 @@ export function acceptRemoteCollection(
             outdated = true;
         } else {
             next.push(mine?.chat && data ? { id, chat: data } : { id, meta: listedMeta(record) });
+            if (mine?.chat && data) installed.push(key);
             holdChatRevision(key, record.revision);
             staleChats.delete(key);
             changed(key);
@@ -6018,6 +6118,7 @@ export function acceptRemoteCollection(
         next.sort((a, b) => (localIndex.get(a.id) ?? Infinity) - (localIndex.get(b.id) ?? Infinity));
     }
     setChatList(chaId, next);
+    for (const key of installed) recordChatInstall(key);
     mutationToken += 1;
     if (
         !pendingOrders.has(chaId) &&
@@ -6248,6 +6349,7 @@ function installRead(
     }
     changed(key);
     touch(key);
+    recordChatInstall(key);
     scheduleTrim();
     return "installed";
 }

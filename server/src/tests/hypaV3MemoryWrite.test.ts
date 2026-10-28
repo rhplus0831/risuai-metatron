@@ -241,6 +241,15 @@ describe("remapHypaV3MetricsByIdentity", () => {
         expect(remapHypaV3MetricsByIdentity(metrics([0, 1, 2]), twice, [S.a, S.b])).toEqual(metrics([0]));
         expect(remapHypaV3MetricsByIdentity(metrics([0, 1]), [S.a, S.b], [S.b, S.a, S.b])).toEqual(metrics([1]));
     });
+
+    it("moves the deferred summaries the same way and leaves the field out once none is left", () => {
+        const deferred = { ...metrics(), lastDeferredSummaries: [2, 3] };
+        expect(remapHypaV3MetricsByIdentity(deferred, [S.a, S.b, S.c, S.d], [S.a, S.b, S.d])).toEqual({
+            ...metrics(),
+            lastDeferredSummaries: [2],
+        });
+        expect(remapHypaV3MetricsByIdentity(deferred, [S.a, S.b, S.c, S.d], [S.a, S.b])).toEqual(metrics());
+    });
 });
 
 describe("mergeHypaV3SelectionWrite", () => {

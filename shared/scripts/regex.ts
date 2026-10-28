@@ -1,3 +1,4 @@
+import { isCbsPlainText } from "../cbs/evaluator.ts";
 import type { customscript } from "../database.ts";
 
 /**
@@ -96,6 +97,10 @@ export function runRegexScripts(
         effects.push(effect);
         run.applyEffect?.(effect);
     };
+    const replaceAndParse = (reg: RegExp, outScript: string) => {
+        const replaced = data.replace(reg, outScript);
+        return replaced === data && isCbsPlainText(replaced) ? replaced : parse(replaced);
+    };
 
     function executeScript(pscript: ParsedScript) {
         const script = pscript.script;
@@ -192,7 +197,7 @@ export function runRegexScripts(
                         // The moved text goes through the CBS parser like any other replacement.
                         data = parse(data);
                     } else {
-                        data = parse(data.replace(reg, outScript));
+                        data = replaceAndParse(reg, outScript);
                     }
                 } else {
                     if (
@@ -226,7 +231,7 @@ export function runRegexScripts(
                     }
                 }
             } else {
-                data = parse(data.replace(reg, outScript));
+                data = replaceAndParse(reg, outScript);
             }
         }
     }

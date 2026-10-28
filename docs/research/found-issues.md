@@ -2,25 +2,19 @@
 
 Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26; single entries move as they come up.
 
-These are notes, not verified reports. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
+These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
 Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (second batch), and 2026-10-27 (single entries). Confirmed fixes have been removed, and partially fixed entries have been narrowed to the remaining gap. Entries that still need runtime reproduction are retained.
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
-- [Chat screen and input](#chat-screen-and-input) (3)
-- [Test mocks](#test-mocks) (2)
+- [Display transform](#display-transform) (3)
+- [Chat screen and input](#chat-screen-and-input) (2)
+- [Test mocks](#test-mocks) (3)
 
 ## Chat store, sync, and change feeds
-
-### Feed lock windows
-
-Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `dropFeedLocksOf` in `src/ts/storage/chatStore.svelte.ts`) are advisory. A tab shows a generating reply unlocked (2a's `dropLockedEdits` then catches an edit) before the job's first write frame: the job owns no message before its `begin`, so neither the `hello` snapshot nor a whole chat read's lock list can list it. Since 2026-10-26 whole chat reads carry the server's lock list and decide the chat's feed locks (Deep Audit Fixes slice 8), so the window after a newer whole read is gone, except against an older server whose reads omit the list (the revision rule still applies there). `isCharacterGenerating` also counts feed locks, so the same window decides when an observer tab refuses a permanent character delete or a different-id replace locally (the server's 409 `generating` stays the fallback).
-
-**Why it matters:** the remaining path for A4 (edit over the generating reply) before the reply exists on the server.
-**Suggested handling:** if it matters, announce the job's chat reservation (admission, before `begin`) in the feed and the read lock lists, so a tab can lock the chat's tail instead of a message id.
 
 ### Parked resends leak
 
@@ -53,6 +47,29 @@ Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `
 **Why it matters:** the client's feed-lock rules (whole-read lock lists, the revision rule for older copies) assume a released generation does not re-lock a message.
 **Suggested handling:** if a reply ever shows locked after its job finished its write, check for a replayed `begin`; a fix would retire released generation ids per job in `generationLock` or refuse a `begin` whose message exists.
 
+## Display transform
+
+### Budget-refused handler rows stay raw
+
+`server/src/prompt/transform.ts` refuses a two-call (tab plugin handler) target whose snapshot charge passes `MAX_SNAPSHOT_BYTES` (8 MiB, :51; the check near :806-824), and the target answers `{ ok: false }`, so the row shows its raw text. `src/ts/parser/transformClient.ts` sends chunks of `MAX_TRANSFORM_TARGETS` (64, `shared/transform.ts:106`; the chunking near :425) and never retries a budget-refused target in a later, smaller chunk, so the row stays raw until it remounts. When Display Evaluation Slice 3 measured it (2026-10-28), a 2,000-message chat of about 6 MiB charged about 6.7 MiB per scope, so only 30–38 of a 64-target chunk fit. Since Slice 4 the shared display entries are excluded from the per-snapshot charge (`exclude: entries`) and pinned against the 64 MiB `MAX_RETAINED_BYTES` instead, so that number is likely smaller now; not re-measured.
+
+**Why it matters:** users with display plugins and long chats may see raw rows.
+**Suggested handling:** re-measure on a realistic large chat with handlers; if rows still fail, retry budget-refused targets in smaller chunks or give the refusal its own code.
+
+### Display scope copies the job scope's character reads
+
+`server/src/prompt/displayScope.ts` `chatCharacters` (:152) and `readCharacters` (:170) copy `server/src/jobs/jobScope.ts` `chatCharacters` (:133) and `readCharacters` (:150). Display Evaluation Slice 4 added the copies (2026-10-28) because `jobScope.ts` was outside its files.
+
+**Why it matters:** the transform's key and its `chatCharacters` memo assume the display load reads the same characters (members, speakers, target sources) as `loadJobScope`; two copies can drift.
+**Suggested handling:** when `jobScope.ts` is next touched, export the two helpers from it and delete the copies.
+
+### Transform probe heap delta reads as noise
+
+`docs/research/deep-audit-with-fable/probes/transform-jobs-probe.mjs` `four-tiny-snapshots` reports `heapDeltaMiB` (:322) from just before the four calls to just after. Since the display loader shares one transcript entry, the delta reads about −1 to +1 MiB in a full run (earlier garbage is collected inside the window) although the snapshots retain the ~16 MiB transcript. The probe also still throws at `r.pending[0]` (:321) when no snapshot is kept. Display Evaluation Slice 9 (2026-10-28) measured instead the heap freed by `service.close()` and a gc: 15.94 MiB after the plan against 62.9–63.2 MiB at `2f38c2e7b`.
+
+**Why it matters:** a later measurement that copies the probe's number would report no retained heap.
+**Suggested handling:** guard the read with `?.` and measure the heap freed on close (or run the snapshot section alone with a close step); say which method in the table.
+
 ## Chat screen and input
 
 ### Latest-message start scroll untested in DefaultChatScreen
@@ -61,13 +78,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a regression in either path would pass the gate.
 **Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
-
-### Reader position not kept across growth inside shown rows
-
-Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in above the view until they have rendered and the reader stops scrolling. That fixed the reproduced jumps: wheeling while a chat opens, and wheeling into load-more. Content that grows inside rows already shown above the view still moves the reader by the grown height while a scroll animation runs (Chrome, reversed scroller; measured on a minimal page). Examples are images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs from its rendered height when it comes near. Repro drivers from the investigation: headed Chrome on WSLg with real X wheel ticks through XTest. CDP `Input.dispatchMouseEvent` wheels do not animate, so they never reproduce it.
-
-**Why it matters:** each case is smaller than the jumps that were fixed (one row's growth, not a page), but it has the same feel: the reader lands somewhere they did not scroll to.
-**Suggested handling (optional, deferred by the owner):** once the anchor is released, keep a reader anchor. Record the visible row nearest the view's top and its offset on scroll. After a transcript resize, restore that offset at `scrollend`, not mid-animation, where a correction would fight the running animation. Measure the visible row's displacement beyond the intended scroll; do not double-compensate with any native anchoring.
 
 ### Popup editor close at teardown reads pre-batch store values
 
@@ -91,3 +101,10 @@ Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in abo
 
 **Why it matters:** the typed stale mocks are what broke 37 tests when `GenerationFollow.opened` was added.
 **Suggested handling:** migrate the one-liners when touching those files.
+
+### chatStore mock has no shared factory
+
+About 25 test files under `src/` mock `src/ts/storage/chatStore.svelte.ts` inline with partial objects (2026-10-28; `rg -l 'vi\.mock\(\s*"[^"]*chatStore\.svelte' src`), for example `src/ts/parser/tests/transformClient.test.ts` near its `heldChatRevision` stub. STRUCTURE.md V7 asks for one shared typed factory. Found by Display Evaluation Slice 2: adding `chatInstallVersion` and `chatHasUnackedWork` failed 34 transformClient tests with "No chatInstallVersion export defined on mock".
+
+**Why it matters:** each new chatStore export a mocked module imports breaks unrelated suites, which then look like regressions and cost a stale-test round.
+**Suggested handling:** a typed `chatStoreMock()` factory under the test helpers, adopted file by file.

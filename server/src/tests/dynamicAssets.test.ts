@@ -2,7 +2,7 @@
 import http from "node:http";
 import path from "node:path";
 import { symlinkSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createScriptCache, type RegexScriptMode } from "../../../shared/scripts/regex.ts";
 import type { character, customscript } from "../../../shared/database.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
@@ -15,7 +15,11 @@ const workers = createScriptWorkerPool({ rootDir, size: 1, maxSize: 1 });
 afterAll(() => workers.dispose());
 
 // Real regex workers and nearest-vector ranking, with deterministic vectors and identity CBS.
-function fixture(scripts: customscript[] = [], flags: Record<string, boolean> = {}) {
+function fixture(
+    scripts: customscript[] = [],
+    flags: Record<string, boolean> = {},
+    sources: { preset?: customscript[]; module?: customscript[] } = {},
+) {
     const char = {
         type: "character",
         chaId: "c",
@@ -50,11 +54,13 @@ function fixture(scripts: customscript[] = [], flags: Record<string, boolean> = 
                 dynamicAssets: true,
                 dynamicAssetsEditDisplay: true,
                 ...flags,
-                presetRegex: [],
+                presetRegex: sources.preset ?? [],
                 characters: [char],
                 personas: [],
-                modules: [],
-                enabledModules: [],
+                modules: sources.module
+                    ? [{ id: "regex-module", name: "Regex", description: "", regex: sources.module }]
+                    : [],
+                enabledModules: sources.module ? ["regex-module"] : [],
             },
         },
         nativeCtx: { signal, identity: { characterId: "c", chatId: "k", presetId: null, personaId: null } },
@@ -78,7 +84,60 @@ const regex = (mode: RegexScriptMode): customscript => ({
     flag: "g",
 });
 
+function recordScriptDispatches() {
+    const dispatch = vi.spyOn(workers, "runScripts");
+    onTestFinished(() => dispatch.mockRestore());
+    return dispatch;
+}
+
 describe("dynamic assets in the server script tail", () => {
+    it.each(["editoutput", "editdisplay"] as const)(
+        "skips workers for other stages' scripts in %s while applying and caching dynamic assets",
+        async (mode) => {
+            const dispatch = recordScriptDispatches();
+            const f = fixture(
+                [regex("editinput")],
+                {},
+                {
+                    preset: [regex("editprocess")],
+                    module: [regex(mode === "editoutput" ? "editdisplay" : "editoutput")],
+                },
+            );
+            expect(await f.run("{{img::hapy}}", mode)).toBe("{{img::happy}}");
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(f.embed.mock.calls.flatMap(([inputs]) => inputs)).toEqual(
+                expect.arrayContaining(["sad", "happy", "hapy"]),
+            );
+
+            // Remove the asset-match cache so only the final-output cache can avoid reranking.
+            f.deps.assetMatches.clear();
+            f.embed.mockClear();
+            f.embeddings.mockClear();
+            expect(await f.run("{{img::hapy}}", mode)).toBe("{{img::happy}}");
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(f.embeddings).not.toHaveBeenCalled();
+            expect(f.embed).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(["preset", "character", "module"] as const)(
+        "dispatches a matching-stage script from the %s alongside other stages' scripts",
+        async (source) => {
+            const dispatch = recordScriptDispatches();
+            const matching = regex("editoutput");
+            const f = fixture(
+                [regex("editinput"), ...(source === "character" ? [matching] : [])],
+                {},
+                {
+                    preset: [regex("editprocess"), ...(source === "preset" ? [matching] : [])],
+                    module: [regex("editdisplay"), ...(source === "module" ? [matching] : [])],
+                },
+            );
+            expect(await f.run("MARKER", "editoutput")).toBe("{{img::happy}}");
+            expect(dispatch).toHaveBeenCalledTimes(1);
+        },
+    );
+
     it.each(["editoutput", "editdisplay"] as const)(
         "ranks unknown markers in %s with zero regex scripts or after a regex",
         async (mode) => {

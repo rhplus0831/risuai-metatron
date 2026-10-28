@@ -47,6 +47,7 @@ git show ca5b656fa:docs/plan/deep-audit-fixes.md
 git show 1fc70e547:docs/plan/chat-lore-override-states.md
 git show ae289ecf5:docs/plan/mobile-resume-reliability.md
 git show 802a4840a:docs/plan/hypav3-token-budget.md
+git show 1db8c10a8:docs/plan/display-evaluation.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -95,6 +96,7 @@ it is not a current architecture guide.
 | Chat Lore Override States                | `1fc70e547`: `docs/plan/chat-lore-override-states.md`                     | [chat pipeline](../structure/chat-pipeline.md), [characters/modules](../structure/characters-modules.md), [persistence](../structure/persistence.md), [CBS/rendering](../structure/cbs-rendering.md), [UI/theming](../structure/ui-theming.md), [settings/i18n](../structure/settings-i18n.md)                                                                                                                                                                                               |
 | Mobile Resume Reliability                | `ae289ecf5`: `docs/plan/mobile-resume-reliability.md`                     | [global API](../structure/global-api.md), [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [build/test/platforms](../structure/build-test-platforms.md), [server](../structure/self-host-server.md), [diagnostics](../structure/diagnostics.md)                                                                                                                                                                                                   |
 | HypaV3 Token Budget                      | `802a4840a`: `docs/plan/hypav3-token-budget.md`                           | [memory](../structure/memory.md), [settings/i18n](../structure/settings-i18n.md), [UI/theming](../structure/ui-theming.md), [persistence](../structure/persistence.md), [backup sync hub](../structure/backup-sync-hub.md)                                                                                                                                                                                                                                                                   |
+| Display Evaluation                       | `1db8c10a8`: `docs/plan/display-evaluation.md`                            | [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                         |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -641,6 +643,34 @@ recomputes when the max context changes (2). Out of scope by the plan: a trigger
 field. Still open: the manual checks in a browser after a real send (convert a ratio preset and
 confirm the summarize timing is unchanged; lower the max context and confirm the chip shows
 "memory reduced" with the applied values); the settings page itself was checked with Playwright.
+
+Display Evaluation (the server display transform's cache and dispatch, audit findings TJ02, TJ03,
+TJ05 and ST05, planned on 2026-10-28 and reviewed by Sol; the user answered Q1–Q3 as recommended)
+landed all nine slices on `dev` on 2026-10-28 through the plan runner (`delegate-implementation`,
+Codex implementer and challenger), one cherry-picked commit each: 1 the conservative key (the
+stored chat revision, the viewport, and every loaded character) (`fd7f50766`); 6 the regex mode
+filter and the CBS parse skip for unchanged plain text (`15ed61b6c`); 3 snapshot accounting
+(`6b0d485f5`); 4 `createDisplayScopeLoader`, one shared load per render burst with pinned entries
+under a 64 MiB budget (`3b0e047ff`); 5 the character display identity without `lastInteraction`
+and eleven kinds dropped from the key (`cf326ef1e`); 2 a row that rendered an unsaved mix renders
+again once its chat settles (`4a1d870f3`); 7 `knownKey` on a target and `same` on an exact hit
+(`f5eda0ff6`); 8 the tab result cache `transformResults.ts`, which shows a remounted row's confirmed
+text at once (`aa4f2a68a`); 9 the guides and the cache comment (`31b75a1e3`). `dev` moved during the
+run (HypaV3 modal fixes, the popup editor toggle, Durable Drafts slices 1 and 9, the Known Hazards
+split, the Job Protocol plan); it was merged in as `05e4be8c1`, keeping both loops in
+`applyRemoteCollection`. The final checks on that tree passed: `pnpm check`, `check:tests`, 7,529
+unit tests, 56 slow tests, and the 10 `serverTransform`/`transformGolden` e2e tests. Measured after
+all slices: a 500-target cold render parses 1,116 times instead of 4,849, a stamp-only save keeps
+all 500 hits, and 10 non-matching regex scripts take 274–314 ms instead of 1,033–1,193 ms; the
+first remount after a send refetches 28 of 30 rows once (about 35 ms of server time and 90 KB), so
+the plan's **Later** read-class key was judged not needed. Decisions made by the slices: a scope
+over the snapshot budget fails every uncached target (3); four kinds beyond the plan's candidates
+were dropped, since no display path reads them (5); a refilled key may hold other random, clock or
+plugin text while `same` confirms the tab's older text (7); a GUI reset advances the tab cache's
+generation without clearing it, and a synchronous source hash with an exact source check replaces
+`sha256(source)` (8). Findings outside the plan went to `docs/research/found-issues.md` (Display
+transform). Still open: the device checks on the Android PWA over mobile data (A → B → A shows rows
+at once; no disturbing flicker after a send; repeated switches answer only `same`).
 
 ## Server-Owned Data Chronology
 

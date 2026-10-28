@@ -1803,13 +1803,14 @@ describe("deferred stored summaries", () => {
             ...deferred.chats.map((chat) => chat.content),
         ]);
         expect(selection.currentTokens).toBe(760);
-        // The stored summaries stay in the memory written back; nothing was selected.
+        // The stored summaries stay in the memory written back; nothing was selected, both deferred.
         expect(selection.memory!.summaries.map((summary) => summary.text)).toEqual(["S0", "S1"]);
         expect(selection.memory!.metrics).toEqual({
             lastImportantSummaries: [],
             lastRecentSummaries: [],
             lastSimilarSummaries: [],
             lastRandomSummaries: [],
+            lastDeferredSummaries: [0, 1],
         });
 
         // The meter: the next send takes a summary 241 tokens on (990 + 10 is the most that fits), and
@@ -1870,6 +1871,7 @@ describe("deferred stored summaries", () => {
         );
         expect(selection.memory!.summaries).toHaveLength(7);
         expect(selection.memory!.metrics!.lastRecentSummaries).toEqual([2, 1, 0]);
+        expect(selection.memory!.metrics!.lastDeferredSummaries).toEqual([3, 4, 5, 6]);
     });
 
     it("with an extra ratio the replay keeps the pause between the target and the context", async () => {

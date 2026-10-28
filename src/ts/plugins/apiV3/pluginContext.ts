@@ -20,6 +20,8 @@ import { chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
  * correlation id in the sandbox RPC (a transport change).
  */
 export interface PluginCallContext {
+    /** Tab-side transform continuations cannot write durable data through the host API. */
+    readonly purpose?: "transform";
     readonly chatRef: ChatRef;
     /** The prompt preset. */
     readonly presetId: string;
@@ -118,4 +120,12 @@ export function enterContext(owner: object, context: PluginCallContext): () => v
 export function currentContext(owner: object): PluginCallContext | undefined {
     const stack = stacks.get(owner);
     return stack?.[stack.length - 1]?.context;
+}
+
+/**
+ * A writable hook can overlap a transform on this instance and become the innermost context.
+ * Refuse durable writes while ANY transform is active; exact attribution needs an RPC call id.
+ */
+export function hasReadOnlyContext(owner: object): boolean {
+    return stacks.get(owner)?.some((entry) => entry.context.purpose === "transform") ?? false;
 }

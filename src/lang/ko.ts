@@ -873,6 +873,7 @@ export const languageKorean = {
     ttsCustomUrlNeedsKey:
         "커스텀 OpenAI TTS 기본 URL을 사용하려면 TTS 설정에 별도의 API 키를 입력해야 합니다. 저장된 OpenAI 키는 api.openai.com으로만 전송됩니다.",
     longPressToPopupEditor: "길게 눌러 팝업 편집기 열기",
+    popupEditorMonaco: "코드 편집기 (Monaco)",
     disableAutoPopupMessageEditor: "메시지 편집 시 자동 팝업 편집기 끄기",
     UiLanguage: "UI 언어",
     createfromScratch: "새 캐릭터 생성",
@@ -2103,6 +2104,9 @@ export const languageKorean = {
         doNotSummarizeUserMessageLabel: "유저 메시지 요약하지 않기",
     },
     hypaV3Modal: {
+        readyBadge: "준비됨",
+        readyBadgeHelp:
+            "지난 전송에서는 넣지 않은 준비된 요약입니다. 이 요약이 다루는 메시지는 아직 원문 그대로 보내고, 프롬프트가 컨텍스트를 채우면 요약이 그 메시지를 대신합니다.",
         titleLabel: "HypaV3",
         resetConfirmMessage: "이 작업은 되돌릴 수 없습니다. HypaV3 데이터를 초기화하시겠습니까?",
         resetConfirmSecondMessage: "이 작업은 복구할 수 없습니다. 정말로, 정말로 HypaV3 데이터를 초기화하시겠습니까?",

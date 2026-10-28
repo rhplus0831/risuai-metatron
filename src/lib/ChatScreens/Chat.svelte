@@ -35,7 +35,7 @@
         Scissors,
         XIcon,
     } from "@lucide/svelte";
-    import { rerenderMessage } from "src/ts/parser/transformClient";
+    import { type CapturedTransform, rerenderMessage } from "src/ts/parser/transformClient";
     import {
         displayTransformMessageKey,
         displayTransformRetryRound,
@@ -109,6 +109,7 @@
     import { alertStore, HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
     import ChatBody from "./ChatBody.svelte";
+    import { waitForSettledRender } from "./settledRender.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from "./PartialEditController.svelte";
     import { chatFolderOf } from "../SideBars/chatFolders";
@@ -374,6 +375,37 @@
         seenSave = { chat: key, version };
     });
 
+    let disposeSettledRender: (() => void) | undefined;
+    let settledRenderTarget: { ref: ChatRef; id: string } | null = null;
+
+    function clearSettledRender() {
+        disposeSettledRender?.();
+        disposeSettledRender = undefined;
+        settledRenderTarget = null;
+    }
+
+    function renderSettledRow() {
+        const target = settledRenderTarget;
+        clearSettledRender();
+        if (target && isCurrentMessageTarget(target)) chatBodyRevision += 1;
+    }
+
+    function onMixedRender(capture: CapturedTransform) {
+        const target = { ref: capture.chatRef, id: capture.messageId };
+        // Previews without a message id, and answers for a previously displayed chat, do not register.
+        if (!target.id || !isCurrentMessageTarget(target)) return;
+        if (disposeSettledRender) return;
+        settledRenderTarget = target;
+        disposeSettledRender = waitForSettledRender(target.ref, renderSettledRow);
+    }
+
+    $effect(() => {
+        displayedChat?.chaId;
+        displayedChat?.chatId;
+        messageId;
+        return clearSettledRender;
+    });
+
     // The server transform shows a locked (streaming) message raw: it renders again once the lock ends.
     $effect(() => {
         const now = locked;
@@ -406,7 +438,7 @@
         return ref && messageId ? { ref, id: messageId } : null;
     }
 
-    function isCurrentPopupMessageTarget(target: { ref: ChatRef; id: string }): boolean {
+    function isCurrentMessageTarget(target: { ref: ChatRef; id: string }): boolean {
         const current = messageTarget();
         return (
             current !== null &&
@@ -432,7 +464,7 @@
             editMode &&
             draft === initialDraft &&
             (draft ?? message) === initialValue &&
-            isCurrentPopupMessageTarget(target);
+            isCurrentMessageTarget(target);
 
         try {
             while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
@@ -468,7 +500,7 @@
             editTranslationMode &&
             editTranslationText === initialValue &&
             editTranslationTarget === target &&
-            isCurrentPopupMessageTarget(rowTarget);
+            isCurrentMessageTarget(rowTarget);
 
         try {
             while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
@@ -899,6 +931,7 @@
     });
 
     onDestroy(() => {
+        clearSettledRender();
         popupEditorsDestroyed = true;
         if (activeAutoPopupMessageSessionId !== null) {
             closePopupEditorSession(activeAutoPopupMessageSessionId);
@@ -1287,6 +1320,7 @@
                     {name}
                     {bodyRoot}
                     renderRevision={chatBodyRevision}
+                    {onMixedRender}
                     modelShortName={messageGenerationInfo ? getModelInfo(messageGenerationInfo?.model).shortName : ""}
                     role={role ?? null}
                     bind:translated

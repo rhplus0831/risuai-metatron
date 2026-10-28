@@ -13,11 +13,14 @@ import {
     type TransformResult,
     type TransformTarget,
 } from "../../../shared/transform.ts";
+import { isValidResourceId } from "../data/resourceStore.ts";
 import { GenerationRunnerError, type RunningJob } from "../jobs/generationJobs.ts";
-import { type JobScope, jobScopeKinds, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
+import { type JobScope, jobScopeKinds, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup, type GenerationRunnerDeps, type RunSetup } from "../jobs/runSetup.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import type { LuaBudget } from "../scripts/workerPool.ts";
+import { isDisplayKeyKind } from "./displayKinds.ts";
+import { createDisplayScopeLoader, MAX_RETAINED_BYTES, retainedBytes, type DisplayScopeEntry } from "./displayScope.ts";
 import { runLuaEdit, runScriptTail } from "./scripts.ts";
 import { createTransformCache } from "./transformCache.ts";
 import { TriggerEffectLimitError } from "./triggers.ts";
@@ -44,10 +47,17 @@ const MAX_QUEUED = 32;
 /** Snapshots waiting for their second call, per client and in all. */
 const MAX_SNAPSHOTS_PER_CLIENT = 4;
 const MAX_SNAPSHOTS = 16;
-/** What one snapshot keeps of its targets: their texts and the variables their Lua wrote. */
+/** Request-owned retained memory of one snapshot: its projection and each target's setup, copies and texts. */
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
-/** Owners whose group members the cache probe remembers (`ownerMembers`). */
-const MAX_OWNER_MEMBERS = 256;
+/** Bindings, the CBS host and matcher table, trigger runtime, and run state. */
+const SNAPSHOT_TARGET_BYTES = 48 * 1024;
+/** The copied variable object's property storage; unchanged keys and values are paid by the scope. */
+const SNAPSHOT_VARIABLE_ENTRY_BYTES = 64;
+const SNAPSHOT_CHARACTER_ENTRY_BYTES = 8;
+/** Parsed default-variable maps can retain many times their source text's bytes. */
+const SNAPSHOT_DEFAULT_VARIABLE_FACTOR = 12;
+/** Chats whose member and speaker ids the cache probe remembers (`chatCharacters`). */
+const MAX_CHAT_CHARACTERS = 256;
 
 /** What every target of one request shares: one Lua budget and CBS time. */
 type Shared = {
@@ -55,7 +65,7 @@ type Shared = {
     cbsUsage: { usedMs: number };
 };
 
-/** One target's run: its own scope copy, setup, and regex caches, its text so far. */
+/** One target's run: a shallow scope copy pinning the loaded scope, its setup, caches and text so far. */
 type TargetRun = {
     target: TransformTarget;
     key: string;
@@ -86,6 +96,8 @@ type Snapshot = {
     life: Lifecycle;
     shared: Shared;
     runs: Map<string, TargetRun>;
+    claimed: boolean;
+    release: () => void;
 };
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -112,23 +124,53 @@ function link(signal: AbortSignal, controller: AbortController): () => void {
     return () => signal.removeEventListener("abort", onAbort);
 }
 
-/** The bytes a target's run keeps: its text and the variables its Lua wrote. */
-function retainedBytes(run: TargetRun): number {
-    let bytes = Buffer.byteLength(run.text);
+/** Per-target retained memory beyond the shared scope, including allowances for lazy setup allocations. */
+function targetRetainedBytes(run: TargetRun): number {
+    let bytes = SNAPSHOT_TARGET_BYTES + Buffer.byteLength(run.text);
+    if (run.text !== run.target.source) {
+        bytes += Buffer.byteLength(run.target.source);
+    }
     const state = scopeChat(run.setup.scope)?.scriptstate ?? {};
     for (const [key, value] of Object.entries(state)) {
+        bytes += SNAPSHOT_VARIABLE_ENTRY_BYTES;
         if (run.baseline?.[key] !== value) {
             bytes += Buffer.byteLength(key) + Buffer.byteLength(String(value));
         }
     }
-    return bytes;
+    const db = run.setup.scope.db;
+    bytes += db.characters.length * SNAPSHOT_CHARACTER_ENTRY_BYTES;
+    // The host can parse any loaded character's defaults, even if it has not read a missing variable yet.
+    const characterDefaults = db.characters.reduce(
+        (largest, entry) => Math.max(largest, Buffer.byteLength((entry as character).defaultVariables ?? "")),
+        0,
+    );
+    return (
+        bytes +
+        SNAPSHOT_DEFAULT_VARIABLE_FACTOR * (characterDefaults + Buffer.byteLength(db.templateDefaultVariables ?? ""))
+    );
+}
+
+/** Partition ordinary cache hits already held by the tab out of the first call's full results. */
+function partitionKnownResults(targets: TransformTarget[], results: TransformResult[]): TransformResponse {
+    const knownKeys = new Map(targets.map((target) => [target.id, target.knownKey]));
+    const full: TransformResult[] = [];
+    const same: NonNullable<TransformResponse["same"]> = [];
+    for (const result of results) {
+        if (result.ok && result.cached && result.key === knownKeys.get(result.id)) {
+            same.push({ id: result.id, key: result.key });
+        } else {
+            full.push(result);
+        }
+    }
+    return same.length ? { results: full, same } : { results };
 }
 
 /**
  * The script transform: `processScriptFull`'s `editdisplay` and `editprocess` stages for targets
- * the tab sends, read-only. One `loadJobScope` per request the cache does not answer whole (the ids
- * the tab captured; a missing record fails the request, 404), then per target an isolated run on a
- * copy of that snapshot: its own chat object (`scriptstate` copied: a Lua or CBS variable write
+ * the tab sends, read-only. A fresh display projection per request the result cache does not answer
+ * whole, using raw configuration and transcript entries cached by epoch and revisions (the ids
+ * the tab captured; a missing record fails the request, 404), then per target an isolated run on
+ * that projection: its own chat object (`scriptstate` copied: a Lua or CBS variable write
  * changes it for the target's later stages and is never stored), its own owner object and character
  * list, its own regex and dynamic-asset caches, and a setup built as a job's (`createRunSetup`) on
  * a job that cannot write, ask, or call the tab, with frozen bindings (no character or chat
@@ -143,19 +185,48 @@ function retainedBytes(run: TargetRun): number {
  * next trigger; the display trigger: the text kept); an abort, a spent limit, a latched host
  * failure, a worker failure, or a refused write fails the target (`{ ok: false }`, nothing cached).
  * A text after the stages before the plugin handlers is bounded as the second call's texts are.
+ * A kept snapshot is charged its request-owned projection plus each target's setup, copied
+ * containers, texts, changed variables and default-variable map allowance, up to 8 MiB. Shared raw
+ * entries are charged once while pinned, alongside snapshots and in-progress reservations against
+ * a 64 MiB global limit. Oldest waiting snapshots give way first (this client's, then all clients').
+ * Continuations keep their pins through queueing and execution; every end path releases them.
+ * Targets that still do not fit fail alone.
  *
- * Results are cached (`transformCache.ts`) under a digest of the epoch, the target, the context,
- * the handler set, the revisions the load read (every section and collection, the presets, the
- * modules, the owner, the source, a group's members), and the chat's variables, author's note,
- * local lore, name, modules, bound persona, bound presets, and greeting index; not the viewport or
- * the other messages. `noCache` replaces the entry. A cached result keeps its emotions;
- * the tab applies a key's emotions once. A request whose every target has an entry is answered
- * before the load (`cachedResults`: revisions and the chat's metadata only, no record parsed).
+ * Results are cached (`transformCache.ts`) under `targetKey`: a digest of the epoch, the stored
+ * chat revision the load read, the mode, the full request context, browser language (empty when
+ * absent), viewport width and height (null without a client), and handler-set identity (null
+ * without handlers). It includes the loaded non-character record revisions kept by
+ * `displayKinds.ts` (all admission kinds and `globalChatVariables` stay; unclassified kinds stay),
+ * plus the display identities of the owner, valid group members and every valid stored message
+ * speaker besides the owner. An identity is the digest of stored JSON before runtime chats are
+ * attached, without top-level `lastInteraction`, preserving property order; absence is `missing`.
+ * A separate canonical metadata digest includes `scriptstate`, `GLGlobalVariables`, `note`,
+ * `localLore`, `loreOverrides`, `name`, `modules`, `bindedPersona`, `promptPresetId`, `modelPresetId`
+ * and `fmIndex`, with the defaults in `baseKey`. Each target adds its kind, message id for a
+ * message (null otherwise), chat index, source id and that source's display identity (`missing`
+ * when absent), `cbsConditions` (empty when absent), and the source text's digest. Sources named
+ * only by other targets stay out of its key, so batching does not change it; the correlation id,
+ * `knownKey` and `noCache` are not key inputs. A result stays under the loaded chat revision even
+ * if the chat changes while it runs. `noCache` invalidates that entry and prevents an older fill
+ * from replacing it. A cached result keeps its emotions; the tab applies a key's emotions once.
+ *
+ * `cachedResults` can answer every target before building a display projection: it reads the
+ * current job-scope kind revisions and chat metadata (including its revision), then the
+ * `chatCharacters` memo under owner id, chat id and chat revision. That memo remembers member and
+ * speaker ids, including missing ones, and is validated against the owner's current display
+ * identity; a missing memo or changed owner identity requires a load. Character records are read
+ * only on identity-memo misses; no configuration data or message rows are parsed by the probe.
+ * On the first call, `partitionKnownResults` answers an ordinary cache hit matching the target's
+ * `knownKey` in `same` with only its id and key, present only when non-empty. A different key,
+ * a miss, `noCache`, a failure and every continuation answer in full (or await plugin handlers).
+ * The key identifies inputs, not output, so random, clock, or plugin output refilled under the
+ * same key after eviction or Re-render can differ while `same` still confirms that key.
  *
  * Lifecycle: a request is registered (its controller, its deadline, the epoch, the maintenance
  * count) when it is admitted, before it waits for one of `MAX_ACTIVE` slots (`MAX_QUEUED` may wait;
  * more are refused). `pause` (maintenance) aborts every request, queued or running, and every
- * snapshot, and empties the cache; a request admitted before a maintenance never runs after it.
+ * snapshot, and empties the result and scope caches; a request admitted before maintenance never
+ * runs after it.
  * `close` (shutdown) refuses new work, aborts, and waits for the runs. One deadline,
  * `TRANSFORM_SNAPSHOT_TTL_MS` from the first call's admission, covers both calls of a snapshot.
  */
@@ -164,6 +235,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
     const deps: GenerationRunnerDeps = { ...runnerDeps, mcp: undefined };
     const { store, kinds } = deps;
     const cache = createTransformCache();
+    const displayScopes = createDisplayScopeLoader(store, kinds);
+    const pins = new Map<DisplayScopeEntry, number>();
+    let retained = 0;
     const snapshots = new Map<string, Snapshot>();
     const lives = new Set<Lifecycle>();
     const running = new Set<Promise<unknown>>();
@@ -290,10 +364,63 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         if (snapshots.get(snapshot.id) === snapshot) {
             snapshots.delete(snapshot.id);
         }
+        if (!snapshot.claimed) {
+            snapshot.release();
+        }
         if (reason) {
             snapshot.life.controller.abort(reason);
             retire(snapshot.life);
         }
+    };
+
+    /** Reservations are synchronous: another head can await without making this charge available again. */
+    const reservationFor = (entries: readonly DisplayScopeEntry[]) => {
+        let ownBytes = 0;
+        let pinned = false;
+        let released = false;
+        const sharedBytes = () =>
+            pinned ? 0 : entries.reduce((sum, entry) => sum + (pins.has(entry) ? 0 : entry.bytes), 0);
+        return {
+            reserve(bytes: number, clientId: string): boolean {
+                while (retained + sharedBytes() + bytes > MAX_RETAINED_BYTES) {
+                    // Claimed continuations and other requests' reservations are never in this map.
+                    const oldest =
+                        [...snapshots.values()].find((entry) => entry.clientId === clientId) ??
+                        snapshots.values().next().value;
+                    if (!oldest) {
+                        return false;
+                    }
+                    dropSnapshot(oldest, new TransformSnapshotError("The render's snapshot was replaced"));
+                }
+                retained += sharedBytes() + bytes;
+                ownBytes += bytes;
+                if (!pinned) {
+                    for (const entry of entries) {
+                        pins.set(entry, (pins.get(entry) ?? 0) + 1);
+                    }
+                    pinned = true;
+                }
+                return true;
+            },
+            release() {
+                if (released) {
+                    return;
+                }
+                released = true;
+                retained -= ownBytes;
+                if (pinned) {
+                    for (const entry of entries) {
+                        const count = pins.get(entry)!;
+                        if (count === 1) {
+                            pins.delete(entry);
+                            retained -= entry.bytes;
+                        } else {
+                            pins.set(entry, count - 1);
+                        }
+                    }
+                }
+            },
+        };
     };
 
     /** A job that cannot write, ask, or call the tab: what the setup needs of one. */
@@ -322,59 +449,74 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
     });
 
     /**
-     * The members of a chat's owner as a load read them, by the owner's id and revision (none for a
-     * character): the cache probe keys a request without reading the owner's record.
+     * A chat's member and speaker ids besides its owner, including missing ones, by chat revision.
+     * The owner's display identity validates the member list across stamps without reading messages.
      */
-    const ownerMembers = new Map<string, readonly string[]>();
-    const membersKey = (characterId: string, revision: string) => `${characterId}\0${revision}`;
+    const chatCharacters = new Map<string, { ownerIdentity: string; characterIds: readonly string[] }>();
+    const charactersKey = (characterId: string, chatId: string, chatRevision: string) =>
+        `${characterId}\0${chatId}\0${chatRevision}`;
 
-    /** The owner's members of a loaded scope (none for a character), remembered for the probe. */
-    const scopeMembers = (scope: JobScope): readonly string[] => {
+    /** The loaded chat's characters, including missing ones, without sources named only by targets. */
+    const scopeCharacters = (scope: JobScope, identities: ReadonlyMap<string, string>): readonly string[] => {
         const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
-        const members = owner?.type === "group" ? [...(owner.characters ?? [])] : [];
-        const revision = scope.revisions?.get(`characters/${scope.characterId}`);
-        if (revision !== undefined) {
-            const key = membersKey(scope.characterId, revision);
-            ownerMembers.delete(key);
-            ownerMembers.set(key, members);
-            if (ownerMembers.size > MAX_OWNER_MEMBERS) {
-                ownerMembers.delete(ownerMembers.keys().next().value!);
+        const ids = new Set<string>(owner?.type === "group" ? (owner.characters ?? []) : []);
+        for (const message of scopeChat(scope)?.message ?? []) {
+            if (message.saying) {
+                ids.add(message.saying);
             }
         }
-        return members;
+        const characters = [...ids].filter((id) => id !== scope.characterId && isValidResourceId(id));
+        const ownerIdentity = identities.get(scope.characterId);
+        if (ownerIdentity !== undefined) {
+            const key = charactersKey(scope.characterId, scope.chatId, scope.chatRevision);
+            chatCharacters.delete(key);
+            chatCharacters.set(key, { ownerIdentity, characterIds: characters });
+            if (chatCharacters.size > MAX_CHAT_CHARACTERS) {
+                chatCharacters.delete(chatCharacters.keys().next().value!);
+            }
+        }
+        return characters;
     };
 
     /**
      * The key parts every target of a request shares: what decides the render besides the target,
      * and what decides the load's checks (the chat's binding, the records it names), so an entry
-     * answers only a request whose load would have passed.
+     * answers only a request whose load would have passed. Non-character revisions follow
+     * `displayKinds.ts`; characters use stored display identities (or `missing`), not revisions.
+     * Sources named only by targets stay out so batching does not change another target's key.
      */
     const baseKey = (
         request: TransformRequest,
         revisions: ReadonlyMap<string, string> | undefined,
+        identities: ReadonlyMap<string, string>,
         characterId: string,
-        members: readonly string[],
+        characters: readonly string[],
         epoch: string,
         chat: Chat,
+        chatRevision: string,
     ): unknown[] => {
-        const characterIds = new Set<string>([characterId, ...members]);
         const included: [string, string][] = [];
         for (const [name, revision] of revisions ?? []) {
             const slash = name.indexOf("/");
-            if (name.slice(0, slash) !== "characters" || characterIds.has(name.slice(slash + 1))) {
+            if (isDisplayKeyKind(name.slice(0, slash))) {
                 included.push([name, revision]);
             }
+        }
+        for (const id of new Set([characterId, ...characters])) {
+            const name = `characters/${id}`;
+            included.push([name, identities.get(id)!]);
         }
         included.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
         return [
             epoch,
+            chatRevision,
             request.mode,
             request.context,
             request.client?.browserLanguage ?? "",
+            request.client ? [request.client.viewport.width, request.client.viewport.height] : null,
             request.handlers ?? null,
             included,
-            // What a render reads of the chat besides its messages (the history stays as first
-            // rendered), and its binding (the load's check).
+            // The chat metadata read by the render and its binding (the load's check).
             sha256(
                 canonical({
                     scriptstate: chat.scriptstate ?? {},
@@ -393,11 +535,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         ];
     };
 
-    const targetKey = (
-        base: unknown[],
-        revisions: ReadonlyMap<string, string> | undefined,
-        target: TransformTarget,
-    ): string =>
+    /** Each row adds only its own source's display identity to the shared key. */
+    const targetKey = (base: unknown[], identities: ReadonlyMap<string, string>, target: TransformTarget): string =>
         sha256(
             canonical([
                 ...base,
@@ -405,19 +544,17 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 target.kind === "message" ? (target.messageId ?? null) : null,
                 target.chatIndex,
                 target.sourceId,
-                revisions?.get(`characters/${target.sourceId}`) ?? null,
+                identities.get(target.sourceId) ?? "missing",
                 target.cbsConditions ?? {},
                 sha256(target.source),
             ]),
         );
 
     /**
-     * The request's results from the cache alone, when every target has an entry: it reads the
-     * revisions and the chat's metadata (no record's data, no message), so a render the cache
-     * answers never loads the job scope (the sections, presets, modules, and rendered characters
-     * parsed). Null when a target must run, the owner's members are not known for its revision, or
-     * the chat is gone: the request then loads as before (and its load reports a missing record or
-     * a binding refusal).
+     * The request's results when every target has an entry: revisions and chat metadata plus
+     * character reads only for unknown identities. A cold chat memo misses before resolving any
+     * identity, so its load reads the owner just once. A changed owner identity also misses (group
+     * membership may have changed). The load reports any missing record or binding refusal.
      */
     const cachedResults = (request: TransformRequest, epoch: string): TransformResult[] | null => {
         if (request.targets.length === 0 || request.targets.some((target) => target.noCache)) {
@@ -435,16 +572,34 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 revisions.set(`${kindName}/${record.id}`, record.revision);
             }
         }
-        const ownerRevision = revisions.get(`characters/${characterId}`);
-        const members =
-            ownerRevision === undefined ? undefined : ownerMembers.get(membersKey(characterId, ownerRevision));
-        if (!members) {
+        const memo = chatCharacters.get(charactersKey(characterId, chatId, chatRecord.revision));
+        if (!memo) {
             return null;
         }
-        const base = baseKey(request, revisions, characterId, members, epoch, chatRecord.data as Chat);
+        const ownerIdentity = displayScopes.resolveIdentities([characterId], revisions).get(characterId)!;
+        if (ownerIdentity !== memo.ownerIdentity) {
+            return null;
+        }
+        const identities = new Map(
+            displayScopes.resolveIdentities(
+                [...memo.characterIds, ...request.targets.map((target) => target.sourceId)],
+                revisions,
+            ),
+        );
+        identities.set(characterId, ownerIdentity);
+        const base = baseKey(
+            request,
+            revisions,
+            identities,
+            characterId,
+            memo.characterIds,
+            epoch,
+            chatRecord.data,
+            chatRecord.revision,
+        );
         const results: TransformResult[] = [];
         for (const target of request.targets) {
-            const key = targetKey(base, revisions, target);
+            const key = targetKey(base, identities, target);
             const hit = cache.get(key);
             if (!hit) {
                 return null;
@@ -582,6 +737,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         const life = admit();
         const unlink = link(signal, life.controller);
         let kept: Snapshot | null = null;
+        let reservation: ReturnType<typeof reservationFor> | null = null;
         let release: (() => void) | null = null;
         try {
             release = await acquire(life);
@@ -590,7 +746,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             const answered = cachedResults(request, life.epoch);
             stillValid(life);
             if (answered) {
-                return { results: answered };
+                return partitionKnownResults(request.targets, answered);
             }
             const context: GenerationContext = {
                 characterId: request.context.characterId,
@@ -606,19 +762,29 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             };
             // A render, read-only: the chat's bound fields that exist must be the ones sent; an
             // unset or gone field renders with the tab's.
-            const scope = loadJobScope(store, kinds, context, {
-                binding: "display",
+            const { scope, entries, identities } = displayScopes.load(context, {
                 // Besides the chat's characters, each target's source.
                 characters: () => request.targets.map((target) => target.sourceId),
             });
+            reservation = reservationFor(entries);
             const chat = scopeChat(scope)!;
             const shared: Shared = { budget: deps.scriptWorkers.createBudget(), cbsUsage: { usedMs: 0 } };
-            const base = baseKey(request, scope.revisions, scope.characterId, scopeMembers(scope), life.epoch, chat);
+            const base = baseKey(
+                request,
+                scope.revisions,
+                identities,
+                scope.characterId,
+                scopeCharacters(scope, identities),
+                life.epoch,
+                chat,
+                scope.chatRevision,
+            );
             const results: TransformResult[] = [];
             const pending: TargetRun[] = [];
-            let retained = 0;
+            let ownBytes = 0;
+            let scopeBytes: number | undefined;
             for (const target of request.targets) {
-                const key = targetKey(base, scope.revisions, target);
+                const key = targetKey(base, identities, target);
                 if (target.noCache) {
                     cache.invalidate(key);
                 } else {
@@ -636,6 +802,15 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                     }
                 }
                 try {
+                    if (request.handlers !== undefined) {
+                        scopeBytes ??= retainedBytes(scope, MAX_SNAPSHOT_BYTES, { exclude: entries });
+                        if (
+                            (pending.length ? ownBytes : scopeBytes) + SNAPSHOT_TARGET_BYTES > MAX_SNAPSHOT_BYTES ||
+                            entries.some((entry) => entry.bytes > MAX_RETAINED_BYTES)
+                        ) {
+                            throw new Error("The render's texts are over the limit of one request");
+                        }
+                    }
                     const run = prepare(scope, context, target, shared, life, key, cache.generation(key));
                     await head(run, request.mode);
                     if (request.handlers === undefined) {
@@ -643,15 +818,19 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                         continue;
                     }
                     // The texts sent back together stay within the second call's limit, and the snapshot within its budget.
-                    const bytes = retainedBytes(run);
+                    const bytes = targetRetainedBytes(run) + (pending.length === 0 ? scopeBytes! : 0);
                     const pendingText = pending.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
                     if (
-                        retained + bytes > MAX_SNAPSHOT_BYTES ||
+                        ownBytes + bytes > MAX_SNAPSHOT_BYTES ||
                         pendingText + Buffer.byteLength(run.text) > MAX_TRANSFORM_REQUEST_TEXT_BYTES
                     ) {
                         throw new Error("The render's texts are over the limit of one request");
                     }
-                    retained += bytes;
+                    stillValid(life);
+                    if (!reservation.reserve(bytes, request.clientId)) {
+                        throw new Error("The render's texts are over the limit of one request");
+                    }
+                    ownBytes += bytes;
                     pending.push(run);
                 } catch (error) {
                     results.push(failure(life, error, target.id));
@@ -659,23 +838,26 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             }
             stillValid(life);
             if (pending.length === 0) {
-                return { results };
+                return partitionKnownResults(request.targets, results);
             }
-            kept = {
+            const snapshot: Snapshot = {
                 id: randomUUID(),
                 clientId: request.clientId,
                 mode: request.mode,
                 life,
                 shared,
                 runs: new Map(pending.map((run) => [run.target.id, run])),
+                claimed: false,
+                release: reservation.release,
             };
-            const snapshot = kept;
             // The deadline (or a maintenance) ends the snapshot too: it is no longer claimable once its runs' time is over.
             life.controller.signal.addEventListener(
                 "abort",
                 () => {
-                    dropSnapshot(snapshot);
-                    retire(life);
+                    if (!snapshot.claimed) {
+                        dropSnapshot(snapshot);
+                        retire(life);
+                    }
                 },
                 { once: true },
             );
@@ -688,8 +870,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 dropSnapshot(old, new TransformSnapshotError("The render's snapshot was replaced"));
             }
             snapshots.set(snapshot.id, snapshot);
+            kept = snapshot;
             return {
-                results,
+                ...partitionKnownResults(request.targets, results),
                 snapshotId: snapshot.id,
                 pending: pending.map((run) => ({ id: run.target.id, text: run.text })),
             };
@@ -697,6 +880,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             unlink();
             release?.();
             if (!kept) {
+                reservation?.release();
                 retire(life);
             }
         }
@@ -723,7 +907,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         ) {
             throw new TransformRequestError("texts must name every pending target once");
         }
-        // Claimed now: a second call for the same snapshot finds nothing.
+        // Claimed now: a second call finds nothing, but its data stays charged until this call ends.
+        snapshot.claimed = true;
         dropSnapshot(snapshot);
         const { life } = snapshot;
         const unlink = link(signal, life.controller);
@@ -755,6 +940,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         } finally {
             unlink();
             release?.();
+            snapshot.release();
             retire(life);
         }
     };
@@ -778,6 +964,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             pauses++;
             abortAll(reason);
             cache.clear();
+            displayScopes.clear();
+            chatCharacters.clear();
             let resumed = false;
             return () => {
                 if (!resumed) {
@@ -790,10 +978,20 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         async close(): Promise<void> {
             closed = true;
             abortAll("The server is shutting down");
+            displayScopes.clear();
+            chatCharacters.clear();
             await Promise.allSettled([...running]);
         },
         /** For tests and diagnostics. */
-        stats: () => ({ active, queued: queue.length, snapshots: snapshots.size, cached: cache.size }),
+        stats: () => ({
+            active,
+            queued: queue.length,
+            snapshots: snapshots.size,
+            cached: cache.size,
+            retainedBytes: retained,
+            pinnedEntries: pins.size,
+            displayScope: displayScopes.stats(),
+        }),
     };
 }
 

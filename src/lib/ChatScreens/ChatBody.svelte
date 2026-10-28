@@ -18,7 +18,7 @@
 </script>
 
 <script lang="ts">
-    import { tick } from "svelte";
+    import { onDestroy, tick } from "svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
     import { sleep } from "src/ts/util";
@@ -55,6 +55,8 @@
         translating: boolean;
         retranslate: boolean;
         renderRevision?: number;
+        /** Reports a completed render whose server display transform may have mixed chat states. */
+        onMixedRender?: (capture: CapturedTransform) => void;
         bodyRoot?: HTMLElement | null;
         modelShortName: string;
         /** The row's message is streaming: the rendered path shows the original and translates once it ends. */
@@ -94,6 +96,7 @@
         translating = $bindable(false),
         retranslate = $bindable(false),
         renderRevision = 0,
+        onMixedRender,
         bodyRoot,
         modelShortName = "",
         streaming = false,
@@ -121,6 +124,12 @@
      * next render is pending.
      */
     let parseRun = 0;
+    let confirmedRevision = $state(0);
+    let pendingTransformOutcome: { run: number; outcome: CapturedTransform["provisionalOutcome"] } | undefined;
+    let destroyed = false;
+    onDestroy(() => {
+        destroyed = true;
+    });
     let pendingAutoTranslate: Promise<void> | undefined;
 
     function getCbsCondition() {
@@ -158,6 +167,7 @@
             shownStored: boolean;
             pairing: { source: string; options: BilingualInterleaveOptions } | null;
         },
+        display = { finished: false, mixed: false, reported: false, replaced: false },
     ): Promise<string> => {
         // track 'translated' and 'retranslate' state
         translated;
@@ -168,6 +178,43 @@
         const pairing = retryStored ? retryStored.pairing : bilingual;
         // The server transform's context, captured once for every stage and retry of this render (flag on).
         const transform = retryTransform !== undefined ? retryTransform : captureTransform(chatID);
+        if (tries === undefined && pendingTransformOutcome) {
+            if (transform && pendingTransformOutcome.run === run - 1) {
+                transform.provisionalOutcome = pendingTransformOutcome.outcome;
+            }
+            pendingTransformOutcome = undefined;
+        }
+        // A retry starts before any translation probes again; only its final display may opt in.
+        if (transform) transform.onProvisional = undefined;
+        const reportMixed = () => {
+            if (
+                destroyed ||
+                run !== parseRun ||
+                !display.finished ||
+                display.replaced ||
+                display.reported ||
+                transform?.pendingProvisional
+            )
+                return;
+            if (transform && (display.mixed || transform.mixedDisplay)) {
+                display.reported = true;
+                onMixedRender?.(transform);
+            }
+        };
+        const enableProvisional = () => {
+            if (!transform) return;
+            transform.onProvisional = ({ replaced, mixed, outcome }) => {
+                if (destroyed || run !== parseRun || display.replaced) return;
+                display.mixed ||= mixed;
+                if (replaced) {
+                    display.replaced = true;
+                    pendingTransformOutcome = outcome ? { run, outcome } : undefined;
+                    confirmedRevision += 1;
+                } else {
+                    reportMixed();
+                }
+            };
+        };
         const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
         let lastParsedQueue = "";
         let mode = "notrim" as const;
@@ -179,12 +226,14 @@
                     // The display scripts see the pairs' wrappers between the lines.
                     text = bilingualInterleave(pairing.source, text, pairing.options);
                 }
+                enableProvisional();
                 const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 return marked;
             }
             if (streaming) {
                 lastAutoTranslate = null;
+                enableProvisional();
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 return marked;
@@ -299,6 +348,7 @@
 
                 return transResult;
             } else {
+                enableProvisional();
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
                 lastParsedQueue = marked;
                 lastCharArg = charArg;
@@ -327,6 +377,7 @@
                     shownStored,
                     pairing,
                 },
+                display,
             );
             if (retried !== undefined) {
                 lastParsedQueue = retried;
@@ -334,9 +385,14 @@
             return retried;
         } finally {
             //since trimMarkdown is fast, we don't need to cache it
-            if (run === parseRun) {
+            if (!destroyed && run === parseRun) {
                 lastParsed = lastParsedQueue;
                 lastRenderedRevision = requestedRevision;
+                // Retries share the capture; only their outer call reports the completed render.
+                if (tries === undefined) {
+                    display.finished = true;
+                    reportMixed();
+                }
             }
         }
     };
@@ -419,6 +475,7 @@
     let markParsingResult = $derived.by(() => {
         // Translation can await before ParseMarkdown reads the parser's asset inputs.
         moduleAssets;
+        confirmedRevision;
         return markParsing(msgDisplay, character, idx, renderRevision, ++parseRun);
     });
 

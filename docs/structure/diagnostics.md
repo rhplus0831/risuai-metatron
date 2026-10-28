@@ -284,12 +284,23 @@ job, and saving a phone browser report. The automated tests above do not cover t
 
 ## Known Hazards
 
+### Issues
+
+- Daily event appends are unsynced, so a power loss can lose recent events; whole-file
+  state, report, and share writes flush their staged files before rename.
+
+### Limitations
+
 - Sharing can redact only credentials still stored then; deleted credentials are
   unavailable. Encoding limits belong to [llm-requests](llm-requests.md).
+  Decision: the Request History and Diagnostics plan (`ab11ea9d0`,
+  [archive](../archived-plan/README.md)).
 - Auxiliary `/proxy2` operations are outside durable LLM history; failures can appear
   as checked HTTP diagnostics. A plugin iframe's runtime faults are outside the
   window collector.
+  Decision: Out of scope of the Request History and Diagnostics plan (`ab11ea9d0`,
+  [archive](../archived-plan/README.md)).
 - Journal/share work is synchronous. Folder write failures leave in-memory diagnostics
   available. A client timeout after report dispatch can leave a successfully saved file.
-- Daily event appends are unsynced, so a power loss can lose recent events; whole-file
-  state, report, and share writes flush their staged files before rename.
+  Decision: synchronous journal writes are an accepted trade-off
+  (`server/src/diagnostics/journal.ts`).

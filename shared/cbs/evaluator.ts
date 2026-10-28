@@ -695,6 +695,11 @@ function parse(ev: Evaluator, da: string, arg: CbsParseArg = {}): string {
     }
 }
 
+/** Text with no CBS constructs; must stay in step with parseText's scanner. */
+export function isCbsPlainText(text: string): boolean {
+    return !text.includes("{{") && !text.includes("{#") && !/<(user|char|bot)>/i.test(text);
+}
+
 function parseText(ev: Evaluator, da: string, arg: CbsParseArg, budget: CbsBudget | null): string {
     const chatID = arg.chatID ?? -1;
     const db = arg.db ?? ev.host.getDatabase();

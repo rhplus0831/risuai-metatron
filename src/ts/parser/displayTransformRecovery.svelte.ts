@@ -41,10 +41,18 @@ function scheduleRetry(): void {
     }, retryDelay);
 }
 
-/** A success of another target in the same row must not clear its failed display transform. */
 export function markDisplayTransformFailed(ref: ChatRef, messageId: string, generation: number): void {
     failures.set(displayTransformMessageKey(ref, messageId), generation);
     scheduleRetry();
+}
+
+/** A success supersedes older failures, but not another target's failure in the same generation. */
+export function markDisplayTransformSucceeded(ref: ChatRef, messageId: string, generation: number): void {
+    const key = displayTransformMessageKey(ref, messageId);
+    const failedGeneration = failures.get(key);
+    if (failedGeneration === undefined || failedGeneration >= generation) return;
+    failures.delete(key);
+    if (failures.size === 0) clearRetryTimer();
 }
 
 let seenRecovery = untrack(pageRecoveryVersion);

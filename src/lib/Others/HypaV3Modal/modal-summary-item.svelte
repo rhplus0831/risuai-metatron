@@ -395,6 +395,16 @@
                 + {language.hypaV3Modal.tag}
             </button>
 
+            {#if hypaV3Data.metrics?.lastDeferredSummaries?.includes(summaryIndex)}
+                <span
+                    class="px-1.5 py-0.5 rounded-full text-xs whitespace-nowrap text-zinc-300 bg-zinc-700"
+                    title={language.hypaV3Modal.readyBadgeHelp}
+                    data-hypa-ready
+                >
+                    {language.hypaV3Modal.readyBadge}
+                </span>
+            {/if}
+
             {#if filterSelected && hypaV3Data.metrics}
                 <div class="flex flex-wrap gap-1">
                     {#if hypaV3Data.metrics.lastImportantSummaries.includes(summaryIndex)}

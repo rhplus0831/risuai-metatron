@@ -186,8 +186,16 @@ Alerts:
 
 ## Known Hazards
 
+### Issues
+
 - Direct URLs already handed out are not re-rendered when the page loses its controller or capability. Without a signing worker they load from the browser HTTP cache or fail with 401; only new source calls use the fallback.
-- The client `isLocalNetworkHost` accepts bare single-label hosts, but the server's version does not. A Node proxy job can be rejected, and the request then falls back to unrestricted `/proxy2`.
-- A plugin hook already inside `invokeHook` cannot be aborted: a cancellation skips the later hooks, but the running one finishes, its writes flush, and it holds the callback lane until it settles.
-- A `provider` callback (a plugin provider model of a server job) is the tab's outstanding callback for as long as its stream is read; the server sends no other root callback of this tab meanwhile, and one that arrives anyway is refused ("A callback may run only inside the outstanding one"). A cancelled hook that never settles keeps refusing roots (and plugin `sendChat`) until the page reloads; the server stops holding its lane `CANCELLED_CALLBACK_DRAIN_MS` after the cancel, so a later job's root callback is then refused rather than queued forever. An unloaded provider fails the callback, so the server reports the request as `Plugin Error from <provider>: ...`, not as the unknown-plugin message.
 - A tab MCP tool call from the job channel (`getToolList`, `callTool`) has no abort signal: once it starts, ending the request does not stop it.
+
+### Limitations
+
+- A plugin hook already inside `invokeHook` cannot be aborted: a cancellation skips the later hooks, but the running one finishes, its writes flush, and it holds the callback lane until it settles. Decision: D4 (never interrupt) of RisuNest Small Wins and the cancelled-hook behavior accepted by Per-Chat Send ([archive](../archived-plan/README.md)).
+- A `provider` callback (a plugin provider model of a server job) is the tab's outstanding callback for as long as its stream is read; the server sends no other root callback of this tab meanwhile, and one that arrives anyway is refused ("A callback may run only inside the outstanding one"). A cancelled hook that never settles keeps refusing roots (and plugin `sendChat`) until the page reloads; the server stops holding its lane `CANCELLED_CALLBACK_DRAIN_MS` after the cancel, so a later job's root callback is then refused rather than queued forever. Decision: the per-tab callback lane (D1) and the cancelled-hook refusal accepted by Per-Chat Send ([archive](../archived-plan/README.md)).
+
+### Gotchas
+
+- An unloaded provider fails its `provider` callback, so the server reports the request as `Plugin Error from <provider>: ...`, not as the unknown-plugin message.

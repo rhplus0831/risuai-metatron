@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
+import type { TransformResponse } from "../shared/transform.ts";
 
 // The server script transform (the only script path since browser generation was removed), in the
 // mounted chat screen of the real app, against the isolated stack of `playwright.config.ts`. What
@@ -14,6 +15,8 @@ import { openApp } from "../util/playwright/stack.mjs";
 //   shows without markdown and the others parse;
 // - a locked message that is not the last row renders raw while locked and transformed after;
 // - "Re-render" asks again for that message only, bypassing the cache;
+// - switching back to a chat shows its unchanged rows' confirmed text before the answer, which
+//   confirms them in `same` without downloading their text;
 // - a render answered after a chat switch does not land in the new chat, whose rows render with
 //   their own chat's variables (the same message ids in both chats).
 // The provider is a local mock; no public service is contacted.
@@ -51,7 +54,7 @@ test.afterAll(async () => {
 
 const LUA = `listenEdit("editDisplay", function(id, value, meta) setChatVar(id, "lv", "lua") return value .. " [lua" .. meta.index .. "]" end)`;
 
-type Target = { id: string; kind: string; messageId?: string; source: string; noCache?: boolean };
+type Target = { id: string; kind: string; messageId?: string; source: string; noCache?: boolean; knownKey?: string };
 type TransformPost = { path: string; body: { context?: { chatId: string }; targets?: Target[]; texts?: unknown[] } };
 
 interface Session {
@@ -354,10 +357,11 @@ for (const mode of ["off", "balanced", "strong"] as const) {
         await expect(reply.locator("strong").filter({ hasText: "slow" })).toHaveCount(1);
         expect(await reply.innerText()).not.toContain("**");
         const targets = count(targeted(s, from));
-        // The new reply once (when its lock ended), the new user message at most once (its mount),
+        // The new reply once (when its lock ended), the new user message at most twice (its mount,
+        // and once more after the chat settles when the reply's install landed during that render),
         // and nothing else: no seeded row, no greeting.
         expect(targets[replyMessage.id], JSON.stringify(targets)).toBe(1);
-        expect(targets[userMessage.id] ?? 0, JSON.stringify(targets)).toBeLessThanOrEqual(1);
+        expect(targets[userMessage.id] ?? 0, JSON.stringify(targets)).toBeLessThanOrEqual(2);
         expect(Object.keys(targets).filter((k) => k !== replyMessage.id && k !== userMessage.id)).toEqual([]);
         expect(await mutations(page, "m-c2")).toBe(0);
         expect(
@@ -445,6 +449,81 @@ test("Re-render asks again for that message only, bypassing the cache", async ({
     expect(values.size).toBeGreaterThan(1);
     expect(await mutations(page, "m-c2")).toBe(0);
     expect(s.errors).toEqual([]);
+});
+
+test("switching A to B to A shows confirmed rows before the response and returns them only in same", async ({
+    context,
+    baseURL,
+}) => {
+    const s = await session(context, baseURL!);
+    const chatA = randomUUID();
+    const chatB = randomUUID();
+    const messagesB = messages.map((message) => ({ ...message, chatId: `b-${message.chatId}` }));
+    const chaId = await seed(s, [
+        { id: chatA, scriptstate: { $w: "from-A" }, message: messages },
+        { id: chatB, scriptstate: { $w: "from-B" }, message: messagesB },
+    ]);
+    const { page } = s;
+    const confirmed = new Map<string, string>();
+    for (const [index, message] of messages.entries()) {
+        const body = row(page, message.chatId).locator(".chattext");
+        await expect(body).toContainText(`[lua${index}]`);
+        confirmed.set(message.chatId, (await body.innerText()).trim());
+    }
+    await expect(row(page, "m-c2")).toContainText("HELLO c2 W=from-A");
+    await selectChat(page, chaId, chatB);
+    for (const [index, message] of messagesB.entries()) {
+        await expect(row(page, message.chatId)).toContainText(`[lua${index}]`);
+    }
+    await expect(row(page, "b-m-c2")).toContainText("W=from-B");
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const held: { targets: Target[]; body: TransformResponse }[] = [];
+    const delivered: Promise<TransformResponse>[] = [];
+    page.on("response", (response) => {
+        if (new URL(response.url()).pathname !== "/api/transform") return;
+        const body = response.request().postDataJSON() as TransformPost["body"];
+        if (body.context?.chatId === chatA) delivered.push(response.json());
+    });
+    await page.route("**/api/transform", async (route) => {
+        const request = route.request().postDataJSON() as TransformPost["body"];
+        if (request.context?.chatId !== chatA) return route.fallback();
+        // Let the real server answer, then withhold its response from the returning rows.
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        held.push({ targets: request.targets!, body: await response.json() });
+        await gate;
+        await route.fulfill({ response });
+    });
+    try {
+        await selectChat(page, chaId, chatA);
+        await expect
+            .poll(() => held.flatMap(({ targets }) => targets.map((target) => target.messageId).filter(Boolean)).sort())
+            .toEqual(messages.map((message) => message.chatId).sort());
+        expect(delivered).toHaveLength(0);
+        for (const [id, text] of confirmed) {
+            await expect(row(page, id).locator(".chattext")).toHaveText(text, { useInnerText: true });
+        }
+
+        release();
+        await expect.poll(() => delivered.length).toBe(held.length);
+        for (const { targets, body } of held) {
+            const rows = targets.filter((target) => target.messageId);
+            expect(rows.every((target) => typeof target.knownKey === "string")).toBe(true);
+            expect(body.same).toEqual(
+                expect.arrayContaining(rows.map((target) => ({ id: target.id, key: target.knownKey }))),
+            );
+            expect(body.results.filter((result) => rows.some((target) => target.id === result.id))).toEqual([]);
+        }
+        for (const [id, text] of confirmed) {
+            await expect(row(page, id).locator(".chattext")).toHaveText(text, { useInnerText: true });
+        }
+        expect(s.errors).toEqual([]);
+    } finally {
+        release();
+        await page.unrouteAll({ behavior: "wait" });
+    }
 });
 
 test("a render answered after a chat switch does not land in the new chat, which renders with its own variables", async ({
