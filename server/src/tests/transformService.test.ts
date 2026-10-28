@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TransformRequest, TransformResponse } from "../../../shared/transform.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
@@ -21,8 +21,10 @@ import { createLuaBudget } from "../scripts/workerPool.ts";
 // second call waiting for a slot, the clock read even when the timer was held back), the snapshot
 // caps, the cache's generation fence against an older fill (a "Re-render" while an earlier two-call
 // render waits; the forgotten generations of the floor), and the cache probe (an all-cached request
-// answered without loading the scope, only while the load's checks would still pass). The route and
-// the real workers are `transform.test.ts`.
+// answered without loading the scope, only while the load's checks would still pass); the snapshot's
+// memory budget (the loaded scope once, each target's setup, unchanged variable copies, distinct
+// source and default-variable maps; an oversized scope runs no Lua and still answers cached targets).
+// The route and the real workers are `transform.test.ts`.
 
 type Held = { task: { data: string }; release: (suffix?: string) => void };
 
@@ -422,6 +424,245 @@ describe("the transform service's deadline and snapshots", () => {
         expect(next.snapshotId).toBeUndefined();
         expect(next.results).toEqual([expect.objectContaining({ id: "t", text: "X new!", cached: true })]);
         await service.close();
+    });
+});
+
+describe("the transform snapshot's memory budget", () => {
+    beforeEach(() => {
+        // Neither fixture size nor a continuation gap races the render deadline or the CBS clock.
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    });
+    const signal = () => new AbortController().signal;
+    const patchCharacter = (h: Harness, fields: Record<string, unknown>) => {
+        const kind = h.kinds.get("characters")!;
+        const stored = h.store.get(kind, "a")!;
+        h.store.put(kind, "a", { ...(stored.data as object), ...fields }, stored.revision);
+    };
+    const patchChat = (h: Harness, set: Record<string, unknown>) => {
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "a",
+                    chatId: "k",
+                    baseRevision: h.store.chatRevision("a", "k"),
+                    ops: [{ op: "meta", set }],
+                },
+            ],
+        });
+    };
+    /** Every requested target is either pending or failed, and the accepted set can still finish. */
+    const finishPending = async (
+        service: ReturnType<typeof createTransformService>,
+        request: TransformRequest,
+        first: TransformResponse,
+    ) => {
+        expect(first.snapshotId).toEqual(expect.any(String));
+        const pending = first.pending ?? [];
+        const pendingIds = new Set(pending.map(({ id }) => id));
+        expect(first.results).toEqual(
+            request.targets
+                .filter(({ id }) => !pendingIds.has(id))
+                .map(({ id }) => ({ id, ok: false, error: expect.any(String) })),
+        );
+        expect(service.stats().snapshots).toBe(1);
+        const second = await service.resume(
+            { clientId: request.clientId, snapshotId: first.snapshotId!, texts: pending },
+            signal(),
+        );
+        expect(second.results).toEqual(
+            pending.map(({ id }) => expect.objectContaining({ id, ok: true, cached: false })),
+        );
+        expect(service.stats().snapshots).toBe(0);
+    };
+
+    it("a chat over the snapshot budget fails every uncached target without running Lua or retaining a snapshot", async () => {
+        const h = open();
+        h.setHold(false);
+        // The targets are tiny; it is the rest of the loaded transcript that exceeds 8 MiB.
+        h.store.applyChanges({
+            chats: [
+                {
+                    characterId: "a",
+                    chatId: "k",
+                    baseRevision: h.store.chatRevision("a", "k"),
+                    ops: [
+                        {
+                            op: "append",
+                            anchor: { end: true },
+                            messages: Array.from({ length: 9 }, (_, i) => ({
+                                chatId: `m${i}`,
+                                role: "char" as const,
+                                data: "x".repeat(1024 * 1024),
+                            })),
+                        },
+                    ],
+                },
+            ],
+        });
+        const service = createTransformService(h.deps);
+        try {
+            for (let i = 0; i < 4; i++) {
+                const request = h.request(`tiny${i}`, {
+                    mode: "editdisplay",
+                    handlers: "display",
+                    targets: [...h.request(`tiny${i}`).targets, ...h.request(`other${i}`).targets],
+                });
+                const first = await service.transform(request, signal());
+                expect(first.snapshotId).toBeUndefined();
+                expect(first.pending ?? []).toEqual([]);
+                expect(first.results).toEqual(
+                    request.targets.map(({ id }) => ({ id, ok: false, error: expect.any(String) })),
+                );
+                expect(service.stats().snapshots).toBe(0);
+            }
+            expect(h.counts.lua).toBe(0);
+            expect(h.counts.regex).toBe(0);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("each pending target pays for its unchanged chat-variable entries", async () => {
+        const h = open();
+        h.setHold(false);
+        patchChat(h, {
+            scriptstate: Object.fromEntries(Array.from({ length: 8192 }, (_, i) => [`$v${i}`, "0"])),
+        });
+        // All 32 tiny texts fit if unchanged entries are charged only with the shared scope.
+        const request = h.request("v", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: Array.from({ length: 32 }, (_, i) => h.request(`v${i}`).targets[0]),
+        });
+        const service = createTransformService(h.deps);
+        try {
+            const first = await service.transform(request, signal());
+            expect(first.pending?.length).toBeGreaterThan(0);
+            expect(first.pending?.length).toBeLessThan(request.targets.length);
+            await finishPending(service, request, first);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("a tiny Lua head result still pays for its large source, with the loaded character charged once", async () => {
+        const h = open();
+        h.setHold(false);
+        patchCharacter(h, { desc: "d".repeat(5 * 1024 * 1024) });
+        // The input texts total just under 4 MiB, while every head result is only four bytes.
+        const lua = vi.spyOn(h.deps.scriptWorkers, "runLua").mockResolvedValue({
+            res: "tiny",
+            stopSending: false,
+            cpuMs: 0,
+            memory: { used: 0, max: 0 },
+        });
+        const request = h.request("source", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: [
+                ...Array.from(
+                    { length: 8 },
+                    (_, i) => h.request(`source${i}`, {}, "s".repeat(512 * 1024 - 2) + i).targets[0],
+                ),
+                ...h.request("small", {}, "fits").targets,
+            ],
+        });
+        const service = createTransformService(h.deps);
+        try {
+            const first = await service.transform(request, signal());
+            // More than one fits because the loaded character is shared; all eight large sources do not.
+            expect(first.pending?.length).toBeGreaterThan(1);
+            expect(first.pending?.length).toBeLessThan(request.targets.length);
+            expect(first.pending).toContainEqual({ id: "small", text: "tiny" });
+            expect(first.pending?.every(({ text }) => text === "tiny")).toBe(true);
+            expect(lua).toHaveBeenCalled();
+            await finishPending(service, request, first);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("target setup costs limit tiny targets, and cached targets survive an oversized loaded scope", async () => {
+        const h = open();
+        h.setHold(false);
+        patchCharacter(h, { desc: "d".repeat(6 * 1024 * 1024) });
+        // This character is loaded only when a target names it, so the primed cache key stays valid.
+        const kind = h.kinds.get("characters")!;
+        const owner = h.store.get(kind, "a")!.data as object;
+        h.store.put(kind, "extra", { ...owner, chaId: "extra", desc: "e".repeat(3 * 1024 * 1024) }, null);
+        const request = h.request("setup", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: Array.from({ length: 64 }, (_, i) => h.request(`setup${i}`).targets[0]),
+        });
+        const service = createTransformService(h.deps);
+        try {
+            const first = await service.transform(request, signal());
+            // The scope fits once and these texts are tiny, but 64 individual setups do not fit.
+            expect(first.pending?.length).toBeGreaterThan(1);
+            expect(first.pending?.length).toBeLessThan(request.targets.length);
+            await finishPending(service, request, first);
+            const cached = request.targets.find(({ id }) => id === first.pending![0].id)!;
+            const luaBefore = h.counts.lua;
+            const mixed = await service.transform(
+                {
+                    ...request,
+                    targets: [
+                        h.request("fresh").targets[0],
+                        { ...h.request("extra").targets[0], sourceId: "extra" },
+                        cached,
+                    ],
+                },
+                signal(),
+            );
+            expect(mixed.results).toEqual([
+                { id: "fresh", ok: false, error: expect.any(String) },
+                { id: "extra", ok: false, error: expect.any(String) },
+                expect.objectContaining({ id: cached.id, ok: true, cached: true }),
+            ]);
+            expect(mixed.snapshotId).toBeUndefined();
+            expect(mixed.pending ?? []).toEqual([]);
+            expect(service.stats().snapshots).toBe(0);
+            expect(h.counts.lua).toBe(luaBefore);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("each pending target reserves space for character and template default-variable maps", async () => {
+        const h = open();
+        h.setHold(false);
+        const defaults = Array.from({ length: 4096 }, (_, i) => `v${i}=0`).join("\n");
+        const kind = h.kinds.get("presets")!;
+        // Default maps are lazy: their allowance must apply even before a missing variable is read.
+        const request = h.request("defaults", {
+            mode: "editdisplay",
+            handlers: "display",
+            targets: Array.from({ length: 32 }, (_, i) => h.request(`defaults${i}`, {}, "{{getvar::v0}}").targets[0]),
+        });
+        const service = createTransformService(h.deps);
+        try {
+            for (const source of ["character", "template"]) {
+                patchCharacter(h, { defaultVariables: source === "character" ? defaults : "" });
+                const stored = h.store.get(kind, "main")!;
+                const presets = stored.data as { id: string }[];
+                h.store.put(
+                    kind,
+                    "main",
+                    presets.map((preset) => ({
+                        ...preset,
+                        templateDefaultVariables: source === "template" ? defaults : "",
+                    })),
+                    stored.revision,
+                );
+                const first = await service.transform(request, signal());
+                expect(first.pending?.length, source).toBeGreaterThan(0);
+                expect(first.pending?.length, source).toBeLessThan(request.targets.length);
+                await finishPending(service, request, first);
+            }
+        } finally {
+            await service.close();
+        }
     });
 });
 

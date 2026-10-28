@@ -45,8 +45,19 @@ const MAX_QUEUED = 32;
 /** Snapshots waiting for their second call, per client and in all. */
 const MAX_SNAPSHOTS_PER_CLIENT = 4;
 const MAX_SNAPSHOTS = 16;
-/** What one snapshot keeps of its targets: their texts and the variables their Lua wrote. */
+/** Conservative retained memory of one snapshot: its loaded scope and each target's setup, copies and texts. */
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+/** Object headers and storage slots include slack for V8's record and collection storage. */
+const SNAPSHOT_OBJECT_BYTES = 64;
+const SNAPSHOT_SLOT_BYTES = 32;
+const SNAPSHOT_SCALAR_BYTES = 16;
+/** Bindings, the CBS host and matcher table, trigger runtime, and run state. */
+const SNAPSHOT_TARGET_BYTES = 48 * 1024;
+/** The copied variable object's property storage; unchanged keys and values are paid by the scope. */
+const SNAPSHOT_VARIABLE_ENTRY_BYTES = 64;
+const SNAPSHOT_CHARACTER_ENTRY_BYTES = 8;
+/** Parsed default-variable maps can retain many times their source text's bytes. */
+const SNAPSHOT_DEFAULT_VARIABLE_FACTOR = 12;
 /** Chats whose member and speaker ids the cache probe remembers (`chatCharacters`). */
 const MAX_CHAT_CHARACTERS = 256;
 
@@ -56,7 +67,7 @@ type Shared = {
     cbsUsage: { usedMs: number };
 };
 
-/** One target's run: its own scope copy, setup, and regex caches, its text so far. */
+/** One target's run: a shallow scope copy pinning the loaded scope, its setup, caches and text so far. */
 type TargetRun = {
     target: TransformTarget;
     key: string;
@@ -113,16 +124,85 @@ function link(signal: AbortSignal, controller: AbortController): () => void {
     return () => signal.removeEventListener("abort", onAbort);
 }
 
-/** The bytes a target's run keeps: its text and the variables its Lua wrote. */
-function retainedBytes(run: TargetRun): number {
-    let bytes = Buffer.byteLength(run.text);
+/** The loaded scope's retained data, shared by every pending target; stops once it exceeds `cap`. */
+function scopeRetainedBytes(scope: JobScope, cap: number): number {
+    let bytes = 0;
+    const seen = new Set<object>();
+    const stack: unknown[] = [scope];
+    // UTF-16 length is a lower bound on UTF-8 bytes: reject huge strings without scanning them.
+    const stringBytes = (text: string) => (text.length > cap - bytes ? cap + 1 : Buffer.byteLength(text));
+    while (stack.length > 0 && bytes <= cap) {
+        const value = stack.pop();
+        if (typeof value === "string") {
+            bytes += stringBytes(value);
+        } else if (typeof value !== "object" || value === null) {
+            if (typeof value === "number" || typeof value === "boolean") {
+                bytes += SNAPSHOT_SCALAR_BYTES;
+            }
+        } else if (!seen.has(value)) {
+            seen.add(value);
+            bytes += SNAPSHOT_OBJECT_BYTES;
+            if (bytes > cap) {
+                break;
+            }
+            if (value instanceof Map) {
+                for (const [key, entry] of value) {
+                    bytes += SNAPSHOT_SLOT_BYTES;
+                    if (bytes > cap) {
+                        return bytes;
+                    }
+                    stack.push(key, entry);
+                }
+            } else if (value instanceof Set) {
+                for (const entry of value) {
+                    bytes += SNAPSHOT_SLOT_BYTES;
+                    if (bytes > cap) {
+                        return bytes;
+                    }
+                    stack.push(entry);
+                }
+            } else {
+                const record = value as Record<string, unknown>;
+                for (const key in record) {
+                    if (Object.hasOwn(record, key)) {
+                        bytes += SNAPSHOT_SLOT_BYTES;
+                        bytes += stringBytes(key);
+                        if (bytes > cap) {
+                            return bytes;
+                        }
+                        stack.push(record[key]);
+                    }
+                }
+            }
+        }
+    }
+    return bytes;
+}
+
+/** Per-target retained memory beyond the shared scope, including allowances for lazy setup allocations. */
+function targetRetainedBytes(run: TargetRun): number {
+    let bytes = SNAPSHOT_TARGET_BYTES + Buffer.byteLength(run.text);
+    if (run.text !== run.target.source) {
+        bytes += Buffer.byteLength(run.target.source);
+    }
     const state = scopeChat(run.setup.scope)?.scriptstate ?? {};
     for (const [key, value] of Object.entries(state)) {
+        bytes += SNAPSHOT_VARIABLE_ENTRY_BYTES;
         if (run.baseline?.[key] !== value) {
             bytes += Buffer.byteLength(key) + Buffer.byteLength(String(value));
         }
     }
-    return bytes;
+    const db = run.setup.scope.db;
+    bytes += db.characters.length * SNAPSHOT_CHARACTER_ENTRY_BYTES;
+    // The host can parse any loaded character's defaults, even if it has not read a missing variable yet.
+    const characterDefaults = db.characters.reduce(
+        (largest, entry) => Math.max(largest, Buffer.byteLength((entry as character).defaultVariables ?? "")),
+        0,
+    );
+    return (
+        bytes +
+        SNAPSHOT_DEFAULT_VARIABLE_FACTOR * (characterDefaults + Buffer.byteLength(db.templateDefaultVariables ?? ""))
+    );
 }
 
 /**
@@ -144,6 +224,8 @@ function retainedBytes(run: TargetRun): number {
  * next trigger; the display trigger: the text kept); an abort, a spent limit, a latched host
  * failure, a worker failure, or a refused write fails the target (`{ ok: false }`, nothing cached).
  * A text after the stages before the plugin handlers is bounded as the second call's texts are.
+ * A kept snapshot is charged its loaded scope once, plus each target's setup, copied containers,
+ * texts, changed variables and default-variable map allowance. Targets that do not fit fail alone.
  *
  * Results are cached (`transformCache.ts`) under a digest of the epoch, the target, the context,
  * the handler set, the viewport and browser language, the stored chat revision the load read,
@@ -641,6 +723,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             const results: TransformResult[] = [];
             const pending: TargetRun[] = [];
             let retained = 0;
+            let scopeCharged = false;
             for (const target of request.targets) {
                 const key = targetKey(base, scope.revisions, target);
                 if (target.noCache) {
@@ -660,6 +743,15 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                     }
                 }
                 try {
+                    if (request.handlers !== undefined) {
+                        if (!scopeCharged) {
+                            retained = scopeRetainedBytes(scope, MAX_SNAPSHOT_BYTES);
+                            scopeCharged = true;
+                        }
+                        if (retained + SNAPSHOT_TARGET_BYTES > MAX_SNAPSHOT_BYTES) {
+                            throw new Error("The render's texts are over the limit of one request");
+                        }
+                    }
                     const run = prepare(scope, context, target, shared, life, key, cache.generation(key));
                     await head(run, request.mode);
                     if (request.handlers === undefined) {
@@ -667,7 +759,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                         continue;
                     }
                     // The texts sent back together stay within the second call's limit, and the snapshot within its budget.
-                    const bytes = retainedBytes(run);
+                    const bytes = targetRetainedBytes(run);
                     const pendingText = pending.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
                     if (
                         retained + bytes > MAX_SNAPSHOT_BYTES ||
