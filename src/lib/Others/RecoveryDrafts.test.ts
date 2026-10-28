@@ -443,6 +443,31 @@ describe("recovery drafts", () => {
         expect(drafts.recoveryDrafts.entries).toEqual([]);
     });
 
+    it("retries Apply in the dialog after a lost create answer without duplicating the recovered chat", async () => {
+        const input = chatInput([], "gone");
+        input.layers.pending!.createSnapshot = snapshot();
+        const entry = await put(input);
+        await render();
+        h.fake.dropNextBatchResponse = true;
+        button(language.apply, row()).click();
+        await settle();
+        expect(io.error).toHaveBeenCalledTimes(1);
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+        const recoveredIds = h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id));
+        expect(recoveredIds).toHaveLength(1);
+        expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
+
+        button(language.apply, row()).click();
+        await settle();
+        expect(io.confirm).toHaveBeenCalledTimes(2);
+        expect(io.error).toHaveBeenCalledTimes(1);
+        expect(h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id))).toEqual(recoveredIds);
+        expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+        expect(target.querySelector("li")).toBeNull();
+    });
+
     it.each(["conflict", "refusal"])("keeps the record draft after a save %s", async (outcome) => {
         const entry = await put(recordInput());
         if (outcome === "conflict") {

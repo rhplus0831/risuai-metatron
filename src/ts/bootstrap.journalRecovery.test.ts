@@ -412,7 +412,8 @@ describe("boot journal recovery", () => {
         const chatRow = (await first.journal.readOwn()).find(
             (entry) => entry.scope === "chat" && entry.target.startsWith("new-character\0"),
         );
-        expect(!!chatRow).toBe(dispatched);
+        // Its first chat's create is queued when the character is added, so the journal holds it either way.
+        expect(chatRow).toBeDefined();
         const second = await reload();
         if (dispatched) {
             expect(second.characters.findCharacter("new-character")).toBeUndefined();
@@ -429,7 +430,9 @@ describe("boot journal recovery", () => {
                 name: "Recovered",
                 desc: "local create",
             });
-            expect(second.chat.chatCount("new-character")).toBe(1);
+            expect(second.chat.chatList("new-character").map((chat) => chat.id)).toEqual([
+                chatRow!.target.split("\0")[1],
+            ]);
         }
         await flush();
         expect(ops("characters")).toEqual(
@@ -919,53 +922,198 @@ describe("boot recovery of chat work", () => {
         expect(await second.journal.readOwn()).toEqual([]);
     });
 
-    it("recovers an undispatched character and its original first chat without a synthetic second chat", async () => {
+    it("journals imported history while another save is outstanding and recovers the original chat after reload", async () => {
         seedChats();
         const first = await boot();
         await flush();
-        first.characters.addCharacter({ chaId: "new-parent", name: "Recovered parent" });
-        // Imported first chats are collected only by the save cycle. The hide captures the
-        // character; supply its unsent chat snapshot so both are present at recovery.
-        const originalId = first.chat.chatList("new-parent")[0].id;
-        await hideUnsent();
-        await first.journal.write([
-            {
-                epoch: server.store.epoch(),
-                scope: "chat",
-                target: `new-parent\0${originalId}`,
-                version: first.journal.nextVersion(),
-                layers: {
-                    pending: {
-                        groupId: "original-first-chat-group",
-                        baseRevision: null,
-                        ops: [],
-                        createSnapshot: plain(first.chat.findChat({ chaId: "new-parent", chatId: originalId })!),
-                    },
+        server.requests.length = 0;
+        server.holdNextBatchResponse = true;
+        first.settings.ui.theme = "unrelated outstanding save";
+        await vi.advanceTimersByTimeAsync(500);
+        await drain();
+        expect(server.releaseBatchResponse).not.toBeNull();
+
+        first.characters.addCharacter({
+            chaId: "new-parent",
+            name: "Imported character",
+            chats: [
+                {
+                    id: "original-chat",
+                    name: "Imported chat",
+                    message: [{ chatId: "imported-message", role: "char", data: "Imported history" }],
                 },
-            },
-        ]);
-        const rows = await first.journal.readOwn();
-        const row = rows.find((entry) => entry.scope === "chat" && entry.target === `new-parent\0${originalId}`)!;
-        expect(row.scope).toBe("chat");
-        if (row.scope !== "chat") throw new Error("Missing create journal row");
-        const pending = row.layers.pending!.value;
-        expect(pending.createSnapshot?.id).toBe(originalId);
-        expect(row.layers.resend).toBeUndefined();
+            ],
+        });
+        const rows = await hideUnsent();
+        // No save collection for the character can run while the unrelated answer is outstanding.
+        expect(ops("characters")).toEqual([]);
+        expect(chatGroups()).toEqual([]);
+        expect(rows).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ scope: "record", target: "characters\0new-parent" }),
+                expect.objectContaining({ scope: "chat", target: "new-parent\0original-chat" }),
+            ]),
+        );
+        expect(server.record("characters", "new-parent")).toBeNull();
+
+        first.sync.stopResourceSync();
+        server.releaseBatchResponse!();
+        await drain();
         const second = await reload();
-        expect(second.chat.chatList("new-parent").map((chat) => chat.id)).toEqual([originalId]);
+        expect(second.chat.chatList("new-parent").map((chat) => chat.id)).toEqual(["original-chat"]);
         await flush();
-        expect(chatGroups()).toEqual([
-            {
-                characterId: "new-parent",
-                chatId: originalId,
-                groupId: pending.groupId,
-                baseRevision: null,
-                ops: [expect.objectContaining({ op: "create", chat: pending.createSnapshot })],
-            },
+        expect(server.record("characters", "new-parent")!.data).toMatchObject({ name: "Imported character" });
+        expect(server.order("new-parent")!.ids).toEqual(["original-chat"]);
+        expect(server.chat("new-parent", "original-chat")!.data.message).toEqual([
+            { chatId: "imported-message", role: "char", data: "Imported history" },
         ]);
-        expect(server.order("new-parent")!.ids).toEqual([originalId]);
+        // Resource operations precede chat groups within a batch, as on the real wire.
+        const creates = server
+            .batchBodies()
+            .flatMap((body) => [
+                ...(body.ops ?? [])
+                    .filter((op) => op.kind === "characters" && op.id === "new-parent")
+                    .map((op) => ({ kind: "character", id: op.id, baseRevision: op.baseRevision })),
+                ...(body.chats ?? [])
+                    .filter((group) => group.characterId === "new-parent")
+                    .map((group) => ({ kind: "chat", id: group.chatId, baseRevision: group.baseRevision })),
+            ]);
+        expect(creates).toEqual([
+            { kind: "character", id: "new-parent", baseRevision: null },
+            { kind: "chat", id: "original-chat", baseRevision: null },
+        ]);
         expect(second.recoveryDrafts.entries).toEqual([]);
         expect(await second.journal.readOwn()).toEqual([]);
+    });
+
+    it("applies a missing chat's snapshot and every newer journaled edit after reload", async () => {
+        seedChats();
+        const first = await boot();
+        await flush();
+        const created = first.chat.createChat("c", {
+            id: "lost-create",
+            name: "Original name",
+            note: "Original note",
+            localLore: [],
+            message: [{ chatId: "original-message", role: "user", data: "Original snapshot" }],
+        });
+        server.failNext = { status: 0, times: 1, match: batchPath };
+        await vi.advanceTimersByTimeAsync(500);
+        await drain();
+        const target = ref(created.id);
+        first.chat.setMessageText(target, "original-message", "Newest edit");
+        first.chat.appendMessage(target, { chatId: "appended-message", role: "char", data: "New appended message" });
+        first.chat.setChatMeta(target, { name: "Newest name", note: "Newest note" });
+        const rows = await hideUnsent();
+        expect(rows).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    scope: "chat",
+                    target: "c\0lost-create",
+                    layers: expect.objectContaining({ resend: expect.any(Object), pending: expect.any(Object) }),
+                }),
+            ]),
+        );
+        expect(server.chat("c", "lost-create")).toBeNull();
+
+        const second = await reload();
+        const draft = second.recoveryDrafts.entries.find(
+            (entry) => entry.scope === "chat" && entry.target === "c\0lost-create",
+        )!;
+        expect(draft).toBeDefined();
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        expect(await applyRecoveryDraft(draft)).toEqual({ skipped: [] });
+        const recoveredIds = server.order("c")!.ids.filter((id) => !["chat", "untouched"].includes(id));
+        expect(recoveredIds).toHaveLength(1);
+        expect(server.chat("c", recoveredIds[0])!.data).toMatchObject({
+            name: "Newest name",
+            note: "Newest note",
+            message: [
+                { chatId: "original-message", role: "user", data: "Newest edit" },
+                { chatId: "appended-message", role: "char", data: "New appended message" },
+            ],
+        });
+        expect(await second.journal.listDrafts()).toEqual([]);
+        expect(second.recoveryDrafts.entries).toEqual([]);
+    });
+
+    it("retries a missing-chat Apply after reload without duplicating its committed create", async () => {
+        seedChats();
+        const first = await boot();
+        await flush();
+        const snapshot = {
+            id: "gone",
+            name: "Recovered story",
+            note: "",
+            localLore: [],
+            message: [{ chatId: "saved-message", role: "char" as const, data: "Saved history" }],
+        };
+        const id = await first.journal.putDraft({
+            epoch: server.store.epoch(),
+            scope: "chat",
+            target: "c\0gone",
+            layers: { pending: { baseRevision: null, groupId: "abandoned-group", ops: [], createSnapshot: snapshot } },
+        });
+        await first.recoveryDrafts.refresh();
+        const draft = first.recoveryDrafts.entries.find((entry) => entry.id === id)!;
+        const recovery = await import("./storage/journalRecovery");
+        server.dropNextBatchResponse = true;
+        await expect(recovery.applyRecoveryDraft(draft)).rejects.toThrow();
+        await drain();
+        const recoveredIds = server.order("c")!.ids.filter((chatId) => !["chat", "untouched"].includes(chatId));
+        expect(recoveredIds).toHaveLength(1);
+        expect(server.texts("c", recoveredIds[0])).toEqual(["Saved history"]);
+        expect((await first.journal.listDrafts()).map((entry) => entry.id)).toEqual([id]);
+
+        const second = await reload();
+        const retained = second.recoveryDrafts.entries.find((entry) => entry.id === id)!;
+        expect(retained).toBeDefined();
+        const freshRecovery = await import("./storage/journalRecovery");
+        await freshRecovery.applyRecoveryDraft(retained);
+        expect(server.order("c")!.ids.filter((chatId) => !["chat", "untouched"].includes(chatId))).toEqual(
+            recoveredIds,
+        );
+        expect(server.texts("c", recoveredIds[0])).toEqual(["Saved history"]);
+        expect(await second.journal.listDrafts()).toEqual([]);
+        expect(second.recoveryDrafts.entries).toEqual([]);
+    });
+
+    it("times out a stalled on-demand chat load after 60 seconds and lets a fresh read succeed", async () => {
+        seedChats();
+        const current = await boot();
+        await flush();
+        expect(current.chat.findChat(ref())).toBeUndefined();
+        let reads = 0;
+        io.fetch = (path, init) => {
+            if (
+                path === "/api/resources/read" &&
+                JSON.parse(init!.body as string).chats?.some((chat) => chat.id === "chat")
+            ) {
+                reads += 1;
+                // This transport deliberately ignores aborts and never settles the first read.
+                if (reads === 1) return new Promise<Response>(() => {});
+            }
+            return transport.fetch(path, init);
+        };
+        let outcome: unknown = "pending";
+        const stalled = current.chat.ensureChatLoaded(ref()).then(
+            () => {
+                outcome = "resolved";
+            },
+            (error: unknown) => {
+                outcome = error;
+            },
+        );
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(reads).toBe(1);
+        expect(outcome).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        expect(outcome).toBeInstanceOf(Error);
+        await stalled;
+        expect(current.chat.findChat(ref())).toBeUndefined();
+        const loaded = await current.chat.loadChat(ref());
+        expect(reads).toBe(2);
+        expect(loaded?.message.map((message) => message.data)).toEqual(["before", "second"]);
     });
 
     it.each(["dispatched create", "gone chat", "gone parent"] as const)(

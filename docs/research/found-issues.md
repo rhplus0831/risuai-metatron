@@ -9,8 +9,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
-- [Save journal and recovery](#save-journal-and-recovery) (3)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
+- [Save journal and recovery](#save-journal-and-recovery) (1)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (2)
 - [Test mocks](#test-mocks) (4)
@@ -36,25 +36,11 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 Found during the Durable Drafts plan run (2026-10-28 to 2026-10-29; archived, `git show bbc747f24:docs/plan/durable-drafts.md`); each was outside the slice that noticed it.
 
-### Chat drift check has no disposer
-
-`src/ts/storage/chatStore.svelte.ts` `startChatDriftCheck` (~:6624, dev builds only) starts a `setInterval` and returns nothing to stop it, so `stopResourceSync` (the simulated-reload teardown, Slice 4) cannot clear it; `src/ts/bootstrap.journalRecovery.test.ts` relies on `vi.clearAllTimers()` instead.
-
-**Why it matters:** the reload seam is meant to tear down every module listener and timer; a second boot in one realm runs two drift checks.
-**Suggested handling:** return a disposer and call it from `stopResourceSync`.
-
-### Ops answered missing drop their content
-
-`ackChatWork` (`chatStore.svelte.ts`) settles by-id ops the server answers as `missing` (the target message is gone, for example deleted by another tab); the next idle refresh replaces the chat, and their local content is gone with no recovery draft, unlike the conflict paths Slice 10 covers. Pinned as current behavior by `src/ts/storage/tests/resourceSyncChats.test.ts` (~:1210).
-
-**Why it matters:** an edit typed into a message another tab deleted vanishes silently; the plan's "keep the local version at every conflict" goal does not cover it.
-**Suggested handling:** at acknowledgement, while the group still exists, capture the ops answered `missing` (with their befores) as a draft.
-
 ### Reads outside the save adapter have no deadline
 
-Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/storage/resourceSync.svelte.ts`); the `resourceClient.ts` read functions take an optional `signal` but have no default deadline. The on-demand chat-load case was reproduced and moved to [persistence Issues](../structure/persistence.md#issues), with evidence in [Durable Drafts audit U1](../audit/durable-drafts-2026-10-29.md#u1--an-on-demand-chat-read-can-remain-pending-indefinitely). Remaining callers to investigate: the socket reconcile's `listRevisions` (`src/ts/network/eventFeed.ts` ~:119), character-order repair (`src/ts/storage/characterOrder.ts` ~:221), job callback recovery (`src/ts/network/jobChannel.ts` ~:599), detached export reads (`src/ts/storage/chatEdits.ts` ~:109), and the boot read. Found while landing Slice 2.
+Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/storage/resourceSync.svelte.ts`); the `resourceClient.ts` read functions take an optional `signal` but have no default deadline. On-demand chat loads now have their own per-request deadline (`CHAT_READ_DEADLINE_MS`, `chatStore.svelte.ts`; [Durable Drafts audit U1](../audit/durable-drafts-2026-10-29.md#u1--an-on-demand-chat-read-can-remain-pending-indefinitely)). Remaining callers to investigate: the socket reconcile's `listRevisions` (`src/ts/network/eventFeed.ts` ~:119), character-order repair (`src/ts/storage/characterOrder.ts` ~:221), job callback recovery (`src/ts/network/jobChannel.ts` ~:599), detached export reads (`src/ts/storage/chatEdits.ts` ~:109), and the boot read. Found while landing Slice 2.
 
-**Why it matters:** a stuck read hangs its caller (a chat that never finishes loading, a reconcile that never ends) with no error. It no longer blocks saving.
+**Why it matters:** a stuck read hangs its caller (a reconcile that never ends, an export that never finishes) with no error. It no longer blocks saving.
 **Suggested handling:** when touching one of these callers, pass a signal with a bound suited to its payload (a chat load can be large on a slow link, so 20 s may be too short).
 
 ## Server jobs and prompt assembly

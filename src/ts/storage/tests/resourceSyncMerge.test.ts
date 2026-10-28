@@ -527,18 +527,6 @@ describe("which remote changes are merged", () => {
         expect(after).toEqual(["characters/a"]);
         expect(errors).toHaveBeenCalled();
     });
-
-    it("does not merge a create: a local new character whose id another tab created conflicts as before", async () => {
-        const { fake, sync, mirror } = await boot();
-        // The list changes through the character module (a push through the list wrapper is refused).
-        const characterStore = await import("../characterStore.svelte");
-        characterStore.addCharacter(character("n", "Local new", { lastInteraction: 1 }));
-        await tick();
-        fake.set("characters", "n", character("n", "Local new", { lastInteraction: 2 }));
-        const result = await sync.flushResources();
-        expect(result.discarded).toEqual(["characters/n"]);
-        expect(mirror("n").lastInteraction).toBe(2);
-    });
 });
 
 describe("a running generation's character (the generation deferral is gone)", () => {

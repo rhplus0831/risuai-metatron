@@ -1,8 +1,11 @@
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
+import { createFakeLockManager } from "./fakeLockManager";
+import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
 // against the real server store: mixed batches, the request caps, quarantine, conflicts, deferral,
@@ -181,6 +184,38 @@ describe("boot and mixed batches", () => {
         expect(saved).not.toHaveProperty("chatPage");
     });
 
+    it("stops the dev chat drift interval before another page starts in the same realm", async () => {
+        const polls: ReturnType<typeof vi.fn>[] = [];
+        const interval = globalThis.setInterval;
+        vi.spyOn(globalThis, "setInterval").mockImplementation((handler, delay, ...args) => {
+            if (delay === 2000 && typeof handler === "function") {
+                const poll = vi.fn(() => handler(...args));
+                polls.push(poll);
+                return interval(poll, delay);
+            }
+            return interval(handler, delay, ...args);
+        });
+        const first = await boot();
+        expect(polls).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(polls[0]).toHaveBeenCalledTimes(1);
+        first.sync.stopResourceSync();
+        first.fake.close();
+        // Boot resets the module graph, without clearing the realm's timers as test teardown does.
+        const second = await boot();
+        try {
+            expect(polls).toHaveLength(2);
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(polls[0]).toHaveBeenCalledTimes(1);
+            expect(polls[1]).toHaveBeenCalledTimes(1);
+            second.sync.stopResourceSync();
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(polls[1]).toHaveBeenCalledTimes(1);
+        } finally {
+            second.sync.stopResourceSync();
+        }
+    });
+
     it("sends resource ops, chat groups, and reorders in one request, without touching the character revision", async () => {
         const { fake, sync, chat, settings, mirrorIds } = await boot();
         const characterRevision = fake.record("characters", "c")!.revision;
@@ -236,6 +271,77 @@ describe("boot and mixed batches", () => {
         await sync.flushResources();
         expect(fake.batchCount()).toBe(before);
         expect(fake.store.readKinds([fake.kind("characters")], { chats: true }).chats).toHaveLength(4);
+    });
+
+    it("does not merge a create: a local new character whose id another tab created conflicts as before", async () => {
+        const { fake, sync, characters } = await boot();
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter({ chaId: "n", name: "Local new", type: "character", lastInteraction: 1 });
+        await tick();
+        fake.set("characters", "n", { chaId: "n", name: "Local new", type: "character", lastInteraction: 2 });
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["characters/n"]);
+        expect(characters().find((entry: any) => entry.chaId === "n").lastInteraction).toBe(2);
+    });
+
+    it("keeps imported history as a recovery draft and settles chat work when another tab wins the character create", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, sync, chat, characters } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            const characterStore = await import("../characterStore.svelte");
+            const importedMessages = [
+                m("imported-user", "Imported question"),
+                m("imported-char", "Imported reply", "char"),
+            ];
+            characterStore.addCharacter({
+                chaId: "n",
+                name: "Local new",
+                type: "character",
+                chats: [{ id: "imported", name: "Imported history", message: importedMessages }],
+            });
+            await tick();
+            expect(chat.hasUnsavedChatWork()).toBe(true);
+            fake.set("characters", "n", { chaId: "n", name: "Other tab's character", type: "character" });
+            fake.chatBatch([
+                {
+                    characterId: "n",
+                    chatId: "remote-chat",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: "remote-chat", name: "Other tab's chat", message: [] } as any }],
+                },
+            ]);
+
+            await expect(sync.flushResources()).resolves.toEqual({ discarded: ["characters/n"], refused: [] });
+            expect(characters().find((entry: any) => entry.chaId === "n").name).toBe("Other tab's character");
+            expect(fake.order("n")!.ids).toEqual(["remote-chat"]);
+            expect(fake.chat("n", "imported")).toBeNull();
+            expect(chat.chatDiscardsSince(0)).toEqual([]);
+            expect(chat.hasUnsavedChatWork()).toBe(false);
+            expect(warnsOnUnload()).toBe(false);
+
+            const batches = fake.batchCount();
+            // The chat list refresh and draft journal are scheduled separately from the flush.
+            await vi.advanceTimersByTimeAsync(500);
+            expect(chat.chatList("n").map(({ id, name }) => ({ id, name }))).toEqual([
+                { id: "remote-chat", name: "Other tab's chat" },
+            ]);
+            const drafts = (await journal.listDrafts()).filter((draft) => draft.scope === "chat");
+            expect(drafts).toHaveLength(1);
+            const draft = drafts[0];
+            expect(draft).toMatchObject({ scope: "chat", target: "n\0imported" });
+            if (draft.scope !== "chat") throw new Error("Missing chat recovery draft");
+            expect(draft.layers.pending?.value.createSnapshot?.message).toEqual(importedMessages);
+
+            await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
+            expect(fake.batchCount()).toBe(batches);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
     });
 
     it("renames a message id the server refuses and redirects the edit queued meanwhile", async () => {
@@ -1229,6 +1335,59 @@ describe("missing targets and gone anchors", () => {
         expect(chat.idleChatRefreshes()).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
         expect(chat.chatDiscardsSince(0)).toEqual([]);
+    });
+
+    it("keeps only missing by-id edits as a recovery draft when the rest of the group saves", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, sync, chat } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            removeElsewhere(fake, ["b"]);
+            const translation = {
+                text: "Lost translation",
+                sourceHash: translationSourceHash("Lost replacement"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+            };
+            chat.setMessageText(refK, "a", "Saved A");
+            chat.setMessageText(refK, "b", "Lost text");
+            chat.appendMessage(refK, m("d", "Saved append"));
+            chat.replaceMessage(refK, m("b", "Lost replacement"));
+            chat.patchMessage(refK, "a", { name: "Saved speaker" });
+            chat.patchMessage(refK, "b", { name: "Lost speaker" });
+            chat.setChatMeta(refK, { note: "Saved note" });
+            expect(chat.setMessageTranslation(refK, "b", translation)).toBe(true);
+
+            const result = await sync.flushResources();
+            expect(result.discarded).toEqual([]);
+            expect(result.refused).toEqual([]);
+            expect(fake.texts("c", "k")).toEqual(["Saved A", "C", "Saved append"]);
+            expect(fake.chat("c", "k")!.data.note).toBe("Saved note");
+            expect(fake.chat("c", "k")!.data.message[0].name).toBe("Saved speaker");
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(500);
+            const drafts = await journal.listDrafts();
+            expect(drafts).toHaveLength(1);
+            const draft = drafts[0];
+            expect(draft).toMatchObject({ scope: "chat", target: "c\0k" });
+            if (draft.scope !== "chat") throw new Error("Missing chat recovery draft");
+            expect(Object.keys(draft.layers)).toEqual(["pending"]);
+            expect(draft.layers.pending!.value.ops.map((item) => item.op)).toEqual([
+                { op: "setText", id: "b", text: "Lost text" },
+                { op: "setMessage", message: m("b", "Lost replacement") },
+                { op: "patchMessage", id: "b", set: { name: "Lost speaker" } },
+                { op: "setTranslation", id: "b", translation },
+            ]);
+            expect(chat.chatDiscardsSince(0)).toEqual([]);
+            expect(alerts.normal).not.toHaveBeenCalled();
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
     });
 
     it("re-anchors an append after a message another tab removed to the end, keeps a later append anchored on it, and retries with no discard or notice", async () => {

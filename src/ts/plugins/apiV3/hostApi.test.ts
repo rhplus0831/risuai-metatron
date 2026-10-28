@@ -488,10 +488,19 @@ describe("v3 character setters normalize new characters", () => {
         ]);
         expect(chatStore.findChat({ chaId: w.chaId, chatId: w.chats[0].id })).toBeDefined();
         expect(chatStore.findChat({ chaId: "n", chatId: n.chats[0].id })!.message[0].data).toBe("hi");
-        // Existing characters keep their chats; nothing is queued for the new ones yet (their
-        // creates travel with the characters' own creates in the save loop).
+        // Existing characters keep their chats; the new ones' chats are queued as creates at once
+        // (sent once their characters' own creates are in the same batch), and nothing else is.
         expect(c.chats[0].id).toBe("k");
-        expect(chatStore.takeChatWork(new Set([n.chaId, w.chaId])).groups).toEqual([]);
+        const groups = chatStore.takeChatWork(new Set([n.chaId, w.chaId])).groups;
+        expect(groups.map((group) => [group.characterId, group.chatId, group.ops.map((op) => op.op)])).toEqual(
+            expect.arrayContaining([
+                ["n", n.chats[0].id, ["create"]],
+                [w.chaId, w.chats[0].id, ["create"]],
+            ]),
+        );
+        expect(groups).toHaveLength(2);
+        const created = groups.find((group) => group.characterId === "n")!.ops[0] as { chat: { message: any[] } };
+        expect(created.chat.message.map((message) => message.data)).toEqual(["hi"]);
     });
 
     it("refuses a list that names one id-less object twice (it would get one id twice), leaving the mirror unchanged", async () => {
