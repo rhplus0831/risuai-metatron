@@ -9,8 +9,9 @@ because a reloaded page posts with the current epoch, so D4's 412 does not refus
 outcome reports progress, and a done sequence takes one automatic checkpoint since the slot is held
 between parts), Slice 4 (`31dd5c2f0`; the channel hub gains `expireOverdue` and `ownerChanged`,
 and MCP owner checks read the same effective presence), Slice 5 (`2864a806e`; the lookup takes an
-optional `clientId` for `owned`, and the foreign Stop sits beside Send instead of replacing it). The
-user
+optional `clientId` for `owned`, and the foreign Stop sits beside Send instead of replacing it), Slice 6 (`0fb58b456`; the driver shortens `OWNER_ABSENT_MS` through a
+module loader hook, and `util/playwright/stack.mjs` restarts after SIGKILL; Android PWA checks not
+run). The user
 accepted every recommendation for Q1–Q4 the
 same day (see **Answered questions**). A Sol review of the first
 draft (24 points, 3 blockers) is folded in. Most notably, follow-ups run as one sequence job instead

@@ -10,7 +10,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
 - [Job Protocol](job-protocol.md): a lost create answer is replayed instead of run twice, a
   command's `/multisend` runs on the server as one sequence job, an absent owner frees its chat in
   minutes, another tab or device can stop a chat's job, and a restart reads as an ended job (audit
-  F15, F16, TJ06). Slices 1–5 and 2b landed.
+  F15, F16, TJ06). All slices landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
