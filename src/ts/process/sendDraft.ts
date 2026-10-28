@@ -21,9 +21,14 @@ export function composerSendText(draft: { input: string; files: readonly string[
 export function createSendDrafts() {
     const drafts = new Map<string, SendDraft & { placed: boolean }>();
 
-    function retryIdFor(ref: ChatRef, text: string): string | undefined {
+    function retryIdFor(ref: ChatRef, text: string): Pick<SendDraft, "userMessageId" | "requestId"> | undefined {
         const draft = drafts.get(keyOf(ref));
-        return draft?.input === text ? draft.userMessageId : undefined;
+        return draft?.input === text
+            ? {
+                  userMessageId: draft.userMessageId,
+                  ...(draft.requestId === undefined ? {} : { requestId: draft.requestId }),
+              }
+            : undefined;
     }
 
     function adopt(ref: ChatRef, draft: SendDraft): void {

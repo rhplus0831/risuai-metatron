@@ -95,6 +95,7 @@
     import { composerSendText, createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
     import { createComposer } from "src/ts/process/composerDrafts.svelte";
     import { pageDraftJournal } from "src/ts/storage/draftJournal";
+    import { getResourceEpoch } from "src/ts/storage/resourceClient";
     import {
         createInputTranslation,
         handleMainComposerKeydown,
@@ -133,6 +134,7 @@
     const sendDrafts = createSendDrafts();
     const composer = createComposer({
         journal: pageDraftJournal(),
+        epoch: getResourceEpoch,
         retryIdFor: (key, text) => {
             const [chaId, chatId] = key.split("\u0000");
             return sendDrafts.retryIdFor({ chaId, chatId }, text);
@@ -240,7 +242,12 @@
                         },
                     })
                     .then((draft) => {
-                        if (draft) sendDrafts.adopt(ref, { input: draft.text, userMessageId: draft.userMessageId });
+                        if (draft)
+                            sendDrafts.adopt(ref, {
+                                input: draft.text,
+                                userMessageId: draft.userMessageId,
+                                requestId: draft.requestId,
+                            });
                     });
             }
         });
@@ -521,7 +528,11 @@
         } else {
             // Retried text keeps its id: the server skips an input it already appended under it.
             serverInput = { input, ...sendDrafts.idsFor(ref, input, !continueResponse) };
-            composer.beginSend(chatKeyOf(ref), { snapshot, userMessageId: serverInput.userMessageId });
+            composer.beginSend(chatKeyOf(ref), {
+                snapshot,
+                userMessageId: serverInput.userMessageId,
+                requestId: continueResponse ? undefined : serverInput.requestId,
+            });
         }
         draft.files = [];
         draft.input = "";
@@ -734,7 +745,10 @@
                     selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
                     composerEmpty: composer.at(chatKeyOf(target)).input === "",
                 });
-                composer.settleSend(chatKeyOf(target), serverInput.userMessageId, result === "drop");
+                composer.settleSend(chatKeyOf(target), serverInput.userMessageId, result === "drop", {
+                    requestId: continued ? undefined : serverInput.requestId,
+                    retainedRequestId: sendDrafts.retryIdFor(target, serverInput.input)?.requestId,
+                });
                 if (result === "restore") {
                     composer.at(chatKeyOf(target)).input = serverInput.input;
                 }

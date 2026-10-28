@@ -1,6 +1,6 @@
 import { onChatRemoved, type ChatRemoval } from "../storage/chatStore.svelte";
 import { pageDraftJournal, type ComposerValue, type DraftJournal } from "../storage/draftJournal";
-import { composerSendText } from "./sendDraft";
+import { composerSendText, type SendDraft } from "./sendDraft";
 
 export type ComposerDraft = { input: string; translate: string; files: string[] };
 /** A chat's live composer while shown, or its stashed draft otherwise. */
@@ -9,7 +9,8 @@ export type ComposerView = ComposerDraft & { addFile(id: string): void; removeFi
 type ComposerOptions = {
     journal?: DraftJournal;
     debounceMs?: number;
-    retryIdFor?: (key: string, text: string) => string | undefined;
+    epoch?: () => string;
+    retryIdFor?: (key: string, text: string) => Pick<SendDraft, "userMessageId" | "requestId"> | undefined;
 };
 type RestoreChecks = {
     landed(userMessageId: string): Promise<boolean | undefined>;
@@ -71,7 +72,7 @@ onChatRemoved((removal) => {
 });
 
 /** Keeps per-chat composers, optionally journaling their edits and send hand-offs in this browser. */
-export function createComposer({ journal, debounceMs = 500, retryIdFor }: ComposerOptions = {}) {
+export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }: ComposerOptions = {}) {
     const live = new ComposerState();
     const drafts = new Map<string, ComposerDraft>();
     const dirty = new Set<string>();
@@ -89,6 +90,10 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
     const version = (key: string) => edits.get(key) ?? 0;
     const removed = (key: string) =>
         removedKeys.has(key) || (removedCharacters.has(key.split("\u0000")[0]) && !reopened.has(key));
+    const requestIdentity = (requestId?: string) => {
+        const requestEpoch = epoch?.();
+        return requestId === undefined || requestEpoch === undefined ? undefined : { requestId, requestEpoch };
+    };
     function cancelTimer(key: string) {
         clearTimeout(timers.get(key));
         timers.delete(key);
@@ -108,7 +113,7 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
         );
     }
 
-    async function write(key: string): Promise<void> {
+    async function write(key: string, attempt?: { userMessageId: string; requestId?: string }): Promise<void> {
         cancelTimer(key);
         if (!journal || !dirty.has(key) || removed(key)) return;
         const edit = version(key);
@@ -116,11 +121,14 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
         if (empty(draft)) {
             lastWritten.delete(key);
             dirty.delete(key);
-            await journal.removeComposer(key, { keepSendingIds: [...(sending.get(key) ?? [])] });
+            await journal.removeComposer(key, { keepSendingIds: [...(sending.get(key) ?? [])], attempt });
             return;
         }
-        const userMessageId = retryIdFor?.(key, composerSendText(draft));
-        const value: ComposerValue = { ...draft, ...(userMessageId === undefined ? {} : { userMessageId }) };
+        const retry = retryIdFor?.(key, composerSendText(draft));
+        const value: ComposerValue = {
+            ...draft,
+            ...(retry === undefined ? {} : { userMessageId: retry.userMessageId, ...requestIdentity(retry.requestId) }),
+        };
         const text = JSON.stringify(value);
         if (lastWritten.get(key) === text) {
             dirty.delete(key);
@@ -135,7 +143,7 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
     }
 
     async function flush(): Promise<void> {
-        await Promise.all([...dirty].map(write));
+        await Promise.all([...dirty].map((key) => write(key)));
     }
 
     /** Stashes the previous chat's nonempty draft and loads the next chat's composer. */
@@ -216,7 +224,10 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
         return view(() => key);
     }
 
-    function beginSend(key: string, send: { snapshot: ComposerDraft; userMessageId: string }): void {
+    function beginSend(
+        key: string,
+        send: { snapshot: ComposerDraft; userMessageId: string; requestId?: string },
+    ): void {
         if (destroyed || removed(key)) return;
         cancelTimer(key);
         dirty.delete(key);
@@ -229,25 +240,37 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
             ...snapshot(send.snapshot),
             state: "sending",
             userMessageId: send.userMessageId,
+            ...requestIdentity(send.requestId),
         });
     }
 
-    function settleSend(key: string, userMessageId: string, landed: boolean): void {
+    function settleSend(
+        key: string,
+        userMessageId: string,
+        landed: boolean,
+        request: { requestId?: string; retainedRequestId?: string } = {},
+    ): void {
         // Flush the consumed empty composer while its send still protects the hand-off. A failed
         // send in a hidden chat must keep that row until the in-page recovery can place its text.
-        if (empty(snapshot(read(key)))) void write(key);
+        if (empty(snapshot(read(key)))) void write(key, { userMessageId, requestId: request.requestId });
         sending.get(key)?.delete(userMessageId);
         if (sending.get(key)?.size === 0) sending.delete(key);
-        if (landed && !removed(key)) {
+        if (!removed(key)) {
             lastWritten.delete(key);
-            void journal?.removeComposer(key, { userMessageId });
+            if (landed) void journal?.removeComposer(key, { userMessageId });
+            else
+                void journal?.updateComposerRequest(
+                    key,
+                    { userMessageId, requestId: request.requestId },
+                    requestIdentity(request.retainedRequestId),
+                );
         }
     }
 
     async function restore(
         key: string,
         checks: RestoreChecks,
-    ): Promise<{ userMessageId: string; text: string } | undefined> {
+    ): Promise<{ userMessageId: string; text: string; requestId?: string } | undefined> {
         const edit = version(key);
         const switched = generation;
         const current = () =>
@@ -276,7 +299,13 @@ export function createComposer({ journal, debounceMs = 500, retryIdFor }: Compos
         if (files.length === value.files.length) {
             lastWritten.set(key, JSON.stringify(value));
             if (value.userMessageId !== undefined)
-                return { userMessageId: value.userMessageId, text: composerSendText(live) };
+                return {
+                    userMessageId: value.userMessageId,
+                    text: composerSendText(live),
+                    ...(value.requestId !== undefined && value.requestEpoch === epoch?.()
+                        ? { requestId: value.requestId }
+                        : {}),
+                };
         } else {
             lastWritten.delete(key);
             schedule(key);

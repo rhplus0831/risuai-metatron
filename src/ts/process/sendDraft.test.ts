@@ -90,7 +90,9 @@ describe("createSendDrafts", () => {
         expect(composerSendText(restored)).toBe("hello{{inlayed::first}}{{inlayed::second}}");
         drafts.adopt(a, { input: composerSendText(restored), userMessageId: "journal-id" });
         expect(drafts.takeUnplaced(a)).toBeUndefined();
-        expect(drafts.retryIdFor(a, "hello{{inlayed::first}}{{inlayed::second}}")).toBe("journal-id");
+        expect(drafts.retryIdFor(a, "hello{{inlayed::first}}{{inlayed::second}}")).toEqual({
+            userMessageId: "journal-id",
+        });
         expect(drafts.retryIdFor(b, composerSendText(restored))).toBeUndefined();
         expect(drafts.retryIdFor(a, composerSendText({ ...restored, input: "edited" }))).toBeUndefined();
         expect(drafts.retryIdFor(a, composerSendText({ ...restored, files: ["second", "first"] }))).toBeUndefined();

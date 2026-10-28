@@ -10,7 +10,7 @@ import { isJournalEligible } from "./journalEligibility";
  * so the change survives the loss of the page (a killed PWA, a crash, a reload during an outage), and
  * the local version kept at a conflict (a recovery draft). This module is the store alone: keys,
  * layers, versions, budgets, expiry, and the tab ownership protocol. The composer uses the page's
- * shared journal; its browser-wide rows keep text, translation, attachments, and a send's retry id.
+ * shared journal; its browser-wide rows keep text, translation, attachments, and a send's retry ids.
  * Composer writes keep `createdAt` while the row is live; a write after expiry starts a new entry.
  * Send success deletes only a row still carrying that send's id.
  *
@@ -155,13 +155,15 @@ export type MutationEntry = RowBase & {
 /** A recovery draft: work that is not replayed on its own, kept for the user (the entry's layers as they were). */
 export type DraftEntry = RowBase & { type: "draft"; id: string; epoch: string; target: string } & ScopedLayers;
 
-/** What a chat's composer held (the send hand-off adds `sending` and the message id). */
+/** What a chat's composer held, with an uncertain send's request identity scoped to its epoch. */
 export type ComposerValue = {
     input: string;
     translate: string;
     files: string[];
     state?: "sending";
     userMessageId?: string;
+    requestId?: string;
+    requestEpoch?: string;
 };
 
 /** A composer draft of one chat, shared by the browser's tabs. */
@@ -301,7 +303,9 @@ function checkComposerValue(value: unknown): value is ComposerValue {
         Array.from(value.files).every(isString) &&
         (value.state === undefined || value.state === "sending") &&
         (value.userMessageId === undefined || isString(value.userMessageId)) &&
-        (value.state !== "sending" || isString(value.userMessageId))
+        (value.state !== "sending" || isString(value.userMessageId)) &&
+        ((value.requestId === undefined && value.requestEpoch === undefined) ||
+            (isString(value.requestId) && isString(value.requestEpoch) && isString(value.userMessageId)))
     );
 }
 
@@ -377,7 +381,12 @@ export type DraftInput = { epoch: string; target: string; createdAt?: number } &
 /** Moves one of this tab's entries to a draft, unless a layer was written after `version`. */
 export type DraftMove = { epoch: string; scope: JournalScope; target: string; version: number };
 
-export type ComposerRemoval = { userMessageId?: string; keepSendingIds?: readonly string[] };
+export type ComposerRemoval = {
+    userMessageId?: string;
+    keepSendingIds?: readonly string[];
+    /** An empty settlement flush must leave another attempt's row alone. */
+    attempt?: { userMessageId: string; requestId?: string };
+};
 
 export interface DraftJournal {
     /** Claims this tab's id and owner lock and opens the database; false: the journal stays off. Single-flight. */
@@ -404,6 +413,12 @@ export interface DraftJournal {
     /** Composer calls start the journal on first use. Reads omit expired and unreadable rows. */
     readComposer(chatKey: string): Promise<ComposerValue | null>;
     putComposer(chatKey: string, value: ComposerValue): Promise<WriteOutcome>;
+    /** Updates request identity only on a live row still belonging to this attempt. */
+    updateComposerRequest(
+        chatKey: string,
+        attempt: { userMessageId: string; requestId?: string },
+        retained?: { requestId: string; requestEpoch: string },
+    ): Promise<WriteOutcome>;
     /** Conditions are checked against the stored row inside the deletion's transaction. */
     removeComposer(chatKey: string, condition?: ComposerRemoval): Promise<void>;
     removeComposersOf(chaId: string): Promise<void>;
@@ -1439,6 +1454,32 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             reportFailure(error, "write");
             return "failed";
         }
+        return writeComposer(chatKey, () => copy);
+    }
+
+    function updateComposerRequest(
+        chatKey: string,
+        { userMessageId, requestId }: { userMessageId: string; requestId?: string },
+        retained?: { requestId: string; requestEpoch: string },
+    ): Promise<WriteOutcome> {
+        const identity = retained && { ...retained };
+        return writeComposer(chatKey, (row, time) => {
+            if (!row || isExpired(row.createdAt, time) || row.value.userMessageId !== userMessageId) return;
+            if (row.value.requestId !== undefined && row.value.requestId !== requestId) return;
+            if (identity) {
+                if (row.value.requestId !== undefined) return;
+                return { ...row.value, ...identity };
+            }
+            if (row.value.requestId === undefined) return;
+            const { requestId: previousId, requestEpoch: previousEpoch, ...value } = row.value;
+            return value;
+        });
+    }
+
+    async function writeComposer(
+        chatKey: string,
+        update: (row: ComposerEntry | null, time: number) => ComposerValue | undefined,
+    ): Promise<WriteOutcome> {
         await (started ??= start());
         return tracked<WriteOutcome>("off", async () => {
             try {
@@ -1447,11 +1488,17 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     const key = composerKey(chatKey);
                     const raw: unknown = await requestValue(store.get(key));
                     const existing = checkJournalRow(raw);
-                    if (!checkComposerValue(copy) || (raw !== undefined && existing?.type !== "composer")) {
+                    if (raw !== undefined && existing?.type !== "composer") {
                         skipped = "format";
                         return "skipped";
                     }
                     const time = now();
+                    const copy = update(existing?.type === "composer" ? existing : null, time);
+                    if (copy === undefined) return "stale";
+                    if (!checkComposerValue(copy)) {
+                        skipped = "format";
+                        return "skipped";
+                    }
                     const row: ComposerEntry = {
                         format: JOURNAL_FORMAT,
                         type: "composer",
@@ -1491,6 +1538,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     async function removeComposer(chatKey: string, condition: ComposerRemoval = {}): Promise<void> {
         const { userMessageId } = condition;
         const keepSendingIds = new Set(condition.keepSendingIds);
+        const attempt = condition.attempt && { ...condition.attempt };
         await (started ??= start());
         return tracked(undefined, async () => {
             try {
@@ -1500,6 +1548,10 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     if (
                         row?.type === "composer" &&
                         (userMessageId === undefined || row.value.userMessageId === userMessageId) &&
+                        (!attempt ||
+                            row.value.userMessageId === undefined ||
+                            (row.value.userMessageId === attempt.userMessageId &&
+                                (row.value.requestId === undefined || row.value.requestId === attempt.requestId))) &&
                         !(row.value.state === "sending" && keepSendingIds.has(row.value.userMessageId!))
                     ) {
                         store.delete(key);
@@ -1623,6 +1675,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         removeDraft,
         readComposer,
         putComposer,
+        updateComposerRequest,
         removeComposer,
         removeComposersOf,
         purgeExpired,
