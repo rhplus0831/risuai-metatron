@@ -176,9 +176,68 @@ describe("the tab's identity and saved jobs", () => {
         expect(id).toMatch(/^[0-9a-f-]{36}$/);
         expect(transport.generationClientId()).toBe(id);
         expect(sessionStorage.getItem("risu-generation-client")).toBe(id);
+        // A reload: the old page releases the id on pagehide before the next page claims it.
+        window.dispatchEvent(new Event("pagehide"));
         vi.resetModules();
         const again: Transport = await import("./generationJobs");
         expect(again.generationClientId()).toBe(id);
+    });
+
+    it.each([
+        ["copied live page", "generationClientId"],
+        ["copied live page", "savedGenerationJobs"],
+        ["copied live page", "savedGenerationJobIds"],
+        ["reload after pagehide", "savedGenerationJobIds"],
+        ["discarded page", "savedGenerationJobIds"],
+    ] as const)("isolates copied owners and preserves recovery on a %s reading %s first", async (page, firstRead) => {
+        const originalId = transport.generationClientId();
+        transport.rememberGenerationJob({ chaId: "c", chatId: "k" }, "active-job");
+        const saved = { '["c","k"]': "active-job" };
+        if (page === "reload after pagehide") window.dispatchEvent(new Event("pagehide"));
+
+        // Each page gets its own session storage, copied by the browser before its scripts run.
+        const values = new Map<string, string>();
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i)!;
+            values.set(key, sessionStorage.getItem(key)!);
+        }
+        const copiedStorage: Storage = {
+            get length() {
+                return values.size;
+            },
+            key: (index) => [...values.keys()][index] ?? null,
+            getItem: (key) => values.get(key) ?? null,
+            setItem: (key, value) => {
+                values.set(key, value);
+            },
+            removeItem: (key) => {
+                values.delete(key);
+            },
+            clear: () => values.clear(),
+        };
+        vi.stubGlobal("sessionStorage", copiedStorage);
+        vi.stubGlobal("window", new EventTarget());
+        const discarded = Object.getOwnPropertyDescriptor(document, "wasDiscarded");
+        Object.defineProperty(document, "wasDiscarded", { configurable: true, value: page === "discarded page" });
+        try {
+            vi.resetModules();
+            const next: Transport = await import("./generationJobs");
+            const copied = page === "copied live page";
+            const first = next[firstRead]();
+            if (firstRead === "savedGenerationJobIds") expect(first).toEqual(copied ? [] : ["active-job"]);
+            if (firstRead === "savedGenerationJobs") expect(first).toEqual(copied ? {} : saved);
+            const nextId = next.generationClientId();
+            if (copied) expect(nextId).not.toBe(originalId);
+            else expect(nextId).toBe(originalId);
+            expect(next.generationClientId()).toBe(nextId);
+            expect(next.savedGenerationJobs()).toEqual(copied ? {} : saved);
+            expect(next.savedGenerationJobIds()).toEqual(copied ? [] : ["active-job"]);
+            expect(transport.generationClientId()).toBe(originalId);
+            expect(transport.savedGenerationJobs()).toEqual(saved);
+        } finally {
+            if (discarded) Object.defineProperty(document, "wasDiscarded", discarded);
+            else Reflect.deleteProperty(document, "wasDiscarded");
+        }
     });
 
     it("keys saved jobs by a JSON pair, so ids with slashes never collide, and forgets a job by its id", () => {

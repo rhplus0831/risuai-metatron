@@ -131,6 +131,7 @@ export function noteChannelCallbacks(count: number) {
 
 const CLIENT_ID_KEY = "risu-generation-client";
 const JOBS_KEY = "risu-generation-jobs";
+const CLIENT_CLAIM_KEY = "risu-generation-client-claim";
 
 /** 409 `chatBusy`: the chat has a running job; its owner can attach to `jobId`. */
 export class GenerationBusyError extends Error {
@@ -184,26 +185,52 @@ function storage(): Storage | null {
 }
 
 let fallbackClientId: string | null = null;
+let claimedStorage: Storage | null = null;
+
+/** A copied live page's session belongs to a new owner; a released or discarded page can recover. */
+function claimGenerationIdentity() {
+    if (fallbackClientId) return;
+    const store = storage();
+    try {
+        const copied =
+            store?.getItem(CLIENT_CLAIM_KEY) === "held" &&
+            !(typeof document !== "undefined" && "wasDiscarded" in document && document.wasDiscarded === true);
+        fallbackClientId = (!copied && store?.getItem(CLIENT_ID_KEY)) || uuidv4();
+        if (copied) store?.removeItem(JOBS_KEY);
+        store?.setItem(CLIENT_ID_KEY, fallbackClientId);
+        store?.setItem(CLIENT_CLAIM_KEY, "held");
+        claimedStorage = store;
+    } catch {
+        // Failed storage must not expose copied jobs under the page's in-memory identity.
+        fallbackClientId ??= uuidv4();
+    }
+}
+
+function markGenerationIdentity(state: "held" | "released") {
+    try {
+        claimedStorage?.setItem(CLIENT_CLAIM_KEY, state);
+    } catch {}
+}
+
+if (typeof window !== "undefined") {
+    claimGenerationIdentity();
+    window.addEventListener("pagehide", () => markGenerationIdentity("released"));
+    window.addEventListener("pageshow", () => markGenerationIdentity("held"));
+}
 
 /** This tab's id, created once and kept across reloads of the tab. */
 export function generationClientId(): string {
-    const store = storage();
-    const saved = store?.getItem(CLIENT_ID_KEY);
-    if (saved) {
-        return saved;
-    }
-    const id = fallbackClientId ?? uuidv4();
-    fallbackClientId = id;
-    store?.setItem(CLIENT_ID_KEY, id);
-    return id;
+    claimGenerationIdentity();
+    return fallbackClientId!;
 }
 
 /** Ids may contain `/`, so the saved key is a JSON pair. */
 const chatKey = (ref: ChatRef) => JSON.stringify([ref.chaId, ref.chatId]);
 
 function readSavedJobs(): Record<string, string> {
+    claimGenerationIdentity();
     try {
-        const parsed = JSON.parse(storage()?.getItem(JOBS_KEY) ?? "{}") as unknown;
+        const parsed = JSON.parse(claimedStorage?.getItem(JOBS_KEY) ?? "{}") as unknown;
         return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
     } catch {
         return {};
@@ -211,8 +238,9 @@ function readSavedJobs(): Record<string, string> {
 }
 
 function writeSavedJobs(jobs: Record<string, string>) {
+    claimGenerationIdentity();
     try {
-        storage()?.setItem(JOBS_KEY, JSON.stringify(jobs));
+        claimedStorage?.setItem(JOBS_KEY, JSON.stringify(jobs));
     } catch {}
 }
 
