@@ -174,11 +174,18 @@ delete, reason } }`;
     dispatch and the keepalive path send the batch under that id, and a new id is minted only once
     the batch is dispatched. So every journaled version of a batch names the id the server will
     remember: a slow or failed journal can lose ops, but a replay is never a fresh group.
+  - The keepalive path sends a batch only whole: every op by id, at most 5,000 ops, within the
+    keepalive budget. A part of a batch sent under its id would hide the unsent rest, so a batch
+    with a replace, a multi-message remove or a chat delete is left to the next save and the
+    journal (the user's decision after Slice 6, 2026-10-28).
   - Journal writes are coalesced into one transaction per save cycle (and one on page hide), over
     one connection kept open, and dispatch never waits for them. The exception is a create: its
     entry is marked dispatched before the request goes, with a 200 ms bound. Known limit: if that
     write does not land, a create that landed, lost its answer and was deleted elsewhere can come
-    back once after a crash.
+    back once after a crash. A second exception (the user's decision after Slice 6, 2026-10-28):
+    a batch split at the per-request op cap sends its front part, a parked resend under the
+    batch's own id, only after the split is committed to the journal; with the journal off, the
+    row skipped, or two failed writes, it is sent anyway.
   - A record is journaled again only when its dirty generation changed since its last journal
     write. Records over 256 KiB are journaled at most every 5 s, and on page hide.
 - **D8. Recovery drafts and their actions.** Drafts (from D2, from D9, and from conflict capture in
