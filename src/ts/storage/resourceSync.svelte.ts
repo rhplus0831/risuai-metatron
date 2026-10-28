@@ -1,6 +1,9 @@
 import isEqual from "lodash/isEqual";
 import {
+    JOURNAL_FORMAT,
+    JOURNAL_LAYER_NAMES,
     MAX_JOURNAL_ENTRY_BYTES,
+    journalValueSize,
     pageDraftJournal,
     recordTarget,
     type JournalWrite,
@@ -476,6 +479,7 @@ let journalDeadline = 0;
 const LARGE_JOURNAL_BYTES = 256 * 1024;
 const LARGE_JOURNAL_INTERVAL_MS = 5000;
 const JOURNAL_CREATE_WAIT_MS = 200;
+const JOURNAL_RESTORE_WAIT_MS = 1000;
 const RECORD_JOURNAL_LAYERS = ["sent", "latest", "refused"] as const;
 
 function journalView(key: string): JournalRecordView | undefined {
@@ -646,6 +650,7 @@ function journalDispatched(ops: readonly PendingOp[]) {
 
 /** An answer (or a lost answer) leaves only the intent the adapter still holds. */
 function journalSettled(key: string) {
+    if (halted) return;
     const view = journalRecords.get(key);
     if (view) {
         view.dispatched = undefined;
@@ -654,6 +659,7 @@ function journalSettled(key: string) {
 }
 
 function journalDiscarded(key: string) {
+    if (halted) return;
     const view = journalRecords.get(key);
     if (view) {
         view.dispatched = undefined;
@@ -675,7 +681,7 @@ function sameJournalLayer(a: RecordLayerValues[keyof RecordLayerValues] | undefi
     );
 }
 
-/** All adapter calls are serialized after startup seeds the version counter, including removals. */
+/** Normal flushes are serialized after startup seeds the version counter, including removals. */
 function flushJournal(onHide = false): Promise<void> {
     if (journalTimer) {
         clearTimeout(journalTimer);
@@ -868,6 +874,107 @@ function flushJournal(onHide = false): Promise<void> {
             recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
         });
     return journalQueue;
+}
+
+type RestoreJournalItem = {
+    write: JournalWrite;
+    changed?: (keyof RecordLayerValues)[];
+};
+
+/** Capture before halting: record projection can invalidate a refusal and queue more work. */
+function captureRestoreJournal(): RestoreJournalItem[] {
+    const snapshot: RestoreJournalItem[] = [];
+    for (const [key, view] of journalRecords) {
+        refreshJournalRecord(key, view);
+        if (!RECORD_JOURNAL_LAYERS.some((name) => view.desired[name] || view.written[name])) continue;
+        snapshot.push({
+            write: {
+                epoch: view.epoch,
+                scope: "record",
+                target: key,
+                version: 0,
+                layers: Object.fromEntries(RECORD_JOURNAL_LAYERS.map((name) => [name, view.desired[name] ?? null])),
+            },
+            changed: RECORD_JOURNAL_LAYERS.filter(
+                (name) => !sameJournalLayer(view.desired[name], view.written[name]?.value),
+            ),
+        });
+    }
+    // Written chat layers lag pending transactions. Even an empty projection must fence every
+    // absent layer, so an outstanding write cannot bring settled work back after the snapshot.
+    for (const view of journalChatViews.values()) {
+        const projection = chatJournal.project(view.key);
+        const desired: Record<string, unknown> = projection.layers;
+        snapshot.push({
+            write: {
+                ...view.key,
+                epoch: view.epoch,
+                version: 0,
+                layers: Object.fromEntries(
+                    JOURNAL_LAYER_NAMES[view.key.scope].map((name) => [name, desired[name] ?? null]),
+                ),
+            } as JournalWrite,
+        });
+    }
+    return structuredClone(snapshot);
+}
+
+async function writeRestoreJournal(snapshot: RestoreJournalItem[]) {
+    if (journalOff || snapshot.length === 0) return;
+    const journal = pageDraftJournal();
+    if (!(await journal.start()) || !journal.enabled) return;
+    // Bypass the normal queue: it may be stuck. Startup must seed the counter before this version
+    // supersedes every pre-halt write and removal, even one that completes after the notice.
+    const version = journal.nextVersion();
+    const writes = snapshot.map(({ write, changed }) => {
+        write.version = version;
+        if (write.scope === "record") {
+            const layers = Object.fromEntries(
+                Object.entries(write.layers)
+                    .filter(([, value]) => value != null)
+                    .map(([name, value]) => [name, { version, value }]),
+            );
+            // Match the stored row's UTF-8 size, including its envelope. Rewriting an unchanged
+            // layer into an oversized row would let the journal trim it along with the changes.
+            const size = journalValueSize({
+                ...write,
+                layers,
+                format: JOURNAL_FORMAT,
+                type: "mutation",
+                tabId: journal.tabId,
+                createdAt: 0,
+                updatedAt: 0,
+                size: 0,
+            });
+            if (size > MAX_JOURNAL_ENTRY_BYTES) {
+                write.layers = Object.fromEntries(changed!.map((name) => [name, null]));
+                recordClientEvent({ kind: "sync", phase: "journalSkipped", reason: "tooLarge", entries: 1 });
+            }
+        }
+        return write;
+    });
+    await journal.write(writes);
+}
+
+async function waitForRestoreJournal(snapshot: RestoreJournalItem[]) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            writeRestoreJournal(snapshot).catch((error) => {
+                console.warn("[Save journal]", error);
+                recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
+            }),
+            new Promise<void>((resolve) => {
+                timer = setTimeout(() => {
+                    console.warn("[Save journal] Restore snapshot timed out");
+                    recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "timeout" });
+                    resolve();
+                }, JOURNAL_RESTORE_WAIT_MS);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
 }
 
 async function waitForCreateJournal(flush: Promise<void>) {
@@ -2987,6 +3094,13 @@ async function haltForRestore() {
     if (halted) {
         return;
     }
+    let snapshot: RestoreJournalItem[] = [];
+    try {
+        snapshot = captureRestoreJournal();
+    } catch (error) {
+        console.warn("[Save journal]", error);
+        recordClientEvent({ kind: "sync", phase: "journalFailed", reason: "write" });
+    }
     halted = true;
     if (journalTimer) {
         clearTimeout(journalTimer);
@@ -3006,15 +3120,17 @@ async function haltForRestore() {
         clearTimeout(timer);
         timer = null;
     }
+    const journalSnapshot = !journalOff && snapshot.length > 0 ? waitForRestoreJournal(snapshot) : null;
     try {
         restoreReloadHook?.();
     } catch (error) {
         console.error("[Save] Before restore reload:", error);
     }
     restoreReloadHook = null;
-    // The terminal notice: no other alert replaces or clears it, so the page reloads only after the
-    // user acknowledged it.
+    // The terminal notice opens synchronously after the hook; no other alert replaces or clears it.
+    // Any snapshot's bound starts above; an off or empty journal adds no wait after acknowledgement.
     await alertTerminal(language.resourceRestored);
+    if (journalSnapshot) await journalSnapshot;
     if (stopped) return;
     recordClientEvent({ kind: "sync", phase: "reload", reason: "restore" });
     flushClientDiagnostics();

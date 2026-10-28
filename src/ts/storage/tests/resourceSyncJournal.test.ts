@@ -580,28 +580,165 @@ describe("resource save journal", () => {
         expect(JSON.parse(next.latest.text).desc).toBe(large + "B");
     });
 
-    it("does not journal after a restore halt, even when startup was still pending", async () => {
+    it("snapshots live restore intent atomically under the loaded epoch and freezes it after halt", async () => {
+        const { fake, sync, settings, characterStore, chat } = await boot();
+        const client = await import("../resourceClient");
+        const { alertTerminal } = await import("../../alert");
+        const { language } = await import("../../../lang");
+        const oldEpoch = fake.store.epoch();
+        const ui = plain(fake.record("ui", "main"));
+        const character = plain(fake.record("characters", "c"));
+        const chatBase = fake.chat("c", "k")!.revision;
+        const orderBase = fake.order("c")!.revision;
+        const refusedText = JSON.stringify({ ...character.data, desc: "refused description" });
+        const uiText = (theme: string) => JSON.stringify({ ...ui.data, theme });
+        const reason = "ops[0]: characters c: refused description";
+        fake.failNext = { status: 400, times: 1, match: batchPath, body: { error: reason } };
+        characterStore.updateCharacter("c", { desc: "refused description" });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await layers(CHARACTER)).toEqual({ refused: { op: "update", text: refusedText, reason } });
+
+        fake.holdNextBatch = true;
+        settings.ui.theme = "sent settings";
+        chat.setMessageText(refK, "a", "sent chat");
+        chat.reorderChats("c", ["j", "k"]);
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.releaseBatch).not.toBeNull();
+        await rows();
+        const dispatched = fake.batchBodies().at(-1)!;
+        const sentId = dispatched.chats[0].groupId;
+        // These edits have never reached a debounce or a hide flush when the restore arrives.
+        settings.ui.theme = "unsent settings";
+        chat.setMessageText(refK, "a", "unsent chat");
+        chat.reorderChats("c", ["k", "j"]);
+
+        const order: string[] = [];
+        let acknowledge!: () => void;
+        const notice = new Promise<void>((resolve) => {
+            acknowledge = resolve;
+        });
+        sync.beforeRestoreReload(() => order.push("hook"));
+        vi.mocked(alertTerminal).mockImplementationOnce(() => {
+            order.push("notice");
+            return notice;
+        });
+        vi.mocked(location.reload).mockImplementation(() => {
+            order.push("reload");
+        });
+        const transactions = writeTransactions();
+        const commit = holdJournalCommit();
+        try {
+            client.epochMismatch("restored-epoch");
+            // The selection hook and notice must run within the listener call, even with IDB held.
+            expect(order).toEqual(["hook", "notice"]);
+            expect(alertTerminal).toHaveBeenCalledExactlyOnceWith(language.resourceRestored);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(transactions()).toBe(1);
+            await commit.started;
+            expect(location.reload).not.toHaveBeenCalled();
+            commit.release();
+            const snapshot = await rows();
+            expect(snapshot.map(({ scope, target }) => [scope, target]).sort()).toEqual([
+                ["chat", chatTarget("c", "k")],
+                ["order", orderTarget("c")],
+                ["record", CHARACTER],
+                ["record", UI],
+            ]);
+            expect(snapshot.every((row) => row.epoch === oldEpoch)).toBe(true);
+            expect(await layers(CHARACTER)).toEqual({ refused: { op: "update", text: refusedText, reason } });
+            expect(await layers(UI)).toEqual({
+                sent: sent(uiText("sent settings"), ui.revision),
+                latest: latest(uiText("unsent settings"), ui.revision),
+            });
+            expect(await chatLayers()).toEqual({
+                resend: {
+                    ops: [{ op: "setText", id: "a", text: "sent chat" }],
+                    baseRevision: chatBase,
+                    groupId: sentId,
+                    seq: expect.any(Number),
+                    inDoubt: false,
+                },
+                pending: {
+                    ops: [{ op: { op: "setText", id: "a", text: "unsent chat" }, before: { value: "sent chat" } }],
+                    baseRevision: chatBase,
+                    groupId: expect.any(String),
+                },
+            });
+            expect((await chatLayers()).pending!.groupId).not.toBe(sentId);
+            expect(await orderLayers()).toEqual({
+                sent: { ids: ["j", "k"], baseRevision: orderBase },
+                latest: { ids: ["k", "j"], baseRevision: orderBase },
+            });
+            expect(transactions()).toBe(1);
+            expect(location.reload).not.toHaveBeenCalled();
+            acknowledge();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(order).toEqual(["hook", "notice", "reload"]);
+            const batches = fake.batchCount();
+            fake.releaseBatch!();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(await rows()).toEqual(snapshot);
+            hide();
+            hide("visibilitychange");
+            await vi.advanceTimersByTimeAsync(5000);
+            await sync.flushResources().catch(() => {});
+            expect(await rows()).toEqual(snapshot);
+            expect(transactions()).toBe(1);
+            expect(fake.batchCount()).toBe(batches);
+            expect(location.reload).toHaveBeenCalledOnce();
+        } finally {
+            acknowledge();
+            commit.release();
+        }
+    });
+
+    it("reloads after acknowledgement within one second when the restore journal is stalled", async () => {
         const held = holdOpen();
         const { fake, settings } = await boot(false);
+        const { alertTerminal } = await import("../../alert");
+        let acknowledge!: () => void;
+        vi.mocked(alertTerminal).mockImplementationOnce(
+            () =>
+                new Promise<void>((resolve) => {
+                    acknowledge = resolve;
+                }),
+        );
+        const oldEpoch = fake.store.epoch();
+        const base = plain(fake.record("ui", "main"));
         const transactions = writeTransactions();
         fake.failNext = {
             status: 412,
             times: 1,
             match: batchPath,
-            body: { error: "EpochMismatch", epoch: "restored" },
+            body: { error: "EpochMismatch", epoch: "restored-epoch" },
         };
-        settings.ui.theme = "old epoch";
-        await vi.advanceTimersByTimeAsync(500);
+        settings.ui.theme = "unacknowledged before restore";
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
         await held.opened;
-        expect(fake.batchCount()).toBe(1);
+        expect(alertTerminal).toHaveBeenCalledOnce();
+        expect(location.reload).not.toHaveBeenCalled();
+        acknowledge();
+        await vi.advanceTimersByTimeAsync(999);
+        expect(location.reload).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
         expect(location.reload).toHaveBeenCalledOnce();
+        expect(transactions()).toBe(0);
+
+        // Opening late permits only the restore snapshot, never the pre-halt queued flush.
         held.release();
         expect(await journal.start()).toBe(true);
+        const snapshot = await rows();
+        expect(snapshot).toHaveLength(1);
+        expect(snapshot[0].epoch).toBe(oldEpoch);
+        expect(await layers(UI)).toEqual({
+            sent: sent(JSON.stringify({ ...base.data, theme: "unacknowledged before restore" }), base.revision),
+        });
         hide();
         hide("visibilitychange");
         await vi.advanceTimersByTimeAsync(5000);
-        expect(await rows()).toEqual([]);
-        expect(transactions()).toBe(0);
+        expect(await rows()).toEqual(snapshot);
+        expect(transactions()).toBe(1);
+        expect(location.reload).toHaveBeenCalledOnce();
     });
 });
 
