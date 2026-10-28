@@ -1238,8 +1238,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     /** The memory step's entries (and their copies in the `memory` card). */
     const memoryEntries = new Set<OpenAIChat>();
     /**
-     * What each prompt entry carries, by identity, once a merge changed it (`pushPrompts` appends to
-     * the previous entry in place, and a later chat range can push that same object again).
+     * What each prompt entry carries, by identity, once a merge made it (`pushPrompts` merges into a
+     * copy of the previous entry, since a later chat range can push that same object again).
      */
     const mergedProvenance = new Map<OpenAIChat, EntryProvenance>();
     const provenanceOf = (chat: OpenAIChat): EntryProvenance | null => {
@@ -1892,6 +1892,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         unformated.postEverything.push({ role: "system", content: "[Continue the last response]" });
     }
 
+    /** The entries `pushPrompts` made by merging, which only `formated` holds. */
+    const mergedEntries = new Set<OpenAIChat>();
     function pushPrompts(cha: OpenAIChat[]) {
         for (const chat of cha) {
             if (!chat.content.trim() && !(chat.multimodals && chat.multimodals.length > 0)) {
@@ -1907,10 +1909,21 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 continue;
             }
             if (chat.role === "system") {
-                const endf = formated.at(-1);
-                if (endf && endf.role === "system" && endf.memo === chat.memo && endf.name === chat.name) {
-                    const into = provenanceOf(endf);
+                const last = formated.at(-1);
+                if (last && last.role === "system" && last.memo === chat.memo && last.name === chat.name) {
+                    const into = provenanceOf(last);
                     const from = provenanceOf(chat);
+                    // A later chat range can push the same history object again: merge into a copy,
+                    // so the other occurrence keeps its own text.
+                    let endf = last;
+                    if (!mergedEntries.has(last)) {
+                        endf = { ...last };
+                        mergedEntries.add(endf);
+                        formated[formated.length - 1] = endf;
+                        if (protectedEntries.has(last)) {
+                            protectedEntries.add(endf);
+                        }
+                    }
                     if (into || from) {
                         const merged = mergedProvenance.get(endf) ?? {
                             sources: into?.sources.slice() ?? [],
@@ -1927,7 +1940,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                         }
                         mergedProvenance.set(endf, merged);
                     }
-                    formated[formated.length - 1].content += "\n\n" + chat.content;
+                    endf.content += "\n\n" + chat.content;
                     if (protectedEntries.has(chat)) {
                         delete endf.removable;
                         protectedEntries.add(endf);

@@ -1006,6 +1006,21 @@ describe("the context report", () => {
         });
     });
 
+    it("merges a system entry into a copy, so another chat range's occurrence of that entry keeps its text", async () => {
+        const separator: PromptItem = { type: "plain", type2: "normal", text: "--", role: "user" };
+        const { run } = contextAssembly({
+            template: [CHAT_CARD, separator, CHAT_CARD],
+            messages: [
+                { chatId: "u1", data: "hello" },
+                { chatId: "c1", data: "yo", role: "char" },
+            ],
+            promptSettings: { sendChatAsSystem: true },
+        });
+        const { texts } = await run();
+        const range = "assistant: Hi!\n\nuser: hello\n\nassistant: yo";
+        expect(texts).toEqual([range, "--", range]);
+    });
+
     it.each([760, 720, 660])(
         "counts every removed occurrence of overlapping history and keeps the entries that fit in %i tokens",
         async (promptBudget) => {

@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
 - [Chat screen and input](#chat-screen-and-input) (3)
 - [Test mocks](#test-mocks) (2)
 
@@ -52,13 +52,6 @@ Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `
 
 **Why it matters:** the client's feed-lock rules (whole-read lock lists, the revision rule for older copies) assume a released generation does not re-lock a message.
 **Suggested handling:** if a reply ever shows locked after its job finished its write, check for a replayed `begin`; a fix would retire released generation ids per job in `generationLock` or refuse a `begin` whose message exists.
-
-### Overlapping chat ranges share one history object
-
-`server/src/prompt/assemble.ts` `pushPrompts` (:1853, `formated[formated.length - 1].content += "\n\n" + chat.content`) appends a merged system entry's text into the previous entry object in place. With two overlapping `chat` template cards the same history object sits in `formated` twice, so a merge into one occurrence also changes the other occurrence's text (it is sent twice with the merged text). Only for gpt/claude/openrouter/reverse_proxy models and consecutive system entries with the same memo and name. Pre-existing, inherited from the client path; the token-recheck half was fixed 2026-10-26 (Deep Audit Fixes slice 1).
-
-**Why it matters:** a prompt shape the user did not write; the context report's per-entry counts read the mutated object.
-**Suggested handling:** clone an occurrence before merging into it (prompt identity changes: check `server/src/tests/assemble.test.ts` ~957, which asserts the shared identity, and the browser golden).
 
 ## Chat screen and input
 
