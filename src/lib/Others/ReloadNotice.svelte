@@ -1,10 +1,11 @@
 <script lang="ts">
     import { language } from "src/lang";
     import { dismissReloadNotice, reloadNotice } from "../../ts/alert";
-    import { exportDrafts, recoveryDrafts } from "../../ts/storage/recoveryDrafts.svelte";
+    import { recoveryDrafts } from "../../ts/storage/recoveryDrafts.svelte";
+    import RecoveryDrafts from "./RecoveryDrafts.svelte";
     import Button from "../UI/GUI/Button.svelte";
     let draftsDismissed = $state(false);
-    const showDrafts = $derived(!draftsDismissed && recoveryDrafts.entries.length > 0);
+    const showDrafts = $derived(!draftsDismissed && !recoveryDrafts.isOpen && recoveryDrafts.entries.length > 0);
 </script>
 
 <!-- Conflict and draft notices stay above the alert overlay and dismiss independently. Not modal. -->
@@ -29,11 +30,15 @@
             {/if}
             {#if showDrafts}
                 <span class="text-textcolor whitespace-pre-wrap">{language.resourceRecoveryDrafts}</span>
-                <Button className="mt-4" onclick={exportDrafts}>{language.export}</Button>
+                <Button className="mt-4" onclick={() => recoveryDrafts.open()}>{language.recoveryDrafts.review}</Button>
                 <Button className="mt-4" onclick={() => (draftsDismissed = true)}
                     >{language.resourceNoticeDismiss}</Button
                 >
             {/if}
         </div>
     </div>
+{/if}
+
+{#if recoveryDrafts.isOpen}
+    <RecoveryDrafts />
 {/if}

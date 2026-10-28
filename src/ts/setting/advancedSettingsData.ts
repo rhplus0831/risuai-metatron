@@ -1,9 +1,18 @@
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
+import { recoveryDrafts } from "../storage/recoveryDrafts.svelte";
 
 export const advancedSettingsItems: SettingItem[] = [
     { type: "header", id: "adv.header", labelKey: "advancedSettings", options: { level: "h2" }, classes: "!mb-0" },
     { type: "header", id: "adv.warn", labelKey: "advancedSettingsWarn", options: { level: "warning" } },
+    {
+        id: "adv.recoveredChanges",
+        type: "button",
+        labelKey: "recoveredChanges",
+        condition: () => recoveryDrafts.entries.length > 0,
+        options: { onClick: () => recoveryDrafts.open() },
+        keywords: ["recovery", "recovered", "drafts", "changes", "복구", "변경"],
+    },
 
     // Media
     {
@@ -277,7 +286,12 @@ export const advancedSettingsSections: SettingSection[] = [
         id: "advanced.featureAccess",
         labelKey: "settingsSectionFeatureAccess",
         descriptionKey: "settingsSectionFeatureAccessDesc",
-        items: itemsById(advancedSettingsItems, ["adv.showUnrec", "adv.useExp", "display.hideApiKey"]),
+        items: itemsById(advancedSettingsItems, [
+            "adv.recoveredChanges",
+            "adv.showUnrec",
+            "adv.useExp",
+            "display.hideApiKey",
+        ]),
     },
     {
         id: "advanced.performance",
