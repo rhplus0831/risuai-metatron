@@ -190,6 +190,8 @@ function update(patch: Partial<PushBrowserState>) {
 
 let started = false;
 let serverKey: string | null = null;
+/** Set by the boot's key read and taken by the first sync, so a boot reads the key once. */
+let keyJustRead = false;
 /** Enable, disable, and sync run one at a time, across tabs when Web Locks are available. */
 let queue: Promise<unknown> = Promise.resolve();
 /** The last contiguous reconciliation, only while it is waiting for the queue or Web Lock. */
@@ -222,21 +224,30 @@ function sameKey(subscription: PushSubscription, key: string): boolean {
     return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
-/** The server's VAPID key, fetched once; null (and `server-off`) when push is off there. */
-async function loadServerKey(): Promise<string | null> {
-    if (serverKey) {
-        return serverKey;
+/** A key read; `failure` is set when the read failed and `key` is the last key read before. */
+type KeyRead = { key: string | null; failure?: unknown };
+
+/**
+ * Reads the server's VAPID key: null (and `server-off`) when push is off there. Each sync reads it
+ * again, so an open tab follows a key change, or push turned on or off on the server. A failed read
+ * answers the last key read with the failure, and throws when there is none.
+ */
+async function loadServerKey(): Promise<KeyRead> {
+    try {
+        const response = await authFetch(PUSH_KEY_PATH);
+        if (!response.ok) {
+            throw new Error(language.pushNotifications.keyRequestFailed(response.status));
+        }
+        const body = (await response.json()) as { publicKey?: unknown };
+        serverKey = typeof body.publicKey === "string" && body.publicKey ? body.publicKey : null;
+    } catch (error) {
+        if (serverKey) {
+            return { key: serverKey, failure: error };
+        }
+        throw error;
     }
-    const response = await authFetch(PUSH_KEY_PATH);
-    if (!response.ok) {
-        throw new Error(language.pushNotifications.keyRequestFailed(response.status));
-    }
-    const body = (await response.json()) as { publicKey?: unknown };
-    serverKey = typeof body.publicKey === "string" && body.publicKey ? body.publicKey : null;
-    if (!serverKey) {
-        update({ availability: "server-off" });
-    }
-    return serverKey;
+    update({ availability: serverKey ? "ok" : "server-off" });
+    return { key: serverKey };
 }
 
 /** The active service worker registration, or null when there is none within the timeout. */
@@ -325,10 +336,10 @@ async function flushPendingUnsubscribe(optedOut: boolean) {
 /**
  * Registers this browser's subscription with the server, creating it (or replacing one made for an
  * old server key) first. Needs the permission granted; creating a subscription may need a click on
- * some browsers, so a failure here is reported, not fatal.
+ * some browsers, so a failure here is reported, not fatal. `known` is a key this sync already read.
  */
-async function ensureSubscribed(force: boolean): Promise<void> {
-    const key = await loadServerKey();
+async function ensureSubscribed(force: boolean, known: KeyRead | null = null): Promise<void> {
+    const { key, failure } = known ?? (await loadServerKey());
     if (!key) {
         update({ subscribed: false });
         return;
@@ -339,6 +350,10 @@ async function ensureSubscribed(force: boolean): Promise<void> {
     }
     let subscription = await registration.pushManager.getSubscription();
     if (subscription && !sameKey(subscription, key)) {
+        if (failure !== undefined) {
+            // Another tab may have subscribed for a newer key: replace nothing until the key is read.
+            throw failure;
+        }
         writeRegistrationStamp(null);
         const stale = subscription.endpoint;
         const removed = await unsubscribed(subscription);
@@ -414,9 +429,17 @@ export function reconcilePush(): Promise<void> {
     };
     const run: Promise<void> = serial(async () => {
         releaseFold();
+        let known: KeyRead | null = keyJustRead ? { key: serverKey } : null;
+        keyJustRead = false;
         const permission = currentPermission();
         let optedOut = readStored(OPTED_OUT_KEY) === "1";
         update({ permission, optedOut, promptDismissed: readStored(PROMPT_DISMISSED_KEY) === "1" });
+        if (!known && get(pushBrowserState).availability === "server-off") {
+            // Push may have been turned on on the server since.
+            try {
+                known = await loadServerKey();
+            } catch {}
+        }
         if (get(pushBrowserState).availability !== "ok") {
             return;
         }
@@ -436,7 +459,7 @@ export function reconcilePush(): Promise<void> {
             return;
         }
         try {
-            await ensureSubscribed(false);
+            await ensureSubscribed(false, known);
         } catch (error) {
             update({ subscribed: false, error: describe(error) });
         }
@@ -645,9 +668,10 @@ export function startPushNotifications() {
     void (async () => {
         if (availability === "ok") {
             try {
-                if (!(await loadServerKey())) {
+                if (!(await loadServerKey()).key) {
                     availability = "server-off";
                 }
+                keyJustRead = true;
             } catch (error) {
                 console.error("[Push]", error);
             }

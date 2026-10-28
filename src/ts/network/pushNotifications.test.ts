@@ -113,8 +113,8 @@ class FakeNotification {
     }
 }
 
-/** What the fake server answers: the key route, the PUT, the DELETE. */
-const server = { publicKey: KEY as string | null, put: 204, delete: 204 };
+/** What the fake server answers: the key route (its status and key), the PUT, the DELETE. */
+const server = { key: 200, publicKey: KEY as string | null, put: 204, delete: 204 };
 const requests: { method: string; path: string; body?: unknown }[] = [];
 let visibility: DocumentVisibilityState = "visible";
 /** `document.hasFocus()`: off by default, so the tab's notification is shown. */
@@ -192,6 +192,7 @@ beforeEach(() => {
     shown = [];
     visibility = "visible";
     focused = false;
+    server.key = 200;
     server.publicKey = KEY;
     server.put = 204;
     server.delete = 204;
@@ -208,7 +209,11 @@ beforeEach(() => {
         const method = init?.method ?? "GET";
         requests.push({ method, path, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
         if (path === "/api/push/key") {
-            return { ok: true, status: 200, json: async () => ({ publicKey: server.publicKey }) } as Response;
+            return {
+                ok: server.key < 300,
+                status: server.key,
+                json: async () => ({ publicKey: server.publicKey }),
+            } as Response;
         }
         const status = method === "PUT" ? server.put : server.delete;
         return { ok: status < 300, status } as Response;
@@ -638,6 +643,63 @@ describe("startPushNotifications", () => {
         server.put = 400;
         const module = await boot();
         expect(state(module)).toMatchObject({ subscribed: false, error: expect.stringContaining("400") });
+    });
+});
+
+describe("the server key in an open tab", () => {
+    // The server's key is read again at each sync, so a tab that stays open never swaps back a
+    // subscription another tab made for a newer key, and a server that turns push on is seen.
+    const NEWER_KEY_BYTES = OLD_KEY_BYTES;
+
+    it("follows a key change another tab already subscribed for, replacing nothing", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        // A reloaded tab learned the newer key and subscribed for it.
+        server.publicKey = base64url(NEWER_KEY_BYTES);
+        const other = fakeSubscription("https://fcm.googleapis.com/fcm/send/other", NEWER_KEY_BYTES);
+        current = other;
+        registration.pushManager.subscribe.mockClear();
+        showPage();
+        await settle();
+        expect(other.unsubscribe).not.toHaveBeenCalled();
+        expect(registration.pushManager.subscribe).not.toHaveBeenCalled();
+        expect(current).toBe(other);
+        expect(calls("DELETE")).toEqual([]);
+        expect(calls("PUT").at(-1)?.body).toEqual({ subscription: other.toJSON() });
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("replaces nothing when the key cannot be read and the subscription has another key", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const other = fakeSubscription("https://fcm.googleapis.com/fcm/send/other", NEWER_KEY_BYTES);
+        current = other;
+        server.key = 503;
+        registration.pushManager.subscribe.mockClear();
+        await module.reconcilePush();
+        expect(other.unsubscribe).not.toHaveBeenCalled();
+        expect(registration.pushManager.subscribe).not.toHaveBeenCalled();
+        expect(state(module)).toMatchObject({
+            subscribed: false,
+            error: languageEnglish.pushNotifications.keyRequestFailed(503),
+        });
+        // A failed read with the last key's subscription in place still syncs from the last key.
+        current = fakeSubscription("https://fcm.googleapis.com/fcm/send/same", KEY_BYTES);
+        await module.reconcilePush();
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("sees push turned on on the server when the page is shown again, and subscribes", async () => {
+        server.publicKey = null;
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        expect(state(module).availability).toBe("server-off");
+        server.publicKey = KEY;
+        showPage();
+        await settle();
+        expect(state(module)).toMatchObject({ availability: "ok", subscribed: true });
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(1);
+        expect(calls("PUT")).toHaveLength(1);
     });
 });
 
