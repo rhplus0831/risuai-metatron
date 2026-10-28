@@ -343,7 +343,10 @@ Generation channels:
   within the wait removes the absence cap without extending a request's own
   allowance. Absence expiry settles `disconnected` through the existing path,
   including that client's ownerless queued roots opened no later than the expired
-  root's dispatch. Delivered callbacks keep their drain holds; socket departure
+  root's dispatch. A queued root also wakes at its own job's absence deadline (its own
+  timeout still starts at dispatch), and an attach after that deadline settles it
+  `disconnected` instead of delivering it; a never-dispatched root gets no `cancel` and
+  no drain hold. Delivered callbacks keep their drain holds; socket departure
   never releases them or changes `/drained`. There is no job-wide absence abort:
   callback-free sequence parts and detached memory tasks keep running.
 - On attach, buffered notices, outstanding request replays, and first deliveries
@@ -573,6 +576,11 @@ Runtime limits of other subsystems live with their owners:
   without `exp` does not expire.
 - `/hub-proxy` is unauthenticated and forwards request headers other than
   `risu-auth` to the configured hub.
+- Unconfirmed: a provider callback that ends `disconnected` fails its job through
+  `endWith` and the runner's finalize (`jobs/runSetup.ts`), not the registry's `abort()`,
+  so `JOB_ABORT_GRACE_MS` does not bound that end (the maximum-duration watchdog still
+  does). The chat can stay busy longer than owner absence plus abort grace; inspected in
+  source, not reproduced.
 
 ### Limitations
 

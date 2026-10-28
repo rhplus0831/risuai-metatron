@@ -680,6 +680,115 @@ describe("the hub: owner absence", () => {
         expect(await next).toEqual({ outcome: "answered", value: true });
     });
 
+    it.each(["dispatched callback", "cancelled callback's drain hold"] as const)(
+        "expires a newer queued root at its own absence deadline behind a %s without changing the drain hold",
+        async (blocker) => {
+            const h = harness();
+            const aAttached = { value: true };
+            const bAttached = { value: true };
+            let aDeadline = Infinity;
+            let bDeadline = Infinity;
+            const a = h.open("a", { attached: aAttached, ownerAbsentDeadline: () => aDeadline });
+            const abort = new AbortController();
+            const running = a.channel.callback(
+                "editoutput",
+                { text: "long callback" },
+                { timeoutMs: 300_000, signal: abort.signal },
+            );
+            const runningId = h.last("callback").id;
+            await h.tick(1);
+            // B must open after A dispatched: the older-channel sweep cannot settle this root.
+            const b = h.open("b", { attached: bAttached, ownerAbsentDeadline: () => bDeadline });
+            const queued = b.channel.callback("editoutput", { text: "queued" });
+            const c = h.open("c");
+            const next = c.channel.callback("editoutput", { text: "after the drain" });
+            if (blocker === "cancelled callback's drain hold") {
+                aAttached.value = false;
+                aDeadline = h.clock.value + 120_000;
+                a.ownerChanged();
+                await h.tick(10_000);
+            }
+            bAttached.value = false;
+            bDeadline = h.clock.value + 120_000;
+            b.ownerChanged();
+            if (Number.isFinite(aDeadline)) {
+                await h.tick(aDeadline - h.clock.value);
+                expect(await h.state(running)).toMatchObject({ outcome: "disconnected" });
+            }
+            await h.tick(bDeadline - h.clock.value - 1);
+            expect(await h.state(queued)).toBe("pending");
+            await h.tick(1);
+            expect(await h.state(queued)).toMatchObject({ outcome: "disconnected" });
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            expect(h.hydrations).toEqual(["a"]);
+            if (blocker === "dispatched callback") {
+                expect(await h.state(running)).toBe("pending");
+                abort.abort();
+                expect(await h.state(running)).toMatchObject({ outcome: "aborted" });
+                aDeadline = h.clock.value;
+            }
+            expect(h.ofType("cancel").map((event) => event.id)).toEqual([runningId]);
+            const drainEnd = aDeadline + CANCELLED_CALLBACK_DRAIN_MS;
+            await h.tick(drainEnd - h.clock.value - 1);
+            expect(await h.state(next)).toBe("pending");
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            await h.tick(1);
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a", "c"]);
+            h.answer(c, h.last("callback").id);
+            expect(await next).toMatchObject({ outcome: "answered" });
+            expect(a.drained(runningId)).toBe(false);
+        },
+    );
+
+    it.each([
+        { absence: 119_999, outcome: "answered" },
+        { absence: 120_000, outcome: "disconnected" },
+    ] as const)(
+        "settles a newer queued root as $outcome when its owner reattaches after $absence ms",
+        async ({ absence, outcome }) => {
+            const h = harness();
+            const a = h.open("a");
+            const running = a.channel.callback("editoutput", { text: "long callback" }, { timeoutMs: 300_000 });
+            const runningId = h.last("callback").id;
+            h.clock.value += 1;
+            const bAttached = { value: true };
+            let bDeadline = Infinity;
+            const b = h.open("b", { attached: bAttached, ownerAbsentDeadline: () => bDeadline });
+            const queued = b.channel.callback("editoutput", { text: "queued" }, { timeoutMs: 20_000 });
+            bAttached.value = false;
+            bDeadline = h.clock.value + 120_000;
+            b.ownerChanged();
+            // No timer fires: an attach checks the authoritative clock before clearing absence.
+            h.clock.value += absence;
+            b.expireOverdue();
+            bAttached.value = true;
+            bDeadline = Infinity;
+            b.ownerChanged();
+            b.handleAttach();
+            expect(await h.state(queued)).toEqual(
+                outcome === "answered" ? "pending" : expect.objectContaining({ outcome }),
+            );
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            if (outcome === "answered") {
+                // The owner is back, but the lane remains held beyond the old absence deadline.
+                h.clock.value += 1_000;
+                await vi.advanceTimersByTimeAsync(121_000);
+                expect(await h.state(queued)).toBe("pending");
+                expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            }
+            h.answer(a, runningId);
+            expect(await running).toMatchObject({ outcome: "answered" });
+            if (outcome === "answered") {
+                expect(h.last("callback")).toMatchObject({ job: "b", deadline: h.clock.value + 20_000 });
+                expect(h.last("callback").replay).toBeUndefined();
+                h.answer(b, h.last("callback").id);
+            }
+            expect(await h.state(queued)).toMatchObject({ outcome });
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(outcome === "answered" ? ["a", "b"] : ["a"]);
+            expect(h.ofType("cancel")).toEqual([]);
+        },
+    );
+
     it("caps a child by its absent parent's deadline and refuses nesting in that parent after expiry", async () => {
         const h = harness();
         let absenceDeadline = Infinity;

@@ -73,16 +73,6 @@ Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/stor
 **Why it matters:** the client's feed-lock rules (whole-read lock lists, the revision rule for older copies) assume a released generation does not re-lock a message.
 **Suggested handling:** if a reply ever shows locked after its job finished its write, check for a replayed `begin`; a fix would retire released generation ids per job in `generationLock` or refuse a `begin` whose message exists.
 
-### Owner absence bound is not universal
-
-The Job Protocol plan's D6 said a negotiated tab's chat is free within `OWNER_SILENT_MS + OWNER_ABSENT_MS + JOB_ABORT_GRACE_MS` (45 + 120 + 5 s). Found 2026-10-29 while landing owner liveness (Job Protocol Slice 4, `31dd5c2f0`); the guides do not state the bound as a guarantee. Two paths miss it:
-
-- `server/src/jobs/channel.ts` `expireIfDue` (~:424) settles `disconnected` for queued roots whose job opened no later than the expired root's dispatch. A newer ownerless job of the same client stays queued past 170 s (a Codex probe), and a delivered callback's drain hold (`CANCELLED_CALLBACK_DRAIN_MS`) adds up to 60 s more.
-- A provider callback that ends `disconnected` fails through `endWith` and the runner's finalize, not the registry's `abort()`, so `JOB_ABORT_GRACE_MS` does not bound that end (`server/src/jobs/generationJobs.ts` `abort`).
-
-**Why it matters:** a user waiting on an absent owner's chat can wait longer than the documented absence wait suggests.
-**Suggested handling:** scope any stated bound to a dispatched callback of the job itself; if the newer-job case matters, give queued roots of an absent client the job-level absence deadline too.
-
 ## Display transform
 
 ### Budget-refused handler rows stay raw
