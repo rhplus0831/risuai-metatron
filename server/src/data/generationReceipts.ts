@@ -40,13 +40,20 @@ export type GenerationReceipts = {
     end(jobId: string, endedAt: number, status: GenerationStatus): void;
     progress(jobId: string, value: unknown): void;
     read(jobId: string): GenerationReceipt | null;
+    /** Finds a current-epoch request's receipt or tombstone, even when its outcome payload was pruned. */
+    readByRequest(requestId: string): GenerationRequestReceipt | null;
+    /** Records an unknown request's cancellation; preserves an existing receipt or the first tombstone time. */
+    cancel(requestId: string, clientId: string, at: number): void;
     sync(epoch: string): void;
     prune(now: number): void;
     degraded(): boolean;
     close(): void;
 };
 
-type ReceiptRow = Omit<GenerationReceipt, "progress" | "status"> & {
+export type GenerationRequestReceipt = { cancelled: true } | (GenerationReceipt & { cancelled: false });
+
+type ReceiptRow = Omit<GenerationReceipt, "kind" | "progress" | "status"> & {
+    kind: GenerationKind | "cancelled";
     progress: string | null;
     status: string | null;
 };
@@ -130,6 +137,12 @@ export function createGenerationReceipts(options: {
                     "character_id AS characterId, chat_id AS chatId, admitted_at AS admittedAt, ended_at AS endedAt, " +
                     "progress, status FROM receipts WHERE job_id = ? AND epoch = ?",
             ),
+            requestKey: open.prepare("SELECT job_id AS jobId FROM receipts WHERE request_id = ? AND epoch = ?"),
+            expireRequest: open.prepare("DELETE FROM receipts WHERE request_id = ? AND epoch = ? AND ended_at <= ?"),
+            cancel: open.prepare(
+                "INSERT INTO receipts (job_id, request_id, client_id, epoch, kind, character_id, chat_id, admitted_at, ended_at) " +
+                    "VALUES (?, ?, ?, ?, 'cancelled', '', '', ?, ?)",
+            ),
             sync: open.prepare("DELETE FROM receipts WHERE epoch <> ?"),
             expirePayloads: open.prepare(
                 "UPDATE receipts SET status = NULL WHERE job_id IN " +
@@ -190,10 +203,44 @@ export function createGenerationReceipts(options: {
         fail(error);
     }
 
+    /** Deletes an expired matching row before returning its remaining key, freeing expired unique request ids. */
+    function requestKey(requestId: string): string | undefined {
+        statements!.expireRequest.run(requestId, epoch, now() - GENERATION_RECEIPT_MS);
+        return (statements!.requestKey.get(requestId, epoch) as { jobId: string } | undefined)?.jobId;
+    }
+
+    function readRow(jobId: string): GenerationRequestReceipt | null {
+        const row = statements!.read.get(jobId, epoch) as ReceiptRow | undefined;
+        if (!row) {
+            return null;
+        }
+        const age = row.endedAt === null ? null : now() - row.endedAt;
+        if (age !== null && age >= GENERATION_RECEIPT_MS) {
+            if (row.requestId) {
+                statements!.expireRequest.run(row.requestId, epoch, now() - GENERATION_RECEIPT_MS);
+            }
+            return null;
+        }
+        if (row.kind === "cancelled") {
+            return { cancelled: true };
+        }
+        return {
+            ...row,
+            kind: row.kind,
+            cancelled: false,
+            progress: row.progress === null ? null : JSON.parse(row.progress),
+            status: age !== null && age < KEPT_OUTCOME_MS && row.status !== null ? JSON.parse(row.status) : null,
+        };
+    }
+
     return {
         admit(input) {
             guard(undefined, () => {
                 if (input.epoch !== epoch) {
+                    return;
+                }
+                const existing = input.requestId ? requestKey(input.requestId) : undefined;
+                if (existing && existing !== input.jobId) {
                     return;
                 }
                 statements!.admit.run(
@@ -234,20 +281,22 @@ export function createGenerationReceipts(options: {
         },
         read(jobId) {
             return guard(null, (): GenerationReceipt | null => {
-                const row = statements!.read.get(jobId, epoch) as ReceiptRow | undefined;
-                if (!row) {
-                    return null;
-                }
-                const age = row.endedAt === null ? null : now() - row.endedAt;
-                if (age !== null && age >= GENERATION_RECEIPT_MS) {
-                    return null;
-                }
-                return {
-                    ...row,
-                    progress: row.progress === null ? null : JSON.parse(row.progress),
-                    status:
-                        age !== null && age < KEPT_OUTCOME_MS && row.status !== null ? JSON.parse(row.status) : null,
-                };
+                const row = readRow(jobId);
+                if (!row || row.cancelled) return null;
+                const { cancelled, ...receipt } = row;
+                return receipt;
+            });
+        },
+        readByRequest(requestId) {
+            return guard(null, () => {
+                const jobId = requestKey(requestId);
+                return jobId ? readRow(jobId) : null;
+            });
+        },
+        cancel(requestId, clientId, at) {
+            guard(undefined, () => {
+                if (requestKey(requestId)) return;
+                statements!.cancel.run(`cancel:${requestId}`, requestId, clientId, epoch, at, at);
             });
         },
         sync(nextEpoch) {

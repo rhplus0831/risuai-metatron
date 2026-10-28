@@ -6,8 +6,9 @@ import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Hono } from "hono";
 import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
-import type { GenerationStatus, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { NO_GENERATION_HOOKS, type GenerationStatus, type GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import {
     createGenerationReceipts,
     type GenerationReceiptAdmission,
@@ -18,6 +19,9 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
 import { createGenerationJobs, type GenerationRunner } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { createAuthStore } from "../routes/auth.ts";
+import { registerGenerationRoutes } from "../routes/generations.ts";
+import type { AppEnv } from "../types.ts";
 import { createResourceTestClient, createTestServer } from "./testSupport.ts";
 
 const HOUR = 60 * 60_000;
@@ -165,8 +169,246 @@ function registryFixture(beforeOpen?: (file: string, epoch: string) => void) {
         await store.backupTo(snapshot);
         store.replaceAll(store.readSnapshot(snapshot));
     };
-    return { file, store, receipts, events, registry, create, changeEpoch };
+    return { dir, bound, snapshots, file, store, receipts, events, registry, create, changeEpoch };
 }
+
+/** In-process HTTP, with real admission and SQLite; authentication is bypassed for this fixture. */
+function requestFixture() {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.setSystemTime(START);
+    const s = registryFixture();
+    const body = {
+        kind: "send" as const,
+        requestId: "request-one",
+        clientId: "owner",
+        context: {
+            characterId: "c",
+            chatId: "k",
+            ...s.bound,
+            mode: "normal",
+            input: "hello",
+            userMessageId: "user-one",
+            chatRevision: s.store.chatRevision("c", "k")!,
+        },
+    };
+    const route = (jobs: ReturnType<typeof s.registry>) => {
+        const app = new Hono<AppEnv>();
+        registerGenerationRoutes(app, {
+            jobs,
+            auth: createAuthStore(s.dir, { bypass: true }),
+            limiter: async (_c, next) => next(),
+        });
+        return async (value: unknown = body, endpoint = "/api/generations", epoch = s.store.epoch()) => {
+            const response = await app.request(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+                body: JSON.stringify(value),
+            });
+            return {
+                status: response.status,
+                body: (await response.json()) as {
+                    jobId?: string;
+                    replayed?: boolean;
+                    status?: GenerationStatus | null;
+                    error?: string;
+                },
+            };
+        };
+    };
+    return { ...s, body, route };
+}
+
+describe("request identity over HTTP", () => {
+    it("replays a completed unanswered create before revision, binding, maintenance and shutdown refusals", async () => {
+        const s = requestFixture();
+        const runner = vi.fn<GenerationRunner>(async (job) => {
+            job.write(() => ({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: s.body.context.chatRevision,
+                        ops: [
+                            {
+                                op: "append",
+                                messages: [{ role: "user", data: "hello", chatId: "user-one" }],
+                                anchor: { end: true },
+                            },
+                        ],
+                    },
+                ],
+            }));
+            job.emit({ type: "done", revision: s.store.chatRevision("c", "k")!, result: "owner-only" });
+        });
+        const jobs = s.registry(s.receipts, runner);
+        const post = s.route(jobs);
+        // The caller never consumes the first create's answer.
+        await post();
+        await jobs.drain();
+        expect(s.store.chatRevision("c", "k")).not.toBe(s.body.context.chatRevision);
+        const receipt = s.receipts.readByRequest(s.body.requestId);
+        expect(receipt).toMatchObject({ cancelled: false, status: { state: "ended" } });
+        if (!receipt || receipt.cancelled) throw new Error("Missing admitted receipt");
+        const replay = {
+            status: 200,
+            body: {
+                jobId: receipt.jobId,
+                replayed: true,
+                owned: true,
+                status: { state: "ended", terminal: { type: "done", result: "owner-only" } },
+            },
+        };
+        expect(await post()).toMatchObject(replay);
+        await s.snapshots.withMaintenance(async () => {
+            expect(s.snapshots.gate.active).toBe(true);
+            expect(await post()).toMatchObject(replay);
+            expect(await post(s.body, "/api/generations", "old-epoch")).toMatchObject({ status: 412 });
+        });
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: s.store.chatRevision("c", "k"),
+                    ops: [{ op: "meta", set: { bindedPersona: null } }],
+                },
+            ],
+        });
+        expect(await post()).toMatchObject(replay);
+        // Revision, bindings, hooks and client id do not belong to the fingerprint.
+        const foreign = await post({
+            ...s.body,
+            clientId: "other",
+            hooks: { ...NO_GENERATION_HOOKS, chatOutput: true },
+            context: { ...s.body.context, chatRevision: s.store.chatRevision("c", "k"), personaId: null },
+        });
+        expect(foreign).toMatchObject({
+            status: 200,
+            body: {
+                jobId: receipt.jobId,
+                replayed: true,
+                owned: false,
+                status: { state: "ended", terminal: { type: "done" } },
+            },
+        });
+        expect(foreign.body.status?.terminal).not.toHaveProperty("result");
+        jobs.beginShutdown();
+        expect(await post()).toMatchObject(replay);
+        expect(runner).toHaveBeenCalledTimes(1);
+    });
+
+    it("admits identical concurrent posts once while the runner is latched and rejects changed request identities", async () => {
+        const s = requestFixture();
+        const runner = vi.fn<GenerationRunner>(async (job) => {
+            await new Promise<void>((resolve) => {
+                if (job.signal.aborted) resolve();
+                else job.signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+        });
+        const jobs = s.registry(s.receipts, runner);
+        const post = s.route(jobs);
+        const answers = await Promise.all([post(), post()]);
+        expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+        const first = answers.find((answer) => !answer.body.replayed)!;
+        const replay = answers.find((answer) => answer.body.replayed)!;
+        expect(replay).toMatchObject({
+            status: 200,
+            body: { jobId: first.body.jobId, replayed: true, owned: true, status: { state: "running" } },
+        });
+        expect(runner).toHaveBeenCalledTimes(1);
+        for (const change of [{ input: "changed" }, { characterId: "another-character" }]) {
+            expect(await post({ ...s.body, context: { ...s.body.context, ...change } })).toEqual({
+                status: 409,
+                body: { error: "requestIdReused" },
+            });
+        }
+        expect(runner).toHaveBeenCalledTimes(1);
+    });
+
+    it("cancels an unknown request before its late create and aborts only the named running request across owners", async () => {
+        const s = requestFixture();
+        const signals: AbortSignal[] = [];
+        const jobs = s.registry(s.receipts, async (job) => {
+            signals.push(job.signal);
+            await new Promise<void>((resolve) => {
+                if (job.signal.aborted) resolve();
+                else job.signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+        });
+        const post = s.route(jobs);
+        const running = await post();
+        const cancel = (requestId: string) => post({ requestId, clientId: "another-tab" }, "/api/generations/cancel");
+        expect(await cancel("late-request")).toEqual({ status: 200, body: { state: "cancelled" } });
+        expect(signals[0].aborted).toBe(false);
+        expect(await post({ ...s.body, requestId: "late-request" })).toEqual({
+            status: 409,
+            body: { error: "requestCancelled" },
+        });
+        expect(await cancel(s.body.requestId)).toMatchObject({
+            status: 200,
+            body: { state: "aborted", jobId: running.body.jobId, owned: false },
+        });
+        expect(signals[0].aborted).toBe(true);
+        await jobs.drain();
+        expect(await post()).toMatchObject({
+            status: 200,
+            body: { replayed: true, status: { state: "ended", terminal: { type: "error", reason: "aborted" } } },
+        });
+        expect(signals).toHaveLength(1);
+    });
+
+    it("replays an interrupted request as shutdown after the receipts are reopened", async () => {
+        const s = requestFixture();
+        const jobs = s.registry(s.receipts, async (job) => {
+            await new Promise<void>((resolve) => job.signal.addEventListener("abort", () => resolve(), { once: true }));
+        });
+        const first = await s.route(jobs)();
+        // Closing the disk first leaves the running admission without a terminal, as a crash does.
+        s.receipts.close();
+        jobs.beginShutdown();
+        await jobs.drain();
+        jobs.dispose();
+        const reopened = open(s.file, s.store.epoch(), () => Date.now());
+        const runner = vi.fn<GenerationRunner>(async () => {});
+        const next = s.registry(reopened, runner);
+        expect(await s.route(next)()).toMatchObject({
+            status: 200,
+            body: {
+                jobId: first.body.jobId,
+                replayed: true,
+                owned: true,
+                status: { state: "ended", terminal: { type: "error", reason: "shutdown", status: 503 } },
+            },
+        });
+        expect(runner).not.toHaveBeenCalled();
+    });
+
+    it("admits a request id again after 72 hours without degrading or losing its new receipt", async () => {
+        const s = requestFixture();
+        const runner = vi.fn<GenerationRunner>(async (job) => {
+            job.emit({ type: "done", revision: "r" });
+        });
+        const jobs = s.registry(s.receipts, runner);
+        const post = s.route(jobs);
+        const first = await post();
+        await jobs.drain();
+        jobs.startGc();
+        await vi.advanceTimersByTimeAsync(60_000);
+        // No GC timer fires after the jump: lookup itself must retire the expired unique request key.
+        vi.setSystemTime(START + 72 * HOUR + 1);
+        const second = await post();
+        expect(second.status).toBe(200);
+        expect(second.body).not.toHaveProperty("replayed", true);
+        expect(second.body.jobId).not.toBe(first.body.jobId);
+        await jobs.drain();
+        expect(runner).toHaveBeenCalledTimes(2);
+        expect(s.receipts.degraded()).toBe(false);
+        expect(s.receipts.readByRequest(s.body.requestId)).toMatchObject({
+            jobId: second.body.jobId,
+            status: { state: "ended", terminal: { type: "done" } },
+        });
+    });
+});
 
 describe("generation receipts on disk", () => {
     it("ends an interrupted job on reopen, preserving progress and the owning tab's status", () => {

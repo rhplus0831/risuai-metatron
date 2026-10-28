@@ -16,9 +16,10 @@ import { warmModules } from "../storage/tests/mutationStoresHarness";
 // joining an active follow and never releasing it, and `runServerButton`'s preflight (ids before the
 // flush, a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
 // `runServerJob` itself: the send kinds with their context, the `unknown` outcome of a create
-// request without an answer, the abort signal (a DELETE for a started job, for a followed busy job,
-// and for a signal that fired during the create; nothing posted after an abort before the flush
-// ends), and a plugin call's identity.
+// request without an answer, the abort signal (passed to the create, which cancels by request id; a
+// DELETE for a started job, for a followed busy job, and for a job the create answered as the signal
+// fired, none for a job its cancel answered; nothing posted after an abort before the flush ends),
+// and a plugin call's identity.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
@@ -28,7 +29,7 @@ type Transport = typeof import("../network/generationJobs");
 
 const stubs = vi.hoisted(() => ({
     follows: [] as unknown[],
-    create: vi.fn<(body: unknown) => Promise<string>>(),
+    create: vi.fn<Transport["createGenerationJob"]>(),
     abort: vi.fn<(jobId: string) => Promise<void>>(async () => {}),
     read: vi.fn<Transport["readGenerationJob"]>(),
     release: vi.fn(),
@@ -91,6 +92,13 @@ class RequestError extends Error {
         super(message);
     }
 }
+/** The resource client's 412: the server data was replaced by a restore. */
+class EpochMismatchError extends Error {
+    constructor(readonly epoch: string) {
+        super("The server data was replaced by a restore");
+        this.name = "ResourceEpochMismatchError";
+    }
+}
 
 vi.mock("src/lang", () => ({
     language: {
@@ -143,6 +151,7 @@ vi.mock("../network/generationJobs", async () => {
     });
 });
 vi.mock("../storage/chatStore.svelte", () => ({
+    endServerJob: vi.fn(),
     chatEntry: stubs.entry,
     /** No chat open: every reply lands away from the open chat. */
     currentChatRef: () => null,
@@ -153,7 +162,11 @@ vi.mock("../storage/chatStore.svelte", () => ({
     markChatStale: stubs.markStale,
     pinChat: stubs.pin,
 }));
-vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
+vi.mock("../storage/resourceClient", () => ({
+    getResourceEpoch: () => EPOCH,
+    ResourceEpochMismatchError: EpochMismatchError,
+    ResourceRequestError: RequestError,
+}));
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: stubs.flush,
     refusedItems: stubs.refused,
@@ -457,7 +470,7 @@ describe("runServerButton", () => {
 
     it("takes the target and the chat's binding before the flush, saves first, and runs a command job it then follows", async () => {
         stubs.entry.mockReturnValue({ ...BOUND, bindedPersona: "bound" });
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerButton(char, "go", ref);
         // The binding was read: a change before the flush ends does not move the job.
         stubs.entry.mockReturnValue({ ...BOUND });
@@ -492,7 +505,7 @@ describe("runServerButton", () => {
     it("reads a chat this tab knows is behind the server after the flush and before the create, saving and reading once more when the first read did not bring it current, and goes on after two attempts; a failed read runs nothing", async () => {
         const order = (fn: { mock: { invocationCallOrder: number[] } }, index = 0) =>
             fn.mock.invocationCallOrder[index];
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         // Behind after the first read (a change landed meanwhile): saved and read once more.
         stubs.refresh.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         let run = commands.runServerButton(char, "go", ref);
@@ -583,7 +596,7 @@ describe("runServerManualTrigger", () => {
     const char = { chaId: "c", type: "character" } as never;
 
     it("posts a manual command with the trigger id in the context, calls onStart once the job exists and before the follow, and reports `started`", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const onStart = vi.fn(() => {
             expect(stubs.create).toHaveBeenCalledTimes(1);
             expect(follows()).toHaveLength(0);
@@ -614,7 +627,7 @@ describe("runServerManualTrigger", () => {
     });
 
     it("omits an absent trigger id and reports `started` for an error terminal too (the follow alerts it)", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerManualTrigger(char, "greet", ref);
         await flush();
         const body = stubs.create.mock.calls[0][0] as { context: Record<string, unknown> };
@@ -675,6 +688,91 @@ describe("runServerJob", () => {
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
 
+    it("follows a running replay once and calls onStart once after a lost create answer", async () => {
+        vi.useFakeTimers();
+        const transport = await vi.importActual<Transport>("../network/generationJobs");
+        const { NO_GENERATION_HOOKS } = await import("../../../shared/jobs.ts");
+        const auth = await import("../storage/serverAuth");
+        const post = vi
+            .spyOn(auth, "authFetch")
+            .mockRejectedValueOnce(new TypeError("answer lost"))
+            .mockResolvedValueOnce(Response.json({ jobId: "j", replayed: true, owned: true, status }));
+        stubs.create.mockImplementation((body, options) =>
+            transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }, options),
+        );
+        const onStart = vi.fn();
+        try {
+            const run = commands.runServerJob(
+                char,
+                ref,
+                {
+                    kind: "send",
+                    label: "send",
+                    requestId: "send-request",
+                    context: { input: "hello", userMessageId: "user-one" },
+                },
+                { onStart },
+            );
+            await vi.advanceTimersByTimeAsync(0);
+            expect(post).toHaveBeenCalledTimes(1);
+            expect(onStart).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(post).toHaveBeenCalledTimes(2);
+            expect(post.mock.calls[1][1]!.body).toBe(post.mock.calls[0][1]!.body);
+            expect(JSON.parse(String(post.mock.calls[1][1]!.body)).requestId).toBe("send-request");
+            expect(follows()).toHaveLength(1);
+            expect(onStart).toHaveBeenCalledTimes(1);
+            endWith(follows()[0], done);
+            expect(await run).toEqual({ outcome: "replayed", terminal: done, requestUncertain: false });
+            expect(follows()).toHaveLength(1);
+            expect(onStart).toHaveBeenCalledTimes(1);
+        } finally {
+            transport.releaseGenerationJob("j");
+            vi.useRealTimers();
+        }
+    });
+
+    it("returns an owned replay terminal even when subsequent chat reads fail, and refuses a foreign running replay", async () => {
+        vi.useFakeTimers();
+        try {
+            const terminal: GenerationTerminalEvent = { ...done, result: ["kept preview"] };
+            stubs.create.mockResolvedValueOnce({
+                outcome: "replayed",
+                jobId: "j",
+                owned: true,
+                status: kept(terminal),
+            });
+            stubs.refresh.mockResolvedValueOnce(true).mockRejectedValue(new Error("chat read offline"));
+            stubs.read.mockRejectedValue(new Error("status read offline"));
+            const onStart = vi.fn();
+            const result = await send({ input: "hello" }, { onStart });
+            expect(result).toEqual({ outcome: "replayed", terminal, requestUncertain: false });
+            expect(stubs.apply).toHaveBeenCalledWith("j", ref, terminal);
+            expect(stubs.refresh).toHaveBeenCalledTimes(2);
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+            stubs.load.mockResolvedValue({});
+            stubs.refresh.mockResolvedValue(true);
+            window.dispatchEvent(new Event("online"));
+            await vi.advanceTimersByTimeAsync(0);
+            stubs.create.mockResolvedValueOnce({
+                outcome: "replayed",
+                jobId: "foreign",
+                owned: false,
+                status: { ...status, jobId: "foreign" },
+            });
+            expect(await send({ input: "hello" }, { onStart })).toMatchObject({
+                outcome: "refused",
+                terminal: null,
+                blockedChats: [ref],
+            });
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("blocks send, button, and trigger jobs for refused targets or orders while allowing healthy chats", async () => {
         vi.useFakeTimers();
         try {
@@ -692,7 +790,11 @@ describe("runServerJob", () => {
                     stubs.refused.mockReturnValue(source === "inventory" ? [item] : []);
                     stubs.flush.mockResolvedValue({ discarded: [], refused: source === "flush" ? [key] : [] });
                     stubs.alertError.mockClear();
-                    expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+                    expect(await send({ input: "hi" })).toEqual({
+                        outcome: "refused",
+                        terminal: null,
+                        requestUncertain: false,
+                    });
                     expect(await commands.runServerButton(char, "go", ref)).toBe("refused");
                     expect(await commands.runServerManualTrigger(char, "greet", ref)).toBe("refused");
                     expect(stubs.create).not.toHaveBeenCalled();
@@ -714,7 +816,7 @@ describe("runServerJob", () => {
                     discarded: [],
                     refused: [item.kind === "chat" ? "chats/c/k" : "chats/c"],
                 });
-                stubs.create.mockReset().mockResolvedValue(`job-${item.kind}`);
+                stubs.create.mockReset().mockResolvedValue({ outcome: "created", jobId: `job-${item.kind}` });
                 stubs.follows.length = 0;
                 const run = commands.runServerJob({ chaId: healthy.chaId, type: "character" } as never, healthy, {
                     kind: "send",
@@ -726,9 +828,10 @@ describe("runServerJob", () => {
                     expect.objectContaining({
                         context: expect.objectContaining({ characterId: healthy.chaId, chatId: healthy.chatId }),
                     }),
+                    { signal: undefined, requestUncertain: undefined },
                 );
                 endWith(follows()[0], done);
-                expect(await run).toEqual({ outcome: "started", terminal: done });
+                expect(await run).toEqual({ outcome: "started", terminal: done, requestUncertain: false });
             }
             expect(stubs.alertError).not.toHaveBeenCalled();
         } finally {
@@ -738,7 +841,7 @@ describe("runServerJob", () => {
     });
 
     it("posts the kind with the caller's context fields and no command, and reports `started` with the terminal", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = send({ input: "hi", userMessageId: "u1", continueMessageId: "m9" });
         await flush();
         const body = stubs.create.mock.calls[0][0] as {
@@ -761,12 +864,12 @@ describe("runServerJob", () => {
             chatRevision: "e:1:1",
         });
         endWith(follows()[0], done);
-        expect(await run).toEqual({ outcome: "started", terminal: done });
+        expect(await run).toEqual({ outcome: "started", terminal: done, requestUncertain: false });
         expect(stubs.abort).not.toHaveBeenCalled();
     });
 
     it("takes a plugin call's captured ids as the identity instead of the binding, once the chat's binding is complete", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = send(
             { input: "" },
             { identity: { presetId: "plug-preset", modelPresetId: "plug-model", personaId: "plug-persona" } },
@@ -787,13 +890,13 @@ describe("runServerJob", () => {
     // create, never on the tab's selection; the server's 409s are shown the same way.
     it("refuses a chat whose binding is not complete before the flush, listing each problem, and never falls back to the selection", async () => {
         stubs.entry.mockReturnValue({ bindedPersona: "nope", bindingReview: true });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(
             await send(
                 { input: "hi" },
                 { identity: { presetId: "preset", modelPresetId: "preset", personaId: "selected" } },
             ),
-        ).toEqual({ outcome: "refused", terminal: null });
+        ).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(await commands.runServerButton(char, "go", ref)).toBe("refused");
         expect(await commands.runServerManualTrigger(char, "greet", ref, { triggerId: "t" })).toBe("refused");
         expect(stubs.flush).not.toHaveBeenCalled();
@@ -811,21 +914,21 @@ describe("runServerJob", () => {
         );
         // A chat that is not listed: refused with the header alone (no fields to list).
         stubs.entry.mockReturnValue(undefined);
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError).toHaveBeenLastCalledWith("cannot send");
         expect(stubs.create).not.toHaveBeenCalled();
     });
 
     it("shows the server's 409 binding refusals: a mismatch reads the chat again and asks to send again, an incomplete binding lists its problems", async () => {
         stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.loadChat).toHaveBeenCalledTimes(1);
         expect(stubs.loadChat).toHaveBeenCalledWith(ref);
         expect(stubs.alertError).toHaveBeenLastCalledWith("binding changed");
         stubs.create.mockRejectedValueOnce(
             new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }]),
         );
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.loadChat).toHaveBeenCalledTimes(1);
         expect(stubs.alertError).toHaveBeenLastCalledWith("cannot send\nPrompt preset: deleted");
         expect(follows()).toHaveLength(0);
@@ -833,7 +936,7 @@ describe("runServerJob", () => {
         // A failed re-read is logged, not shown twice.
         stubs.loadChat.mockRejectedValueOnce(new Error("offline"));
         stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         await flush();
         expect(stubs.alertError).toHaveBeenCalledTimes(3);
     });
@@ -847,7 +950,11 @@ describe("runServerJob", () => {
         stubs.create.mockRejectedValueOnce(new LoreOverrideOrphanedError(entries));
         const onStart = vi.fn();
 
-        expect(await send({ input: "hi" }, { onStart })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" }, { onStart })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            requestUncertain: false,
+        });
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         const [message] = stubs.alertError.mock.calls[0];
         expect(message).toContain("overrides lost their entries");
@@ -860,46 +967,105 @@ describe("runServerJob", () => {
     });
 
     it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {
+        const { GenerationCreateError, GenerationStaleError } = await import("../network/generationJobs");
+        const uncertain = { outcome: "unknown", terminal: null, requestUncertain: true };
+        const definite = { outcome: "refused", terminal: null, requestUncertain: false };
+        // The transport's retries ended with no answer (or an answer the registry did not give).
+        stubs.create.mockRejectedValueOnce(new GenerationCreateError(new RequestError(0, "fetch failed"), true));
+        expect(await send({ input: "hi" })).toEqual(uncertain);
+        stubs.create.mockRejectedValueOnce(new GenerationCreateError(new RequestError(429, "Too many requests"), true));
+        expect(await send({ input: "hi" })).toEqual(uncertain);
         stubs.create.mockRejectedValueOnce(new TypeError("fetch failed"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "unknown", terminal: null });
+        expect(await send({ input: "hi" })).toEqual(uncertain);
         stubs.create.mockRejectedValueOnce(new RequestError(0, "The network is unreachable"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "unknown", terminal: null });
+        expect(await send({ input: "hi" })).toEqual(uncertain);
         stubs.create.mockRejectedValueOnce(new RequestError(400, "context.userMessageId must be an id"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual(definite);
         stubs.create.mockRejectedValueOnce(new RequestError(409, "stale"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual(definite);
+        // The registry's stale refusal and the restore's 412 are answers too: nothing ran.
+        stubs.create.mockRejectedValueOnce(new GenerationStaleError());
+        expect(await send({ input: "hi" })).toEqual(definite);
+        stubs.create.mockRejectedValueOnce(new EpochMismatchError("other"));
+        expect(await send({ input: "hi" })).toEqual(definite);
         expect(follows()).toHaveLength(0);
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
+            "job lost",
+            "job lost",
             "fetch failed",
             "The network is unreachable",
             "context.userMessageId must be an id",
             "stale",
+            "The chat changed on the server; reload it and send again",
+            "The server data was replaced by a restore",
         ]);
     });
 
-    it("aborts the job it started when the signal fires, and one aborted during the create as soon as it exists", async () => {
-        stubs.create.mockResolvedValue("j");
+    it("aborts the job it started when the signal fires, and one created as the signal fired as soon as it exists; a create answered by its cancel is not aborted again", async () => {
+        const stopped: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            message: "stopped",
+            status: 499,
+            reason: "aborted",
+        };
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const controller = new AbortController();
         const run = send({ input: "hi" }, { signal: controller.signal });
         await flush();
+        // The transport gets the signal: it cancels a dispatched create by its request id.
+        expect(stubs.create).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({ signal: controller.signal }),
+        );
         expect(follows()[0]?.jobId).toBe("j");
         controller.abort();
         await flush();
         expect(stubs.abort).toHaveBeenCalledWith("j");
-        endWith(follows()[0], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
+        endWith(follows()[0], stopped);
         expect((await run).outcome).toBe("started");
 
-        let answer!: (jobId: string) => void;
-        stubs.create.mockReturnValueOnce(new Promise<string>((resolve) => (answer = resolve)));
+        // A job the create answered as the signal fired is aborted once it exists.
+        let answer!: (result: Awaited<ReturnType<Transport["createGenerationJob"]>>) => void;
+        stubs.create.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
         const during = new AbortController();
         const late = send({ input: "hi" }, { signal: during.signal });
         await flush();
         during.abort();
-        answer("j2");
+        answer({ outcome: "created", jobId: "j2" });
         await flush();
         expect(stubs.abort).toHaveBeenLastCalledWith("j2");
-        endWith(follows()[1], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
+        endWith(follows()[1], stopped);
         expect((await late).outcome).toBe("started");
+
+        // The transport's cancel found this request's own job and aborted it: followed as a replay to
+        // its terminal, without onStart and without a second abort.
+        stubs.abort.mockClear();
+        const onStart = vi.fn();
+        stubs.create.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        const cancelling = new AbortController();
+        const replayed = send({ input: "hi" }, { signal: cancelling.signal, onStart });
+        await flush();
+        cancelling.abort();
+        answer({ outcome: "replayed", jobId: "j3", owned: true, status: { ...status, jobId: "j3" }, cancelled: true });
+        await flush();
+        expect(follows()[2]?.jobId).toBe("j3");
+        endWith(follows()[2], stopped);
+        expect(await replayed).toEqual({ outcome: "replayed", terminal: stopped, requestUncertain: false });
+        expect(onStart).not.toHaveBeenCalled();
+        expect(stubs.abort).not.toHaveBeenCalled();
+
+        // The cancel answered before any job existed: nothing ran, and nothing is followed or aborted.
+        stubs.create.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        const before = new AbortController();
+        const none = send({ input: "hi" }, { signal: before.signal, onStart });
+        await flush();
+        before.abort();
+        answer({ outcome: "cancelled" });
+        expect(await none).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
+        expect(follows()).toHaveLength(3);
+        expect(onStart).not.toHaveBeenCalled();
+        expect(stubs.abort).not.toHaveBeenCalled();
     });
 
     it("aborts this tab's busy job it follows instead, reporting `followed` without onStart", async () => {
@@ -915,7 +1081,7 @@ describe("runServerJob", () => {
         await flush();
         expect(stubs.abort).toHaveBeenCalledWith("mine");
         endWith(follows()[0], done);
-        expect(await run).toEqual({ outcome: "followed", terminal: done });
+        expect(await run).toEqual({ outcome: "followed", terminal: done, requestUncertain: false });
         expect(onStart).not.toHaveBeenCalled();
     });
 
@@ -928,6 +1094,7 @@ describe("runServerJob", () => {
         expect(await send({ input: "hi" }, { signal: controller.signal })).toEqual({
             outcome: "refused",
             terminal: null,
+            requestUncertain: false,
         });
         expect(stubs.create).not.toHaveBeenCalled();
         expect(stubs.abort).not.toHaveBeenCalled();
@@ -940,7 +1107,12 @@ describe("runServerJob", () => {
         // The chats the flush waited on are passed on (a reroll restores its replies unless its own chat waits).
         const other = { chaId: "c2", chatId: "k2" };
         stubs.flush.mockRejectedValueOnce(new BlockedError([other]));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [other] });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [other],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         // The flush's conflict recovery showed it (the count moved during the flush): no second alert.
         let count = 0;
@@ -949,11 +1121,21 @@ describe("runServerJob", () => {
             count += 1;
             throw new BlockedError();
         });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         // Another explicit send in the same episode (the adapter does not show it again): feedback again.
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
         expect(stubs.create).not.toHaveBeenCalled();
         expect(follows()).toHaveLength(0);
@@ -963,9 +1145,9 @@ describe("runServerJob", () => {
         stubs.flush.mockRejectedValueOnce(
             new Error("A character is still being generated; try again when it finishes"),
         );
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
             "save failed: A character is still being generated; try again when it finishes",
             "save failed: offline",
@@ -975,13 +1157,13 @@ describe("runServerJob", () => {
 
     it("shows a send's refusals as `language.serverJob` entries, the error's text in their `{0}` taken literally", async () => {
         stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.flush.mockRejectedValueOnce(new Error("quota $& {0} $1"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.refresh.mockRejectedValueOnce(new Error("offline $'"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.held.mockReturnValueOnce(null);
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
             "discarded: send",
             "save failed: quota $& {0} $1",
@@ -995,11 +1177,21 @@ describe("runServerJob", () => {
         let count = 3;
         stubs.notices.mockImplementation(() => count);
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         count = 4;
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [] });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
     });
 
@@ -1007,7 +1199,12 @@ describe("runServerJob", () => {
         stubs.create.mockRejectedValueOnce(new BusyError("theirs"));
         stubs.read.mockResolvedValueOnce(null);
         // Its job may hold no lock this tab knows of yet: a reroll must not restore into the chat.
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, blockedChats: [ref] });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [ref],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         expect(follows()).toHaveLength(0);
     });
@@ -1445,7 +1642,7 @@ describe("the job's chat", () => {
     };
 
     it("pins the target before the flush, loads it after the flush and before the create, holds the pin while the job runs, and releases it once on every exit", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerButton(char, "go", ref);
         await flush();
         expect(stubs.pin).toHaveBeenCalledWith(ref);

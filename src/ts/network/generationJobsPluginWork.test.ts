@@ -127,6 +127,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
@@ -148,7 +149,7 @@ describe("a job of this tab", () => {
         expect(active()).toBe(true);
 
         answer.resolve(json(200, { jobId: "j1" }));
-        await expect(creating).resolves.toBe("j1");
+        await expect(creating).resolves.toEqual({ outcome: "created", jobId: "j1" });
         expect(active()).toBe(true);
         // The saved copy is one hold, the created job another: forgetting the save keeps it held.
         transport.forgetGenerationJob("j1");
@@ -164,8 +165,26 @@ describe("a job of this tab", () => {
         stubs.fetch.mockResolvedValueOnce(json(409, { error: "stale" }));
         await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ name: "GenerationStaleError" });
         expect(active()).toBe(false);
-        stubs.fetch.mockRejectedValueOnce(new Error("offline"));
-        await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ status: 0 });
+        // A request without an answer stays held through its retries after 1, 2, and 4 s, then holds nothing.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            stubs.fetch.mockRejectedValueOnce(new Error("offline"));
+        }
+        const failing = transport.createGenerationJob(body).then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        for (const delay of [1_000, 2_000, 4_000]) {
+            expect(active()).toBe(true);
+            await vi.advanceTimersByTimeAsync(delay);
+        }
+        const failed = await failing;
+        expect(failed).toBeInstanceOf(transport.GenerationCreateError);
+        expect(failed).toMatchObject({ uncertain: true, cause: { name: "ResourceRequestError", status: 0 } });
+        const sent = stubs.fetch.mock.calls.slice(1).map(([, init]) => String(init!.body));
+        expect(sent).toHaveLength(4);
+        expect(new Set(sent).size).toBe(1);
+        expect(JSON.parse(sent[0]).requestId).toMatch(/^[0-9a-f-]{36}$/);
         expect(active()).toBe(false);
         expect(listener).toHaveBeenCalledTimes(2);
     });

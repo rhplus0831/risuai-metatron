@@ -353,6 +353,7 @@ export function isStackFrame(frame: unknown): frame is string {
  */
 export const ROUTE_TEMPLATES = [
     "/api/generations",
+    "/api/generations/cancel",
     "/api/generations/:id",
     "/api/generations/:id/memory-stop",
     "/api/generations/:id/drained",

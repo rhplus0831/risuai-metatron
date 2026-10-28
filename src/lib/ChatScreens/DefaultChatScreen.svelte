@@ -520,7 +520,7 @@
             }
         } else {
             // Retried text keeps its id: the server skips an input it already appended under it.
-            serverInput = { input, userMessageId: sendDrafts.idFor(ref, input) };
+            serverInput = { input, ...sendDrafts.idsFor(ref, input, !continueResponse) };
             composer.beginSend(chatKeyOf(ref), { snapshot, userMessageId: serverInput.userMessageId });
         }
         draft.files = [];
@@ -676,14 +676,22 @@
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
         let ran = true;
-        let end: { settled: boolean; blockedChats: readonly ChatRef[] } = { settled: false, blockedChats: [] };
+        let end: { settled: boolean; blockedChats: readonly ChatRef[]; requestUncertain?: boolean } = {
+            settled: false,
+            blockedChats: [],
+        };
         let releaseAbort: (() => void) | null = null;
         try {
             // Only this chat's own work refuses it; `sendChat` takes the chat's entry synchronously
             // right after this check.
             if (isChatBusy(target)) {
                 alertError(language.chatGenerating);
-                return { ran: false, ok: false, settled: true, blockedChats: [] };
+                end = {
+                    settled: !serverInput?.requestUncertain,
+                    blockedChats: [],
+                    requestUncertain: serverInput?.requestUncertain === true,
+                };
+                return { ran: false, ok: false, ...end };
             }
             const { signal, release } = sendAborts.begin(target);
             releaseAbort = release;
@@ -722,6 +730,7 @@
                 const result = sendDrafts.settle(target, serverInput, {
                     landed,
                     ok,
+                    requestUncertain: !continued && (end.requestUncertain ?? !end.settled),
                     selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
                     composerEmpty: composer.at(chatKeyOf(target)).input === "",
                 });

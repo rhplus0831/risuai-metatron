@@ -207,6 +207,73 @@ describe("the requests", () => {
         },
     };
 
+    it("never saves, stages or holds a replay owned by another tab", async () => {
+        vi.useFakeTimers();
+        const { jobStages, chatStageOf } = await import("../process/jobStages");
+        const running = {
+            jobId: "foreign-job",
+            kind: "send",
+            characterId: "c",
+            chatId: "k",
+            epoch: EPOCH,
+            state: "running",
+        };
+        for (const status of [
+            running,
+            { ...running, state: "ended", terminal: { type: "done", epoch: EPOCH, revision: "r" } },
+            null,
+        ]) {
+            stubs.fetch.mockResolvedValueOnce(
+                json(200, { jobId: "foreign-job", replayed: true, owned: false, status }),
+            );
+            expect(await transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS })).toMatchObject({
+                outcome: "replayed",
+                owned: false,
+                status,
+            });
+            expect(transport.savedGenerationJobIds()).toEqual([]);
+            expect(sessionStorage.getItem("risu-generation-jobs") ?? "{}").toBe("{}");
+            expect(chatStageOf(get(jobStages), { chaId: "c", chatId: "k" })).toBeNull();
+            // This public lease includes liveJobs even after creation has settled.
+            expect(transport.generationPluginWorkActive()).toBe(false);
+        }
+    });
+
+    it("sends a request cancellation when stopped during create backoff and sends nothing when stopped before dispatch", async () => {
+        vi.useFakeTimers();
+        const auth = await import("../storage/serverAuth");
+        vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
+            options?.beforeDispatch?.();
+            return stubs.fetch(path, init);
+        });
+        const before = new AbortController();
+        before.abort();
+        expect(
+            await transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }, { signal: before.signal }),
+        ).toEqual({ outcome: "cancelled" });
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        stubs.fetch
+            .mockRejectedValueOnce(new TypeError("answer lost"))
+            .mockResolvedValueOnce(json(200, { state: "cancelled" }));
+        const stop = new AbortController();
+        const creating = transport.createGenerationJob(
+            { ...body, requestId: "stop-request", hooks: NO_GENERATION_HOOKS },
+            { signal: stop.signal },
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        stop.abort();
+        expect(await creating).toEqual({ outcome: "cancelled" });
+        expect(stubs.fetch.mock.calls.map(([path]) => path)).toEqual(["/api/generations", "/api/generations/cancel"]);
+        expect(JSON.parse(String(stubs.fetch.mock.calls[1][1]!.body))).toEqual({
+            requestId: "stop-request",
+            clientId: transport.generationClientId(),
+        });
+        await vi.advanceTimersByTimeAsync(7000);
+        expect(stubs.fetch).toHaveBeenCalledTimes(2);
+        expect(transport.generationPluginWorkActive()).toBe(false);
+    });
+
     it("shows preparing when creation returns, preserves a stage received before the create response, and clears each released job", async () => {
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
@@ -237,13 +304,15 @@ describe("the requests", () => {
         const registered: GenerationHooks = { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], mcpTools: ["plugin:t"] };
         stubs.registeredHooks.mockResolvedValueOnce(registered);
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1" }));
-        await expect(transport.createGenerationJob(body)).resolves.toBe("j1");
+        await expect(transport.createGenerationJob(body)).resolves.toEqual({ outcome: "created", jobId: "j1" });
         const [path, init] = stubs.fetch.mock.calls[0];
         expect(path).toBe("/api/generations");
         expect((init!.headers as Record<string, string>)[RESOURCE_EPOCH_HEADER]).toBe(EPOCH);
+        // A body without its own request id gets a fresh one.
         expect(JSON.parse(String(init!.body))).toEqual({
             ...body,
             hooks: registered,
+            requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
             clientId: transport.generationClientId(),
         });
         expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
@@ -270,8 +339,38 @@ describe("the requests", () => {
             status: 503,
             message: "not now",
         });
-        stubs.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-        await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ status: 0 });
+        // A request without an answer is sent again after 1, 2, and 4 s with the same body and request id,
+        // then fails as one whose outcome is not known.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const before = stubs.fetch.mock.calls.length;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            stubs.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        }
+        const unanswered = transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }).then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        await microtasks();
+        expect(stubs.fetch).toHaveBeenCalledTimes(before + 1);
+        for (const [delay, attempts] of [
+            [1_000, 2],
+            [2_000, 3],
+            [4_000, 4],
+        ] as const) {
+            await vi.advanceTimersByTimeAsync(delay - 1);
+            expect(stubs.fetch).toHaveBeenCalledTimes(before + attempts - 1);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(stubs.fetch).toHaveBeenCalledTimes(before + attempts);
+        }
+        const failed = await unanswered;
+        expect(failed).toBeInstanceOf(transport.GenerationCreateError);
+        expect(failed).toMatchObject({ uncertain: true, cause: { name: "ResourceRequestError", status: 0 } });
+        const sent = stubs.fetch.mock.calls.slice(before).map(([, init]) => String(init!.body));
+        expect(new Set(sent).size).toBe(1);
+        expect(JSON.parse(sent[0]).requestId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(stubs.fetch.mock.calls.slice(before).every(([sentPath]) => sentPath === "/api/generations")).toBe(true);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(stubs.fetch).toHaveBeenCalledTimes(before + 4);
         // The saved job survives the refusals.
         expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
     });

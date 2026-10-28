@@ -17,6 +17,10 @@ export type ServerSendArg = {
     /** The chat input the job's input stage appends (`sendMain` behind the flag), with its message id. */
     input?: string;
     userMessageId?: string;
+    /** This action's request id, reused only while its previous attempt remains uncertain. */
+    requestId?: string;
+    /** An earlier attempt under requestId may still run; local refusals must preserve that uncertainty. */
+    requestUncertain?: boolean;
     /** A plugin call's context: the job takes its preset and effective persona, not the tab's selection now. */
     pluginContext?: PluginCallContext;
 };
@@ -37,6 +41,10 @@ export type ServerSendResult = {
     ok: boolean;
     outcome: ServerCommandOutcome;
     settled: boolean;
+    /** This action still lacks a known outcome, so an unlanded draft must retain its request id. */
+    requestUncertain?: boolean;
+    /** Whether the chat read for a replay without a usable owner terminal succeeded. */
+    reconciled?: boolean;
     result?: unknown;
     refusal?: ServerSendRefusal;
     blockedChats?: readonly ChatRef[];
@@ -59,7 +67,13 @@ export async function sendChatOnServer(arg: ServerSendArg): Promise<ServerSendRe
     const ref = arg.target ?? currentChatRef();
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!ref || !char || !chatEntry(ref)) {
-        return { ok: false, outcome: "refused", settled: true, refusal: "definite" };
+        return {
+            ok: false,
+            outcome: "refused",
+            settled: !arg.requestUncertain,
+            refusal: arg.requestUncertain ? "ambiguous" : "definite",
+            requestUncertain: arg.requestUncertain === true,
+        };
     }
     const release = pinChat(ref);
     try {
@@ -86,12 +100,14 @@ async function sendPinned(
               ? "continue"
               : "send";
     const input = kind === "preview" || kind === "previewPrompt" ? "" : (arg.input ?? "");
-    const { outcome, terminal, blockedChats } = await runServerJob(
+    const { outcome, terminal, blockedChats, requestUncertain, reconciled } = await runServerJob(
         char,
         ref,
         {
             kind,
             label: "send",
+            requestId: arg.requestId,
+            requestUncertain: arg.requestUncertain,
             context: {
                 input,
                 ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
@@ -112,17 +128,30 @@ async function sendPinned(
         },
     );
     if (outcome === "refused") {
-        return { ok: false, outcome, settled: true, refusal: "definite", ...(blockedChats ? { blockedChats } : {}) };
+        return {
+            ok: false,
+            outcome,
+            settled: !requestUncertain,
+            refusal: requestUncertain ? "ambiguous" : "definite",
+            requestUncertain,
+            ...(blockedChats ? { blockedChats } : {}),
+        };
     }
     if (outcome === "followed") {
         // A followed job is this tab's other action: this send's input did not reach it.
-        return { ok: false, outcome, settled: terminal !== "lost", refusal: "definite" };
+        return { ok: false, outcome, settled: terminal !== "lost", refusal: "definite", requestUncertain: false };
     }
     if (outcome === "unknown") {
-        return { ok: false, outcome, settled: false, refusal: "ambiguous" };
+        return { ok: false, outcome, settled: false, refusal: "ambiguous", requestUncertain: true };
     }
     if (!terminal || terminal === "lost" || terminal.type !== "done") {
-        return { ok: false, outcome, settled: terminal !== "lost" };
+        return {
+            ok: false,
+            outcome,
+            settled: terminal !== "lost" && !requestUncertain,
+            requestUncertain: terminal === "lost" || requestUncertain === true,
+            ...(reconciled !== undefined ? { reconciled } : {}),
+        };
     }
     if (terminal.alternatives && terminal.messageId && kind !== "continue") {
         const reply = findChat(ref)?.message.find((message) => message.chatId === terminal.messageId);

@@ -26,7 +26,13 @@ let registry: typeof import("./localSends");
 
 const entries = (): Entries => [...get(registry.localSends)];
 const started: ServerResult = { ok: true, outcome: "started", settled: true };
-const refused: ServerResult = { ok: false, outcome: "refused", settled: true, refusal: "definite" };
+const refused: ServerResult = {
+    ok: false,
+    outcome: "refused",
+    settled: true,
+    refusal: "definite",
+    requestUncertain: false,
+};
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -110,7 +116,12 @@ describe("sendChat owns its chat's send entry", () => {
             if (end === "throw") {
                 expect(onEnd).not.toHaveBeenCalled();
             } else {
-                expect(onEnd).toHaveBeenCalledExactlyOnceWith({ settled: true, blockedChats: [] });
+                expect(onEnd).toHaveBeenCalledExactlyOnceWith({
+                    settled: true,
+                    blockedChats: [],
+                    outcome: end === "success" ? "started" : "refused",
+                    requestUncertain: false,
+                });
             }
         } finally {
             server.resolve(started);
@@ -235,17 +246,60 @@ describe("sendChat owns its chat's send entry", () => {
         const blockedChats = [chatB];
         stubs.serverSend.mockResolvedValueOnce({ ...refused, blockedChats });
         expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
-        expect(onEnd).toHaveBeenLastCalledWith({ settled: true, blockedChats });
+        expect(onEnd).toHaveBeenLastCalledWith({
+            settled: true,
+            blockedChats,
+            outcome: "refused",
+            requestUncertain: false,
+        });
         // An unanswered create: the input may have been appended, and the job may still write.
-        stubs.serverSend.mockResolvedValueOnce({ ok: false, outcome: "unknown", settled: false, refusal: "ambiguous" });
+        stubs.serverSend.mockResolvedValueOnce({
+            ok: false,
+            outcome: "unknown",
+            settled: false,
+            refusal: "ambiguous",
+            requestUncertain: true,
+        });
         expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
         expect(onServerRefused).toHaveBeenLastCalledWith(true);
-        expect(onEnd).toHaveBeenLastCalledWith({ settled: false, blockedChats: [] });
+        expect(onEnd).toHaveBeenLastCalledWith({
+            settled: false,
+            blockedChats: [],
+            outcome: "unknown",
+            requestUncertain: true,
+        });
         // A lost follow ran but is not settled.
-        stubs.serverSend.mockResolvedValueOnce({ ok: false, outcome: "started", settled: false });
+        stubs.serverSend.mockResolvedValueOnce({
+            ok: false,
+            outcome: "started",
+            settled: false,
+            requestUncertain: true,
+        });
         expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
         expect(onServerRefused).toHaveBeenCalledTimes(2);
-        expect(onEnd).toHaveBeenLastCalledWith({ settled: false, blockedChats: [] });
+        expect(onEnd).toHaveBeenLastCalledWith({
+            settled: false,
+            blockedChats: [],
+            outcome: "started",
+            requestUncertain: true,
+        });
+        // A replay settled from a chat read passes on whether that read succeeded.
+        stubs.serverSend.mockResolvedValueOnce({
+            ok: false,
+            outcome: "replayed",
+            settled: false,
+            requestUncertain: true,
+            reconciled: false,
+        });
+        expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
+        expect(onServerRefused).toHaveBeenCalledTimes(2);
+        expect(onEnd).toHaveBeenLastCalledWith({
+            settled: false,
+            blockedChats: [],
+            outcome: "replayed",
+            requestUncertain: true,
+            reconciled: false,
+        });
     });
 
     it("refuses a gone explicit target before taking any entry", async () => {
@@ -259,7 +313,23 @@ describe("sendChat owns its chat's send entry", () => {
 
         expect(await sendChat(-1, { target: chatA, onServerRefused, onEnd })).toBe(false);
         expect(onServerRefused).toHaveBeenCalledExactlyOnceWith(false);
-        expect(onEnd).toHaveBeenCalledExactlyOnceWith({ settled: true, blockedChats: [] });
+        expect(onEnd).toHaveBeenCalledExactlyOnceWith({
+            settled: true,
+            blockedChats: [],
+            outcome: "refused",
+            requestUncertain: false,
+        });
+        // A retry of a request whose earlier attempt is still uncertain stays uncertain.
+        expect(
+            await sendChat(-1, { target: chatA, requestId: "r1", requestUncertain: true, onServerRefused, onEnd }),
+        ).toBe(false);
+        expect(onServerRefused).toHaveBeenLastCalledWith(true);
+        expect(onEnd).toHaveBeenLastCalledWith({
+            settled: false,
+            blockedChats: [],
+            outcome: "refused",
+            requestUncertain: true,
+        });
         expect(stubs.serverSend).not.toHaveBeenCalled();
         expect(notifications).toHaveBeenCalledTimes(1);
         expect(entries()).toEqual([]);

@@ -1,12 +1,13 @@
 import { v4 } from "uuid";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
-export type SendDraft = { input: string; userMessageId: string };
+export type SendDraft = { input: string; userMessageId: string; requestId?: string; requestUncertain?: boolean };
 export type SendDraftOutcome = {
     landed: boolean;
     ok: boolean;
     selected: boolean;
     composerEmpty: boolean;
+    requestUncertain?: boolean;
 };
 
 const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
@@ -38,6 +39,17 @@ export function createSendDrafts() {
         return userMessageId;
     }
 
+    function idsFor(
+        ref: ChatRef,
+        text: string,
+        reuseRequest = true,
+    ): Pick<SendDraft, "userMessageId" | "requestId" | "requestUncertain"> {
+        const pending = drafts.get(keyOf(ref));
+        const requestId = reuseRequest && pending?.input === text ? pending.requestId : undefined;
+        const userMessageId = idFor(ref, text);
+        return { userMessageId, requestId: requestId ?? v4(), requestUncertain: requestId !== undefined };
+    }
+
     function settle(ref: ChatRef, draft: SendDraft, outcome: SendDraftOutcome): "drop" | "restore" | "keep" {
         const key = keyOf(ref);
         if (outcome.landed || outcome.ok) {
@@ -46,7 +58,8 @@ export function createSendDrafts() {
         }
         // Refusals and accepted jobs that fail recover alike. Keep the id even if the mirror is behind.
         const placed = outcome.selected && outcome.composerEmpty;
-        drafts.set(key, { ...draft, placed });
+        const { requestId, requestUncertain, ...message } = draft;
+        drafts.set(key, { ...message, ...(outcome.requestUncertain && requestId ? { requestId } : {}), placed });
         return placed ? "restore" : "keep";
     }
 
@@ -56,8 +69,9 @@ export function createSendDrafts() {
             return undefined;
         }
         draft.placed = true;
-        return { input: draft.input, userMessageId: draft.userMessageId };
+        const { placed, ...send } = draft;
+        return send;
     }
 
-    return { idFor, settle, takeUnplaced, retryIdFor, adopt };
+    return { idFor, idsFor, settle, takeUnplaced, retryIdFor, adopt };
 }

@@ -123,6 +123,12 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (!isValidResourceId(body.clientId)) {
         return "clientId must be a valid id";
     }
+    if (
+        body.requestId !== undefined &&
+        (typeof body.requestId !== "string" || !GENERATION_ID_PATTERN.test(body.requestId))
+    ) {
+        return "requestId must be a generation id";
+    }
     const context = body.context;
     if (!isPlainObject(context)) {
         return "context must be an object";
@@ -196,7 +202,12 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (typeof hooks === "string") {
         return hooks;
     }
-    const base = { context: parsed, hooks, clientId: body.clientId };
+    const base = {
+        context: parsed,
+        hooks,
+        clientId: body.clientId,
+        ...(body.requestId !== undefined ? { requestId: body.requestId as string } : {}),
+    };
     return command !== undefined
         ? { ...base, kind: "command", command }
         : { ...base, kind: body.kind as Exclude<GenerationCreateBody["kind"], "command"> };
@@ -248,7 +259,29 @@ export function registerGenerationRoutes(
             }
             return c.json(result.body, result.status);
         }
-        return c.json({ jobId: result.jobId });
+        const { ok, ...answer } = result;
+        return c.json(answer);
+    });
+
+    app.post("/api/generations/cancel", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) return denied;
+        const read = await readJsonBody(c);
+        if (!read.ok) return read.response;
+        const body = read.body;
+        if (
+            !isPlainObject(body) ||
+            typeof body.requestId !== "string" ||
+            !GENERATION_ID_PATTERN.test(body.requestId) ||
+            !isValidResourceId(body.clientId)
+        ) {
+            return c.json({ error: "requestId and clientId must be valid ids" }, 400);
+        }
+        const result = jobs.cancel(
+            { requestId: body.requestId, clientId: body.clientId },
+            c.req.header(RESOURCE_EPOCH_HEADER),
+        );
+        return result.ok ? c.json(result.body) : c.json(result.body, result.status);
     });
 
     app.get("/api/generations/:id", limiter, async (c) => {

@@ -42,6 +42,17 @@ export class ChatLoreOverrideOrphanedError extends Error {
     }
 }
 
+export class GenerationCreateError extends Error {
+    readonly uncertain: boolean;
+    override readonly cause: unknown;
+    constructor(cause: unknown, uncertain: boolean) {
+        super(cause instanceof Error ? cause.message : String(cause));
+        this.name = "GenerationCreateError";
+        this.cause = cause;
+        this.uncertain = uncertain;
+    }
+}
+
 /**
  * A `GenerationFollow` a test settles: `open()` resolves `opened` true (the socket opened), `end`
  * closes it with the terminal given (null: closed before the job's end), `resume()` closes it as the
@@ -105,6 +116,7 @@ export function createGenerationJobsMock(overrides: Partial<GenerationJobsModule
         channelCallbacksRunning: vi.fn<GenerationJobsModule["channelCallbacksRunning"]>(() => false),
         noteChannelCallbacks: vi.fn<GenerationJobsModule["noteChannelCallbacks"]>(),
         GenerationBusyError,
+        GenerationCreateError,
         GenerationStaleError,
         ChatBindingRefusedError,
         ChatLoreOverrideOrphanedError,
@@ -113,7 +125,13 @@ export function createGenerationJobsMock(overrides: Partial<GenerationJobsModule
         savedGenerationJobIds: vi.fn<GenerationJobsModule["savedGenerationJobIds"]>(() => []),
         rememberGenerationJob: vi.fn<GenerationJobsModule["rememberGenerationJob"]>(),
         forgetGenerationJob: vi.fn<GenerationJobsModule["forgetGenerationJob"]>(),
-        createGenerationJob: vi.fn<GenerationJobsModule["createGenerationJob"]>(async () => "job"),
+        createGenerationJob: vi.fn<GenerationJobsModule["createGenerationJob"]>(async () => ({
+            outcome: "created",
+            jobId: "job",
+        })),
+        cancelGenerationRequest: vi.fn<GenerationJobsModule["cancelGenerationRequest"]>(async () => ({
+            outcome: "cancelled",
+        })),
         readGenerationJob: vi.fn<GenerationJobsModule["readGenerationJob"]>(async () => null),
         abortGenerationJob: vi.fn<GenerationJobsModule["abortGenerationJob"]>(async () => {}),
         reportCallbackDrained: vi.fn<GenerationJobsModule["reportCallbackDrained"]>(async () => {}),

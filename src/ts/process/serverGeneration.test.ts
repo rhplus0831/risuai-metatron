@@ -8,14 +8,24 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 // `incrementStatic`; the target's `lastInteraction` is the server job's to stamp, so the tab
 // touches no character record and uploads none before the job), and the result mapping (`refused`
 // and `followed` are a definite refusal, `unknown` an ambiguous one, an error or lost terminal
-// neither; `settled` unless the create got no answer or the follow was lost; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls` under its
+// neither; `settled` unless the create got no answer or the follow was lost; `requestUncertain`
+// while this send's own request has no known end; a `replayed` job is this send's own, its chat
+// read's success passed on as `reconciled`; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls` under its
 // generation, none for a continue; a preview's `result` comes back).
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
 
 const stubs = vi.hoisted(() => ({
-    run: vi.fn<(...args: unknown[]) => Promise<{ outcome: string; terminal: unknown; blockedChats?: unknown }>>(),
+    run: vi.fn<
+        (...args: unknown[]) => Promise<{
+            outcome: string;
+            terminal: unknown;
+            blockedChats?: unknown;
+            requestUncertain?: boolean;
+            reconciled?: boolean;
+        }>
+    >(),
     findChat: vi.fn<() => unknown>(),
     /** The membership (`chatEntry`): a chat may be listed without being loaded. */
     members: new Set<string>(),
@@ -57,7 +67,8 @@ const done = (extra: Partial<Extract<GenerationTerminalEvent, { type: "done" }>>
     revision: "e:1:2",
     ...extra,
 });
-const started = (terminal: unknown) => stubs.run.mockResolvedValueOnce({ outcome: "started", terminal });
+const started = (terminal: unknown) =>
+    stubs.run.mockResolvedValueOnce({ outcome: "started", terminal, requestUncertain: terminal === "lost" });
 const lastRequest = () => stubs.run.mock.calls.at(-1)![2] as { kind: string; context: Record<string, unknown> };
 const lastOptions = () => stubs.run.mock.calls.at(-1)![3] as Record<string, unknown>;
 
@@ -89,6 +100,17 @@ const seededCharacters = () => [
 ];
 
 describe("sendChatOnServer", () => {
+    it("returns the result of this send's owned ended replay", async () => {
+        const result = ["the preview already completed"];
+        stubs.run.mockResolvedValueOnce({ outcome: "replayed", terminal: done({ result }), requestUncertain: false });
+        expect(await send({ target: ref, preview: true, requestId: "preview-request" })).toEqual({
+            ok: true,
+            outcome: "replayed",
+            settled: true,
+            result,
+        });
+    });
+
     it("posts a send with the input and its user message id after counting the send, without touching the target record", async () => {
         started(done({ messageId: "r1" }));
         const result = await send({ target: ref, input: "hi", userMessageId: "u1", continueMessageId: "ignored" });
@@ -143,20 +165,19 @@ describe("sendChatOnServer", () => {
         expect(stubs.run.mock.calls[0][1]).toEqual(ref);
 
         stubs.currentChatRef.mockReturnValue(null);
-        expect(await send({})).toEqual({ ok: false, outcome: "refused", settled: true, refusal: "definite" });
-        expect(await send({ target: { chaId: "nobody", chatId: "k" } })).toEqual({
-            ok: false,
-            outcome: "refused",
-            settled: true,
-            refusal: "definite",
-        });
+        const definite = { ok: false, outcome: "refused", settled: true, refusal: "definite", requestUncertain: false };
+        expect(await send({})).toEqual(definite);
+        expect(await send({ target: { chaId: "nobody", chatId: "k" } })).toEqual(definite);
         // The chat left the list meanwhile (the send checks the membership, not a loaded chat).
         stubs.members.delete("c/k");
-        expect(await send({ target: ref })).toEqual({
+        expect(await send({ target: ref })).toEqual(definite);
+        // A request whose earlier attempt has no known end stays uncertain: the refusal ran nothing new.
+        expect(await send({ target: ref, requestId: "r1", requestUncertain: true })).toEqual({
             ok: false,
             outcome: "refused",
-            settled: true,
-            refusal: "definite",
+            settled: false,
+            refusal: "ambiguous",
+            requestUncertain: true,
         });
         expect(stubs.run).toHaveBeenCalledTimes(1);
         expect(stubs.incrementStatic).toHaveBeenCalledTimes(1);
@@ -174,43 +195,97 @@ describe("sendChatOnServer", () => {
             signal: controller.signal,
             identity: { presetId: "plug", modelPresetId: "plug-model", personaId: null },
         });
+        // The send's request id, and whether an earlier attempt under it is uncertain, go to the runner.
+        started(done());
+        await send({ target: ref, requestId: "r1", requestUncertain: true });
+        expect(lastRequest()).toMatchObject({ requestId: "r1", requestUncertain: true });
     });
 
-    it("maps the outcomes: refused and followed are definite, unknown is ambiguous, a failed or lost job is neither; only an unanswered create or a lost follow is unsettled", async () => {
+    it("maps the outcomes: refused and followed are definite, unknown is ambiguous, a failed or lost job is neither; an unanswered create, a lost follow, or a replay whose chat read failed is unsettled", async () => {
         const blockedChats = [{ chaId: "c2", chatId: "k2" }];
-        stubs.run.mockResolvedValueOnce({ outcome: "refused", terminal: null, blockedChats });
+        stubs.run.mockResolvedValueOnce({ outcome: "refused", terminal: null, blockedChats, requestUncertain: false });
         expect(await send({ target: ref })).toEqual({
             ok: false,
             outcome: "refused",
             settled: true,
             refusal: "definite",
+            requestUncertain: false,
             blockedChats,
         });
-        stubs.run.mockResolvedValueOnce({ outcome: "followed", terminal: done() });
+        stubs.run.mockResolvedValueOnce({ outcome: "followed", terminal: done(), requestUncertain: false });
         expect(await send({ target: ref })).toEqual({
             ok: false,
             outcome: "followed",
             settled: true,
             refusal: "definite",
+            requestUncertain: false,
         });
-        stubs.run.mockResolvedValueOnce({ outcome: "followed", terminal: "lost" });
+        // A lost follow of this tab's other action leaves that action open, not this send's request.
+        stubs.run.mockResolvedValueOnce({ outcome: "followed", terminal: "lost", requestUncertain: false });
         expect(await send({ target: ref })).toEqual({
             ok: false,
             outcome: "followed",
             settled: false,
             refusal: "definite",
+            requestUncertain: false,
         });
-        stubs.run.mockResolvedValueOnce({ outcome: "unknown", terminal: null });
+        stubs.run.mockResolvedValueOnce({ outcome: "unknown", terminal: null, requestUncertain: true });
         expect(await send({ target: ref })).toEqual({
             ok: false,
             outcome: "unknown",
             settled: false,
             refusal: "ambiguous",
+            requestUncertain: true,
         });
         started({ type: "error", epoch: EPOCH, message: "boom", status: 500, reason: "failed" });
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started", settled: true });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "started",
+            settled: true,
+            requestUncertain: false,
+        });
         started("lost");
-        expect(await send({ target: ref })).toEqual({ ok: false, outcome: "started", settled: false });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "started",
+            settled: false,
+            requestUncertain: true,
+        });
+        // A replay is this send's own job: its terminal maps as a started one's does, and a replay settled
+        // from a chat read passes on whether that read succeeded.
+        stubs.run.mockResolvedValueOnce({ outcome: "replayed", terminal: done(), requestUncertain: false });
+        expect(await send({ target: ref })).toEqual({
+            ok: true,
+            outcome: "replayed",
+            settled: true,
+            result: undefined,
+        });
+        stubs.run.mockResolvedValueOnce({
+            outcome: "replayed",
+            terminal: null,
+            reconciled: true,
+            requestUncertain: false,
+        });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "replayed",
+            settled: true,
+            requestUncertain: false,
+            reconciled: true,
+        });
+        stubs.run.mockResolvedValueOnce({
+            outcome: "replayed",
+            terminal: null,
+            reconciled: false,
+            requestUncertain: true,
+        });
+        expect(await send({ target: ref })).toEqual({
+            ok: false,
+            outcome: "replayed",
+            settled: false,
+            requestUncertain: true,
+            reconciled: false,
+        });
         started(done({ stopped: true, messageId: "r1" }));
         expect(await send({ target: ref })).toEqual({
             ok: false,

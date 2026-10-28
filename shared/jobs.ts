@@ -122,6 +122,8 @@ type GenerationCreateBase = {
     /** The client's registered hooks; missing means none. */
     hooks?: GenerationHooks;
     clientId: string;
+    /** Identifies one attempt across retries; omitted by older clients. */
+    requestId?: string;
 };
 
 /** A create body: a `command` job carries its `command`; every other kind has none. */
@@ -129,7 +131,17 @@ export type GenerationCreateBody =
     | (GenerationCreateBase & { kind: Exclude<GenerationKind, "command">; command?: undefined })
     | (GenerationCreateBase & { kind: "command"; command: GenerationCommand });
 
-export type GenerationCreated = { jobId: string };
+/** A newly admitted job, or a replay with ownership and its retained status (null after payload pruning). */
+export type GenerationCreated =
+    | { jobId: string; replayed?: false }
+    | { jobId: string; replayed: true; owned: boolean; status: GenerationStatus | null };
+
+/** Cancels one request id; clientId determines ownership of the answer, not authority to cancel. */
+export type GenerationCancelBody = { requestId: string; clientId: string };
+/** A tombstone, an abort requested for an admitted job, or a job already ended; an abort is not a terminal. */
+export type GenerationCancelled =
+    | { state: "cancelled" }
+    | { state: "aborted" | "ended"; jobId: string; owned: boolean; status: GenerationStatus | null };
 
 /** 409: the chat has a running job (the owner can attach to it). */
 export type GenerationBusyBody = { error: "chatBusy"; jobId: string };

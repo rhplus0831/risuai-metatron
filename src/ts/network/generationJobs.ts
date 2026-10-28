@@ -6,6 +6,9 @@ import {
     type ChatResyncRequest,
     type ReplyResyncRequest,
     type GenerationCreateBody,
+    type GenerationCreated,
+    type GenerationCancelled,
+    GENERATION_ID_PATTERN,
     type GenerationEvent,
     type GenerationStatus,
     type GenerationTerminalEvent,
@@ -231,6 +234,14 @@ export function forgetGenerationJob(jobId: string) {
     writeSavedJobs(jobs);
 }
 
+type FailureBody = {
+    error?: string;
+    jobId?: string;
+    epoch?: string;
+    problems?: ChatBindingProblem[];
+    entries?: unknown;
+};
+
 async function failure(response: Response): Promise<never> {
     let body: { error?: string; jobId?: string; epoch?: string; problems?: ChatBindingProblem[]; entries?: unknown } =
         {};
@@ -240,16 +251,20 @@ async function failure(response: Response): Promise<never> {
             body = parsed;
         }
     } catch {}
-    if (response.status === 409 && body.error === "chatBusy" && typeof body.jobId === "string") {
+    return failAnswer(response.status, body);
+}
+
+function failAnswer(status: number, body: FailureBody): never {
+    if (status === 409 && body.error === "chatBusy" && typeof body.jobId === "string") {
         throw new GenerationBusyError(body.jobId);
     }
-    if (response.status === 409 && body.error === "stale") {
+    if (status === 409 && body.error === "stale") {
         throw new GenerationStaleError();
     }
-    if (response.status === 409 && (body.error === "chatBindingIncomplete" || body.error === "chatBindingMismatch")) {
+    if (status === 409 && (body.error === "chatBindingIncomplete" || body.error === "chatBindingMismatch")) {
         throw new ChatBindingRefusedError(body.error, Array.isArray(body.problems) ? body.problems : []);
     }
-    if (response.status === 409 && body.error === "chatLoreOverrideOrphaned") {
+    if (status === 409 && body.error === "chatLoreOverrideOrphaned") {
         const entries = Array.isArray(body.entries)
             ? body.entries
                   .filter(
@@ -263,11 +278,11 @@ async function failure(response: Response): Promise<never> {
             : [];
         throw new ChatLoreOverrideOrphanedError(entries);
     }
-    if (response.status === 412 && body.error === "EpochMismatch") {
+    if (status === 412 && body.error === "EpochMismatch") {
         // The restore notice and reload, as for any other resource request.
         throw epochMismatch(body.epoch ?? "");
     }
-    throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
+    throw new ResourceRequestError(status, body.error ?? `Request failed (${status})`);
 }
 
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -280,22 +295,298 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
     return response.ok ? response : failure(response);
 }
 
-/** Creates a job for `body.context`'s chat and remembers it for this tab (`hooks`: the registered ones by default). */
-type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
+/** The create exchange's refusal, retaining whether an earlier dispatched attempt is unresolved. */
+export class GenerationCreateError extends Error {
+    readonly uncertain: boolean;
+    override readonly cause: unknown;
+    constructor(cause: unknown, uncertain: boolean) {
+        super(cause instanceof Error ? cause.message : String(cause));
+        this.name = "GenerationCreateError";
+        this.cause = cause;
+        this.uncertain = uncertain;
+    }
+}
 
-export async function createGenerationJob(body: CreateInput): Promise<string> {
+type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
+/** One create exchange: a new job, a replay classified by ownership, or a confirmed cancellation. */
+export type GenerationCreateResult =
+    | { outcome: "created"; jobId: string }
+    | { outcome: "replayed"; jobId: string; owned: boolean; status: GenerationStatus | null; cancelled?: true }
+    | { outcome: "cancelled" };
+
+type CreateOptions = { signal?: AbortSignal; requestUncertain?: boolean };
+const CREATE_DELAYS_MS = [1000, 2000, 4000];
+const CREATE_DEADLINE_MS = 10_000;
+
+function noAnswer(error: unknown): ResourceRequestError {
+    return new ResourceRequestError(0, error instanceof Error ? error.message : String(error));
+}
+
+/** Bounds authentication and body consumption too; a late auth completion cannot dispatch. */
+async function boundedAttempt<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop!: () => void;
+    const interrupted = new Promise<never>((_, reject) => {
+        stop = () => {
+            controller.abort();
+            reject(noAnswer("The generation request was stopped"));
+        };
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(noAnswer("The generation request timed out"));
+        }, CREATE_DEADLINE_MS);
+        signal?.addEventListener("abort", stop, { once: true });
+        if (signal?.aborted) stop();
+    });
+    try {
+        return await Promise.race([interrupted, work(controller.signal)]);
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+        controller.abort();
+    }
+}
+
+async function retryWait(ms: number, signal?: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const stop = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", stop);
+            reject(noAnswer("The generation request was stopped"));
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", stop);
+            resolve();
+        }, ms);
+        signal?.addEventListener("abort", stop, { once: true });
+        if (signal?.aborted) stop();
+    });
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validStatus(value: unknown, jobId: string): value is GenerationStatus | null {
+    if (value === null) return true;
+    if (!object(value) || value.jobId !== jobId) return false;
+    if (value.state === "running") return true;
+    return (
+        value.state === "ended" &&
+        object(value.terminal) &&
+        (value.terminal.type === "done" || value.terminal.type === "error")
+    );
+}
+
+function validCreated(value: unknown): value is GenerationCreated {
+    if (!object(value) || typeof value.jobId !== "string" || !GENERATION_ID_PATTERN.test(value.jobId)) return false;
+    return value.replayed === true
+        ? typeof value.owned === "boolean" && validStatus(value.status, value.jobId)
+        : value.replayed === undefined || value.replayed === false;
+}
+
+function validCancelled(value: unknown): value is GenerationCancelled {
+    return (
+        object(value) &&
+        (value.state === "cancelled" ||
+            ((value.state === "aborted" || value.state === "ended") &&
+                typeof value.jobId === "string" &&
+                GENERATION_ID_PATTERN.test(value.jobId) &&
+                typeof value.owned === "boolean" &&
+                validStatus(value.status, value.jobId)))
+    );
+}
+
+function registryRefusal(status: number, body: FailureBody): boolean {
+    if (status === 409) {
+        if (body.error === "chatBusy") return typeof body.jobId === "string";
+        if (body.error === "chatBindingIncomplete") return Array.isArray(body.problems);
+        if (body.error === "chatLoreOverrideOrphaned") return Array.isArray(body.entries);
+        return ["stale", "chatBindingMismatch", "requestIdReused", "requestCancelled"].includes(body.error ?? "");
+    }
+    return (
+        (status === 404 && body.error === "Chat not found") ||
+        (status === 503 &&
+            ["The server is not accepting generations now", "The server is shutting down"].includes(body.error ?? ""))
+    );
+}
+
+function validFailure(status: number, body: unknown): body is FailureBody {
+    if (!object(body) || typeof body.error !== "string") return false;
+    if (status === 412 && body.error === "EpochMismatch") return typeof body.epoch === "string";
+    if (status === 409 && body.error === "chatBusy") {
+        return typeof body.jobId === "string" && GENERATION_ID_PATTERN.test(body.jobId);
+    }
+    return true;
+}
+
+/** Retries an unanswered frozen request within bounded attempts, preserving uncertainty across pre-lookup failures. */
+async function exchange<T>(options: {
+    path: string;
+    body: string;
+    epoch: string;
+    valid: (body: unknown) => body is T;
+    signal?: AbortSignal;
+    dispatched?: () => void;
+    uncertain: boolean;
+    cancelling?: boolean;
+}): Promise<T> {
+    let uncertain = options.uncertain;
+    for (let attempt = 0; ; attempt++) {
+        let answer: { status: number; ok: boolean; body: unknown };
+        try {
+            if (attempt > 0) await retryWait(CREATE_DELAYS_MS[attempt - 1], options.signal);
+            answer = await boundedAttempt(async (signal) => {
+                const response = await authFetch(
+                    options.path,
+                    {
+                        method: "POST",
+                        cache: "no-store",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: options.epoch },
+                        body: options.body,
+                    },
+                    {
+                        beforeDispatch: () => {
+                            if (signal.aborted) throw noAnswer("The generation request was stopped");
+                            options.dispatched?.();
+                        },
+                    },
+                );
+                const body: unknown = await response.json();
+                if (response.ok ? !options.valid(body) : !validFailure(response.status, body)) {
+                    throw noAnswer("The server returned an incomplete generation answer");
+                }
+                return { status: response.status, ok: response.ok, body };
+            }, options.signal);
+        } catch (error) {
+            uncertain = true;
+            if (options.signal?.aborted || attempt === CREATE_DELAYS_MS.length) {
+                throw new GenerationCreateError(noAnswer(error), true);
+            }
+            continue;
+        }
+        if (answer.ok) return answer.body as T;
+        const body = answer.body as FailureBody;
+        try {
+            failAnswer(answer.status, body);
+        } catch (error) {
+            if (options.cancelling || (uncertain && !registryRefusal(answer.status, body))) {
+                throw new GenerationCreateError(error, true);
+            }
+            throw error;
+        }
+    }
+}
+
+/** Saves, stages and holds fresh creations and owned replays with a usable status, after classification. */
+function rememberCreated(result: GenerationCreateResult, ref: ChatRef): GenerationCreateResult {
+    if (result.outcome === "cancelled" || (result.outcome === "replayed" && (!result.owned || result.status === null)))
+        return result;
+    setJobStage(result.jobId, ref, "preparing", { onlyIfMissing: true });
+    rememberGenerationJob(ref, result.jobId);
+    liveJobs.add(result.jobId);
+    return result;
+}
+
+/** Cancels this request with its frozen client and epoch, using an independent retry budget; an admitted job is a replay. */
+async function cancelRequest(requestId: string, clientId: string, epoch: string): Promise<GenerationCreateResult> {
+    const result = await exchange({
+        path: "/api/generations/cancel",
+        body: JSON.stringify({ requestId, clientId }),
+        epoch,
+        valid: validCancelled,
+        uncertain: true,
+        cancelling: true,
+    });
+    return result.state === "cancelled"
+        ? { outcome: "cancelled" }
+        : {
+              outcome: "replayed",
+              jobId: result.jobId,
+              owned: result.owned,
+              status: result.status,
+              cancelled: true,
+          };
+}
+
+/** Cancels a previously unanswered attempt, including when this invocation never dispatched a create. */
+export async function cancelGenerationRequest(requestId: string, ref: ChatRef): Promise<GenerationCreateResult> {
     creatingJobs++;
     try {
-        const jobId = await createJob(body);
-        liveJobs.add(jobId);
-        return jobId;
+        return rememberCreated(await cancelRequest(requestId, generationClientId(), getResourceEpoch()), ref);
+    } finally {
+        creatingJobs--;
+        notifyPluginWork();
+    }
+}
+
+/** Creates or replays one frozen request for `body.context`'s chat, remembering only an owned job; hooks default to registered ones. */
+export async function createGenerationJob(
+    body: CreateInput,
+    options: CreateOptions = {},
+): Promise<GenerationCreateResult> {
+    creatingJobs++;
+    try {
+        const requestId = body.requestId ?? uuidv4();
+        const clientId = generationClientId();
+        const epoch = getResourceEpoch();
+        const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
+        let dispatched = options.requestUncertain === true;
+        let prepared = false;
+        let result: GenerationCreateResult;
+        try {
+            const frozen = await boundedAttempt(async () => {
+                let hooks = body.hooks;
+                let context = body.context;
+                if (!hooks) {
+                    // The tab's own job: its registered hooks, and the emotions it showed last (the server's
+                    // emotion modes penalize a recent choice as the tab's do).
+                    const channel = await import("./jobChannel");
+                    // The job's model preset (its chat's binding), not the settings views'.
+                    const { presetId, modelPresetId } = context;
+                    hooks = await channel.registeredHooks(
+                        presetId !== null && modelPresetId !== null ? { presetId, modelPresetId } : undefined,
+                    );
+                    if (context.client && !context.client.emotions) {
+                        context = {
+                            ...context,
+                            client: { ...context.client, emotions: channel.recentEmotions(context.characterId) },
+                        };
+                    }
+                }
+                return JSON.stringify({ ...body, context, hooks, requestId, clientId });
+            }, options.signal);
+            prepared = true;
+            const answer = await exchange({
+                path: "/api/generations",
+                body: frozen,
+                epoch,
+                valid: validCreated,
+                signal: options.signal,
+                dispatched: () => {
+                    dispatched = true;
+                },
+                uncertain: options.requestUncertain === true,
+            });
+            if (options.signal?.aborted) throw noAnswer("The generation request was stopped");
+            result = answer.replayed ? { ...answer, outcome: "replayed" } : { outcome: "created", jobId: answer.jobId };
+        } catch (error) {
+            if (!options.signal?.aborted) {
+                throw prepared ? error : new GenerationCreateError(error, dispatched);
+            }
+            result = dispatched ? await cancelRequest(requestId, clientId, epoch) : { outcome: "cancelled" };
+        }
+        return rememberCreated(result, ref);
     } catch (error) {
-        if (error instanceof GenerationBusyError) {
+        const cause = error instanceof GenerationCreateError ? error.cause : error;
+        if (cause instanceof GenerationBusyError && !(error instanceof GenerationCreateError && error.uncertain)) {
             // Maybe this tab's own job (the caller reads its status, then follows it).
-            let reservations = busyJobs.get(error.jobId);
+            let reservations = busyJobs.get(cause.jobId);
             if (!reservations) {
                 reservations = new Set();
-                busyJobs.set(error.jobId, reservations);
+                busyJobs.set(cause.jobId, reservations);
             }
             reservations.add({ reading: false });
         }
@@ -304,37 +595,6 @@ export async function createGenerationJob(body: CreateInput): Promise<string> {
         creatingJobs--;
         notifyPluginWork();
     }
-}
-
-async function createJob(body: CreateInput): Promise<string> {
-    let hooks = body.hooks;
-    let context = body.context;
-    if (!hooks) {
-        // The tab's own job: its registered hooks, and the emotions it showed last (the server's
-        // emotion modes penalize a recent choice as the tab's do).
-        const channel = await import("./jobChannel");
-        // The job's model preset (its chat's binding), not the settings views'.
-        const { presetId, modelPresetId } = context;
-        hooks = await channel.registeredHooks(
-            presetId !== null && modelPresetId !== null ? { presetId, modelPresetId } : undefined,
-        );
-        if (context.client && !context.client.emotions) {
-            context = {
-                ...context,
-                client: { ...context.client, emotions: channel.recentEmotions(context.characterId) },
-            };
-        }
-    }
-    const response = await request("/api/generations", {
-        method: "POST",
-        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        body: JSON.stringify({ ...body, context, hooks, clientId: generationClientId() }),
-    });
-    const { jobId } = (await response.json()) as { jobId: string };
-    const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
-    setJobStage(jobId, ref, "preparing", { onlyIfMissing: true });
-    rememberGenerationJob(ref, jobId);
-    return jobId;
 }
 
 const jobPath = (jobId: string) =>

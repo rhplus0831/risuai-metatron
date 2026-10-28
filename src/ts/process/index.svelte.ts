@@ -1,6 +1,6 @@
 import { type ChatRef, chatEntry, currentChatRef } from "../storage/chatStore.svelte";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import { sendChatOnServer, type ServerSendArg } from "./serverGeneration";
+import { sendChatOnServer, type ServerSendArg, type ServerSendResult } from "./serverGeneration";
 import { beginLocalSend } from "./localSends";
 
 export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
@@ -21,7 +21,13 @@ type SendChatArg = ServerSendArg & {
      * more (it did not run, or its job ended; not after a create without an answer or a lost follow),
      * with the chats a flush refused for a generation waited on.
      */
-    onEnd?: (end: { settled: boolean; blockedChats: readonly ChatRef[] }) => void;
+    onEnd?: (end: {
+        settled: boolean;
+        blockedChats: readonly ChatRef[];
+        outcome: ServerSendResult["outcome"];
+        requestUncertain: boolean;
+        reconciled?: boolean;
+    }) => void;
 };
 
 /**
@@ -63,26 +69,41 @@ export async function previewChat(
 
 async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknown }> {
     if (arg.target && !chatEntry(arg.target)) {
-        arg.onServerRefused?.(false);
-        arg.onEnd?.({ settled: true, blockedChats: [] });
+        arg.onServerRefused?.(arg.requestUncertain === true);
+        arg.onEnd?.({
+            settled: !arg.requestUncertain,
+            blockedChats: [],
+            outcome: "refused",
+            requestUncertain: arg.requestUncertain === true,
+        });
         return { ok: false };
     }
     const target = arg.target ?? currentChatRef();
     // The registry itself refuses a second send of the chat (read synchronously, never a derived view).
     const release = beginLocalSend(target);
     if (!release) {
-        arg.onServerRefused?.(false);
-        arg.onEnd?.({ settled: true, blockedChats: [] });
+        arg.onServerRefused?.(arg.requestUncertain === true);
+        arg.onEnd?.({
+            settled: !arg.requestUncertain,
+            blockedChats: [],
+            outcome: "refused",
+            requestUncertain: arg.requestUncertain === true,
+        });
         return { ok: false };
     }
     try {
-        const { ok, result, refusal, settled, blockedChats } = await sendChatOnServer(
-            target ? { ...arg, target } : arg,
-        );
+        const { ok, result, refusal, settled, blockedChats, outcome, requestUncertain, reconciled } =
+            await sendChatOnServer(target ? { ...arg, target } : arg);
         if (refusal) {
             arg.onServerRefused?.(refusal === "ambiguous");
         }
-        arg.onEnd?.({ settled, blockedChats: blockedChats ?? [] });
+        arg.onEnd?.({
+            settled,
+            blockedChats: blockedChats ?? [],
+            outcome,
+            requestUncertain: requestUncertain ?? !settled,
+            ...(reconciled !== undefined ? { reconciled } : {}),
+        });
         return { ok, result };
     } finally {
         release();

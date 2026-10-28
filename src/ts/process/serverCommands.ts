@@ -11,6 +11,7 @@ import type {
     GenerationFollowUp,
     GenerationKind,
     GenerationTerminalEvent,
+    GenerationStatus,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { writable } from "svelte/store";
@@ -21,6 +22,10 @@ import {
     ChatBindingRefusedError,
     ChatLoreOverrideOrphanedError,
     createGenerationJob,
+    cancelGenerationRequest,
+    GenerationCreateError,
+    GenerationStaleError,
+    type GenerationCreateResult,
     followGenerationJob,
     type GenerationFollow,
     GenerationBusyError,
@@ -38,7 +43,7 @@ import {
     markChatStale,
     pinChat,
 } from "../storage/chatStore.svelte";
-import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
+import { getResourceEpoch, ResourceEpochMismatchError, ResourceRequestError } from "../storage/resourceClient";
 import {
     flushResources,
     GenerationBlockedError,
@@ -91,6 +96,7 @@ const followedUp = new Set<string>();
 
 /** The one lifecycle of each job this tab follows to its end, shared by every caller. */
 const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
+const replayedStatuses = new Map<string, GenerationStatus>();
 
 /** The followed jobs whose chats are known, keyed by job id so overlapping follows stay visible. */
 export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
@@ -128,7 +134,12 @@ export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef):
  * stays pinned through every reconnect, the terminal's hydration, and the chat's read again, so no
  * event of the job finds its chat evicted.
  */
-export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<GenerationTerminalEvent | "lost"> {
+export function followJobToEnd(
+    jobId: string,
+    ref?: ChatRef,
+    initialStatus?: GenerationStatus,
+): Promise<GenerationTerminalEvent | "lost"> {
+    if (initialStatus?.state === "ended" && initialStatus.terminal) replayedStatuses.set(jobId, initialStatus);
     let shared = following.get(jobId);
     if (!shared) {
         shared = (async () => {
@@ -147,8 +158,25 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                     followedJobs.update((jobs) => new Map(jobs).set(jobId, key));
                     release ??= pinChat(target);
                 }
-                const result: FollowEnd =
-                    target === "lost" || !(await loadJobChat(target)) ? "lost" : await followOnce(jobId, target);
+                // A terminal already received is authoritative even if the chat cannot be loaded.
+                const loaded = target !== "lost" && (replayedStatuses.has(jobId) || (await loadJobChat(target)));
+                const replay = replayedStatuses.get(jobId);
+                let result: FollowEnd = replay?.terminal
+                    ? { terminal: replay.terminal, applied: false, kept: replay.kept === true }
+                    : !loaded
+                      ? "lost"
+                      : await followOnce(jobId, target as ChatRef);
+                if (typeof result === "string") {
+                    // Another caller may have registered an ended replay while followOnce was awaiting the network.
+                    const replayAfterFollow = replayedStatuses.get(jobId);
+                    if (replayAfterFollow?.terminal) {
+                        result = {
+                            terminal: replayAfterFollow.terminal,
+                            applied: false,
+                            kept: replayAfterFollow.kept === true,
+                        };
+                    }
+                }
                 const end = typeof result === "string" ? "lost" : result.terminal;
                 if (typeof result === "string") {
                     recordClientEvent({ kind: "jobLink", phase: result, jobId });
@@ -174,7 +202,7 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                 // chat this tab could not read again runs none of them.
                 const current =
                     target === "lost" ||
-                    !needsChatRead(result, target) ||
+                    (!replayedStatuses.has(jobId) && !needsChatRead(result, target)) ||
                     (await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome"));
                 if (end !== "lost" && end.type === "done" && target !== "lost" && !followedUp.has(jobId)) {
                     if (end.followUpsDropped || (end.followUps?.length && !current)) {
@@ -197,6 +225,7 @@ export function followJobToEnd(jobId: string, ref?: ChatRef): Promise<Generation
                 return end;
             } finally {
                 following.delete(jobId);
+                replayedStatuses.delete(jobId);
                 followedJobs.update((jobs) => {
                     const next = new Map(jobs);
                     next.delete(jobId);
@@ -397,6 +426,8 @@ async function followOnce(jobId: string, ref: ChatRef): Promise<FollowEnd> {
     let attach = 0;
     let resumed = false;
     while (attach < MAX_ATTACHES) {
+        const replay = replayedStatuses.get(jobId);
+        if (replay?.terminal) return { terminal: replay.terminal, applied: false, kept: replay.kept === true };
         if (attach > 0 || resumed) {
             if (!resumed) {
                 await sleep(retryDelay(attach));
@@ -471,17 +502,21 @@ export async function resumeServerJobs(): Promise<void> {
 }
 
 /**
- * How a server job ended for the caller: it ran (`started`), this tab's busy job (another action) was
- * followed instead, it did not run (`refused`), or the create request failed without an answer, so it
+ * How a server job ended for the caller: it ran (`started`) or was found by request id (`replayed`),
+ * this tab's busy job (another action) was followed instead, it did not run (`refused`), or the create failed without an answer, so it
  * may have run (`unknown`).
  */
-export type ServerCommandOutcome = "started" | "followed" | "refused" | "unknown";
+export type ServerCommandOutcome = "started" | "replayed" | "followed" | "refused" | "unknown";
 
 /** What a server job runs as, for its refusal alerts: a send (every send kind), a Lua button, or a manual trigger. */
 export type ServerJobLabel = "send" | "button" | "trigger";
 
 /** What a server job of this tab runs: its kind, its command, and the context fields of the caller. */
 export type ServerJobRequest = {
+    /** Identifies this action across unanswered creates; the transport mints one when omitted. */
+    requestId?: string;
+    /** An earlier dispatched attempt under this id has no known end. */
+    requestUncertain?: boolean;
     kind: GenerationKind;
     command?: GenerationCommand;
     /** What did not run, for the refusal alert (`language.serverJob.discarded`). */
@@ -497,8 +532,9 @@ export type ServerJobRequest = {
  * flush runs nothing), then the job runs and its events are applied until it ends. Its chat and
  * record changes arrive as the server's records; its alerts and questions through the job's
  * channel. An error ends with `alertError`. `onStart` runs once the job exists, before it is
- * followed. `signal` aborts the job (`DELETE`), also when it fires while the job is being created,
- * and the busy job of this tab followed instead; an abort before the flush ends runs nothing. The
+ * followed. `signal` cancels a dispatched create by request id; once following a known owned job,
+ * it aborts that job (`DELETE`), including a busy job followed instead. An abort before dispatch
+ * runs nothing; an already uncertain request is still cancelled during preflight. The
  * target chat is pinned from the start until the follow ends and is loaded before the job is
  * created (a failed load runs nothing). A flush refused for a generation gives the chats it waited on
  * (`blockedChats`); a create refused for another tab's job gives the target.
@@ -510,7 +546,7 @@ export async function runServerJob(
     options: ServerJobOptions = {},
 ): Promise<ServerJobResult> {
     if (!ref) {
-        return { outcome: "refused", terminal: null };
+        return { outcome: "refused", terminal: null, requestUncertain: request.requestUncertain === true };
     }
     const release = pinChat(ref);
     try {
@@ -521,6 +557,9 @@ export async function runServerJob(
 }
 
 type ServerJobResult = {
+    requestUncertain?: boolean;
+    /** A replay with no usable owner terminal was reconciled against the chat. */
+    reconciled?: boolean;
     outcome: ServerCommandOutcome;
     terminal: GenerationTerminalEvent | "lost" | null;
     blockedChats?: readonly ChatRef[];
@@ -538,91 +577,102 @@ async function runPinnedServerJob(
     request: ServerJobRequest,
     options: ServerJobOptions,
 ): Promise<ServerJobResult> {
-    const refused = { outcome: "refused" as const, terminal: null };
-    // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
-    // the chat's complete binding or not at all.
-    const binding = chatBinding(ref);
-    if (!binding?.ok) {
-        alertError(chatBindingRefusalText(chatBindingProblems(binding)));
-        return refused;
-    }
-    const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);
-    const client = {
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        browserLanguage: navigator.language,
+    let previousCancel: Promise<GenerationCreateResult> | undefined;
+    const cancelPrevious = () => {
+        if (request.requestId && request.requestUncertain) {
+            previousCancel ??= cancelGenerationRequest(request.requestId, ref);
+            // The preflight may still be awaiting a flush when cancellation fails.
+            void previousCancel.catch(() => {});
+        }
     };
-    const notices = generatingNoticeCount();
-    // Saved first; then a chat this tab knows is behind the server (a job's chat patch that did not
-    // fit, a stale acknowledgement, a live notice) is read whole, so the job is not created on its
-    // old revision. A change made while that read was in flight is saved and the read tried once
-    // more; a chat still behind then goes as it is, and the server refuses its old revision.
-    for (let attempt = 0; attempt < 2; attempt++) {
-        if (
-            refusedItems().some(
-                (item) =>
-                    (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
-                    (item.kind === "order" && item.chaId === ref.chaId),
-            )
-        ) {
-            alertError(language.serverJob.refusedDraft);
+    options.signal?.addEventListener("abort", cancelPrevious, { once: true });
+    if (options.signal?.aborted) cancelPrevious();
+    const prepare = async () => {
+        const refused = {
+            outcome: "refused" as const,
+            terminal: null,
+            requestUncertain: request.requestUncertain === true,
+        };
+        // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
+        // the chat's complete binding or not at all.
+        const binding = chatBinding(ref);
+        if (!binding?.ok) {
+            alertError(chatBindingRefusalText(chatBindingProblems(binding)));
             return refused;
         }
-        try {
-            const { discarded, refused: refusedKeys } = await flushResources();
-            if (discarded.length > 0) {
-                alertError(language.serverJob.discarded[request.label]);
-                return refused;
-            }
+        const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);
+        const client = {
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+            browserLanguage: navigator.language,
+        };
+        const notices = generatingNoticeCount();
+        // Saved first; then a chat this tab knows is behind the server (a job's chat patch that did not
+        // fit, a stale acknowledgement, a live notice) is read whole, so the job is not created on its
+        // old revision. A change made while that read was in flight is saved and the read tried once
+        // more; a chat still behind then goes as it is, and the server refuses its old revision.
+        for (let attempt = 0; attempt < 2; attempt++) {
             if (
-                refusedKeys.includes(`chats/${ref.chaId}/${ref.chatId}`) ||
-                refusedKeys.includes(`chats/${ref.chaId}`)
+                refusedItems().some(
+                    (item) =>
+                        (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
+                        (item.kind === "order" && item.chaId === ref.chaId),
+                )
             ) {
                 alertError(language.serverJob.refusedDraft);
                 return refused;
             }
-        } catch (error) {
-            if (error instanceof GenerationBlockedError) {
-                // The chat or character is being generated (another tab's job): the same notice as a
-                // busy chat, unless this flush's conflict recovery has just shown it.
-                if (generatingNoticeCount() === notices) {
-                    alertError(language.chatGenerating);
+            try {
+                const { discarded, refused: refusedKeys } = await flushResources();
+                if (discarded.length > 0) {
+                    alertError(language.serverJob.discarded[request.label]);
+                    return refused;
                 }
-                return { ...refused, blockedChats: error.chats };
+                if (
+                    refusedKeys.includes(`chats/${ref.chaId}/${ref.chatId}`) ||
+                    refusedKeys.includes(`chats/${ref.chaId}`)
+                ) {
+                    alertError(language.serverJob.refusedDraft);
+                    return refused;
+                }
+            } catch (error) {
+                if (error instanceof GenerationBlockedError) {
+                    // The chat or character is being generated (another tab's job): the same notice as a
+                    // busy chat, unless this flush's conflict recovery has just shown it.
+                    if (generatingNoticeCount() === notices) {
+                        alertError(language.chatGenerating);
+                    }
+                    return { ...refused, blockedChats: error.chats };
+                }
+                alertError(withError(language.serverJob.saveFailed, error));
+                return refused;
             }
-            alertError(withError(language.serverJob.saveFailed, error));
-            return refused;
+            let current: boolean;
+            try {
+                current = await refreshStaleChat(ref);
+            } catch (error) {
+                alertError(withError(language.serverJob.chatLoadFailed, error));
+                return refused;
+            }
+            if (current) {
+                break;
+            }
         }
-        let current: boolean;
+        let target;
         try {
-            current = await refreshStaleChat(ref);
+            target = await ensureChatLoaded(ref);
         } catch (error) {
             alertError(withError(language.serverJob.chatLoadFailed, error));
             return refused;
         }
-        if (current) {
-            break;
+        if (!target || options.signal?.aborted) {
+            return refused;
         }
-    }
-    let target;
-    try {
-        target = await ensureChatLoaded(ref);
-    } catch (error) {
-        alertError(withError(language.serverJob.chatLoadFailed, error));
-        return refused;
-    }
-    if (!target || options.signal?.aborted) {
-        return refused;
-    }
-    const chatRevision = heldChatRevision(ref);
-    if (chatRevision === null) {
-        alertError(language.serverJob.chatNotSaved);
-        return refused;
-    }
-    let jobId: string;
-    let outcome: "started" | "followed" = "started";
-    try {
-        jobId = await createGenerationJob({
-            kind: request.kind,
+        const chatRevision = heldChatRevision(ref);
+        if (chatRevision === null) {
+            alertError(language.serverJob.chatNotSaved);
+            return refused;
+        }
+        return {
             context: {
                 characterId: ref.chaId,
                 chatId: ref.chatId,
@@ -635,9 +685,58 @@ async function runPinnedServerJob(
                 client,
                 ...request.context,
             },
-            ...(request.command ? { command: request.command } : {}),
-        } as Parameters<typeof createGenerationJob>[0]);
-    } catch (error) {
+        };
+    };
+    let prepared: Awaited<ReturnType<typeof prepare>>;
+    try {
+        prepared = await prepare();
+    } finally {
+        options.signal?.removeEventListener("abort", cancelPrevious);
+    }
+    if (!previousCancel && "outcome" in prepared) return prepared;
+    const refused = { outcome: "refused" as const, terminal: null, requestUncertain: false };
+    let jobId: string;
+    let initialStatus: GenerationStatus | undefined;
+    let outcome: "started" | "replayed" | "followed" = "started";
+    let cancelled = false;
+    try {
+        const created = previousCancel
+            ? await previousCancel
+            : await createGenerationJob(
+                  {
+                      kind: request.kind,
+                      requestId: request.requestId,
+                      context: (prepared as { context: GenerationContext }).context,
+                      ...(request.command ? { command: request.command } : {}),
+                  } as Parameters<typeof createGenerationJob>[0],
+                  {
+                      signal: options.signal,
+                      requestUncertain: request.requestUncertain,
+                  },
+              );
+        if (created.outcome === "cancelled") return refused;
+        jobId = created.jobId;
+        if (created.outcome === "replayed") {
+            outcome = "replayed";
+            cancelled = created.cancelled === true;
+            if (!created.owned && created.status?.state === "running" && !cancelled) {
+                alertError(language.chatGenerating);
+                return { ...refused, blockedChats: [ref], requestUncertain: true };
+            }
+            if (!created.owned || created.status === null) {
+                const reconciled = await recoverJobChat(ref, jobId, "outcome");
+                // An abort acknowledgement does not mean a foreign job has stopped writing yet.
+                const requestUncertain = !reconciled || created.status?.state === "running";
+                return { outcome, terminal: null, reconciled, requestUncertain };
+            }
+            initialStatus = created.status;
+        }
+    } catch (failure) {
+        const error = failure instanceof GenerationCreateError ? failure.cause : failure;
+        if (failure instanceof GenerationCreateError && failure.uncertain) {
+            if (!options.signal?.aborted) alertError(language.serverJob.lost);
+            return { outcome: "unknown", terminal: null, requestUncertain: true };
+        }
         if (error instanceof ChatBindingRefusedError) {
             if (error.code === "chatBindingMismatch") {
                 // The server holds a newer binding than this tab: read the chat again, and the user sends again.
@@ -663,33 +762,48 @@ async function runPinnedServerJob(
             jobId = error.jobId;
             outcome = "followed";
         } else {
-            alertError(errorText(error));
+            if (error instanceof ResourceRequestError && error.message === "requestCancelled") return refused;
+            alertError(
+                error instanceof ResourceRequestError && error.message === "requestIdReused"
+                    ? language.serverJob.requestIdReused
+                    : errorText(error),
+            );
             // No answer (the network, or a body that did not arrive whole): the job may exist.
-            const unanswered = !(error instanceof ResourceRequestError) || error.status === 0;
-            return { outcome: unanswered ? "unknown" : "refused", terminal: null };
+            // The exchange also keeps pre-lookup failures uncertain after an unanswered attempt.
+            const unanswered =
+                failure instanceof GenerationCreateError
+                    ? failure.uncertain
+                    : !(
+                          error instanceof GenerationStaleError ||
+                          error instanceof ResourceEpochMismatchError ||
+                          (error instanceof ResourceRequestError && error.status !== 0)
+                      );
+            return { outcome: unanswered ? "unknown" : "refused", terminal: null, requestUncertain: unanswered };
         }
     }
     const onAbort = () => {
         void abortGenerationJob(jobId).catch((error) => console.error("[Generation]", error));
     };
     if (options.signal?.aborted) {
-        onAbort();
+        if (!cancelled) onAbort();
     } else {
         options.signal?.addEventListener("abort", onAbort, { once: true });
     }
     try {
-        if (outcome === "started") {
+        if (outcome === "started" || (outcome === "replayed" && initialStatus?.state === "running" && !cancelled)) {
             try {
                 options.onStart?.();
             } catch (error) {
                 // The job runs anyway: it is still followed to its end, which releases what this tab
                 // holds for it (a plugin reload waits for a job that is never released).
-                void followJobToEnd(jobId, ref).catch((followError) => console.error("[Generation]", followError));
+                void followJobToEnd(jobId, ref, initialStatus).catch((followError) =>
+                    console.error("[Generation]", followError),
+                );
                 throw error;
             }
         }
-        const terminal = await followJobToEnd(jobId, ref);
-        return { outcome, terminal };
+        const terminal = await followJobToEnd(jobId, ref, initialStatus);
+        return { outcome, terminal, requestUncertain: outcome !== "followed" && terminal === "lost" };
     } finally {
         options.signal?.removeEventListener("abort", onAbort);
     }

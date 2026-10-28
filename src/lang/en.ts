@@ -1619,6 +1619,7 @@ export const languageEnglish = {
     rerollRepliesNotRestored:
         "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",
     serverJob: {
+        requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",
         followUpsNotRun: "The command's /multisend did not run: the command ended while this page was away",

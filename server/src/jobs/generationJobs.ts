@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -13,6 +13,9 @@ import {
     type GenerationCommand,
     type GenerationContext,
     type GenerationCreateBody,
+    type GenerationCreated,
+    type GenerationCancelBody,
+    type GenerationCancelled,
     type GenerationHooks,
     type HydrationReceipt,
     GENERATION_ERROR_STAGES,
@@ -29,7 +32,13 @@ import {
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
-import { KEPT_OUTCOME_MS, MAX_KEPT_OUTCOMES, type GenerationReceipts } from "../data/generationReceipts.ts";
+import {
+    GENERATION_RECEIPT_MS,
+    MAX_GENERATION_RECEIPTS,
+    KEPT_OUTCOME_MS,
+    MAX_KEPT_OUTCOMES,
+    type GenerationReceipts,
+} from "../data/generationReceipts.ts";
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import {
     type AppliedChanges,
@@ -248,11 +257,63 @@ export const unavailableRunner: GenerationRunner = async () => {
 };
 
 export type CreateResult =
-    { ok: true; jobId: string } | { ok: false; status: 400 | 404 | 409 | 412 | 503; body: Record<string, unknown> };
+    | ({ ok: true } & GenerationCreated)
+    | { ok: false; status: 400 | 404 | 409 | 412 | 503; body: Record<string, unknown> };
+
+/** Sorts object keys recursively without assigning them to a prototype; keeps array order and maps absent values to null. */
+function canonicalJson(value: unknown): string {
+    if (value === undefined || value === null) return "null";
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (typeof value === "object") {
+        const object = value as Record<string, unknown>;
+        return `{${Object.keys(object)
+            .sort()
+            .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+
+/** Hashes the action and its input identity, excluding revision, bindings, hooks and client ownership. */
+function requestFingerprint(body: GenerationCreateBody): string {
+    const { characterId, chatId, input, userMessageId, continueMessageId } = body.context;
+    return createHash("sha256")
+        .update(
+            canonicalJson({
+                kind: body.kind,
+                characterId,
+                chatId,
+                command: body.command,
+                input,
+                userMessageId,
+                continueMessageId,
+            }),
+        )
+        .digest("hex");
+}
+
+type RequestIdentity =
+    | { cancelled: true }
+    | {
+          cancelled: false;
+          jobId: string;
+          clientId: string | null;
+          fingerprint: string | null;
+          status: GenerationStatus | null;
+      };
+
+/** Omits a non-owner's preview result from a copy, preserving the owner's retained terminal. */
+function replayStatus(status: GenerationStatus | null, owned: boolean): GenerationStatus | null {
+    if (owned || status?.terminal?.type !== "done") return status;
+    const { result, ...terminal } = status.terminal;
+    return { ...status, terminal };
+}
 
 type Job = {
     id: string;
     clientId: string;
+    requestId?: string;
+    fingerprint: string | null;
     kind: GenerationKind;
     context: GenerationContext;
     command: GenerationCommand | null;
@@ -459,9 +520,12 @@ export function createGenerationJobs(options: {
     receipts?: GenerationReceipts;
     /** How long an aborted job's runner may take before the job is ended for it (default `JOB_ABORT_GRACE_MS`; tests raise it). */
     abortGraceMs?: number;
+    /** Clock for admission/end timestamps and identity retention (defaults to Date.now). */
+    now?: () => number;
 }) {
     const { store, kinds, gate, snapshots, lock, authorize, diagnostics, receipts } = options;
     const abortGraceMs = options.abortGraceMs ?? JOB_ABORT_GRACE_MS;
+    const clock = options.now ?? (() => Date.now());
     const runner = options.runner ?? unavailableRunner;
     const hub = options.hub ?? createChannelHub();
     const jobs = new Map<string, Job>();
@@ -473,7 +537,14 @@ export function createGenerationJobs(options: {
     let maintenancePending = 0;
     let gcTimer: ReturnType<typeof setInterval> | null = null;
     /** The kept outcomes of collected jobs, oldest first (`KEPT_OUTCOME_MS`), all of `keptEpoch`. */
-    const kept = new Map<string, { clientId: string; keptAt: number; status: GenerationStatus }>();
+    const kept = new Map<
+        string,
+        { clientId: string; keptAt: number; status: GenerationStatus; requestId?: string; fingerprint: string | null }
+    >();
+    /** Request id → current-epoch job id, including ended jobs until collection moves their identity to kept. */
+    const requestJobs = new Map<string, string>();
+    /** Cancelled request id → first cancellation time, oldest first; bounded and cleared on epoch changes. */
+    const cancelledRequests = new Map<string, number>();
     let keptEpoch = store.epoch();
 
     /** A `job` event to the journal; a recorder's throw never reaches the job. */
@@ -797,7 +868,7 @@ export function createGenerationJobs(options: {
         }
         job.ended = true;
         job.stage = null;
-        job.endedAt = Date.now();
+        job.endedAt = clock();
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
         try {
@@ -1223,11 +1294,30 @@ export function createGenerationJobs(options: {
     }
 
     function create(body: GenerationCreateBody, epoch: string | undefined): CreateResult {
-        if (closed || maintenancePending > 0 || gate.active) {
-            return { ok: false, status: 503, body: { error: "The server is not accepting generations now" } };
-        }
         if (epoch !== store.epoch()) {
             return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+        }
+        keptOutcomes();
+        const fingerprint = body.requestId ? requestFingerprint(body) : null;
+        const identity = body.requestId ? lookupRequest(body.requestId) : null;
+        if (identity?.cancelled) {
+            return { ok: false, status: 409, body: { error: "requestCancelled" } };
+        }
+        if (identity) {
+            if (identity.fingerprint !== fingerprint) {
+                return { ok: false, status: 409, body: { error: "requestIdReused" } };
+            }
+            const owned = identity.clientId === body.clientId;
+            return {
+                ok: true,
+                jobId: identity.jobId,
+                replayed: true,
+                owned,
+                status: replayStatus(identity.status, owned),
+            };
+        }
+        if (closed || maintenancePending > 0 || gate.active) {
+            return { ok: false, status: 503, body: { error: "The server is not accepting generations now" } };
         }
         const hooks = parseGenerationHooks(body.hooks);
         if (typeof hooks === "string") {
@@ -1263,6 +1353,8 @@ export function createGenerationJobs(options: {
         const job: Job = {
             id: randomUUID(),
             clientId: body.clientId,
+            requestId: body.requestId,
+            fingerprint,
             kind: body.kind,
             context: structuredClone(body.context),
             command: body.command ? structuredClone(body.command) : null,
@@ -1273,7 +1365,7 @@ export function createGenerationJobs(options: {
             controller: new AbortController(),
             abortReason: null,
             abortTimer: null,
-            startedAt: Date.now(),
+            startedAt: clock(),
             ended: false,
             endedAt: 0,
             sockets: new Set(),
@@ -1321,7 +1413,7 @@ export function createGenerationJobs(options: {
         lock.addToken(job.token);
         jobs.set(job.id, job);
         chatSlots.set(chatKey(characterId, chatId), job.id);
-        keptOutcomes();
+        if (job.requestId) requestJobs.set(job.requestId, job.id);
         receipts?.admit({
             jobId: job.id,
             clientId: job.clientId,
@@ -1330,6 +1422,8 @@ export function createGenerationJobs(options: {
             characterId,
             chatId,
             admittedAt: job.startedAt,
+            requestId: job.requestId,
+            fingerprint: job.fingerprint,
         });
         record({ kind: "job", phase: "accepted", jobId: job.id, jobKind: job.kind });
         start(job);
@@ -1346,10 +1440,78 @@ export function createGenerationJobs(options: {
         const epoch = store.epoch();
         if (epoch !== keptEpoch) {
             kept.clear();
+            requestJobs.clear();
+            cancelledRequests.clear();
             keptEpoch = epoch;
             receipts?.sync(epoch);
         }
         return kept;
+    }
+
+    /** Drops the oldest cancellation tombstones past the time or count limit. */
+    function expireCancelled(now: number) {
+        for (const [id, at] of cancelledRequests) {
+            if (now - at < GENERATION_RECEIPT_MS && cancelledRequests.size <= MAX_GENERATION_RECEIPTS) break;
+            cancelledRequests.delete(id);
+        }
+    }
+
+    /** Finds current-epoch identity in live jobs, kept outcomes or tombstones before falling back to disk. */
+    function lookupRequest(requestId: string): RequestIdentity | null {
+        expireOutcomes(clock());
+        expireCancelled(clock());
+        const jobId = requestJobs.get(requestId);
+        const job = jobId ? jobs.get(jobId) : undefined;
+        if (job && job.epoch === keptEpoch) {
+            return {
+                cancelled: false,
+                jobId: job.id,
+                clientId: job.clientId,
+                fingerprint: job.fingerprint,
+                status: status(job),
+            };
+        }
+        for (const [id, outcome] of kept) {
+            if (outcome.requestId === requestId) {
+                return { cancelled: false, jobId: id, ...outcome };
+            }
+        }
+        if (cancelledRequests.has(requestId)) return { cancelled: true };
+        return receipts?.readByRequest(requestId) ?? null;
+    }
+
+    /** Aborts this request's job regardless of owner, or records a tombstone before a late create can admit. */
+    function cancel(
+        body: GenerationCancelBody,
+        epoch: string | undefined,
+    ): { ok: true; body: GenerationCancelled } | { ok: false; status: 412; body: Record<string, unknown> } {
+        if (epoch !== store.epoch()) {
+            return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+        }
+        keptOutcomes();
+        const identity = lookupRequest(body.requestId);
+        if (identity && !identity.cancelled) {
+            const job = jobs.get(identity.jobId);
+            const running = job && job.epoch === keptEpoch && !job.ended;
+            if (running) abort(job, "aborted");
+            const owned = identity.clientId === body.clientId;
+            return {
+                ok: true,
+                body: {
+                    state: running ? "aborted" : "ended",
+                    jobId: identity.jobId,
+                    owned,
+                    status: replayStatus(identity.status, owned),
+                },
+            };
+        }
+        if (!identity) {
+            const at = clock();
+            cancelledRequests.set(body.requestId, at);
+            expireCancelled(at);
+            receipts?.cancel(body.requestId, body.clientId, at);
+        }
+        return { ok: true, body: { state: "cancelled" } };
     }
 
     /** Keeps a collected job's outcome; a job of an older epoch keeps none. */
@@ -1362,6 +1524,8 @@ export function createGenerationJobs(options: {
         outcomes.set(job.id, {
             clientId: job.clientId,
             keptAt: now,
+            requestId: job.requestId,
+            fingerprint: job.fingerprint,
             status: keptStatus(job, job.terminal),
         });
         for (const id of outcomes.keys()) {
@@ -1562,6 +1726,7 @@ export function createGenerationJobs(options: {
 
     return {
         create,
+        cancel,
 
         /** The change feed's whole lock snapshot, with stored chat revisions sampled synchronously. */
         streamingSnapshot(): ChatStreamingSnapshot[] {
@@ -1617,7 +1782,7 @@ export function createGenerationJobs(options: {
             if (jobs.has(jobId)) {
                 return null;
             }
-            expireOutcomes(Date.now());
+            expireOutcomes(clock());
             const outcome = kept.get(jobId);
             if (outcome) {
                 return outcome.clientId === clientId ? outcome.status : null;
@@ -1681,16 +1846,18 @@ export function createGenerationJobs(options: {
                 return;
             }
             gcTimer = setInterval(() => {
-                const now = Date.now();
+                const now = clock();
                 expireOutcomes(now);
+                expireCancelled(now);
                 receipts?.prune(now);
                 for (const [id, job] of jobs) {
                     if (job.ended && now - job.endedAt >= JOB_DONE_GRACE_MS) {
                         for (const ws of job.sockets) {
                             ws.close();
                         }
-                        jobs.delete(id);
                         keepOutcome(job, now);
+                        if (job.requestId && requestJobs.get(job.requestId) === id) requestJobs.delete(job.requestId);
+                        jobs.delete(id);
                     } else if (!job.ended && now - job.startedAt >= JOB_MAX_DURATION_MS) {
                         abort(job, "timeout");
                     }

@@ -1076,6 +1076,7 @@ export const languageKorean = {
     rerollRepliesNotRestored:
         "다시 생성한 답변이 없지만, 리롤로 지운 답변을 안전하게 되돌리지 못했습니다. 이 채팅을 다른 곳에서 생성하고 있거나, 최신 채팅을 읽지 못했습니다.",
     serverJob: {
+        requestIdReused: "이 요청 ID는 이미 다른 작업에 사용되었습니다. 다시 보내면 새 요청이 시작됩니다.",
         lost: "서버 작업과의 연결이 끊겼습니다. 변경 사항을 보려면 채팅을 다시 불러와 주세요.",
         endedAway: "페이지가 꺼져 있는 동안 응답 작업이 끝나 채팅을 다시 불러왔습니다",
         followUpsNotRun: "페이지가 꺼져 있는 동안 명령이 끝나 명령의 /multisend를 실행하지 않았습니다.",

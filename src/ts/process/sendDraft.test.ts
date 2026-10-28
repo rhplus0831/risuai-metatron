@@ -97,3 +97,13 @@ describe("createSendDrafts", () => {
         expect(drafts.idFor(a, composerSendText(restored))).toBe("journal-id");
     });
 });
+
+it("gives Continue a fresh request id even when the same text has an uncertain Send", () => {
+    const drafts = createSendDrafts();
+    const first = { input: "same text", ...drafts.idsFor(a, "same text") };
+    drafts.settle(a, first, { ...failed, requestUncertain: true });
+    const continued = drafts.idsFor(a, first.input, false);
+    expect(continued.requestId).not.toBe(first.requestId);
+    expect(continued.userMessageId).toBe(first.userMessageId);
+    expect(continued.requestUncertain).toBe(false);
+});

@@ -989,7 +989,7 @@
                         CurrentTriggerIdStore.set(triggerId || null);
                     },
                 });
-                if (outcome === "started") {
+                if (outcome === "started" || outcome === "replayed") {
                     ReloadChatPointer.update((v) => {
                         v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                         return v;
@@ -1009,7 +1009,7 @@
         }
         if (btnEvent) {
             const outcome = await runServerButton(currentChar, btnEvent, ref);
-            if (outcome === "started") {
+            if (outcome === "started" || outcome === "replayed") {
                 ReloadChatPointer.update((v) => {
                     v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                     return v;
@@ -1074,7 +1074,7 @@
             label: "button",
             context: { mode: "form" },
         });
-        if (outcome === "started") {
+        if (outcome === "started" || outcome === "replayed") {
             ReloadChatPointer.update((v) => {
                 v[reloadKey] = (v[reloadKey] ?? 0) + 1;
                 return v;

@@ -16,12 +16,15 @@ const io = vi.hoisted(() => ({
     server: null as FakeResourceServer | null,
     inlayWritten: null as (() => void) | null,
     createJob: vi.fn<typeof import("src/ts/network/generationJobs").createGenerationJob>(),
+    generationFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
     selectFiles: vi.fn<typeof import("src/ts/util").selectMultipleFile>(),
 }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
-        authFetch: async (path, init) => {
+        authFetch: async (path, init, options) => {
+            options?.beforeDispatch?.();
+            if (path.startsWith("/api/generations")) return io.generationFetch(path, init);
             const response = path === "/api/write" ? Response.json({ ok: true }) : await io.server!.fetch(path, init);
             if (path.startsWith("/api/resources/inlays/") && init?.method === "PUT") io.inlayWritten?.();
             return response;
@@ -32,8 +35,9 @@ vi.mock("src/ts/util", async (original) => ({
     ...(await original<typeof import("src/ts/util")>()),
     selectMultipleFile: io.selectFiles,
 }));
-vi.mock("src/ts/network/generationJobs", async () =>
+vi.mock("src/ts/network/generationJobs", async (original) =>
     (await import("src/ts/network/tests/generationJobsMock")).createGenerationJobsMock({
+        ...(await original<typeof import("src/ts/network/generationJobs")>()),
         createGenerationJob: io.createJob,
     }),
 );
@@ -74,6 +78,7 @@ async function until(check: () => boolean) {
 
 afterEach(async () => {
     if (screen) await unmount(screen);
+    screen = undefined;
     await drive(pageDraftJournal().close());
     document.body.innerHTML = "";
     vi.clearAllTimers();
@@ -84,7 +89,9 @@ afterEach(async () => {
     else Reflect.deleteProperty(navigator, "locks");
 });
 
-it("journals screen sends, restores on switch, flushes on hide, and tracks attachments", async () => {
+async function mountComposer() {
+    io.createJob.mockReset();
+    io.generationFetch.mockReset();
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.setSystemTime(1_700_000_000_000);
     vi.stubGlobal("indexedDB", new IDBFactory());
@@ -160,6 +167,12 @@ it("journals screen sends, restores on switch, flushes on hide, and tracks attac
         document.dispatchEvent(new Event("visibilitychange"));
     };
 
+    return { target, input, type, click, menuItem, menu, hide, journal };
+}
+
+it("journals screen sends, restores on switch, flushes on hide, and tracks attachments", async () => {
+    const { target, input, type, click, menuItem, menu, hide, journal } = await mountComposer();
+
     async function attach() {
         // Await the upload itself before driving UI timers; hashing the media has no time budget.
         const written = new Promise<void>((resolve) => {
@@ -230,4 +243,134 @@ it("journals screen sends, restores on switch, flushes on hide, and tracks attac
         files: [],
         userMessageId: request.context.userMessageId,
     });
+});
+
+async function useHttpCreation() {
+    const transport = await vi.importActual<typeof import("src/ts/network/generationJobs")>(
+        "src/ts/network/generationJobs",
+    );
+    const { NO_GENERATION_HOOKS } = await import("../../../shared/jobs.ts");
+    io.createJob.mockImplementation((body, options) =>
+        transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }, options),
+    );
+    return transport;
+}
+
+const createPosts = () =>
+    io.generationFetch.mock.calls
+        .filter(([path]) => path === "/api/generations")
+        .map(
+            ([, init]) =>
+                JSON.parse(String(init!.body)) as {
+                    requestId: string;
+                    context: { userMessageId: string; input: string };
+                },
+        );
+
+function endedReplay(terminal: Record<string, unknown>) {
+    return Response.json({
+        jobId: `job-${createPosts().length}`,
+        replayed: true,
+        owned: true,
+        status: {
+            jobId: `job-${createPosts().length}`,
+            kind: "send",
+            characterId: "c",
+            chatId: "a",
+            epoch: io.server!.epoch,
+            state: "ended",
+            terminal: { epoch: io.server!.epoch, ...terminal },
+        },
+    });
+}
+
+it("posts the same request id after an unknown send and fresh ids after error, stopped, abort and refusal without losing the message id", async () => {
+    const { target, input, type, click } = await mountComposer();
+    await useHttpCreation();
+    type("keep this text");
+    io.generationFetch.mockRejectedValue(new TypeError("create answer lost"));
+    click(target.querySelector(".button-icon-send"));
+    await until(() => createPosts().length === 1);
+    await vi.advanceTimersByTimeAsync(7000);
+    await until(() => input().value === "keep this text" && target.querySelector(".button-icon-send") !== null);
+    const original = createPosts()[0];
+    expect(original.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(createPosts()).toHaveLength(4);
+    expect(createPosts().every((post) => post.requestId === original.requestId)).toBe(true);
+
+    async function retry(terminal: Record<string, unknown>) {
+        const before = createPosts().length;
+        io.generationFetch.mockImplementation(async () => endedReplay(terminal));
+        click(target.querySelector(".button-icon-send"));
+        await until(
+            () =>
+                createPosts().length === before + 1 &&
+                input().value === "keep this text" &&
+                target.querySelector(".button-icon-send") !== null,
+        );
+        const post = createPosts().at(-1)!;
+        expect(post.context.userMessageId).toBe(original.context.userMessageId);
+        expect(post.context.input).toBe(original.context.input);
+        return post;
+    }
+    const error = { type: "error", reason: "failed", stage: "setup", status: 500, message: "before input" };
+    const replayedError = await retry(error);
+    expect(replayedError.requestId).toBe(original.requestId);
+    const stopped = await retry({ type: "done", stopped: true, revision: null });
+    expect(stopped.requestId).not.toBe(replayedError.requestId);
+
+    io.generationFetch.mockImplementation(async (path) => {
+        if (path === "/api/generations/cancel") return Response.json({ state: "cancelled" });
+        throw new TypeError("create answer lost");
+    });
+    click(target.querySelector(".button-icon-send"));
+    await until(() => createPosts().length === 7);
+    const aborted = createPosts().at(-1)!;
+    expect(aborted.requestId).not.toBe(stopped.requestId);
+    click(target.querySelector('button[aria-labelledby="cancel"]'));
+    await until(() => input().value === "keep this text" && target.querySelector(".button-icon-send") !== null);
+    const cancel = io.generationFetch.mock.calls.find(([path]) => path === "/api/generations/cancel")!;
+    expect(JSON.parse(String(cancel[1]!.body)).requestId).toBe(aborted.requestId);
+
+    io.generationFetch.mockResolvedValue(Response.json({ error: "stale" }, { status: 409 }));
+    click(target.querySelector(".button-icon-send"));
+    await until(
+        () =>
+            createPosts().length === 8 &&
+            input().value === "keep this text" &&
+            target.querySelector(".button-icon-send") !== null,
+    );
+    const refused = createPosts().at(-1)!;
+    expect(refused.requestId).not.toBe(aborted.requestId);
+    expect(refused.context.userMessageId).toBe(original.context.userMessageId);
+    const fresh = await retry(error);
+    expect(fresh.requestId).not.toBe(refused.requestId);
+});
+
+it("keeps an unanswered create unknown after a rate limit answer and reuses its request id on the next Send", async () => {
+    const { target, input, type, click } = await mountComposer();
+    await useHttpCreation();
+    const sends = vi.spyOn(await import("src/ts/process/serverGeneration"), "sendChatOnServer");
+    io.generationFetch
+        .mockRejectedValueOnce(new TypeError("answer lost"))
+        .mockResolvedValueOnce(Response.json({ error: "Too many requests" }, { status: 429 }));
+    type("retry after limiter");
+    click(target.querySelector(".button-icon-send"));
+    await until(() => createPosts().length === 1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await until(() => input().value === "retry after limiter" && target.querySelector(".button-icon-send") !== null);
+    expect(createPosts()).toHaveLength(2);
+    expect(createPosts()[1]).toEqual(createPosts()[0]);
+    expect(await sends.mock.results[0].value).toMatchObject({
+        outcome: "unknown",
+        settled: false,
+        requestUncertain: true,
+    });
+    io.generationFetch.mockImplementation(async () =>
+        endedReplay({ type: "error", reason: "failed", status: 500, message: "before input", stage: "setup" }),
+    );
+    click(target.querySelector(".button-icon-send"));
+    await until(() => createPosts().length === 3 && input().value === "retry after limiter");
+    expect(createPosts()[2].requestId).toBe(createPosts()[0].requestId);
+    expect(createPosts()[2].context.userMessageId).toBe(createPosts()[0].context.userMessageId);
 });
