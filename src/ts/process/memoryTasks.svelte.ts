@@ -218,7 +218,8 @@ export function noteMemoryTaskFrame(frame: unknown) {
 /**
  * A `hello` of the loaded epoch: its snapshot replaces the status map. A chat live in it is fenced
  * as live; every other chat this tab tracked (a status or a fence) or the snapshot lists waits for
- * the reconnect's revision listing (`noteMemoryTaskListing` with the returned token), since a task
+ * the reconnect's revision listing (fetched or from a digest-matched advertised map;
+ * `noteMemoryTaskListing` with the returned token), since a task
  * may have committed while the tab was disconnected and its terminal may have expired. A manual
  * start still in flight keeps its fence for its answer. Returns the token for the listing.
  */
@@ -250,7 +251,8 @@ export function noteMemoryTaskHello(entries: unknown): number {
 }
 
 /**
- * The revision listing read after the `hello` that returned `hello`: each chat still waiting for it
+ * The revision listing for the `hello` that returned `hello`, fetched or from a digest-matched
+ * advertised map: each chat still waiting for it
  * waits for its listed revision (none when the chat is not listed, or the mirror already holds it).
  * A listing of an older `hello` changes nothing; a failed listing leaves the chats waiting for the
  * next connection's.

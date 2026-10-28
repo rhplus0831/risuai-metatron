@@ -1,3 +1,5 @@
+import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
+import { FakeSocket } from "./tests/eventSocket";
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
 // The client of the live-update socket (`eventFeed.ts`): a freshly signed JWT on every connection
@@ -53,42 +55,6 @@ vi.mock("../storage/chatStore.svelte", () => ({
 vi.mock("../diagnostics/collector", async () =>
     (await import("../diagnostics/tests/collectorMock")).createCollectorMock({ recordClientEvent: mocks.record }),
 );
-
-class FakeSocket {
-    static instances: FakeSocket[] = [];
-    readonly url: string;
-    closed = false;
-    /** A socket whose `close()` fires no `close` event (a dead link: the event comes late, or never). */
-    silent = false;
-    private listeners = new Map<string, ((event: any) => void)[]>();
-    constructor(url: string) {
-        this.url = url;
-        FakeSocket.instances.push(this);
-    }
-    addEventListener(type: string, listener: (event: any) => void) {
-        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-    }
-    open() {
-        this.emit("open", {});
-    }
-    close() {
-        if (this.closed) {
-            return;
-        }
-        this.closed = true;
-        if (!this.silent) {
-            this.emit("close", {});
-        }
-    }
-    emit(type: string, event: any) {
-        for (const listener of this.listeners.get(type) ?? []) {
-            listener(event);
-        }
-    }
-    frame(value: unknown) {
-        this.emit("message", { data: typeof value === "string" ? value : JSON.stringify(value) });
-    }
-}
 
 const listing = { epoch: "E1", resources: [], chats: [], chatOrders: [] };
 const change = { resources: [{ kind: "ui", id: "main", revision: "E1:1:2" }], chats: [], chatOrders: [] };
@@ -748,4 +714,184 @@ describe("the connection's liveness and the resume reconnect", () => {
         await vi.advanceTimersByTimeAsync(2);
         expect(FakeSocket.instances).toHaveLength(4);
     });
+});
+
+describe("advertised revision reconciliation", () => {
+    const initial: ResourceRevisionListing = {
+        epoch: "E1",
+        resources: [
+            { kind: "ui", id: "main", revision: "E1:1:1" },
+            { kind: "characters", id: "c", revision: "E1:2:1" },
+        ],
+        chats: [{ characterId: "c", id: "k", revision: "E1:3:1" }],
+        chatOrders: [
+            { characterId: "c", revision: "E1:4:1" },
+            { characterId: "d", revision: "E1:6:1" },
+        ],
+    };
+    const latest: ResourceRevisionListing = {
+        epoch: "E1",
+        resources: [{ kind: "ui", id: "main", revision: "E1:1:3" }],
+        chats: [{ characterId: "c", id: "j", revision: "E1:5:1" }],
+        chatOrders: [{ characterId: "c", revision: "E1:4:3" }],
+    };
+    const changes = {
+        resources: [...latest.resources, { kind: "characters", id: "c", revision: null }],
+        chats: [...latest.chats, { characterId: "c", id: "k", revision: null }],
+        chatOrders: [...latest.chatOrders, { characterId: "d", revision: null }],
+    };
+    const hello = (ws: FakeSocket, rows = initial) =>
+        ws.frame({ type: "hello", epoch: rows.epoch, digest: revisionDigest(rows), memoryTasks: [], streaming: [] });
+    async function reconnect(ws: FakeSocket, delay = 1000) {
+        ws.close();
+        await vi.advanceTimersByTimeAsync(delay);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        return next;
+    }
+    beforeEach(() => {
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        mocks.listRevisions.mockResolvedValue(initial);
+    });
+
+    it("reconciles a matching hello from advertised rows and resets reconnect backoff", async () => {
+        const tasks = await import("../process/memoryTasks.svelte");
+        const noted = vi.spyOn(tasks, "noteMemoryTaskListing");
+        let ws = await started();
+        hello(ws);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(1); // Even a matching unseeded map must read.
+        ws.frame({ type: "change", epoch: "E1", changes });
+        ws = await reconnect(ws);
+        ws = await reconnect(ws, 2000); // An unsuccessful connection grew the backoff.
+        hello(ws, latest);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(1);
+        expect(noted).toHaveBeenLastCalledWith(expect.any(Number), latest);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(latest);
+        const count = FakeSocket.instances.length;
+        ws.close();
+        await vi.advanceTimersByTimeAsync(998);
+        expect(FakeSocket.instances).toHaveLength(count);
+        await vi.advanceTimersByTimeAsync(2);
+        expect(FakeSocket.instances).toHaveLength(count + 1);
+    });
+
+    it("reads the listing when a dropped middle frame changed a row no later frame covered", async () => {
+        const ws = await started();
+        hello(ws);
+        await vi.advanceTimersByTimeAsync(0);
+        for (const revision of ["E1:1:2", "E1:1:3"]) {
+            ws.frame({
+                type: "change",
+                epoch: "E1",
+                changes: {
+                    resources: [{ kind: "ui", id: "main", revision }],
+                    chats: [],
+                    chatOrders: [],
+                },
+            });
+        }
+        // The missing middle frame changed the character, independently of both UI changes.
+        const serverRows = structuredClone(initial);
+        serverRows.resources[0].revision = "E1:1:3";
+        serverRows.resources[1].revision = "E1:2:2";
+        mocks.listRevisions.mockResolvedValue(serverRows);
+        hello(await reconnect(ws), serverRows);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(serverRows);
+    });
+
+    it("ignores a superseded socket's listing and frames without seeding the advertised map", async () => {
+        let resolve!: (rows: ResourceRevisionListing) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise<ResourceRevisionListing>((done) => (resolve = done)));
+        const stale = await started();
+        hello(stale);
+        const current = await reconnect(stale);
+        resolve(initial);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+        hello(current);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
+        stale.frame({ type: "change", epoch: "E1", changes });
+        current.frame({ type: "change", epoch: "E0", changes });
+        expect(mocks.noteRemoteChanges).not.toHaveBeenCalled();
+        hello(await reconnect(current));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(initial);
+    });
+
+    it("overlays frames during a pending listing but reconciles and settles fences from the fetched listing unchanged", async () => {
+        const tasks = await import("../process/memoryTasks.svelte");
+        const noted = vi.spyOn(tasks, "noteMemoryTaskListing");
+        let resolve!: (rows: ResourceRevisionListing) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise<ResourceRevisionListing>((done) => (resolve = done)));
+        const ws = await started();
+        hello(ws);
+        ws.frame({
+            type: "change",
+            epoch: "E1",
+            changes: {
+                resources: [{ kind: "ui", id: "main", revision: "E1:1:2" }],
+                chats: [],
+                chatOrders: [],
+            },
+        });
+        ws.frame({ type: "change", epoch: "E1", changes });
+        resolve(initial);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(noted).toHaveBeenLastCalledWith(expect.any(Number), initial);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(initial);
+        hello(await reconnect(ws), latest);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(1);
+        expect(noted).toHaveBeenLastCalledWith(expect.any(Number), latest);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(latest);
+    });
+
+    it("reads the listing when an older server omits the hello digest despite a seeded map", async () => {
+        const ws = await started();
+        hello(ws);
+        await vi.advanceTimersByTimeAsync(0);
+        const next = await reconnect(ws);
+        next.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(initial);
+    });
+
+    it.each(["hello", "epoch", "listing error"])(
+        "clears the advertised map and memory fences after an epoch change via %s",
+        async (via) => {
+            const tasks = await import("../process/memoryTasks.svelte");
+            const ws = await started();
+            hello(ws);
+            await vi.advanceTimersByTimeAsync(0);
+            ws.frame({
+                type: "memoryTask",
+                epoch: "E1",
+                characterId: "c",
+                chatId: "k",
+                status: { taskId: "t", state: "running", done: 0, total: 1 },
+            });
+            expect(tasks.memoryTaskFenced({ chaId: "c", chatId: "k" })).toBe(true);
+            if (via === "listing error") {
+                mocks.listRevisions.mockRejectedValueOnce(new mocks.EpochMismatch());
+                ws.frame({ type: "hello", epoch: "E1" });
+            } else {
+                ws.frame({ type: via, epoch: "E2", digest: revisionDigest(initial) });
+                expect(mocks.epochMismatch).toHaveBeenCalledWith("E2");
+            }
+            await vi.advanceTimersByTimeAsync(0);
+            expect(tasks.memoryTaskFenced({ chaId: "c", chatId: "k" })).toBe(false);
+            const reads = mocks.listRevisions.mock.calls.length;
+            // The real epoch-mismatch handler reloads. While that reload is pending, old evidence is unusable.
+            hello(await reconnect(ws));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(mocks.listRevisions).toHaveBeenCalledTimes(reads + 1);
+        },
+    );
 });

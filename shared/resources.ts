@@ -338,6 +338,65 @@ export type ResourceRevisionListing = {
     chatOrders: { characterId: string; revision: string }[];
 };
 
+const revisionEncoder = new TextEncoder();
+const murmurMultipliers = [0x239b961b, 0xab0e9789, 0x38b34ae5, 0xa1e38b93];
+const murmurAddends = [0x561ccd1b, 0x0bcaa747, 0x96cd1c35, 0x32ac3b17];
+
+function rotateLeft32(value: number, bits: number): number {
+    return (value << bits) | (value >>> (32 - bits));
+}
+
+/** MurmurHash3 x86_128 (Austin Appleby's public-domain algorithm), with h1 as the low word. */
+function murmurHash128(bytes: Uint8Array, seed = 0): bigint {
+    const h = [seed, seed, seed, seed];
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const end = bytes.length - (bytes.length % 16);
+    for (let offset = 0; offset < end; offset += 16) {
+        for (let lane = 0; lane < 4; lane++) {
+            const next = (lane + 1) % 4;
+            const word = Math.imul(view.getUint32(offset + lane * 4, true), murmurMultipliers[lane]);
+            h[lane] ^= Math.imul(rotateLeft32(word, 15 + lane), murmurMultipliers[next]);
+            h[lane] = (Math.imul(rotateLeft32(h[lane], 19 - lane * 2) + h[next], 5) + murmurAddends[lane]) | 0;
+        }
+    }
+    // The tail has up to four little-endian words, with no body-state rotation or addition.
+    for (let offset = end, lane = 0; offset < bytes.length; offset += 4, lane++) {
+        let word = 0;
+        for (let byte = 0; byte < Math.min(4, bytes.length - offset); byte++) {
+            word |= bytes[offset + byte] << (byte * 8);
+        }
+        word = Math.imul(word, murmurMultipliers[lane]);
+        h[lane] ^= Math.imul(rotateLeft32(word, 15 + lane), murmurMultipliers[(lane + 1) % 4]);
+    }
+    for (let lane = 0; lane < 4; lane++) h[lane] ^= bytes.length;
+    h[0] = (h[0] + h[1] + h[2] + h[3]) | 0;
+    for (let lane = 1; lane < 4; lane++) h[lane] = (h[lane] + h[0]) | 0;
+    for (let lane = 0; lane < 4; lane++) {
+        let word = h[lane];
+        word = Math.imul(word ^ (word >>> 16), 0x85ebca6b);
+        word = Math.imul(word ^ (word >>> 13), 0xc2b2ae35);
+        h[lane] = word ^ (word >>> 16);
+    }
+    h[0] = (h[0] + h[1] + h[2] + h[3]) | 0;
+    for (let lane = 1; lane < 4; lane++) h[lane] = (h[lane] + h[0]) | 0;
+    return BigInt(h[0] >>> 0) | (BigInt(h[1] >>> 0) << 32n) | (BigInt(h[2] >>> 0) << 64n) | (BigInt(h[3] >>> 0) << 96n);
+}
+
+/**
+ * Order-independent fingerprint of the server's advertised revisions, for reconnect reconciliation.
+ * Each domain-separated JSON tuple is hashed as UTF-8 with MurmurHash3 x86_128 (seed 0), using
+ * 32-bit arithmetic for speed in both runtimes. The epoch and row hashes are summed mod 2^128 and
+ * encoded as 32 lowercase hex digits. This detects accidental differences, not adversarial input.
+ */
+export function revisionDigest(listing: ResourceRevisionListing): string {
+    const hash = (term: string[]) => murmurHash128(revisionEncoder.encode(JSON.stringify(term)));
+    let sum = hash(["e", listing.epoch]);
+    for (const { kind, id, revision } of listing.resources) sum += hash(["r", kind, id, revision]);
+    for (const { characterId, id, revision } of listing.chats) sum += hash(["c", characterId, id, revision]);
+    for (const { characterId, revision } of listing.chatOrders) sum += hash(["o", characterId, revision]);
+    return BigInt.asUintN(128, sum).toString(16).padStart(32, "0");
+}
+
 export type BackupSnapshotInfo = { id: string; createdAt: string; size: number };
 
 /** First record of a local backup archive (format version 2). */

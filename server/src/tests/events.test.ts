@@ -4,10 +4,18 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient } from "ws";
 import type { EventFeedFrame, MemoryTaskEntry } from "../../../shared/events.ts";
-import type { ResourceRevisionListing } from "../../../shared/resources.ts";
+import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
+import { DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { createChangeFeed } from "../data/changeFeed.ts";
 import { createEventSockets } from "../routes/events.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import {
+    allowListenerOrigin,
+    createSigner,
+    createTestServer,
+    json,
+    waitFor,
+    type TestServerOptions,
+} from "./testSupport.ts";
 
 // The live-update socket (`/api/events/ws`, `server/src/routes/events.ts`) on a real listening
 // server: JWT-only authentication, `hello` with the epoch and the memory task snapshot, every
@@ -46,6 +54,39 @@ function connect(url: string, headers: Record<string, string> = {}): Client {
     return { frames, opened, closed, ws };
 }
 
+/** Wait for wire evidence without polling or a real production deadline. */
+function frameAt(client: Client, index: number): Promise<EventFeedFrame> {
+    if (client.frames[index]) return Promise.resolve(client.frames[index]);
+    return new Promise((resolve, reject) => {
+        const cleanup = () => {
+            client.ws.off("message", message);
+            client.ws.off("close", closed);
+        };
+        const message = () => {
+            if (client.frames[index]) {
+                cleanup();
+                resolve(client.frames[index]);
+            }
+        };
+        const closed = () => {
+            cleanup();
+            reject(new Error("Socket closed before the expected frame"));
+        };
+        client.ws.on("message", message);
+        client.ws.on("close", closed);
+    });
+}
+
+/** A pong follows all change frames queued by the completed writes, including zero on rollback. */
+async function delivered(client: Client) {
+    const pong = new Promise<void>((resolve) => client.ws.once("pong", () => resolve()));
+    client.ws.ping();
+    await pong;
+}
+
+const noteKind: ResourceKind = { name: "notes", schemaVersion: 1, normalize: (value) => value };
+const digestKinds = [...DEFAULT_RESOURCE_KINDS, noteKind];
+
 describe("the live-update socket on the server", () => {
     let server: ReturnType<typeof createTestServer>;
     let node: http.Server | undefined;
@@ -74,8 +115,8 @@ describe("the live-update socket on the server", () => {
         }
     });
 
-    async function listen() {
-        server = createTestServer({ password: "pw" });
+    async function listen(options: TestServerOptions = {}) {
+        server = createTestServer({ password: "pw", ...options });
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
@@ -113,11 +154,23 @@ describe("the live-update socket on the server", () => {
         const byQuery = await open();
         expect(await byQuery.opened).toBe("open");
         await waitFor(() => byQuery.frames.length > 0);
-        expect(byQuery.frames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
+        expect(byQuery.frames[0]).toEqual({
+            type: "hello",
+            epoch,
+            streaming: [],
+            memoryTasks: [],
+            digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+        });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
         expect(await byHeader.opened).toBe("open");
         await waitFor(() => byHeader.frames.length > 0);
-        expect(byHeader.frames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
+        expect(byHeader.frames[0]).toEqual({
+            type: "hello",
+            epoch,
+            streaming: [],
+            memoryTasks: [],
+            digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+        });
         expect(server.context.eventSockets.size()).toBe(2);
     });
 
@@ -223,6 +276,197 @@ describe("the live-update socket on the server", () => {
         expect(JSON.stringify(listing)).not.toContain('"data"');
     });
 
+    it("keeps a frame-built revision map equal to fresh hello digests through every commit kind and rollback", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const first = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const observer = await open();
+        await frameAt(observer, 0);
+        const resources = new Map(first.resources.map((row) => [JSON.stringify([row.kind, row.id]), row]));
+        const chats = new Map(first.chats.map((row) => [JSON.stringify([row.characterId, row.id]), row]));
+        const chatOrders = new Map(first.chatOrders.map((row) => [row.characterId, row]));
+        let consumed = 1;
+        const advertised = (): ResourceRevisionListing => ({
+            epoch: first.epoch,
+            resources: [...resources.values()],
+            chats: [...chats.values()],
+            chatOrders: [...chatOrders.values()],
+        });
+        async function matches(label: string) {
+            await delivered(observer);
+            for (const frame of observer.frames.slice(consumed)) {
+                if (frame.type !== "change") continue;
+                expect(frame.epoch).toBe(first.epoch);
+                for (const { kind, id, revision } of frame.changes.resources) {
+                    const key = JSON.stringify([kind, id]);
+                    if (revision === null) resources.delete(key);
+                    else resources.set(key, { kind, id, revision });
+                }
+                for (const { characterId, id, revision } of frame.changes.chats) {
+                    const key = JSON.stringify([characterId, id]);
+                    if (revision === null) chats.delete(key);
+                    else chats.set(key, { characterId, id, revision });
+                }
+                for (const { characterId, revision } of frame.changes.chatOrders) {
+                    if (revision === null) chatOrders.delete(characterId);
+                    else chatOrders.set(characterId, { characterId, revision });
+                }
+            }
+            consumed = observer.frames.length;
+            const fresh = await open();
+            expect(await frameAt(fresh, 0), label).toMatchObject({
+                type: "hello",
+                epoch: first.epoch,
+                digest: revisionDigest(advertised()),
+            });
+            fresh.ws.close();
+            await fresh.closed;
+        }
+        const write = async (body: unknown, status = 200) => {
+            const response = await request("/api/resources/batch", json(body, { "x-resource-epoch": first.epoch }));
+            expect(response.status).toBe(status);
+            return response.json();
+        };
+        const resourceRevision = (kind: string, id: string) => resources.get(JSON.stringify([kind, id]))!.revision;
+        const chatRevision = (id: string) => chats.get(JSON.stringify(["c", id]))!.revision;
+        const createChat = (id: string) => ({
+            characterId: "c",
+            chatId: id,
+            baseRevision: null,
+            ops: [{ op: "create", chat: { id, name: id, message: [] } }],
+        });
+        await matches("initial listing");
+        const putNote = async (baseRevision: string | null, text: string) => {
+            expect(
+                (
+                    await request("/api/resources/notes/n", {
+                        ...json({ baseRevision, data: { text } }, { "x-resource-epoch": first.epoch }),
+                        method: "PUT",
+                    })
+                ).status,
+            ).toBe(200);
+        };
+        await putNote(null, "one");
+        await matches("resource insert");
+        await putNote(resourceRevision("notes", "n"), "two");
+        await matches("resource update");
+        expect(
+            (
+                await request(
+                    `/api/resources/notes/n?baseRevision=${encodeURIComponent(resourceRevision("notes", "n"))}`,
+                    {
+                        method: "DELETE",
+                        headers: { "x-resource-epoch": first.epoch },
+                    },
+                )
+            ).status,
+        ).toBe(200);
+        await matches("resource delete");
+        await write({
+            ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [createChat("k")],
+        });
+        await matches("character with chat and order");
+        await write({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: chatRevision("k"),
+                    ops: [{ op: "meta", set: { name: "Renamed" } }],
+                },
+            ],
+        });
+        await matches("existing chat ops");
+        await write({ chats: [createChat("j")] });
+        await matches("chat create");
+        await write({
+            chatOrders: [{ characterId: "c", baseRevision: chatOrders.get("c")!.revision, ids: ["j", "k"] }],
+        });
+        await matches("chat order write");
+        await write({
+            chats: [{ characterId: "c", chatId: "j", baseRevision: chatRevision("j"), ops: [{ op: "delete" }] }],
+        });
+        await matches("chat delete");
+        const beforeRollback = structuredClone(advertised());
+        const beforeFrames = observer.frames.length;
+        await write(
+            {
+                ops: [
+                    { kind: "notes", id: "rolled-back", baseRevision: null, data: { text: "never committed" } },
+                    { kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "Conflict" } },
+                ],
+            },
+            409,
+        );
+        await matches("rolled-back batch");
+        expect(observer.frames).toHaveLength(beforeFrames);
+        expect(advertised()).toEqual(beforeRollback);
+        await write({
+            ops: [{ kind: "characters", id: "c", baseRevision: resourceRevision("characters", "c"), delete: true }],
+        });
+        await matches("character cascade deletes remaining chat and order");
+    });
+
+    it.each(["startup normalization", "restore"])(
+        "invalidates a preexisting revision map after %s",
+        async (operation) => {
+            vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+            await listen({ resourceKinds: digestKinds });
+            const epoch = await epochOf();
+            expect(
+                (
+                    await request("/api/resources/notes/n", {
+                        ...json({ baseRevision: null, data: { text: "old" } }, { "x-resource-epoch": epoch }),
+                        method: "PUT",
+                    })
+                ).status,
+            ).toBe(200);
+            const before = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+            const prior = await open();
+            expect(await frameAt(prior, 0)).toMatchObject({ digest: revisionDigest(before) });
+            if (operation === "startup normalization") {
+                const rootDir = server.rootDir;
+                await server.context.dispose();
+                node!.closeAllConnections();
+                await new Promise<void>((resolve) => node!.close(() => resolve()));
+                node = undefined;
+                await listen({
+                    rootDir,
+                    resourceKinds: [
+                        ...DEFAULT_RESOURCE_KINDS,
+                        {
+                            ...noteKind,
+                            normalize: (value) => ({ ...(value as object), normalized: true }),
+                        },
+                    ],
+                });
+            } else {
+                const snapshot = await server.context.snapshots.snapshotNow();
+                expect(
+                    (
+                        await request(`/api/backups/${snapshot.id}/restore`, {
+                            method: "POST",
+                            headers: { "x-resource-epoch": epoch },
+                        })
+                    ).status,
+                ).toBe(200);
+                await delivered(prior);
+                expect(prior.frames.some((frame) => frame.type === "epoch" && frame.epoch !== epoch)).toBe(true);
+            }
+            const after = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+            if (operation === "startup normalization") {
+                expect(after.epoch).toBe(before.epoch);
+                expect(after.resources.find((row) => row.kind === "notes")?.revision).not.toBe(
+                    before.resources.find((row) => row.kind === "notes")?.revision,
+                );
+            } else expect(after.epoch).not.toBe(before.epoch);
+            const hello = await frameAt(await open(), 0);
+            expect(hello).toMatchObject({ type: "hello", epoch: after.epoch, digest: revisionDigest(after) });
+            expect(hello.type === "hello" && hello.digest).not.toBe(revisionDigest(before));
+        },
+    );
+
     it("closes every socket with 1001 on shutdown and refuses new ones", async () => {
         await listen();
         const a = await open();
@@ -248,9 +492,17 @@ describe("createEventSockets", () => {
     async function host(
         authorize: (token: string | undefined) => Promise<boolean>,
         memoryTasks: () => MemoryTaskEntry[] = () => [],
+        digest?: () => string,
     ) {
         const feed = createChangeFeed();
-        const sockets = createEventSockets({ feed, epoch: () => "E", authorize, streaming: () => [], memoryTasks });
+        const sockets = createEventSockets({
+            feed,
+            epoch: () => "E",
+            authorize,
+            streaming: () => [],
+            memoryTasks,
+            digest,
+        });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
             if (!sockets.handleUpgrade(req, socket, head)) {
@@ -371,6 +623,39 @@ describe("createEventSockets", () => {
         sockets.close();
     });
 
+    it("omits a failed digest while keeping the hello snapshots and the socket usable", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        const status: MemoryTaskEntry = {
+            characterId: "c",
+            chatId: "k",
+            status: { taskId: "t", state: "running", done: 0, total: 1 },
+        };
+        const { feed, sockets, url } = await host(
+            async () => true,
+            () => [status],
+            () => {
+                throw new Error("digest failed");
+            },
+        );
+        const client = connect(url);
+        try {
+            expect(await frameAt(client, 0)).toEqual({
+                type: "hello",
+                epoch: "E",
+                streaming: [],
+                memoryTasks: [status],
+            });
+            expect(client.ws.readyState).toBe(WsClient.OPEN);
+            feed.publish({ type: "epoch", epoch: "F" });
+            expect(await frameAt(client, 1)).toEqual({ type: "epoch", epoch: "F" });
+        } finally {
+            client.ws.terminate();
+            sockets.close();
+            logged.mockRestore();
+        }
+    });
+
     it("closes a socket with 1011 and no frame when the memory task snapshot throws, logging no detail", async () => {
         const error = vi.spyOn(console, "error").mockImplementation(() => {});
         try {
@@ -391,5 +676,121 @@ describe("createEventSockets", () => {
         } finally {
             error.mockRestore();
         }
+    });
+});
+
+describe("revisionDigest", () => {
+    const rows: ResourceRevisionListing = {
+        epoch: "epoch",
+        resources: [
+            { kind: "c", id: "k", revision: "r" },
+            { kind: "ui", id: "main", revision: "s" },
+        ],
+        chats: [
+            { characterId: "c", id: "k", revision: "r" },
+            { characterId: "d", id: "j", revision: "s" },
+        ],
+        chatOrders: [
+            { characterId: "c", revision: "r" },
+            { characterId: "d", revision: "s" },
+        ],
+    };
+    it("is order independent and has exactly 32 lowercase hexadecimal digits", () => {
+        const digest = revisionDigest(rows);
+        expect(digest).toMatch(/^[0-9a-f]{32}$/);
+        expect(
+            revisionDigest({
+                ...rows,
+                resources: [...rows.resources].reverse(),
+                chats: [...rows.chats].reverse(),
+                chatOrders: [...rows.chatOrders].reverse(),
+            }),
+        ).toBe(digest);
+        expect(revisionDigest({ epoch: "", resources: [], chats: [], chatOrders: [] })).toMatch(/^[0-9a-f]{32}$/);
+    });
+    it.each<[string, (listing: ResourceRevisionListing) => void]>([
+        [
+            "epoch",
+            (value) => {
+                value.epoch = "other";
+            },
+        ],
+        [
+            "resource membership",
+            (value) => {
+                value.resources.pop();
+            },
+        ],
+        [
+            "resource kind",
+            (value) => {
+                value.resources[0].kind = "other";
+            },
+        ],
+        [
+            "resource id",
+            (value) => {
+                value.resources[0].id = "other";
+            },
+        ],
+        [
+            "resource revision",
+            (value) => {
+                value.resources[0].revision = "other";
+            },
+        ],
+        [
+            "chat membership",
+            (value) => {
+                value.chats.pop();
+            },
+        ],
+        [
+            "chat character id",
+            (value) => {
+                value.chats[0].characterId = "other";
+            },
+        ],
+        [
+            "chat id",
+            (value) => {
+                value.chats[0].id = "other";
+            },
+        ],
+        [
+            "chat revision",
+            (value) => {
+                value.chats[0].revision = "other";
+            },
+        ],
+        [
+            "order membership",
+            (value) => {
+                value.chatOrders.pop();
+            },
+        ],
+        [
+            "order character id",
+            (value) => {
+                value.chatOrders[0].characterId = "other";
+            },
+        ],
+        [
+            "order revision",
+            (value) => {
+                value.chatOrders[0].revision = "other";
+            },
+        ],
+        [
+            "row category",
+            (value) => {
+                const resource = value.resources.pop()!;
+                value.chats.push({ characterId: resource.kind, id: resource.id, revision: resource.revision });
+            },
+        ],
+    ])("changes when only %s changes", (_label, change) => {
+        const changed = structuredClone(rows);
+        change(changed);
+        expect(revisionDigest(changed)).not.toBe(revisionDigest(rows));
     });
 });

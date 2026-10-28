@@ -1413,7 +1413,13 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await waitFor(() => feedFrames.length > 0);
         expect(feedOpened).toBe(true);
-        expect(feedFrames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
+        expect(feedFrames[0]).toEqual({
+            type: "hello",
+            epoch,
+            streaming: [],
+            memoryTasks: [],
+            digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+        });
         const generation = await createOk();
         const owner = await follow(generation);
         await until(owner, 1);

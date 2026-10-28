@@ -4598,8 +4598,8 @@ export function noteRemoteChanges(changes: ChangeSet) {
 }
 
 /**
- * Reconciles with the server's revision listing (after every `hello` of the live-update socket, so
- * nothing committed while it was disconnected is missed): every listed record, chat, and order goes
+ * Reconciles with server revisions after every live-update `hello`, from the advertised map when
+ * its digest matches or a fetched listing otherwise: every listed record, chat, and order goes
  * through `noteRemoteChanges`, every one this client holds that the server no longer lists is a
  * deletion, and each owner outside the mirror reconciles its own records.
  */

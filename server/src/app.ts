@@ -95,7 +95,7 @@ import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTask
 import { registerResourceRoutes } from "./routes/resources.ts";
 import { ASSET_MISSING_PATH, registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
-import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID, revisionDigest } from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
 import { type BuildInfo, formatBuildId } from "../../shared/buildInfo.ts";
 import { readServerBuildInfo, resolveBuildInfo } from "./buildInfo.ts";
@@ -263,6 +263,7 @@ export function createServerContext(options: {
     const eventSockets = createEventSockets({
         feed: changeFeed,
         epoch: () => resources.epoch(),
+        digest: () => revisionDigest(resources.listRevisions()),
         authorize: auth.isAuthorizedToken,
         // The services are built below; a socket connects only once the context exists.
         streaming: () => generationJobs.streamingSnapshot(),

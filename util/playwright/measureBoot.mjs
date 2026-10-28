@@ -20,7 +20,7 @@
 // server TTFB. Summary timing reports both HTTP incremental cost (estimate) and direct
 // readKinds([], { chatSummaries: true }) first/median time after shutdown on the temp-dir SQLite file,
 // with its filesystem reported (tmpfs is memory-backed).
-// Resume reports all API reads and hello WebSocket payload bytes; scripts reports same-origin
+// Resume requires no revision listing and reports API reads and hello WebSocket payload bytes; scripts reports same-origin
 // non-API transfer/decoded bytes after network idle. Final Markdown tables use median bytes/ms.
 // Every cached boot checks its request, expanded answer and written cache against a plain read;
 // warm claims every eligible character and module. External page requests are blocked through
@@ -1151,13 +1151,7 @@ async function measureBoot() {
                 console.log(`resume ${run}: hidden for 31 s`);
                 await page.waitForTimeout(31000);
                 const start = await page.evaluate(() => performance.now());
-                const listingDone = page.waitForResponse(
-                    (response) =>
-                        new URL(response.url()).pathname === "/api/resources/revisions" && response.status() === 200,
-                );
                 await page.evaluate(() => window.__setVisibility("visible"));
-                const response = await listingDone;
-                await response.finished();
                 for (
                     const until = Date.now() + 30000;
                     Date.now() < until && !hellos.some((hello) => hello.socket > previousSocket);
@@ -1180,11 +1174,10 @@ async function measureBoot() {
                 );
                 const listings = reads.filter((entry) => entry.path === "/api/resources/revisions");
                 const hello = hellos.find((entry) => entry.socket > previousSocket);
-                check(
-                    `resume ${run}: new socket hello and completed revision listing`,
-                    !!hello && listings.length === 1 && listings[0].decoded > 0,
-                    { hello, reads },
-                );
+                check(`resume ${run}: new socket hello and no revision listing`, !!hello && listings.length === 0, {
+                    hello,
+                    reads,
+                });
                 const sample = {
                     transfer: listings.reduce((sum, entry) => sum + entry.transfer, 0),
                     decoded: listings.reduce((sum, entry) => sum + entry.decoded, 0),

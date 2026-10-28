@@ -1,4 +1,5 @@
 import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts";
+import { revisionDigest, type ChangeSet, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { epochMismatch, getResourceEpoch, listRevisions, ResourceEpochMismatchError } from "../storage/resourceClient";
 import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
@@ -16,8 +17,10 @@ import {
  * The live-update socket (`server/src/routes/events.ts`): another tab's or device's committed
  * changes arrive as refs and revisions and go to the save loop (`noteRemoteChanges`), which reads
  * and applies what this tab holds. On every `hello` (connect, reconnect, a server restart) the tab
- * reconciles against the revision listing, so nothing committed while it was disconnected is
- * missed. Every connection signs a fresh JWT (they live five minutes). A frame of another epoch, or
+ * reconciles against server revisions: its advertised map when the hello's digest matches, otherwise
+ * a fetched revision listing, so nothing committed while it was disconnected is missed. The map
+ * tracks advertised revisions independently of held records and overlays changes received during
+ * a listing read. Every connection signs a fresh JWT (they live five minutes). A frame of another epoch, or
  * an `epoch` frame, means a restore replaced the data: the save loop halts and the page reloads. A
  * `change` frame's refs are dispatched before its generation locks (`streaming`) go to the chat
  * module (`noteRemoteStreaming`), so a fitting `begin` patch puts the row in the mirror before its
@@ -33,9 +36,9 @@ import {
  * socket after a freeze would otherwise deliver nothing until TCP gives up.
  *
  * HypaV3 memory task statuses go to `memoryTasks.svelte.ts`: a `memoryTask` frame of the loaded epoch
- * as it comes, a `hello`'s snapshot as the whole status set, and the revision listing that follows
- * the `hello` (before it is reconciled) for the chats whose fences wait for it. Another epoch resets
- * them.
+ * as it comes, a `hello`'s snapshot as the whole status set, and the fetched or digest-matched revision
+ * listing (before it is reconciled) for the chats whose fences wait for it. Another epoch resets
+ * them and the advertised map.
  */
 
 const MAX_BACKOFF_MS = 30_000;
@@ -47,7 +50,7 @@ let stopped = false;
  * `close` act only while it is current: a new connection, an abandoned one, an ended attempt (its
  * close, a failed authentication), and the stop each move it on, so every late result of an older
  * connection does nothing, except that an epoch-mismatch error of an older connection's listing
- * still resets the memory tasks (the data was replaced, whichever connection read it).
+ * still resets the memory tasks and advertised map (the data was replaced, whichever connection read it).
  */
 let generation = 0;
 let socket: WebSocket | null = null;
@@ -59,16 +62,86 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** The socket that got its `hello` (recorded `connected` once), and the attempt it was. */
 let connectedSocket: WebSocket | null = null;
 
+type RevisionMap = {
+    [K in keyof ChangeSet]: Map<string, ResourceRevisionListing[K][number] | null>;
+};
+/** All rows at the server's advertised revisions, never this tab's held revisions. */
+let advertised: { epoch: string; rows: RevisionMap } | null = null;
+/** Changes since this connection's hello while its listing is pending; null rows are tombstones. */
+let listingOverlay: RevisionMap | null = null;
+
+function emptyRevisionMap(): RevisionMap {
+    return { resources: new Map(), chats: new Map(), chatOrders: new Map() };
+}
+
+function setRevisionRow<T>(rows: Map<string, T | null>, key: string, row: T | null, keepDeletes: boolean) {
+    if (row === null && !keepDeletes) rows.delete(key);
+    else rows.set(key, row);
+}
+
+/** Copy revision information only; neither the map nor its overlay retains patches. */
+function applyRevisionChanges(rows: RevisionMap, changes: ChangeSet, keepDeletes = false) {
+    for (const { kind, id, revision } of changes.resources) {
+        setRevisionRow(
+            rows.resources,
+            JSON.stringify([kind, id]),
+            revision === null ? null : { kind, id, revision },
+            keepDeletes,
+        );
+    }
+    for (const { characterId, id, revision } of changes.chats) {
+        setRevisionRow(
+            rows.chats,
+            JSON.stringify([characterId, id]),
+            revision === null ? null : { characterId, id, revision },
+            keepDeletes,
+        );
+    }
+    for (const { characterId, revision } of changes.chatOrders) {
+        setRevisionRow(rows.chatOrders, characterId, revision === null ? null : { characterId, revision }, keepDeletes);
+    }
+}
+
+function overlayRevisionRows<T>(rows: Map<string, T | null>, overlay: Map<string, T | null>) {
+    for (const [key, row] of overlay) setRevisionRow(rows, key, row, false);
+}
+
+function seedAdvertised(listing: ResourceRevisionListing, overlay: RevisionMap) {
+    const rows = emptyRevisionMap();
+    applyRevisionChanges(rows, listing);
+    overlayRevisionRows(rows.resources, overlay.resources);
+    overlayRevisionRows(rows.chats, overlay.chats);
+    overlayRevisionRows(rows.chatOrders, overlay.chatOrders);
+    advertised = { epoch: listing.epoch, rows };
+}
+
+function advertisedListing(): ResourceRevisionListing | null {
+    if (!advertised) return null;
+    const { epoch, rows } = advertised;
+    return {
+        epoch,
+        resources: [...rows.resources.values()].filter((row) => row !== null),
+        chats: [...rows.chats.values()].filter((row) => row !== null),
+        chatOrders: [...rows.chatOrders.values()].filter((row) => row !== null),
+    };
+}
+
+function clearAdvertised() {
+    advertised = null;
+    listingOverlay = null;
+}
+
 function isFrame(value: unknown): value is EventFeedFrame {
     return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
 }
 
 /**
  * Ends the current connection's attempt without closing anything: its late results do nothing,
- * except that an epoch-mismatch error of its listing still resets the memory tasks.
+ * except that an epoch-mismatch error of its listing still resets the memory tasks and advertised map.
  */
 function retire() {
     generation += 1;
+    listingOverlay = null;
     liveness?.stop();
     liveness = null;
     socket = null;
@@ -116,10 +189,23 @@ function resumeReconnect() {
     void connect();
 }
 
-async function reconcile(gen: number, ws: WebSocket, hello: number) {
+async function reconcile(gen: number, ws: WebSocket, hello: number, digest: string | undefined) {
     try {
-        const listing = await listRevisions();
+        if (gen !== generation) return;
+        let listing = advertised?.epoch === getResourceEpoch() ? advertisedListing() : null;
+        if (!listing || typeof digest !== "string" || revisionDigest(listing) !== digest) {
+            const overlay = emptyRevisionMap();
+            listingOverlay = overlay;
+            listing = await listRevisions();
+            if (gen !== generation) return;
+            // HTTP answers and socket frames are unordered against each other. Keep the last
+            // advertised value of each row, including deletions, on top of the fetched snapshot.
+            seedAdvertised(listing, overlay);
+            listingOverlay = null;
+        }
         if (gen === generation) {
+            // Fences use the fetched listing itself, never its overlay: a stale deletion in that
+            // overlay must not release a fence for a chat the server has since recreated.
             noteMemoryTaskListing(hello, listing);
             reconcileRemote(listing);
             // Only a reconciled connection resets the backoff: a server that accepts the socket but fails the reconcile keeps backing off.
@@ -128,6 +214,7 @@ async function reconcile(gen: number, ws: WebSocket, hello: number) {
     } catch (error) {
         // The data was replaced, whichever connection read it.
         if (error instanceof ResourceEpochMismatchError) {
+            clearAdvertised();
             resetMemoryTasks();
             return;
         }
@@ -145,6 +232,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
     switch (frame.type) {
         case "hello":
             if (frame.epoch !== loaded) {
+                clearAdvertised();
                 resetMemoryTasks();
                 epochMismatch(frame.epoch);
                 return;
@@ -155,10 +243,12 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                 connectedSocket = ws;
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
-            void reconcile(gen, ws, hello);
+            void reconcile(gen, ws, hello, frame.digest);
             return;
         case "change":
             if (frame.epoch === loaded) {
+                if (advertised?.epoch === loaded) applyRevisionChanges(advertised.rows, frame.changes);
+                if (listingOverlay) applyRevisionChanges(listingOverlay, frame.changes, true);
                 noteRemoteChanges(frame.changes);
                 if (frame.streaming) {
                     noteRemoteStreaming(frame.streaming, frame.changes);
@@ -172,6 +262,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             return;
         case "epoch":
             if (frame.epoch !== loaded) {
+                clearAdvertised();
                 resetMemoryTasks();
                 epochMismatch(frame.epoch);
             }
@@ -285,6 +376,7 @@ export function startEventFeed() {
 /** Closes the socket and stops reconnecting (tests). */
 export function stopEventFeed() {
     stopped = true;
+    clearAdvertised();
     stopResume?.();
     stopResume = null;
     if (retryTimer) {

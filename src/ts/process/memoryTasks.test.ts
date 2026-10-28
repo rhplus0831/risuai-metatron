@@ -2,8 +2,9 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMORY_TASKS_PATH, type MemoryTaskEntry } from "../../../shared/events.ts";
 import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
-import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { revisionDigest, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { KINDS, SAVE_DEBOUNCE_MS, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
+import { FakeSocket } from "../network/tests/eventSocket";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // The tab's memory task module (`memoryTasks.svelte.ts`) over the real chat module and save loop
@@ -108,9 +109,9 @@ function deferred<T>() {
  * character `c` with chat `k` (messages a, b; summaries "one", "two") and chat `j` (empty): read,
  * seed, install, start, let the boot compare pass run.
  */
-async function boot() {
+async function boot(feed = false) {
     vi.resetModules();
-    const fake = await StoreBackedServer.create();
+    const fake = await StoreBackedServer.create({ feed });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -644,4 +645,99 @@ describe("Summarize now and Cancel", () => {
         expect(await cancel).toEqual({ outcome: "superseded" });
         expect(fenced()).toBe(false);
     });
+});
+
+describe("memory fences on digest-matched reconnects", () => {
+    let feed: typeof import("../network/eventFeed") | undefined;
+    afterEach(() => {
+        feed?.stopEventFeed();
+        feed = undefined;
+    });
+
+    it.each(["updated", "deleted"])(
+        "settles the %s chat from advertised server revisions while hydration is pending",
+        async (operation) => {
+            const { fake, chat, taskWrite, stored, fenced, awaiting, settle } = await boot(true);
+            FakeSocket.instances = [];
+            vi.stubGlobal("WebSocket", FakeSocket);
+            vi.stubGlobal("location", { protocol: "https:", host: "risu.test", reload: vi.fn() });
+            vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+            feed = await import("../network/eventFeed");
+            feed.startEventFeed();
+            await vi.advanceTimersByTimeAsync(0);
+            const first = FakeSocket.instances.at(-1)!;
+            const hello = (socket: FakeSocket, memoryTasks: MemoryTaskEntry[]) =>
+                socket.frame({
+                    type: "hello",
+                    epoch: fake.store.epoch(),
+                    digest: revisionDigest(fake.store.listRevisions()),
+                    streaming: [],
+                    memoryTasks,
+                });
+            hello(first, [entry(live("A", "running", 1, 3))]);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fenced()).toBe(true);
+            const held = chat.heldChatRevision(refK);
+            const reads = () => fake.requests.filter((request) => request.path === "/api/resources/revisions").length;
+            expect(reads()).toBe(1);
+
+            // Hold the HTTP read's answer; the frame advertises a revision before the chat can adopt it.
+            const issued = deferred<void>();
+            const release = deferred<void>();
+            const fetch = fake.fetch.bind(fake);
+            vi.spyOn(fake, "fetch").mockImplementation(async (path, init) => {
+                const response = await fetch(path, init);
+                if (path.startsWith("/api/resources/read")) {
+                    issued.resolve();
+                    await release.promise;
+                }
+                return response;
+            });
+            fake.onFeed = (frame) => {
+                if (frame.type !== "change") return;
+                // Revision-only frames are valid; a whole chat read is necessary for this commit.
+                first.frame({
+                    ...frame,
+                    changes: {
+                        ...frame.changes,
+                        chats: frame.changes.chats.map(({ characterId, id, revision }) => ({
+                            characterId,
+                            id,
+                            revision,
+                        })),
+                    },
+                });
+            };
+            let committed: string | null = null;
+            if (operation === "updated") committed = taskWrite(["one", "two", "three"]);
+            else
+                fake.store.applyChanges({
+                    chats: [{ characterId: "c", chatId: "k", baseRevision: held, ops: [{ op: "delete" }] }],
+                });
+            await vi.advanceTimersByTimeAsync(50);
+            await issued.promise;
+            expect(chat.heldChatRevision(refK)).toBe(held);
+            first.close();
+            await vi.advanceTimersByTimeAsync(1000);
+            hello(FakeSocket.instances.at(-1)!, []); // The task's terminal was missed; its status has expired.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(reads()).toBe(1);
+            expect(chat.heldChatRevision(refK)).toBe(held);
+            if (operation === "updated") {
+                expect(fenced()).toBe(true);
+                expect(awaiting()).toBe(true);
+                expect(stored()).toEqual(["one", "two"]);
+            } else {
+                expect(chat.chatEntry(refK)).toBeDefined();
+                expect(fenced()).toBe(false); // Absence in the advertised map settles it before hydration.
+            }
+            release.resolve();
+            await settle();
+            expect(fenced()).toBe(false);
+            if (operation === "updated") {
+                expect(chat.heldChatRevision(refK)).toBe(committed);
+                expect(stored()).toEqual(["one", "two", "three"]);
+            } else expect(chat.chatEntry(refK)).toBeUndefined();
+        },
+    );
 });

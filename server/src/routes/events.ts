@@ -20,9 +20,10 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
  * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
  * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
- * status (`memoryTasks`), all read in the same synchronous step before the socket is registered and
- * the hello sent. Nothing is replayed, so a client reconciles from the revision listing after
- * every `hello`. Every published event goes to every socket in publication order, also one published
+ * status (`memoryTasks`), plus an optional revision-listing `digest`, all read in the same synchronous
+ * step before the socket is registered and the hello sent. Nothing is replayed: a client reconciles
+ * from its advertised map when the digest matches, otherwise from a fetched revision listing.
+ * Every published event goes to every socket in publication order, also one published
  * while another is being sent. Sockets are not tracked by the snapshot manager and not gated by
  * maintenance: a restore publishes `epoch`, which reloads the clients.
  */
@@ -34,8 +35,10 @@ export function createEventSockets(options: {
     streaming: () => ChatStreamingSnapshot[];
     /** Every chat's memory task status, for `hello`. */
     memoryTasks: () => MemoryTaskEntry[];
+    /** Digest of the revision listing, sampled synchronously with the other hello snapshots. */
+    digest?: () => string;
 }) {
-    const { feed, epoch, authorize, streaming, memoryTasks } = options;
+    const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
     const wsServer = new WebSocketServer({ noServer: true });
     const sockets = new Set<WebSocket>();
     let closed = false;
@@ -113,12 +116,22 @@ export function createEventSockets(options: {
         ws.on("message", () => {});
         let hello: string;
         try {
-            hello = JSON.stringify({
+            const frame: Extract<EventFeedFrame, { type: "hello" }> = {
                 type: "hello",
                 epoch: epoch(),
                 streaming: streaming(),
                 memoryTasks: memoryTasks(),
-            } satisfies EventFeedFrame);
+            };
+            try {
+                if (digest) frame.digest = digest();
+            } catch (error) {
+                // Without the digest the client reads the listing; the other snapshots stay usable.
+                console.error(
+                    "[Live updates] hello digest failed:",
+                    error instanceof Error ? error.name : typeof error,
+                );
+            }
+            hello = JSON.stringify(frame);
         } catch (error) {
             // A partial `hello` would hide the locks or statuses it lacks: the client reconnects instead.
             console.error("[Live updates] hello failed:", error instanceof Error ? error.name : typeof error);
