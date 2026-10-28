@@ -1,9 +1,19 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    utimesSync,
+    writeFileSync,
+} from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
 import { decodeFileName, decodeKeyHeader, encodeFileName, resolveStorageKey } from "../routes/storage.ts";
@@ -40,6 +50,22 @@ function freshServer(options?: { password?: string }) {
 describe("GET / and /index.html", () => {
     const modifiedAt = new Date("2025-01-01T00:00:00Z");
 
+    function writeStaticRepresentations(rootDir: string, filename: string, content: string | Buffer) {
+        const identity = Buffer.from(content);
+        const bodies = { identity, br: brotliCompressSync(identity), gzip: gzipSync(identity) };
+        const filePath = path.join(rootDir, "dist", filename);
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        for (const [suffix, body] of [
+            ["", bodies.identity],
+            [".br", bodies.br],
+            [".gz", bodies.gzip],
+        ] as const) {
+            writeFileSync(filePath + suffix, body);
+            utimesSync(filePath + suffix, modifiedAt, modifiedAt);
+        }
+        return bodies;
+    }
+
     // Without the flag the client shows only the "self-host server required" notice, so both
     // entry URLs must inject it (with or without a query string, which deep links carry).
     it("injects the __NODE__ flag and revalidates both entry URLs", async () => {
@@ -68,6 +94,180 @@ describe("GET / and /index.html", () => {
         expect(res.status).toBe(200);
         expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
         expect(await res.text()).toBe(content);
+    });
+
+    it("negotiates encodings by quality, exclusions, and preference while varying every representation", async () => {
+        const { app, rootDir } = freshServer();
+        const bodies = writeStaticRepresentations(rootDir, "assets/app-hash.js", 'console.log("한글");');
+        for (const [acceptEncoding, encoding] of [
+            [undefined, "identity"],
+            ["gzip, br", "br"],
+            ["gzip", "gzip"],
+            ["br;q=0.3, gzip;q=0.9, identity;q=0.1", "gzip"],
+            ["gzip;q=0.3, br;q=0.9, identity;q=0.1", "br"],
+            ["br;q=0.5, gzip;q=0.8", "identity"],
+            ["br;q=0.5, gzip;q=0.5, identity;q=0.9", "identity"],
+            ["br;q=0, gzip", "gzip"],
+            ["gzip;q=0, br", "br"],
+            ["br;q=0, gzip;q=0", "identity"],
+            ["*;q=1, br;q=0", "gzip"],
+        ] as const) {
+            const res = await app.request("/assets/app-hash.js", {
+                headers: acceptEncoding === undefined ? {} : { "Accept-Encoding": acceptEncoding },
+            });
+            expect(res.status, acceptEncoding).toBe(200);
+            expect(res.headers.get("content-encoding"), acceptEncoding).toBe(encoding === "identity" ? null : encoding);
+            expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), acceptEncoding).toContain(
+                "accept-encoding",
+            );
+            expect(res.headers.get("cache-control"), acceptEncoding).toBe("public, max-age=31536000, immutable");
+            expect(Buffer.from(await res.arrayBuffer()), acceptEncoding).toEqual(bodies[encoding]);
+        }
+    });
+
+    it("serves compressed GET bytes and bodyless HEAD with the original MIME type for every supported file type", async () => {
+        const { app, rootDir } = freshServer();
+        for (const [filename, content, mime] of [
+            ["app.js", 'console.log("한글");', /^(?:text|application)\/javascript\b/],
+            ["module.mjs", 'export const name = "한글";', /^(?:text|application)\/javascript\b/],
+            ["style.css", 'body { font-family: "한글"; }', /^text\/css\b/],
+            ["manifest.json", '{"name":"한글"}', /^application\/json\b/],
+            ["icon.svg", '<svg xmlns="http://www.w3.org/2000/svg"><title>한글</title></svg>', /^image\/svg\+xml\b/],
+            ["module.wasm", Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]), /^application\/wasm\b/],
+        ] as const) {
+            const bodies = writeStaticRepresentations(rootDir, filename, content);
+            for (const [encoding, decompress] of [
+                ["br", brotliDecompressSync],
+                ["gzip", gunzipSync],
+            ] as const) {
+                for (const method of ["GET", "HEAD"]) {
+                    const label = `${method} ${filename} ${encoding}`;
+                    const res = await app.request(`/${filename}`, { method, headers: { "Accept-Encoding": encoding } });
+                    expect(res.status, label).toBe(200);
+                    expect(res.headers.get("content-encoding"), label).toBe(encoding);
+                    expect(res.headers.get("content-type"), label).toMatch(mime);
+                    expect(res.headers.get("content-length"), label).toBe(String(bodies[encoding].length));
+                    expect(res.headers.get("cache-control"), label).toBe("no-cache");
+                    expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), label).toContain(
+                        "accept-encoding",
+                    );
+                    const bytes = Buffer.from(await res.arrayBuffer());
+                    if (method === "HEAD") {
+                        expect(bytes.length, label).toBe(0);
+                    } else {
+                        expect(decompress(bytes), label).toEqual(bodies.identity);
+                    }
+                }
+            }
+        }
+    });
+
+    it("revalidates only the selected encoding even when all representations have identical sizes and mtimes", async () => {
+        const { app, rootDir } = freshServer();
+        // All three valid representations are 34 bytes, exposing ETags that omit the encoding.
+        const bodies = writeStaticRepresentations(
+            rootDir,
+            "assets/validators.js",
+            Buffer.from("ABQ2ZqTwSrIorD4AFDZmpPBKsiisPgAUNmak8EqyKKw+AA==", "base64"),
+        );
+        expect(new Set(Object.values(bodies).map((body) => body.length)).size).toBe(1);
+        const encodings = ["identity", "br", "gzip"] as const;
+        const etags = new Map<string, string>();
+        for (const encoding of encodings) {
+            const res = await app.request("/assets/validators.js", { headers: { "Accept-Encoding": encoding } });
+            expect(res.status, encoding).toBe(200);
+            expect(Buffer.from(await res.arrayBuffer()), encoding).toEqual(bodies[encoding]);
+            expect(res.headers.get("etag"), encoding).toBeTruthy();
+            etags.set(encoding, res.headers.get("etag")!);
+        }
+        for (const encoding of encodings) {
+            for (const validatorEncoding of encodings) {
+                const label = `${encoding} with ${validatorEncoding} validator`;
+                const res = await app.request("/assets/validators.js", {
+                    headers: { "Accept-Encoding": encoding, "If-None-Match": etags.get(validatorEncoding)! },
+                });
+                expect(res.status, label).toBe(encoding === validatorEncoding ? 304 : 200);
+                expect(res.headers.get("etag"), label).toBe(etags.get(encoding));
+                expect(res.headers.get("content-encoding"), label).toBe(encoding === "identity" ? null : encoding);
+                expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), label).toContain(
+                    "accept-encoding",
+                );
+                expect(res.headers.get("cache-control"), label).toBe("public, max-age=31536000, immutable");
+                expect(Buffer.from(await res.arrayBuffer()), label).toEqual(
+                    encoding === validatorEncoding ? Buffer.alloc(0) : bodies[encoding],
+                );
+            }
+        }
+    });
+
+    it("falls back to another acceptable encoding or identity when siblings are missing", async () => {
+        const { app, rootDir } = freshServer();
+        for (const [filename, missing, acceptEncoding, encoding] of [
+            ["only-gzip.js", [".br"], "br, gzip", "gzip"],
+            ["only-br.js", [".gz"], "gzip, br;q=0.5, identity;q=0.1", "br"],
+            ["identity.js", [".br", ".gz"], "br, gzip", "identity"],
+            ["refused-gzip.js", [".br"], "br, gzip;q=0", "identity"],
+        ] as const) {
+            const bodies = writeStaticRepresentations(rootDir, filename, "export const value = 1;");
+            for (const suffix of missing) rmSync(path.join(rootDir, "dist", filename + suffix));
+            const res = await app.request(`/${filename}`, { headers: { "Accept-Encoding": acceptEncoding } });
+            expect(res.status, filename).toBe(200);
+            expect(res.headers.get("content-encoding"), filename).toBe(encoding === "identity" ? null : encoding);
+            expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), filename).toContain(
+                "accept-encoding",
+            );
+            expect(Buffer.from(await res.arrayBuffer()), filename).toEqual(bodies[encoding]);
+        }
+    });
+
+    it("uses identity for Range and If-Range while preserving partial and full response behavior", async () => {
+        const { app, rootDir } = freshServer();
+        writeStaticRepresentations(rootDir, "range.js", "0123456789");
+        const first = await app.request("/range.js");
+        expect(first.status).toBe(200);
+        expect(await first.text()).toBe("0123456789");
+        const etag = first.headers.get("etag")!;
+        for (const [headers, status] of [
+            [{ Range: "bytes=2-5" }, 206],
+            [{ Range: "bytes=2-5", "If-Range": modifiedAt.toUTCString() }, 206],
+            [{ Range: "bytes=2-5", "If-Range": "Tue, 31 Dec 2024 00:00:00 GMT" }, 200],
+            [{ Range: "bytes=2-5", "If-Range": etag }, 200],
+            [{ "If-Range": modifiedAt.toUTCString() }, 200],
+        ] as const) {
+            const res = await app.request("/range.js", { headers: { "Accept-Encoding": "br, gzip", ...headers } });
+            const label = JSON.stringify(headers);
+            expect(res.status, label).toBe(status);
+            expect(res.headers.get("content-encoding"), label).toBeNull();
+            expect(res.headers.get("etag"), label).toBe(etag);
+            expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), label).toContain("accept-encoding");
+            expect(res.headers.get("content-range"), label).toBe(status === 206 ? "bytes 2-5/10" : null);
+            expect(res.headers.get("content-length"), label).toBe(status === 206 ? "4" : "10");
+            expect(await res.text(), label).toBe(status === 206 ? "2345" : "0123456789");
+        }
+    });
+
+    it("keeps HTML and source maps as identity even when compressed siblings exist", async () => {
+        const { app, rootDir } = freshServer();
+        writeStaticRepresentations(rootDir, "index.html", TEST_INDEX_HTML);
+        writeStaticRepresentations(rootDir, "other.html", TEST_INDEX_HTML);
+        const sourceMap = '{"version":3,"sources":[]}';
+        writeStaticRepresentations(rootDir, "app.js.map", sourceMap);
+        for (const url of ["/", "/index.html", "/chat/c1/chat-1", "/other.html", "/app.js.map"]) {
+            for (const method of ["GET", "HEAD"]) {
+                const label = `${method} ${url}`;
+                const res = await app.request(url, { method, headers: { "Accept-Encoding": "br, gzip" } });
+                expect(res.status, label).toBe(200);
+                expect(res.headers.get("content-encoding"), label).toBeNull();
+                expect(res.headers.get("cache-control"), label).toBe("no-cache");
+                const content =
+                    url === "/app.js.map"
+                        ? sourceMap
+                        : url === "/other.html"
+                          ? TEST_INDEX_HTML
+                          : TEST_INDEX_HTML.replace("<head>", "<head><script>globalThis.__NODE__ = true</script>");
+                expect(await res.text(), label).toBe(method === "HEAD" ? "" : content);
+            }
+        }
     });
 
     it("serves ranges only when If-Range matches the current date and never for a weak ETag", async () => {

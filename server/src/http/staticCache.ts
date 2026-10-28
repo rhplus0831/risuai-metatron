@@ -1,9 +1,15 @@
 import type { BigIntStats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import type { Context, MiddlewareHandler } from "hono";
+import { getMimeType } from "hono/utils/mime";
 import type { AppEnv } from "../types.ts";
 
+export const STATIC_COMPRESSIBLE_EXTENSIONS = new Set([".js", ".mjs", ".css", ".json", ".svg", ".wasm"]);
+
+type StaticEncoding = "br" | "gzip";
+const encodingSuffixes = { br: ".br", gzip: ".gz" };
 const headOpenTag = /<head(\s[^>]*)?>/i;
 
 function matchesEtag(header: string, etag: string): boolean {
@@ -13,8 +19,13 @@ function matchesEtag(header: string, etag: string): boolean {
     );
 }
 
-function setCacheHeaders(c: Context<AppEnv>, stat: BigIntStats, cacheControl: string): boolean {
-    const etag = `W/"${stat.size}-${stat.mtimeNs}"`;
+function setCacheHeaders(
+    c: Context<AppEnv>,
+    stat: BigIntStats,
+    cacheControl: string,
+    encoding?: StaticEncoding,
+): boolean {
+    const etag = `W/"${stat.size}-${stat.mtimeNs}${encoding ? `-${encoding}` : ""}"`;
     c.header("ETag", etag);
     c.header("Last-Modified", stat.mtime.toUTCString());
     c.header("Cache-Control", cacheControl);
@@ -45,34 +56,128 @@ function tryDecodePath(requestPath: string): string {
 }
 
 /** Resolve files like serveStatic, leaving missing or rejected paths to later routes. */
-async function staticFileStat(root: string, requestPath: string): Promise<BigIntStats | undefined> {
+async function staticFileStat(root: string, requestPath: string) {
     const filename = tryDecodePath(requestPath);
     if (/(?:^|[\/\\])\.{1,2}(?:$|[\/\\])|[\/\\]{2,}|\\/.test(filename)) {
         return undefined;
     }
     try {
-        const filePath = path.join(root, filename);
+        let filePath = path.join(root, filename);
         let stat = await fs.stat(filePath, { bigint: true });
         if (stat.isDirectory()) {
-            stat = await fs.stat(path.join(filePath, "index.html"), { bigint: true });
+            filePath = path.join(filePath, "index.html");
+            stat = await fs.stat(filePath, { bigint: true });
         }
-        return stat.isFile() ? stat : undefined;
+        return stat.isFile() ? { filePath, stat } : undefined;
     } catch {
         return undefined;
     }
 }
 
-/** Answer conditional requests before serveStatic opens a body stream. */
+/** Rank supported encodings ahead of identity; equal qualities prefer br, then gzip. */
+function acceptedEncodings(header: string | undefined): StaticEncoding[] {
+    if (!header) {
+        return [];
+    }
+    const quality = new Map<string, number>();
+    for (const entry of header.split(",")) {
+        const [name, ...params] = entry.split(";").map((part) => part.trim());
+        const coding = name.toLowerCase();
+        // The first occurrence wins; invalid or out-of-range quality values refuse that coding.
+        if (!coding || quality.has(coding)) {
+            continue;
+        }
+        let q = 1;
+        for (const param of params) {
+            if (/^q(?:\s*=|\s*$)/i.test(param)) {
+                const match = /^q\s*=\s*(\d+(?:\.\d*)?|\.\d+)$/i.exec(param);
+                const value = match ? Number(match[1]) : NaN;
+                q = Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
+                break;
+            }
+        }
+        quality.set(coding, q);
+    }
+    const wildcard = quality.get("*") ?? 0;
+    const identity = quality.get("identity") ?? (quality.get("*") === 0 ? 0 : 1);
+    return (["br", "gzip"] as const)
+        .map((encoding) => ({ encoding, q: quality.get(encoding) ?? wildcard }))
+        .filter(({ q }) => q > 0 && q >= identity)
+        .sort((a, b) => b.q - a.q)
+        .map(({ encoding }) => encoding);
+}
+
+async function openCompressedFile(filePath: string, original: BigIntStats, header: string | undefined) {
+    for (const encoding of acceptedEncodings(header)) {
+        try {
+            const siblingPath = filePath + encodingSuffixes[encoding];
+            const siblingStat = await fs.stat(siblingPath, { bigint: true });
+            if (!siblingStat.isFile() || siblingStat.mtimeNs < original.mtimeNs) {
+                continue;
+            }
+            const handle = await fs.open(siblingPath, "r");
+            let selected = false;
+            try {
+                const stat = await handle.stat({ bigint: true });
+                if (stat.isFile() && stat.mtimeNs >= original.mtimeNs) {
+                    selected = true;
+                    return { handle, stat, encoding };
+                }
+            } finally {
+                if (!selected) {
+                    await handle.close();
+                }
+            }
+        } catch {
+            // Missing, unreadable, and stale siblings leave the other representations available.
+        }
+    }
+    return undefined;
+}
+
+/** Serve negotiated siblings and answer conditional requests before serveStatic handles identity. */
 export function createStaticCache(root: string): MiddlewareHandler<AppEnv> {
     return async (c, next) => {
-        if (c.finalized) {
+        if (c.finalized || (c.req.method !== "GET" && c.req.method !== "HEAD")) {
             return next();
         }
-        const stat = await staticFileStat(root, c.req.path);
-        if (!stat) {
+        const file = await staticFileStat(root, c.req.path);
+        if (!file) {
             return next();
         }
+        const { filePath, stat } = file;
+        const compressible = STATIC_COMPRESSIBLE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+        if (compressible) {
+            c.header("Vary", "Accept-Encoding", { append: true });
+        }
+        // Range and If-Range always validate and serve the original representation.
+        const compressed =
+            compressible && c.req.header("Range") === undefined && c.req.header("If-Range") === undefined
+                ? await openCompressedFile(filePath, stat, c.req.header("Accept-Encoding"))
+                : undefined;
         const cacheControl = c.req.path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache";
+        if (compressed) {
+            let streaming = false;
+            try {
+                c.header("Content-Type", getMimeType(filePath) || "application/octet-stream");
+                c.header("Content-Encoding", compressed.encoding);
+                if (setCacheHeaders(c, compressed.stat, cacheControl, compressed.encoding)) {
+                    return c.body(null, 304);
+                }
+                c.header("Content-Length", compressed.stat.size.toString());
+                if (c.req.method === "HEAD") {
+                    return c.body(null, 200);
+                }
+                const body = Readable.toWeb(compressed.handle.createReadStream());
+                const response = c.body(body, 200);
+                streaming = true;
+                return response;
+            } finally {
+                if (!streaming) {
+                    await compressed.handle.close();
+                }
+            }
+        }
         if (setCacheHeaders(c, stat, cacheControl)) {
             return c.body(null, 304);
         }

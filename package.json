@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build --sourcemap",
+    "build": "vite build --sourcemap && node util/compressDist.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
     "check:tests": "node util/testInventory.mjs",
     "test": "vitest run --tags-filter=!slow",
