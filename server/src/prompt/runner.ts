@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatOp, CheckpointOutcome, MessageGeneration } from "../../../shared/chats.ts";
 import type { Chat, character, groupChat, Message, MessageGenerationInfo } from "../../../shared/database.ts";
+import { greetingText } from "../../../shared/greetings.ts";
 import { supaMemoryOnCount } from "../../../shared/characters.ts";
 import { completionNotification } from "../../../shared/notifications.ts";
 import {
@@ -1147,8 +1148,7 @@ async function runSpeaker(arg: {
                     if (!stored || stored.type === "group") {
                         return null;
                     }
-                    greeting =
-                        chat.fmIndex === -1 ? stored.firstMessage : stored.alternateGreetings?.[chat.fmIndex as number];
+                    greeting = greetingText(stored, chat.fmIndex);
                 }
                 return { messages: chat.message, fmIndex: chat.fmIndex, greeting };
             },
