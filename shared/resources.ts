@@ -273,7 +273,7 @@ export type ResourceBootResult = {
  * entry's revision equals the record at `baseRevision` (the same incarnation, one write earlier) with
  * every `set` field assigned its stored value and every `remove` field deleted. Values compare as
  * JSON values; top-level key order is not part of it. A client saves a changed character with one
- * (a `patch` batch op), and a send job stamps `lastInteraction` with one.
+ * (a `patch` batch op).
  */
 export type RecordFieldPatch = { baseRevision: string; set: Record<string, unknown>; remove: string[] };
 

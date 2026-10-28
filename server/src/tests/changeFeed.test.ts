@@ -680,7 +680,7 @@ describe("field patches in the feed", () => {
         expect(store.get(characters, "c")).toEqual(before);
         expect(store.chatMeta("c", "k")!.data.name).toBe("K2");
 
-        // A character patch (a send job's stamp) publishes the one field over the normalized record.
+        // A character field patch (a client's save) publishes the one field over the normalized record.
         const stamped = store.applyChanges(
             {
                 ops: [

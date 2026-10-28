@@ -2862,3 +2862,115 @@ describe("group idempotency ids", () => {
         ).toBe(bumped(base, 1));
     });
 });
+
+describe("last-message activity", () => {
+    it("reads the final message by position after append, insert, setMessage, patchMessage, remove and replace, also from a fresh store", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    {
+                        op: "create",
+                        chat: {
+                            id: "k",
+                            name: "K",
+                            message: [
+                                { ...m("a"), time: 900 },
+                                { ...m("b"), time: 100 },
+                            ],
+                        } as never,
+                    },
+                ]),
+            ],
+        });
+        const check = (expected: number | undefined) => {
+            const read = (source: ResourceStore) => [
+                source.chatSummary("c", "k")!,
+                source.readKinds([], { chatSummaries: true }).chatSummaries![0],
+                source.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0].chats[0],
+            ];
+            const summaries = read(store);
+            for (const summary of summaries) {
+                if (expected === undefined) expect(summary).not.toHaveProperty("lastMessageAt");
+                else expect(summary.lastMessageAt).toBe(expected);
+            }
+            const fresh = createResourceStore({ file: path.join(dir, "live.sqlite"), kinds });
+            try {
+                expect(read(fresh)).toEqual(summaries);
+            } finally {
+                fresh.close();
+            }
+        };
+        const apply = (op: ChatOp, expected: number | undefined) => {
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), [op])] });
+            check(expected);
+        };
+        check(100); // The earlier message has the largest time.
+        apply({ op: "append", anchor: { end: true }, messages: [{ ...m("c"), time: 300 }] }, 300);
+        apply({ op: "append", anchor: { after: "c" }, messages: [{ ...m("d"), time: 200 }] }, 200);
+        apply({ op: "append", anchor: { start: true }, messages: [{ ...m("first"), time: 1000 }] }, 200);
+        apply({ op: "setMessage", message: { ...m("d"), time: 50 } }, 50);
+        apply({ op: "patchMessage", id: "d", set: { time: 75 } }, 75);
+        apply({ op: "remove", ids: ["d"] }, 300);
+        apply(
+            {
+                op: "replace",
+                chat: { id: "k", name: "K", message: [{ ...m("older"), time: 800 }, m("undated")] } as never,
+            },
+            undefined,
+        );
+        // Missing and nonnumeric last-message times never search backward for a date.
+        for (const time of ["900", null]) {
+            apply({ op: "setMessage", message: { ...m("undated"), time } as never }, undefined);
+        }
+        apply({ op: "setMessage", message: { ...m("undated"), time: 0 } }, 0);
+        apply({ op: "remove", ids: ["older", "undated"] }, undefined);
+        apply({ op: "append", anchor: { end: true }, messages: [{ ...m("again"), time: 150 }] }, 150);
+    });
+
+    it("does not retain activity read inside a transaction that rolls back, even when a metadata commit reuses its revision", () => {
+        const store = memoryStore();
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { id: "k", name: "K", message: [{ ...m("a"), time: 100 }] } as never },
+                ]),
+            ],
+        });
+        const before = store.chatSummary("c", "k")!;
+        expect(before.lastMessageAt).toBe(100);
+        let rolledBackRevision: string | undefined;
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", before.revision, [
+                            { op: "append", anchor: { end: true }, messages: [{ ...m("b"), time: 400 }] },
+                        ]),
+                    ],
+                },
+                {
+                    inTransaction: {
+                        after: () => {
+                            const provisional = store.chatSummary("c", "k")!;
+                            expect(provisional.lastMessageAt).toBe(400);
+                            rolledBackRevision = provisional.revision;
+                            throw new Error("roll back the reply");
+                        },
+                    },
+                },
+            ),
+        ).toThrow("roll back the reply");
+        expect(messageIds(store, "k")).toEqual(["a"]);
+        store.applyChanges({ chats: [group("k", before.revision, [{ op: "meta", set: { name: "Renamed" } }])] });
+        expect(store.chatSummary("c", "k")).toMatchObject({
+            revision: rolledBackRevision,
+            name: "Renamed",
+            lastMessageAt: 100,
+        });
+        expect(store.readKinds([], { chatSummaries: true }).chatSummaries![0].lastMessageAt).toBe(100);
+    });
+});

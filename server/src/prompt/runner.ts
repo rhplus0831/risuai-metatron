@@ -338,37 +338,6 @@ export async function runPromptSend(
     }
 }
 
-/**
- * Stamps the owner record's `lastInteraction` (a character, or the group of a group chat) with the
- * server's clock, once per send, continue, reroll, or group job, after its scope loaded (a preview, a
- * command, and a create the admission refused stamp nothing). A field patch (the change feed carries
- * the field, so no tab reads the whole record back), read again on `job.write`'s one replay. Not
- * tracked as a job record: callbacks do not wait for it, and the owner tab learns it from the feed
- * like any other tab.
- */
-function stampInteraction(job: RunningJob, deps: GenerationRunnerDeps) {
-    const charactersKind = deps.kinds.get(RESOURCE_KIND.characters);
-    if (!charactersKind) {
-        throw new Error(`Unknown resource kind ${RESOURCE_KIND.characters}`);
-    }
-    const characterId = job.context.characterId;
-    job.write(() => {
-        const revision = deps.store.revisionOf(charactersKind, characterId);
-        return revision
-            ? {
-                  ops: [
-                      {
-                          kind: charactersKind,
-                          id: characterId,
-                          baseRevision: revision,
-                          patch: { set: { lastInteraction: Date.now() } },
-                      },
-                  ],
-              }
-            : {};
-    });
-}
-
 /** A message the job generates: its generation id and the checkpoint counter of its writes. */
 type Generation = { messageId: string; generationId: string; seq: number; final: boolean };
 
@@ -388,9 +357,6 @@ async function runSend(
     const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     if (!owner) {
         throw new GenerationRunnerError(404, "The job's character no longer exists");
-    }
-    if (INPUT_KINDS.has(job.kind)) {
-        stampInteraction(job, deps);
     }
     const preview = job.kind === "preview" || job.kind === "previewPrompt";
 
@@ -734,6 +700,7 @@ async function runSpeaker(arg: {
     const chatRef = { chaId: characterId, chatId };
     const generationId = randomUUID();
     let generation: Generation | null = null;
+    let continuingStream = false;
     let generationInfo: MessageGenerationInfo | undefined;
     let memoryTask: MemoryTaskHandOff | undefined;
     const chatNow = (): Chat | undefined => {
@@ -984,7 +951,15 @@ async function runSpeaker(arg: {
         const gen = { id: generation.generationId, seq: generation.seq, final: true };
         generation.final = true;
         const outcomes = writeOwn(
-            [{ op: "setText", id: generation.messageId, text: text ?? stored.data, generation: gen }],
+            [
+                continuingStream
+                    ? {
+                          op: "setMessage",
+                          message: { ...structuredClone(stored), data: text ?? stored.data, time: Date.now() },
+                          generation: gen,
+                      }
+                    : { op: "setText", id: generation.messageId, text: text ?? stored.data, generation: gen },
+            ],
             covers !== undefined
                 ? [{ messageId: generation.messageId, generationId: generation.generationId, seq: covers }]
                 : undefined,
@@ -1580,7 +1555,8 @@ async function runSpeaker(arg: {
             let messageId: string;
             let prefix = "";
             if (generation) {
-                // Continue keeps the message's id and text (read now, after the hooks).
+                // Continue keeps the message's id and text; the final write refreshes its time once.
+                continuingStream = true;
                 messageId = generation.messageId;
                 prefix = prefixOf(messageId);
             } else {

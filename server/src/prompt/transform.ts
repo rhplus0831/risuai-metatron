@@ -199,7 +199,7 @@ function partitionKnownResults(targets: TransformTarget[], results: TransformRes
  * `displayKinds.ts` (all admission kinds and `globalChatVariables` stay; unclassified kinds stay),
  * plus the display identities of the owner, valid group members and every valid stored message
  * speaker besides the owner. An identity is the digest of stored JSON before runtime chats are
- * attached, without top-level `lastInteraction`, preserving property order; absence is `missing`.
+ * attached, without the frozen legacy `lastInteraction`, preserving property order; absence is `missing`.
  * A separate canonical metadata digest includes `scriptstate`, `GLGlobalVariables`, `note`,
  * `localLore`, `loreOverrides`, `name`, `modules`, `bindedPersona`, `promptPresetId`, `modelPresetId`
  * and `fmIndex`, with the defaults in `baseKey`. Each target adds its kind, message id for a

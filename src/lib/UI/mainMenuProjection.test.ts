@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import type { ChatRecord, ChatSummary } from "../../../shared/chats";
+import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
+import * as chats from "src/ts/storage/chatStore.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 import { collectHomeRecentCharacters, HOME_RECENT_CHARACTER_LIMIT, makeCharacterAgoText } from "./mainMenuProjection";
 
@@ -54,5 +57,109 @@ describe("collectHomeRecentCharacters", () => {
             [...many.map((c) => c.chaId)].sort().slice(0, HOME_RECENT_CHARACTER_LIMIT),
         );
         expect(collectHomeRecentCharacters(many, { ...options, limit: 2 })).toHaveLength(2);
+    });
+});
+
+describe("recent characters from chat activity", () => {
+    afterEach(() => {
+        for (const id of chats.heldOrderCharacters()) chats.forgetCharacter(id);
+        chats.assembleChats([], [], []);
+        initializeRecords(takeRecordFields({ characters: [] }));
+    });
+
+    function install(characters: AnyClientCharacter[], entries: (ChatRecord | ChatSummary)[]) {
+        const orders = characters.map(({ chaId }) => ({
+            characterId: chaId,
+            revision: "order",
+            ids: entries.filter((entry) => entry.characterId === chaId).map((entry) => entry.id),
+        }));
+        initializeRecords(takeRecordFields({ characters }));
+        chats.seedChats(entries, orders);
+        chats.assembleChats(characters, entries, orders);
+    }
+    const summary = (characterId: string, id: string, time?: number): ChatSummary => ({
+        characterId,
+        id,
+        revision: "00000000-0000-4000-8000-000000000000:1:1",
+        name: id,
+        fmIndex: -1,
+        ...(time === undefined ? {} : { lastMessageAt: time }),
+    });
+
+    it("orders home by loaded messages and unloaded summaries, moves back on deletion, and uses a group's own chats", () => {
+        const characters = [
+            char("active", { lastInteraction: now + 60_000 }),
+            char("group", {
+                type: "group",
+                characters: ["active"],
+                lastInteraction: now + 120_000,
+            } as Partial<AnyClientCharacter>),
+            char("legacy", { lastInteraction: now - 3 * 60_000 }),
+        ];
+        const ref = { chaId: "active", chatId: "loaded" };
+        install(characters, [
+            {
+                ...summary("active", "loaded"),
+                data: {
+                    id: "loaded",
+                    name: "Loaded",
+                    note: "",
+                    localLore: [],
+                    message: [
+                        { role: "char", data: "earlier, with a later clock", chatId: "first", time: now },
+                        { role: "char", data: "last by position", chatId: "last", time: now - 6 * 60_000 },
+                    ],
+                },
+            },
+            summary("active", "unloaded", now - 4 * 60_000),
+            summary("group", "own", now - 2 * 60_000),
+            summary("legacy", "empty"),
+        ]);
+        const rows = () => collectHomeRecentCharacters(characters, options);
+        expect(chats.findChat({ chaId: "active", chatId: "unloaded" })).toBeUndefined();
+        expect(chats.characterLastChattedAt("active", now + 60_000)).toBe(now - 4 * 60_000);
+        expect(rows().map(({ chaId }) => chaId)).toEqual(["group", "legacy", "active"]);
+
+        // No summary refresh accompanies this local reply.
+        chats.appendMessage(ref, { role: "char", data: "new reply", chatId: "reply", time: now - 60_000 });
+        expect(chats.characterLastChattedAt("active", now + 60_000)).toBe(now - 60_000);
+        expect(rows().map(({ chaId, agoText }) => [chaId, agoText])).toEqual([
+            ["active", "-1 minute"],
+            ["group", "-2 minute"],
+            ["legacy", "-3 minute"],
+        ]);
+        chats.removeMessages(ref, ["reply"]);
+        expect(chats.characterLastChattedAt("active", now + 60_000)).toBe(now - 4 * 60_000);
+        expect(rows().map(({ chaId }) => chaId)).toEqual(["group", "legacy", "active"]);
+    });
+
+    it("uses the finite legacy fallback only when every chat lacks a dated final message, including an empty or undated loaded chat", () => {
+        const character = char("fallback", { lastInteraction: 700 });
+        const ref = { chaId: "fallback", chatId: "loaded" };
+        install(
+            [character],
+            [
+                {
+                    ...summary("fallback", "loaded"),
+                    data: {
+                        id: "loaded",
+                        name: "Loaded",
+                        note: "",
+                        localLore: [],
+                        message: [{ role: "char", data: "dated", chatId: "dated", time: 100 }],
+                    },
+                },
+            ],
+        );
+        expect(chats.characterLastChattedAt("fallback", 700)).toBe(100);
+        chats.appendMessage(ref, { role: "char", data: "undated", chatId: "undated" });
+        expect(chats.characterLastChattedAt("fallback", 700)).toBe(700);
+        for (const fallback of [undefined, null, "700", Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(chats.characterLastChattedAt("fallback", fallback)).toBe(0);
+        }
+        chats.removeMessages(ref, ["dated", "undated"]);
+        expect(chats.characterLastChattedAt("fallback", 700)).toBe(700);
+        chats.appendMessage(ref, { role: "char", data: "epoch", chatId: "zero", time: 0 });
+        expect(chats.characterLastChattedAt("fallback", 700)).toBe(0);
     });
 });

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { characterList, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-    import { chatCount } from "src/ts/storage/chatStore.svelte";
+    import { characterLastChattedAt, chatCount } from "src/ts/storage/chatStore.svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
@@ -31,13 +31,14 @@
                 return !hideTrash || !c.trashTime;
             })
             .map(({ c }) => {
+                const interaction = characterLastChattedAt(c.chaId, c.lastInteraction);
                 return {
                     name: c.name || "Unnamed",
                     image: c.image,
                     chats: chatCount(c.chaId),
                     chaId: c.chaId,
-                    interaction: c.lastInteraction || 0,
-                    agoText: makeAgoText(c.lastInteraction || 0),
+                    interaction,
+                    agoText: makeAgoText(interaction),
                 };
             })
             .filter((char) => !query || matchesAny([char.name], query))

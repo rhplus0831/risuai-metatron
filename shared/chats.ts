@@ -171,8 +171,8 @@ export type ChatRecord = { characterId: string; id: string; revision: string; da
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
 /**
- * A chat's summary: what a chat list shows, projected from the stored metadata without reading
- * message rows. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`, `supaMemoryData`),
+ * A chat's summary: what a chat list shows, projected from the stored metadata and the memoized
+ * time of its last message by position. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`, `supaMemoryData`),
  * bookmarks, or `toolCalls`; it is never a `Chat`. `fmIndex` and `name` arrive defaulted (the
  * server's chat normalizer stores both); `pinned` is projected only when true.
  */
@@ -180,6 +180,8 @@ export type ChatSummary = {
     characterId: string;
     id: string;
     revision: string;
+    /** The last message by position has this finite numeric `time`; absent otherwise. */
+    lastMessageAt?: number;
     name: string;
     pinned?: boolean;
     folderId?: string;

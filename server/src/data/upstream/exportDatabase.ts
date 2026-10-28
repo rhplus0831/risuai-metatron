@@ -947,8 +947,9 @@ function upstreamCharacters(
             character.trashTime = now;
             addEntry(report.converted, "trash-time-refreshed", [name]);
         }
-        // U `makeColdData` sends a character whose `lastInteraction` is older than ten days to cold
-        // storage: it is kept as recent as its newest chat.
+        // The stored `lastInteraction` is frozen legacy data. Keep the export's own rule: raise a
+        // numeric value to the newest chat's `lastDate`, so U `makeColdData` does not cold-store an
+        // active character after ten days. An absent field stays absent (upstream reads it as now).
         if (typeof character.lastInteraction === "number") {
             let lastInteraction = character.lastInteraction;
             for (const chat of chats) {

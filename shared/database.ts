@@ -795,6 +795,10 @@ export interface character {
     defaultVariables?: string;
     lowLevelAccess?: boolean;
     hideChatIcon?: boolean;
+    /**
+     * Frozen legacy last-chatted value: no longer written or migrated. Readers derive activity
+     * from the chats' last-message times and fall back to this only when none supplies a value.
+     */
     lastInteraction?: number;
     translatorNote?: string;
     doNotChangeSeperateModels?: boolean;
@@ -857,6 +861,10 @@ export interface groupChat {
     defaultVariables?: string;
     lowLevelAccess?: boolean;
     hideChatIcon?: boolean;
+    /**
+     * Frozen legacy last-chatted value: no longer written or migrated. Readers derive activity
+     * from the chats' last-message times and fall back to this only when none supplies a value.
+     */
     lastInteraction?: number;
 
     //lazy hack for typechecking

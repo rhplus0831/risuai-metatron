@@ -22,7 +22,11 @@ vi.mock("src/ts/characters", () => ({
     addCharacter: vi.fn(),
 }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ characterList: () => characters }));
-vi.mock("src/ts/storage/chatStore.svelte", () => ({ chatCount: () => 0 }));
+const activity = new Map<string, number>();
+vi.mock("src/ts/storage/chatStore.svelte", () => ({
+    chatCount: () => 0,
+    characterLastChattedAt: (chaId: string, fallback: number) => activity.get(chaId) ?? fallback,
+}));
 
 import MobileCharacters from "./MobileCharacters.svelte";
 
@@ -62,6 +66,7 @@ const settle = async () => {
 const wrappers = () => [...target.querySelectorAll(".shrink-0")];
 
 beforeEach(() => {
+    activity.clear();
     getCharImage.mockClear();
     changeChar.mockClear();
     FakeObserver.live = [];
@@ -136,4 +141,23 @@ it("omits the first visible row's top border under search and separates every la
     for (const row of rows.slice(1)) {
         expect(row.classList.contains("border-t")).toBe(true);
     }
+});
+
+it("orders mobile rows by derived chat activity instead of the stored legacy values", async () => {
+    await unmount(instance!);
+    instance = null;
+    activity.set("cha-49", 3000);
+    activity.set("cha-20", 2000);
+    activity.set("cha-0", 0);
+    instance = mount(MobileCharacters, { target, props: {} });
+    flushSync();
+    const rows = [...target.querySelectorAll<HTMLButtonElement>("button.flex")];
+    expect(rows.slice(0, 3).map((row) => row.querySelector(".text-start > span")?.textContent)).toEqual([
+        "Char 49",
+        "Char 20",
+        "Char 01",
+    ]);
+    expect(rows.at(-1)?.querySelector(".text-start > span")?.textContent).toBe("Char 00");
+    rows[0].click();
+    expect(changeChar).toHaveBeenCalledWith("cha-49");
 });

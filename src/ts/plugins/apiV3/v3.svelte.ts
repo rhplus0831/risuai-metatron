@@ -992,7 +992,12 @@ function applyPluginCharacter(index: number, char: any) {
         // Turning memory on counts, as the sidebar toggle's (`supaMemoryOnCount`): it voids every
         // chat's "don't ask again" answer to the no-memory trim question. The stored count is kept
         // otherwise: the plugin's copy (stale, missing, or changed) never replaces it.
-        const { supaMemoryOnCount: _theirs, ...fields } = char;
+        const { supaMemoryOnCount: _theirs, lastInteraction: _derived, ...fields } = char;
+        // Snapshots expose derived chat activity. A same-character round trip keeps the frozen
+        // legacy value exactly as stored, including its absence.
+        if (Object.hasOwn(current, "lastInteraction")) {
+            fields.lastInteraction = current.lastInteraction;
+        }
         if (fields.supaMemory && !current.supaMemory) {
             fields.supaMemoryOnCount = supaMemoryOnCount(current) + 1;
         } else if (current.supaMemoryOnCount !== undefined) {

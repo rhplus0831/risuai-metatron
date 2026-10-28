@@ -878,8 +878,8 @@ export async function changeChar(
 ) {
     const reseter = arg.reseter ?? (() => {});
     reseter();
-    // A selection only makes sure the character has a chat and shows its chat (it no longer stamps
-    // `lastInteraction`; a send does). The defaults come from creation and the server.
+    // A selection only makes sure the character has a chat and shows it. Last-chatted time comes
+    // from the chats; defaults come from creation and the server.
     if (characterRecord(chaId)) {
         ensureChat(chaId);
     }

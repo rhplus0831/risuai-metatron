@@ -656,6 +656,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         "SELECT position, data, generationId, generationSeq, generationFinal, generationHistory FROM messages " +
             "WHERE chatSeq = ? AND id = ?",
     );
+    const selectLastMessage = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 1");
+    // Keyed by the chat incarnation. `undefined` is cached too (empty or undated last message).
+    const lastMessageTimes = new Map<number, number | undefined>();
     const maxPosition = db.prepare("SELECT MAX(position) AS position FROM messages WHERE chatSeq = ?");
     const shiftAfter = db.prepare("UPDATE messages SET position = position + ? WHERE chatSeq = ? AND position > ?");
     const insertMessage = db.prepare("INSERT INTO messages (chatSeq, id, position, data) VALUES (?, ?, ?, ?)");
@@ -730,7 +733,23 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return { characterId, id: row.id, revision: tokens.token(row.seq, row.revision), data };
     }
 
-    /** A chat's summary from its row: the listed fields picked from its metadata (no message rows read). */
+    /** One indexed row read on a miss; metadata-only changes keep the memo. */
+    function lastMessageAt(chatSeq: number): number | undefined {
+        // An in-transaction reader may be followed by a rollback. Never read or fill the memo
+        // there: a later metadata-only commit can reuse the rolled-back chat revision.
+        if (!db.isTransaction && lastMessageTimes.has(chatSeq)) {
+            return lastMessageTimes.get(chatSeq);
+        }
+        const row = selectLastMessage.get(chatSeq) as { data: string } | undefined;
+        const time: unknown = row ? JSON.parse(row.data).time : undefined;
+        const value = typeof time === "number" && Number.isFinite(time) ? time : undefined;
+        if (!db.isTransaction) {
+            lastMessageTimes.set(chatSeq, value);
+        }
+        return value;
+    }
+
+    /** A chat's listed metadata and the memoized time of its last message by position. */
     function chatSummary(characterId: string, row: { seq: number; id: string; revision: number; meta: string }) {
         const meta = JSON.parse(row.meta) as Record<string, unknown>;
         const summary: ChatSummary = {
@@ -740,6 +759,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             name: typeof meta.name === "string" ? meta.name : "",
             fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
         };
+        const time = lastMessageAt(row.seq);
+        if (time !== undefined) {
+            summary.lastMessageAt = time;
+        }
         if (typeof meta.folderId === "string") {
             summary.folderId = meta.folderId;
         }
@@ -785,6 +808,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     }
 
     function insertAt(chatSeq: number, after: number, messages: readonly PreparedMessage[]) {
+        lastMessageTimes.delete(chatSeq);
         shiftAfter.run(messages.length, chatSeq, after);
         messages.forEach((message, index) => {
             insertMessage.run(chatSeq, message.id, after + 1 + index, message.text);
@@ -1090,6 +1114,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         for (const [opIndex, op] of group.ops.entries()) {
             applyingOp = opIndex;
             const chatSeq = row?.seq ?? -1;
+            if (op.op !== "meta" && op.op !== "begin") {
+                lastMessageTimes.delete(chatSeq);
+            }
             switch (op.op) {
                 case "create": {
                     const created = insertChat.run(characterId, chatId, CHAT_SCHEMA_VERSION, op.meta);
@@ -1431,7 +1458,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return row ? tokens.token(row.seq, row.revision) : null;
         },
 
-        /** A chat's summary (its listed fields; its messages are not read), or null when it does not exist. */
+        /** A chat's summary (listed fields and memoized last-message time), or null when it does not exist. */
         readChatSummary(characterId: string, id: string): ChatSummary | null {
             const row = selectChat.get(characterId, id) as ChatRow | undefined;
             return row ? chatSummary(characterId, { ...row, id }) : null;
@@ -1595,7 +1622,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * and whether an order existed.
          */
         deleteCharacter(characterId: string): { chatIds: string[]; order: boolean } {
-            const chatIds = (selectCharacterChats.all(characterId) as { id: string }[]).map((row) => row.id);
+            const rows = selectCharacterChats.all(characterId) as { seq: number; id: string }[];
+            const chatIds = rows.map((row) => row.id);
+            for (const row of rows) {
+                lastMessageTimes.delete(row.seq);
+            }
             const order = readOrder(characterId) !== null;
             deleteCharacterChats.run(characterId);
             deleteOrder.run(characterId);
@@ -1754,7 +1785,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return { chats, chatOrders };
         },
 
-        /** Every chat's summary (no message rows read) and every chat order, in one read. */
+        /** Every chat's summary (with memoized last-message times) and every chat order, in one read. */
         readSummaries(): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
             const chatSummaries = (
                 selectAllChats.all() as {
@@ -1775,7 +1806,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return { chatSummaries, chatOrders };
         },
 
-        /** A character's order and its chats' summaries (no message rows read), or null when it has no order. */
+        /** A character's order and its chats' summaries (with memoized last-message times), or null when it has no order. */
         readCollectionSummaries(characterId: string): { order: ChatOrderRecord; chats: ChatSummary[] } | null {
             const order = readOrder(characterId);
             if (!order) {
@@ -1824,6 +1855,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
         /** Restores validated chat rows in the caller's transaction and returns the old-to-new chat seq map. */
         replaceAll(rows: ChatSnapshotRows) {
+            lastMessageTimes.clear();
             db.exec("DELETE FROM messages; DELETE FROM chats; DELETE FROM chatOrders;");
             for (const order of rows.chatOrders) {
                 insertRestoredOrder.run(order.characterId, order.revision, order.ids);

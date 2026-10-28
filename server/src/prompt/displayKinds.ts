@@ -50,7 +50,7 @@ export const DISPLAY_KIND_CLASSIFICATION = {
     presets: "keep",
     // Display scripts, lore, assets and toggle definitions.
     modules: "keep",
-    // Stored JSON without the top-level lastInteraction stamp, or `missing`, keyed per character.
+    // Stored JSON without the frozen legacy lastInteraction field, or `missing`, keyed per character.
     characters: "identity",
 } as const satisfies Record<string, "keep" | "drop" | "identity">;
 

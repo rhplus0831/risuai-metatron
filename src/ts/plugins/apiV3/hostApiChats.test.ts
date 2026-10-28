@@ -471,3 +471,40 @@ describe("lazy loading", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 });
+
+describe("plugin character activity snapshots", () => {
+    it.each([
+        { label: "present", legacy: { lastInteraction: 900 } },
+        { label: "absent", legacy: {} },
+    ])(
+        "reports derived activity and preserves the $label stored field on a getChar/setChar round trip",
+        async ({ legacy }) => {
+            const characters = liveCharacters();
+            Object.assign(characters[0], legacy);
+            characters[0].chats[0].message = [
+                { ...message("a", "earlier"), time: 800 },
+                { ...message("b", "last by position"), time: 100 },
+            ];
+            characters[0].chats[1].message = [{ ...message("j", "newest chat"), time: 300 }];
+            installDatabase({ characters });
+            chatStore.initializeChats();
+            selectCharacter("c");
+            const api = await makeApi();
+            for (const snapshot of [
+                await api.getChar(),
+                await api.getCharacter(),
+                await api.getCharacterFromIndex(0),
+                (await api.getDatabase(["characters"])).characters[0],
+            ]) {
+                expect(snapshot.lastInteraction).toBe(300);
+            }
+            await api.setChar(await api.getChar());
+            if (Object.hasOwn(legacy, "lastInteraction")) {
+                expect(characterList()[0].lastInteraction).toBe(900);
+            } else {
+                expect(characterList()[0]).not.toHaveProperty("lastInteraction");
+            }
+            expect((await api.getChar()).lastInteraction).toBe(300);
+        },
+    );
+});

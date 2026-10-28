@@ -119,22 +119,13 @@ export function mergeSectionFields(
     return mergeFields(base, theirs, ours, SECTION_MERGE_GROUPS[kind]);
 }
 
-/** A stamp is a finite number; absent and non-numeric values retain the existing refusal rules. */
-function isStamp(value: unknown): value is number {
-    return typeof value === "number" && Number.isFinite(value);
-}
-
-/** Fixed identity/kind fields must agree; the server clock wins an untouched stamp, else the later stamp wins. */
+/** Fixed identity/kind fields must agree; other fields use the ordinary three-way merge. */
 function mergeCharacterField(field: string, base: unknown, theirs: unknown, ours: unknown): unknown {
     if (field === "chaId" || field === "type") return isEqual(theirs, ours) ? ours : CONFLICT;
-    if (field !== "lastInteraction") return mergeUnit(base, theirs, ours);
-    if (isEqual(theirs, ours) || (isStamp(theirs) && (ours === ABSENT || isEqual(ours, base)))) return theirs;
-    if (!isStamp(theirs) && theirs === base) return ours;
-    if (!isStamp(theirs) || !isStamp(ours)) return CONFLICT;
-    return Math.max(theirs, ours);
+    return mergeUnit(base, theirs, ours);
 }
 
-/** Stored character fields merge atomically by tuple or field, with the send stamp kept separate. */
+/** Stored character fields merge atomically by tuple or field. */
 export function mergeCharacterFields(base: Fields, theirs: Fields, ours: Fields): Fields | null {
     return mergeFields(base, theirs, ours, CHARACTER_MERGE_GROUPS, mergeCharacterField);
 }

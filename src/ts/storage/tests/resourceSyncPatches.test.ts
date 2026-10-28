@@ -1378,7 +1378,7 @@ describe("patches of the other mirrored records", () => {
                     expect(h.sync.applyHydration({ kind, id, ...row })).toBe(false);
                 }
             };
-            // An unrelated character stamp merges, and statistics add both tabs' deltas.
+            // A remote change of a character field this tab did not edit merges, and statistics add both tabs' deltas.
             h.character().desc = "local";
             (h.records.trackedRecord("statics") as any).messages = 6;
             publish("characters", "c", { set: { lastInteraction: 123 } });

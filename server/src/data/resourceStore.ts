@@ -1407,7 +1407,7 @@ export function createResourceStore(options: {
         /**
          * Every record of several kinds, read in one synchronous call, so one committed state. With
          * `chats`, also every chat (metadata plus messages in order) and every chat order; with
-         * `chatSummaries` (not together with `chats`), every chat's summary (no message rows read)
+         * `chatSummaries` (not together with `chats`), every chat's summary (with memoized last-message times)
          * and every chat order.
          */
         readKinds(
@@ -1442,7 +1442,7 @@ export function createResourceStore(options: {
          * Named records, read in one synchronous call; a missing one has revision and data null.
          * `chats` names single chats (missing: revision and data null); `chatCollections` names
          * characters whose order and every chat are read (no order: null); `chatSummaryCollections`
-         * names characters whose order and every chat's summary are read (no message rows).
+         * names characters whose order and every chat's summary are read (with memoized last-message times).
          */
         readRefs(
             refs: readonly { kind: ResourceKind; id: string }[],
@@ -1603,7 +1603,7 @@ export function createResourceStore(options: {
             return chatTables.chatRevision(characterId, id);
         },
 
-        /** A chat's summary (its listed fields and revision; its messages are not read), or null when it does not exist. */
+        /** A chat's summary (listed fields, revision, and memoized last-message time), or null when it does not exist. */
         chatSummary(characterId: string, id: string): ChatSummary | null {
             assertOpen();
             return chatTables.readChatSummary(characterId, id);

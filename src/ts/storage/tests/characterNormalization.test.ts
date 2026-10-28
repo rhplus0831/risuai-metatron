@@ -12,7 +12,7 @@ import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 // the input untouched, a refusal changing nothing), canonical character text (a partial same-id
 // replacement, a deleted or nulled default, a group whose companion arrays no longer fit, with a
 // retained wrapper, the own save's echo, another writer's partial record, a local edit during an
-// outstanding save, and another tab's send stamp merged), the chat defaults at every client entry
+// outstanding save, and another tab's remote field change merged), the chat defaults at every client entry
 // and in `setChatMeta`, a create whose answer was lost, and a selection (`changeChar`) that writes
 // nothing. In every case the mirror, the server, and the held baseline agree and no further save
 // follows.
@@ -512,13 +512,13 @@ describe("canonical character text", () => {
         noNotice();
     });
 
-    it("merges another tab's send stamp into a local edit of a canonicalized record without a discard or a notice", async () => {
+    it("merges another tab's remote field change into a local edit of a canonicalized record without a discard or a notice", async () => {
         const { fake, live, sync, character, record, agree, settle, noNotice } = await boot();
         delete character("c").desc;
         character("c").scenario = "first save";
         await settle();
         agree("c");
-        // Another tab sends (its stamp), while this tab edits; the feed is late, so the save conflicts.
+        // Another tab changes an independent field while this tab edits; the feed is late, so the save conflicts.
         live.paused = true;
         fake.set("characters", "c", { ...record("c"), lastInteraction: 5000 });
         character("c").personality = "mine";

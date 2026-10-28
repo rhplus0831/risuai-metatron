@@ -233,7 +233,8 @@ export function createDisplayScopeLoader(
     };
 
     /**
-     * Only the top-level send stamp is invisible to display. Preserve JSON property order: CBS
+     * Keep the frozen legacy `lastInteraction` excluded so existing display identities stay stable.
+     * Preserve JSON property order: CBS
      * `lorebook` serializes entries with JSON.stringify. Memoize under the revision returned with
      * these data, never a token looked up before the read. Absence has the fixed identity `missing`.
      */

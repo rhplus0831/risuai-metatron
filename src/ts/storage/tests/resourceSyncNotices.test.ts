@@ -383,7 +383,7 @@ describe("a send while another tab's job holds the chat", () => {
 });
 
 describe("a send on a clean tab", () => {
-    it("uploads no character record before the job is created: the `lastInteraction` stamp is the server job's", async () => {
+    it("uploads no character record before the job is created: a send writes no character field", async () => {
         const { fake, character } = await boot();
         const commands = await import("../../process/serverCommands");
         const before = fake.record("characters", "c")!;

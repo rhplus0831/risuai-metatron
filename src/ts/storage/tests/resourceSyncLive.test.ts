@@ -1151,7 +1151,7 @@ describe("halting for a restore", () => {
     });
 });
 
-/** A send job's write on the server: a field patch of the character at its current revision. */
+/** Another writer's write on the server: a field patch of the character at its current revision. */
 const patchCharacter = (
     fake: StoreBackedServer,
     id: string,
@@ -1161,11 +1161,12 @@ const patchCharacter = (
         ops: [{ kind: fake.kind("characters"), id, baseRevision: fake.record("characters", id)!.revision, patch }],
     }).results[0].revision!;
 
-// A change-feed entry with a `RecordFieldPatch` (a send job's `lastInteraction` stamp) is applied
-// by `applyRemotePatch` without a read when this tab holds exactly its base and has no unsent
-// change of the character; anything else is read whole as before.
+// A change-feed entry with a `RecordFieldPatch` (another writer's change of some character fields)
+// is applied by `applyRemotePatch` without a read when this tab holds exactly its base and has no
+// unsent change of the character; anything else is read whole as before. The remote-change
+// listeners hear of every patch that changed a field.
 describe("field patches another writer committed", () => {
-    it("applies a send job's stamp at once: no read, no write, no notice, no listener; the next local edit writes on the new revision", async () => {
+    it("applies a remote field patch at once: no read, no write, no notice, the listener told once; the next local edit writes on the new revision", async () => {
         const { fake, sync, character } = await boot();
         const changed: string[] = [];
         sync.onRemoteRecordApplied((kind, id) => changed.push(`${kind}/${id}`));
@@ -1176,26 +1177,27 @@ describe("field patches another writer committed", () => {
         const element = character("d");
         const entry = element.globalLore[0];
         const batches = fake.batchCount();
-        const stamped = patchCharacter(fake, "d", { set: { lastInteraction: 1234 } });
-        // Applied inside the feed's delivery, before any cycle.
+        const patched = patchCharacter(fake, "d", { set: { lastInteraction: 1234 } });
+        // Applied inside the feed's delivery, before any cycle, and announced.
         expect(element.lastInteraction).toBe(1234);
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(reads(fake)).toBe(0);
+        expect(changed).toEqual(["characters/d"]);
         await settle(fake);
         expect(reads(fake)).toBe(0);
         expect(fake.batchCount()).toBe(batches);
-        expect(changed).toEqual([]);
+        expect(changed).toEqual(["characters/d"]);
         noNotice();
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
-        // The untouched subtree's wrapper still writes into the same record, on the stamped revision.
-        entry.content = "edited after the stamp";
+        // The untouched subtree's wrapper still writes into the same record, on the patched revision.
+        entry.content = "edited after the patch";
         await tick();
         await sync.flushResources();
         const last = fake.batchBodies().at(-1) as any;
-        expect(last.ops).toEqual([expect.objectContaining({ kind: "characters", id: "d", baseRevision: stamped })]);
+        expect(last.ops).toEqual([expect.objectContaining({ kind: "characters", id: "d", baseRevision: patched })]);
         expect(fake.record("characters", "d")!.data).toMatchObject({
             lastInteraction: 1234,
-            globalLore: [{ key: "k", content: "edited after the stamp" }],
+            globalLore: [{ key: "k", content: "edited after the patch" }],
         });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
@@ -1242,7 +1244,7 @@ describe("field patches another writer committed", () => {
             expect(fake.batchCount()).toBe(0);
         };
         live.paused = true;
-        // A missed frame: the second of two stamps names a base this tab never held.
+        // A missed frame: the second of two patches names a base this tab never held.
         const first = patchCharacter(fake, "d", { set: { lastInteraction: 1 } });
         patchCharacter(fake, "d", { set: { lastInteraction: 2, name: "N1" } });
         const [missed, second] = live.queue.splice(0) as Extract<ServerFeedEvent, { type: "change" }>[];
@@ -1283,7 +1285,7 @@ describe("field patches another writer committed", () => {
             live.queue.length = 0;
             await readWhole(current().revision, make(base));
         }
-        // The real stamp of a field the mirror object only inherits (`toString`) is read whole too.
+        // A real patch of a field the mirror object only inherits (`toString`) is read whole too.
         live.paused = false;
         patchCharacter(fake, "d", { set: { toString: "own", lastInteraction: 77 } });
         expectedReads += 1;
@@ -1296,39 +1298,40 @@ describe("field patches another writer committed", () => {
         noNotice();
     });
 
-    it("leaves a patch alone while this tab has an unsent change of the character; its save merges the stamp through the 409 without a notice", async () => {
+    it("leaves a patch alone while this tab has an unsent change of the character; its save merges the remote field through the 409 without a notice and tells the listener", async () => {
         const { fake, sync, character } = await boot();
         const changed: string[] = [];
         sync.onRemoteRecordApplied((kind, id) => changed.push(`${kind}/${id}`));
         character("d").desc = "mine";
         await tick();
-        // The stamp lands before this tab's debounced save.
+        // Another writer's patch of an independent field lands before this tab's debounced save.
         patchCharacter(fake, "d", { set: { lastInteraction: 777 } });
         expect(character("d").lastInteraction).toBeUndefined();
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.record("characters", "d")!.data).toMatchObject({ desc: "mine", lastInteraction: 777 });
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 777 });
         expect(sync.heldRecordRevision("characters", "d")).toBe(fake.record("characters", "d")!.revision);
-        // The rejected batch and the merged write; the stamp alone is not announced.
+        // The rejected batch and the merged write; the merge took the server's field, so it is announced.
         expect(fake.batchCount()).toBe(2);
-        expect(changed).toEqual([]);
+        expect(changed).toEqual(["characters/d"]);
         await settle(fake);
         expect(fake.batchCount()).toBe(2);
+        expect(changed).toEqual(["characters/d"]);
         noNotice();
     });
 
     it("holds a patch that arrives while the character's save is in flight and applies it after the acknowledgement, without a read", async () => {
         const { fake, sync, character, intercept } = await boot();
-        let stamped = "";
+        let patched = "";
         intercept.afterApply = (path) => {
             expect(path).toBe("/api/resources/batch");
-            // The job stamps right after this tab's save, before its answer arrives.
-            stamped = patchCharacter(fake, "d", { set: { lastInteraction: 55 } });
+            // Another writer patches right after this tab's save, before its answer arrives.
+            patched = patchCharacter(fake, "d", { set: { lastInteraction: 55 } });
         };
         character("d").desc = "mine";
         await settle(fake);
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 55 });
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(fake.record("characters", "d")!.data).toMatchObject({ desc: "mine", lastInteraction: 55 });
         expect(fake.batchCount()).toBe(1);
         expect(reads(fake)).toBe(0);
@@ -1345,8 +1348,8 @@ describe("field patches another writer committed", () => {
         const flushing = sync.flushResources();
         await vi.advanceTimersByTimeAsync(600);
         expect(intercept.release).not.toBeNull();
-        // While the save's answer is held: the stamp, then the listing that names it, then its frame.
-        const stamped = patchCharacter(fake, "d", { set: { lastInteraction: 42 } });
+        // While the save's answer is held: the patch, then the listing that names it, then its frame.
+        const patched = patchCharacter(fake, "d", { set: { lastInteraction: 42 } });
         sync.reconcileRemote(fake.store.listRevisions());
         live.paused = false;
         flushFeed();
@@ -1355,7 +1358,7 @@ describe("field patches another writer committed", () => {
         await flushing;
         await settle(fake);
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 42 });
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(reads(fake)).toBe(0);
         expect(fake.batchCount()).toBe(1);
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
@@ -1368,11 +1371,11 @@ describe("field patches another writer committed", () => {
         fake.set("characters", "d", { ...fake.record("characters", "d")!.data, name: "D remote" });
         await vi.advanceTimersByTimeAsync(100);
         expect(intercept.release).not.toBeNull();
-        const stamped = patchCharacter(fake, "d", { set: { lastInteraction: 5 } });
+        const patched = patchCharacter(fake, "d", { set: { lastInteraction: 5 } });
         intercept.release!();
         await settle(fake);
         expect(character("d")).toMatchObject({ name: "D remote", lastInteraction: 5 });
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });

@@ -866,8 +866,8 @@ describe("transaction", () => {
     });
 });
 
-// A batch op may carry a field `patch` of an object record (store-internal; the send
-// job's `lastInteraction` stamp). It is checked before the transaction, applied at its base revision
+// A batch op may carry a field `patch` of an object record (a client's
+// character save). It is checked before the transaction, applied at its base revision
 // inside it, normalized and stored like a write, and counted as one. What the feed carries for it is
 // in `changeFeed.test.ts`.
 describe("field patches", () => {

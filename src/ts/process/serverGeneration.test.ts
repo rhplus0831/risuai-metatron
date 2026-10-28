@@ -5,8 +5,8 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 // (`preview`, `previewPrompt`, `group` for a group chat, `continue`, else `send`), the context (the
 // input with its user message id, an explicit continue target; a preview carries no input), a
 // plugin call's identity, the one per-send field written before the job (`statics.messages` through
-// `incrementStatic`; the target's `lastInteraction` is the server job's to stamp, so the tab
-// touches no character record and uploads none before the job), and the result mapping (`refused`
+// `incrementStatic`; "last chatted" is derived from chats and nobody writes `lastInteraction`, so the
+// tab touches no character record and uploads none before the job), and the result mapping (`refused`
 // and `followed` are a definite refusal, `unknown` an ambiguous one, an error or lost terminal
 // neither; `settled` unless the create got no answer or the follow was lost; `requestUncertain`
 // while this send's own request has no known end; a `replayed` job is this send's own, its chat
@@ -92,7 +92,7 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
-/** The character records as the test seeded them: a send changes none of them (the server stamps). */
+/** The character records as the test seeded them: a send changes none of them (nobody writes `lastInteraction`). */
 const seededCharacters = () => [
     { chaId: "other", type: "character" },
     { chaId: "c", type: "character", lastInteraction: 1 },
@@ -122,8 +122,8 @@ describe("sendChatOnServer", () => {
         expect(options).toEqual({ signal: undefined });
         expect(stubs.incrementStatic).toHaveBeenCalledTimes(1);
         expect(stubs.incrementStatic).toHaveBeenCalledWith("messages");
-        // The stamp is the job's (a server field patch), so no character record becomes dirty and
-        // none is uploaded before the job: the target keeps its seeded stamp, the others are untouched.
+        // A send writes no character record, so none becomes dirty and none is uploaded before the job:
+        // the target keeps its seeded `lastInteraction`, the others are untouched.
         expect(stubs.db.characters).toEqual(seededCharacters());
         expect(stubs.addRerolls).not.toHaveBeenCalled();
     });
@@ -142,7 +142,7 @@ describe("sendChatOnServer", () => {
         started(done());
         await send({ target: { chaId: "g", chatId: "k" }, input: "all", userMessageId: "u3", continue: true });
         expect(lastRequest()).toMatchObject({ kind: "group", context: { input: "all", userMessageId: "u3" } });
-        // The group record is not stamped by the tab either.
+        // The group record is not written by the tab either.
         expect(stubs.db.characters).toEqual(seededCharacters());
 
         for (const [arg, kind] of [

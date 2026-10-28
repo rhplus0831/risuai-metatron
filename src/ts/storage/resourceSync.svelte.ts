@@ -3697,12 +3697,7 @@ function mergeConcurrentChange(item: RemoteItem, key: string): boolean {
         }
         applyRaw(COLLECTION_KIND.statics, target);
     }
-    adoptMergedBase(
-        item,
-        item.revision,
-        key,
-        prepared.some(([field]) => !(isCharacter && field === "lastInteraction")),
-    );
+    adoptMergedBase(item, item.revision, key, prepared.length > 0);
     return true;
 }
 
@@ -4648,8 +4643,7 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
  * patch (except `llmSecrets`) is applied to a detached copy of the held text and the result goes through
  * the mirror's whole-record path (`applyToMirror`, as a read would). The saved text is the mirror's
  * projection afterwards, as for a whole update, and a waiting notice the update covers is settled.
- * The remote-change listeners hear of it unless only a character's `lastInteraction` changed (a send
- * job's stamp, as `mergeConcurrentChange` treats it). Returns false, changing nothing, for anything
+ * The remote-change listeners hear of every changed field. Returns false, changing nothing, for anything
  * else (another kind or patch form, another base, a local change, a malformed patch or one naming a
  * field twice, a character's fixed or client-only field or one the mirror object only inherits, an
  * item patch that does not fit the held list): the update is then read whole as before.
@@ -4716,7 +4710,7 @@ function applyRemotePatch(ref: {
 
 /**
  * A character's field patch into the mirror raw (`applyRemotePatch`). Returns null when it does not
- * apply, else whether a field other than `lastInteraction` changed.
+ * apply, else whether any field changed (false for an empty patch).
  */
 function applyCharacterPatch(id: string, patch: RecordPatch): boolean | null {
     const character = findMirrorCharacter(id);
@@ -4753,7 +4747,7 @@ function applyCharacterPatch(id: string, patch: RecordPatch): boolean | null {
     if (!patchRawCharacter(id, changes)) {
         return null;
     }
-    return fields.some((field) => field !== "lastInteraction");
+    return fields.length > 0;
 }
 
 /** A patch must describe exactly the next write of the held incarnation, in this epoch. */

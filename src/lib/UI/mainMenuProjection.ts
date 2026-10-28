@@ -1,3 +1,4 @@
+import { characterLastChattedAt } from "src/ts/storage/chatStore.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 
 export const HOME_RECENT_CHARACTER_LIMIT = 8;
@@ -15,7 +16,7 @@ export interface CharacterAgoTextOptions {
     now?: number;
 }
 
-/** The "3h ago" text of a `lastInteraction` stamp, shared by the home screen and the mobile character list. */
+/** The "3h ago" text of the derived last-chatted time, shared by the home screen and the mobile character list. */
 export function makeCharacterAgoText(
     time: number,
     { agoFormatter, unknownText, now = Date.now() }: CharacterAgoTextOptions,
@@ -23,7 +24,7 @@ export function makeCharacterAgoText(
     if (time === 0) {
         return unknownText;
     }
-    // The stamp is the server's clock: a client clock behind it reads as "0 minutes ago", not "in 1 minute".
+    // A message time ahead of the client clock reads as "0 minutes ago", not "in 1 minute".
     const diff = Math.max(0, now - time);
     if (diff < 3600000) {
         const min = Math.floor(diff / 60000);
@@ -50,17 +51,22 @@ export function makeCharacterAgoText(
 }
 
 /**
- * The home screen's recent characters: those sent to at least once (`lastInteraction`), newest first,
+ * The home screen's recent characters: those with a positive last-chatted time, newest first,
  * without the trash and the playground character.
  */
 export function collectHomeRecentCharacters(
     characters: readonly AnyClientCharacter[],
-    options: CharacterAgoTextOptions & { limit?: number },
+    options: CharacterAgoTextOptions & {
+        limit?: number;
+        lastChattedAt?: (chaId: string, fallback?: unknown) => number;
+    },
 ): HomeRecentCharacterItem[] {
     const limit = Math.max(0, options.limit ?? HOME_RECENT_CHARACTER_LIMIT);
+    const lastChattedAt = options.lastChattedAt ?? characterLastChattedAt;
     return characters
-        .filter((c) => c?.chaId && c.chaId !== "§playground" && !c.trashTime && (c.lastInteraction || 0) > 0)
-        .map((c) => ({ c, name: c.name || "Unnamed", interaction: c.lastInteraction || 0 }))
+        .filter((c) => c?.chaId && c.chaId !== "§playground" && !c.trashTime)
+        .map((c) => ({ c, name: c.name || "Unnamed", interaction: lastChattedAt(c.chaId, c.lastInteraction) }))
+        .filter(({ interaction }) => interaction > 0)
         .sort((a, b) =>
             a.interaction === b.interaction ? a.name.localeCompare(b.name) : b.interaction - a.interaction,
         )

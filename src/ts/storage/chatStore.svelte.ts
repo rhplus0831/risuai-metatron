@@ -474,8 +474,9 @@ export type StreamingEntry = { messageId: string; mode: Chat["activeStreamingDis
  */
 const streamingChats: Record<string, StreamingEntry & { generationId: string | null }> = $state({});
 
-/** What a chat list shows of a chat (`ChatListEntry` without the id): its summary while it is not loaded. */
+/** An unloaded chat's summary: list metadata and the derived time of its last message. */
 type ChatEntryMeta = {
+    lastMessageAt?: number;
     name: string;
     pinned?: boolean;
     folderId?: string;
@@ -964,21 +965,41 @@ export function chatsLoaded(chaId: string): boolean {
     return !holding || holding.ids.every((id) => holding.chats[slot(id)] !== undefined);
 }
 
-/** The list fields of a chat or summary (server rules: `name` "", `fmIndex` -1, `pinned` only when true). */
-function metaOf(source: {
-    name?: unknown;
-    pinned?: unknown;
-    folderId?: unknown;
-    bindedPersona?: unknown;
-    promptPresetId?: unknown;
-    modelPresetId?: unknown;
-    bindingReview?: unknown;
-    fmIndex?: unknown;
-}): ChatEntryMeta {
+/** Only the final message by position counts, even when an earlier message has a time. */
+function lastMessageTime(chat: { message: readonly { time?: unknown }[] }): number | undefined {
+    const time = chat.message.at(-1)?.time;
+    return typeof time === "number" && Number.isFinite(time) ? time : undefined;
+}
+
+/**
+ * Summary fields from a chat or summary (`name` "", `fmIndex` -1, `pinned` only when true).
+ * Lists omit activity so reading their metadata never subscribes to messages.
+ */
+function metaOf(
+    source: {
+        message?: readonly { time?: unknown }[];
+        lastMessageAt?: unknown;
+        name?: unknown;
+        pinned?: unknown;
+        folderId?: unknown;
+        bindedPersona?: unknown;
+        promptPresetId?: unknown;
+        modelPresetId?: unknown;
+        bindingReview?: unknown;
+        fmIndex?: unknown;
+    },
+    includeActivity = true,
+): ChatEntryMeta {
     const meta: ChatEntryMeta = {
         name: typeof source.name === "string" ? source.name : "",
         fmIndex: typeof source.fmIndex === "number" ? source.fmIndex : -1,
     };
+    if (includeActivity) {
+        const time = source.message !== undefined ? lastMessageTime({ message: source.message }) : source.lastMessageAt;
+        if (typeof time === "number" && Number.isFinite(time)) {
+            meta.lastMessageAt = time;
+        }
+    }
     if (typeof source.folderId === "string") {
         meta.folderId = source.folderId;
     }
@@ -1155,8 +1176,9 @@ export function selectedChat(): DeepReadonly<Chat> | null {
  * plain copy) with the character's chats as plain copies in order and `chatPage`, the index of
  * `chatId` when it is listed, else of the selected chat. Every chat must be loaded (the caller pins
  * and awaits `loadChats` first); throws otherwise, so a copy is never missing a chat.
+ * Its `lastInteraction` is filled with the derived last-chatted time when positive, for plugins.
  */
-export function withChatsCopy<T extends { chaId: string }>(
+export function withChatsCopy<T extends { chaId: string; lastInteraction?: unknown }>(
     copy: T,
     chatId?: string,
 ): T & { chats: Chat[]; chatPage: number } {
@@ -1165,7 +1187,13 @@ export function withChatsCopy<T extends { chaId: string }>(
     }
     const chats = clone<Chat[]>($state.snapshot(chatsOf(copy.chaId)) as Chat[]);
     const listed = chatId === undefined ? -1 : chats.findIndex((chat) => chat.id === chatId);
-    return { ...copy, chats, chatPage: listed !== -1 ? listed : selectedChatIndex(copy.chaId) };
+    const lastChatted = characterLastChattedAt(copy.chaId, copy.lastInteraction);
+    return {
+        ...copy,
+        ...(lastChatted > 0 ? { lastInteraction: lastChatted } : {}),
+        chats,
+        chatPage: listed !== -1 ? listed : selectedChatIndex(copy.chaId),
+    };
 }
 
 /**
@@ -1194,8 +1222,26 @@ export function chatCount(chaId: string): number {
     return holdingAt(chaId)?.ids.length ?? 0;
 }
 
+/**
+ * The newest last-message time among a character's chats (reactive). Loaded chats use their own
+ * final message, including an undated one; summaries serve unloaded chats only. The frozen legacy
+ * value is a fallback only when no chat supplies a finite time, never part of the maximum.
+ */
+export function characterLastChattedAt(chaId: string, fallback?: unknown): number {
+    const holding = holdingAt(chaId);
+    let newest: number | undefined;
+    for (const id of holding?.ids ?? []) {
+        const chat = holding!.chats[slot(id)];
+        const time = chat ? lastMessageTime(chat) : holding!.summaries[slot(id)]?.lastMessageAt;
+        if (typeof time === "number" && Number.isFinite(time)) {
+            newest = newest === undefined ? time : Math.max(newest, time);
+        }
+    }
+    return newest ?? (typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 0);
+}
+
 /** One entry of a character's chat list (`chatList`): what a chat list shows, never a whole chat. */
-export type ChatListEntry = { id: string } & ChatEntryMeta;
+export type ChatListEntry = { id: string } & Omit<ChatEntryMeta, "lastMessageAt">;
 
 /**
  * A character's chats as list entries, in order (reactive over the listed fields and the
@@ -1236,7 +1282,8 @@ export function countChatEntries(test: (entry: ChatListEntry) => boolean): numbe
 
 function listEntry(holding: HeldChats, id: string): ChatListEntry {
     const chat = holding.chats[slot(id)];
-    return { id, ...(chat ? metaOf(chat) : (holding.summaries[slot(id)] ?? metaOf({}))) };
+    // Lists track metadata only; activity readers use `characterLastChattedAt` independently.
+    return { id, ...metaOf(chat ?? holding.summaries[slot(id)] ?? {}, false) };
 }
 
 /** A chat as sent: a plain copy without the client-only streaming flags. */
