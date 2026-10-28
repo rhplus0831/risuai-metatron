@@ -43,6 +43,8 @@ import {
 // equivalence over the real route is `bootCacheServer.test.ts`.
 
 const DB_NAME = "risu-boot-cache";
+/** The version the app opens; a fixture of a newer app uses one above it. */
+const DB_VERSION = 2;
 const APP = "v1";
 const ALL_KINDS = Object.values(RESOURCE_KIND) as string[];
 const hashOf = (item: unknown) => createHash("sha256").update(JSON.stringify(item)).digest("base64url").slice(0, 22);
@@ -162,7 +164,7 @@ function seededServer() {
 /** The three stores of the fake database, raw. */
 async function dump() {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => {
             for (const name of ["records", "items", "meta"]) {
                 if (!request.result.objectStoreNames.contains(name)) {
@@ -201,7 +203,7 @@ async function dump() {
 /** Writes raw entries into the fake database (a corrupt or foreign cache). */
 async function seedRaw(entries: { records?: [string, unknown][]; items?: [string, unknown][]; meta?: unknown }) {
     const db = await new Promise<IDBDatabase>((resolve) => {
-        const request = indexedDB.open(DB_NAME, 1);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => {
             for (const name of ["records", "items", "meta"]) {
                 if (!request.result.objectStoreNames.contains(name)) {
@@ -928,9 +930,120 @@ describe("the boot over the IndexedDB cache", () => {
         }
     });
 
+    it("a version-1 database without stores is repaired on boot and retains the committed cache", async () => {
+        await new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                request.result.close();
+                resolve();
+            };
+        });
+        const server = seededServer();
+        const store = cacheStore();
+        const deps = depsFor(server, store);
+        const boot = await loadBootSnapshot(deps);
+        expect(boot.snapshot).toEqual(server.full());
+        expect(fallbacks(deps)).toEqual([]);
+        await boot.commit();
+        expect(deps.events).toEqual([]);
+
+        const next = depsFor(server, store);
+        expect((await loadBootSnapshot(next)).snapshot).toEqual(server.full());
+        expect(next.requests[0].known?.records).toContainEqual({
+            kind: "characters",
+            id: "c1",
+            revision: server.state.kinds.characters[0].revision,
+        });
+        expect(next.fullReads).toBe(0);
+        expect(fallbacks(next)).toEqual([]);
+    });
+
+    it("a version-1 database with only records keeps its contents through repair and accepts a boot write", async () => {
+        const server = seededServer();
+        const key = recordKey("characters", "c1");
+        const record = {
+            kind: "characters",
+            id: "c1",
+            revision: server.state.kinds.characters[0].revision,
+            text: JSON.stringify(character("c1")),
+        };
+        await new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = () => request.result.createObjectStore("records").put(record, key);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                request.result.close();
+                resolve();
+            };
+        });
+        const store = cacheStore();
+        const deps = depsFor(server, store);
+        const boot = await loadBootSnapshot(deps);
+        expect(fallbacks(deps)).toEqual([]);
+        // Inspect before the boot write can replace the entry with the server's copy.
+        expect((await dump()).records).toEqual(new Map([[key, record]]));
+        await boot.commit();
+        const written = await store.load();
+        expect(written.records).toContainEqual(record);
+        expect(written.items.get(itemKey("modules", hashOf(module("m1"))))).toBe(JSON.stringify(module("m1")));
+        expect(deps.events).toEqual([]);
+    });
+
+    it("a version-1 connection blocking the upgrade falls back before the timeout and a late connection closes", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const blocker = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result);
+        });
+        try {
+            const open = vi.spyOn(indexedDB, "open");
+            const server = seededServer();
+            const deps = depsFor(server, indexedDbBootCacheStore(APP));
+            const loading = loadBootSnapshot(deps);
+            let settled = false;
+            void loading.then(() => {
+                settled = true;
+            });
+            const request = open.mock.results[0].value as IDBOpenDBRequest;
+            await new Promise<void>((resolve) => request.addEventListener("blocked", () => resolve(), { once: true }));
+            await vi.advanceTimersByTimeAsync(BOOT_CACHE_TIMEOUT_MS - 1);
+            expect(settled).toBe(true);
+            const boot = await loading;
+            expect(boot.snapshot).toEqual(server.full());
+            expect(deps.fullReads).toBe(1);
+            expect(deps.requests).toEqual([]);
+            expect(fallbacks(deps)).toEqual([
+                { kind: "bootCache", phase: "fallback", reason: "unavailable", records: 0, items: 0 },
+            ]);
+            await boot.commit();
+
+            const late = new Promise<void>((resolve, reject) => {
+                request.addEventListener("success", () => resolve(), { once: true });
+                request.addEventListener("error", () => reject(request.error), { once: true });
+            });
+            blocker.close();
+            await late;
+            const version = await new Promise<number>((resolve, reject) => {
+                const upgrade = indexedDB.open(DB_NAME, DB_VERSION + 1);
+                upgrade.onblocked = () => reject(new Error("The late cache connection blocked a later upgrade"));
+                upgrade.onerror = () => reject(upgrade.error);
+                upgrade.onsuccess = () => {
+                    const found = upgrade.result.version;
+                    upgrade.result.close();
+                    resolve(found);
+                };
+            });
+            expect(version).toBe(DB_VERSION + 1);
+        } finally {
+            blocker.close();
+        }
+    });
+
     it("a database another version holds (a newer app opened it) cannot be opened: `readFailed`, and the cache is left alone", async () => {
         await new Promise<void>((resolve) => {
-            const request = indexedDB.open(DB_NAME, 2);
+            const request = indexedDB.open(DB_NAME, DB_VERSION + 1);
             request.onupgradeneeded = () => request.result.createObjectStore("records");
             request.onsuccess = () => {
                 request.result.close();
@@ -956,7 +1069,7 @@ describe("the boot over the IndexedDB cache", () => {
         await loadBootSnapshot(depsFor(server, store));
         const blocked = vi.fn();
         const version = await new Promise<number>((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, 2);
+            const request = indexedDB.open(DB_NAME, DB_VERSION + 1);
             request.onblocked = blocked;
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
@@ -965,7 +1078,7 @@ describe("the boot over the IndexedDB cache", () => {
                 resolve(found);
             };
         });
-        expect(version).toBe(2);
+        expect(version).toBe(DB_VERSION + 1);
         expect(blocked).not.toHaveBeenCalled();
     });
 

@@ -103,7 +103,7 @@ function depsFor(s: TestClient, store = indexedDbBootCacheStore(APP)) {
 /** The cache's stores, raw. */
 async function dump() {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open("risu-boot-cache", 1);
+        const request = indexedDB.open("risu-boot-cache", 2);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
     });
@@ -250,7 +250,7 @@ describe("the boot through the cache against the real route", () => {
         const store = indexedDbBootCacheStore(APP);
         await (await loadBootSnapshot(depsFor(s, store))).commit();
         const db = await new Promise<IDBDatabase>((resolve) => {
-            const request = indexedDB.open("risu-boot-cache", 1);
+            const request = indexedDB.open("risu-boot-cache", 2);
             request.onsuccess = () => resolve(request.result);
         });
         const tx = db.transaction("records", "readwrite");

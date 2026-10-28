@@ -374,7 +374,8 @@ function sameRecord(a: CachedRecord, b: CachedRecord): boolean {
 // --- IndexedDB store ---
 
 const DB_NAME = "risu-boot-cache";
-const DB_VERSION = 1;
+// Version 1 databases created by another opener may lack stores; the upgrade creates missing ones.
+const DB_VERSION = 2;
 const RECORDS = "records";
 const ITEMS = "items";
 const META = "meta";
@@ -397,9 +398,10 @@ export class BootCacheTimeoutError extends Error {
 }
 
 /**
- * Opens the database, creating the stores on first use. A blocked open (another tab holds an older
- * version) or one slower than the timeout fails; a connection that arrives after that is closed. An
- * open connection closes itself when another tab upgrades the database.
+ * Opens the database, creating whichever stores are missing during the upgrade, including when
+ * another opener created it without them. A blocked open (another tab holds an older version) or one
+ * slower than the timeout fails; a connection that arrives after that is closed. An open connection
+ * closes itself when another tab upgrades the database.
  */
 function openDatabase(timeoutMs: number): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
