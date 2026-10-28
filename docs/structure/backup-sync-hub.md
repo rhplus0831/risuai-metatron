@@ -88,5 +88,7 @@
 
 ## Known Hazards
 
+### Issues
+
 - `RealmMain` renders `hubAdditionalHTML` via `{@html}`.
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not check `ui.realmTermsAccepted`.

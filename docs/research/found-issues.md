@@ -2,25 +2,18 @@
 
 Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26; single entries move as they come up.
 
-These are notes, not verified reports. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
+These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
 Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (second batch), and 2026-10-27 (single entries). Confirmed fixes have been removed, and partially fixed entries have been narrowed to the remaining gap. Entries that still need runtime reproduction are retained.
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
-- [Chat screen and input](#chat-screen-and-input) (3)
+- [Chat screen and input](#chat-screen-and-input) (2)
 - [Test mocks](#test-mocks) (2)
 
 ## Chat store, sync, and change feeds
-
-### Feed lock windows
-
-Slice 2b's feed locks (`feedLocks`, `noteRemoteStreaming`, `replaceFeedLocks`, `dropFeedLocksOf` in `src/ts/storage/chatStore.svelte.ts`) are advisory. A tab shows a generating reply unlocked (2a's `dropLockedEdits` then catches an edit) before the job's first write frame: the job owns no message before its `begin`, so neither the `hello` snapshot nor a whole chat read's lock list can list it. Since 2026-10-26 whole chat reads carry the server's lock list and decide the chat's feed locks (Deep Audit Fixes slice 8), so the window after a newer whole read is gone, except against an older server whose reads omit the list (the revision rule still applies there). `isCharacterGenerating` also counts feed locks, so the same window decides when an observer tab refuses a permanent character delete or a different-id replace locally (the server's 409 `generating` stays the fallback).
-
-**Why it matters:** the remaining path for A4 (edit over the generating reply) before the reply exists on the server.
-**Suggested handling:** if it matters, announce the job's chat reservation (admission, before `begin`) in the feed and the read lock lists, so a tab can lock the chat's tail instead of a message id.
 
 ### Parked resends leak
 
@@ -61,13 +54,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a regression in either path would pass the gate.
 **Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
-
-### Reader position not kept across growth inside shown rows
-
-Since 2026-10-27, `src/lib/ChatScreens/Chats.svelte` holds rows that come in above the view until they have rendered and the reader stops scrolling. That fixed the reproduced jumps: wheeling while a chat opens, and wheeling into load-more. Content that grows inside rows already shown above the view still moves the reader by the grown height while a scroll animation runs (Chrome, reversed scroller; measured on a minimal page). Examples are images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs from its rendered height when it comes near. Repro drivers from the investigation: headed Chrome on WSLg with real X wheel ticks through XTest. CDP `Input.dispatchMouseEvent` wheels do not animate, so they never reproduce it.
-
-**Why it matters:** each case is smaller than the jumps that were fixed (one row's growth, not a page), but it has the same feel: the reader lands somewhere they did not scroll to.
-**Suggested handling (optional, deferred by the owner):** once the anchor is released, keep a reader anchor. Record the visible row nearest the view's top and its offset on scroll. After a transcript resize, restore that offset at `scrollend`, not mid-animation, where a correction would fight the running animation. Measure the visible row's displacement beyond the intended scroll; do not double-compensate with any native anchoring.
 
 ### Popup editor close at teardown reads pre-batch store values
 

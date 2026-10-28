@@ -171,10 +171,13 @@ Theme and GUI helpers:
 
 ## Known Hazards
 
+### Limitations
+
+- Content that grows inside rows already shown above the view while a scroll animation runs moves the reader by the grown height (Chrome, reversed scroller): images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs from its rendered height when it comes near. `Chats.svelte` holds rows that come in above the view until they have rendered and the reader stops scrolling; a new path that adds rows above the shown ones goes through that hold. A fix would keep a reader anchor once the hold releases (the visible row nearest the view's top and its offset) and restore it at `scrollend`, not mid-animation. Reproduce with real X wheel ticks (headed Chrome on WSLg through XTest); CDP `Input.dispatchMouseEvent` wheels do not animate. Decision: deferred by the owner (2026-10-27).
+- A far row's fixed-position or overflowing custom content is contained while it is far. Near rows are deliberately uncontained; do not apply `content-visibility` to every row or to the transcript ancestor. Decision: near rows stay uncontained (`src/styles.css`, `.chat-message-container.far`).
+- Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next renders (edit, reload, remount, etc.); restoring the old last-five key would add unnecessary renders on every append. Decision: old rows are deliberately not re-rendered (`docs/research/risunest-ideas.md`).
+
+### Gotchas
+
 - `src/lib/ChatScreens/Message.svelte` is an unused TODO rewrite; `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` is empty. Confirm intent before extending either.
-
-- Content that grows above the view while a scroll animation runs moves the reader in Chrome (see `Chats.svelte`). A new path that adds rows above the shown ones goes through the hold; growth inside rows already shown (late images, re-renders, a far row's intrinsic-size estimate) is not held (`docs/research/found-issues.md`).
-- A far row's fixed-position or overflowing custom content is contained while it is far. Near rows are deliberately uncontained; do not apply `content-visibility` to every row or to the transcript ancestor.
-- Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next renders (edit, reload, remount, etc.); restoring the old last-five key would add unnecessary renders on every append.
-
-- `LazyPortal` and the generic `tooltip` action have no active callers found.
+- `LazyPortal` has no active callers found.

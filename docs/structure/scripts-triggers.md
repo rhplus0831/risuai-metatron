@@ -122,13 +122,20 @@ v2 layout:
 
 ## Known Hazards
 
-- `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
+### Issues
 
-- `triggercode` effects have no runtime case. Only `triggerlua` executes.
 - The deprecated `v2ModifyLorebook`, `v2SetLorebookActivation`, and their reads address lore entries as arrays (`entry[0]`, `entry[2]`), but entries are objects: the first never matches, the second adds a junk `"2"` key (pre-existing; a separate task).
 - Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write.
 - Trigger character effects write one patch per effect; a long run that writes a whole `globalLore` array from its starting copy overwrites lore edits made after that copy was taken.
-- A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag.
+- A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag. `server/src/tests/regex.test.ts` pins it as a quirk.
 - A Lua button ignores `stopSending`: `stopChat` marks the run but neither stops the later button triggers nor changes the `done` event, while the trigger runtime honors it.
-- Job setters for `scriptstate` and `note` share a pending metadata write until a microtask or explicit flush; a yielded trigger or awaited command can split one run across writes. Another chat write flushes that batch first, so a refused message write cannot discard an earlier setter. The final `applyTriggerChat` write reconciles the map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`, `GLGlobalVariables`, `toolCalls`) entry by entry against the trigger's baseline (`meta.merge`/`mergeUnset`), so a variable another command or tab saved during the run survives and the trigger's final value wins only for keys it changed; a key the trigger changed and then restored to its baseline value is not written, so a concurrent value of that key stays. The metadata write also advances the revision, so that trigger's reorder may be dropped. `server/src/tests/chatMetadataCoalescing.test.ts` pins the batching boundary.
 - `v2Calculate` substitutes chat variables and calls the calculator directly, outside the CBS evaluator's cooperative work/time budget; expensive expressions can hold the server thread.
+
+### Limitations
+
+- `triggercode` effects have no runtime case. Only `triggerlua` executes. Decision: `triggercode` is legacy and unsupported (`TriggerList.svelte`, Files above).
+
+### Gotchas
+
+- `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
+- Job setters for `scriptstate` and `note` share a pending metadata write until a microtask or explicit flush; a yielded trigger or awaited command can split one run across writes. Another chat write flushes that batch first, so a refused message write cannot discard an earlier setter. The final `applyTriggerChat` write reconciles the map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`, `GLGlobalVariables`, `toolCalls`) entry by entry against the trigger's baseline (`meta.merge`/`mergeUnset`), so a variable another command or tab saved during the run survives and the trigger's final value wins only for keys it changed; a key the trigger changed and then restored to its baseline value is not written, so a concurrent value of that key stays. The metadata write also advances the revision, so that trigger's reorder may be dropped. `server/src/tests/chatMetadataCoalescing.test.ts` pins the batching boundary.

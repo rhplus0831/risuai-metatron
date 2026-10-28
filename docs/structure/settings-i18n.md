@@ -155,10 +155,15 @@ Languages (`src/lang/`):
 
 ## Known Hazards
 
+### Issues
+
 - `changeLanguage` supports `es`, but the language selector does not offer it.
 - Some accessibility labels are computed from `language` at module load and do not update after a language switch.
-- The setting conditions read `ctx.preset` (prompt preset) or `ctx.modelPreset` (model preset): a condition on a model field must read `ctx.modelPreset`.
 - A conflict reload or live update of a settings record replaces its fields and resolves the selection, but runs no presentation update: the language (`changeLanguage`), the theme and custom CSS, the animation, and the sizes stay as they were until the next local change of that setting or a reload.
 - Some settings pages fill missing values with control defaults when they first mount (`bindPath` creating missing containers), so the first visit can save; a second visit writes nothing (`e2e/settingsPages.spec.ts`). Which pages write on a first visit is not pinned (the former Bot Settings page, Display, Accessibility, and Advanced were seen). Items in a collapsible section mount, and can write, only when it is opened (the spec opens every accordion).
+
+### Gotchas
+
+- The setting conditions read `ctx.preset` (prompt preset) or `ctx.modelPreset` (model preset): a condition on a model field must read `ctx.modelPreset`.
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, so a 50-preset reorder re-renders through the wrappers: 17.9 ms against a 15.9–16.0 ms baseline (`measureRecords.mjs`, commit `5b47b2b3` against `35678fd4`), about 2% outside the 10% target; at commit `2f658598` it measures 17.9–18.2 ms (17.5–17.8 ms at `6fa405d1`). Keyed rows were slower (18.4–20.1 ms at `5b47b2b3`, not re-measured); a plain-row projection (each row's id, name, and image read once) was not tried.
 - `pluginDevelopMode`, `forceProxyAsOpenAI`, and `moveInsteadOfCopyOnCMPConvert` are persisted `ui` toggles with no reader and no settings item (removed from the UI); their fields, defaults, and `shared/sections.ts` places stay for saved data. `globalscript` (`settings.globalscript`) and the global lore-book pages (`settings.loreBook`, `selectedLoreBookPage()`) have no settings page either: menu indexes 7–9 (Communities, global lore book, global regex) were unreachable and are gone.
