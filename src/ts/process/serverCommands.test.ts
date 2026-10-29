@@ -515,6 +515,40 @@ describe("resumeServerJobs (boot)", () => {
         expect(stubs.read).toHaveBeenCalledTimes(1);
         expect(stubs.release).not.toHaveBeenCalled();
     });
+
+    it("ends a job with the outcome its discovery read when the server is unreachable afterwards: a kept outcome without an attach, an ended one after the attaches run out or when its chat cannot be loaded", async () => {
+        const shutdown: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            status: 503,
+            reason: "shutdown",
+            message: "The server stopped while this job ran",
+        };
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValueOnce(kept(shutdown)).mockRejectedValue(new Error("offline"));
+        await commands.resumeServerJobs();
+        expect(follows()).toHaveLength(0);
+        expect(stubs.read).toHaveBeenCalledTimes(1);
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, shutdown);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", shutdown);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        stubs.read.mockReset().mockResolvedValueOnce({ ...status, state: "ended", terminal: done });
+        stubs.read.mockRejectedValue(new Error("offline"));
+        stubs.attached = () => queueMicrotask(() => follows().at(-1)!.end(null));
+        await commands.resumeServerJobs();
+        expect(follows()).toHaveLength(5);
+        expect(stubs.apply).toHaveBeenLastCalledWith("j", ref, done);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        stubs.read.mockReset().mockResolvedValueOnce({ ...status, state: "ended", terminal: failed });
+        stubs.load.mockRejectedValue(new Error("offline"));
+        await commands.resumeServerJobs();
+        expect(follows()).toHaveLength(5);
+        expect(stubs.apply).toHaveBeenLastCalledWith("j", ref, failed);
+        expect(stubs.alertJobError).toHaveBeenLastCalledWith("j", failed);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
 });
 
 describe("stopChatJob", () => {

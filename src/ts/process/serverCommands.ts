@@ -178,11 +178,11 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
  * such close: a failed read is retried; a job that ended meanwhile and is still live is attached
  * again too (its attach sends its final records and its terminal); the server's kept outcome of a
  * collected job is its end, applied as the socket's terminal would be (as is the last ended status
- * read when the attaches ran out). The end is reported once: an error terminal as it is when
- * watched live, a server that stayed unreachable as `serverJob.lost`. A job the server no longer
- * knows shows no alert: its chat is read again, then `serverJob.endedAway`. After a lost or gone
- * follow, and after an end from the status that this tab's copy may lack, the chat is marked stale
- * and read again (`recoverJobChat`). Returns the terminal event, or `"lost"` (also for a gone job:
+ * read when the attaches ran out, the boot resume's first read included). The end is reported once:
+ * an error terminal as it is when watched live, a server that stayed unreachable as
+ * `serverJob.lost`. A job the server no longer knows shows no alert: its chat is read again, then
+ * `serverJob.endedAway`. After a lost or gone follow, and after an end from the status that this
+ * tab's copy may lack, the chat is marked stale and read again (`recoverJobChat`). Returns the terminal event, or `"lost"` (also for a gone job:
  * its outcome is unknown); a lost job is released as its end would release it. The job's chat is
  * pinned and loaded before the follow attaches (a load that keeps failing makes the job lost) and
  * stays pinned through every reconnect, the terminal's hydration, and the chat's read again, so no
@@ -199,14 +199,14 @@ export function followJobToEnd(
         shared = (async () => {
             let release: (() => void) | null = ref ? pinChat(ref) : null;
             try {
-                const discovered = ref ?? (await discover(jobId));
+                const discovered = ref ? { ref, status: undefined } : await discover(jobId);
                 if (discovered === "gone") {
                     // No chat known (the boot resume): the page has just read its data.
                     recordClientEvent({ kind: "jobLink", phase: "gone", jobId });
                     releaseGenerationJob(jobId);
                     return "lost";
                 }
-                const target: ChatRef | "lost" = discovered;
+                const target: ChatRef | "lost" = discovered === "lost" ? "lost" : discovered.ref;
                 if (target !== "lost") {
                     const key = chatKeyOf(target);
                     clearForeignJob(target);
@@ -216,11 +216,15 @@ export function followJobToEnd(
                 // A terminal already received is authoritative even if the chat cannot be loaded.
                 const loaded = target !== "lost" && (replayedStatuses.has(jobId) || (await loadJobChat(target)));
                 const replay = replayedStatuses.get(jobId);
+                // Discovery's ended status stands, as a replay does, when the chat cannot be loaded.
+                const read = discovered === "lost" ? undefined : discovered.status;
                 let result: FollowEnd = replay?.terminal
                     ? { terminal: replay.terminal, applied: false, kept: replay.kept === true }
                     : !loaded
-                      ? "lost"
-                      : await followOnce(jobId, target as ChatRef);
+                      ? read?.state === "ended" && read.terminal
+                          ? { terminal: read.terminal, applied: false, kept: read.kept === true }
+                          : "lost"
+                      : await followOnce(jobId, target as ChatRef, read);
                 if (typeof result === "string") {
                     // Another caller may have registered an ended replay while followOnce was awaiting the network.
                     const replayAfterFollow = replayedStatuses.get(jobId);
@@ -407,10 +411,11 @@ async function loadJobChat(ref: ChatRef): Promise<boolean> {
 }
 
 /**
- * The chat of a saved job from its status: `"gone"` when the server does not know it, `"lost"` after
- * the retries (each read bounded by `STEP_DEADLINE_MS`).
+ * The chat of a saved job from its status, with the status read (the follow starts from it):
+ * `"gone"` when the server does not know it, `"lost"` after the retries (each read bounded by
+ * `STEP_DEADLINE_MS`).
  */
-async function discover(jobId: string): Promise<ChatRef | "gone" | "lost"> {
+async function discover(jobId: string): Promise<{ ref: ChatRef; status: GenerationStatus } | "gone" | "lost"> {
     for (let read = 0; read < MAX_ATTACHES; read++) {
         if (read > 0) {
             await sleep(retryDelay(read));
@@ -425,7 +430,7 @@ async function discover(jobId: string): Promise<ChatRef | "gone" | "lost"> {
         if (!status || status.epoch !== getResourceEpoch()) {
             return "gone";
         }
-        return { chaId: status.characterId, chatId: status.chatId };
+        return { ref: { chaId: status.characterId, chatId: status.chatId }, status };
     }
     return "lost";
 }
@@ -439,10 +444,13 @@ async function discover(jobId: string): Promise<ChatRef | "gone" | "lost"> {
  * (the server may be out of reach), a job the server does not know is `"gone"`, its kept outcome is
  * the end, and a job still running or ended but still live is attached again. When the attaches run
  * out, or the job is no longer known after an ended status was read, the terminal of the last ended
- * status read is the end, if there was one; `"lost"` (or `"gone"`) otherwise.
+ * status read is the end, if there was one; `"lost"` (or `"gone"`) otherwise. `read` is a status
+ * read before the follow (the boot resume's discovery): its kept outcome is the end without an
+ * attach (one would be refused), and its ended terminal is the first one known.
  */
-async function followOnce(jobId: string, ref: ChatRef): Promise<FollowEnd> {
-    let known: GenerationTerminalEvent | null = null;
+async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus): Promise<FollowEnd> {
+    if (read?.kept && read.terminal) return { terminal: read.terminal, applied: false, kept: true };
+    let known: GenerationTerminalEvent | null = read?.state === "ended" ? (read.terminal ?? null) : null;
     // Attaches counted against the budget, and whether the last socket was replaced on the page's return.
     let attach = 0;
     let resumed = false;
