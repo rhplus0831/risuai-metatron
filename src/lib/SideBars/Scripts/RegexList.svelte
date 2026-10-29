@@ -9,9 +9,11 @@
     interface Props {
         value?: customscript[];
         buttons?: boolean;
+        /** The record the scripts belong to; a popup opened on another record is discarded. */
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable([]), buttons = false }: Props = $props();
+    let { value = $bindable([]), buttons = false, popupEditorContext = undefined }: Props = $props();
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
@@ -77,6 +79,7 @@
             <RegexData
                 idx={i}
                 bind:value={value[i]}
+                {popupEditorContext}
                 {onOpen}
                 {onClose}
                 onRemove={() => {

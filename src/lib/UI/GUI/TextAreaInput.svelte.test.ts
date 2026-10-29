@@ -187,6 +187,21 @@ describe("TextAreaInput popup editor", () => {
         expect(ui.props.value).toBe("same text");
     });
 
+    it("discards the popup when the field's context changes away and back while it is open", async () => {
+        const ui = render({ value: "same text", popupEditorContext: "chat-a" });
+        ui.expandButton()!.click();
+        flushSync();
+        popUpEditorStore.value = "typed";
+        ui.props.popupEditorContext = "chat-b";
+        flushSync();
+        ui.props.popupEditorContext = "chat-a";
+        flushSync();
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+        expect(popUpEditorStore.open).toBe(false);
+        expect(ui.props.value).toBe("same text");
+    });
+
     it("closes its own popup when the field unmounts, and leaves a popup another field took over alone", async () => {
         // The store writes of an open settle on the flush; a teardown reads values from before a pending
         // batch, as a real field's popup has always flushed long before the field goes away.

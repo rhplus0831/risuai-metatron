@@ -18,9 +18,17 @@
         onClose?: () => void;
         onOpen?: () => void;
         idx: number;
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable(), onRemove = () => {}, onClose = () => {}, onOpen = () => {}, idx }: Props = $props();
+    let {
+        value = $bindable(),
+        onRemove = () => {},
+        onClose = () => {},
+        onOpen = () => {},
+        idx,
+        popupEditorContext = undefined,
+    }: Props = $props();
 
     const checkFlagContain = (flag: string, matchFlag: string) => {
         if (flag.length === 1) {
@@ -138,6 +146,7 @@
                 autocomplete="off"
                 size="sm"
                 bind:value={value.out}
+                {popupEditorContext}
                 onInput={(e) => {
                     $ReloadGUIPointer += 1;
                 }}

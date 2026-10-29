@@ -24,6 +24,8 @@
         openedItemIndices?: Set<number>;
         currentIndex?: number;
         displayIndex?: number;
+        /** The record `promptItem` belongs to; a popup opened on another record is discarded. */
+        popupEditorContext?: unknown;
     }
 
     let {
@@ -39,6 +41,7 @@
         openedItemIndices = $bindable(new Set<number>()),
         currentIndex = -1,
         displayIndex = -1,
+        popupEditorContext = undefined,
     }: Props = $props();
 
     const chatPromptChange = () => {
@@ -301,7 +304,7 @@
                 <OptionInput value="globalNote">{language.globalNote}</OptionInput>
             </SelectInput>
             <span>{language.prompt}</span>
-            <TextAreaInput highlight bind:value={promptItem.text} />
+            <TextAreaInput highlight bind:value={promptItem.text} {popupEditorContext} />
             <span>{language.role}</span>
             <SelectInput bind:value={promptItem.role}>
                 <OptionInput value="user">{language.user}</OptionInput>
@@ -311,7 +314,7 @@
         {/if}
         {#if promptItem.type === "chatML"}
             <span>{language.prompt}</span>
-            <TextAreaInput highlight bind:value={promptItem.text} />
+            <TextAreaInput highlight bind:value={promptItem.text} {popupEditorContext} />
         {/if}
         {#if promptItem.type === "cache"}
             <span>{language.depth}</span>
@@ -386,7 +389,7 @@
                 />
             {:else}
                 <span>{language.innerFormat}</span>
-                <TextAreaInput highlight bind:value={promptItem.innerFormat} />
+                <TextAreaInput highlight bind:value={promptItem.innerFormat} {popupEditorContext} />
                 <CheckInput
                     name={language.customInnerFormat}
                     check={true}

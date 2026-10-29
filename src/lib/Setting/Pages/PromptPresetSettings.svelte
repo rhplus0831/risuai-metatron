@@ -463,11 +463,17 @@
     </Accordion>
 
     <Accordion styled name={language.moduleIntergration} help="moduleIntergration">
-        <TextAreaInput bind:value={activePreset.moduleIntergration} fullwidth height={"32"} autocomplete="off" />
+        <TextAreaInput
+            bind:value={activePreset.moduleIntergration}
+            popupEditorContext={activePreset.id}
+            fullwidth
+            height={"32"}
+            autocomplete="off"
+        />
     </Accordion>
 
     <Accordion styled name={language.regexScript}>
-        <RegexList bind:value={activePreset.regex} buttons />
+        <RegexList bind:value={activePreset.regex} popupEditorContext={activePreset.id} buttons />
     </Accordion>
 
     <Accordion styled name={language.icon}>
@@ -525,13 +531,31 @@
 {#if submenu === 2 || submenu === -1}
     {#if !activePreset.promptTemplate}
         <span class="text-textcolor">{language.mainPrompt} <Help key="mainprompt" /></span>
-        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.mainPrompt}></TextAreaInput>
+        <TextAreaInput
+            fullwidth
+            autocomplete="off"
+            height={"32"}
+            bind:value={activePreset.mainPrompt}
+            popupEditorContext={activePreset.id}
+        ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{mainPromptTokens} {language.tokens}</span>
         <span class="text-textcolor">{language.jailbreakPrompt} <Help key="jailbreak" /></span>
-        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.jailbreak}></TextAreaInput>
+        <TextAreaInput
+            fullwidth
+            autocomplete="off"
+            height={"32"}
+            bind:value={activePreset.jailbreak}
+            popupEditorContext={activePreset.id}
+        ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{jailbreakTokens} {language.tokens}</span>
         <span class="text-textcolor">{language.globalNote} <Help key="globalNote" /></span>
-        <TextAreaInput fullwidth autocomplete="off" height={"32"} bind:value={activePreset.globalNote}></TextAreaInput>
+        <TextAreaInput
+            fullwidth
+            autocomplete="off"
+            height={"32"}
+            bind:value={activePreset.globalNote}
+            popupEditorContext={activePreset.id}
+        ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{globalNoteTokens} {language.tokens}</span>
         <span class="text-textcolor mb-2 mt-4">{language.formatingOrder} <Help key="formatOrder" /></span>
         <DropList bind:list={activePreset.formatingOrder} />

@@ -31,14 +31,18 @@ import { deleteModelProfile, translatorPresetsUsingModelProfile } from "src/ts/s
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 import { settings, activePreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { selectChat } from "src/ts/storage/chatStore.svelte";
+import { applyRaw } from "src/ts/storage/records.svelte";
+import { selectCharacter, selectModelPreset, selectPreset, setChatOpen } from "src/ts/storage/selection.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
+    closePopupEditorSession,
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     openModelPresetList,
     openPresetList,
+    popUpEditorStore,
     SettingsMenuIndex,
     settingsOpen,
 } from "src/ts/stores.svelte";
@@ -323,5 +327,90 @@ describe("the Prompt page", () => {
         expect(get(openPresetList)).toBe(true);
         expect(get(openModelPresetList)).toBe(false);
         expect(activePreset.id).toBe("p1");
+    });
+
+    it("a field's popup writes the preset it opened on; a preset change while it is open discards it, even between presets with the same text", async () => {
+        vi.useFakeTimers();
+        const previousPopup = { ...popUpEditorStore };
+        try {
+            installFlatDatabaseWithChats({
+                characters: [
+                    {
+                        chaId: "c",
+                        type: "character",
+                        name: "C",
+                        chats: [{ id: "chat", name: "chat", message: [], localLore: [], promptPresetId: "bound" }],
+                    },
+                ],
+                botPresets: [
+                    { id: "bound", name: "Bound", moduleIntergration: "" },
+                    { id: "tab", name: "Tab", moduleIntergration: "" },
+                ],
+                useLegacyGUI: false,
+            } as any);
+            selectPreset("tab");
+            selectCharacter("c");
+            selectChat("c", "chat");
+            setChatOpen(true);
+            expect(activePreset.id).toBe("bound");
+            const page = render(PromptPresetSettings);
+            const button = (name: string) =>
+                [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === name)!;
+            button(language.others).click();
+            flushSync();
+            button(language.moduleIntergration).click();
+            flushSync();
+            const openPopup = () => {
+                const area = [...page.querySelectorAll("textarea")].find((area) =>
+                    area.closest("div.relative")?.querySelector("button"),
+                )!;
+                area.parentElement!.querySelector("button")!.click();
+                flushSync();
+                expect(popUpEditorStore).toMatchObject({ open: true, value: "" });
+            };
+            const closePopupWith = async (text: string) => {
+                popUpEditorStore.value = text;
+                closePopupEditorSession(popUpEditorStore.sessionId);
+                await vi.advanceTimersByTimeAsync(100);
+                flushSync();
+                await vi.advanceTimersByTimeAsync(0);
+                flushSync();
+            };
+            const moduleIntegrations = () => settings.presets.map((preset) => [preset.id, preset.moduleIntergration]);
+
+            // The chat's bound preset is shown; Home closes the chat while its popup is open, and the
+            // tab's preset (also "") is shown next, so the bound value alone would not notice.
+            openPopup();
+            popUpEditorStore.value = "typed for the bound preset";
+            selectCharacter(null);
+            flushSync();
+            expect(activePreset.id).toBe("tab");
+            await closePopupWith("typed for the bound preset");
+            expect(moduleIntegrations()).toEqual([
+                ["bound", ""],
+                ["tab", ""],
+            ]);
+
+            // Without a change the popup writes the shown preset, also across a refresh of the preset
+            // list (another client renamed it) that keeps its id.
+            openPopup();
+            const refreshed = JSON.parse(JSON.stringify(settings.presets));
+            refreshed[1].name = "Tab, renamed";
+            applyRaw("presets", refreshed);
+            flushSync();
+            await vi.advanceTimersByTimeAsync(100);
+            flushSync();
+            expect(popUpEditorStore.open).toBe(true);
+            await closePopupWith("typed for the tab preset");
+            expect(moduleIntegrations()).toEqual([
+                ["bound", ""],
+                ["tab", "typed for the tab preset"],
+            ]);
+        } finally {
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+            Object.assign(popUpEditorStore, previousPopup);
+            vi.useRealTimers();
+        }
     });
 });

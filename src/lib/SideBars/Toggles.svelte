@@ -247,6 +247,7 @@
                     className="w-32"
                     height="20"
                     value={valueOf(`toggle_${toggle.key}`)}
+                    popupEditorContext={chatRef ? `${chatRef.chaId}\u0000${chatRef.chatId}\u0000${toggle.key}` : null}
                     onchange={(e) => {
                         //check is div
                         if (e.currentTarget instanceof HTMLDivElement) {

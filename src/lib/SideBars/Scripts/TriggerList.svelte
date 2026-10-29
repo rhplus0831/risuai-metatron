@@ -11,9 +11,11 @@
     interface Props {
         value?: triggerscript[];
         lowLevelAble?: boolean;
+        /** The record the triggers belong to; a popup opened on another record is discarded. */
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable([]), lowLevelAble = false }: Props = $props();
+    let { value = $bindable([]), lowLevelAble = false, popupEditorContext = undefined }: Props = $props();
 </script>
 
 <div class="flex items-start mt-2 gap-2">
@@ -83,7 +85,12 @@
     >
 </div>
 {#if value?.[0]?.effect?.[0]?.type === "triggerlua"}
-    <TextAreaInput margin="both" autocomplete="off" bind:value={value[0].effect[0].code} popupLanguage="lua"
+    <TextAreaInput
+        margin="both"
+        autocomplete="off"
+        bind:value={value[0].effect[0].code}
+        {popupEditorContext}
+        popupLanguage="lua"
     ></TextAreaInput>
     <Button
         onclick={() => {

@@ -83,6 +83,11 @@
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
+    // Popup editors of chat fields belong to the chat they opened on.
+    const chatContext = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? `${ref.chaId}\u0000${ref.chatId}` : null;
+    });
     let iconRemoveMode = $state(false);
     let viewSubMenu = $state(0);
     let iconButtonSize = window.innerWidth > 360 ? (24 as const) : (20 as const);
@@ -404,11 +409,21 @@
     {#if currentCharacter.type !== "group" && licensed !== "private"}
         <TextInput size="xl" marginBottom placeholder="Character Name" bind:value={currentCharacter.name} />
         <span class="text-textcolor">{language.description} <Help key="charDesc" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={(currentCharacter as character).desc}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={(currentCharacter as character).desc}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm">{tokens.desc} {language.tokens}</span>
         <span class="text-textcolor">{language.firstMessage} <Help key="charFirstMessage" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.firstMessage}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.firstMessage}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm">{tokens.firstMsg} {language.tokens}</span>
     {:else if licensed !== "private" && currentCharacter.type === "group"}
@@ -471,11 +486,17 @@
     {/if}
     <!-- Local to this server, never in a card, so a private card shows it too. -->
     <span class="text-textcolor">{language.customNotificationMessage} <Help key="customNotificationMessage" /></span>
-    <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.customNotificationMessage} />
+    <TextAreaInput
+        popupEditorContext={currentCharacter.chaId}
+        margin="both"
+        autocomplete="off"
+        bind:value={currentCharacter.customNotificationMessage}
+    />
     <!-- The chat's fields wait while the selected chat loads. -->
     {#if currentChat}
         <span class="text-textcolor">{language.authorNote} <Help key="chatNote" /></span>
         <TextAreaInput
+            popupEditorContext={chatContext}
             margin="both"
             autocomplete="off"
             bind:value={() => currentChat.note, (note) => setCurrentChatMeta({ note })}
@@ -753,7 +774,11 @@
 
             {#if (currentCharacter as character).inlayViewScreen}
                 <span class="text-textcolor mt-2">{language.imgGenInstructions}</span>
-                <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.emotionInstructions} />
+                <TextAreaInput
+                    popupEditorContext={currentCharacter.chaId}
+                    highlight
+                    bind:value={(currentCharacter as character).newGenData.emotionInstructions}
+                />
             {/if}
 
             <CheckInput
@@ -783,11 +808,23 @@
             <span class="text-textcolor2 text-xs">{language.emotionWarn}</span>
 
             <span class="text-textcolor mt-2">{language.imgGenPrompt}</span>
-            <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.prompt} />
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                bind:value={(currentCharacter as character).newGenData.prompt}
+            />
             <span class="text-textcolor mt-2">{language.imgGenNegatives}</span>
-            <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.negative} />
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                bind:value={(currentCharacter as character).newGenData.negative}
+            />
             <span class="text-textcolor mt-2">{language.imgGenInstructions}</span>
-            <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.instructions} />
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                bind:value={(currentCharacter as character).newGenData.instructions}
+            />
 
             <CheckInput
                 bind:check={(currentCharacter as character).inlayViewScreen}
@@ -992,11 +1029,16 @@
         <h2 class="mb-2 text-2xl font-bold mt-2">{language.scripts}</h2>
 
         <span class="text-textcolor mt-2">{language.backgroundHTML} <Help key="backgroundHTML" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.backgroundHTML}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.backgroundHTML}
         ></TextAreaInput>
 
         <span class="text-textcolor mt-4">{language.regexScript} <Help key="regexScript" /></span>
-        <RegexList bind:value={currentCharacter.customscript} />
+        <RegexList bind:value={currentCharacter.customscript} popupEditorContext={currentCharacter.chaId} />
         <div class="text-textcolor2 mt-2 flex gap-2">
             <button
                 class="font-medium cursor-pointer hover:text-green-500"
@@ -1034,6 +1076,7 @@
         <TriggerList
             bind:value={(currentCharacter as character).triggerscript}
             lowLevelAble={currentCharacter.lowLevelAccess}
+            popupEditorContext={currentCharacter.chaId}
         />
     {/if}
 {:else if $CharConfigSubMenu === 6}
@@ -1320,7 +1363,11 @@
 
             {#if currentCharacter.gptSoVitsConfig.use_prompt && !currentCharacter.gptSoVitsConfig.use_long_audio}
                 <span class="text-textcolor">Reference Audio Script</span>
-                <TextAreaInput className="mb-4 mt-2" bind:value={currentCharacter.gptSoVitsConfig.prompt} />
+                <TextAreaInput
+                    popupEditorContext={currentCharacter.chaId}
+                    className="mb-4 mt-2"
+                    bind:value={currentCharacter.gptSoVitsConfig.prompt}
+                />
             {/if}
 
             <span class="text-textcolor">Reference Audio Language</span>
@@ -1470,12 +1517,18 @@
         </div>
 
         <span class="text-textcolor">{language.exampleMessage} <Help key="exampleMessage" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.exampleMessage}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.exampleMessage}
         ></TextAreaInput>
 
         <span class="text-textcolor">{language.creatorNotes} <Help key="creatorQuotes" /></span>
         <MultiLangInput
             bind:value={currentCharacter.creatorNotes}
+            popupEditorContext={currentCharacter.chaId}
             className="my-2"
             onInput={() => {
                 currentCharacter.removedQuotes = false;
@@ -1483,38 +1536,77 @@
         ></MultiLangInput>
 
         <span class="text-textcolor">{language.systemPrompt} <Help key="systemPrompt" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.systemPrompt}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.systemPrompt}
         ></TextAreaInput>
 
         <span class="text-textcolor">{language.replaceGlobalNote} <Help key="replaceGlobalNote" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.replaceGlobalNote}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.replaceGlobalNote}
         ></TextAreaInput>
 
         <span class="text-textcolor mt-2">{language.additionalText} <Help key="additionalText" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.additionalText}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.additionalText}
         ></TextAreaInput>
 
         {#if settings.ui.showUnrecommended || currentCharacter.personality.length > 3}
             <span class="text-textcolor">{language.personality} <Help key="personality" unrecommended /></span>
-            <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.personality}
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                margin="both"
+                autocomplete="off"
+                bind:value={currentCharacter.personality}
             ></TextAreaInput>
         {/if}
         {#if settings.ui.showUnrecommended || currentCharacter.scenario.length > 3}
             <span class="text-textcolor">{language.scenario} <Help key="scenario" unrecommended /></span>
-            <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.scenario}
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                margin="both"
+                autocomplete="off"
+                bind:value={currentCharacter.scenario}
             ></TextAreaInput>
         {/if}
 
         <span class="text-textcolor mt-2">{language.defaultVariables} <Help key="defaultVariables" /></span>
-        <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.defaultVariables}></TextAreaInput>
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.defaultVariables}
+        ></TextAreaInput>
 
         <span class="text-textcolor mt-2">{language.translatorNote} <Help key="translatorNote" /></span>
-        <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.translatorNote}></TextAreaInput>
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.translatorNote}
+        ></TextAreaInput>
 
         <span class="text-textcolor mt-2"
             >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
         >
-        <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.customModuleToggle}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.customModuleToggle}
         ></TextAreaInput>
 
         <span class="text-textcolor">{language.creator}</span>
@@ -1562,6 +1654,7 @@
                         <tr>
                             <td class="font-medium truncate">
                                 <TextAreaInput
+                                    popupEditorContext={currentCharacter.chaId}
                                     highlight
                                     bind:value={currentCharacter.alternateGreetings[i]}
                                     placeholder="..."
@@ -1651,6 +1744,7 @@
         {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
+                popupEditorContext={chatContext}
                 margin="both"
                 autocomplete="off"
                 bind:value={
@@ -1681,6 +1775,7 @@
         {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
+                popupEditorContext={chatContext}
                 margin="both"
                 autocomplete="off"
                 bind:value={

@@ -174,6 +174,7 @@
                             {#if plugin?.argMeta?.[arg]?.textarea}
                                 <TextAreaInput
                                     bind:value={settings.plugins[i].realArg[arg] as string}
+                                    popupEditorContext={`${plugin.name}\u0000${arg}`}
                                     placeholder={plugin?.argMeta?.[arg]?.placeholder}
                                 />
                             {:else if plugin?.argMeta?.[arg]?.radio}

@@ -441,6 +441,7 @@
                 size="sm"
                 placeholder={language.hypaV3Settings.supaMemoryPromptPlaceHolder}
                 bind:value={settings.summarizationPrompt}
+                popupEditorContext={currentHypaV3?.id}
             />
         </div>
         <span class="text-textcolor">{language.reSummarizationPrompt} <Help key="reSummarizationPrompt" /></span>
@@ -449,6 +450,7 @@
                 size="sm"
                 placeholder={language.hypaV3Settings.supaMemoryPromptPlaceHolder}
                 bind:value={settings.reSummarizationPrompt}
+                popupEditorContext={currentHypaV3?.id}
             />
         </div>
         <span class="text-textcolor">{language.hypaV3Settings.budgetModeLabel}</span>

@@ -19,4 +19,5 @@
 <TextAreaInput
     bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
     placeholder={item.options?.placeholder}
+    popupEditorContext={item.popupEditorContext?.(ctx)}
 />

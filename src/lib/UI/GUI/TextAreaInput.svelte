@@ -70,6 +70,8 @@
     let textareaDom: HTMLTextAreaElement = $state();
     let popupEditorRun = 0;
     let popupEditorContextRevision = 0;
+    // svelte-ignore state_referenced_locally
+    let lastPopupEditorContext = popupEditorContext;
     let activePopupEditorSessionId: number | null = null;
 
     const isPopupEditorButtonVisible = () =>
@@ -302,8 +304,11 @@
         } catch (error) {}
     }
 
+    // A real change of context, not a rerun with the same one (a refreshed record list), so a switch
+    // away and back still discards.
     $effect.pre(() => {
-        void popupEditorContext;
+        if (popupEditorContext === lastPopupEditorContext) return;
+        lastPopupEditorContext = popupEditorContext;
         popupEditorContextRevision += 1;
     });
     $effect.pre(() => {

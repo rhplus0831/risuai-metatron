@@ -38,6 +38,7 @@ export const chatFormatSettingsItems: SettingItem[] = [
         setValue: (value, ctx) => {
             ctx.modelProfile.JinjaTemplate = value;
         },
+        popupEditorContext: (ctx) => ctx.modelProfile.id,
         condition: (ctx) => ctx.modelProfile.instructChatTemplate === "jinja",
         keywords: ["jinja", "template", "custom"],
     },

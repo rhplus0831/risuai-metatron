@@ -200,6 +200,7 @@
             {#each getReorderedTemplate() as { item: prompt, originalIndex, displayIndex }}
                 <PromptDataItem
                     bind:promptItem={activePreset.promptTemplate[originalIndex]}
+                    popupEditorContext={activePreset.id}
                     isDragging={draggedIndex === originalIndex}
                     isOpened={openedItemIndices.has(originalIndex)}
                     bind:draggedIndex
@@ -333,21 +334,26 @@
     <span class="text-textcolor mt-4"
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
-    <TextAreaInput bind:value={activePreset.customPromptTemplateToggle} />
+    <TextAreaInput bind:value={activePreset.customPromptTemplateToggle} popupEditorContext={activePreset.id} />
     <span class="text-textcolor mt-4">{language.defaultVariables} <Help key="defaultVariables" /></span>
-    <TextAreaInput bind:value={activePreset.templateDefaultVariables} />
+    <TextAreaInput bind:value={activePreset.templateDefaultVariables} popupEditorContext={activePreset.id} />
     <span class="text-textcolor mt-4">{language.predictedOutput}</span>
     <TextAreaInput bind:value={settings.providers.OAIPrediction} />
     <span class="text-textcolor mt-4">{language.autoSuggest} <Help key="autoSuggest" /></span>
-    <TextAreaInput bind:value={activePreset.autoSuggestPrompt} placeholder={defaultAutoSuggestPrompt} />
+    <TextAreaInput
+        bind:value={activePreset.autoSuggestPrompt}
+        popupEditorContext={activePreset.id}
+        placeholder={defaultAutoSuggestPrompt}
+    />
     <span class="text-textcolor mt-4">{language.groupInnerFormat} <Help key="groupInnerFormat" /></span>
     <TextAreaInput
         placeholder={`<{{char}}\'s Message>\n{{slot}}\n</{{char}}\'s Message>`}
         bind:value={activePreset.groupTemplate}
+        popupEditorContext={activePreset.id}
     />
     {#if activePreset.jsonSchemaEnabled}
         <span class="text-textcolor mt-4">{language.jsonSchema} <Help key="jsonSchema" /></span>
-        <TextAreaInput bind:value={activePreset.jsonSchema} />
+        <TextAreaInput bind:value={activePreset.jsonSchema} popupEditorContext={activePreset.id} />
         <span class="text-textcolor mt-4">{language.extractJson} <Help key="extractJson" /></span>
         <TextInput bind:value={activePreset.extractJson} />
     {/if}

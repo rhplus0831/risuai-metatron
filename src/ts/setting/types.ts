@@ -159,6 +159,13 @@ export interface SettingItem {
      */
     condition?: (ctx: SettingContext) => boolean;
 
+    /**
+     * For a textarea whose value lives in a record the selection resolves (`getValue` reading
+     * `ctx.preset`, `ctx.modelProfile`, ...): that record's id, so a popup opened on one record
+     * is discarded instead of written into another after the selection changes.
+     */
+    popupEditorContext?: (ctx: SettingContext) => unknown;
+
     /** Type-specific options */
     options?: SettingOptions;
 
