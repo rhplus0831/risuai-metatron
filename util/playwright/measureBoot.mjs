@@ -376,7 +376,8 @@ async function measureBoot() {
     const EXPECTED_HOSTS = ["cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com", "sv.risuai.xyz"];
     const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-    const dist = process.env.RISU_DIST ?? path.join(repoRoot, "dist");
+    // Resolved here: the temporary directory's `dist` link would otherwise resolve a relative value against itself.
+    const dist = path.resolve(process.env.RISU_DIST ?? path.join(repoRoot, "dist"));
     if (!existsSync(path.join(dist, "index.html"))) {
         console.error("No production build: run `pnpm build` first.");
         process.exit(1);
