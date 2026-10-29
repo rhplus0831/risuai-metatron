@@ -1047,13 +1047,24 @@ describe("the two-call protocol", () => {
             });
             const big = await render("tp", "k", [target("big", "big", "x")], { handlers: "doc:editdisplay:4" });
             expect(big.body).toEqual({
-                results: [{ id: "big", ok: false, error: "The text before the plugin handlers is over 524288 bytes" }],
+                results: [
+                    {
+                        id: "big",
+                        ok: false,
+                        error: "The text before the plugin handlers is over 524288 bytes",
+                        permanent: true,
+                    },
+                ],
             });
             const targets = (sourceId: string) =>
                 Array.from({ length: 10 }, (_, i) => target(`${sourceId}${i}`, sourceId, "x"));
             const agg = await render("tp", "k", targets("agg"), { handlers: "doc:editdisplay:4" });
             expect(agg.body.pending).toHaveLength(8);
-            expect(agg.body.results.filter((r: { ok: boolean }) => !r.ok)).toHaveLength(2);
+            // Over the limit only beside the other targets: these may fit in a later, smaller request.
+            expect(agg.body.results.filter((r: { ok: boolean }) => !r.ok)).toEqual([
+                { id: "agg8", ok: false, error: expect.any(String) },
+                { id: "agg9", ok: false, error: expect.any(String) },
+            ]);
             // Sent back unchanged (an identity plugin), the pending texts are a valid second call.
             const back = await resume(agg.body.snapshotId, agg.body.pending);
             expect(back.status).toBe(200);

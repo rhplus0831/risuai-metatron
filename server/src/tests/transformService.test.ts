@@ -531,8 +531,9 @@ describe("the transform snapshot's memory budget", () => {
                 const first = await service.transform(request, signal());
                 expect(first.snapshotId).toBeUndefined();
                 expect(first.pending ?? []).toEqual([]);
+                // Alone over the budget, each fails again on a retry: the tab is told not to retry.
                 expect(first.results).toEqual(
-                    request.targets.map(({ id }) => ({ id, ok: false, error: expect.any(String) })),
+                    request.targets.map(({ id }) => ({ id, ok: false, error: expect.any(String), permanent: true })),
                 );
                 expect(service.stats().snapshots).toBe(0);
             }
@@ -636,9 +637,10 @@ describe("the transform snapshot's memory budget", () => {
                 },
                 signal(),
             );
+            // The loaded scope alone is over the budget, so the uncached targets fail for good.
             expect(mixed.results).toEqual([
-                { id: "fresh", ok: false, error: expect.any(String) },
-                { id: "extra", ok: false, error: expect.any(String) },
+                { id: "fresh", ok: false, error: expect.any(String), permanent: true },
+                { id: "extra", ok: false, error: expect.any(String), permanent: true },
                 expect.objectContaining({ id: cached.id, ok: true, cached: true }),
             ]);
             expect(mixed.snapshotId).toBeUndefined();

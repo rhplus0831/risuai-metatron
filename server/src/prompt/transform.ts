@@ -34,6 +34,9 @@ export class TransformSnapshotError extends Error {}
 /** A request names targets the snapshot does not hold, or misses some: 400. */
 export class TransformRequestError extends Error {}
 
+/** A target over a limit on its own (not for the request's other targets or the global budget): it fails again. */
+class TransformLimitError extends Error {}
+
 /** A render tried to write: never reaches the store (the target fails). */
 class TransformWriteRefusedError extends Error {
     constructor() {
@@ -185,6 +188,9 @@ function partitionKnownResults(targets: TransformTarget[], results: TransformRes
  * next trigger; the display trigger: the text kept); an abort, a spent limit, a latched host
  * failure, a worker failure, or a refused write fails the target (`{ ok: false }`, nothing cached).
  * A text after the stages before the plugin handlers is bounded as the second call's texts are.
+ * A target over a limit on its own (that text, or the scope alone over the snapshot or retained
+ * budget) fails `permanent`, so the tab does not retry it; a limit the request's other targets or
+ * the global reservation reached does not.
  * A kept snapshot is charged its request-owned projection plus each target's setup, copied
  * containers, texts, changed variables and default-variable map allowance, up to 8 MiB. Shared raw
  * entries are charged once while pinned, alongside snapshots and in-progress reservations against
@@ -687,7 +693,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             run.text = text;
         }
         if (Buffer.byteLength(run.text) > MAX_TRANSFORM_TEXT_BYTES) {
-            throw new Error(`The text before the plugin handlers is over ${MAX_TRANSFORM_TEXT_BYTES} bytes`);
+            throw new TransformLimitError(
+                `The text before the plugin handlers is over ${MAX_TRANSFORM_TEXT_BYTES} bytes`,
+            );
         }
     };
 
@@ -730,7 +738,12 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             throw life.controller.signal.reason ?? error;
         }
         stillValid(life);
-        return { id, ok: false, error: errorText(error) };
+        return {
+            id,
+            ok: false,
+            error: errorText(error),
+            ...(error instanceof TransformLimitError ? { permanent: true } : {}),
+        };
     };
 
     const transform = async (request: TransformRequest, signal: AbortSignal): Promise<TransformResponse> => {
@@ -808,7 +821,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                             (pending.length ? ownBytes : scopeBytes) + SNAPSHOT_TARGET_BYTES > MAX_SNAPSHOT_BYTES ||
                             entries.some((entry) => entry.bytes > MAX_RETAINED_BYTES)
                         ) {
-                            throw new Error("The render's texts are over the limit of one request");
+                            // Alone, the scope itself is over the limit: every later request fails the same way.
+                            const Refusal = pending.length ? Error : TransformLimitError;
+                            throw new Refusal("The render's texts are over the limit of one request");
                         }
                     }
                     const run = prepare(scope, context, target, shared, life, key, cache.generation(key));
@@ -824,7 +839,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                         ownBytes + bytes > MAX_SNAPSHOT_BYTES ||
                         pendingText + Buffer.byteLength(run.text) > MAX_TRANSFORM_REQUEST_TEXT_BYTES
                     ) {
-                        throw new Error("The render's texts are over the limit of one request");
+                        const Refusal = pending.length ? Error : TransformLimitError;
+                        throw new Refusal("The render's texts are over the limit of one request");
                     }
                     stillValid(life);
                     if (!reservation.reserve(bytes, request.clientId)) {

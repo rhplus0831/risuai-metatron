@@ -87,7 +87,16 @@ export type TransformResult =
           key: string;
           cached: boolean;
       }
-    | { id: string; ok: false; error: string };
+    | {
+          id: string;
+          ok: false;
+          error: string;
+          /**
+           * The target is expected to fail again until its source, context, or stored data changes (a
+           * text or scope over a limit on its own): the tab does not retry it on its own.
+           */
+          permanent?: true;
+      };
 
 export type TransformResponse = {
     results: TransformResult[];

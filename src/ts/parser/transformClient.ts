@@ -66,10 +66,13 @@ import {
  * transform is skipped: the text goes through
  * the browser steps raw, and the row renders again when the lock ends. Each target is answered as
  * soon as its result is known; a failed target or request leaves its text unprocessed, and a batch
- * shows one toast on its first failure; there is no browser fallback on the server path. With the
- * tab's plugin handlers for the mode, the server answers the texts before them; the tab runs each
- * text's handlers in order (with the captured plugin context), the texts side by side, and sends
- * the second call. A chunk has 28 s for both calls and the handlers (the server allows 30 s from the
+ * shows one toast on its first failure; there is no browser fallback on the server path. A failure
+ * is `permanent` (`displayTransformRecovery` does not retry it) for a source over
+ * `MAX_TRANSFORM_TEXT_BYTES` (never sent), a 400 or 413 answer to either call of a chunk whose first
+ * request held that target alone, and a target the server marks so.
+ * With the tab's plugin handlers for the mode, the server answers the texts before them; the tab
+ * runs each text's handlers in order (with the captured plugin context), the texts side by side,
+ * and sends the second call. A chunk has 28 s for both calls and the handlers (the server allows 30 s from the
  * first call's admission), each call bounded as a whole; the handlers end 5 s before that: a handler
  * still running then fails its own target (it is not stopped, but no later handler of its text is
  * started; its result is ignored), and the finished texts go out in the second call.
@@ -334,6 +337,8 @@ function post(path: string, body: unknown, deadline: number): Promise<TransformR
 
 /** Errors of a request the server refused for another epoch (a restore replaced the data). */
 const epochRefusals = new WeakSet<object>();
+/** Errors of a request the server refused as malformed or too large: the same request fails again. */
+const permanentRefusals = new WeakSet<object>();
 
 async function postOnce(path: string, body: unknown, deadline: number): Promise<TransformResponse> {
     const response = await authFetch(path, {
@@ -357,7 +362,9 @@ async function postOnce(path: string, body: unknown, deadline: number): Promise<
         throw new Error(language.chatBinding.mismatch);
     }
     if (!response.ok) {
-        throw new Error(answer.error ?? `The render failed (${response.status})`);
+        const error = new Error(answer.error ?? `The render failed (${response.status})`);
+        if (response.status === 400 || response.status === 413) permanentRefusals.add(error);
+        throw error;
     }
     return answer as TransformResponse;
 }
@@ -430,7 +437,12 @@ async function sendBatch(batch: Batch): Promise<void> {
     for (const entry of batch.pending) {
         const size = textBytes(entry.target.source);
         if (size > MAX_TRANSFORM_TEXT_BYTES) {
-            settle(batch, entry, { id: entry.target.id, ok: false, error: "The text is too long to render" });
+            settle(batch, entry, {
+                id: entry.target.id,
+                ok: false,
+                error: "The text is too long to render",
+                permanent: true,
+            });
             continue;
         }
         if (chunk.length >= MAX_TRANSFORM_TARGETS || bytes + size > MAX_TRANSFORM_REQUEST_TEXT_BYTES) {
@@ -503,7 +515,17 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
             batch.reported = true;
         }
         const message = error instanceof Error ? error.message : String(error);
-        answer([...open.keys()].map((id) => ({ id, ok: false as const, error: message })));
+        // A refused request of several targets may be refused only for their sum: they retry.
+        const permanent =
+            entries.length === 1 && typeof error === "object" && error !== null && permanentRefusals.has(error);
+        answer(
+            [...open.keys()].map((id) => ({
+                id,
+                ok: false as const,
+                error: message,
+                ...(permanent ? { permanent: true as const } : {}),
+            })),
+        );
     }
     answer([...open.keys()].map((id) => ({ id, ok: false as const, error: "The render did not answer" })));
 }
@@ -666,8 +688,14 @@ export async function serverProcessScript(
             }
             if (mode === "editdisplay") {
                 recordClientEvent({ kind: "notice", notice: "transformFailed" });
+                // A permanent failure waits for a changed source or context, a remount, or a Re-render; like
+                // a success, it ends an older generation's pending retry.
                 if (captured.messageId && current) {
-                    markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+                    if (answered.permanent) {
+                        markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
+                    } else {
+                        markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+                    }
                 }
             }
         } else {

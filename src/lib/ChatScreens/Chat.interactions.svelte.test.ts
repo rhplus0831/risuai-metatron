@@ -16,7 +16,7 @@ vi.mock("src/ts/translator/translator", async (importOriginal) => ({
 }));
 
 import { language } from "src/lang";
-import { doingAlert } from "src/ts/alert";
+import { alertToast, doingAlert } from "src/ts/alert";
 import { chatFoldedStateMessageIndex, foldChatToMessage } from "src/ts/globalApi.svelte";
 import { displaySettingsItems } from "src/ts/setting/displaySettingsData.svelte";
 import { captureTransform, rerenderMessage, serverProcessScript } from "src/ts/parser/transformClient";
@@ -549,6 +549,78 @@ describe("display transform recovery", () => {
         await settle(16);
         expect(requests).toHaveLength(8);
         expect(generation()).toBe(initialGeneration + delays.length);
+    });
+
+    it.each([
+        ["a source over the size limit", "x".repeat(512 * 1024 + 1), success],
+        ["a 400", "Malformed reply", () => Response.json({ error: "Malformed" }, { status: 400 })],
+        [
+            "a target the server marks permanent",
+            "Huge transcript reply",
+            (body: TransformRequest) =>
+                Response.json({
+                    results: body.targets.map((target) => ({
+                        id: target.id,
+                        ok: false,
+                        error: "Over the limit",
+                        permanent: true,
+                    })),
+                }),
+        ],
+    ])("does not retry %s while the row stays mounted; a later mount renders it again", async (_, source, refuse) => {
+        vi.mocked(alertToast).mockClear();
+        respond = refuse;
+        const row = renderChat(source);
+        await settle(16);
+        await settle();
+        const sent = requests.length;
+        const initialGeneration = generation();
+        expect(row.element.querySelector(".chattext")!.textContent).not.toContain("Rendered:");
+        expect(alertToast).toHaveBeenCalledOnce();
+
+        await settle(5 * 60_000);
+        expect(requests).toHaveLength(sent);
+        expect(generation()).toBe(initialGeneration);
+        expect(alertToast).toHaveBeenCalledOnce();
+
+        await row.remove();
+        renderChat(source);
+        await settle(16);
+        await settle();
+        expect(alertToast).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries the rows of a refused request of several targets, which may fit apart", async () => {
+        appendMessage(ref, { chatId: "second", role: "char", data: "Second reply" });
+        respond = () => Response.json({ error: "Request body too large" }, { status: 413 });
+        renderChat("First reply");
+        renderChat("Second reply", { messageId: "second", idx: 1 });
+        await settle(16);
+        await settle();
+        expect(requests.map((request) => request.targets.length)).toEqual([2]);
+        respond = success;
+        await settle(5_000);
+        await settle(16);
+        await settle();
+        expect(requests.slice(1).flatMap((request) => request.targets.map((target) => target.source))).toEqual(
+            expect.arrayContaining(["First reply", "Second reply"]),
+        );
+    });
+
+    it("ends an older generation's pending retry when the newer render fails permanently", async () => {
+        respond = () => Response.json({ error: "Unavailable" }, { status: 503 });
+        const row = renderChat("Raw reply");
+        await settle(16);
+        await settle();
+        rerenderMessage(ref, "message");
+        await row.remove();
+        respond = () => Response.json({ error: "Malformed" }, { status: 400 });
+        renderChat("Raw reply");
+        await settle(16);
+        await settle();
+        const sent = requests.length;
+        await settle(5 * 60_000);
+        expect(requests).toHaveLength(sent);
     });
 
     it("does not retry stale display failures, editprocess failures, or failures without a captured message id", async () => {

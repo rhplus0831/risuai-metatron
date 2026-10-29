@@ -46,7 +46,10 @@ export function markDisplayTransformFailed(ref: ChatRef, messageId: string, gene
     scheduleRetry();
 }
 
-/** A success supersedes older failures, but not another target's failure in the same generation. */
+/**
+ * A success (or a permanent failure, which is not retried) supersedes older failures, but not another
+ * target's failure in the same generation.
+ */
 export function markDisplayTransformSucceeded(ref: ChatRef, messageId: string, generation: number): void {
     const key = displayTransformMessageKey(ref, messageId);
     const failedGeneration = failures.get(key);
