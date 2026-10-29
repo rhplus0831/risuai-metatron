@@ -35,8 +35,19 @@ the persistence guide's Known Hazards records it. JR3: the split-commit test run
 cycle while the journal commit is held and fails with the collector's guard removed. An
 adversarial GPT-6.1-Sol review of the first version found that a file queued during a send kept
 an already placed hand-off alive (it came back after the composer was cleared) and that the row
-swaps budgeted both rows near the 64 MiB cap; both were fixed before landing. UI-01, DT1, SJ1,
-DT2, and DT3 remain open.
+swaps budgeted both rows near the 64 MiB cap; both were fixed before landing.
+
+UI-01 was fixed on 2026-10-29 in `d0e9cc5f1`. Every popup field bound to a record the selection
+resolves passes that record's id as `popupEditorContext`: the prompt preset pages, CharConfig's
+character and chat fields, the regex, Lua trigger, and textarea toggle editors, the HypaV3 prompts,
+plugin arguments, and the Jinja template setting. `TextAreaInput` advances the context revision
+only when the value changes. `presetPages.test.ts` and `CharConfig.popupEditor.test.ts` fail with
+the guards removed. A GPT-6.1-Sol review of the first version found the sweep's misses (regex, Lua,
+toggles, HypaV3, plugins) and a false discard when the preset list was refreshed with the same id;
+all were fixed before landing. A second round found that rows bound by index still redirect a draft
+when another client reorders them under an open popup, and that duplicate plugin names share a
+context. Both need equal text and remote edits, so the ui-theming guide's Known Hazards records
+them. DT1, SJ1, DT2, and DT3 remain open.
 
 | ID    | Priority | Seam              | Finding                                                                                 |
 | ----- | -------- | ----------------- | --------------------------------------------------------------------------------------- |
