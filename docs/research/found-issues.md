@@ -12,6 +12,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Save journal and recovery](#save-journal-and-recovery) (8)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
 - [Display transform](#display-transform) (3)
+- [Assets and imports](#assets-and-imports) (1)
 - [Chat screen and input](#chat-screen-and-input) (2)
 - [Test mocks](#test-mocks) (4)
 
@@ -147,6 +148,15 @@ The Job Protocol plan's D6 said a negotiated tab's chat is free within `OWNER_SI
 
 **Why it matters:** a later measurement that copies the probe's number would report no retained heap.
 **Suggested handling:** guard the read with `?.` and measure the heap freed on close (or run the snapshot section alone with a close step); say which method in the table.
+
+## Assets and imports
+
+### Server import and restore skip existing assets on existence alone
+
+Server-side writers of content-addressed assets skip a target that merely exists, without checking its bytes: `writeContentAsset` (`server/src/http/contentAsset.ts:33`, `storageFileExists`) and `publishStagedContentAsset` (`:60`), the `.risum` import (`server/src/routes/importModule.ts:121`, counted as `assetsSkipped`), and backup restore (`server/src/routes/backups.ts:413`, any successful `lstat`). An empty, truncated, or corrupt file under a content name therefore stays forever through every reimport and restore. The client's uploads no longer have this gap: they ask `POST /api/assets/missing`, which counts a file that fails verification as missing (Boot Bytes plan D7 and Q5, which left these server paths out of scope). Recorded 2026-10-29.
+
+**Why it matters:** a damaged asset cannot be repaired by importing the same card, module, or backup again, which is what a user would try.
+**Suggested handling:** in the retention or byte-budget plan, verify an existing target (reuse `assetVerification.verifyFiles` and its budget) and overwrite it when it does not hash to its name.
 
 ## Chat screen and input
 

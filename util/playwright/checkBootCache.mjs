@@ -17,7 +17,8 @@
 // credential character); the fallback boot read the plain route after the failed boot request. No
 // page error. Wait for `loadedStore` after each reload without navigating again; if the app or Vite
 // reloads, compare the snapshot of the document that finished loading. Check every boot request's
-// credential claims, and the full-cache claims of the compared document.
+// credential claims, and the full-cache claims of the compared document. Unreadable boot response
+// bodies fail the chat-edit assertion that needs them; other boots compare the captured snapshot.
 //
 // Usage: node util/playwright/checkBootCache.mjs
 import { randomUUID } from "node:crypto";
@@ -76,7 +77,11 @@ try {
     });
     page.on("response", (response) => {
         const boot = boots.find((entry) => entry.request === response.request());
-        if (boot) boot.answer = response.json();
+        if (boot) {
+            boot.answer = response.json().catch((error) => {
+                boot.answerError = String(error);
+            });
+        }
     });
     // The wrapper: the module as Vite serves it, `loadBootSnapshot` renamed and wrapped.
     let wrapped = 0;
@@ -249,6 +254,7 @@ try {
                             ) &&
                         JSON.stringify(answer.chatOrders) ===
                             JSON.stringify(current.chatOrders.filter((row) => row.characterId === changedCollection)),
+                    boot.answerError === undefined ? undefined : { error: boot.answerError },
                 );
             }
         }

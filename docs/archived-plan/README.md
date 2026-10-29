@@ -852,16 +852,13 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - The reporting user has not compared DevTools Timing on their server before and after.
   - Only headless Chrome was checked: no Firefox, Safari, mobile, or private-window run.
   - A browser's first boot still downloads the whole compressed read (6 s at 10 Mbps on
-    the measured data); chats are not cached (chat summaries are always sent); the
-    client's work after the read is unchanged.
+    the measured data); the client's work after the read is unchanged. (Chat summaries
+    and orders are cached per character since the Boot Bytes plan; whole chats still
+    load on demand.)
   - No sign-out calls `clearBootCache` yet.
-  - A `risu-boot-cache` database another opener created at version 1 without the stores
-    makes every load fail and fall back without clearing it (only another script on the
-    origin can create one).
-  - Found while measuring, outside the plan: the app's static files are served with
-    `Last-Modified` only (no `Cache-Control`, no 304 for `If-Modified-Since`, no
-    compression), so once Chrome's heuristic freshness lapses a boot downloads the
-    app's ~3.8 MB of scripts in full again.
+  - Closed by the Boot Bytes plan: the version-1 `risu-boot-cache` database without
+    stores is repaired by an upgrade, and the app's static files are served from Brotli
+    and gzip siblings (their `ETag`, 304 and `immutable` caching had landed before).
 - Heap memory reduction:
   - Found by M0, not sliced: opening a character's settings loads a tokenizer BPE model
     (~49 MB) on the main thread and keeps it; the settings tokenize the description and
