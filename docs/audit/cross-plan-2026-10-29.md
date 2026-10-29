@@ -68,7 +68,17 @@ search, the HypaV3 memory modal, and the popup editor hide the transcript as Set
 smaller pickers and dialogs still do not. The new `serverCommands.test.ts` boot case and the
 `chatStatus.test.ts` obstruction cases fail with each guard removed. A GPT-6.1-Sol review of the
 first version found that a failed chat load after discovery still dropped the terminal, and that
-the popup editor was missing from the panels; both were fixed before landing. DT2 remains open.
+the popup editor was missing from the panels; both were fixed before landing.
+
+DT2 was fixed in `f7d403a47`. Each transcript row reports the source it shows to the recovery
+module, a failure keeps the source shown when it failed, and a row showing another source drops it;
+the same source keeps it, so a sibling target's failure still retries. A GPT-6.1-Sol review of the
+first version, which compared sources inside one row instance, found that an edit remounts a
+transcript row and so escaped it; the module-level record replaced it. The new `Chat.interactions`
+remount case and `displayTransformRecovery.svelte.test.ts` fail with the source comparison removed,
+with every show dropping, and with the owner check removed. A request of the old source that fails
+after the edited source renders is still retried once; the rendering guide's Known Hazards records
+it. Every finding of this review is now resolved.
 
 | ID    | Priority | Seam              | Finding                                                                                 |
 | ----- | -------- | ----------------- | --------------------------------------------------------------------------------------- |
