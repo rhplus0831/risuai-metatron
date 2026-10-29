@@ -584,6 +584,64 @@ describe("start and ownership", () => {
         expect(tab.events).toEqual([]);
     });
 
+    it("close drains a write, a removal, and a composer write issued in the same tick before it", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const v1 = tab.journal.nextVersion();
+        await tab.journal.write([characterWrite(v1, { latest: latest("old") })]);
+        const other = recordTarget("characters", "c2");
+        const writing = tab.journal.write([characterWrite(tab.journal.nextVersion(), { latest: latest("x") }, other)]);
+        const removing = tab.journal.remove([{ epoch: EPOCH, scope: "record", target: CHARACTER, version: v1 }]);
+        const composing = tab.journal.putComposer("k", { input: "typed", translate: "", files: [] });
+        await tab.journal.close();
+        expect(await writing).toEqual(["written"]);
+        expect(await removing).toBeUndefined();
+        expect(await composing).toBe("written");
+        expect(Object.keys(await rows(h.factory)).sort()).toEqual(
+            ["composer\u0000k", mutationKey(EPOCH, "id-1", "record", other)].sort(),
+        );
+        expect(tab.events).toEqual([]);
+    });
+
+    it("answers whether a draft is gone: true when deleted or absent, false while off or after close", async () => {
+        const h = harness();
+        expect(await page(h).journal.removeDraft("id-1")).toBe(false);
+        const tab = await started(h);
+        const id = await tab.journal.putDraft({
+            epoch: EPOCH,
+            scope: "record",
+            target: CHARACTER,
+            layers: { latest: latest("kept") },
+        });
+        expect(id).not.toBeNull();
+        expect(await tab.journal.removeDraft(id!)).toBe(true);
+        expect(await tab.journal.listDrafts()).toEqual([]);
+        expect(await tab.journal.removeDraft(id!)).toBe(true);
+        await tab.journal.close();
+        expect(await tab.journal.removeDraft(id!)).toBe(false);
+    });
+
+    it("answers false and keeps the draft when its delete fails, reporting `write`", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const id = await tab.journal.putDraft({
+            epoch: EPOCH,
+            scope: "record",
+            target: CHARACTER,
+            layers: { latest: latest("kept") },
+        });
+        const failing = vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(() => {
+            throw new DOMException("delete failed", "UnknownError");
+        });
+        try {
+            expect(await tab.journal.removeDraft(id!)).toBe(false);
+        } finally {
+            failing.mockRestore();
+        }
+        expect(tab.events).toEqual([{ kind: "sync", phase: "journalFailed", reason: "write" }]);
+        expect((await tab.journal.listDrafts()).map((draft) => draft.id)).toEqual([id]);
+    });
+
     it("close gives up on a stalled write at the bound, reporting `timeout` (the write fails as `timeout` too), and still releases the owner lock", async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
@@ -992,8 +1050,33 @@ describe("writes, removals, and versions", () => {
             await tab.journal.moveToDrafts([{ epoch: EPOCH, scope: "record", target: CHARACTER, version: v2 }]),
         ).toEqual([null]);
         expect(await rows(h.factory)).toEqual({});
-        expect(await tab.journal.removeDraft("id-404")).toBeUndefined();
+        expect(await tab.journal.removeDraft("id-404")).toBe(true);
         expect(tab.events).toEqual([]);
+    });
+});
+
+describe("uncloneable values", () => {
+    it("fails an item whose layers cannot be copied, reporting `uncloneable`, removes its older values, and still writes the rest of the call", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const v1 = tab.journal.nextVersion();
+        await tab.journal.write([characterWrite(v1, { sent: sent("kept"), latest: latest("older") })]);
+        const other = recordTarget("characters", "c2");
+        const v2 = tab.journal.nextVersion();
+        const uncloneable = { ...latest("newer"), callback: () => {} } as unknown as ReturnType<typeof latest>;
+        expect(
+            await tab.journal.write([
+                characterWrite(v2, { latest: uncloneable }),
+                characterWrite(v2, { latest: latest("other") }, other),
+            ]),
+        ).toEqual(["failed", "written"]);
+        expect(tab.events).toEqual([{ kind: "sync", phase: "journalFailed", reason: "uncloneable" }]);
+        const own = await tab.journal.readOwn();
+        const mine = own.find((entry) => entry.target === CHARACTER)!;
+        expect(Object.keys(mine.layers)).toEqual(["sent"]);
+        expect(Object.keys(own.find((entry) => entry.target === other)!.layers)).toEqual(["latest"]);
+        // The fence holds: a late write of the replaced value does not bring it back.
+        expect(await tab.journal.write([characterWrite(v1, { latest: latest("older") })])).toEqual(["stale"]);
     });
 });
 

@@ -268,8 +268,9 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
  * queued. Every request has one deadline from the moment it is dispatched (it takes the client's
  * slot, with or without an owner socket attached), capped by owner absence and its parent's
  * effective deadline; at the deadline it is
- * `timedOut` with an owner socket attached, else `disconnected`. A queued root has no deadline: it
- * waits until it is dispatched, its job ends, or the signal it was given aborts. When a dispatched
+ * `timedOut` with an owner socket attached, else `disconnected`. A queued root's own timeout starts
+ * at dispatch, but its job's owner-absence deadline also bounds its wait in the queue. It can also
+ * end when its job ends or its signal aborts. When a dispatched
  * root expires `disconnected`, queued roots of that client whose own jobs have no owner and were
  * opened no later than that root's dispatch settle `disconnected` first. A job's end (`close`)
  * settles its requests `aborted` and cancels their children.
@@ -410,7 +411,8 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     function armDeadline(request: Request) {
         const deadline = effectiveDeadline(request);
         if (request.timer) clearTimeout(request.timer);
-        if (request.settled) return;
+        request.timer = null;
+        if (request.settled || !Number.isFinite(deadline)) return;
         request.timer = setTimeout(
             () => {
                 request.timer = null;
@@ -589,6 +591,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 dispatch(request, lane);
             } else {
                 lane.queue.push(request);
+                armDeadline(request);
                 pump(transport.clientId);
             }
         });
@@ -682,8 +685,10 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
                 /** Owner presence changed: children also inherit the parent's new absence bound. */
                 ownerChanged() {
-                    for (const request of lanes.get(transport.clientId)?.stack ?? []) {
-                        if (request.dispatched && !request.settled) armDeadline(request);
+                    const lane = lanes.get(transport.clientId);
+                    if (!lane) return;
+                    for (const request of [...lane.stack, ...lane.queue]) {
+                        if (!request.settled) armDeadline(request);
                     }
                 },
 
@@ -694,7 +699,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     deferredPumps.add(clientId);
                     try {
                         for (const request of [...state.requests]) {
-                            if (request.dispatched) expireIfDue(request);
+                            expireIfDue(request);
                         }
                     } finally {
                         if (!deferred) {

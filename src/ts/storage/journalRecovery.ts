@@ -669,12 +669,17 @@ function draftChat(entry: ChatDraft) {
         ...(entry.layers.pending?.value.ops.map((item) => item.op) ?? []),
     ];
     let snapshot = entry.layers.pending?.value.createSnapshot;
+    let snapshotEnd = ops.length;
     if (!snapshot) {
-        for (const op of ops) {
-            if (op.op === "create" || op.op === "replace") snapshot = op.chat;
+        for (const [index, op] of ops.entries()) {
+            if (op.op === "create" || op.op === "replace") {
+                snapshot = op.chat;
+                snapshotEnd = index + 1;
+            }
         }
     }
-    return { ref: { chaId, chatId }, ops, snapshot };
+    // A pending create snapshot already projects every edit in the live mirror.
+    return { ref: { chaId, chatId }, ops, snapshot, tail: ops.slice(snapshotEnd) };
 }
 
 function draftOrder(entry: Extract<DraftEntry, { scope: "order" }>) {
@@ -715,10 +720,11 @@ export function recoveryDraftDetails(entry: DraftEntry): {
         } else if (entry.scope === "chat") {
             const { ref, snapshot } = draftChat(entry);
             const character = findCharacter(ref.chaId);
-            const chat = chatEntry(ref);
+            const destination = chatEntry({ chaId: ref.chaId, chatId: entry.id });
+            const chat = destination ?? chatEntry(ref);
             name = `${chat?.name || snapshot?.name || language.unnamedCharacter} · ${character?.name || language.unnamedCharacter}`;
             if (!character) reason = language.recoveryDrafts.missingCharacter;
-            else if (chat && isChatGenerating(ref)) reason = language.chatGenerating;
+            else if (!destination && chat && isChatGenerating(ref)) reason = language.chatGenerating;
             else if (!chat && !snapshot) reason = language.recoveryDrafts.noSnapshot;
         } else {
             const character = findCharacter(entry.target);
@@ -729,6 +735,7 @@ export function recoveryDraftDetails(entry: DraftEntry): {
     } catch {
         reason = language.recoveryDrafts.invalid;
     }
+    if (recoveryDrafts.isApplied(entry.id)) reason = language.recoveryDrafts.appliedNotRemoved;
     if (entry.epoch !== getResourceEpoch()) reason = language.recoveryDrafts.otherEpoch;
     return { name, canApply: reason === undefined, blocked: reason === language.chatGenerating, reason };
 }
@@ -826,12 +833,17 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
             keys.add(`chats/${entry.target}`);
             if (!ids.every((id, index) => current[index] === id)) reorderChats(entry.target, ids);
         } else {
-            const { ref, ops, snapshot } = draftChat(entry);
+            const { ref, ops, snapshot, tail } = draftChat(entry);
+            const destination = { chaId: ref.chaId, chatId: entry.id };
             keys.add(`chats/${ref.chaId}`);
-            if (!chatEntry(ref)) {
+            if (chatEntry(destination)) {
+                // A previous Apply queued the complete create; its lost answer only needs a flush.
+                keys.add(`chats/${destination.chaId}/${destination.chatId}`);
+            } else if (!chatEntry(ref)) {
                 if (!snapshot) throw new Error(language.recoveryDrafts.noSnapshot);
-                const chat = createChat(ref.chaId, { ...snapshot, id: "" });
+                const chat = createChat(ref.chaId, { ...snapshot, id: entry.id });
                 keys.add(`chats/${ref.chaId}/${chat.id}`);
+                skipped = applyChatOps({ chaId: ref.chaId, chatId: chat.id }, tail);
             } else {
                 const owner = chatOwnerToken(ref.chaId);
                 release = pinChat(ref);
@@ -859,7 +871,13 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
         if (result.discarded.some(affected) || result.refused.some(affected)) {
             throw new Error(language.recoveryDrafts.notSaved);
         }
-        await recoveryDrafts.remove(entry.id);
+        try {
+            await recoveryDrafts.remove(entry.id);
+        } catch {
+            // The changes are saved; applying the kept draft again would repeat them.
+            recoveryDrafts.markApplied(entry.id);
+            throw new Error(language.recoveryDrafts.appliedNotRemoved);
+        }
         return { skipped };
     } finally {
         release?.();

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { isJournalEligible, JOURNAL_EXCLUDED_KINDS } from "../journalEligibility";
 
@@ -51,6 +51,27 @@ describe("isJournalEligible", () => {
             record(RESOURCE_KIND.characters, JSON.stringify({ name: "Alice", desc: `my apiKey is ${SECRET}` })),
         ).toBe(true);
         expect(record(RESOURCE_KIND.characters, null)).toBe(true);
+    });
+
+    it("decides a character without a parse unless it has a non-empty `apiKey` member or a real `\\u` escape", () => {
+        const parse = vi.spyOn(JSON, "parse");
+        try {
+            const regex = { name: "Alice", oaiTTSConfig: { apiKey: "" }, desc: "apiKey", script: "[\\uAC00-\\uD7A3]" };
+            expect(JSON.stringify(regex)).toContain("\\\\uAC00");
+            expect(record(RESOURCE_KIND.characters, JSON.stringify(regex))).toBe(true);
+            expect(record(RESOURCE_KIND.characters, character({ apiKey: "", voice: "alloy" }))).toBe(true);
+            expect(parse).not.toHaveBeenCalled();
+            // A non-empty key under another object is parsed and accepted.
+            expect(record(RESOURCE_KIND.characters, JSON.stringify({ other: { apiKey: SECRET } }))).toBe(true);
+            expect(parse).toHaveBeenCalledTimes(1);
+            // An escaped backslash right before a real escape (`\\\u0001`) is still parsed.
+            const control = JSON.stringify({ desc: "\\\u0001" });
+            expect(control).toContain("\\\\\\u0001");
+            expect(record(RESOURCE_KIND.characters, control)).toBe(true);
+            expect(parse).toHaveBeenCalledTimes(2);
+        } finally {
+            parse.mockRestore();
+        }
     });
 
     it("refuses a `providers` record whose `additionalParams` has a `header::` key, literal or escaped, and accepts the marker in a value only", () => {

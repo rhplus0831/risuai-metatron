@@ -4,9 +4,10 @@
 // Prefer: util/playwright/offline.sh node util/playwright/checkJobProtocol.mjs
 // Optional: SERVER_PORT=6281 VITE_PORT=5381 DEBUG=1 (ports must be free).
 //
-// A temporary --import preload registers a loader that changes only OWNER_ABSENT_MS to 4000;
-// the replacement must match exactly. This reaches the real main.ts without exposing a product
-// setting. NODE_OPTIONS replaces stack.mjs's preload, so this preload also installs its equivalent
+// The production owner-absence allowance applies until the final owner-closed-mid-provider case.
+// While idle before that case, rewrite the temporary --import preload and gracefully restart to
+// replace only OWNER_ABSENT_MS with 4000 (an exact match), without a product setting.
+// NODE_OPTIONS replaces stack.mjs's preload, so this preload also installs its equivalent
 // fetch guard, writing the same denied-egress.log consumed by deniedEgress/unexpectedEgress.
 // offline.sh supplies the transport-independent boundary, including Lua and browser sockets.
 // All resources and receipts live in the stack's temporary save/, retained across SIGKILL.
@@ -42,8 +43,8 @@ const names = [
     "lost-create-answer",
     "reload-mid-sequence",
     "stop-from-other-context",
-    "owner-closed-mid-provider",
     "sigkill-before-checkpoint",
+    "owner-closed-mid-provider",
 ];
 
 // No network or host DOM API is needed. Playwright evaluates flags in the actual sandbox frame;
@@ -112,12 +113,13 @@ try {
         return result;
     }`;
     const preload = path.join(temporary, "preload.mjs");
-    await writeFile(
-        preload,
-        `import { register } from "node:module";
+    const writePreload = (shortAbsence = false) =>
+        writeFile(
+            preload,
+            `import { register } from "node:module";
 import { appendFileSync } from "node:fs";
 import path from "node:path";
-register(${JSON.stringify("data:text/javascript," + encodeURIComponent(hook))}, import.meta.url);
+${shortAbsence ? `register(${JSON.stringify("data:text/javascript," + encodeURIComponent(hook))}, import.meta.url);` : ""}
 const local = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "host.docker.internal"]);
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -128,7 +130,8 @@ globalThis.fetch = async (input, init) => {
     throw new TypeError("egress denied by the check harness: " + url.origin);
 };
 `,
-    );
+        );
+    await writePreload();
     stack = await startStack({
         serverPort,
         vitePort,
@@ -660,32 +663,6 @@ globalThis.fetch = async (input, init) => {
 
     await run(names[3], async () => {
         const f = await fixture(names[3]);
-        await send("The owner will close during this provider callback.");
-        await waiting(owner);
-        const current = await f.current();
-        assert.equal(current.status, 200);
-        const closedAt = Date.now();
-        await owner.page.close();
-        await delay(Math.min(500, ABSENT_MS / 4));
-        assert.equal((await f.current()).status, 200, "Chat freed before the absence wait");
-        const bound = ABSENT_MS + ABORT_GRACE_MS;
-        await until(
-            "closed owner's chat frees within absence plus abort grace",
-            f.current,
-            (response) => response.status === 404,
-            Math.max(1, closedAt + bound - Date.now()),
-        );
-        assert(Date.now() - closedAt < bound, `Release exceeded ${bound} ms`);
-        const job = await owner.api(`/api/generations/${current.body.jobId}?clientId=${owner.posts.at(-1).clientId}`);
-        assert.equal(job.status, 200);
-        assert.equal(job.body.terminal.type, "error");
-        assert.notEqual(job.body.terminal.reason, "aborted");
-        // This bound applies to this job's dispatched callback, not arbitrary jobs queued in a lane.
-        owner = await client();
-    });
-
-    await run(names[4], async () => {
-        const f = await fixture(names[4]);
         const eventStart = owner.events.length;
         await send("Checkpoint the first chunk, then crash.");
         await waiting(owner);
@@ -737,6 +714,33 @@ globalThis.fetch = async (input, init) => {
                 texts.every((text) => !text.includes("Visible-only chunk B.")),
         );
         assert(!owner.events.slice(eventStart).some((e) => e.type === "done"), "Crash incorrectly completed the job");
+    });
+
+    await run(names[4], async () => {
+        await writePreload(true);
+        await stack.restartServer();
+        const f = await fixture(names[4]);
+        await send("The owner will close during this provider callback.");
+        await waiting(owner);
+        const current = await f.current();
+        assert.equal(current.status, 200);
+        const closedAt = Date.now();
+        await owner.page.close();
+        await delay(Math.min(500, ABSENT_MS / 4));
+        assert.equal((await f.current()).status, 200, "Chat freed before the absence wait");
+        const bound = ABSENT_MS + ABORT_GRACE_MS;
+        await until(
+            "closed owner's chat frees within absence plus abort grace",
+            f.current,
+            (response) => response.status === 404,
+            Math.max(1, closedAt + bound - Date.now()),
+        );
+        assert(Date.now() - closedAt < bound, `Release exceeded ${bound} ms`);
+        const job = await owner.api(`/api/generations/${current.body.jobId}?clientId=${owner.posts.at(-1).clientId}`);
+        assert.equal(job.status, 200);
+        assert.equal(job.body.terminal.type, "error");
+        assert.notEqual(job.body.terminal.reason, "aborted");
+        owner = await client();
     });
 } catch (error) {
     process.exitCode = 1;

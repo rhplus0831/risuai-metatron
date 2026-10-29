@@ -124,7 +124,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   delayed work; `durationMs` from the oldest mark to dispatch); from the draft journal
   (`src/ts/storage/draftJournal.ts`), `journalSkipped` (`reason` `tooLarge` | `budget` for a write it did not
   make, `format` for rows it cannot read and keeps or recovery intent it cannot install, with `entries`), `journalFailed` (`unavailable`, `timeout`,
-  `blocked`, `quota`, `write`, `readFailed`), and `journalRecovered` (`orphan`, the `entries` it took over from a
+  `blocked`, `quota`, `write`, `readFailed`, `uncloneable` for a value it could not copy), and `journalRecovered` (`orphan`, the `entries` it took over from a
   closed tab). `journalRecovery.ts` also emits `journalRecovered` with the boot decision count in `entries`
   and no reason, and `journalFailed` with `timeout` or `readFailed` when recovery fails. The adapter also
   emits journal budget skips and write/restore-snapshot failures.

@@ -443,6 +443,31 @@ describe("recovery drafts", () => {
         expect(drafts.recoveryDrafts.entries).toEqual([]);
     });
 
+    it("retries Apply in the dialog after a lost create answer without duplicating the recovered chat", async () => {
+        const input = chatInput([], "gone");
+        input.layers.pending!.createSnapshot = snapshot();
+        const entry = await put(input);
+        await render();
+        h.fake.dropNextBatchResponse = true;
+        button(language.apply, row()).click();
+        await settle();
+        expect(io.error).toHaveBeenCalledTimes(1);
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+        const recoveredIds = h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id));
+        expect(recoveredIds).toHaveLength(1);
+        expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
+
+        button(language.apply, row()).click();
+        await settle();
+        expect(io.confirm).toHaveBeenCalledTimes(2);
+        expect(io.error).toHaveBeenCalledTimes(1);
+        expect(h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id))).toEqual(recoveredIds);
+        expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+        expect(target.querySelector("li")).toBeNull();
+    });
+
     it.each(["conflict", "refusal"])("keeps the record draft after a save %s", async (outcome) => {
         const entry = await put(recordInput());
         if (outcome === "conflict") {
@@ -467,6 +492,35 @@ describe("recovery drafts", () => {
             const kept = Object.values(left[0].layers)[0] as { value: { text: string } };
             expect(JSON.parse(kept.value.text).theme).toBe("recovered");
         }
+    });
+
+    it("keeps a draft whose delete fails: Discard alerts and keeps the row, and an Apply that saved says not to apply it again", async () => {
+        const entry = await put(recordInput());
+        const removeDraft = vi.spyOn(journal, "removeDraft").mockResolvedValue(false);
+        await render();
+        button(language.recoveryDrafts.discard, row()).click();
+        await settle();
+        expect(io.error).toHaveBeenCalledWith(
+            `${language.recoveryDrafts.failed}\nError: ${language.recoveryDrafts.removeFailed}`,
+        );
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        expect(row()).not.toBeNull();
+
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.record("ui", "main")!.data.theme).toBe("recovered");
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        // Applying it again would repeat the saved changes: Apply is off for it while the page lives.
+        await settle();
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        expect([...row().querySelectorAll("button")].some((node) => node.textContent === language.apply)).toBe(false);
+        const batches = h.fake.batchCount();
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.batchCount()).toBe(batches);
+        removeDraft.mockRestore();
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
     });
 
     it("opens the recovery dialog from Review and the Advanced settings row only while drafts exist", async () => {

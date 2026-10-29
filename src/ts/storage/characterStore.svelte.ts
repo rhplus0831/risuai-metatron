@@ -8,10 +8,10 @@ import { CharacterShapeError, normalizeCharacter, supaMemoryOnCount } from "../.
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
 import type { Chat } from "../../../shared/database.ts";
 import {
+    adoptCharacter,
     forgetCharacterChats,
     installCharacterChats,
     isCharacterGenerating,
-    normalizeNewCharacter,
     prepareChatInput,
 } from "./chatStore.svelte";
 import { checkCharOrder } from "./characterOrder";
@@ -44,7 +44,8 @@ export { selectCharacter };
  * records (`records.svelte.ts`): every write of a character's own fields queues its
  * save, and the list's membership changes only here (add, replace at an index, remove). The chats
  * are the chat module's (`chatStore.svelte.ts`): a character new to the list hands
- * its chats to it (`installCharacterChats`), and the records hold no chats.
+ * its chats to it (`installCharacterChats`), then queues their creates for saving and journaling
+ * (`adoptCharacter`). The records hold no chats.
  */
 
 type AnyCharacter = character | groupChat;
@@ -219,8 +220,8 @@ export function findCharacter(chaId: string): DeepReadonly<AnyClientCharacter> |
 
 /**
  * Adds a character to the list, prepared as a creation (`prepareNewCharacter`): its chats go to the
- * chat module, which gives them ids, and it goes into the character order. A `chaId` another
- * character has is refused. Returns the id.
+ * chat module, which gives them ids and queues their creates immediately, and it goes into the
+ * character order. A `chaId` another character has is refused. Returns the id.
  */
 export function addCharacter(char: unknown): string {
     return addPreparedCharacter(prepareNewCharacter(char));
@@ -240,7 +241,7 @@ export function addPreparedCharacter(prepared: PreparedCharacter): string {
         forgetCharacterChats(chaId);
         throw error;
     }
-    normalizeNewCharacter(chaId);
+    adoptCharacter(chaId);
     checkCharOrder();
     return chaId;
 }
@@ -330,7 +331,7 @@ export function replaceCharacterAt(index: number, char: unknown): string {
         // with them on the server).
         forgetCharacterChats(replacedId);
     }
-    normalizeNewCharacter(chaId);
+    adoptCharacter(chaId);
     return chaId;
 }
 

@@ -1626,9 +1626,13 @@ export const languageEnglish = {
         skipped: "Skipped operations (missing targets, whole-chat changes, or a translation whose source changed):",
         failed: "Could not complete this action. The recovery draft has been kept.",
         refreshFailed: "Could not refresh recovery drafts.",
+        removeFailed: "The recovery draft could not be removed.",
+        appliedNotRemoved:
+            "The recovered changes were saved, but the draft could not be removed. Discard it instead of applying it again.",
     },
     resourceNoticeDismiss: "Dismiss",
     chatLoadFailed: "This chat could not be loaded: {0}",
+    chatLoadTimedOut: "The chat request timed out. Try again.",
     chatLoadRetry: "Try again",
     selectChatToOpen: "Select a chat from the list to start.",
     openMostRecentChat: "Open most recent chat",
@@ -1656,6 +1660,8 @@ export const languageEnglish = {
             idle: "No job is running in this chat.",
             invalidCurrent: "The server returned an invalid job lookup response.",
             invalidStop: "The server returned an invalid job stop response.",
+            lookupTimedOut: "The current job lookup timed out. Try stopping the chat again.",
+            stopTimedOut: "The job stop request timed out. Try stopping the chat again.",
             running: "running",
             sequence: ", part {part} of {total}",
             kinds: {

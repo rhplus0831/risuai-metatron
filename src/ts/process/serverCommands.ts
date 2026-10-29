@@ -773,7 +773,16 @@ async function runPinnedServerJob(
         }
     } catch (failure) {
         const error = failure instanceof GenerationCreateError ? failure.cause : failure;
-        if (failure instanceof GenerationCreateError && failure.uncertain) {
+        const requestUncertain = failure instanceof GenerationCreateError && failure.uncertain;
+        const refusal = { ...refused, requestUncertain };
+        const admissionRefused =
+            error instanceof GenerationBusyError ||
+            (error instanceof ChatBindingRefusedError && error.code === "chatBindingIncomplete") ||
+            error instanceof ChatLoreOverrideOrphanedError ||
+            (error instanceof ResourceRequestError &&
+                error.status === 503 &&
+                ["The server is not accepting generations now", "The server is shutting down"].includes(error.message));
+        if (requestUncertain && !admissionRefused) {
             if (!options.signal?.aborted) alertError(language.serverJob.lost);
             return { outcome: "unknown", terminal: null, requestUncertain: true };
         }
@@ -785,13 +794,19 @@ async function runPinnedServerJob(
             } else {
                 alertError(chatBindingRefusalText(error.problems));
             }
-            return refused;
+            return refusal;
         }
         if (error instanceof ChatLoreOverrideOrphanedError) {
             alertError(chatLoreOverrideRefusalText(error.entries));
-            return refused;
+            return refusal;
         }
         if (error instanceof GenerationBusyError) {
+            if (requestUncertain) {
+                // Identity replay precedes busy lookup, so this job belongs to another action.
+                noteForeignJob(ref, error.jobId);
+                alertError(language.chatGenerating);
+                return { ...refusal, blockedChats: [ref] };
+            }
             // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
             const owned = await readGenerationJob(error.jobId, { deadlineMs: STEP_DEADLINE_MS }).catch(() => null);
             if (!owned) {
@@ -809,6 +824,7 @@ async function runPinnedServerJob(
                     ? language.serverJob.requestIdReused
                     : errorText(error),
             );
+            if (requestUncertain && admissionRefused) return refusal;
             // No answer (the network, or a body that did not arrive whole): the job may exist.
             // The exchange also keeps pre-lookup failures uncertain after an unanswered attempt.
             const unanswered =

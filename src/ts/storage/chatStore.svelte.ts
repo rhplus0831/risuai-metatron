@@ -554,6 +554,7 @@ const loading = new Map<string, { lifetime: string; promise: Promise<DeepReadonl
 const MAX_LOAD_READS = 3;
 /** Chats per read request of a load (well inside the server's per-request cap). */
 const LOAD_CHUNK = 500;
+const CHAT_READ_DEADLINE_MS = 60_000;
 
 /**
  * Per character, the lifetime of its held chats: advanced whenever they are installed, forgotten, or
@@ -4129,8 +4130,8 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
 /**
  * Holds the chats of a character that is about to enter the character list (`characterStore`'s
  * add and replace), prepared (`prepareCharacterChats`), replacing anything held under `chaId`.
- * A new character leaves its creates to the save loop's `adoptCharacter`. A reused character id
- * reconciles the chats the server holds or may receive from earlier work: its character record
+ * A new character's caller queues its creates with `adoptCharacter` after insertion. A reused
+ * character id reconciles the chats the server holds or may receive from earlier work: its character record
  * stays an update, so the save loop will not adopt its replacement chats. The revisions stay held
  * until the server acknowledges the old character's deletion (`ackCharacterDelete`), so a re-add
  * after a deletion that failed or was refused reconciles the same way. Unsent work is superseded,
@@ -4299,7 +4300,7 @@ function dropLoadState(chaId: string) {
 
 /**
  * Gives a character new to the list its first chat when it holds none, and its chats their message
- * ids and defaults, without queuing anything (the save loop's `adoptCharacter` queues the creates).
+ * ids and defaults, without queuing anything (`adoptCharacter` queues the creates after insertion).
  */
 export function normalizeNewCharacter(chaId: string) {
     const character = findCharacter(chaId);
@@ -4318,7 +4319,7 @@ export function normalizeNewCharacter(chaId: string) {
     syncSelection(chaId);
 }
 
-/** Queues creates for a new character's chats (the save loop found it in the list, unsaved). */
+/** Queues creates for a new character's chats on insertion and for unsaved chats found by the save loop. */
 export function adoptCharacter(chaId: string) {
     if (!findCharacter(chaId)) {
         return;
@@ -4343,15 +4344,17 @@ export function adoptCharacter(chaId: string) {
 }
 
 /**
- * Drops all chat state of a character that is deleted (the server deletes its chats with it). With
- * `discard` (another writer deleted it), the chats' unsent work and a queued reorder count as
+ * Drops all local chat state after a character's deletion or a conflicting create. With `discard`
+ * (another writer deleted it), the chats' unsent work and a queued reorder count as
  * discarded (the flush and `MutationScope` reports, `markDiscarded`); returns whether there was any.
  * A queued delete the deletion fulfils is settled. This tab's own deletion settles them all instead
  * (`ackCharacterDelete`, once the server acknowledged it). Groups still in flight are retired
- * (`retireCharacterGroups`) and the parked resends dropped: the chats are gone on the server.
+ * (`retireCharacterGroups`) and the parked resends dropped, so late answers cannot restore that state.
+ * With `capture`, keeps eligible work as drafts even when settling it: a conflicting parent create
+ * supersedes its local chats, with the discard reported on the character itself.
  */
-export function forgetCharacter(chaId: string, options: { discard?: boolean } = {}): boolean {
-    if (options.discard && conflictListener) {
+export function forgetCharacter(chaId: string, options: { discard?: boolean; capture?: boolean } = {}): boolean {
+    if ((options.discard || options.capture) && conflictListener) {
         const prefix = `${chaId}\u0000`;
         const keys = new Set([
             ...pending.keys(),
@@ -4821,6 +4824,32 @@ export function ackChatWork(
         jobBlocked.delete(group.key);
         const result = results[index];
         if (result) {
+            if (conflictListener && result.targets?.includes("missing")) {
+                let targetIndex = 0;
+                const missingOps = group.ops.filter((op) => {
+                    if (
+                        op.op !== "setText" &&
+                        op.op !== "setMessage" &&
+                        op.op !== "patchMessage" &&
+                        op.op !== "setTranslation"
+                    )
+                        return false;
+                    return result.targets![targetIndex++] === "missing";
+                });
+                if (missingOps.length) {
+                    conflictListener({
+                        scope: "chat",
+                        target: group.key,
+                        layers: {
+                            pending: {
+                                ops: journalOps(missingOps),
+                                baseRevision: group.baseRevision,
+                                groupId: group.groupId,
+                            },
+                        },
+                    });
+                }
+            }
             if (
                 group.inDoubt &&
                 group.ops.some((op) => op.op === "create" || op.op === "delete") &&
@@ -4865,8 +4894,8 @@ export function ackChatWork(
                 (group.recoveredAt !== undefined || result.stale || result.targets?.includes("missing")) &&
                 result.revision !== null
             ) {
-                // A `missing` target (another writer removed its message) changed nothing and is not
-                // a discard: the idle read removes it. Recovered ops were never applied to the
+                // A `missing` target changed nothing and is kept as a draft, without a discard:
+                // the idle read removes its local message. Recovered ops were never applied to the
                 // boot mirror, so even a fresh or duplicate acknowledgement needs the whole read.
                 staleChats.add(group.key);
             }
@@ -6225,7 +6254,9 @@ export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undef
     const notice = chatNoticeSeq(ref);
     const issued = heldChatRevision(ref);
     const readStamp = issueChatReadStamp();
-    const read = await readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }] });
+    const read = await deadlineChatRead((signal) =>
+        readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }], signal }),
+    );
     const server = read.chats?.find((chat) => chat.characterId === ref.chaId && chat.id === ref.chatId);
     if (lifetimeOf(ref.chaId) !== lifetime) {
         return undefined;
@@ -6241,10 +6272,27 @@ export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undef
     return heldChat(ref);
 }
 
+/** Bounds on-demand reads even when the transport does not settle after an abort. */
+async function deadlineChatRead<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error(language.chatLoadTimedOut)), CHAT_READ_DEADLINE_MS);
+    let aborted!: () => void;
+    const cancellation = new Promise<never>((_, reject) => {
+        aborted = () => reject(controller.signal.reason);
+        controller.signal.addEventListener("abort", aborted, { once: true });
+    });
+    try {
+        return await Promise.race([read(controller.signal), cancellation]);
+    } finally {
+        controller.signal.removeEventListener("abort", aborted);
+        clearTimeout(timeout);
+    }
+}
+
 /** Reads a character's summary list and applies it as a live update (fenced on the owner's lifetime). */
 async function readSummaryList(chaId: string, lifetime: string) {
     const revisions = heldChatRevisionsOf(chaId);
-    const read = await readRefs([], { chatSummaryCollections: [chaId] });
+    const read = await deadlineChatRead((signal) => readRefs([], { chatSummaryCollections: [chaId], signal }));
     const collection = read.chatSummaryCollections?.find((entry) => entry.characterId === chaId);
     if (collection && findCharacter(chaId) && lifetimeOf(chaId) === lifetime) {
         applyRemoteCollection(collection, revisions);
@@ -6285,9 +6333,12 @@ async function readUnloaded(chaId: string, ids: readonly string[], lifetime: str
         const records = new Map<string, RemoteChat>();
         for (let start = 0; start < wanted.length; start += LOAD_CHUNK) {
             const readStamp = issueChatReadStamp();
-            const read = await readRefs([], {
-                chats: wanted.slice(start, start + LOAD_CHUNK).map((id) => ({ characterId: chaId, id })),
-            });
+            const read = await deadlineChatRead((signal) =>
+                readRefs([], {
+                    chats: wanted.slice(start, start + LOAD_CHUNK).map((id) => ({ characterId: chaId, id })),
+                    signal,
+                }),
+            );
             if (lifetimeOf(chaId) !== lifetime) {
                 return;
             }
@@ -6670,14 +6721,14 @@ const DRIFT_CHECK_INTERVAL_MS = 2000;
  */
 export function startChatDriftCheck() {
     if (!import.meta.env.DEV) {
-        return;
+        return () => {};
     }
     // Polled, not an effect: a deep snapshot on every change makes a long stream quadratic. A
     // change outside the module in the same interval as a module write goes unnoticed (a dev aid).
     let lastCharacter: string | undefined;
     let lastText: string | undefined;
     let lastToken = -1;
-    setInterval(() => {
+    const interval = setInterval(() => {
         const id = selection.characterId ?? undefined;
         const text = JSON.stringify($state.snapshot(id === undefined ? undefined : holdingAt(id)));
         if (id === lastCharacter && lastText !== undefined && text !== lastText && mutationToken === lastToken) {
@@ -6689,6 +6740,7 @@ export function startChatDriftCheck() {
         lastText = text;
         lastToken = mutationToken;
     }, DRIFT_CHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
 }
 
 /** Tells the drift check that a mirror change outside the module is expected (hydration, restore). */

@@ -124,13 +124,14 @@ export function noteChannelCallbacks(count: number) {
  * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
  * owner socket, plus `applyGenerationEvent`, which mirrors a job's events into the chat module and
  * the save loop without any outgoing write. The tab's `clientId` and its jobs (one per chat) are
- * kept in `sessionStorage`, so a reloaded tab can attach again (`resumeSavedGenerations`). Its
+ * kept in `sessionStorage`, so boot can resume through `resumeServerJobs` and `followJobToEnd`. Its
  * callers are the server command and send jobs of `process/serverCommands.ts` (the only generation
  * path).
  */
 
 const CLIENT_ID_KEY = "risu-generation-client";
 const JOBS_KEY = "risu-generation-jobs";
+const CLIENT_CLAIM_KEY = "risu-generation-client-claim";
 
 /** 409 `chatBusy`: the chat has a running job; its owner can attach to `jobId`. */
 export class GenerationBusyError extends Error {
@@ -152,7 +153,7 @@ export class GenerationStaleError extends Error {
 
 /**
  * 409 `chatBindingIncomplete` (with the chat's binding `problems`) or `chatBindingMismatch`: the job's
- * ids are not its chat's complete binding. Nothing ran.
+ * ids are not its chat's complete binding. This attempt was refused.
  */
 export class ChatBindingRefusedError extends Error {
     readonly code: "chatBindingIncomplete" | "chatBindingMismatch";
@@ -165,7 +166,7 @@ export class ChatBindingRefusedError extends Error {
     }
 }
 
-/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries. Nothing ran. */
+/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries; this attempt was refused. */
 export class ChatLoreOverrideOrphanedError extends Error {
     readonly entries: readonly OrphanedOverrideEntry[];
     constructor(entries: readonly OrphanedOverrideEntry[]) {
@@ -184,26 +185,52 @@ function storage(): Storage | null {
 }
 
 let fallbackClientId: string | null = null;
+let claimedStorage: Storage | null = null;
+
+/** A copied live page's session belongs to a new owner; a released or discarded page can recover. */
+function claimGenerationIdentity() {
+    if (fallbackClientId) return;
+    const store = storage();
+    try {
+        const copied =
+            store?.getItem(CLIENT_CLAIM_KEY) === "held" &&
+            !(typeof document !== "undefined" && "wasDiscarded" in document && document.wasDiscarded === true);
+        fallbackClientId = (!copied && store?.getItem(CLIENT_ID_KEY)) || uuidv4();
+        if (copied) store?.removeItem(JOBS_KEY);
+        store?.setItem(CLIENT_ID_KEY, fallbackClientId);
+        store?.setItem(CLIENT_CLAIM_KEY, "held");
+        claimedStorage = store;
+    } catch {
+        // Failed storage must not expose copied jobs under the page's in-memory identity.
+        fallbackClientId ??= uuidv4();
+    }
+}
+
+function markGenerationIdentity(state: "held" | "released") {
+    try {
+        claimedStorage?.setItem(CLIENT_CLAIM_KEY, state);
+    } catch {}
+}
+
+if (typeof window !== "undefined") {
+    claimGenerationIdentity();
+    window.addEventListener("pagehide", () => markGenerationIdentity("released"));
+    window.addEventListener("pageshow", () => markGenerationIdentity("held"));
+}
 
 /** This tab's id, created once and kept across reloads of the tab. */
 export function generationClientId(): string {
-    const store = storage();
-    const saved = store?.getItem(CLIENT_ID_KEY);
-    if (saved) {
-        return saved;
-    }
-    const id = fallbackClientId ?? uuidv4();
-    fallbackClientId = id;
-    store?.setItem(CLIENT_ID_KEY, id);
-    return id;
+    claimGenerationIdentity();
+    return fallbackClientId!;
 }
 
 /** Ids may contain `/`, so the saved key is a JSON pair. */
 const chatKey = (ref: ChatRef) => JSON.stringify([ref.chaId, ref.chatId]);
 
 function readSavedJobs(): Record<string, string> {
+    claimGenerationIdentity();
     try {
-        const parsed = JSON.parse(storage()?.getItem(JOBS_KEY) ?? "{}") as unknown;
+        const parsed = JSON.parse(claimedStorage?.getItem(JOBS_KEY) ?? "{}") as unknown;
         return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
     } catch {
         return {};
@@ -211,8 +238,9 @@ function readSavedJobs(): Record<string, string> {
 }
 
 function writeSavedJobs(jobs: Record<string, string>) {
+    claimGenerationIdentity();
     try {
-        storage()?.setItem(JOBS_KEY, JSON.stringify(jobs));
+        claimedStorage?.setItem(JOBS_KEY, JSON.stringify(jobs));
     } catch {}
 }
 
@@ -329,7 +357,11 @@ function noAnswer(error: unknown): ResourceRequestError {
 }
 
 /** Bounds authentication and body consumption too; a late auth completion cannot dispatch. */
-async function boundedAttempt<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function boundedAttempt<T>(
+    work: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+    timeoutMessage = "The generation request timed out",
+): Promise<T> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stop!: () => void;
@@ -340,7 +372,7 @@ async function boundedAttempt<T>(work: (signal: AbortSignal) => Promise<T>, sign
         };
         timer = setTimeout(() => {
             controller.abort();
-            reject(noAnswer("The generation request timed out"));
+            reject(noAnswer(timeoutMessage));
         }, CREATE_DEADLINE_MS);
         signal?.addEventListener("abort", stop, { once: true });
         if (signal?.aborted) stop();
@@ -404,18 +436,12 @@ function validCancelled(value: unknown): value is GenerationCancelled {
     );
 }
 
+/** Registry identity evidence or a permanent chat refusal resolves earlier create uncertainty. */
 function registryRefusal(status: number, body: FailureBody): boolean {
     if (status === 409) {
-        if (body.error === "chatBusy") return typeof body.jobId === "string";
-        if (body.error === "chatBindingIncomplete") return Array.isArray(body.problems);
-        if (body.error === "chatLoreOverrideOrphaned") return Array.isArray(body.entries);
         return ["stale", "chatBindingMismatch", "requestIdReused", "requestCancelled"].includes(body.error ?? "");
     }
-    return (
-        (status === 404 && body.error === "Chat not found") ||
-        (status === 503 &&
-            ["The server is not accepting generations now", "The server is shutting down"].includes(body.error ?? ""))
-    );
+    return status === 404 && body.error === "Chat not found";
 }
 
 function validFailure(status: number, body: unknown): body is FailureBody {
@@ -427,7 +453,7 @@ function validFailure(status: number, body: unknown): body is FailureBody {
     return true;
 }
 
-/** Retries an unanswered frozen request within bounded attempts, preserving uncertainty across pre-lookup failures. */
+/** Retries an unanswered frozen request within bounded attempts, until an answer fences delayed creates. */
 async function exchange<T>(options: {
     path: string;
     body: string;
@@ -610,7 +636,11 @@ const jobPath = (jobId: string) =>
 export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurrent | null> {
     const query = new URLSearchParams({ characterId: ref.chaId, chatId: ref.chatId, clientId: generationClientId() });
     try {
-        const body: unknown = await (await request(`/api/generations/current?${query}`)).json();
+        const body: unknown = await boundedAttempt(
+            async (signal) => (await request(`/api/generations/current?${query}`, { signal })).json(),
+            undefined,
+            language.serverJob.stopOther.lookupTimedOut,
+        );
         if (
             !object(body) ||
             typeof body.jobId !== "string" ||
@@ -644,13 +674,19 @@ export async function stopChatGeneration(ref: ChatRef, jobId: string): Promise<"
         clientId: generationClientId(),
     };
     try {
-        const answer: unknown = await (
-            await request("/api/generations/stop", {
-                method: "POST",
-                headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-                body: JSON.stringify(body),
-            })
-        ).json();
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request("/api/generations/stop", {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify(body),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.stopOther.stopTimedOut,
+        );
         if (!object(answer) || typeof answer.aborted !== "boolean") {
             throw new ResourceRequestError(0, language.serverJob.stopOther.invalidStop);
         }
@@ -1167,29 +1203,4 @@ export function releaseGenerationJob(jobId: string) {
     liveJobs.delete(jobId);
     busyJobs.delete(jobId);
     notifyPluginWork();
-}
-
-/**
- * Attaches again to this tab's saved jobs (after a reload): each one the server still knows is
- * followed and its events applied; an unknown one is forgotten. Returns the follows started.
- */
-export async function resumeSavedGenerations(
-    onEvent?: (jobId: string, ref: ChatRef, event: GenerationEvent) => void,
-): Promise<GenerationFollow[]> {
-    const follows: GenerationFollow[] = [];
-    for (const jobId of Object.values(readSavedJobs())) {
-        const status = await readGenerationJob(jobId);
-        if (!status || status.epoch !== getResourceEpoch()) {
-            forgetGenerationJob(jobId);
-            continue;
-        }
-        const ref = { chaId: status.characterId, chatId: status.chatId };
-        // The follow is the channel's transport: its answers go out on the job's current socket.
-        const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
-            applyGenerationEvent(jobId, ref, event, follow);
-            onEvent?.(jobId, ref, event);
-        });
-        follows.push(follow);
-    }
-    return follows;
 }

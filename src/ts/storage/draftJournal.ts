@@ -437,7 +437,8 @@ export interface DraftJournal {
     /** Stores a draft (reclaiming only expired drafts and composer rows); its id, or null when not stored. */
     putDraft(input: DraftInput): Promise<string | null>;
     listDrafts(): Promise<DraftEntry[]>;
-    removeDraft(id: string): Promise<void>;
+    /** Whether the draft is gone: true once deleted or already absent; false on a failure or while off. */
+    removeDraft(id: string): Promise<boolean>;
     /** Composer calls start the journal on first use. Reads omit expired and unreadable rows. */
     readComposer(chatKey: string): Promise<ComposerValue | null>;
     putComposer(chatKey: string, value: ComposerValue): Promise<WriteOutcome>;
@@ -637,7 +638,10 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     const reportTo = deps.report ?? recordClientEvent;
 
     let enabled = false;
+    /** No call is admitted once set; calls admitted before it still reach the database while `close` drains. */
     let closed = false;
+    /** Set when `close` has drained (or stopped waiting): no call reaches the database after it. */
+    let ended = false;
     let tabId: string | null = null;
     let counter = 0;
     let db: IDBDatabase | null = null;
@@ -675,7 +679,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
 
     /** The open connection, opening it once at a time; a caller waits at most `openTimeoutMs`. */
     function connection(): Promise<IDBDatabase> {
-        if (closed || !factory) {
+        if (ended || !factory) {
             return Promise.reject(new JournalFailure("unavailable", "The journal is closed"));
         }
         if (db) {
@@ -688,7 +692,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             }).then(
                 (opened) => {
                     opening = null;
-                    if (closed) {
+                    if (ended) {
                         opened.close();
                         throw new JournalFailure("unavailable", "The journal is closed");
                     }
@@ -744,14 +748,25 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return run;
     }
 
-    /** `body` over the open connection, unless the journal closed while it opened. */
+    /**
+     * `tracked`, starting the journal first; tracked at once when it already started, so a call made
+     * before `close` in the same tick is drained like any other.
+     */
+    function afterStart<T>(fallback: T, body: () => Promise<T>): Promise<T> {
+        if (enabled) {
+            return tracked(fallback, body);
+        }
+        return (started ??= start()).then(() => tracked(fallback, body));
+    }
+
+    /** `body` over the open connection, unless the journal ended while it opened. */
     async function withDatabase<T>(
         mode: IDBTransactionMode,
         body: (store: IDBObjectStore) => Promise<T>,
         timeoutMs?: number,
     ): Promise<T> {
         const opened = await connection();
-        if (closed) {
+        if (ended) {
             throw new JournalFailure("unavailable", "The journal is closed");
         }
         return inTransaction(opened, mode, body, transactions, timeoutMs);
@@ -1033,7 +1048,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                 return { row: structuredClone(row), eligible: true };
             });
         } catch (error) {
-            reportFailure(error, "write");
+            reportFailure(error, "uncloneable");
             return Promise.resolve(outcome("failed"));
         }
         const preparedRemovals = prepareRemovals(removals);
@@ -1044,8 +1059,20 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             try {
                 copy = { ...item, layers: structuredClone(item.layers) } as JournalWrite;
             } catch (error) {
-                console.warn("[Draft journal]", error);
-                return null;
+                // As for a skipped write, the older values of its layers go too: recovery must not replay
+                // a value this one replaced.
+                reportFailure(error, "uncloneable");
+                const key = mutationKey(item.epoch, tabId!, item.scope, item.target);
+                let names: string[] = [];
+                try {
+                    names = Object.entries(item.layers)
+                        .filter(([, value]) => value !== undefined)
+                        .map(([name]) => name);
+                } catch {}
+                for (const name of names) {
+                    raiseFence(`${key}${NUL}${name}`, item.version);
+                }
+                return { uncloneable: true as const, key, version: item.version, names };
             }
             const key = mutationKey(copy.epoch, tabId!, copy.scope, copy.target);
             const eligible = new Set<string>();
@@ -1132,7 +1159,23 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         draftAnswers.push("written");
                     }
                     for (const entry of prepared) {
-                        if (!entry) {
+                        if ("uncloneable" in entry) {
+                            const { key, version, names } = entry;
+                            const existing = reserved.has(key)
+                                ? null
+                                : checkJournalRow(await requestValue(store.get(key)));
+                            if (existing?.type === "mutation") {
+                                const kept = trimThrough(existing, version, names);
+                                if (kept !== existing) {
+                                    total -= existing.size;
+                                    if (kept) {
+                                        store.put(kept, key);
+                                        total += kept.size;
+                                    } else {
+                                        store.delete(key);
+                                    }
+                                }
+                            }
                             answers.push("failed");
                             continue;
                         }
@@ -1548,7 +1591,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                     .map(([name, value]) => [name, { version: 0, value }]),
             );
         } catch (error) {
-            console.warn("[Draft journal]", error);
+            reportFailure(error, "uncloneable");
             return Promise.resolve(null);
         }
         const id = mintId();
@@ -1614,8 +1657,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    function removeDraft(id: string): Promise<void> {
-        return tracked(undefined, async () => {
+    function removeDraft(id: string): Promise<boolean> {
+        return tracked(false, async () => {
             try {
                 await withDatabase("readwrite", async (store) => {
                     const key = draftKey(id);
@@ -1623,15 +1666,16 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         store.delete(key);
                     }
                 });
+                return true;
             } catch (error) {
                 reportFailure(error, "write");
+                return false;
             }
         });
     }
 
-    async function readComposer(chatKey: string): Promise<ComposerValue | null> {
-        await (started ??= start());
-        return tracked(null, async () => {
+    function readComposer(chatKey: string): Promise<ComposerValue | null> {
+        return afterStart(null, async () => {
             try {
                 return await withDatabase("readonly", async (store) => {
                     const row = checkJournalRow(await requestValue(store.get(composerKey(chatKey))));
@@ -1649,7 +1693,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         try {
             copy = structuredClone(value);
         } catch (error) {
-            reportFailure(error, "write");
+            reportFailure(error, "uncloneable");
             return "failed";
         }
         return writeComposer(chatKey, () => copy);
@@ -1674,12 +1718,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    async function writeComposer(
+    function writeComposer(
         chatKey: string,
         update: (row: ComposerEntry | null, time: number) => ComposerValue | undefined,
     ): Promise<WriteOutcome> {
-        await (started ??= start());
-        return tracked<WriteOutcome>("off", async () => {
+        return afterStart<WriteOutcome>("off", async () => {
             try {
                 let skipped: SyncReason | undefined;
                 const outcome = await withDatabase("readwrite", async (store): Promise<WriteOutcome> => {
@@ -1733,12 +1776,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    async function removeComposer(chatKey: string, condition: ComposerRemoval = {}): Promise<void> {
+    function removeComposer(chatKey: string, condition: ComposerRemoval = {}): Promise<void> {
         const { userMessageId } = condition;
         const keepSendingIds = new Set(condition.keepSendingIds);
         const attempt = condition.attempt && { ...condition.attempt };
-        await (started ??= start());
-        return tracked(undefined, async () => {
+        return afterStart(undefined, async () => {
             try {
                 await withDatabase("readwrite", async (store) => {
                     const key = composerKey(chatKey);
@@ -1761,9 +1803,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    async function removeComposersOf(chaId: string): Promise<void> {
-        await (started ??= start());
-        return tracked(undefined, async () => {
+    function removeComposersOf(chaId: string): Promise<void> {
+        return afterStart(undefined, async () => {
             try {
                 await withDatabase("readwrite", async (store) => {
                     const prefix = composerKey(`${chaId}${NUL}`);
@@ -1841,6 +1882,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             });
             try {
                 await Promise.race([Promise.allSettled([started, ...inFlight]), deadline]);
+                ended = true;
                 for (const abort of transactions.values()) {
                     abort();
                 }

@@ -335,6 +335,7 @@ let halted = false;
 let stopped = false;
 let removeLifecycleListeners: (() => void) | null = null;
 let unloadAuthInterval: ReturnType<typeof setInterval> | null = null;
+let stopChatDriftCheck: (() => void) | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** When the scheduled cycle runs; a later mark never postpones it. */
 let timerDeadline = 0;
@@ -4071,9 +4072,16 @@ async function recoverConflictedWork(
         if (mergeConcurrentChange(item, key)) {
             continue;
         }
-        if (item.kind === RESOURCE_KIND.characters && item.revision !== null && !findMirrorCharacter(item.id)) {
-            // A character the mirror did not have: its chats come with their order.
-            queueCharacterRefresh(item.id, "hydrate");
+        if (item.kind === RESOURCE_KIND.characters && item.revision !== null) {
+            if (op?.baseRevision === null) {
+                // Another writer owns this id: settle the superseded chats with the parent conflict,
+                // preserving their local history as drafts before loading the server's chat list.
+                forgetCharacter(item.id, { capture: true });
+                queueCharacterRefresh(item.id, "hydrate");
+            } else if (!findMirrorCharacter(item.id)) {
+                // A character the mirror did not have: its chats come with their order.
+                queueCharacterRefresh(item.id, "hydrate");
+            }
         }
         if (abandoned) queueConflictDraft(abandoned);
         acceptRemote(item);
@@ -5484,7 +5492,7 @@ export function startResourceSync() {
         }
     }, 60_000);
     noteChatWaits();
-    startChatDriftCheck();
+    stopChatDriftCheck = startChatDriftCheck();
     // Every local write of a character marks it at once; a membership change wakes the loop.
     setCharacterWriteListener({
         character: (chaId) => markKey(characterKey(chaId)),
@@ -5506,6 +5514,8 @@ export function stopResourceSync() {
     setMutationAdmission(() => false);
     removeLifecycleListeners?.();
     removeLifecycleListeners = null;
+    stopChatDriftCheck?.();
+    stopChatDriftCheck = null;
     if (timer) clearTimeout(timer);
     if (refreshTimer) clearTimeout(refreshTimer);
     if (journalTimer) clearTimeout(journalTimer);

@@ -108,6 +108,15 @@ vi.mock("src/lang", () => ({
         chatGenerating: "generating",
         serverJob: {
             stoppedElsewhere: "stopped elsewhere",
+            stopOther: {
+                idle: "idle",
+                confirm: "Stop {kind} ({stage}){sequence}?",
+                kinds: { send: "send" },
+                stages: { generating: "generating" },
+                running: "running",
+                lookupTimedOut: "Current job lookup timed out",
+                stopTimedOut: "Stop request timed out",
+            },
             lost: "job lost",
             endedAway: "ended away",
             sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
@@ -508,6 +517,52 @@ describe("resumeServerJobs (boot)", () => {
     });
 });
 
+describe("stopChatJob", () => {
+    it.each(["lookup", "stop"] as const)(
+        "releases the chat after a %s timeout so another Stop looks it up again",
+        async (phase) => {
+            vi.useFakeTimers();
+            const actual = await vi.importActual<Transport>("../network/generationJobs");
+            const mocked = await import("../network/generationJobs");
+            vi.mocked(mocked.readChatGeneration).mockImplementation(actual.readChatGeneration);
+            vi.mocked(mocked.stopChatGeneration).mockImplementation(actual.stopChatGeneration);
+            const { alertConfirm } = await import("../alert");
+            vi.mocked(alertConfirm).mockResolvedValue(true);
+            const auth = await import("../storage/serverAuth");
+            const post = vi.spyOn(auth, "authFetch");
+            if (phase === "stop")
+                post.mockResolvedValueOnce(
+                    Response.json({ jobId: "confirmed-job", kind: "send", owned: false, state: "running" }),
+                );
+            post.mockImplementationOnce(() => new Promise<Response>(() => {}));
+            const ended = vi.fn();
+            const run = commands.stopChatJob(ref).then(ended);
+            try {
+                await vi.advanceTimersByTimeAsync(0);
+                const calls = phase === "lookup" ? 1 : 2;
+                expect(post).toHaveBeenCalledTimes(calls);
+                await commands.stopChatJob(ref);
+                expect(post).toHaveBeenCalledTimes(calls);
+                await vi.advanceTimersByTimeAsync(10_000);
+                expect(ended).toHaveBeenCalledTimes(1);
+                await run;
+                expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(
+                    phase === "lookup" ? "Current job lookup timed out" : "Stop request timed out",
+                );
+                post.mockResolvedValueOnce(Response.json({ error: "idle" }, { status: 404 }));
+                await commands.stopChatJob(ref);
+                expect(post).toHaveBeenCalledTimes(calls + 1);
+                expect(post.mock.calls.at(-1)![0]).toContain("/api/generations/current?");
+                expect(mocked.readChatGeneration).toHaveBeenNthCalledWith(2, ref);
+                if (phase === "stop")
+                    expect(mocked.stopChatGeneration).toHaveBeenCalledExactlyOnceWith(ref, "confirmed-job");
+            } finally {
+                vi.useRealTimers();
+            }
+        },
+    );
+});
+
 describe("runServerButton", () => {
     const char = { chaId: "c", type: "character" } as never;
 
@@ -730,6 +785,42 @@ describe("runServerJob", () => {
         options: Parameters<Module["runServerJob"]>[3] = {},
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
+
+    it.each([
+        { refusal: "maintenance", message: "The server is not accepting generations now" },
+        { refusal: "shutdown", message: "The server is shutting down" },
+        { refusal: "busy", message: "generating" },
+        { refusal: "binding", message: "cannot send\nPrompt preset: deleted" },
+        { refusal: "orphaned override", message: "overrides lost their entries\nLost entry\n\ndelete or move them" },
+    ])(
+        "keeps an uncertain $refusal refusal and its own alert without following another job",
+        async ({ refusal, message }) => {
+            const { GenerationCreateError } = await import("../network/generationJobs");
+            const cause =
+                refusal === "busy"
+                    ? new BusyError("busy-job")
+                    : refusal === "binding"
+                      ? new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }])
+                      : refusal === "orphaned override"
+                        ? new LoreOverrideOrphanedError([{ id: "lost", name: "Lost entry" }])
+                        : new RequestError(503, message);
+            stubs.create.mockRejectedValueOnce(new GenerationCreateError(cause, true));
+            // Even if the busy job is this tab's, this request must stay an ambiguous refusal.
+            stubs.read.mockResolvedValue({ ...status, jobId: "busy-job" });
+            const onStart = vi.fn();
+            const result = await send({ input: "same text" }, { onStart });
+            expect(result).toEqual({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: true,
+                ...(refusal === "busy" ? { blockedChats: [ref] } : {}),
+            });
+            expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(message);
+            expect(stubs.read).not.toHaveBeenCalled();
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+        },
+    );
 
     it("follows a running replay once and calls onStart once after a lost create answer", async () => {
         vi.useFakeTimers();

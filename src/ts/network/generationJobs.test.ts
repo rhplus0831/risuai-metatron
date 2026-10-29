@@ -176,9 +176,68 @@ describe("the tab's identity and saved jobs", () => {
         expect(id).toMatch(/^[0-9a-f-]{36}$/);
         expect(transport.generationClientId()).toBe(id);
         expect(sessionStorage.getItem("risu-generation-client")).toBe(id);
+        // A reload: the old page releases the id on pagehide before the next page claims it.
+        window.dispatchEvent(new Event("pagehide"));
         vi.resetModules();
         const again: Transport = await import("./generationJobs");
         expect(again.generationClientId()).toBe(id);
+    });
+
+    it.each([
+        ["copied live page", "generationClientId"],
+        ["copied live page", "savedGenerationJobs"],
+        ["copied live page", "savedGenerationJobIds"],
+        ["reload after pagehide", "savedGenerationJobIds"],
+        ["discarded page", "savedGenerationJobIds"],
+    ] as const)("isolates copied owners and preserves recovery on a %s reading %s first", async (page, firstRead) => {
+        const originalId = transport.generationClientId();
+        transport.rememberGenerationJob({ chaId: "c", chatId: "k" }, "active-job");
+        const saved = { '["c","k"]': "active-job" };
+        if (page === "reload after pagehide") window.dispatchEvent(new Event("pagehide"));
+
+        // Each page gets its own session storage, copied by the browser before its scripts run.
+        const values = new Map<string, string>();
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i)!;
+            values.set(key, sessionStorage.getItem(key)!);
+        }
+        const copiedStorage: Storage = {
+            get length() {
+                return values.size;
+            },
+            key: (index) => [...values.keys()][index] ?? null,
+            getItem: (key) => values.get(key) ?? null,
+            setItem: (key, value) => {
+                values.set(key, value);
+            },
+            removeItem: (key) => {
+                values.delete(key);
+            },
+            clear: () => values.clear(),
+        };
+        vi.stubGlobal("sessionStorage", copiedStorage);
+        vi.stubGlobal("window", new EventTarget());
+        const discarded = Object.getOwnPropertyDescriptor(document, "wasDiscarded");
+        Object.defineProperty(document, "wasDiscarded", { configurable: true, value: page === "discarded page" });
+        try {
+            vi.resetModules();
+            const next: Transport = await import("./generationJobs");
+            const copied = page === "copied live page";
+            const first = next[firstRead]();
+            if (firstRead === "savedGenerationJobIds") expect(first).toEqual(copied ? [] : ["active-job"]);
+            if (firstRead === "savedGenerationJobs") expect(first).toEqual(copied ? {} : saved);
+            const nextId = next.generationClientId();
+            if (copied) expect(nextId).not.toBe(originalId);
+            else expect(nextId).toBe(originalId);
+            expect(next.generationClientId()).toBe(nextId);
+            expect(next.savedGenerationJobs()).toEqual(copied ? {} : saved);
+            expect(next.savedGenerationJobIds()).toEqual(copied ? [] : ["active-job"]);
+            expect(transport.generationClientId()).toBe(originalId);
+            expect(transport.savedGenerationJobs()).toEqual(saved);
+        } finally {
+            if (discarded) Object.defineProperty(document, "wasDiscarded", discarded);
+            else Reflect.deleteProperty(document, "wasDiscarded");
+        }
     });
 
     it("keys saved jobs by a JSON pair, so ids with slashes never collide, and forgets a job by its id", () => {
@@ -206,6 +265,115 @@ describe("the requests", () => {
             chatRevision: "r",
         },
     };
+
+    it.each([
+        { status: 503, refusal: { error: "The server is not accepting generations now" }, uncertain: true },
+        { status: 503, refusal: { error: "The server is shutting down" }, uncertain: true },
+        { status: 409, refusal: { error: "chatBusy", jobId: "busy-job" }, uncertain: true },
+        {
+            status: 409,
+            refusal: { error: "chatBindingIncomplete", problems: [{ field: "personaId", reason: "gone" }] },
+            uncertain: true,
+        },
+        {
+            status: 409,
+            refusal: { error: "chatLoreOverrideOrphaned", entries: [{ id: "lost", name: "Lost entry" }] },
+            uncertain: true,
+        },
+        { status: 409, refusal: { error: "requestCancelled" }, uncertain: false },
+        { status: 409, refusal: { error: "requestIdReused" }, uncertain: false },
+        { status: 409, refusal: { error: "stale" }, uncertain: false },
+        { status: 409, refusal: { error: "chatBindingMismatch" }, uncertain: false },
+        { status: 404, refusal: { error: "Chat not found" }, uncertain: false },
+    ])(
+        "keeps uncertainty=$uncertain after an unanswered create followed by $status $refusal.error",
+        async ({ status, refusal, uncertain }) => {
+            vi.useFakeTimers();
+            const auth = await import("../storage/serverAuth");
+            vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
+                options?.beforeDispatch?.();
+                return stubs.fetch(path, init);
+            });
+            const first = deferred<Response>();
+            stubs.fetch.mockImplementationOnce(() => first.promise).mockResolvedValueOnce(json(status, refusal));
+            const result = transport
+                .createGenerationJob({ ...body, requestId: "same-request", hooks: NO_GENERATION_HOOKS })
+                .then(
+                    () => undefined,
+                    (error: unknown) => error,
+                );
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stubs.fetch).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(11_000);
+            expect(stubs.fetch).toHaveBeenCalledTimes(2);
+            const error = await result;
+            const cause = error instanceof transport.GenerationCreateError ? error.cause : error;
+            expect(error).toBeInstanceOf(uncertain ? transport.GenerationCreateError : Error);
+            expect(error instanceof transport.GenerationCreateError && error.uncertain).toBe(uncertain);
+            const expected =
+                status === 409 && refusal.error === "chatBusy"
+                    ? { name: "GenerationBusyError", jobId: "busy-job" }
+                    : refusal.error === "stale"
+                      ? { name: "GenerationStaleError" }
+                      : refusal.error === "chatBindingIncomplete" || refusal.error === "chatBindingMismatch"
+                        ? { name: "ChatBindingRefusedError", code: refusal.error }
+                        : refusal.error === "chatLoreOverrideOrphaned"
+                          ? { name: "ChatLoreOverrideOrphanedError", entries: refusal.entries }
+                          : { name: "ResourceRequestError", status, message: refusal.error };
+            expect(cause).toMatchObject(expected);
+            expect(stubs.fetch.mock.calls[1][1]!.body).toBe(stubs.fetch.mock.calls[0][1]!.body);
+            expect(JSON.parse(String(stubs.fetch.mock.calls[1][1]!.body)).requestId).toBe("same-request");
+            first.resolve(json(200, { jobId: "late-job" }));
+            await vi.advanceTimersByTimeAsync(0);
+        },
+    );
+
+    it.each([
+        ["lookup", "authentication"],
+        ["lookup", "fetch"],
+        ["lookup", "body"],
+        ["stop", "authentication"],
+        ["stop", "fetch"],
+        ["stop", "body"],
+    ] as const)("bounds the chat %s exchange including stalled %s to ten seconds", async (operation, phase) => {
+        vi.useFakeTimers();
+        const auth = await import("../storage/serverAuth");
+        const authentication = deferred();
+        const fetched = deferred<Response>();
+        const parsed = deferred<unknown>();
+        const response = json(200, {});
+        const parse = vi.spyOn(response, "json").mockImplementation(() => parsed.promise);
+        const dispatch = vi.fn(() => fetched.promise);
+        vi.spyOn(auth, "authFetch").mockImplementation(async () => {
+            await authentication.promise;
+            return dispatch();
+        });
+        const observed = vi.fn();
+        const request =
+            operation === "lookup"
+                ? transport.readChatGeneration({ chaId: "c", chatId: "k" })
+                : transport.stopChatGeneration({ chaId: "c", chatId: "k" }, "confirmed-job");
+        void request.then(observed, observed);
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (phase !== "authentication") authentication.resolve();
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (phase === "body") fetched.resolve(response);
+        await vi.advanceTimersByTimeAsync(3_999);
+        expect(dispatch).toHaveBeenCalledTimes(phase === "authentication" ? 0 : 1);
+        expect(parse).toHaveBeenCalledTimes(phase === "body" ? 1 : 0);
+        expect(observed).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(observed).toHaveBeenCalledExactlyOnceWith(expect.any(client.ResourceRequestError));
+        expect(observed.mock.calls[0][0]).toMatchObject({ status: 0 });
+        authentication.resolve();
+        fetched.resolve(response);
+        parsed.resolve(
+            operation === "lookup"
+                ? { jobId: "confirmed-job", kind: "send", owned: false, state: "running" }
+                : { aborted: true },
+        );
+        await vi.advanceTimersByTimeAsync(0);
+    });
 
     it("never saves, stages or holds a replay owned by another tab", async () => {
         vi.useFakeTimers();
@@ -706,21 +874,13 @@ describe("the event dispatcher and the resume", () => {
         expect(chatStageOf(get(jobStages), ref)).toBeNull();
     });
 
-    it("drops only the released job's presentation stage, including a job resumed from saved generations", async () => {
+    it("drops only the released job's presentation stage, including a followed job's", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         transport.rememberGenerationJob(ref, "resumed");
-        stubs.fetch.mockResolvedValueOnce(
-            json(200, {
-                jobId: "resumed",
-                kind: "send",
-                characterId: ref.chaId,
-                chatId: ref.chatId,
-                epoch: EPOCH,
-                state: "running",
-            }),
+        const follow: ReturnType<Transport["followGenerationJob"]> = transport.followGenerationJob("resumed", (event) =>
+            transport.applyGenerationEvent("resumed", ref, event, follow),
         );
-        const follows = await transport.resumeSavedGenerations();
         try {
             stubs.auth[0].resolve("jwt");
             await vi.advanceTimersByTimeAsync(0);
@@ -736,7 +896,7 @@ describe("the event dispatcher and the resume", () => {
             expect(chatStageOf(get(jobStages), ref)).toBeNull();
             expect([...get(jobStages)]).toEqual([["other-job", { chatKey: "other\u0000chat", stage: "memory" }]]);
         } finally {
-            follows.forEach((follow) => follow.close());
+            follow.close();
         }
     });
 
@@ -1278,61 +1438,6 @@ describe("the event dispatcher and the resume", () => {
             ["j1", follow],
         ]);
         expect(stubs.endJobChannel).toHaveBeenCalledWith("j1");
-    });
-
-    it("attaches again to the saved jobs the server still knows in this epoch, forgetting the others", async () => {
-        transport.rememberGenerationJob({ chaId: "c", chatId: "k" }, "known");
-        transport.rememberGenerationJob({ chaId: "c", chatId: "j" }, "gone");
-        transport.rememberGenerationJob({ chaId: "d", chatId: "q" }, "old-epoch");
-        stubs.fetch.mockImplementation(async (path) => {
-            if (path.startsWith("/api/generations/known")) {
-                return json(200, {
-                    jobId: "known",
-                    kind: "send",
-                    characterId: "c",
-                    chatId: "k",
-                    epoch: EPOCH,
-                    state: "running",
-                });
-            }
-            if (path.startsWith("/api/generations/old-epoch")) {
-                return json(200, {
-                    jobId: "old-epoch",
-                    kind: "send",
-                    characterId: "d",
-                    chatId: "q",
-                    epoch: "other",
-                    state: "running",
-                });
-            }
-            return json(404, { error: "Generation not found" });
-        });
-        const seen: [string, unknown, string][] = [];
-        const follows = await transport.resumeSavedGenerations((jobId, target, event) =>
-            seen.push([jobId, target, event.type]),
-        );
-        expect(follows).toHaveLength(1);
-        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "known" });
-        stubs.auth[0].resolve("jwt");
-        await flush();
-        const [socket] = FakeSocket.instances;
-        expect(socket.url).toContain("/api/generations/known/ws");
-        socket.open();
-        const chunk = {
-            type: "chunk",
-            epoch: EPOCH,
-            messageId: "r",
-            generationId: "g",
-            seq: 1,
-            base: 0,
-            keep: 0,
-            text: "t",
-        };
-        socket.message(chunk);
-        expect(stubs.applyServerGenerationChunk).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, "known", chunk);
-        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
-        expect(seen).toEqual([["known", { chaId: "c", chatId: "k" }, "chunk"]]);
-        follows[0].close();
     });
 });
 
