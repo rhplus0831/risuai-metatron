@@ -1103,7 +1103,7 @@ describe("chat save journal", () => {
     );
 
     // A recoverable whole batch must become two durable identities before its prefix leaves.
-    it("commits the split before sending its first 5000 operations, then sends the remainder under a new id", async () => {
+    it("commits the split before sending its first 5000 operations, also across an ordinary save cycle, then sends the remainder under a new id", async () => {
         const { fake, chat, sync } = await boot();
         const base = fake.chat("c", "k")!.revision;
         const ops = Array.from({ length: 5001 }, (_, index) => ({
@@ -1119,16 +1119,26 @@ describe("chat save journal", () => {
         expect(fake.batchCount()).toBe(0);
 
         const held = holdJournalCommit();
-        fake.holdNextBatchResponse = true;
         const saving = sync.flushResources();
         // Observe a rejection even if an earlier assertion fails while the request is held.
         void saving.catch(() => {});
+        const bodiesOfK = () =>
+            fake
+                .batchBodies()
+                .flatMap((body) => body.chats ?? [])
+                .filter((c) => c.chatId === "k");
         try {
             try {
                 await held.started;
-                await vi.advanceTimersByTimeAsync(0);
-                expect(fake.batchCount()).toBe(0);
+                // An ordinary save cycle runs while the split's row is uncommitted: it sends other
+                // work, never the prefix.
+                chat.setChatMeta(refJ, { note: "saved during the split" });
+                await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+                expect(fake.batchBodies().flatMap((body) => body.chats ?? [])).toEqual([
+                    expect.objectContaining({ chatId: "j" }),
+                ]);
             } finally {
+                fake.holdNextBatchResponse = true;
                 held.release();
             }
             await rows();
@@ -1146,13 +1156,13 @@ describe("chat save journal", () => {
                 groupId: expect.any(String),
             });
             expect(split.pending!.groupId).not.toBe(whole.groupId);
-            expect(fake.batchBodies().flatMap((body) => body.chats ?? [])).toEqual([
+            expect(bodiesOfK()).toEqual([
                 { characterId: "c", chatId: "k", baseRevision: base, groupId: whole.groupId, ops: ops.slice(0, 5000) },
             ]);
             const acknowledgedBase = fake.chat("c", "k")!.revision;
             fake.releaseBatchResponse!();
             await saving;
-            expect(fake.batchBodies().flatMap((body) => body.chats ?? [])).toEqual([
+            expect(bodiesOfK()).toEqual([
                 { characterId: "c", chatId: "k", baseRevision: base, groupId: whole.groupId, ops: ops.slice(0, 5000) },
                 {
                     characterId: "c",

@@ -11,8 +11,10 @@ import { isJournalEligible } from "./journalEligibility";
  * the local version kept at a conflict (a recovery draft). This module is the store alone: keys,
  * layers, versions, budgets, expiry, and the tab ownership protocol. The composer uses the page's
  * shared journal; its browser-wide rows keep text, translation, attachments, and a send's retry ids.
- * Composer writes keep `createdAt` while the row is live; a write after expiry starts a new entry.
- * Send success deletes only a row still carrying that send's id.
+ * A chat has two composer rows: the editable draft, and the hand-off of the send that consumed the
+ * composer, so typing during that send never replaces what was sent. Composer writes keep
+ * `createdAt` while the row is live; a write after expiry starts a new entry. A landed send deletes
+ * only a hand-off still carrying its id and drops that id from the draft, keeping the draft's text.
  *
  * - Database `risu-draft-journal`, stores `entries` (string keys, below) and `meta` (reserved), one
  *   connection per page kept open. A database missing a store or an index is upgraded to the next
@@ -20,7 +22,8 @@ import { isJournalEligible } from "./journalEligibility";
  *   (another `format`, or a shape that fails `checkJournalRow`) is kept, never overwritten, moved, or
  *   evicted (it may be the only copy), and reported (`sync` `journalSkipped` `format`).
  * - Keys: a mutation entry `<epoch>\0<tabId>\0<scope>\0<target>` (scope `record`, `chat`, `order`); a
- *   recovery draft `draft\0<id>`; a composer draft `composer\0<chatKey>` (browser-wide). A record target
+ *   recovery draft `draft\0<id>`; a composer draft `composer\0<chatKey>` and its send hand-off
+ *   `composer\0<chatKey>\0send` (both browser-wide; `<chatKey>` is `<chaId>\0<chatId>`). A record target
  *   is `<kind>\0<id>`, both non-empty; malformed record targets are not written or transferred.
  * - Layers: an entry holds what the adapter holds at once (`RecordLayerValues`, `ChatLayerValues`,
  *   `OrderLayerValues`), each layer stamped with the per-tab `version` it was last written at
@@ -198,6 +201,7 @@ export function mutationKey(epoch: string, tabId: string, scope: JournalScope, t
 }
 export const draftKey = (id: string) => `${DRAFT_PREFIX}${id}`;
 export const composerKey = (chatKey: string) => `${COMPOSER_PREFIX}${chatKey}`;
+export const composerSendKey = (chatKey: string) => `${composerKey(chatKey)}${NUL}send`;
 /** Resource ids hold no control character, so these targets cannot collide. */
 export const recordTarget = (kind: string, id: string) => `${kind}${NUL}${id}`;
 export const chatTarget = (chaId: string, chatId: string) => `${chaId}${NUL}${chatId}`;
@@ -405,12 +409,9 @@ export type DraftMove = JournalRemoval;
 
 export type JournalRelease = { epoch: string; scope: "chat" | "order"; target: string };
 
-export type ComposerRemoval = {
-    userMessageId?: string;
-    keepSendingIds?: readonly string[];
-    /** An empty settlement flush must leave another attempt's row alone. */
-    attempt?: { userMessageId: string; requestId?: string };
-};
+/** A send's hand-off: the consumed composer with the attempt's ids. */
+export type ComposerSend = ComposerValue & { state: "sending"; userMessageId: string };
+type ComposerUpdate = (row: ComposerEntry | null, time: number) => ComposerValue | undefined;
 
 export interface DraftJournal {
     /** Claims this tab's id and owner lock and opens the database; false: the journal stays off. Single-flight. */
@@ -441,16 +442,29 @@ export interface DraftJournal {
     removeDraft(id: string): Promise<boolean>;
     /** Composer calls start the journal on first use. Reads omit expired and unreadable rows. */
     readComposer(chatKey: string): Promise<ComposerValue | null>;
-    putComposer(chatKey: string, value: ComposerValue): Promise<WriteOutcome>;
-    /** Updates request identity only on a live row still belonging to this attempt. */
+    readComposerSend(chatKey: string): Promise<ComposerSend | null>;
+    /**
+     * Writes the chat's draft. With `takeOver`, a written draft also deletes the hand-off still carrying
+     * that message id in the same transaction: the draft now holds the send's text.
+     */
+    putComposer(chatKey: string, value: ComposerValue, takeOver?: string): Promise<WriteOutcome>;
+    /** Writes the chat's hand-off and deletes its draft, which the send consumed, in one transaction. */
+    putComposerSend(chatKey: string, value: ComposerSend): Promise<WriteOutcome>;
+    /** Updates request identity on the hand-off and on the draft, each only while it belongs to this attempt. */
     updateComposerRequest(
         chatKey: string,
         attempt: { userMessageId: string; requestId?: string },
         retained?: { requestId: string; requestEpoch: string },
-    ): Promise<WriteOutcome>;
-    /** Conditions are checked against the stored row inside the deletion's transaction. */
-    removeComposer(chatKey: string, condition?: ComposerRemoval): Promise<void>;
-    removeComposersOf(chaId: string): Promise<void>;
+    ): Promise<void>;
+    /**
+     * The send landed: deletes its hand-off and drops its ids from a draft still carrying them (text
+     * typed again during the send stays), in one transaction.
+     */
+    settleComposerSend(chatKey: string, userMessageId: string): Promise<void>;
+    /** Deletes the chat's draft, only while it carries `userMessageId` when one is given. */
+    removeComposer(chatKey: string, condition?: { userMessageId?: string }): Promise<void>;
+    /** Deletes the draft and hand-off of one chat, or of every chat of the character. */
+    removeComposersOf(chaId: string, chatId?: string): Promise<void>;
     /** Deletes this tab's expired entries and every expired draft and composer draft; answers how many. */
     purgeExpired(): Promise<number>;
     /**
@@ -1674,11 +1688,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    function readComposer(chatKey: string): Promise<ComposerValue | null> {
+    function readComposerRow(key: string): Promise<ComposerValue | null> {
         return afterStart(null, async () => {
             try {
                 return await withDatabase("readonly", async (store) => {
-                    const row = checkJournalRow(await requestValue(store.get(composerKey(chatKey))));
+                    const row = checkJournalRow(await requestValue(store.get(key)));
                     return row?.type === "composer" && !isExpired(row.createdAt, now()) ? row.value : null;
                 });
             } catch (error) {
@@ -1688,24 +1702,58 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    async function putComposer(chatKey: string, value: ComposerValue): Promise<WriteOutcome> {
-        let copy: ComposerValue;
+    function readComposer(chatKey: string): Promise<ComposerValue | null> {
+        return readComposerRow(composerKey(chatKey));
+    }
+
+    async function readComposerSend(chatKey: string): Promise<ComposerSend | null> {
+        const value = await readComposerRow(composerSendKey(chatKey));
+        return value?.state === "sending" ? (value as ComposerSend) : null;
+    }
+
+    function copyComposer<T extends ComposerValue>(value: T): T | undefined {
         try {
-            copy = structuredClone(value);
+            return structuredClone(value);
         } catch (error) {
             reportFailure(error, "uncloneable");
-            return "failed";
+            return undefined;
         }
-        return writeComposer(chatKey, () => copy);
+    }
+
+    function putComposer(chatKey: string, value: ComposerValue, takeOver?: string): Promise<WriteOutcome> {
+        const copy = copyComposer(value);
+        if (!copy) return Promise.resolve("failed");
+        return composerTransaction<WriteOutcome>("off", "failed", async (store, skip) => {
+            const sendKey = composerSendKey(chatKey);
+            const replaced =
+                takeOver === undefined
+                    ? null
+                    : await composerRowIf(store, sendKey, (sent) => sent.userMessageId === takeOver);
+            const outcome = await putComposerRow(store, composerKey(chatKey), chatKey, () => copy, skip, replaced);
+            if (outcome === "written" && replaced) store.delete(sendKey);
+            return outcome;
+        });
+    }
+
+    function putComposerSend(chatKey: string, value: ComposerSend): Promise<WriteOutcome> {
+        const copy = copyComposer(value);
+        if (!copy) return Promise.resolve("failed");
+        return composerTransaction<WriteOutcome>("off", "failed", async (store, skip) => {
+            const draftKey = composerKey(chatKey);
+            const consumed = await composerRowIf(store, draftKey, () => true);
+            const outcome = await putComposerRow(store, composerSendKey(chatKey), chatKey, () => copy, skip, consumed);
+            if (outcome === "written" && consumed) store.delete(draftKey);
+            return outcome;
+        });
     }
 
     function updateComposerRequest(
         chatKey: string,
         { userMessageId, requestId }: { userMessageId: string; requestId?: string },
         retained?: { requestId: string; requestEpoch: string },
-    ): Promise<WriteOutcome> {
+    ): Promise<void> {
         const identity = retained && { ...retained };
-        return writeComposer(chatKey, (row, time) => {
+        const update: ComposerUpdate = (row, time) => {
             if (!row || isExpired(row.createdAt, time) || row.value.userMessageId !== userMessageId) return;
             if (row.value.requestId !== undefined && row.value.requestId !== requestId) return;
             if (identity) {
@@ -1715,109 +1763,151 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             if (row.value.requestId === undefined) return;
             const { requestId: previousId, requestEpoch: previousEpoch, ...value } = row.value;
             return value;
+        };
+        return composerTransaction<void>(undefined, undefined, async (store, skip) => {
+            await putComposerRow(store, composerSendKey(chatKey), chatKey, update, skip);
+            await putComposerRow(store, composerKey(chatKey), chatKey, update, skip);
         });
     }
 
-    function writeComposer(
-        chatKey: string,
-        update: (row: ComposerEntry | null, time: number) => ComposerValue | undefined,
-    ): Promise<WriteOutcome> {
-        return afterStart<WriteOutcome>("off", async () => {
+    function settleComposerSend(chatKey: string, userMessageId: string): Promise<void> {
+        return composerTransaction<void>(undefined, undefined, async (store, skip) => {
+            await deleteComposerRow(store, composerSendKey(chatKey), (sent) => sent.userMessageId === userMessageId);
+            // A hand-off an older page kept in the draft row is the sent text itself.
+            await deleteComposerRow(
+                store,
+                composerKey(chatKey),
+                (draft) => draft.state === "sending" && draft.userMessageId === userMessageId,
+            );
+            await putComposerRow(
+                store,
+                composerKey(chatKey),
+                chatKey,
+                (row, time) => {
+                    if (!row || isExpired(row.createdAt, time) || row.value.userMessageId !== userMessageId) return;
+                    const { userMessageId: sentId, requestId, requestEpoch, ...draft } = row.value;
+                    return draft;
+                },
+                skip,
+            );
+        });
+    }
+
+    /** One composer transaction; a skipped row is reported once it committed. */
+    function composerTransaction<T>(
+        off: T,
+        failed: T,
+        body: (store: IDBObjectStore, skip: (reason: SyncReason) => void) => Promise<T>,
+    ): Promise<T> {
+        return afterStart<T>(off, async () => {
             try {
                 let skipped: SyncReason | undefined;
-                const outcome = await withDatabase("readwrite", async (store): Promise<WriteOutcome> => {
-                    const key = composerKey(chatKey);
-                    const raw: unknown = await requestValue(store.get(key));
-                    const existing = checkJournalRow(raw);
-                    if (raw !== undefined && existing?.type !== "composer") {
-                        skipped = "format";
-                        return "skipped";
-                    }
-                    const time = now();
-                    const copy = update(existing?.type === "composer" ? existing : null, time);
-                    if (copy === undefined) return "stale";
-                    if (!checkComposerValue(copy)) {
-                        skipped = "format";
-                        return "skipped";
-                    }
-                    const row: ComposerEntry = {
-                        format: JOURNAL_FORMAT,
-                        type: "composer",
-                        chatKey,
-                        createdAt: existing && !isExpired(existing.createdAt, time) ? existing.createdAt : time,
-                        updatedAt: time,
-                        value: copy,
-                        size: 0,
-                    };
-                    row.size = sizeOf(row);
-                    if (row.size > MAX_JOURNAL_ENTRY_BYTES) {
-                        skipped = "tooLarge";
-                        return "skipped";
-                    }
-                    let total = (await totalSize(store)) - (existing?.size ?? 0) + row.size;
-                    if (total > MAX_JOURNAL_TOTAL_BYTES) {
-                        total -= await evict(store, total - MAX_JOURNAL_TOTAL_BYTES, new Set([key]));
-                    }
-                    if (total > MAX_JOURNAL_TOTAL_BYTES) {
-                        skipped = "budget";
-                        return "skipped";
-                    }
-                    store.put(row, key);
-                    return "written";
-                });
+                const result = await withDatabase("readwrite", (store) =>
+                    body(store, (reason) => {
+                        skipped = reason;
+                    }),
+                );
                 if (skipped) {
                     report({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
                 }
-                return outcome;
+                return result;
             } catch (error) {
                 reportFailure(error, "write");
-                return "failed";
+                return failed;
             }
         });
     }
 
-    function removeComposer(chatKey: string, condition: ComposerRemoval = {}): Promise<void> {
-        const { userMessageId } = condition;
-        const keepSendingIds = new Set(condition.keepSendingIds);
-        const attempt = condition.attempt && { ...condition.attempt };
-        return afterStart(undefined, async () => {
-            try {
-                await withDatabase("readwrite", async (store) => {
-                    const key = composerKey(chatKey);
-                    const row = checkJournalRow(await requestValue(store.get(key)));
-                    if (
-                        row?.type === "composer" &&
-                        (userMessageId === undefined || row.value.userMessageId === userMessageId) &&
-                        (!attempt ||
-                            row.value.userMessageId === undefined ||
-                            (row.value.userMessageId === attempt.userMessageId &&
-                                (row.value.requestId === undefined || row.value.requestId === attempt.requestId))) &&
-                        !(row.value.state === "sending" && keepSendingIds.has(row.value.userMessageId!))
-                    ) {
-                        store.delete(key);
-                    }
-                });
-            } catch (error) {
-                reportFailure(error, "write");
-            }
-        });
+    /**
+     * Puts the row `update` makes of the stored one (none: "stale") inside the caller's transaction.
+     * `replaced` is a row the caller deletes once this one is written; the budget counts it as gone.
+     */
+    async function putComposerRow(
+        store: IDBObjectStore,
+        key: string,
+        chatKey: string,
+        update: ComposerUpdate,
+        skip: (reason: SyncReason) => void,
+        replaced: ComposerEntry | null = null,
+    ): Promise<WriteOutcome> {
+        const raw: unknown = await requestValue(store.get(key));
+        const existing = checkJournalRow(raw);
+        if (raw !== undefined && existing?.type !== "composer") {
+            skip("format");
+            return "skipped";
+        }
+        const time = now();
+        const copy = update(existing?.type === "composer" ? existing : null, time);
+        if (copy === undefined) return "stale";
+        if (!checkComposerValue(copy)) {
+            skip("format");
+            return "skipped";
+        }
+        const row: ComposerEntry = {
+            format: JOURNAL_FORMAT,
+            type: "composer",
+            chatKey,
+            createdAt: existing && !isExpired(existing.createdAt, time) ? existing.createdAt : time,
+            updatedAt: time,
+            value: copy,
+            size: 0,
+        };
+        row.size = sizeOf(row);
+        if (row.size > MAX_JOURNAL_ENTRY_BYTES) {
+            skip("tooLarge");
+            return "skipped";
+        }
+        let total = (await totalSize(store)) - (existing?.size ?? 0) - (replaced?.size ?? 0) + row.size;
+        if (total > MAX_JOURNAL_TOTAL_BYTES) {
+            // The replaced row is already counted as gone.
+            const kept = new Set([key, composerKey(chatKey), composerSendKey(chatKey)]);
+            total -= await evict(store, total - MAX_JOURNAL_TOTAL_BYTES, kept);
+        }
+        if (total > MAX_JOURNAL_TOTAL_BYTES) {
+            skip("budget");
+            return "skipped";
+        }
+        store.put(row, key);
+        return "written";
     }
 
-    function removeComposersOf(chaId: string): Promise<void> {
-        return afterStart(undefined, async () => {
-            try {
-                await withDatabase("readwrite", async (store) => {
-                    const prefix = composerKey(`${chaId}${NUL}`);
-                    await eachCursor(store.openCursor(IDBKeyRange.bound(prefix, `${prefix}\uffff`)), (cursor) => {
-                        if (checkJournalRow(cursor.value)?.type === "composer") {
-                            cursor.delete();
-                        }
-                    });
-                });
-            } catch (error) {
-                reportFailure(error, "write");
-            }
-        });
+    async function composerRowIf(
+        store: IDBObjectStore,
+        key: string,
+        matches: (value: ComposerValue) => boolean,
+    ): Promise<ComposerEntry | null> {
+        const row = checkJournalRow(await requestValue(store.get(key)));
+        return row?.type === "composer" && matches(row.value) ? row : null;
+    }
+
+    async function deleteComposerRow(
+        store: IDBObjectStore,
+        key: string,
+        matches: (value: ComposerValue) => boolean,
+    ): Promise<void> {
+        if (await composerRowIf(store, key, matches)) store.delete(key);
+    }
+
+    function removeComposer(chatKey: string, { userMessageId }: { userMessageId?: string } = {}): Promise<void> {
+        return composerTransaction<void>(undefined, undefined, (store) =>
+            deleteComposerRow(
+                store,
+                composerKey(chatKey),
+                (draft) => userMessageId === undefined || draft.userMessageId === userMessageId,
+            ),
+        );
+    }
+
+    function removeComposersOf(chaId: string, chatId?: string): Promise<void> {
+        const lower = composerKey(chatId === undefined ? `${chaId}${NUL}` : `${chaId}${NUL}${chatId}`);
+        const upper = chatId === undefined ? `${lower}￿` : `${lower}${NUL}￿`;
+        return composerTransaction<void>(undefined, undefined, (store) =>
+            eachCursor(store.openCursor(IDBKeyRange.bound(lower, upper)), (cursor) => {
+                if (checkJournalRow(cursor.value)?.type === "composer") {
+                    cursor.delete();
+                }
+            }),
+        );
     }
 
     function purgeExpired(): Promise<number> {
@@ -1917,8 +2007,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         listDrafts,
         removeDraft,
         readComposer,
+        readComposerSend,
         putComposer,
+        putComposerSend,
         updateComposerRequest,
+        settleComposerSend,
         removeComposer,
         removeComposersOf,
         purgeExpired,

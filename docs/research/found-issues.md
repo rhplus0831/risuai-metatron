@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
-- [Save journal and recovery](#save-journal-and-recovery) (2)
+- [Save journal and recovery](#save-journal-and-recovery) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (3)
@@ -44,13 +44,6 @@ Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/stor
 
 **Why it matters:** a stuck read hangs its caller (an export or boot that never finishes) with no error. It no longer blocks saving.
 **Suggested handling:** when touching one of these callers, pass a signal with a bound suited to its payload (a chat load can be large on a slow link, so 20 s may be too short).
-
-### Split-commit test misses the collector guard
-
-`src/ts/storage/tests/resourceSyncJournal.test.ts` "commits the split before sending its first 5000 operations, then sends the remainder under a new id" holds the journal commit and checks for no dispatch after `advanceTimersByTimeAsync(0)`. With the ordinary collector's `if (resend.unconfirmed) continue;` (`src/ts/storage/chatStore.svelte.ts`) replaced by `if (false) continue;` the file still passes: `flushResources`'s dependency wait masks the collector on the path the test drives. HEAD keeps the guard. Found by the [cross-plan review](../audit/cross-plan-2026-10-29.md#jr3--the-split-commit-test-passes-with-the-collector-guard-removed) (JR3; its `probes/JR3-break_test.py` case 3 reproduces the pass).
-
-**Why it matters:** a regression that lets a normal save cycle dispatch an uncommitted split prefix would not be caught.
-**Suggested handling:** hold the commit across another collection cycle and assert no prefix dispatch before releasing it; fix beside JR1/JR2.
 
 ## Server jobs and prompt assembly
 

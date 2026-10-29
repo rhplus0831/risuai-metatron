@@ -222,7 +222,7 @@
             if (ref && composer.input === "") {
                 const draft = sendDrafts.takeUnplaced(ref);
                 if (draft) {
-                    composer.input = draft.input;
+                    composer.placeSend(chatKeyOf(ref), draft.input, draft.userMessageId);
                 }
             }
             if (ref) {
@@ -759,7 +759,7 @@
                     retainedRequestId: sendDrafts.retryIdFor(target, serverInput.input)?.requestId,
                 });
                 if (result === "restore") {
-                    composer.at(chatKeyOf(target)).input = serverInput.input;
+                    composer.placeSend(chatKeyOf(target), serverInput.input, serverInput.userMessageId);
                 }
             }
         }

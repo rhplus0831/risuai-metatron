@@ -389,7 +389,8 @@ it("journals screen sends, restores on switch, flushes on hide, and tracks attac
     expect(request.requestId).toEqual(expect.any(String));
     expect(request.context.input).toBe(`A to send{{inlayed::${sendFiles[0]}}}`);
     expect(input().value).toBe("");
-    expect(await drive(journal.readComposer(a))).toEqual({
+    expect(await drive(journal.readComposer(a))).toBeNull();
+    expect(await drive(journal.readComposerSend(a))).toEqual({
         state: "sending",
         input: "A to send",
         translate: "",
@@ -416,6 +417,7 @@ it("journals screen sends, restores on switch, flushes on hide, and tracks attac
     expect(io.createJob).toHaveBeenCalledTimes(1);
     hide();
     // The create had no answer: the recovered row keeps the attempt's request id for its retry.
+    expect(await drive(journal.readComposerSend(a))).toBeNull();
     expect(await drive(journal.readComposer(a))).toEqual({
         input: `A to send{{inlayed::${sendFiles[0]}}}`,
         translate: "",
@@ -423,6 +425,36 @@ it("journals screen sends, restores on switch, flushes on hide, and tracks attac
         userMessageId: request.context.userMessageId,
         requestId: request.requestId,
         requestEpoch: io.server!.epoch,
+    });
+});
+
+it("keeps an unanswered send's text and request id across a reload after a follow-up is typed and cleared", async () => {
+    const { target, input, type, click, journal } = await mountComposer();
+    const text = "Long original message that has not reached the server";
+    type(text);
+    io.createJob.mockImplementationOnce(() => new Promise(() => {}));
+    click(target.querySelector(".button-icon-send"));
+    await until(() => io.createJob.mock.calls.length === 1);
+    const request = io.createJob.mock.calls[0][0];
+    expect(input().disabled).toBe(false);
+    type("A possible follow-up");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await drive(journal.readComposer(a))).toMatchObject({ input: "A possible follow-up" });
+    type("");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await drive(journal.readComposer(a))).toBeNull();
+    expect(await drive(journal.readComposerSend(a))).toMatchObject({
+        input: text,
+        userMessageId: request.context.userMessageId,
+        requestId: request.requestId,
+    });
+
+    const reloaded = await mountComposer({ reload: true });
+    await until(() => reloaded.input().value === text);
+    expect(await drive(reloaded.journal.readComposer(a))).toMatchObject({
+        input: text,
+        userMessageId: request.context.userMessageId,
+        requestId: request.requestId,
     });
 });
 
@@ -563,7 +595,7 @@ it.each(["same", "different"])(
         const original = createPosts()[0];
         expect(original.requestId).toEqual(expect.any(String));
         expect(original.context.userMessageId).toEqual(expect.any(String));
-        expect(await drive(first.journal.readComposer(a))).toEqual({
+        expect(await drive(first.journal.readComposerSend(a))).toEqual({
             state: "sending",
             input: text,
             translate: "",
@@ -578,7 +610,7 @@ it.each(["same", "different"])(
         const { isChatBusy } = await import("src/ts/process/chatStatus.svelte");
         await vi.advanceTimersByTimeAsync(7000);
         await until(() => !isChatBusy({ chaId: "c", chatId: "a" }));
-        expect(await drive(first.journal.readComposer(a))).toMatchObject({
+        expect(await drive(first.journal.readComposerSend(a))).toMatchObject({
             input: text,
             userMessageId: original.context.userMessageId,
             requestId: original.requestId,
@@ -622,7 +654,7 @@ it("clears a refused attempt's stored request id while keeping its text and mess
         click(target.querySelector(".button-icon-send"));
         await until(() => createPosts().length === before + 1);
         const post = createPosts().at(-1)!;
-        expect(await drive(journal.readComposer(a))).toMatchObject({ requestId: post.requestId });
+        expect(await drive(journal.readComposerSend(a))).toMatchObject({ requestId: post.requestId });
         if (!selected) {
             selectChat("c", "b");
             flushSync();
@@ -630,7 +662,8 @@ it("clears a refused attempt's stored request id while keeping its text and mess
         }
         refuse(Response.json({ error: "stale" }, { status: 409 }));
         await until(() => !isChatBusy({ chaId: "c", chatId: "a" }));
-        const saved = await drive(journal.readComposer(a));
+        // A hidden chat keeps the hand-off until its text is placed; a shown one takes it over at once.
+        const saved = await drive(selected ? journal.readComposer(a) : journal.readComposerSend(a));
         expect(saved).toMatchObject({ input: text, userMessageId: post.context.userMessageId });
         expect(saved).not.toHaveProperty("requestId");
         expect(saved).not.toHaveProperty("requestEpoch");
@@ -640,6 +673,8 @@ it("clears a refused attempt's stored request id while keeping its text and mess
             flushSync();
         }
         await until(() => input().value === text);
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        expect(await drive(journal.readComposer(a))).toMatchObject({ input: text });
     }
 });
 
@@ -655,13 +690,14 @@ it("journals Continue's text and message id without a request id, including afte
     const post = createPosts()[0];
     expect(post.requestId).toEqual(expect.any(String));
     expect(post.context.userMessageId).toEqual(expect.any(String));
-    expect(await drive(journal.readComposer(a))).toEqual({
+    expect(await drive(journal.readComposerSend(a))).toEqual({
         state: "sending",
         input: text,
         translate: "",
         files: [],
         userMessageId: post.context.userMessageId,
     });
+    expect(await drive(journal.readComposer(a))).toBeNull();
     await vi.advanceTimersByTimeAsync(7000);
     await until(() => input().value === text && target.querySelector(".button-icon-send") !== null);
     window.dispatchEvent(new Event("pagehide"));

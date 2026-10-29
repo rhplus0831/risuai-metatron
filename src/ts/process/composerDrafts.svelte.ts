@@ -65,10 +65,7 @@ onChatRemoved((removal) => {
         composer.forget(removal);
         if (composer.journal) journals.add(composer.journal);
     }
-    for (const journal of journals) {
-        if (removal.chatId === null) void journal.removeComposersOf(removal.chaId);
-        else void journal.removeComposer(`${removal.chaId}\u0000${removal.chatId}`);
-    }
+    for (const journal of journals) void journal.removeComposersOf(removal.chaId, removal.chatId ?? undefined);
 });
 
 /** Keeps per-chat composers, optionally journaling their edits and send hand-offs in this browser. */
@@ -113,7 +110,11 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         );
     }
 
-    async function write(key: string, attempt?: { userMessageId: string; requestId?: string }): Promise<void> {
+    /**
+     * With `takeOver`, the written draft replaces that send's hand-off, whose text the composer now
+     * holds; it keeps the send's ids only while its text still equals the sent text.
+     */
+    async function write(key: string, takeOver?: string): Promise<void> {
         cancelTimer(key);
         if (!journal || !dirty.has(key) || removed(key)) return;
         const edit = version(key);
@@ -121,7 +122,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         if (empty(draft)) {
             lastWritten.delete(key);
             dirty.delete(key);
-            await journal.removeComposer(key, { keepSendingIds: [...(sending.get(key) ?? [])], attempt });
+            await journal.removeComposer(key);
             return;
         }
         const retry = retryIdFor?.(key, composerSendText(draft));
@@ -130,12 +131,12 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
             ...(retry === undefined ? {} : { userMessageId: retry.userMessageId, ...requestIdentity(retry.requestId) }),
         };
         const text = JSON.stringify(value);
-        if (lastWritten.get(key) === text) {
+        if (takeOver === undefined && lastWritten.get(key) === text) {
             dirty.delete(key);
             return;
         }
         lastWritten.delete(key);
-        const outcome = await journal.putComposer(key, value);
+        const outcome = await journal.putComposer(key, value, takeOver);
         if (outcome === "written" && version(key) === edit && !removed(key)) {
             lastWritten.set(key, text);
             dirty.delete(key);
@@ -236,7 +237,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         const ids = sending.get(key) ?? new Set<string>();
         ids.add(send.userMessageId);
         sending.set(key, ids);
-        void journal?.putComposer(key, {
+        void journal?.putComposerSend(key, {
             ...snapshot(send.snapshot),
             state: "sending",
             userMessageId: send.userMessageId,
@@ -250,14 +251,12 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         landed: boolean,
         request: { requestId?: string; retainedRequestId?: string } = {},
     ): void {
-        // Flush the consumed empty composer while its send still protects the hand-off. A failed
-        // send in a hidden chat must keep that row until the in-page recovery can place its text.
-        if (empty(snapshot(read(key)))) void write(key, { userMessageId, requestId: request.requestId });
         sending.get(key)?.delete(userMessageId);
         if (sending.get(key)?.size === 0) sending.delete(key);
         if (!removed(key)) {
             lastWritten.delete(key);
-            if (landed) void journal?.removeComposer(key, { userMessageId });
+            // A failed send's hand-off stays until its text is placed back in the composer.
+            if (landed) void journal?.settleComposerSend(key, userMessageId);
             else
                 void journal?.updateComposerRequest(
                     key,
@@ -265,6 +264,17 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
                     requestIdentity(request.retainedRequestId),
                 );
         }
+    }
+
+    /**
+     * Puts a failed send's text back in the chat's composer and writes the draft at once, replacing the
+     * hand-off; a file queued meanwhile stays and makes the draft a new input without the send's ids.
+     */
+    function placeSend(key: string, text: string, userMessageId: string): void {
+        at(key).input = text;
+        if (!journal || destroyed || removed(key)) return;
+        dirty.add(key);
+        void write(key, userMessageId);
     }
 
     async function restore(
@@ -281,14 +291,19 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
             version(key) === edit &&
             empty(live);
         if (!journal || !current()) return;
-        const value = await journal.readComposer(key);
+        const draft = await journal.readComposer(key);
+        if (!current()) return;
+        // A draft typed during a send comes first; the send's hand-off waits for an empty composer.
+        const handoff = draft ? null : await journal.readComposerSend(key);
+        const value = draft ?? handoff;
         if (!current() || !value) return;
         if (value.state === "sending" && sending.get(key)?.has(value.userMessageId!)) return;
         if (value.userMessageId !== undefined) {
             const landed = await checks.landed(value.userMessageId);
             if (!current()) return;
             if (landed) {
-                await journal.removeComposer(key, { userMessageId: value.userMessageId });
+                if (handoff) await journal.settleComposerSend(key, handoff.userMessageId);
+                else await journal.removeComposer(key, { userMessageId: value.userMessageId });
                 return;
             }
         }
@@ -296,8 +311,18 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         if (!current()) return;
         const files = value.files.filter((_, i) => exists[i] !== false);
         Object.assign(live, snapshot({ ...value, files }));
+        if (handoff) {
+            // The restored draft replaces the hand-off at once, so neither an edit nor clearing the
+            // composer can bring the send's text back later. A dropped attachment drops both ids.
+            const { state, ...sent } = handoff;
+            const restored: ComposerValue = files.length === value.files.length ? sent : snapshot(live);
+            const text = JSON.stringify(restored);
+            void journal.putComposer(key, restored, handoff.userMessageId).then((outcome) => {
+                if (outcome === "written" && version(key) === edit && !removed(key)) lastWritten.set(key, text);
+            });
+        }
         if (files.length === value.files.length) {
-            lastWritten.set(key, JSON.stringify(value));
+            if (!handoff) lastWritten.set(key, JSON.stringify(value));
             if (value.userMessageId !== undefined)
                 return {
                     userMessageId: value.userMessageId,
@@ -306,7 +331,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
                         ? { requestId: value.requestId }
                         : {}),
                 };
-        } else {
+        } else if (!handoff) {
             lastWritten.delete(key);
             schedule(key);
         }
@@ -348,6 +373,6 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
 
     return Object.assign(
         view(() => shown),
-        { switchTo, at, flush, beginSend, settleSend, restore, destroy },
+        { switchTo, at, flush, beginSend, settleSend, placeSend, restore, destroy },
     );
 }

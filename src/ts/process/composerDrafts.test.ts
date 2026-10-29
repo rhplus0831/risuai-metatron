@@ -235,7 +235,8 @@ describe("durable composers", () => {
         first.translate = "";
         first.files = [];
         await drive(first.flush());
-        expect(await drive(journal.readComposer(a))).toEqual({
+        expect(await drive(journal.readComposer(a))).toBeNull();
+        expect(await drive(journal.readComposerSend(a))).toEqual({
             state: "sending",
             input: "send this",
             translate: "translation",
@@ -248,12 +249,18 @@ describe("durable composers", () => {
         await drive(remounted.restore(a, checks));
         expect(snapshot(remounted)).toEqual({ input: "", translate: "", files: [] });
         first.settleSend(a, "sending-id", true);
-        expect(await drive(row(factory, a))).toBeUndefined();
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
     });
 
-    it.each([true, false])(
-        "restores an unlanded send with its retry id and drops a landed send (landed: %s)",
-        async (landed) => {
+    it.each([
+        { landed: true, row: "hand-off" },
+        { landed: false, row: "hand-off" },
+        // An older page kept the hand-off in the draft row.
+        { landed: true, row: "draft" },
+        { landed: false, row: "draft" },
+    ])(
+        "restores an unlanded send with its retry id and drops a landed send (landed: $landed, $row row)",
+        async ({ landed, row: kind }) => {
             const saved = {
                 input: "unconfirmed",
                 translate: "translation",
@@ -261,7 +268,8 @@ describe("durable composers", () => {
                 state: "sending" as const,
                 userMessageId: "recovered-id",
             };
-            await drive(journal.putComposer(a, saved));
+            if (kind === "hand-off") await drive(journal.putComposerSend(a, saved));
+            else await drive(journal.putComposer(a, saved));
             const drafts = createSendDrafts();
             const reloaded = composer((_, text) => drafts.retryIdFor({ chaId: "c", chatId: "a" }, text));
             reloaded.switchTo(a);
@@ -278,7 +286,9 @@ describe("durable composers", () => {
                 expect(recovery).toBeUndefined();
                 expect(reloaded.input).toBe("");
                 expect(await drive(row(factory, a))).toBeUndefined();
+                expect(await drive(journal.readComposerSend(a))).toBeNull();
             } else {
+                expect(await drive(journal.readComposerSend(a))).toBeNull();
                 expect(snapshot(reloaded)).toEqual({
                     input: "unconfirmed",
                     translate: "translation",
@@ -302,6 +312,102 @@ describe("durable composers", () => {
             }
         },
     );
+
+    it("keeps a send's hand-off apart from a follow-up typed and cleared during it, and restores it into an empty composer", async () => {
+        const first = composer();
+        first.switchTo(a);
+        first.input = "original";
+        first.beginSend(a, { snapshot: snapshot(first), userMessageId: "original-id" });
+        first.input = "";
+        first.input = "follow-up";
+        await drive(first.flush());
+        expect(await drive(journal.readComposer(a))).toEqual({ input: "follow-up", translate: "", files: [] });
+        first.input = "";
+        await drive(first.flush());
+        expect(await drive(journal.readComposer(a))).toBeNull();
+        expect(await drive(journal.readComposerSend(a))).toMatchObject({
+            input: "original",
+            userMessageId: "original-id",
+        });
+        first.input = "follow-up";
+        await drive(first.flush());
+        first.settleSend(a, "original-id", false);
+        first.destroy();
+
+        // The draft typed later comes back first; the hand-off waits for an empty composer.
+        const reloaded = composer();
+        reloaded.switchTo(a);
+        expect(await drive(reloaded.restore(a, checks))).toBeUndefined();
+        expect(reloaded.input).toBe("follow-up");
+        reloaded.input = "";
+        await drive(reloaded.flush());
+        expect(await drive(journal.readComposerSend(a))).toMatchObject({ userMessageId: "original-id" });
+        reloaded.switchTo(b);
+        reloaded.switchTo(a);
+        expect(await drive(reloaded.restore(a, checks))).toEqual({ text: "original", userMessageId: "original-id" });
+        expect(reloaded.input).toBe("original");
+        // The restored draft took over the hand-off, so clearing it cannot bring the text back.
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        expect(await drive(journal.readComposer(a))).toEqual({
+            input: "original",
+            translate: "",
+            files: [],
+            userMessageId: "original-id",
+        });
+    });
+
+    it("replaces a failed send's hand-off once its text is placed, also beside a file queued during the send", async () => {
+        const ref = { chaId: "c", chatId: "a" };
+        const drafts = createSendDrafts();
+        const first = composer((_, text) => drafts.retryIdFor(ref, text));
+        first.switchTo(a);
+        first.input = "original";
+        first.addFile("old-file");
+        const attempt = { input: composerSendText(first), ...drafts.idsFor(ref, composerSendText(first)) };
+        first.beginSend(a, { snapshot: snapshot(first), userMessageId: attempt.userMessageId });
+        first.input = "";
+        first.files = ["new-file"];
+        drafts.settle(ref, attempt, { landed: false, ok: false, selected: true, composerEmpty: true });
+        first.settleSend(a, attempt.userMessageId, false);
+        first.placeSend(a, attempt.input, attempt.userMessageId);
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        // The queued file makes it another input: the draft keeps both, without the send's ids.
+        expect(await drive(journal.readComposer(a))).toEqual({
+            input: "original{{inlayed::old-file}}",
+            translate: "",
+            files: ["new-file"],
+        });
+        first.input = "";
+        first.files = [];
+        await drive(first.flush());
+        first.switchTo(b);
+        first.switchTo(a);
+        await drive(first.restore(a, checks));
+        expect(snapshot(first)).toEqual({ input: "", translate: "", files: [] });
+    });
+
+    it("keeps a draft typed again during a send, without that send's id, when the send lands", async () => {
+        const ref = { chaId: "c", chatId: "a" };
+        const drafts = createSendDrafts();
+        const first = composer((_, text) => drafts.retryIdFor(ref, text));
+        first.switchTo(a);
+        first.input = "continue";
+        const attempt = { input: "continue", ...drafts.idsFor(ref, "continue") };
+        first.beginSend(a, { snapshot: snapshot(first), userMessageId: attempt.userMessageId });
+        first.input = "";
+        first.input = "continue";
+        await drive(first.flush());
+        expect(await drive(journal.readComposer(a))).toMatchObject({ userMessageId: attempt.userMessageId });
+        drafts.settle(ref, attempt, { landed: true, ok: true, selected: true, composerEmpty: false });
+        first.settleSend(a, attempt.userMessageId, true);
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        expect(await drive(journal.readComposer(a))).toEqual({ input: "continue", translate: "", files: [] });
+        first.destroy();
+        const reloaded = composer();
+        reloaded.switchTo(a);
+        await drive(reloaded.restore(a, { ...checks, landed: async () => true }));
+        expect(reloaded.input).toBe("continue");
+    });
 
     it.each(["switch away and back", "type and clear"])("ignores a late restore after %s", async (action) => {
         await drive(journal.putComposer(a, { input: "old journal text", translate: "old translation", files: [] }));
