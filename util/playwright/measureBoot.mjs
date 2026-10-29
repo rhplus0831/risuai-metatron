@@ -1367,10 +1367,14 @@ async function measureBoot() {
                 );
                 const listings = reads.filter((entry) => entry.path === "/api/resources/revisions");
                 const hello = hellos.find((entry) => entry.socket > previousSocket);
-                check(`resumeAway ${run}: new socket hello and exactly one revision listing`, !!hello && listings.length === 1, {
-                    hello,
-                    reads,
-                });
+                check(
+                    `resumeAway ${run}: new socket hello and exactly one revision listing`,
+                    !!hello && listings.length === 1,
+                    {
+                        hello,
+                        reads,
+                    },
+                );
                 // The change shows in the page: the character's description field holds the away text.
                 await page.locator(`[data-char-id="${character.chaId}"]`).first().click();
                 await page.getByRole("button", { name: "Character", exact: true }).click();

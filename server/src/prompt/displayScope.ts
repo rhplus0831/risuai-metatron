@@ -22,7 +22,13 @@ import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { bindingLookup, checkChatBinding } from "../jobs/chatBinding.ts";
 import { GenerationRunnerError } from "../jobs/generationJobs.ts";
-import { ChatBindingError, jobScopeKinds, readCharacters, type CharacterRead, type JobScope } from "../jobs/jobScope.ts";
+import {
+    ChatBindingError,
+    jobScopeKinds,
+    readCharacters,
+    type CharacterRead,
+    type JobScope,
+} from "../jobs/jobScope.ts";
 import { buildRequestDb } from "../llm/settings.ts";
 
 /** Shared entries and request-owned data pinned by pending renders, including running continuations. */

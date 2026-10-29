@@ -599,8 +599,10 @@ async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
                 if (epoch !== event.epoch) {
                     throw new CallbackFailed("barrier", "The callback's resource epoch changed");
                 }
-                const result = await readWithDeadline(BARRIER_READ_DEADLINE_MS, "The callback's chat read timed out", (signal) =>
-                    readRefs([], { chats: [{ characterId: record.characterId!, id: record.id }], signal }),
+                const result = await readWithDeadline(
+                    BARRIER_READ_DEADLINE_MS,
+                    "The callback's chat read timed out",
+                    (signal) => readRefs([], { chats: [{ characterId: record.characterId!, id: record.id }], signal }),
                 );
                 if (entry.cancelled || !outstanding.includes(entry)) {
                     throw cancelledByServer();

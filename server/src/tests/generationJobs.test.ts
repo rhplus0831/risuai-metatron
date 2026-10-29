@@ -1178,7 +1178,9 @@ describe("the locks a job's writes and end publish", () => {
     it("a replayed `begin` of a generation the job released takes no lock again", async () => {
         const { create, run, ended, revision, owner, events } = setup({ feed: true });
         const outcome = run(async (job) => {
-            job.write(() => ({ chats: [group(revision(), [begin("r", "g1"), checkpoint("r", "g1", 1, "one", true)])] }));
+            job.write(() => ({
+                chats: [group(revision(), [begin("r", "g1"), checkpoint("r", "g1", 1, "one", true)])],
+            }));
             expect(owner("r")).toBeNull();
             // The store treats the replay as a no-op; the job's released generation stays released.
             job.write(() => ({ chats: [group(revision(), [begin("r", "g1")])] }));

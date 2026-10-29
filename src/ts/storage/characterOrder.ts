@@ -221,11 +221,14 @@ async function appendMissingCharacters(
     for (let start = 0; start < candidates.length; start += REPAIR_READ_CHUNK) {
         const chunk = candidates.slice(start, start + REPAIR_READ_CHUNK);
         const unsaved = new Set(chunk.filter((id) => heldRevision(id) === null));
-        const read = await readWithDeadline(REPAIR_READ_DEADLINE_MS, "The character order repair's read timed out", (signal) =>
-            readRefs(
-                chunk.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
-                { signal },
-            ),
+        const read = await readWithDeadline(
+            REPAIR_READ_DEADLINE_MS,
+            "The character order repair's read timed out",
+            (signal) =>
+                readRefs(
+                    chunk.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
+                    { signal },
+                ),
         );
         if (remoteRepair.seq !== seq || JSON.stringify(settings.characterOrder ?? []) !== before) {
             return "stale";
