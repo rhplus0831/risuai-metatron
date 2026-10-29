@@ -50,6 +50,7 @@ git show 802a4840a:docs/plan/hypav3-token-budget.md
 git show 1db8c10a8:docs/plan/display-evaluation.md
 git show bbc747f24:docs/plan/durable-drafts.md
 git show 73c12d29c:docs/plan/job-protocol.md
+git show 2a8f7b93a:docs/plan/boot-bytes.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -101,6 +102,7 @@ it is not a current architecture guide.
 | Display Evaluation                       | `1db8c10a8`: `docs/plan/display-evaluation.md`                            | [CBS/rendering](../structure/cbs-rendering.md), [scripts/triggers](../structure/scripts-triggers.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                         |
 | Durable Drafts                           | `bbc747f24`: `docs/plan/durable-drafts.md`                                | [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [diagnostics](../structure/diagnostics.md), [UI/theming](../structure/ui-theming.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                                                                                     |
 | Job Protocol                             | `73c12d29c`: `docs/plan/job-protocol.md`                                  | [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [plugins/MCP](../structure/plugins-mcp.md), [diagnostics](../structure/diagnostics.md), [persistence](../structure/persistence.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                 |
+| Boot Bytes                               | `2a8f7b93a`: `docs/plan/boot-bytes.md`                                    | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [app shell](../structure/app-shell.md), [plugins/MCP](../structure/plugins-mcp.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -946,6 +948,19 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     Hazard); modules, global regex and Lua (server-side per job) cannot be turned off.
   - Known stale test untouched by the plan: `server/src/tests/importPngCaps.test.ts` fails
     on a clean tree (`{ total }` expected, `card` also returned).
+- Boot Bytes:
+  - Only headless Chrome was checked: compressed scripts, the reconnect digest, and the
+    per-character chat collections have no Firefox, Safari, mobile, or private-window run.
+  - "Last chatted" ordering on the home screen and the mobile character list is derived
+    from the chats now and has not been checked in a browser; `checkServerJobMatrix.mjs`
+    was not re-run after the server stopped stamping characters on a send.
+  - Not planned: characters as a sidebar projection (Q3), a persisted change log and
+    `changes?since=` cursor (Q2; a reconnect after a change made while hidden still reads
+    the whole revision listing), a summary projection that does not parse whole chat
+    `meta`, and a boot cache that follows the tab's acknowledged state.
+  - Found by the run (in `docs/research/found-issues.md`): server import and restore skip
+    existing assets on existence alone; measureBoot gaps; a `readersCharacters` e2e
+    timeout behind the Safe boot notice.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
