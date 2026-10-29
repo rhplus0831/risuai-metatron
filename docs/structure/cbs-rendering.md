@@ -174,6 +174,8 @@ Display:
 - `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
 - Unconfirmed follow-ups, deferred and not reproduced since: a hang in the additional-asset passes and a duplicate render after "Re-render" (`rerenderMessage` bypasses the transform cache). Both code paths remain.
+- Every failed message display joins the 5–60 s retry rounds (`transformClient.ts` `markDisplayTransformFailed`), including the tab's own size refusal (a source over `MAX_TRANSFORM_TEXT_BYTES`, never sent) and HTTP 4xx answers, whose status `postOnce` folds into a plain `Error`. A permanent failure therefore rerenders the mounted row and shows the `serverTransformFailed` toast every round (every 60 s once the delay has doubled up), and a server-side refusal re-reads its transcript each time ([cross-plan review](../audit/cross-plan-2026-10-29.md#dt1--a-permanent-display-failure-retries-and-toasts-every-round) DT1).
+- `displayTransformRecovery.svelte.ts` `markDisplayTransformSucceeded` retires a failure only from an older Re-render generation. A message edit changes the source without advancing the generation, so a failure recorded before the edit survives the edited source's successful render, and its round rerenders that row once more, replacing its rendered HTML (typed form input included) ([cross-plan review](../audit/cross-plan-2026-10-29.md#dt2--a-failures-retry-outlives-the-edited-sources-successful-render) DT2).
 
 ### Limitations
 

@@ -492,7 +492,8 @@ Process memory: the module-level `assetVerification` singleton holds bounded ver
 - A job writes only while its admitted epoch and live job token remain valid. Message
   ownership is checked in the same synchronous store transaction as the write.
 - Restore and import run under maintenance. The store replaces its resource state
-  atomically; imports preserve existing content-addressed asset files.
+  atomically; imports and restore keep an existing content-addressed asset file whose bytes
+  verify and replace a damaged one from the staged copy.
 - `llmSecrets` is write-only: reads return the masked projection, never credential
   values. Credentials for server provider requests are resolved server-side.
 - The server uses one local `save/` directory and one process. Docker persistence

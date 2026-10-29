@@ -43,7 +43,7 @@ uses a shared principal.
 | U1  | P2       | Pre-existing; outside the plan         | A same-origin window opened with an opener inherits the supposed per-tab job owner identity |
 | U2  | P3       | Pre-existing; previously recorded      | An unused resume helper and its documentation describe the wrong boot path                  |
 
-**Resolution (2026-10-29).** All six are fixed, each with regression tests except JP4 (a browser
+**Resolution (2026-10-29).** All six are fixed, each with regression tests except U2 (a dead-code removal) and JP4 (a browser
 driver, rerun instead): JP1 in `9bfd29b73`, JP2 in `035a76416`, U1 in `0afb40afe`, U2 in
 `32bb411d2`, JP3 in `df393fcc0`, and JP4 in `72b221a26`. JP1 also keeps uncertainty for
 `chatBusy`, `chatBindingIncomplete` and `chatLoreOverrideOrphaned`, which a later probe showed

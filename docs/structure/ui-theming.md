@@ -172,6 +172,10 @@ Theme and GUI helpers:
 
 ## Known Hazards
 
+### Issues
+
+- `chatStatus.svelte.ts` `visibleChatKey` treats the open chat as shown unless the page is hidden or Settings or the grid is open; a full-screen modal over the transcript (the bookmark list, `BookmarkList.svelte`) is not considered, so a reply that finishes behind it counts as viewed (`noteJobDone` adds no unseen mark) and a recovery mark can be cleared ([cross-plan review](../audit/cross-plan-2026-10-29.md#dt3--a-reply-finished-behind-the-bookmark-modal-counts-as-viewed) DT3).
+
 ### Limitations
 
 - Content that grows inside rows already shown above the view while a scroll animation runs moves the reader by the grown height (Chrome, reversed scroller): images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs from its rendered height when it comes near. `Chats.svelte` holds rows that come in above the view until they have rendered and the reader stops scrolling; a new path that adds rows above the shown ones goes through that hold. A fix would keep a reader anchor once the hold releases (the visible row nearest the view's top and its offset) and restore it at `scrollend`, not mid-animation. Reproduce with real X wheel ticks (headed Chrome on WSLg through XTest); CDP `Input.dispatchMouseEvent` wheels do not animate. Decision: deferred by the owner (2026-10-27).

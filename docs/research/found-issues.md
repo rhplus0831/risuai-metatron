@@ -9,11 +9,12 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
-- [Save journal and recovery](#save-journal-and-recovery) (1)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
+- [Save journal and recovery](#save-journal-and-recovery) (2)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
 - [Display transform](#display-transform) (3)
-- [Chat screen and input](#chat-screen-and-input) (2)
+- [Chat screen and input](#chat-screen-and-input) (3)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
+- [Test timing](#test-timing) (1)
 - [Test mocks](#test-mocks) (4)
 
 ## Chat store, sync, and change feeds
@@ -44,6 +45,13 @@ Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/stor
 **Why it matters:** a stuck read hangs its caller (an export or boot that never finishes) with no error. It no longer blocks saving.
 **Suggested handling:** when touching one of these callers, pass a signal with a bound suited to its payload (a chat load can be large on a slow link, so 20 s may be too short).
 
+### Split-commit test misses the collector guard
+
+`src/ts/storage/tests/resourceSyncJournal.test.ts` "commits the split before sending its first 5000 operations, then sends the remainder under a new id" holds the journal commit and checks for no dispatch after `advanceTimersByTimeAsync(0)`. With the ordinary collector's `if (resend.unconfirmed) continue;` (`src/ts/storage/chatStore.svelte.ts`) replaced by `if (false) continue;` the file still passes: `flushResources`'s dependency wait masks the collector on the path the test drives. HEAD keeps the guard. Found by the [cross-plan review](../audit/cross-plan-2026-10-29.md#jr3--the-split-commit-test-passes-with-the-collector-guard-removed) (JR3; its `probes/JR3-break_test.py` case 3 reproduces the pass).
+
+**Why it matters:** a regression that lets a normal save cycle dispatch an uncommitted split prefix would not be caught.
+**Suggested handling:** hold the commit across another collection cycle and assert no prefix dispatch before releasing it; fix beside JR1/JR2.
+
 ## Server jobs and prompt assembly
 
 ### Trigger bookmarkNames whole write
@@ -60,6 +68,20 @@ Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/stor
 **Why it matters:** the client's feed-lock rules (whole-read lock lists, the revision rule for older copies) assume a released generation does not re-lock a message.
 **Suggested handling:** if a reply ever shows locked after its job finished its write, check for a replayed `begin`; a fix would retire released generation ids per job in `generationLock` or refuse a `begin` whose message exists.
 
+### Tool schemas are outside the assembly token budget
+
+`server/src/prompt/assemble.ts`'s final recheck counts messages; `AssemblyHost` has no tool-schema input, and the OpenAI adapter (`server/src/llm/openAI/requests.ts`) adds `body.tools` from descriptors supplied later in `server/src/llm/requests.ts`. A prompt assembled to the budget can therefore exceed the provider's context by the schemas' tokens. Traced by the [cross-plan review](../audit/cross-plan-2026-10-29.md#hypotheses-not-reproduced) (memory seam) and not reproduced with a real tokenizer; unverified.
+
+**Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
+**Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
+
+### Hand-edited legacy HypaV3 ratios resolve negative
+
+`shared/hypaV3Presets.ts` `resolveHypaV3Budget` accepts legacy ratio fields as stored: `memoryTokensRatio: -0.2` or `extraSummarizationRatio: 2` (a hand-edited or imported preset) resolve at `C = 1000` to a memory budget of −200 and a target of −1000, and a token-mode call with `C = NaN` leaves nonfinite thresholds. No settings-UI path produces these values; token-mode fields are floored at 0. Probed by the cross-plan review (memory seam); latent.
+
+**Why it matters:** a malformed preset would plan memory with negative room instead of refusing or clamping.
+**Suggested handling:** clamp ratios to `[0, 1]` and guard a nonfinite `C` in the resolver when it is next touched; keep the stored values (parity and import contract).
+
 ## Display transform
 
 ### Budget-refused handler rows stay raw
@@ -67,7 +89,7 @@ Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/stor
 `server/src/prompt/transform.ts` refuses a two-call (tab plugin handler) target whose snapshot charge passes `MAX_SNAPSHOT_BYTES` (8 MiB, :51; the check near :806-824), and the target answers `{ ok: false }`, so the row shows its raw text. `src/ts/parser/transformClient.ts` sends chunks of `MAX_TRANSFORM_TARGETS` (64, `shared/transform.ts:106`; the chunking near :425) and never retries a budget-refused target in a later, smaller chunk, so the row stays raw until it remounts. When Display Evaluation Slice 3 measured it (2026-10-28), a 2,000-message chat of about 6 MiB charged about 6.7 MiB per scope, so only 30–38 of a 64-target chunk fit. Since Slice 4 the shared display entries are excluded from the per-snapshot charge (`exclude: entries`) and pinned against the 64 MiB `MAX_RETAINED_BYTES` instead, so that number is likely smaller now; not re-measured.
 
 **Why it matters:** users with display plugins and long chats may see raw rows.
-**Suggested handling:** re-measure on a realistic large chat with handlers; if rows still fail, retry budget-refused targets in smaller chunks or give the refusal its own code.
+**Suggested handling:** re-measure on a realistic large chat with handlers; if rows still fail, retry budget-refused targets in smaller chunks or give the refusal its own code. The [cross-plan review](../audit/cross-plan-2026-10-29.md#dt1--a-permanent-display-failure-retries-and-toasts-every-round) measured that each automatic retry of such a refusal re-reads the transcript (about 120–175 ms for 65 MiB) and that the tab retries permanent refusals without bound (DT1).
 
 ### Display scope copies the job scope's character reads
 
@@ -99,6 +121,13 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Why it matters:** an orphaned popup whose close writes back to nothing; only reachable when open and destroy share one batch.
 **Suggested handling:** if it ever shows up, have the opener remember whether its open was the current session at open time and close unconditionally through a store function that compares ids captured outside the teardown, or close in a microtask after destroy.
 
+### Popup editor mode switch resets selection and undo
+
+`src/lib/Others/PopupEditor.svelte` destroys and recreates the textarea or the Monaco model when the Monaco toggle changes after an edit: the text is kept, the selection resets to the end (`[6,10] → [16,16]` in the review probe), the old model is disposed, and `canUndo` goes from true to false, so an undo after switching back does nothing. Observed by the [cross-plan review](../audit/cross-plan-2026-10-29.md#noted-not-recommended-to-fix) with a real Monaco instance (`probes/N1-PopupEditor.review.probe.ts`).
+
+**Why it matters:** a user who toggles modes mid-edit loses undo history; the toggle's contract (`819a6295d`) promises only the text.
+**Suggested handling:** decide: record it as a ui-theming Limitation (keep the text-only contract), or keep one model across the switch (a larger editor-lifetime change).
+
 ## Build, drivers, and e2e
 
 ### measureBoot has no resume after a change made while hidden
@@ -114,6 +143,15 @@ Since the reconnect digest (Boot Bytes D4), `measureBoot.mjs`'s `resume` scenari
 
 **Why it matters:** any stretch of unfinished loads turns into a five-minute timeout instead of a clear failure, and the unfinished loads themselves are unexplained.
 **Suggested handling:** clear the safe-boot attempts in the spec's context (or in a shared e2e fixture), and if it recurs, find why the earlier loads did not finish.
+
+## Test timing
+
+### Gate tests still racing real time
+
+Untagged gate tests that depend on real wall-clock or scheduler time (invariant V3), noted by the [cross-plan review](../audit/cross-plan-2026-10-29.md#test-quality) on 2026-10-29; none failed in its runs. `src/ts/storage/tests/draftJournal.test.ts`: the start and adoption cases (the live-owner case near "leaves a live owner's rows alone" and the owner-reload case) call the real journal with its production 3 s open/seed and 5 s recovery-lock deadlines, and the file's blanket fake-timer comment does not hold for them. `server/src/tests/hypaV3Parts.test.ts`: selection and deferral cases built with `hostOf` run under the real 5,000 ms cumulative separator budget. `server/src/tests/transformService.test.ts`: `heldCount` polls with a real `setTimeout(2)` (up to 500 polls) and a 5 ms real sleep observes shutdown. `server/src/tests/transform.test.ts`: the real-worker route cases outside the cache describe's fake clock race worker, CBS, and transform deadlines (`SLOW = 60_000` is a timeout, not a `slow` tag). `src/ts/storage/tests/bootCacheServer.test.ts` (around the cases near lines 185 and 485 at that time): the real 3 s cache deadline with asynchronous IndexedDB work. Real sleeps: `server/src/tests/backups.test.ts` (`sleep(2)`/`sleep(20)` in five cases), `server/src/tests/push.test.ts` (delivery and queue synchronization), `server/src/tests/resourceStore.test.ts` (delayed continuations), `server/src/tests/diagnostics.test.ts` (successive state timestamps, a job fixture). `src/lib/ChatScreens/Chat.draft.test.ts`: the auto-popup cases wait for the first row with real `vi.waitFor` before faking timers. `src/ts/network/generationJobs.test.ts` and `src/ts/process/serverCommands.test.ts`: zero-delay real-timer flush helpers as synchronization.
+
+**Why it matters:** each is a load-sensitive failure waiting for a slow CI runner; the timing plans' policy (`docs/structure/build-test-platforms.md` `Tests`) asks for controlled clocks or the `slow` tag.
+**Suggested handling:** when one of these files is next touched, control its clock (inject the deadline or fake the timers) or tag the case `slow`; `pnpm --silent test:agent --slow-tests` lists the ones over 1 s.
 
 ## Test mocks
 
