@@ -43,6 +43,7 @@ import {
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
     type ChatSnapshotRows,
+    type ChatWriteChange,
     countChatOperations,
     createChatTables,
     type MessageSearchChat,
@@ -252,6 +253,27 @@ export type CheckpointTransaction = Pick<
 export type ApplyChangesTransaction = {
     before?: (tx: CheckpointTransaction) => unknown;
     after?: (applied: AppliedChanges, tx: CheckpointTransaction) => unknown;
+};
+
+/**
+ * The chat changes a write made, for the writer that asked (`applyChanges` with `changes: true`):
+ * aligned with `AppliedChanges.chats`, each by-id group's change as stored, undefined for a group
+ * without one.
+ */
+export type WrittenChanges = { chats: (ChatWriteChange | undefined)[] };
+
+/** `applyChanges`' options (see there). */
+type ApplyChangesOptions = {
+    epoch?: string;
+    jobToken?: string;
+    inTransaction?: ApplyChangesTransaction;
+    /** Also build the write's own chat changes, for `committed`. */
+    changes?: boolean;
+    /**
+     * `written` is passed only with `changes: true`. A method, so the hook of such a write can take
+     * it as a required parameter.
+     */
+    committed?(applied: AppliedChanges, written?: WrittenChanges): readonly ChatStreaming[];
 };
 
 export type ResourceStore = ReturnType<typeof createResourceStore>;
@@ -991,7 +1013,10 @@ export function createResourceStore(options: {
         return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
     }
 
-    /** `applyChanges` inside the publishing scope (see there). */
+    /**
+     * `applyChanges` inside the publishing scope (see there). With `written` (this call's own), the
+     * chat groups' changes are built too and stored in it once the batch has committed.
+     */
     function applyChangesInScope(
         batch: {
             ops?: readonly ResourceBatchOperation[];
@@ -999,6 +1024,7 @@ export function createResourceStore(options: {
             chatOrders?: unknown;
         },
         options: { epoch?: string; jobToken?: string; inTransaction?: ApplyChangesTransaction },
+        written?: WrittenChanges,
     ): AppliedChanges {
         assertNotInTransaction();
         if (options.epoch !== undefined) {
@@ -1193,6 +1219,7 @@ export function createResourceStore(options: {
                 orderBases,
                 conflicts.length > 0,
                 options.jobToken,
+                written !== undefined,
             );
             conflicts.push(...chatOutcome.conflicts);
             if (conflicts.length > 0) {
@@ -1218,6 +1245,9 @@ export function createResourceStore(options: {
             }
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);
+            }
+            if (written && chatOutcome.changes) {
+                written.chats = chatOutcome.changes;
             }
             return applied;
         } finally {
@@ -1808,6 +1838,14 @@ export function createResourceStore(options: {
          * the published change carries (`streaming`). It runs whether or not a feed is attached and
          * must not write to the store. If it throws, the committed change is still published (without
          * its lists) and the error is rethrown as `CommittedWriteError`: the write is not undone.
+         *
+         * `options.changes: true` (only with `committed`): the hook is called as
+         * `committed(applied, written)`, where `written.chats` holds each chat group's own change as
+         * stored (`ChatWriteChange`), aligned with `applied.chats`; undefined for a group without a
+         * by-id change (a create, replace, or delete, a remove and reappend of one id, a group this chat
+         * remembers, or one that applied nothing). The changes are uncapped and built only for a writer
+         * that asks: the feed still carries its capped patch, taken from the same change, and the
+         * returned `AppliedChanges` (the HTTP batch body) does not change.
          */
         applyChanges(
             batch: {
@@ -1815,23 +1853,20 @@ export function createResourceStore(options: {
                 chats?: unknown;
                 chatOrders?: unknown;
             },
-            options: {
-                epoch?: string;
-                jobToken?: string;
-                inTransaction?: ApplyChangesTransaction;
-                committed?: (applied: AppliedChanges) => readonly ChatStreaming[];
-            } = {},
+            options: ApplyChangesOptions = {},
         ): AppliedChanges {
             assertWritable();
-            const { committed } = options;
+            const { changes, committed } = options;
             if (!committed) {
                 return publishing(() => applyChangesInScope(batch, options));
             }
             const failure: { error?: unknown } = {};
             const applied = publishing(() => {
-                const result = applyChangesInScope(batch, options);
+                // This call's own: a write nested in its input evaluation gets another.
+                const written: WrittenChanges | undefined = changes ? { chats: [] } : undefined;
+                const result = applyChangesInScope(batch, options, written);
                 try {
-                    for (const entry of committed(result)) {
+                    for (const entry of written ? committed(result, written) : committed(result)) {
                         recordStreaming(entry);
                     }
                 } catch (error) {

@@ -186,6 +186,28 @@ export type ChatSnapshotRows = {
     readonly chatOrders: readonly { characterId: string; revision: number; ids: string }[];
 };
 
+/**
+ * What one by-id chat group changed, as stored right after it, for the writer that asked
+ * (`applyChanges` with `changes: true`). Rows and metadata stay the stored JSON strings.
+ */
+export type ChatWriteChange = {
+    /** The stored revision right before the group; for a stale group, newer than its requested base. */
+    baseRevision: string;
+    /** The revision after the group (advanced by its applied op count). */
+    revision: string;
+    /** The message count after the group. */
+    count: number;
+    /** The ids of the rows the group removed that were there before it, in removal order. */
+    removed: string[];
+    /**
+     * Every row the group touched, as stored now (its `data` column), in position order; `after` is
+     * the id of the row right before it by position, null at the start.
+     */
+    rows: { id: string; after: string | null; data: string }[];
+    /** The stored metadata JSON (`meta`), only when the group changed the metadata. */
+    meta?: string;
+};
+
 type TokenFunctions = {
     token(seq: number, revision: number): string;
     parse(value: string): { seq: number; revision: number } | null;
@@ -693,7 +715,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
     const selectPatchMessages = db.prepare(
-        "SELECT m.data, (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position " +
+        "SELECT m.id, m.data, (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position " +
             "ORDER BY p.position DESC LIMIT 1) AS after FROM messages m " +
             "WHERE m.chatSeq = ? AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.position",
     );
@@ -901,54 +923,106 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return targets.chat && [...guard.chatHolders(group.characterId, group.chatId)].some(foreign) ? [] : null;
     }
 
-    /** Reads only touched rows and their final anchors, stopping once the feed's byte cap is exceeded. */
+    /**
+     * The touched rows as stored now, in position order, each with the id of the row right before it
+     * by position. Lazy: nothing is read before the first row is asked for, and a caller that stops
+     * early ends the read.
+     */
+    function* touchedRows(chatSeq: number, touched: ReadonlySet<string>): Generator<ChatWriteChange["rows"][number]> {
+        for (const stored of selectPatchMessages.iterate(chatSeq, JSON.stringify([...touched]))) {
+            yield stored as ChatWriteChange["rows"][number];
+        }
+    }
+
+    /**
+     * The feed's patch of a by-id group from its stored parts, or undefined once its JSON
+     * (`{baseRevision,count,meta?,removed?,messages?}`, in that key order) would pass
+     * `MAX_FEED_PATCH_BYTES`. Measured part by part on the stored strings and given up at the first
+     * byte over: `rows` is iterated only once the metadata and removals fit, and only while the patch
+     * still fits; nothing is parsed until all of it fits.
+     */
     function chatFeedPatch(
-        row: ChatRow,
         baseRevision: string,
-        touched: ReadonlySet<string>,
+        count: number,
+        meta: string | undefined,
         removed: ReadonlySet<string>,
-        metaChanged: boolean,
+        rows: Iterable<{ after: string | null; data: string }> | null,
     ): ChatPatchBody | undefined {
-        const { count } = countMessages.get(row.seq) as { count: number };
-        const patch: ChatPatchBody = { baseRevision, count };
-        let bytes = Buffer.byteLength(JSON.stringify(patch));
-        if (metaChanged) {
-            bytes += Buffer.byteLength(row.meta) + ',"meta":'.length;
+        let bytes = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
+        if (meta !== undefined) {
+            bytes += Buffer.byteLength(meta) + ',"meta":'.length;
             if (bytes > MAX_FEED_PATCH_BYTES) {
                 return undefined;
             }
-            patch.meta = JSON.parse(row.meta) as Record<string, unknown>;
         }
         if (removed.size > 0) {
-            const ids: string[] = [];
-            patch.removed = ids;
             bytes += ',"removed":[]'.length;
+            let index = 0;
             for (const id of removed) {
-                bytes += Buffer.byteLength(JSON.stringify(id)) + (ids.length > 0 ? 1 : 0);
+                bytes += Buffer.byteLength(JSON.stringify(id)) + (index > 0 ? 1 : 0);
                 if (bytes > MAX_FEED_PATCH_BYTES) {
                     return undefined;
                 }
-                ids.push(id);
+                index += 1;
             }
         }
-        if (touched.size > 0) {
-            const messages: { after: string | null; message: unknown }[] = [];
-            patch.messages = messages;
+        const kept: { after: string | null; data: string }[] = [];
+        if (rows) {
             bytes += ',"messages":[]'.length;
-            for (const stored of selectPatchMessages.iterate(row.seq, JSON.stringify([...touched]))) {
-                const { after, data } = stored as { after: string | null; data: string };
+            for (const row of rows) {
                 bytes +=
-                    Buffer.byteLength(JSON.stringify(after)) +
-                    Buffer.byteLength(data) +
+                    Buffer.byteLength(JSON.stringify(row.after)) +
+                    Buffer.byteLength(row.data) +
                     '{"after":,"message":}'.length +
-                    (messages.length > 0 ? 1 : 0);
+                    (kept.length > 0 ? 1 : 0);
                 if (bytes > MAX_FEED_PATCH_BYTES) {
                     return undefined;
                 }
-                messages.push({ after, message: JSON.parse(data) });
+                kept.push(row);
             }
+        }
+        const patch: ChatPatchBody = { baseRevision, count };
+        if (meta !== undefined) {
+            patch.meta = JSON.parse(meta) as Record<string, unknown>;
+        }
+        if (removed.size > 0) {
+            patch.removed = [...removed];
+        }
+        if (rows) {
+            patch.messages = kept.map(({ after, data }) => ({ after, message: JSON.parse(data) }));
         }
         return patch;
+    }
+
+    /**
+     * A by-id group's change as stored now (`ChatWriteChange`), uncapped: one count and one read of
+     * the touched rows, with the metadata as its stored string.
+     */
+    function chatWriteChange(
+        row: ChatRow,
+        baseRevision: string,
+        revision: string,
+        touched: ReadonlySet<string>,
+        removed: ReadonlySet<string>,
+        insertedHere: ReadonlySet<string>,
+        metaChanged: boolean,
+    ): ChatWriteChange {
+        const { count } = countMessages.get(row.seq) as { count: number };
+        const change: ChatWriteChange = {
+            baseRevision,
+            revision,
+            count,
+            // An id the group appended and removed again was never in the base.
+            removed: [...removed].filter((id) => !insertedHere.has(id)),
+            rows:
+                touched.size > 0
+                    ? Array.from(touchedRows(row.seq, touched), ({ id, after, data }) => ({ id, after, data }))
+                    : [],
+        };
+        if (metaChanged) {
+            change.meta = row.meta;
+        }
+        return change;
     }
 
     /**
@@ -1038,7 +1112,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         group: PreparedChatGroup,
         changedOrders: Set<string>,
         jobToken: string | undefined,
-    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody; invalidated?: true; duplicate?: true } {
+        changes: boolean,
+    ): {
+        result: ChatGroupResult;
+        applied: number;
+        patch?: ChatPatchBody;
+        change?: ChatWriteChange;
+        invalidated?: true;
+        duplicate?: true;
+    } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined, reason?: ChatConflict["reason"]): never => {
             throw new ChatChangeConflict({
@@ -1433,11 +1515,32 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             // batch when anything conflicts.
             rememberGroup(row.seq, group.groupId, next, result, messageIdsRenamed);
         }
-        const patch =
-            patchBase && applied > 0 && !reappended
-                ? chatFeedPatch(row!, patchBase, touched, removedIds, metaChanged)
-                : undefined;
-        return { result, applied, patch, ...(invalidated ? { invalidated } : {}) };
+        let patch: ChatPatchBody | undefined;
+        let change: ChatWriteChange | undefined;
+        if (patchBase && applied > 0 && !reappended) {
+            if (changes) {
+                // The feed's patch from the same rows, so nothing is read twice.
+                change = chatWriteChange(row!, patchBase, revision!, touched, removedIds, insertedHere, metaChanged);
+                patch = chatFeedPatch(
+                    patchBase,
+                    change.count,
+                    change.meta,
+                    removedIds,
+                    touched.size > 0 ? change.rows : null,
+                );
+            } else {
+                // Without a change to build, the rows are read only while the feed's patch still fits.
+                const { count } = countMessages.get(row!.seq) as { count: number };
+                patch = chatFeedPatch(
+                    patchBase,
+                    count,
+                    metaChanged ? row!.meta : undefined,
+                    removedIds,
+                    touched.size > 0 ? touchedRows(row!.seq, touched) : null,
+                );
+            }
+        }
+        return { result, applied, patch, change, ...(invalidated ? { invalidated } : {}) };
     }
 
     return {
@@ -1647,7 +1750,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * anything conflicted (`priorConflicts`: a resource op did), since the batch rolls back and a
          * conflicting change is missing from the list. Returns every conflict found (the caller rolls
          * back when there is one), the results, the applied count, and the chats a `delete` or
-         * `replace` applied to (`invalidated`, once each, in group order).
+         * `replace` applied to (`invalidated`, once each, in group order). With `changes`, also each
+         * group's own change (`changes`, aligned with the results; undefined for a group without one).
          */
         apply(
             groups: readonly PreparedChatGroup[],
@@ -1655,20 +1759,24 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             orderBases: ReadonlyMap<string, { seq: number; revision: number } | null>,
             priorConflicts: boolean,
             jobToken?: string,
+            changes = false,
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
             // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
             const patches = new Map<ChatGroupResult, ChatPatchBody>();
             const duplicates = new Set<ChatGroupResult>();
+            // Only for a writer that asked; kept outside the results like the patches.
+            const written: (ChatWriteChange | undefined)[] | undefined = changes ? [] : undefined;
             const changedOrders = new Set<string>();
             const invalidated: { characterId: string; id: string }[] = [];
             let applied = 0;
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
                 try {
-                    const outcome = applyGroup(group, changedOrders, jobToken);
+                    const outcome = applyGroup(group, changedOrders, jobToken, changes);
                     results.push(outcome.result);
+                    written?.push(outcome.change);
                     if (outcome.duplicate) {
                         duplicates.add(outcome.result);
                     }
@@ -1731,7 +1839,16 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     });
                 }
             }
-            return { conflicts, results, orders: orderResults, applied, patches, duplicates, invalidated };
+            return {
+                conflicts,
+                results,
+                orders: orderResults,
+                applied,
+                patches,
+                duplicates,
+                invalidated,
+                changes: written,
+            };
         },
 
         /** The order rows the given reorders name, as they are before the batch writes anything. */

@@ -1,15 +1,28 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
-import type { ChatOp } from "../../../shared/chats.ts";
+import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
+import { MAX_FEED_PATCH_BYTES, type ResourceBatchResult } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import type { ChatWriteChange } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
+import {
+    createResourceStore,
+    ResourceBatchConflictError,
+    type AppliedChanges,
+    type ResourceStore,
+    type WrittenChanges,
+} from "../data/resourceStore.ts";
+import { createResourceTestClient } from "./testSupport.ts";
 
 // Public store/feed contract: expected rows come from the operations below, not the patch builder.
 const stores: ResourceStore[] = [];
-afterEach(() => stores.splice(0).forEach((store) => store.close()));
+afterEach(() => {
+    stores.splice(0).forEach((store) => store.close());
+    vi.restoreAllMocks();
+});
 const m = (chatId: string, data: string): Message => ({ chatId, data, role: "char" });
 const initial = {
     id: "k",
@@ -217,5 +230,364 @@ describe("by-id chat feed patches", () => {
         expect(b.events).toHaveLength(1);
         expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.read().revision });
         expect(b.read().data.message).toEqual([m("a", "A2"), m("b", "B2"), m("c", "C")]);
+    });
+});
+
+const bumped = (revision: string, applied: number) =>
+    revision.replace(/:\d+$/, (counter) => `:${Number(counter.slice(1)) + applied}`);
+const commitSpy = () => vi.fn((_applied: AppliedChanges, _written?: WrittenChanges) => []);
+const group = (baseRevision: string | null, ops: ChatOp[], chatId = "k"): ChatGroup => ({
+    characterId: "c",
+    chatId,
+    baseRevision,
+    ops,
+});
+
+/** Read the stored bytes independently of the writer's callback, without assuming JSON key order. */
+function storedMetadata() {
+    const prepare = DatabaseSync.prototype.prepare;
+    let connection: DatabaseSync;
+    vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+        connection = this;
+        return prepare.call(this, sql);
+    });
+    return (id: string) => {
+        const row = connection.prepare("SELECT meta FROM chats WHERE characterId = ? AND id = ?").get("c", id);
+        if (typeof row?.meta !== "string") throw new Error("The fixture chat must have stored metadata");
+        return row.meta;
+    };
+}
+
+describe("a writer's own chat changes", () => {
+    it("returns the stored row, anchor and count for setText only when requested", () => {
+        for (const changes of [false, true]) {
+            const b = setup();
+            const baseRevision = b.read().revision;
+            const committed = commitSpy();
+            const applied = b.store.applyChanges(
+                { chats: [group(baseRevision, [{ op: "setText", id: "b", text: "B!" }])] },
+                { ...(changes ? { changes: true } : {}), committed },
+            );
+            const revision = bumped(baseRevision, 1);
+            const change: ChatWriteChange = {
+                baseRevision,
+                revision,
+                count: 3,
+                removed: [],
+                rows: [{ id: "b", after: "a", data: JSON.stringify(m("b", "B!")) }],
+            };
+            expect(committed.mock.calls).toStrictEqual([changes ? [applied, { chats: [change] }] : [applied]]);
+            expect(b.notice()).toEqual({
+                characterId: "c",
+                id: "k",
+                revision,
+                patch: { baseRevision, count: 3, messages: [{ after: "a", message: m("b", "B!") }] },
+            });
+        }
+    });
+
+    it("uses the stored base for a stale group and advances by its applied op count", () => {
+        const b = setup();
+        const requestedBase = b.read().revision;
+        b.write([{ op: "meta", set: { note: "another writer" } }]);
+        const baseRevision = bumped(requestedBase, 1);
+        const committed = commitSpy();
+        const applied = b.store.applyChanges(
+            {
+                chats: [
+                    group(requestedBase, [
+                        { op: "setText", id: "c", text: "C!" },
+                        { op: "append", anchor: { start: true }, messages: [m("first", "FIRST")] },
+                        { op: "setText", id: "missing", text: "ignored" },
+                        { op: "setText", id: "b", text: "B!" },
+                    ]),
+                ],
+            },
+            { changes: true, committed },
+        );
+        const revision = bumped(baseRevision, 3);
+        expect(applied.chats).toEqual([
+            { characterId: "c", id: "k", revision, stale: true, targets: ["applied", "missing", "applied"] },
+        ]);
+        expect(committed.mock.calls).toStrictEqual([
+            [
+                applied,
+                {
+                    chats: [
+                        {
+                            baseRevision,
+                            revision,
+                            count: 4,
+                            removed: [],
+                            rows: [
+                                { id: "first", after: null, data: JSON.stringify(m("first", "FIRST")) },
+                                { id: "b", after: "a", data: JSON.stringify(m("b", "B!")) },
+                                { id: "c", after: "b", data: JSON.stringify(m("c", "C!")) },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        ]);
+    });
+
+    it("reports base removals and stored metadata while the feed also lists an appended then removed id", () => {
+        const storedMeta = storedMetadata();
+        for (const changes of [false, true]) {
+            const b = setup();
+            const baseRevision = b.read().revision;
+            const committed = commitSpy();
+            const applied = b.store.applyChanges(
+                {
+                    chats: [
+                        group(baseRevision, [
+                            { op: "append", anchor: { start: true }, messages: [m("temporary", "TEMP")] },
+                            { op: "setText", id: "c", text: "C!" },
+                            { op: "remove", ids: ["b", "temporary", "a"] },
+                            { op: "meta", set: { name: "renamed" } },
+                        ]),
+                    ],
+                },
+                { ...(changes ? { changes: true } : {}), committed },
+            );
+            const revision = bumped(baseRevision, 4);
+            const meta = { id: "k", name: "renamed", note: "keep", fmIndex: -1, localLore: [] };
+            const change: ChatWriteChange = {
+                baseRevision,
+                revision,
+                count: 1,
+                removed: ["b", "a"],
+                rows: [{ id: "c", after: null, data: JSON.stringify(m("c", "C!")) }],
+                meta: storedMeta("k"),
+            };
+            expect(JSON.parse(change.meta!)).toEqual(meta);
+            expect(committed.mock.calls).toStrictEqual([changes ? [applied, { chats: [change] }] : [applied]]);
+            expect(b.notice()).toEqual({
+                characterId: "c",
+                id: "k",
+                revision,
+                patch: {
+                    baseRevision,
+                    count: 1,
+                    meta,
+                    removed: ["b", "temporary", "a"],
+                    messages: [{ after: null, message: m("c", "C!") }],
+                },
+            });
+        }
+    });
+
+    it("returns every touched row above the feed byte cap while publishing no patch", () => {
+        for (const changes of [false, true]) {
+            const b = setup();
+            const baseRevision = b.read().revision;
+            const text = "x".repeat(MAX_FEED_PATCH_BYTES + 1);
+            const committed = commitSpy();
+            const applied = b.store.applyChanges(
+                {
+                    chats: [
+                        group(baseRevision, [
+                            { op: "setText", id: "b", text: "B!" },
+                            { op: "setText", id: "a", text },
+                        ]),
+                    ],
+                },
+                { ...(changes ? { changes: true } : {}), committed },
+            );
+            const revision = bumped(baseRevision, 2);
+            const change: ChatWriteChange = {
+                baseRevision,
+                revision,
+                count: 3,
+                removed: [],
+                rows: [
+                    { id: "a", after: null, data: JSON.stringify(m("a", text)) },
+                    { id: "b", after: "a", data: JSON.stringify(m("b", "B!")) },
+                ],
+            };
+            expect(committed.mock.calls).toStrictEqual([changes ? [applied, { chats: [change] }] : [applied]]);
+            expect(b.notice()).toEqual({ characterId: "c", id: "k", revision });
+        }
+    });
+
+    it("stops touched-row reads at the feed byte cap when changes are not requested", () => {
+        const reads = { rows: 0, iterate: 0, all: 0 };
+        const prepare = DatabaseSync.prototype.prepare;
+        vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepare.call(this, sql);
+            if (sql.includes("FROM messages m") && sql.includes("AS after") && sql.includes("json_each")) {
+                const { iterate, all } = statement;
+                statement.iterate = function* (...args) {
+                    reads.iterate++;
+                    for (const row of Reflect.apply(iterate, this, args)) {
+                        reads.rows++;
+                        yield row;
+                    }
+                    return undefined;
+                };
+                statement.all = function (...args) {
+                    reads.all++;
+                    const rows = Reflect.apply(all, this, args);
+                    reads.rows += rows.length;
+                    return rows;
+                };
+            }
+            return statement;
+        });
+        const b = setup();
+        // A fitting patch proves the counter observes the touched-row statement.
+        b.write([{ op: "setText", id: "b", text: "B!" }]);
+        expect(reads).toEqual({ rows: 1, iterate: 1, all: 0 });
+        Object.assign(reads, { rows: 0, iterate: 0, all: 0 });
+        const committed = commitSpy();
+        const large = "x".repeat(MAX_FEED_PATCH_BYTES + 1);
+        const metadata = b.store.applyChanges(
+            {
+                chats: [
+                    group(b.store.chatRevision("c", "k"), [
+                        { op: "meta", set: { note: large } },
+                        { op: "setText", id: "a", text: "A!" },
+                        { op: "setText", id: "b", text: "B!!" },
+                    ]),
+                ],
+            },
+            { committed },
+        );
+        expect(reads).toEqual({ rows: 0, iterate: 0, all: 0 });
+        expect(committed.mock.calls).toStrictEqual([[metadata]]);
+        expect(b.notice()).not.toHaveProperty("patch");
+        b.write([
+            { op: "setText", id: "a", text: large },
+            { op: "setText", id: "b", text: "B!!!" },
+            { op: "setText", id: "c", text: "C!" },
+        ]);
+        expect(reads).toEqual({ rows: 1, iterate: 1, all: 0 });
+        expect(b.notice()).not.toHaveProperty("patch");
+    });
+
+    it("leaves an undefined entry for whole-chat writes, reappends, replays and unapplied groups", () => {
+        const cases = [
+            { name: "create", ops: [{ op: "create", chat: { ...initial, id: "new" } }] },
+            { name: "replace", ops: [{ op: "replace", chat: { ...initial, name: "replacement" } }] },
+            { name: "delete", ops: [{ op: "delete" }] },
+            {
+                name: "remove and reappend",
+                ops: [
+                    { op: "remove", ids: ["b"] },
+                    { op: "append", anchor: { end: true }, messages: [m("b", "moved")] },
+                ],
+            },
+            { name: "duplicate replay", ops: [{ op: "setText", id: "b", text: "B!" }] },
+            { name: "no-op", ops: [{ op: "append", anchor: { end: true }, messages: [m("b", "B")] }] },
+            { name: "missing target", ops: [{ op: "setText", id: "missing", text: "ignored" }] },
+        ] satisfies { name: string; ops: ChatOp[] }[];
+        for (const { name, ops } of cases) {
+            const b = setup();
+            const chat = name === "create" ? group(null, ops, "new") : group(b.read().revision, ops);
+            if (name === "duplicate replay") {
+                chat.groupId = "remembered";
+                b.store.applyChanges({ chats: [chat] });
+                b.write([{ op: "setText", id: "b", text: "later writer" }]);
+                chat.retry = true;
+            }
+            const committed = commitSpy();
+            const applied = b.store.applyChanges({ chats: [chat] }, { changes: true, committed });
+            expect(committed.mock.calls, name).toStrictEqual([[applied, { chats: [undefined] }]]);
+        }
+    });
+
+    it("calls no committed hook and publishes nothing when a later group rolls the batch back", () => {
+        const b = setup();
+        const before = b.read();
+        const committed = commitSpy();
+        b.events.length = 0;
+        expect(() =>
+            b.store.applyChanges(
+                {
+                    chats: [
+                        group(before.revision, [{ op: "setText", id: "b", text: "rolled back" }]),
+                        group(before.revision, [{ op: "delete" }], "missing"),
+                    ],
+                },
+                { changes: true, committed },
+            ),
+        ).toThrow(ResourceBatchConflictError);
+        expect(committed).not.toHaveBeenCalled();
+        expect(b.events).toEqual([]);
+        expect(b.read()).toEqual(before);
+    });
+
+    it("aligns changes and undefined entries with every chat group in the batch", () => {
+        const storedMeta = storedMetadata();
+        const b = setup();
+        const seeded = b.store.applyChanges({
+            chats: ["j", "l"].map((id) => group(null, [{ op: "create", chat: { ...initial, id } }], id)),
+        });
+        const baseJ = seeded.chats[0].revision!;
+        const baseL = seeded.chats[1].revision!;
+        const committed = commitSpy();
+        const applied = b.store.applyChanges(
+            {
+                chats: [
+                    group(baseJ, [{ op: "setText", id: "b", text: "J!" }], "j"),
+                    group(null, [{ op: "create", chat: { ...initial, id: "new" } }], "new"),
+                    group(b.read().revision, [{ op: "setText", id: "missing", text: "ignored" }]),
+                    group(baseL, [{ op: "meta", set: { note: "L!" } }], "l"),
+                ],
+            },
+            { changes: true, committed },
+        );
+        expect(applied.chats.map(({ id }) => id)).toEqual(["j", "new", "k", "l"]);
+        expect(committed.mock.calls).toStrictEqual([
+            [
+                applied,
+                {
+                    chats: [
+                        {
+                            baseRevision: baseJ,
+                            revision: bumped(baseJ, 1),
+                            count: 3,
+                            removed: [],
+                            rows: [{ id: "b", after: "a", data: JSON.stringify(m("b", "J!")) }],
+                        },
+                        undefined,
+                        undefined,
+                        {
+                            baseRevision: baseL,
+                            revision: bumped(baseL, 1),
+                            count: 3,
+                            removed: [],
+                            rows: [],
+                            meta: storedMeta("l"),
+                        },
+                    ],
+                },
+            ],
+        ]);
+        expect(JSON.parse(storedMeta("l"))).toEqual({ id: "l", name: "K", note: "L!", fmIndex: -1, localLore: [] });
+    });
+
+    it("keeps the HTTP batch response keys unchanged for a by-id chat write", async () => {
+        const s = await createResourceTestClient();
+        try {
+            const seeded = await s.json("/api/resources/batch", {
+                ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c" } }],
+                chats: [group(null, [{ op: "create", chat: initial }])],
+            });
+            expect(seeded.status).toBe(200);
+            const base = ((await seeded.json()) as ResourceBatchResult).chats![0].revision!;
+            const response = await s.json("/api/resources/batch", {
+                chats: [group(base, [{ op: "setText", id: "b", text: "B!" }])],
+            });
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({
+                epoch: s.epoch,
+                results: [],
+                chats: [{ characterId: "c", id: "k", revision: bumped(base, 1) }],
+                chatOrders: [],
+            });
+        } finally {
+            await s.close();
+        }
     });
 });

@@ -257,6 +257,19 @@ Resources and chats:
   earlier result without applying again or publishing a chat feed ref. Duplicate
   tracking stays internal; the HTTP response shape is unchanged. A newly applied
   group publishes its chat ref as usual.
+- Own chat changes: a server writer that passes `changes: true` with its `committed`
+  hook to `applyChanges` gets `committed(applied, written)`. `written.chats` is aligned
+  with `applied.chats`: each by-id group's change as stored (`ChatWriteChange` in
+  `chatStore.ts`: the stored revision right before the group, even for a stale group,
+  and the revision after it; the message count; the ids it removed that were there
+  before it, in removal order; every row it touched as its stored `data` string with
+  the id of the row before it, in position order; the stored `meta` string when it
+  changed the metadata). It is `undefined` for a group without a by-id change: a
+  create, replace, or delete, a remove and reappend of one id, a remembered group, or
+  a group that applied nothing. The change is uncapped and built only for a writer
+  that asks: the feed keeps its capped patch (taken from that change), a write without
+  the option still stops reading at the feed's byte cap, and the HTTP batch body is
+  unchanged.
 - Change feed events reach listeners in publish order, including events a listener
   publishes while handling another event. Listener failures are logged and the
   feed continues draining. Committed nested writes still publish their refs when
