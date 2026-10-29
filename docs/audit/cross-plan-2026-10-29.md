@@ -47,7 +47,20 @@ toggles, HypaV3, plugins) and a false discard when the preset list was refreshed
 all were fixed before landing. A second round found that rows bound by index still redirect a draft
 when another client reorders them under an open popup, and that duplicate plugin names share a
 context. Both need equal text and remote edits, so the ui-theming guide's Known Hazards records
-them. DT1, SJ1, DT2, and DT3 remain open.
+them.
+
+DT1 was fixed on 2026-10-29 in `94856bdc2`. A display failure carries its kind: the tab's size
+refusal, a 400 or 413 answer to a chunk whose first request held one target, and a target the
+server marks `permanent` (a text or loaded scope over a limit on its own) are not retried, and like
+a success they retire the message's older-generation retry. Transient failures keep the 5–60 s
+rounds. `Chat.interactions.svelte.test.ts` fails with each classification removed. A GPT-6-Astra
+review of the first version found that a 400 or 413 of a multi-target chunk can be refused only for
+the targets' sum, and that a newer permanent failure left an older retry pending; both were fixed
+before landing. It also found that a transient sibling target in the same row (a legacy rendered
+translation) still re-requests the permanent target each round and that a script whose output size
+varies can fail the limit once and fit later. Both are rare combinations whose fix needs per-target
+terminal memory, so the rendering guide's Known Hazards records them. SJ1, DT2, and DT3 remain
+open.
 
 | ID    | Priority | Seam              | Finding                                                                                 |
 | ----- | -------- | ----------------- | --------------------------------------------------------------------------------------- |
