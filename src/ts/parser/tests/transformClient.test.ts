@@ -50,7 +50,11 @@ vi.mock("../../alert", async () =>
         alertToast: (text: string) => state.toasts.push(text),
     }),
 );
-vi.mock("../../network/generationJobs", () => ({ generationClientId: () => "client-1" }));
+vi.mock("../../network/generationJobs", async () =>
+    (await import("src/ts/network/tests/generationJobsMock")).createGenerationJobsMock({
+        generationClientId: () => "client-1",
+    }),
+);
 vi.mock("../../plugins/apiV3/pluginContext", () => ({
     capturePluginContext: (ref: { chaId: string; chatId: string } | null) =>
         ref

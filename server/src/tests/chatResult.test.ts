@@ -276,7 +276,7 @@ describe("applyTriggerChat", () => {
     });
 
     it("reconciles map entries against the baseline while other metadata keeps whole-field set and unset", () => {
-        for (const key of ["scriptstate", "GLGlobalVariables", "toolCalls"] as const) {
+        for (const key of ["scriptstate", "GLGlobalVariables", "toolCalls", "bookmarkNames"] as const) {
             const s = setup();
             const entries = (values: Record<string, string>) =>
                 Object.fromEntries(

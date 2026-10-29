@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page, type Route } from "./fixtures";
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 import type { TransformResponse } from "../shared/transform.ts";

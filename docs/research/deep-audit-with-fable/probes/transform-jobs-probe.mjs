@@ -307,24 +307,31 @@ try {
     await service.close();
     service = createTransformService(deps);
     patchChat([{ op: "replace", chat: makeChat(500, 32768) }]);
-    global.gc();
-    const heapBefore = process.memoryUsage().heapUsed;
     let pending = [];
     for (let i = 0; i < 4; i++)
         pending.push(await service.transform(request([target(0, "tiny")], { handlers: "probe-handler" }), signal));
+    // What the kept snapshots retain is measured as the heap a close frees: a delta across the four
+    // calls reads as noise, since the display loader shares one transcript entry and the garbage of
+    // earlier sections is collected inside that window.
+    const stats = service.stats();
     global.gc();
-    const heapAfter = process.memoryUsage().heapUsed;
+    const heapHeld = process.memoryUsage().heapUsed;
+    await service.close();
+    service = null;
+    global.gc();
+    const heapClosed = process.memoryUsage().heapUsed;
     console.log(
         JSON.stringify({
             label: "four-tiny-snapshots",
-            stats: service.stats(),
-            pendingTextBytes: pending.reduce((n, r) => n + Buffer.byteLength(r.pending[0].text), 0),
-            heapDeltaMiB: +((heapAfter - heapBefore) / 1048576).toFixed(2),
+            stats,
+            pendingTextBytes: pending.reduce((n, r) => n + Buffer.byteLength(r.pending?.[0]?.text ?? ""), 0),
+            unansweredCalls: pending.filter((r) => !r.pending?.length).length,
+            heapFreedOnCloseMiB: +((heapHeld - heapClosed) / 1048576).toFixed(2),
             chatTextMiB: (500 * 32768) / 1048576,
         }),
     );
 } finally {
-    await service.close();
+    await service?.close();
     await workers.dispose();
     store.close();
     scratchDb.close();

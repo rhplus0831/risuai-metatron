@@ -757,10 +757,17 @@ export async function readGenerationJob(
     }
 }
 
-/** Aborts this tab's job (the server persists the text so far). */
+/**
+ * Aborts this tab's job (the server persists the text so far). Bounded like the other control
+ * requests (`CREATE_DEADLINE_MS`): a Stop whose request hangs fails instead of staying pending.
+ */
 export async function abortGenerationJob(jobId: string): Promise<void> {
     try {
-        await request(jobPath(jobId), { method: "DELETE" });
+        await boundedAttempt(
+            (signal) => request(jobPath(jobId), { method: "DELETE", signal }),
+            undefined,
+            "The stop request timed out",
+        );
     } catch (error) {
         if (!(error instanceof ResourceRequestError && error.status === 404)) {
             throw error;

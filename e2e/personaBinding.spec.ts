@@ -1,5 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-import { openApp } from "../util/playwright/stack.mjs";
+import { expect, test, type Page } from "./fixtures";
+import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // The persona forwarding and the chat binding (the persona is one of the three fields a chat binds,
 // picked through the binding panel's row or the chat list's "Chat Settings", while a pick at home
@@ -217,7 +217,9 @@ test("two clients keep their own persona selection across reloads while the pers
     browser,
     baseURL,
 }) => {
+    // Contexts a spec makes itself are outside the `context` fixture: clear the safe-boot counter here.
     const contextA = await browser.newContext();
+    await clearSafeBootAttempts(contextA);
     const pageA = await contextA.newPage();
     await openApp(pageA, baseURL!);
     await settle(pageA);
@@ -225,6 +227,7 @@ test("two clients keep their own persona selection across reloads while the pers
     await select(pageA, u2);
 
     const contextB = await browser.newContext();
+    await clearSafeBootAttempts(contextB);
     const pageB = await contextB.newPage();
     await openApp(pageB, baseURL!);
     await settle(pageB);

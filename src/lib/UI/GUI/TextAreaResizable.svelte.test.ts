@@ -124,6 +124,16 @@ describe("TextAreaResizable popup editor", () => {
         expect(onchange).toHaveBeenCalledTimes(1);
     });
 
+    it("closes the popup it opened when destroyed in the same turn, before the open's batch flushed", async () => {
+        const ui = render({ value: "gone", popupEditor: true });
+        ui.expandButton()!.click();
+        expect(popUpEditorStore.open).toBe(true);
+        // No `flushSync()` between the click and the unmount: the teardown runs against the values
+        // from before the open's batch (Svelte 5), so the session check must not read `$state`.
+        await unmount(mounted.pop()!);
+        expect(popUpEditorStore.open).toBe(false);
+    });
+
     it("discards the popup when the bound value changes under it", async () => {
         const onchange = vi.fn();
         const ui = render({ value: "row A", popupEditor: true, onchange });

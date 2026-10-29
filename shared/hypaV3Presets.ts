@@ -148,19 +148,23 @@ export function resolveHypaV3Budget(
     maxContext: number,
     maxResponse: number,
 ): HypaV3Budget {
+    // The stored values are kept as they are (parity, the import contract); only the arithmetic is
+    // guarded: a hand-edited or imported ratio outside [0, 1] or a nonfinite context would otherwise
+    // plan memory with negative room or nonfinite thresholds.
+    const context = positiveOrZero(maxContext);
     if (settings.budgetMode !== "tokens") {
-        const headroom = settings.lookaheadHeadroomRatio;
-        const extra = settings.extraSummarizationRatio;
+        const headroom = unitRatio(settings.lookaheadHeadroomRatio);
+        const extra = unitRatio(settings.extraSummarizationRatio);
         return {
-            memoryTokens: Math.floor(maxContext * settings.memoryTokensRatio),
-            targetTokens: maxContext * (1 - extra),
-            lookaheadTrigger: maxContext * (1 - headroom),
-            lookaheadTarget: Math.max(0, maxContext * (1 - headroom - extra)),
+            memoryTokens: Math.floor(context * unitRatio(settings.memoryTokensRatio)),
+            targetTokens: context * (1 - extra),
+            lookaheadTrigger: context * (1 - headroom),
+            lookaheadTarget: Math.max(0, context * (1 - headroom - extra)),
             reduced: [],
         };
     }
 
-    const half = Math.floor(Math.max(0, positiveOrZero(maxContext) - positiveOrZero(maxResponse)) / 2);
+    const half = Math.floor(Math.max(0, context - positiveOrZero(maxResponse)) / 2);
     const configured = {
         memory: Math.floor(positiveOrZero(settings.memoryBudgetTokens)),
         headroom: Math.floor(positiveOrZero(settings.lookaheadHeadroomTokens)),
@@ -178,9 +182,9 @@ export function resolveHypaV3Budget(
     }
     return {
         memoryTokens: memory,
-        targetTokens: maxContext - extra,
-        lookaheadTrigger: maxContext - headroom,
-        lookaheadTarget: Math.max(0, maxContext - headroom - extra),
+        targetTokens: context - extra,
+        lookaheadTrigger: context - headroom,
+        lookaheadTarget: Math.max(0, context - headroom - extra),
         reduced,
     };
 }
@@ -188,6 +192,11 @@ export function resolveHypaV3Budget(
 /** `value` when it is a positive finite number, else 0. */
 function positiveOrZero(value: number): number {
     return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** `value` clamped to [0, 1]; 0 when it is not a finite number. */
+function unitRatio(value: number): number {
+    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
 }
 
 /**

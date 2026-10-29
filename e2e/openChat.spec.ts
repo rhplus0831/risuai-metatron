@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // The closed chat: a selected character shows its closed-chat screen (its name and a button that

@@ -10,8 +10,12 @@ import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 /** Chat fields a `meta` op may not set or unset: identity, the messages, and client-only state. */
 export const CHAT_META_FORBIDDEN_KEYS = ["id", "message", "isStreaming", "activeStreamingDisplayOptimizationMode"];
 
-/** The chat fields a `meta` op may `merge` entries into (and remove entries from with `mergeUnset`). */
-export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate"];
+/**
+ * The chat fields a `meta` op may `merge` entries into (and remove entries from with `mergeUnset`):
+ * every stored chat field that is a map keyed by an id, so a writer that changes one entry never
+ * replaces another writer's entries (`bookmarkNames` is keyed by message id).
+ */
+export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate", "bookmarkNames"];
 
 /** The largest remembered tool call (`toolCalls[id]`), as serialized JSON, in UTF-8 bytes. */
 export const MAX_TOOL_CALL_RECORD_BYTES = 1024 * 1024;

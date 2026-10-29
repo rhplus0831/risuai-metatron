@@ -128,9 +128,10 @@ export function jobScopeKinds(kinds: ResourceKindRegistry): ResourceKind[] {
 /**
  * The characters a job reads besides its chat's owner: a group's members, the speaker the job names
  * (`speakerChaId`), and every message's speaker (`saying`: the prompt's and lore's speaker names,
- * CBS's group speaker). No job reads another one, so the load parses none of them.
+ * CBS's group speaker). No job reads another one, so the load parses none of them. The display
+ * scope (`displayScope.ts`) reads the same set, so its keys and memos match a job's reads.
  */
-function chatCharacters(chat: Chat, owner: character | groupChat, context: GenerationContext): string[] {
+export function chatCharacters(chat: Chat, owner: character | groupChat, context: GenerationContext): string[] {
     const ids = owner.type === "group" ? [...(owner.characters ?? [])] : [];
     if (context.speakerChaId) {
         ids.push(context.speakerChaId);
@@ -143,20 +144,24 @@ function chatCharacters(chat: Chat, owner: character | groupChat, context: Gener
     return ids;
 }
 
+/** A character read as stored (`remember` of `readCharacters`): a missing one too, with a null revision. */
+export type CharacterRead = ReturnType<ResourceStore["readRefs"]>["items"][number];
+
 /**
  * The chat's owner, then the characters of `chatCharacters` and of `extra`, read by id (a missing
- * one left out); none when the chat or its owner is gone (the load then fails on the owner).
+ * one left out of the records but passed to `remember`); none when the chat or its owner is gone
+ * (the load then fails on the owner). `remember` sees every read as stored, before any projection.
  */
-function readCharacters(
+export function readCharacters(
     store: ResourceStore,
     charactersKind: ResourceKind,
     context: GenerationContext,
     chat: unknown,
     extra: ((chat: Chat, owner: character | groupChat) => Iterable<string>) | undefined,
-    revisions: Map<string, string | null>,
+    remember: (record: CharacterRead) => void,
 ): StoredResource<unknown>[] {
     const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
-    revisions.set(context.characterId, ownerRead.revision);
+    remember(ownerRead);
     if (!chat || ownerRead.data === null || ownerRead.revision === null) {
         return [];
     }
@@ -173,7 +178,7 @@ function readCharacters(
     }
     const others = store.readRefs([...ids].map((id) => ({ kind: charactersKind, id }))).items;
     for (const item of others) {
-        revisions.set(item.id, item.revision);
+        remember(item);
         if (item.data !== null && item.revision !== null) {
             records.push({ id: item.id, revision: item.revision, data: item.data });
         }
@@ -211,7 +216,7 @@ export function loadJobScope(
         context,
         chatRecord.data,
         options.characters,
-        characterRevisions,
+        (record) => characterRevisions.set(record.id, record.revision),
     );
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 

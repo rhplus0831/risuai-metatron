@@ -86,6 +86,31 @@ describe("resolveHypaV3Budget", () => {
         ).toBe(0);
     });
 
+    it("clamps stored ratios to [0, 1] and treats a nonfinite context as empty, keeping the values as stored", () => {
+        const settings = createHypaV3Preset("Edited", {
+            budgetMode: "ratio",
+            memoryTokensRatio: -0.2,
+            lookaheadHeadroomRatio: 0.1,
+            extraSummarizationRatio: 2,
+        }).settings;
+        expect(settings).toMatchObject({ memoryTokensRatio: -0.2, extraSummarizationRatio: 2 });
+        expect(resolveHypaV3Budget(settings, 1000, 100)).toEqual({
+            memoryTokens: 0,
+            targetTokens: 0,
+            lookaheadTrigger: 900,
+            lookaheadTarget: 0,
+            reduced: [],
+        });
+        for (const context of [NaN, Infinity, -1]) {
+            for (const budgetMode of ["ratio", "tokens"] as const) {
+                const budget = resolveHypaV3Budget({ ...settings, budgetMode }, context, 100);
+                for (const value of Object.values(budget)) {
+                    if (typeof value === "number") expect(value, `${budgetMode} C=${context}`).toBe(0);
+                }
+            }
+        }
+    });
+
     it("reduces token amounts to half the prompt budget, freeing headroom before extra", () => {
         // C = 1024, maxResponse = 129: P = 895, half = 447 (rounded down).
         const cases = [

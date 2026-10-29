@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // The forwarding layer and the per-client selection in the browser, against the isolated stack of
@@ -63,8 +63,6 @@ test("an edit on the Prompt page followed by a hotkey switch while the input has
 }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error)));
-    // `reload` loads the app twice (the reload, then `openApp`'s navigation).
-    await clearSafeBootAttempts(page);
     await openApp(page, baseURL!);
     await settle(page);
     const [p1, p2] = await seedPresets(page);

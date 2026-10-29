@@ -1,6 +1,7 @@
 import type { Database } from "../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { characterList } from "./characterStore.svelte";
+import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
 import { settings } from "./settingsViews.svelte";
 
@@ -125,6 +126,8 @@ function forgetUnreferencedCharacters(currentIds: Set<string>, order: Database["
 
 /** Most character refs one read of the remote repair names (the server takes 5,000 entries per read). */
 const REPAIR_READ_CHUNK = 1000;
+/** The bound of one repair chunk's read (`readWithDeadline`): a stalled read fails the attempt. */
+const REPAIR_READ_DEADLINE_MS = 30_000;
 
 /**
  * Whether a remote repair is queued or running, and the count of remote orders announced so far (an
@@ -218,7 +221,12 @@ async function appendMissingCharacters(
     for (let start = 0; start < candidates.length; start += REPAIR_READ_CHUNK) {
         const chunk = candidates.slice(start, start + REPAIR_READ_CHUNK);
         const unsaved = new Set(chunk.filter((id) => heldRevision(id) === null));
-        const read = await readRefs(chunk.map((id) => ({ kind: RESOURCE_KIND.characters, id })));
+        const read = await readWithDeadline(REPAIR_READ_DEADLINE_MS, "The character order repair's read timed out", (signal) =>
+            readRefs(
+                chunk.map((id) => ({ kind: RESOURCE_KIND.characters, id })),
+                { signal },
+            ),
+        );
         if (remoteRepair.seq !== seq || JSON.stringify(settings.characterOrder ?? []) !== before) {
             return "stale";
         }

@@ -18,6 +18,7 @@ import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { setDirectAssets, setUsingSw } from "./globalApi.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { readWithDeadline } from "./storage/readDeadline";
 import { readBoot, readKinds } from "./storage/resourceClient";
 import { indexedDbBootCacheStore, loadBootSnapshot, scheduleBootCacheCommit } from "./storage/bootCache";
 import { appVer } from "./storage/database.svelte";
@@ -61,11 +62,20 @@ export async function loadData() {
             // Chat summaries, not chats: no message row is read here; a chat is loaded when it is selected
             // or a consumer needs it. The read skips what the boot cache holds (`bootCache.ts`), falling
             // back to the plain read; the cache is written after the boot.
+            // Each boot read is bounded (`BOOT_READ_DEADLINE_MS`): a stalled one fails the boot with its
+            // error instead of a loading screen that never ends. The bound is generous, since the plain
+            // read carries every record and summary and a slow link needs the time.
             const { snapshot, commit: commitBootCache } = await loadBootSnapshot({
                 store: indexedDbBootCacheStore(appVer),
                 appVer,
-                readBoot,
-                readKinds: () => readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true }),
+                readBoot: (request) =>
+                    readWithDeadline(BOOT_READ_DEADLINE_MS, "The boot read timed out", (signal) =>
+                        readBoot(request, { signal }),
+                    ),
+                readKinds: () =>
+                    readWithDeadline(BOOT_READ_DEADLINE_MS, "The boot read timed out", (signal) =>
+                        readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true, signal }),
+                    ),
                 report: recordClientEvent,
             });
             // What the server holds, recorded before normalization changes anything, so the first save
@@ -293,6 +303,8 @@ export function watchRemoteRecords() {
 }
 
 const SW_INIT_RELOAD_KEY = "risu.serviceWorker.initReload";
+/** The bound of each boot read (the boot route, then the plain fallback read): `readWithDeadline`. */
+const BOOT_READ_DEADLINE_MS = 120_000;
 let swCapabilityProbe = 0;
 let swControllerListenerInstalled = false;
 

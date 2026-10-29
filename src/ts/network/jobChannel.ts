@@ -67,6 +67,7 @@ import {
     heldRecordRevision,
     type HydrationRecord,
 } from "../storage/resourceSync.svelte";
+import { readWithDeadline } from "../storage/readDeadline";
 import { epochMismatch, getResourceEpoch, readRefs } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 import {
@@ -147,6 +148,8 @@ function cancelOutstanding(entry: Outstanding) {
 
 /** How often a streaming provider's text is sent at most (the newest text each time). */
 const PROVIDER_CHUNK_INTERVAL_MS = 50;
+/** The bound of the barrier's chat read (`readWithDeadline`): a stalled read fails the callback. */
+const BARRIER_READ_DEADLINE_MS = 30_000;
 
 type UiItem =
     | { type: "notice"; jobId: string; notice: GenerationNotice }
@@ -596,7 +599,9 @@ async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
                 if (epoch !== event.epoch) {
                     throw new CallbackFailed("barrier", "The callback's resource epoch changed");
                 }
-                const result = await readRefs([], { chats: [{ characterId: record.characterId, id: record.id }] });
+                const result = await readWithDeadline(BARRIER_READ_DEADLINE_MS, "The callback's chat read timed out", (signal) =>
+                    readRefs([], { chats: [{ characterId: record.characterId!, id: record.id }], signal }),
+                );
                 if (entry.cancelled || !outstanding.includes(entry)) {
                     throw cancelledByServer();
                 }

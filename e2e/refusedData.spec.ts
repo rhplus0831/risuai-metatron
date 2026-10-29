@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Refused local edits remain visible in DefaultChatScreen, Sidebar and MainMenu and can be

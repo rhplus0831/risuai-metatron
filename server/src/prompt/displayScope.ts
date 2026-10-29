@@ -19,10 +19,10 @@ import {
     projectSections,
 } from "../data/databaseProjection.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
-import { isValidResourceId, type ResourceStore, type StoredResource } from "../data/resourceStore.ts";
+import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { bindingLookup, checkChatBinding } from "../jobs/chatBinding.ts";
 import { GenerationRunnerError } from "../jobs/generationJobs.ts";
-import { ChatBindingError, jobScopeKinds, type JobScope } from "../jobs/jobScope.ts";
+import { ChatBindingError, jobScopeKinds, readCharacters, type CharacterRead, type JobScope } from "../jobs/jobScope.ts";
 import { buildRequestDb } from "../llm/settings.ts";
 
 /** Shared entries and request-owned data pinned by pending renders, including running continuations. */
@@ -45,7 +45,6 @@ export type DisplayScopeEntry = {
 };
 type Entry<T> = DisplayScopeEntry & { readonly value: T };
 type CacheBounds = { maxEntries: number; maxBytes: number };
-type CharacterRead = ReturnType<ResourceStore["readRefs"]>["items"][number];
 
 /** Conservative retained data estimate, stopping above `cap`; shared objects are skipped by identity. */
 export function retainedBytes(
@@ -143,62 +142,6 @@ function createEntryCache<T>(bounds: CacheBounds) {
         },
         stats: () => ({ entries: entries.size, bytes }),
     };
-}
-
-/**
- * Characters needed besides the chat's owner: group members, the named speaker, and every stored
- * message's speaker (`saying`, including CBS's group speaker). Target sources enter through `extra`.
- */
-function chatCharacters(chat: Chat, owner: character | groupChat, context: GenerationContext): string[] {
-    const ids = owner.type === "group" ? [...(owner.characters ?? [])] : [];
-    if (context.speakerChaId) {
-        ids.push(context.speakerChaId);
-    }
-    for (const message of chat.message ?? []) {
-        if (message.saying) {
-            ids.push(message.saying);
-        }
-    }
-    return ids;
-}
-
-/**
- * The chat's owner, then the characters of `chatCharacters` and of `extra`, read by id (a missing
- * one left out of the records but remembered); none when the chat or its owner is gone (the
- * load then fails on the owner). `remember` sees stored data before `characterShell` adds chats.
- */
-function readCharacters(
-    store: ResourceStore,
-    charactersKind: ResourceKind,
-    context: GenerationContext,
-    chat: unknown,
-    extra: ((chat: Chat, owner: character | groupChat) => Iterable<string>) | undefined,
-    remember: (record: CharacterRead) => void,
-): StoredResource<unknown>[] {
-    const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
-    remember(ownerRead);
-    if (!chat || ownerRead.data === null || ownerRead.revision === null) {
-        return [];
-    }
-    const records: StoredResource<unknown>[] = [
-        { id: context.characterId, revision: ownerRead.revision, data: ownerRead.data },
-    ];
-    const owner = ownerRead.data as character | groupChat;
-    // An id no record can have (a stray `saying`, say) is one no read finds.
-    const ids = new Set<string>();
-    for (const id of [...chatCharacters(chat as Chat, owner, context), ...(extra?.(chat as Chat, owner) ?? [])]) {
-        if (id !== context.characterId && isValidResourceId(id)) {
-            ids.add(id);
-        }
-    }
-    const others = store.readRefs([...ids].map((id) => ({ kind: charactersKind, id }))).items;
-    for (const item of others) {
-        remember(item);
-        if (item.data !== null && item.revision !== null) {
-            records.push({ id: item.id, revision: item.revision, data: item.data });
-        }
-    }
-    return records;
 }
 
 /**

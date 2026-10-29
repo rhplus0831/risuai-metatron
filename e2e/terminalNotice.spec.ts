@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // The restore notice as the terminal notice (`persistence.md` Save step 10, `global-api.md`

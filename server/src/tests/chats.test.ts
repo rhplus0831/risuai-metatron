@@ -544,27 +544,27 @@ describe("chat.toolCalls", () => {
             rejects(() => prepareChatGroups([group([op])]), `chats[0].ops[0]: ${error}`);
         groupRejects(
             { op: "meta", merge: { note: { a: 1 } } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: "x" } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: [] } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: null } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
         );
         groupRejects(
             { op: "meta", merge: 5 },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
         );
         groupRejects(
             { op: "meta", merge: [] },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: {} }, set: { toolCalls: {} } },
@@ -705,7 +705,7 @@ describe("patchMessage and meta.mergeUnset", () => {
             merge: { scriptstate: { $x: "1" } },
             mergeUnset: {},
         });
-        const shape = "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate";
+        const shape = "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames";
         for (const mergeUnset of [
             null,
             [],

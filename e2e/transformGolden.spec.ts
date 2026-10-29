@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 
 // The script transform golden test (`server/src/tests/fixtures/baseline/README.md`): the final

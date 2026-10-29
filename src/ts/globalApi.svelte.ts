@@ -831,7 +831,9 @@ export function getFetchLogs() {
  * @param {string} url - The URL to open.
  */
 export function openURL(url: string) {
-    window.open(url, "_blank");
+    // `noopener`: the new page gets no `window.opener`, and a same-origin page opened this way starts
+    // with its own `sessionStorage` instead of a copy of this tab's (the live-page claim counts tabs).
+    window.open(url, "_blank", "noopener,noreferrer");
 }
 
 /**

@@ -76,11 +76,15 @@ async function load(options: { characters?: string[]; order?: unknown[]; held?: 
 }
 
 beforeEach(() => {
+    // The repair's reads carry a 30 s deadline (`readWithDeadline`); the clock is faked so no real
+    // production deadline races the test (V3). `vi.waitFor` advances the fake timers as it polls.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     client.readRefs.mockReset();
 });
 

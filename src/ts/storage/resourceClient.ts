@@ -187,12 +187,16 @@ export async function readKinds(
  * The boot read that skips what the client holds (`POST /api/resources/boot`; `bootCache.ts`
  * expands the answer). The answer is the server's as sent: the caller checks its shape.
  */
-export async function readBoot(request: ResourceBootRequest): Promise<ResourceBootResult> {
+export async function readBoot(
+    request: ResourceBootRequest,
+    options: { signal?: AbortSignal } = {},
+): Promise<ResourceBootResult> {
     return checkedEpoch(
         await sendJson<ResourceBootResult>(RESOURCE_BOOT_PATH, {
             method: "POST",
             headers: jsonHeaders,
             body: JSON.stringify(request),
+            signal: options.signal,
         }),
     );
 }

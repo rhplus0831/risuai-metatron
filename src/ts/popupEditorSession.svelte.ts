@@ -8,9 +8,17 @@ export const popUpEditorStore = $state({
 });
 
 let nextPopupEditorSessionId = 0;
+/**
+ * The current session's id outside the reactive graph. An effect teardown (a field's `onDestroy`)
+ * runs against the `$state` values from before a still-unflushed batch, so a field that opens the
+ * popup and is destroyed in the same synchronous turn would read the previous `sessionId` there and
+ * leave the popup open with no owner. The checks compare against this plain value instead.
+ */
+let currentSessionId = 0;
 
 export function openPopupEditorSession(value: string, language = "markdown"): number {
     const sessionId = ++nextPopupEditorSessionId;
+    currentSessionId = sessionId;
     popUpEditorStore.value = value;
     popUpEditorStore.mode = "default";
     popUpEditorStore.language = language;
@@ -20,7 +28,7 @@ export function openPopupEditorSession(value: string, language = "markdown"): nu
 }
 
 export function isPopupEditorSessionCurrent(sessionId: number): boolean {
-    return popUpEditorStore.sessionId === sessionId;
+    return currentSessionId === sessionId;
 }
 
 export function closePopupEditorSession(sessionId: number): boolean {

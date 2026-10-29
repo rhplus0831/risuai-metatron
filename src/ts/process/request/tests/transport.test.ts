@@ -71,7 +71,11 @@ vi.mock("src/ts/model/modellist", async () => {
         isDynamicModel: (id: string) => stubs.dynamicIds.has(id),
     };
 });
-vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab-1" }));
+vi.mock("src/ts/network/generationJobs", async () =>
+    (await import("src/ts/network/tests/generationJobsMock")).createGenerationJobsMock({
+        generationClientId: () => "tab-1",
+    }),
+);
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
 vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
     // The capture is the real display rule over the real records and selection: the chat's bound ids

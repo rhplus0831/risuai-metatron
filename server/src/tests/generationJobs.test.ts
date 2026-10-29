@@ -1175,6 +1175,26 @@ describe("the locks a job's writes and end publish", () => {
         ]);
     });
 
+    it("a replayed `begin` of a generation the job released takes no lock again", async () => {
+        const { create, run, ended, revision, owner, events } = setup({ feed: true });
+        const outcome = run(async (job) => {
+            job.write(() => ({ chats: [group(revision(), [begin("r", "g1"), checkpoint("r", "g1", 1, "one", true)])] }));
+            expect(owner("r")).toBeNull();
+            // The store treats the replay as a no-op; the job's released generation stays released.
+            job.write(() => ({ chats: [group(revision(), [begin("r", "g1")])] }));
+            expect(owner("r")).toBeNull();
+            expect(locks(events.at(-1))).toEqual([chatK([])]);
+            // A new generation on the same message locks it as before.
+            job.write(() => ({ chats: [group(revision(), [begin("r", "g2")])] }));
+            expect(owner("r")).toBe("g2");
+            job.emit({ type: "done", revision: revision(), messageId: "r" });
+        });
+        const jobId = create();
+        await outcome;
+        await ended(jobId);
+        expect(owner("r")).toBeNull();
+    });
+
     it("a handoff lists only the generation that owns the message now, each chat lists its own locks, and an abort without a final write releases every locked chat at the end", async () => {
         const { jobs, store, create, run, ended, revision, owner, events } = setup({ feed: true });
         const outcome = run(async (job) => {

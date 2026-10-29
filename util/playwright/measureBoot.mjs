@@ -12,6 +12,8 @@
 // fallback), cold (empty IndexedDB), warm, module/character (route edits), send (composer
 // send then reload), otherDevice (measured page closed during another client's send),
 // selfEdit (description saved through the sidebar), resume (>30 s hidden, no reload),
+// resumeAway (>30 s hidden with the feed's frames dropped while another client saves a description
+// through the API, as a frozen or disconnected page misses them; no reload),
 // scripts (HTTP cache cleared, IndexedDB kept, including late static imports).
 //
 // Per boot: resource timing, IndexedDB times, actual content coding, whole-answer bytes
@@ -20,7 +22,8 @@
 // server TTFB. Summary timing reports both HTTP incremental cost (estimate) and direct
 // readKinds([], { chatSummaries: true }) first/median time after shutdown on the temp-dir SQLite file,
 // with its filesystem reported (tmpfs is memory-backed).
-// Resume requires no revision listing and reports API reads and hello WebSocket payload bytes; scripts reports same-origin
+// Resume requires no revision listing and reports API reads and hello WebSocket payload bytes; resumeAway
+// requires exactly one listing and the away change shown; scripts reports same-origin
 // non-API transfer/decoded bytes after network idle. Final Markdown tables use median bytes/ms.
 // Every cached boot checks its request, expanded answer and written cache against a plain read;
 // warm claims every eligible character and module. External page requests are blocked through
@@ -353,6 +356,7 @@ async function measureBoot() {
         "otherDevice",
         "selfEdit",
         "resume",
+        "resumeAway",
         "scripts",
     ];
     const SCENARIOS = process.env.SCENARIOS?.split(",").map((value) => value.trim()) ?? allScenarios;
@@ -492,6 +496,36 @@ async function measureBoot() {
             window.__setVisibility = (state) => {
                 visibility = state;
                 document.dispatchEvent(new Event("visibilitychange"));
+            };
+            // `__dropSocketFrames(true)`: the page's sockets stay open but their `message` listeners are
+            // not called (a frozen or disconnected page that misses the feed's frames); the frames
+            // still reach CDP's capture.
+            let dropSocketFrames = false;
+            window.__dropSocketFrames = (drop) => {
+                dropSocketFrames = drop;
+            };
+            const NativeWebSocket = window.WebSocket;
+            window.WebSocket = class extends NativeWebSocket {
+                addEventListener(type, listener, options) {
+                    if (type !== "message") return super.addEventListener(type, listener, options);
+                    return super.addEventListener(
+                        type,
+                        (event) => {
+                            if (!dropSocketFrames) listener.call(this, event);
+                        },
+                        options,
+                    );
+                }
+                set onmessage(listener) {
+                    super.onmessage = listener
+                        ? (event) => {
+                              if (!dropSocketFrames) listener.call(this, event);
+                          }
+                        : listener;
+                }
+                get onmessage() {
+                    return super.onmessage;
+                }
             };
             const spinner = () => document.querySelector("div.bg-gray-900.flex-col svg.animate-spin");
             const poll = () => {
@@ -1251,6 +1285,122 @@ async function measureBoot() {
                     `resume: listing ${sample.transfer} wire / ${sample.decoded} decoded bytes, hello ${sample.hello} WebSocket payload bytes; all API reads ${sample.apiTransfer} wire / ${sample.apiDecoded} decoded bytes`,
                 );
             }
+        if (SCENARIOS.includes("resumeAway"))
+            for (let run = 0; run < RUNS; run++) {
+                await idle();
+                await page.waitForFunction(() =>
+                    performance
+                        .getEntriesByType("resource")
+                        .some(
+                            (entry) =>
+                                new URL(entry.name).pathname === "/api/resources/revisions" && entry.responseEnd > 0,
+                        ),
+                );
+                const character = characters[1 + (run % (characters.length - 1))];
+                const previousSocket = socketNumber;
+                // The window covers the whole hidden interval: a listing a reconnect reads while
+                // hidden counts too.
+                const start = await page.evaluate(() => performance.now());
+                await page.evaluate(() => window.__setVisibility("hidden"));
+                // The feed stays connected while hidden (the socket is replaced only on the resume), so
+                // its frames are dropped here, as a frozen or disconnected page misses them. Another
+                // client's change then leaves the advertised revisions behind: the resume's hello digest
+                // no longer matches, so the resume pays exactly one listing and shows the change.
+                await page.evaluate(() => window.__dropSocketFrames(true));
+                const current = await single("characters", character.chaId);
+                const description = `${current.data.desc} Saved away ${run}.`;
+                const written = await api("/api/resources/batch", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        ops: [
+                            {
+                                kind: "characters",
+                                id: character.chaId,
+                                baseRevision: current.revision,
+                                data: { ...current.data, desc: description },
+                            },
+                        ],
+                    }),
+                });
+                check(`resumeAway ${run}: away change stored`, written.status === 200, written);
+                if (written.status !== 200) throw new Error("The away change was not stored");
+                console.log(`resumeAway ${run}: hidden for 31 s`);
+                await page.waitForTimeout(31000);
+                await page.evaluate(() => window.__dropSocketFrames(false));
+                await page.evaluate(() => window.__setVisibility("visible"));
+                for (
+                    const until = Date.now() + 30000;
+                    Date.now() < until && !hellos.some((hello) => hello.socket > previousSocket);
+                )
+                    await page.waitForTimeout(50);
+                // The listing starts after the hello is processed, later than `idle()` may return:
+                // wait for one to finish (a missing one fails the check below after this bound).
+                await page
+                    .waitForFunction(
+                        (start) =>
+                            performance
+                                .getEntriesByType("resource")
+                                .some(
+                                    (entry) =>
+                                        entry.startTime >= start &&
+                                        new URL(entry.name).pathname === "/api/resources/revisions" &&
+                                        entry.responseEnd > 0,
+                                ),
+                        start,
+                        { timeout: 30000 },
+                    )
+                    .catch(() => {});
+                await idle();
+                const reads = await page.evaluate(
+                    (start) =>
+                        performance
+                            .getEntriesByType("resource")
+                            .filter(
+                                (entry) => entry.startTime >= start && new URL(entry.name).pathname.startsWith("/api/"),
+                            )
+                            .map((entry) => ({
+                                path: new URL(entry.name).pathname,
+                                transfer: entry.transferSize,
+                                decoded: entry.decodedBodySize,
+                            })),
+                    start,
+                );
+                const listings = reads.filter((entry) => entry.path === "/api/resources/revisions");
+                const hello = hellos.find((entry) => entry.socket > previousSocket);
+                check(`resumeAway ${run}: new socket hello and exactly one revision listing`, !!hello && listings.length === 1, {
+                    hello,
+                    reads,
+                });
+                // The change shows in the page: the character's description field holds the away text.
+                await page.locator(`[data-char-id="${character.chaId}"]`).first().click();
+                await page.getByRole("button", { name: "Character", exact: true }).click();
+                if (!(await page.getByPlaceholder("Character Name").count()))
+                    await page.locator("button:has(svg.lucide-user)").first().click();
+                const name = page.getByPlaceholder("Character Name");
+                await name.waitFor();
+                const descriptionInput = name.locator(
+                    'xpath=following::*[@contenteditable="true" or self::textarea][1]',
+                );
+                let shown = "";
+                for (const until = Date.now() + 10000; Date.now() < until;) {
+                    shown = await descriptionInput.evaluate((node) => node.value ?? node.textContent ?? "");
+                    if (shown === description) break;
+                    await page.waitForTimeout(200);
+                }
+                check(`resumeAway ${run}: the away change is shown`, shown === description, { shown, description });
+                await homeOnReload();
+                const sample = {
+                    transfer: listings.reduce((sum, entry) => sum + entry.transfer, 0),
+                    decoded: listings.reduce((sum, entry) => sum + entry.decoded, 0),
+                    hello: hello?.bytes ?? 0,
+                    apiTransfer: reads.reduce((sum, entry) => sum + entry.transfer, 0),
+                    apiDecoded: reads.reduce((sum, entry) => sum + entry.decoded, 0),
+                };
+                (samples.resumeAway ??= []).push(sample);
+                console.log(
+                    `resumeAway: listing ${sample.transfer} wire / ${sample.decoded} decoded bytes, hello ${sample.hello} WebSocket payload bytes; all API reads ${sample.apiTransfer} wire / ${sample.apiDecoded} decoded bytes`,
+                );
+            }
         if (SCENARIOS.includes("scripts"))
             for (let run = 0; run < RUNS; run++) {
                 await idle();
@@ -1278,11 +1428,12 @@ async function measureBoot() {
             "| Scenario | Boot wire B | Decoded B | Compressed answer B | Encoding | Server TTFB ms | Main screen ms | Listing wire / decoded B | Hello WS payload B | Static wire / decoded B |",
         );
         console.log("| --- | ---: | ---: | ---: | --- | ---: | ---: | --- | ---: | --- |");
+        const resumes = new Set(["resume", "resumeAway"]);
         for (const [scenario, list] of Object.entries(samples)) {
             const pick = (key) => median(list.map((sample) => sample[key]));
             const value = (key) => (pick(key) === null ? "-" : Number(pick(key).toFixed(2)));
             console.log(
-                `| ${scenario} | ${scenario === "resume" ? "-" : value("transfer")} | ${scenario === "resume" ? "-" : value("decoded")} | ${value("compressed")} | ${[...new Set(list.map((sample) => sample.encoding).filter(Boolean))].join(", ") || "-"} | ${value("ttfb")} | ${value("loaded")} | ${scenario === "resume" ? `${value("transfer")} / ${value("decoded")}` : "-"} | ${value("hello")} | ${scenario === "scripts" ? `${value("staticTransfer")} / ${value("staticDecoded")}` : "-"} |`,
+                `| ${scenario} | ${resumes.has(scenario) ? "-" : value("transfer")} | ${resumes.has(scenario) ? "-" : value("decoded")} | ${value("compressed")} | ${[...new Set(list.map((sample) => sample.encoding).filter(Boolean))].join(", ") || "-"} | ${value("ttfb")} | ${value("loaded")} | ${resumes.has(scenario) ? `${value("transfer")} / ${value("decoded")}` : "-"} | ${value("hello")} | ${scenario === "scripts" ? `${value("staticTransfer")} / ${value("staticDecoded")}` : "-"} |`,
             );
         }
         console.log(

@@ -558,6 +558,8 @@ describe("the requests", () => {
     });
 
     it("reads a status (null when the server does not know the job) and aborts (a 404 is fine)", async () => {
+        // The Stop is bounded (`boundedAttempt`): a controlled clock, so its deadline never races the test.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
         await expect(transport.readGenerationJob("j1")).resolves.toMatchObject({ jobId: "j1", state: "running" });
         expect(stubs.fetch.mock.calls[0][0]).toBe(`/api/generations/j1?clientId=${transport.generationClientId()}`);
@@ -572,6 +574,27 @@ describe("the requests", () => {
         await expect(transport.abortGenerationJob("j1")).resolves.toBeUndefined();
         stubs.fetch.mockResolvedValueOnce(json(500, { error: "boom" }));
         await expect(transport.abortGenerationJob("j1")).rejects.toMatchObject({ status: 500 });
+    });
+
+    it("bounds the owner's Stop to the control deadline: a hanging DELETE is aborted and the stop fails", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        let signal: AbortSignal | null | undefined;
+        stubs.fetch.mockImplementationOnce((_path, init) => {
+            signal = init?.signal;
+            return new Promise<Response>(() => {});
+        });
+        const outcome = transport.abortGenerationJob("j1").then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const error = await Promise.race([outcome, microtasks().then(() => "pending")]);
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect((error as InstanceType<Client["ResourceRequestError"]>).status).toBe(0);
+        expect(signal?.aborted).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it("bounds a status read to its deadline (the request and its body): past it the request is aborted and the read fails as one without an answer; an answer in time leaves no timer", async () => {

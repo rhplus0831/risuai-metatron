@@ -377,6 +377,11 @@ type Job = {
     generated: Set<string>;
     /** Every chat this job locked a message in (`chatKey`): the job's end publishes their locks again. */
     lockChats: Map<string, { characterId: string; chatId: string }>;
+    /**
+     * The generations this job released (`retiredKey`: a final write applied, or the message was gone
+     * at a refresh): a replayed `begin` of one changes nothing in the store and takes no lock again.
+     */
+    retired: Set<string>;
     terminal: GenerationTerminalEvent | null;
     /** The registered memory run (`registerMemoryControl`) and whether its stop was asked; null for none. */
     memoryControl: { runId: string; stopRequested: boolean } | null;
@@ -386,6 +391,9 @@ type Job = {
 };
 
 const chatKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
+/** A released generation of a message (`Job.retired`). */
+const retiredKey = (ref: MessageRef, generationId: string) =>
+    `${ref.characterId}\u0000${ref.chatId}\u0000${ref.messageId}\u0000${generationId}`;
 
 /** `text` cut to at most `bytes` UTF-8 bytes, never inside a code point. */
 function cutUtf8(text: string, bytes: number): string {
@@ -1096,6 +1104,11 @@ export function createGenerationJobs(options: {
                     for (const op of group.ops) {
                         if (op.op === "begin") {
                             const ref = { characterId: group.characterId, chatId: group.chatId, messageId: op.id };
+                            if (job.retired.has(retiredKey(ref, op.generationId))) {
+                                // A replay of a generation this job already released: the store keeps
+                                // the message as it is, so the lock must not come back either.
+                                continue;
+                            }
                             const owner = { jobId: job.id, generationId: op.generationId, token: job.token };
                             acquired.push({ ref, previous: lock.acquire(ref, owner) });
                             job.lockChats.set(chatKey(group.characterId, group.chatId), {
@@ -1159,11 +1172,9 @@ export function createGenerationJobs(options: {
                                         // Only the generation that owns the message now: a `begin` later in
                                         // the same write keeps its new generation locked.
                                         const messageId = op.op === "setText" ? op.id : op.message.chatId!;
-                                        lock.release(
-                                            { characterId: group.characterId, chatId: group.chatId, messageId },
-                                            job.token,
-                                            op.generation.id,
-                                        );
+                                        const ref = { characterId: group.characterId, chatId: group.chatId, messageId };
+                                        lock.release(ref, job.token, op.generation.id);
+                                        job.retired.add(retiredKey(ref, op.generation.id));
                                     }
                                 }
                             }
@@ -1386,6 +1397,7 @@ export function createGenerationJobs(options: {
                         }
                         if (!chat.ids.has(ref.messageId)) {
                             lock.release(ref, job.token, ref.generationId);
+                            job.retired.add(retiredKey(ref, ref.generationId));
                             if (
                                 job.current?.messageId === ref.messageId &&
                                 job.current.generationId === ref.generationId
@@ -1532,6 +1544,7 @@ export function createGenerationJobs(options: {
             ownerAbsentSince: startedAt,
             current: null,
             watermarks: new Map(),
+            retired: new Set(),
             attachStamp: -1,
             preset: null,
             stage: null,

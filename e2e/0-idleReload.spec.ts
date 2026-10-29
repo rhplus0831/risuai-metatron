@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // The convergence rule in the browser. The stack of `playwright.config.ts` starts with an empty

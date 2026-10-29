@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page } from "./fixtures";
 import { newPersonaId, normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../shared/presets.ts";
 import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 

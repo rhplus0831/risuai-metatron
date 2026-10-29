@@ -11,6 +11,7 @@ import {
     pinChat,
     setChatMeta,
 } from "./chatStore.svelte";
+import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
 import { flushResources } from "./resourceSync.svelte";
 
@@ -75,6 +76,8 @@ export function setCurrentChatMeta(set: Partial<Chat>, unset: readonly string[] 
 
 /** The most characters one detached read names (the read route's cap is far above it). */
 const DETACHED_READ_CHUNK = 500;
+/** The bound of one chunk's read (`readWithDeadline`): whole chat lists can be large on a slow link. */
+const DETACHED_READ_DEADLINE_MS = 60_000;
 
 /**
  * Every chat of the characters `chaIds`, as plain copies in their server order, read from the server
@@ -106,7 +109,9 @@ export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<
         throw new Error(`The server refused local changes that are not saved yet: ${refusedKeys.join(", ")}`);
     }
     for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
-        const read = await readRefs([], { chatCollections: wanted.slice(start, start + DETACHED_READ_CHUNK) });
+        const read = await readWithDeadline(DETACHED_READ_DEADLINE_MS, "The export's chat read timed out", (signal) =>
+            readRefs([], { chatCollections: wanted.slice(start, start + DETACHED_READ_CHUNK), signal }),
+        );
         for (const collection of read.chatCollections ?? []) {
             result.set(
                 collection.characterId,
