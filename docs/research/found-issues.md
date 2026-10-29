@@ -14,6 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Display transform](#display-transform) (3)
 - [Assets and imports](#assets-and-imports) (1)
 - [Chat screen and input](#chat-screen-and-input) (2)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (4)
 - [Test mocks](#test-mocks) (4)
 
 ## Chat store, sync, and change feeds
@@ -108,6 +109,36 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Why it matters:** an orphaned popup whose close writes back to nothing; only reachable when open and destroy share one batch.
 **Suggested handling:** if it ever shows up, have the opener remember whether its open was the current session at open time and close unconditionally through a store function that compares ids captured outside the teardown, or close in a microtask after destroy.
 
+## Build, drivers, and e2e
+
+### Build guide Flows bullets merged
+
+`docs/structure/build-test-platforms.md` Flows, the bullet after "Production:" (line 120), reads "- Development: `pnpm run server`- CI: GitHub Actions runs ..." and ends with "agents keep using `pnpm --silent test:agent` (V1). test:agent` (V1)." A bad edit merged two bullets: the Development bullet's text is lost and the CI bullet has a duplicated tail. Found 2026-10-29 by Boot Bytes Slice 2.
+
+**Why it matters:** the guide is the routed doc for build and test work; the merged bullet hides the development flow.
+**Suggested handling:** restore the Development bullet (`pnpm dev` plus `pnpm run server`, see the `dev` script row) as its own bullet and drop the duplicated tail.
+
+### measureBoot takes a relative RISU_DIST as is
+
+`util/playwright/measureBoot.mjs:379` reads `process.env.RISU_DIST` unchanged and later symlinks it as the temp work dir's `dist`. A relative value such as `dist` (the header at `:10` writes `RISU_DIST=dist` as if it were the default) becomes a link to itself (ELOOP), so the server finds no build. Unset and absolute values work; the build-test-platforms guide already says "an absolute path". Found 2026-10-29 by the Boot Bytes Slice 9 challenger.
+
+**Why it matters:** measuring a baseline build is the variable's documented use, and a relative path fails confusingly.
+**Suggested handling:** `path.resolve` the value and fix the header line.
+
+### measureBoot has no resume after a change made while hidden
+
+Since the reconnect digest (Boot Bytes D4), `measureBoot.mjs`'s `resume` scenario requires that an unchanged resume reads no `/api/resources/revisions` listing. No scenario covers a change another client commits while the measured page is hidden, the case that still pays one full compressed listing (about 88.7 KB wire on the `audit` fixture). Found 2026-10-29 by Boot Bytes Slice 7.
+
+**Why it matters:** a regression that reads the listing twice, or skips it wrongly after an away change, goes unmeasured, and the remaining reconnect cost (the plan's change-log Later item) stays invisible.
+**Suggested handling:** add an away-change resume variant: hide, write through the API from a second client, show, and require exactly one listing with the change applied.
+
+### readersCharacters e2e timed out behind the Safe boot notice
+
+`e2e/readersCharacters.spec.ts` timed out once (300 s) at `:111` (`folderAvatar("Folder One").click({ button: "right" })`) because the Safe boot notice ("The last 4 starts did not finish loading ...") intercepted pointer events. It was the first e2e run right after `pnpm build` and a `checkBootCache.mjs` dev-stack run in the same worktree; three `--force` reruns passed in about 55 s. The spec does not call `clearSafeBootAttempts` (`util/playwright/stack.mjs`), which other specs such as `chatBinding.spec.ts` use. Found 2026-10-29 by Boot Bytes Slice 8; not reproduced.
+
+**Why it matters:** any stretch of unfinished loads turns into a five-minute timeout instead of a clear failure, and the unfinished loads themselves are unexplained.
+**Suggested handling:** clear the safe-boot attempts in the spec's context (or in a shared e2e fixture), and if it recurs, find why the earlier loads did not finish.
+
 ## Test mocks
 
 ### globalApi mock has no shared factory
@@ -126,7 +157,7 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 ### chatStore mock has no shared factory
 
-About 25 test files under `src/` mock `src/ts/storage/chatStore.svelte.ts` inline with partial objects (2026-10-28; `rg -l 'vi\.mock\(\s*"[^"]*chatStore\.svelte' src`), for example `src/ts/parser/tests/transformClient.test.ts` near its `heldChatRevision` stub. STRUCTURE.md V7 asks for one shared typed factory. Found by Display Evaluation Slice 2: adding `chatInstallVersion` and `chatHasUnackedWork` failed 34 transformClient tests with "No chatInstallVersion export defined on mock".
+About 25 test files under `src/` mock `src/ts/storage/chatStore.svelte.ts` inline with partial objects (2026-10-28; `rg -l 'vi\.mock\(\s*"[^"]*chatStore\.svelte' src`), for example `src/ts/parser/tests/transformClient.test.ts` near its `heldChatRevision` stub. STRUCTURE.md V7 asks for one shared typed factory. Found by Display Evaluation Slice 2: adding `chatInstallVersion` and `chatHasUnackedWork` failed 34 transformClient tests with "No chatInstallVersion export defined on mock". Boot Bytes Slice 5 hit it again on 2026-10-29: the new `characterLastChattedAt` export failed four `src/lib/Mobile/MobileCharacters.test.ts` tests at run time.
 
 **Why it matters:** each new chatStore export a mocked module imports breaks unrelated suites, which then look like regressions and cost a stale-test round.
 **Suggested handling:** a typed `chatStoreMock()` factory under the test helpers, adopted file by file.
