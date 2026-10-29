@@ -24,7 +24,7 @@ import {
 } from "../data/resourceStore.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
-import { assetVerification, contentNameHash, hashAssetFile } from "../http/assetVerification.ts";
+import { assetVerification, contentNameHash, hashAssetFile, holdsVerifiedAsset } from "../http/assetVerification.ts";
 import { readJsonBody } from "../http/body.ts";
 import { createImportSlot, type ImportSlot } from "../http/fileImport.ts";
 import { fileRecord, iteratorStream } from "../http/recordStream.ts";
@@ -49,7 +49,8 @@ const ASSET_PREFIX = "assets/";
  *   and assets (all files, profiles selected from that snapshot for `true`, or the listed keys).
  * - `POST /api/backups/import`: an archive as the raw body, spooled to disk (exempt from the global
  *   body limit, capped by `maxImportBytes`), validated completely, then its missing assets are added
- *   (existing files are never overwritten) and the resources restored like a snapshot.
+ *   (an existing file is kept, unless it has a content name and does not hold those bytes while the
+ *   archive's copy does) and the resources restored like a snapshot.
  * Restore and import are mutations: they need the current epoch in `x-resource-epoch`. The upstream
  * RisuAI import (`routes/backupsUpstream.ts`) shares the import's slot and its restore steps
  * (`restoreValidated`).
@@ -386,15 +387,16 @@ export function registerBackupRoutes(
     }
 }
 
-/** One asset of an import: its file under `save/assets`, and how to get its staged copy (removed after linking). */
+/** One asset of an import: its file under `save/assets`, and how to get its staged copy (removed after placing). */
 export type RestoreAsset = { target: string; stage(): Promise<string> };
 
 /**
  * The steps every archive import runs inside `withMaintenance` once its snapshot is validated and
  * the epoch checked under the lock: the safety snapshot, each asset whose file does not exist yet
- * flushed and added by hard link (an existing file is never overwritten: a link fails instead of
- * replacing), one assets directory sync, the epoch checked again, then `replaceAll`. Shared by the
- * version-2 import and the upstream commit.
+ * flushed and added by hard link (a link fails instead of replacing a file that appeared meanwhile),
+ * a content-named file (`assets/<sha256 hex>.<ext>`) that does not hold its bytes replaced by rename
+ * when the staged copy does (any other existing path is kept), one assets directory sync, the epoch
+ * checked again, then `replaceAll`. Shared by the version-2 import and the upstream commit.
  */
 export async function restoreValidated(arg: {
     store: ResourceStore;
@@ -410,25 +412,42 @@ export async function restoreValidated(arg: {
     let written = 0;
     let skipped = 0;
     for (const asset of arg.assets) {
-        if (await fs.lstat(asset.target).catch(() => null)) {
+        const name = decodeFileName(path.basename(asset.target));
+        const expectedHex = name === null ? null : contentNameHash(ASSET_PREFIX + name);
+        const existing = await fs.lstat(asset.target).catch(() => null);
+        // Only a damaged content-named file is replaced: other names have no expected bytes, and a
+        // directory in the way is left alone.
+        const repair =
+            existing !== null &&
+            expectedHex !== null &&
+            (existing.isFile() || existing.isSymbolicLink()) &&
+            !(await holdsVerifiedAsset(asset.target, expectedHex));
+        if (existing && !repair) {
             skipped += 1;
             continue;
         }
         const staged = await asset.stage();
         try {
-            const name = decodeFileName(path.basename(asset.target));
-            const expectedHex = name === null ? null : contentNameHash(ASSET_PREFIX + name);
             const verification = expectedHex === null ? null : await hashAssetFile(staged);
-            await syncFile(staged);
-            // A hard link never replaces an existing file, unlike a rename.
-            try {
-                await fs.link(staged, asset.target);
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-                    throw error;
-                }
+            if (repair && verification?.hashHex !== expectedHex) {
+                // The archive's copy is no better than the file in place.
                 skipped += 1;
                 continue;
+            }
+            await syncFile(staged);
+            if (repair) {
+                await fs.rename(staged, asset.target);
+            } else {
+                // A hard link never replaces an existing file, unlike a rename.
+                try {
+                    await fs.link(staged, asset.target);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+                        throw error;
+                    }
+                    skipped += 1;
+                    continue;
+                }
             }
             if (verification) {
                 assetVerification.recordVerification(

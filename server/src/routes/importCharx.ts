@@ -94,7 +94,7 @@ export type CharxFilePlan = { entries: CharxPlanEntry[]; total: number };
  * `card.json`.
  * Anything else is a 400 `Invalid character file`, with nothing written. Then the answer is NDJSON
  * (`CharxImportLine`): each entry in file order by the shared entry rules, an asset stored under
- * `assets/<sha256 hex>.png` (skipped when that file exists; each write under the maintenance gate),
+ * `assets/<sha256 hex>.png` (skipped when that file already holds those bytes, replaced when it does not; each write under the maintenance gate),
  * with `{ done, total }` lines (the asset entries to read, exact; at most every 200 ms and for the
  * last), then `{ card, moduleData, assets, excluded }`; or one `{ error }` line at the first failure
  * (`Invalid character file` for a corrupt deflate stream, `Maintenance in progress`, `Import failed`),

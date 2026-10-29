@@ -127,7 +127,7 @@ function firstAssetClock(s: ResourceTestClient) {
 
 describe("POST /api/import/charx", () => {
     it.each([false, true])(
-        "reads descriptor entries whole, hashes bytes and skips existing keys (JPEG prefix: %s)",
+        "reads descriptor entries whole, hashes bytes and repairs a damaged existing key (JPEG prefix: %s)",
         async (prefixed) => {
             const s = await server();
             const signatures = Buffer.concat([
@@ -148,7 +148,7 @@ describe("POST /api/import/charx", () => {
             zip.writeUInt16LE(0, zip.length - 22 + 10);
             if (prefixed) zip = Buffer.concat([Buffer.from([255, 216, 255, 224, 0, 16, 255, 217]), zip]);
             mkdirSync(assetDir(s), { recursive: true });
-            writeFileSync(path.join(s.savePath, keyOf(signatures)), "existing key must survive");
+            writeFileSync(path.join(s.savePath, keyOf(signatures)), "damaged bytes under the content key");
             const answer = await lines(await post(s, zip));
             expect(answer.at(-2)).toEqual({ done: 3, total: 3 });
             expect(answer.at(-1)).toEqual({
@@ -164,7 +164,7 @@ describe("POST /api/import/charx", () => {
             expect(assetFiles(s)).toEqual(
                 [keyOf(signatures), keyOf(Buffer.alloc(0))].map((key) => path.basename(key)).sort(),
             );
-            expect(readFileSync(path.join(s.savePath, keyOf(signatures)), "utf8")).toBe("existing key must survive");
+            expect(readFileSync(path.join(s.savePath, keyOf(signatures)))).toEqual(signatures);
             expect(readFileSync(path.join(s.savePath, keyOf(Buffer.alloc(0))))).toEqual(Buffer.alloc(0));
             await recovered(s);
         },

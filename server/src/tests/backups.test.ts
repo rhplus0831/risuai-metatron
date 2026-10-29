@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -756,6 +757,32 @@ describe("POST /api/backups/import", () => {
             (await target.put("characters", "q", { baseRevision: null, data: character("q") }, oldEpoch)).status,
         ).toBe(412);
         expect((await target.put("characters", "q", { baseRevision: null, data: character("q") })).status).toBe(200);
+    });
+
+    it("replaces a content-named asset that does not hold its bytes when the archive's copy does, and keeps every other existing file", async () => {
+        const named = (text: string) => `assets/${createHash("sha256").update(text).digest("hex")}.png`;
+        const [damaged, healthy, wrongBoth] = [named("REPAIRED"), named("HEALTHY"), named("EXPECTED")];
+        const source = await defaultServer();
+        await writeAsset(source, damaged, "REPAIRED");
+        await writeAsset(source, healthy, "HEALTHY");
+        // The archive's copy under this name is wrong too, so it cannot repair the target's.
+        await writeAsset(source, wrongBoth, "ARCHIVE COPY");
+        await writeAsset(source, "assets/shared.png", "SOURCE");
+        const archive = await exportArchive(source);
+
+        const target = await defaultServer();
+        await writeAsset(target, damaged, "BROKEN");
+        await writeAsset(target, healthy, "HEALTHY");
+        await writeAsset(target, wrongBoth, "TARGET COPY");
+        await writeAsset(target, "assets/shared.png", "TARGET");
+        const res = await importArchive(target, archive);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ epoch: expect.any(String), assetsWritten: 1, assetsSkipped: 3 });
+        expect(await readAsset(target, damaged)).toBe("REPAIRED");
+        expect(await readAsset(target, healthy)).toBe("HEALTHY");
+        expect(await readAsset(target, wrongBoth)).toBe("TARGET COPY");
+        expect(await readAsset(target, "assets/shared.png")).toBe("TARGET");
+        expect(readdirSync(tmpDir(target))).toEqual([]);
     });
 
     it("refuses malformed or foreign archives with 400 and writes nothing", async () => {

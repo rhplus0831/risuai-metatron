@@ -958,9 +958,9 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `changes?since=` cursor (Q2; a reconnect after a change made while hidden still reads
     the whole revision listing), a summary projection that does not parse whole chat
     `meta`, and a boot cache that follows the tab's acknowledged state.
-  - Found by the run (in `docs/research/found-issues.md`): server import and restore skip
-    existing assets on existence alone; measureBoot gaps; a `readersCharacters` e2e
-    timeout behind the Safe boot notice.
+  - Found by the run (in `docs/research/found-issues.md`): measureBoot gaps; a
+    `readersCharacters` e2e timeout behind the Safe boot notice. The server import and
+    restore skipping existing assets on existence alone was fixed after the audit (U2).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

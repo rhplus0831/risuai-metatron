@@ -385,13 +385,14 @@ describe("POST /api/import/realm", () => {
         await recovered(s);
     });
 
-    it("keeps an existing asset file, and a PNG that ends on a chunk boundary without IEND", async () => {
+    it("repairs a damaged existing asset and image file, and reads a PNG that ends on a chunk boundary without IEND", async () => {
         const realm = await startRealm();
         const s = await server(realm);
         const asset = bytes("already stored");
         mkdirSync(assetDir(s), { recursive: true });
-        writeFileSync(path.join(s.savePath, keyOf(asset)), "existing key must survive");
+        writeFileSync(path.join(s.savePath, keyOf(asset)), "damaged asset");
         const idat = chunk("IDAT", bytes("pixels"));
+        writeFileSync(path.join(s.savePath, keyOf(png(ihdr, idat))), "damaged image");
         realm.answer(
             "open-ended",
             file(
@@ -402,7 +403,7 @@ describe("POST /api/import/realm", () => {
         const { prepared, committed: answer } = await realmImport(s, "open-ended");
         expect(prepared.card).toBe(v3("open"));
         expect(answer.at(-1)).toEqual({ kind: "png", image: keyOf(png(ihdr, idat)), assets: { "7": keyOf(asset) } });
-        expect(readFileSync(path.join(s.savePath, keyOf(asset)), "utf8")).toBe("existing key must survive");
+        expect(stored(s, keyOf(asset))).toEqual(asset);
         expect(stored(s, keyOf(png(ihdr, idat)))).toEqual(png(ihdr, idat));
         await recovered(s);
     });

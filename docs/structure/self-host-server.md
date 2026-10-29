@@ -51,7 +51,12 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
 - Backup and import internals: `data/upstream/` reads and writes RisuAI-compatible
   `.bin` saves in workers. `http/spool.ts`, `fileImport.ts`, `contentAsset.ts`,
   `recordStream.ts`, and `routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`
-  handle archive and card file transfer.
+  handle archive and card file transfer. A content-named asset (`assets/<sha256 hex>.<ext>`) that
+  already exists is kept only when it holds its bytes (`holdsVerifiedAsset` in
+  `http/assetVerification.ts`, a recorded verification of the same file included): the module,
+  CharX, PNG, and Realm imports replace an empty, truncated, or wrong file by rename, and an
+  archive restore (`backups.ts` `restoreValidated`) replaces it when the archive's copy hashes to
+  the name. Other existing names are never overwritten by a restore.
 - Generation and prompt runtime: `jobs/` owns job admission, message locks, and the
   client channel; `prompt/` assembles and runs prompts, transformations, triggers,
   memory, and tokenization; `lua/` and `scripts/` provide the worker-backed script
@@ -572,7 +577,6 @@ Runtime limits of other subsystems live with their owners:
 
 ### Issues
 
-- Server imports and archive restore skip existing assets without verifying their bytes: `contentAsset.ts` `writeContentAsset`/`publishStagedContentAsset`, `importModule.ts`, and `backups.ts` `restoreValidated`. Reimporting cannot repair an empty or corrupt target even when healthy bytes are supplied. The two content-asset helpers were reproduced; the module/restore branches were confirmed in source. [U2](../audit/boot-bytes-2026-10-29.md#u2--server-reimports-preserve-corrupt-content-addressed-files).
 - Snapshots (`save/backups/`) copy `resources.sqlite`, not assets; retained
   snapshots can keep references to assets that are never deleted, so
   `save/assets/` can grow.

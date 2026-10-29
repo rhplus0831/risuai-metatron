@@ -275,3 +275,21 @@ export class AssetVerification {
 
 /** Absolute paths isolate save directories even when several server contexts share the process. */
 export const assetVerification = new AssetVerification();
+
+/** The SHA-256 of no bytes: the content name of an empty asset. */
+const EMPTY_SHA256 = createHash("sha256").digest("hex");
+
+/**
+ * Whether the regular file at `fullPath` holds bytes hashing to `expectedHex` (a recorded
+ * verification of the same file counts). A missing, unreadable, or mismatched file, a symlink, a
+ * file past the verifier's read budget, and an empty file under any other name than the empty
+ * asset's are not.
+ */
+export async function holdsVerifiedAsset(fullPath: string, expectedHex: string): Promise<boolean> {
+    if (expectedHex === EMPTY_SHA256) {
+        const stat = await fs.lstat(fullPath).catch(() => null);
+        return stat !== null && stat.isFile() && stat.size === 0;
+    }
+    const present = await assetVerification.verifyFiles([{ fullPath, expectedHex }]);
+    return present.has(path.resolve(fullPath));
+}

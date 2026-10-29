@@ -25,10 +25,11 @@ import {
     readFileAt,
     serveFileImport,
 } from "../http/fileImport.ts";
+import { holdsVerifiedAsset } from "../http/assetVerification.ts";
 import { ndjsonLine } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import { storageFileExists, writeStorageFile } from "./storage.ts";
+import { resolveStorageKey, writeStorageFile } from "./storage.ts";
 
 export { MODULE_IMPORT_PATH };
 
@@ -54,7 +55,7 @@ type ModuleFilePlan = { module: RisuModule; recordsStart: number; records: numbe
  * limit). The whole file is validated from the file before anything is written: a malformed or
  * truncated file is a 400 `Invalid module file`, a record over `MAX_MODULE_ASSET_BYTES` a 413. Then
  * the answer is NDJSON (`ModuleImportLine`): each record is read, rpack-decoded, and stored under
- * `assets/<sha256 hex>.png` (skipped when that file exists; each write under the maintenance gate),
+ * `assets/<sha256 hex>.png` (skipped when that file already holds those bytes, replaced when it does not; each write under the maintenance gate),
  * with throttled `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }`, or one
  * `{ error }` line at the first failure (nothing more is written). Memory holds the main record and
  * one asset record at a time.
@@ -116,14 +117,17 @@ export function registerModuleImportRoutes(
                 const bytes = await readAt(file, new Uint8Array(length), position + RECORD_HEADER_BYTES);
                 position += RECORD_HEADER_BYTES + length;
                 decodeRPackInPlace(bytes);
-                // The client's key (`saveAsset` with its default extension).
-                const key = `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
-                if (await storageFileExists(savePath, key)) {
+                // The client's key (`saveAsset` with its default extension). A file there that does
+                // not hold these bytes (empty, truncated, wrong) is replaced.
+                const hashHex = createHash("sha256").update(bytes).digest("hex");
+                const key = `assets/${hashHex}.png`;
+                const fullPath = resolveStorageKey(savePath, key);
+                if (fullPath !== null && (await holdsVerifiedAsset(fullPath, hashHex))) {
                     assetsSkipped += 1;
                 } else {
                     const leave = snapshots.gate.enter();
                     try {
-                        await writeStorageFile(savePath, key, bytes);
+                        await writeStorageFile(savePath, key, bytes, hashHex);
                     } finally {
                         leave();
                     }
