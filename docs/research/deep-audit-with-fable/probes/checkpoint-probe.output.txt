@@ -1,0 +1,166 @@
+{
+  "label": "checkpoint-phases-5000-messages",
+  "commit": "634bc14c7",
+  "node": "v24.21.0",
+  "fixture": {
+    "messages": 5000,
+    "messageDataChars": 2053,
+    "replyTextChars": 32768,
+    "runs": 7,
+    "gcBeforeEachRun": true
+  },
+  "terminal": "done",
+  "medians": {
+    "writeMs": 1.972,
+    "scopeMs": 14.009,
+    "scopeBeforeMs": 0.052,
+    "scopeAfterMs": 13.958,
+    "emitMs": 31.544,
+    "readMs": 13.577,
+    "baselineMs": 18.093,
+    "totalMs": 47.632
+  },
+  "firstTotalMs": 49.208,
+  "runs": [
+    {
+      "writeMs": 2.139,
+      "scopeMs": 14.751,
+      "scopeBeforeMs": 0.051,
+      "scopeAfterMs": 14.7,
+      "emitMs": 32.318,
+      "readMs": 13.899,
+      "baselineMs": 18.419,
+      "totalMs": 49.208,
+      "ownerPatchBytes": 33265,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33370,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    },
+    {
+      "writeMs": 1.945,
+      "scopeMs": 14.316,
+      "scopeBeforeMs": 0.046,
+      "scopeAfterMs": 14.27,
+      "emitMs": 32.396,
+      "readMs": 13.808,
+      "baselineMs": 18.588,
+      "totalMs": 48.657,
+      "ownerPatchBytes": 33265,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33370,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    },
+    {
+      "writeMs": 2.054,
+      "scopeMs": 14.009,
+      "scopeBeforeMs": 0.052,
+      "scopeAfterMs": 13.958,
+      "emitMs": 31.544,
+      "readMs": 13.45,
+      "baselineMs": 18.093,
+      "totalMs": 47.607,
+      "ownerPatchBytes": 33265,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33370,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    },
+    {
+      "writeMs": 1.972,
+      "scopeMs": 13.803,
+      "scopeBeforeMs": 0.06,
+      "scopeAfterMs": 13.743,
+      "emitMs": 31.857,
+      "readMs": 13.604,
+      "baselineMs": 18.253,
+      "totalMs": 47.632,
+      "ownerPatchBytes": 33265,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33370,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    },
+    {
+      "writeMs": 1.948,
+      "scopeMs": 14.529,
+      "scopeBeforeMs": 0.056,
+      "scopeAfterMs": 14.473,
+      "emitMs": 31.348,
+      "readMs": 13.577,
+      "baselineMs": 17.771,
+      "totalMs": 47.826,
+      "ownerPatchBytes": 33265,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33370,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    },
+    {
+      "writeMs": 2.068,
+      "scopeMs": 13.832,
+      "scopeBeforeMs": 0.052,
+      "scopeAfterMs": 13.781,
+      "emitMs": 31.166,
+      "readMs": 13.374,
+      "baselineMs": 17.792,
+      "totalMs": 47.067,
+      "ownerPatchBytes": 33265,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33370,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    },
+    {
+      "writeMs": 1.908,
+      "scopeMs": 13.819,
+      "scopeBeforeMs": 0.052,
+      "scopeAfterMs": 13.767,
+      "emitMs": 30.865,
+      "readMs": 13.127,
+      "baselineMs": 17.738,
+      "totalMs": 46.592,
+      "ownerPatchBytes": 33266,
+      "feedPatchBytes": 32989,
+      "feedEventBytes": 33371,
+      "wholeTranscriptReads": {
+        "write": 0,
+        "scopeBefore": 0,
+        "scopeAfter": 1,
+        "emit": 1,
+        "total": 2
+      }
+    }
+  ]
+}

@@ -257,6 +257,18 @@ Recommendation: adopt acknowledged ops into the runner scope when revisions perm
 the committed touched rows, and reuse the store's own change information instead of rediscovering the diff. Keep the
 full refresh for stale or intervening writes.
 
+**Baseline at `634bc14c7`** ([checkpoint-probe.mjs](probes/checkpoint-probe.mjs),
+[checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt); Node v24.21.0, `--expose-gc`): 5,000 messages of
+about 2 KiB, a `char` reply begun as the runner begins one, then seven 32 KiB `setText` checkpoints with their
+generation and `covers`, each through `writeOwn`'s five calls with an owner socket open. Medians: write 2.0 ms, scope
+14.0 ms (before the write 0.05 ms, `refreshChatAfterWrite` 14.0 ms), `emitRecords` 31.5 ms (owner read 13.6 ms,
+baseline plus diff plus send 18.1 ms); per-run total 47.6 ms, the first 49.2 ms. Two whole-transcript reads per
+checkpoint at the SQL boundary (`refreshChatAfterWrite` one, `emitRecords` one, none before the write or in
+`applyChanges`). Owner `chatPatch` 33,265 bytes, feed patch 32,989 bytes, feed `change` event 33,370 bytes. The
+inline figures above were measured at the audit's commit with a fixture that was not recorded (a plain `setText`
+without the reply's generation gives the same reads and timings and a 33,151-byte owner patch), so they are not
+comparable phase by phase; compare later runs with this line.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**
@@ -303,6 +315,12 @@ H callbacks × N messages; with H ≈ N it is quadratic, plus H sequential round
 
 Recommendation: keep the barrier's revision receipt but send only changes since the last receipt, with whole-chat
 resync as the fallback; consider a batched history-transform callback where plugin ordering allows it.
+
+**Baseline at `634bc14c7`** ([job-channel-probe.mjs](probes/job-channel-probe.mjs), second line of
+[job-channel-probe.output.txt](probes/job-channel-probe.output.txt); Node v24.21.0): the same fixture (500 messages
+of about 2 KiB, a no-op `editprocess` hook, 500 callbacks answered at once). 500 whole-chat frames of 523,601,000
+bytes, 1,003 frames of 523,877,082 bytes in all, 2 `chatPatch` frames of 466 bytes, 275,500 bytes of `callback`
+frames received and 51,000 bytes of `answer` frames sent, 3,278 ms.
 
 ### SD03 — The feed caps each patch, not the frame or the next send
 
@@ -647,5 +665,10 @@ node --expose-gc docs/research/deep-audit-with-fable/probes/transform-jobs-probe
 node docs/research/deep-audit-with-fable/probes/job-channel-probe.mjs
 ```
 
-Their recorded outputs are beside them (`*.output.txt`). The server-data probes ran inline and left only their
+```bash
+node --expose-gc docs/research/deep-audit-with-fable/probes/checkpoint-probe.mjs
+```
+
+Their recorded outputs are beside them (`*.output.txt`); `PROBE_COMMIT` names the measured commit in the
+checkpoint and job-channel outputs. The server-data probes ran inline and left only their
 results (`server-data-*.results.json`); their setups are described in SD01–SD05 and in "Checked, not a problem".
