@@ -29,6 +29,7 @@ import {
     type ChangeSet,
     type ChatPatchBody,
     MAX_FEED_PATCH_BYTES,
+    MAX_FEED_PUBLICATION_PATCH_BYTES,
     RESOURCE_KIND,
     type RecordPatch,
     type ResourceRevisionListing,
@@ -726,6 +727,35 @@ export function createResourceStore(options: {
     }
 
     /**
+     * A publication's record and chat entries in wire order, with their patches within
+     * `MAX_FEED_PUBLICATION_PATCH_BYTES` together. Called once per publication, on the outermost
+     * write's final accumulator, so nested scopes have merged and coalescing has dropped repeated keys'
+     * patches: an entry keeps its patch while the running sum including it fits, and one that does not
+     * fit becomes a copy without it in the same place (a later, smaller patch may still fit). Every
+     * candidate patch is measured, rejected ones included, so the measuring work is proportional to the
+     * patches the write built (each already within `MAX_FEED_PATCH_BYTES` when built), not to the frame.
+     */
+    function budgetedEntries(changes: ChangeAccumulator): Pick<ChangeSet, "resources" | "chats"> {
+        let spent = 0;
+        const withinBudget = <T extends { patch?: RecordPatch | ChatPatchBody }>(entry: T): T | Omit<T, "patch"> => {
+            if (entry.patch === undefined) {
+                return entry;
+            }
+            const size = Buffer.byteLength(JSON.stringify(entry.patch));
+            if (spent + size <= MAX_FEED_PUBLICATION_PATCH_BYTES) {
+                spent += size;
+                return entry;
+            }
+            const { patch: _dropped, ...ref } = entry;
+            return ref;
+        };
+        return {
+            resources: [...changes.resources.values()].map(withinBudget),
+            chats: [...changes.chats.values()].map(withinBudget),
+        };
+    }
+
+    /**
      * `patch`: the write was a field patch whose changes the feed may carry. A record already written
      * in this scope loses it: its base would be a revision no client was told about.
      */
@@ -770,9 +800,10 @@ export function createResourceStore(options: {
      * Runs a write and publishes its refs only after commit, with `transactionState` cleared. Writes
      * inside an open transaction share its scope. An independently committed write nested in input
      * evaluation merges into the enclosing scope on success; if that scope throws, only its nested
-     * commits' refs are published. The invalidation notices of every committed transaction are
-     * delivered after publication, once all publishing scopes (including a feed listener's writes)
-     * have ended, even when an enclosing write throws.
+     * commits' refs are published. Only the outermost scope publishes, once, with its patches within
+     * the publication budget (`budgetedEntries`). The invalidation notices of every committed
+     * transaction are delivered after publication, once all publishing scopes (including a feed
+     * listener's writes) have ended, even when an enclosing write throws.
      */
     function publishing<T>(fn: () => T): T {
         if (publishingScope && db.isTransaction) {
@@ -806,14 +837,11 @@ export function createResourceStore(options: {
                         changes.chatOrders.size > 0 ||
                         changes.streaming.size > 0)
                 ) {
+                    const { resources, chats } = budgetedEntries(changes);
                     feed.publish({
                         type: "change",
                         epoch,
-                        changes: {
-                            resources: [...changes.resources.values()],
-                            chats: [...changes.chats.values()],
-                            chatOrders: [...changes.chatOrders.values()],
-                        },
+                        changes: { resources, chats, chatOrders: [...changes.chatOrders.values()] },
                         ...(changes.streaming.size > 0 ? { streaming: [...changes.streaming.values()] } : {}),
                     });
                 }

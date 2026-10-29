@@ -366,13 +366,22 @@ export type ChatPatchBody = {
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
 /**
+ * The most patch bytes one `change` frame carries: the UTF-8 bytes of each patch's JSON, summed over
+ * its record and chat entries in wire order. An entry whose patch would pass it is a plain ref.
+ */
+export const MAX_FEED_PUBLICATION_PATCH_BYTES = 256 * 1024;
+
+/**
  * What one committed write changed (live updates): refs and their new revisions, and data only as a
  * record patch (`RecordPatch`) or a by-id chat patch (`ChatPatchBody`). A `null` revision is a
  * deletion. A record or chat recorded more than once in the write appears once with its final
  * revision and no patch. A client holding exactly a patch's base revision may apply it when idle (a
  * chat must also be loaded and not stale); otherwise it handles the plain notice as before. Chat
  * revisions advance by the applied op count, not necessarily one. Whole-chat writes, no-op groups,
- * remove-and-reappend groups, and patches over `MAX_FEED_PATCH_BYTES` carry no chat patch.
+ * remove-and-reappend groups, and patches over `MAX_FEED_PATCH_BYTES` carry no chat patch. The
+ * patches of one publication share `MAX_FEED_PUBLICATION_PATCH_BYTES`: taken in wire order (resources,
+ * then chats), one that does not fit leaves its entry a plain ref, and a later smaller one may still
+ * fit.
  */
 export type ChangeSet = {
     resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch }[];

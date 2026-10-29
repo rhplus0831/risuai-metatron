@@ -160,7 +160,7 @@ Routing is non-strict (a trailing slash matches).
 | POST       | `/api/chats/search`                                       | `checkAuth`                                                                  | 2000/min                                                                                                       | body `MessageSearchQuery` (`shared/messageSearch.ts`, 4 KiB); `MessageSearchPage`, `no-store`; 404 named character/chat missing, 409 `reason: "epoch"`, 429 past two running, 503 maintenance (see Files)                                                                                                                                                                                                                       |
 | POST       | `/api/resources/batch`                                    | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | body `{ ops?, chats?, chatOrders? }` (1-5000 operations, nested chat ops counted, see Invariants; a resource op has exactly one of `data`, `delete`, and `patch`); `{ epoch, results, chats?, chatOrders? }`; 409 `{ error, conflicts }` with nothing applied                                                                                                                                                                   |
 | GET        | `/api/resources/revisions`                                | `checkAuth`                                                                  | 2000/min                                                                                                       | `{ epoch, resources: [{ kind, id, revision }], chats: [{ characterId, id, revision }], chatOrders: [{ characterId, revision }] }`, no data (the live-update reconcile); compressed per `Accept-Encoding` (`compressedJson`)                                                                                                                                                                                                     |
-| WS upgrade | `/api/events/ws`                                          | JWT in the `risu-auth` query or header (never the password)                  | none                                                                                                           | the live-update stream: `hello` (epoch, generation locks, memory task statuses, optional revision-listing digest), `change`, `memoryTask`, `epoch`, `ping` (`shared/events.ts`); a matching advertised map skips the listing read                                                                                                                                                                                               |
+| WS upgrade | `/api/events/ws`                                          | JWT in the `risu-auth` query or header (never the password)                  | none                                                                                                           | the live-update stream: `hello` (epoch, generation locks, memory task statuses, optional revision-listing digest), `change`, `memoryTask`, `epoch`, `ping` (`shared/events.ts`); a matching advertised map skips the listing read; a `change` frame's patches total at most 256 KiB, and a frame that would take a socket past 4 MiB queued closes it (not the `hello`)                                                         |
 | GET        | `/api/resources/:kind`                                    | `checkAuth`                                                                  | 2000/min                                                                                                       | `{ epoch, items: [{ id, revision, data }] }` in creation order; 404 for an unknown kind                                                                                                                                                                                                                                                                                                                                         |
 | GET        | `/api/resources/:kind/:id`                                | `checkAuth`                                                                  | 2000/min                                                                                                       | `{ epoch, revision, data }`; 404 when missing, 400 for an invalid id                                                                                                                                                                                                                                                                                                                                                            |
 | PUT        | `/api/resources/:kind/:id`                                | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | body `{ baseRevision: string \| null, data }`; `{ epoch, revision, data }` as stored; 409 `{ error, revision }` on a stale revision                                                                                                                                                                                                                                                                                             |
@@ -182,6 +182,8 @@ Routing is non-strict (a trailing slash matches).
 | POST       | `/api/import/realm/cancel`                                | `checkAuth`                                                                  | 2000/min                                                                                                       | `{ token }` (4 KiB cap): removes the staged card; 204 whether it still waited or not; 400, 413, 503                                                                                                                                                                                                                                                                                                                             |
 
 The live-update `hello` samples the epoch, generation locks (`streaming`), memory task statuses (`memoryTasks`) and optional `digest` in one synchronous step before registering the socket. The digest is `revisionDigest(resources.listRevisions())` (`shared/resources.ts`); a digest failure is logged without data and omits only that field, while failure of another snapshot closes the socket with 1011. A client whose seeded advertised map has the loaded epoch and matching digest reconciles from that map; otherwise it reads `/api/resources/revisions`. Nothing is replayed.
+
+Every other frame is admitted by its own size (`routes/events.ts` `send`): a fan-out frame (`change`, `memoryTask`, `epoch`) is measured once, as the UTF-8 length of its text, and that length is used for every socket; the `ping` is measured the same way. The server does not enable permessage-deflate, so that length is the frame's payload. A socket whose `bufferedAmount` plus the frame's length would pass `MAX_BUFFERED_BYTES` (4 MiB) is terminated before the frame is queued, the other sockets still get the frame, and the client reconnects and reconciles as above; a frame that reaches the bound exactly is sent. ws's `bufferedAmount` also counts the queued frame headers (2 to 10 bytes a frame), which the admission leaves out, so an admitted frame can leave it one header above 4 MiB. The `hello` is checked on `bufferedAmount` alone: its snapshots are not bounded, and a `hello` that could never be admitted would have its client reconnect forever. What a `change` frame's patches may add is bounded by the publication budget (Flows, Resources and chats).
 
 "+ epoch" means the `x-resource-epoch` header must name the current database epoch (412 `{ error: "EpochMismatch", epoch }` otherwise). Mutations answer 503 with `Retry-After` while a restore or an import runs. During shutdown, new resource requests (including reads), backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed store-closed error maps to the same retryable response. Every `/api/resources` and `/api/llm-secrets` response is `Cache-Control: no-store`. Every read route (`/api/resources?kinds=`, `/api/resources/read`, `/api/resources/:kind`, `/api/resources/:kind/:id`) and the PUT response answer a kind with `project` in its projected form: `llmSecrets` is masked. Every whole chat a read returns (`/api/resources/read` `chats` and `chatCollections`, `/api/resources?chats=1`) carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`, `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none). The tab replaces the chat's feed locks with it ([persistence](persistence.md) Save step 9); a client must treat the field as optional.
 
@@ -267,13 +269,31 @@ Resources and chats:
   changed the metadata). It is `undefined` for a group without a by-id change: a
   create, replace, or delete, a remove and reappend of one id, a remembered group, or
   a group that applied nothing. The change is uncapped and built only for a writer
-  that asks: the feed keeps its capped patch (taken from that change), a write without
+  that asks: the feed keeps its capped patch (taken from that change, and subject to
+  the publication budget below, which leaves `written` as it is), a write without
   the option still stops reading at the feed's byte cap, and the HTTP batch body is
   unchanged.
 - Change feed events reach listeners in publish order, including events a listener
   publishes while handling another event. Listener failures are logged and the
   feed continues draining. Committed nested writes still publish their refs when
   an enclosing write fails during input evaluation.
+- Publication budget: one committed outermost write is one `change` frame
+  (`feed.publish` once), and the optional payloads of that frame, its record and chat
+  `patch`es (each within `MAX_FEED_PATCH_BYTES`, 64 KiB, when built), total at most
+  `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON, `shared/resources.ts`).
+  The store applies it only when the outermost publishing scope publishes
+  (`resourceStore.ts` `budgetedEntries`): after nested scopes merged, after coalescing
+  dropped the patches of keys recorded twice, and after a failed outer write kept only
+  its committed nested writes. A nested scope neither spends nor resets it, and a feed
+  listener's own write is a later publication with a budget of its own. The walk takes
+  the final entries in wire order (resources, then chats; chat orders carry no
+  payload): a patch stays when the running sum including it fits, otherwise its entry
+  is published as a copy without it in the same place (a plain ref to the client) and
+  the walk goes on, so a later smaller patch can still fit. Every candidate patch is
+  measured, so the cost follows the patches the write built, not the frame. Refs,
+  chat-order entries, and `streaming` lock lists are never dropped, reordered, or
+  split, so a chat's locks stay in the frame of its chat ref and a lock release with no
+  refs (`publishStreaming`) is still published.
 
 Generation admission and request identity:
 
@@ -653,6 +673,15 @@ Runtime limits of other subsystems live with their owners:
 - `/api/set_password` and `/api/crypto` are unauthenticated by design and rate
   limited. A server has one password and registered browser keys, not separate
   users. Decision: the server's auth model (`server/src/routes/auth.ts` header).
+- The publication budget bounds a `change` frame's patches only; its refs and lock
+  lists are not bounded (an id can be 512 characters, a character delete records the
+  deletion of every one of its chats, and in-process writes have no op cap). A frame
+  whose refs alone cannot be admitted terminates the socket, and the client reconnects
+  and reconciles from the revision listing (or from its advertised map when the
+  `hello` digest matches). Decision: no frame split; one committed write stays one
+  frame, since the client takes a chat's lock revision from the same frame's chat ref
+  and reads a lock release without refs as `null` (D5 in the
+  [Per-Event Server Work plan](../plan/per-event-server-work.md)).
 
 ### Gotchas
 

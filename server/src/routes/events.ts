@@ -10,7 +10,15 @@ import {
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 
 const HEARTBEAT_MS = 15_000;
-/** A socket that falls this far behind is closed; its client reconnects and reconciles. */
+/**
+ * How far behind a socket may fall. A frame other than the `hello` is sent only while the socket's
+ * `bufferedAmount` plus the frame's payload bytes (its text's UTF-8 length: this server does not
+ * enable permessage-deflate) stays within this; otherwise the socket is closed before the frame is
+ * queued, and its client reconnects and reconciles. ws's `bufferedAmount` also counts the queued
+ * frame headers (2 to 10 bytes a frame), which the admission leaves out, so an admitted frame can
+ * leave it one header above this. It counts a queued text by its UTF-16 length (Node's count for a
+ * string written to a socket), which is never more than the UTF-8 bytes admitted for it.
+ */
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 export type EventSockets = ReturnType<typeof createEventSockets>;
@@ -24,7 +32,8 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * step before the socket is registered and the hello sent. Nothing is replayed: a client reconciles
  * from its advertised map when the digest matches, otherwise from a fetched revision listing.
  * Every published event goes to every socket in publication order, also one published
- * while another is being sent. Sockets are not tracked by the snapshot manager and not gated by
+ * while another is being sent; a socket too far behind to take a frame (`MAX_BUFFERED_BYTES`) is
+ * closed before it is queued. Sockets are not tracked by the snapshot manager and not gated by
  * maintenance: a restore publishes `epoch`, which reloads the clients.
  */
 export function createEventSockets(options: {
@@ -43,11 +52,17 @@ export function createEventSockets(options: {
     const sockets = new Set<WebSocket>();
     let closed = false;
 
-    function send(ws: WebSocket, text: string) {
+    /**
+     * Sends a frame's text, or terminates the socket instead of queuing it when its `bufferedAmount`
+     * plus `bytes` (the text's UTF-8 length, measured once per frame by the caller) passes
+     * `MAX_BUFFERED_BYTES`; a frame that reaches it exactly is sent. Without `bytes` (the `hello`) only
+     * `bufferedAmount` is compared.
+     */
+    function send(ws: WebSocket, text: string, bytes = 0) {
         if (ws.readyState !== ws.OPEN) {
             return;
         }
-        if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+        if (ws.bufferedAmount + bytes > MAX_BUFFERED_BYTES) {
             ws.terminate();
             return;
         }
@@ -83,7 +98,8 @@ export function createEventSockets(options: {
     }
 
     // A frame published while another is being sent (the feed delivers nested publications at once)
-    // waits until the current one reached every socket.
+    // waits until the current one reached every socket. A frame's UTF-8 length is measured once, for
+    // every socket.
     const outgoing: string[] = [];
     let fanningOut = false;
     const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => {
@@ -95,8 +111,9 @@ export function createEventSockets(options: {
         try {
             while (outgoing.length > 0) {
                 const text = outgoing.shift()!;
+                const bytes = Buffer.byteLength(text);
                 for (const ws of sockets) {
-                    send(ws, text);
+                    send(ws, text, bytes);
                 }
             }
         } finally {
@@ -139,11 +156,13 @@ export function createEventSockets(options: {
             return;
         }
         sockets.add(ws);
+        // Admitted on the queued bytes alone: the hello's snapshots are not bounded, and a hello that
+        // could never be admitted would have its client reconnect forever.
         send(ws, hello);
-        ping = setInterval(
-            () => send(ws, JSON.stringify({ type: "ping", ts: Date.now() } satisfies EventFeedFrame)),
-            HEARTBEAT_MS,
-        );
+        ping = setInterval(() => {
+            const text = JSON.stringify({ type: "ping", ts: Date.now() } satisfies EventFeedFrame);
+            send(ws, text, Buffer.byteLength(text));
+        }, HEARTBEAT_MS);
     }
 
     /** The `upgrade` handler for `/api/events/ws`; false, leaving the socket untouched, for any other path. */

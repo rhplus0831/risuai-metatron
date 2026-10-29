@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
-import { MAX_FEED_PATCH_BYTES } from "../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, MAX_FEED_PUBLICATION_PATCH_BYTES } from "../../../shared/resources.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import {
@@ -937,6 +937,242 @@ describe("item patches in the feed", () => {
                 id: "main",
                 revision: renamed,
                 patch: { baseRevision: m, items: [], changes: [{ id: "b", set: { name: "B" }, remove: [] }] },
+            },
+        ]);
+    });
+});
+
+describe("the publication patch budget", () => {
+    const plain: ResourceKind = { name: "plain", schemaVersion: 1, normalize: (input) => input };
+    const list: ResourceKind = { name: "list", schemaVersion: 1, normalize: (input) => input };
+    const nearCap = 60 * 1024;
+    const remainder = 16 * 1024; // Four 60 KiB patches leave exactly 16 KiB of the 256 KiB budget.
+
+    function budgetSetup() {
+        const feed = createChangeFeed();
+        const store = createResourceStore({
+            file: ":memory:",
+            kinds: createKindRegistry([...DEFAULT_RESOURCE_KINDS, plain, list]),
+            feed,
+        });
+        stores.push(store);
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        return { store, events };
+    }
+
+    /** Size the expected wire patch from the input, never from a published patch. */
+    function sizedPatch<T>(bytes: number, make: (text: string) => T): T {
+        const payloadBytes = bytes - Buffer.byteLength(JSON.stringify(make("")));
+        const text = "€".repeat(Math.floor(payloadBytes / 3)) + "x".repeat(payloadBytes % 3);
+        const patch = make(text);
+        expect(Buffer.byteLength(JSON.stringify(patch))).toBe(bytes);
+        expect(bytes).toBeLessThanOrEqual(MAX_FEED_PATCH_BYTES);
+        return patch;
+    }
+
+    function publicationPatchBytes(events: ChangeFeedEvent[]) {
+        expect(events).toHaveLength(1);
+        const [event] = events;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        return [...event.changes.resources, ...event.changes.chats].map((entry) =>
+            entry.patch === undefined ? 0 : Buffer.byteLength(JSON.stringify(entry.patch)),
+        );
+    }
+
+    function field(store: ResourceStore, id: string, bytes = nearCap) {
+        const baseRevision = store.put(plain, id, { blob: "" }, null).revision;
+        const patch = sizedPatch(bytes, (blob) => ({ baseRevision, set: { blob }, remove: [] }));
+        return {
+            op: { kind: plain, id, baseRevision, patch: { set: patch.set } },
+            patch,
+            ref: () => ({ kind: plain.name, id, revision: store.revisionOf(plain, id) }),
+        };
+    }
+
+    function chat(store: ResourceStore, id: string, bytes = nearCap) {
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: id,
+                    baseRevision: null,
+                    ops: [chatCreate(id, [{ chatId: "m", data: "", role: "char" }])],
+                },
+            ],
+        });
+        const baseRevision = store.chatRevision("c", id)!;
+        const patch = sizedPatch(bytes, (data) => ({
+            baseRevision,
+            messages: [{ after: null, message: { chatId: "m", data, role: "char" } }],
+            count: 1,
+        }));
+        return {
+            group: {
+                characterId: "c",
+                chatId: id,
+                baseRevision,
+                ops: [{ op: "setText", id: "m", text: patch.messages[0].message.data }] satisfies ChatOp[],
+            },
+            patch,
+            ref: () => ({ characterId: "c", id, revision: store.chatRevision("c", id) }),
+        };
+    }
+
+    it("budgets mixed patches in wire order while preserving later fitting patches, refs, orders and locks", () => {
+        const { store, events } = budgetSetup();
+        expect(MAX_FEED_PUBLICATION_PATCH_BYTES).toBe(256 * 1024);
+        const record = field(store, "record");
+        const listBase = store.put(list, "items", [{ id: "item", blob: "" }], null).revision;
+        const itemPatch = sizedPatch(nearCap, (blob) => ({
+            baseRevision: listBase,
+            items: [],
+            changes: [{ id: "item", set: { blob }, remove: [] }],
+        }));
+        store.put(characters, "c", { chaId: "c", name: "C" }, null);
+        const chats = [
+            chat(store, "first"),
+            chat(store, "second"),
+            chat(store, "dropped"),
+            chat(store, "small", remainder),
+        ];
+        const order = store.readRefs([], { chatCollections: ["c"] }).chatCollections[0].order!;
+        const streaming = [
+            {
+                characterId: "c",
+                id: "dropped",
+                streaming: [
+                    { messageId: "m", generationId: "g1", seq: 2 },
+                    { messageId: "other", generationId: "g2", seq: 3 },
+                ],
+            },
+            { characterId: "c", id: "small", streaming: [] },
+        ];
+        events.length = 0;
+
+        const result = store.applyChanges(
+            {
+                get ops() {
+                    // Chat writes happen first, but resources precede them on the wire.
+                    store.applyChanges({ chats: chats.map((entry) => entry.group) });
+                    expect(events).toEqual([]);
+                    return [
+                        record.op,
+                        { kind: list, id: "items", baseRevision: listBase, patch: { changes: itemPatch.changes } },
+                    ];
+                },
+                chatOrders: [
+                    { characterId: "c", baseRevision: order.revision, ids: ["small", "dropped", "second", "first"] },
+                ],
+            },
+            { committed: () => streaming },
+        );
+
+        expect(publicationPatchBytes(events)).toEqual([nearCap, nearCap, nearCap, nearCap, 0, remainder]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                changes: {
+                    resources: [
+                        { ...record.ref(), patch: record.patch },
+                        { kind: "list", id: "items", revision: result.results[1].revision, patch: itemPatch },
+                    ],
+                    chats: [
+                        { ...chats[0].ref(), patch: chats[0].patch },
+                        { ...chats[1].ref(), patch: chats[1].patch },
+                        chats[2].ref(),
+                        { ...chats[3].ref(), patch: chats[3].patch },
+                    ],
+                    chatOrders: [{ characterId: "c", revision: result.chatOrders[0].revision }],
+                },
+                streaming,
+            },
+        ]);
+
+        events.length = 0;
+        const released = streaming.map((entry) => ({ ...entry, streaming: [] }));
+        store.publishStreaming(released);
+        expect(events).toEqual([{ type: "change", epoch: store.epoch(), changes: empty, streaming: released }]);
+    });
+
+    it("budgets only after nested scopes merge and repeated keys lose their patches", () => {
+        const { store, events } = budgetSetup();
+        const repeated = field(store, "repeated");
+        const kept = ["a", "b", "c", "d"].map((id) => field(store, id));
+        const dropped = field(store, "overflow", remainder + 1);
+        const small = field(store, "small", remainder);
+        events.length = 0;
+
+        store.applyChanges({
+            get ops() {
+                // This nested scope alone exceeds the budget. Its last patch must survive until
+                // the outer write coalesces `repeated`, freeing room for all four kept patches.
+                store.applyChanges({ ops: [repeated.op, ...kept.map((entry) => entry.op)] });
+                expect(events).toEqual([]);
+                return [
+                    {
+                        ...repeated.op,
+                        baseRevision: store.revisionOf(plain, "repeated"),
+                        patch: { set: { blob: "again" } },
+                    },
+                    dropped.op,
+                    small.op,
+                ];
+            },
+        });
+
+        expect(publicationPatchBytes(events)).toEqual([0, nearCap, nearCap, nearCap, nearCap, 0, remainder]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                changes: {
+                    ...empty,
+                    resources: [
+                        repeated.ref(),
+                        ...kept.map((entry) => ({ ...entry.ref(), patch: entry.patch })),
+                        dropped.ref(),
+                        { ...small.ref(), patch: small.patch },
+                    ],
+                },
+            },
+        ]);
+    });
+
+    it("budgets committed nested writes together after the outer write rolls back", () => {
+        const { store, events } = budgetSetup();
+        const large = ["a", "b", "c", "d", "overflow"].map((id) => field(store, id));
+        const small = field(store, "small", remainder);
+        const rolledBack = field(store, "rolled-back", 1024);
+        const before = store.get(plain, "rolled-back");
+        events.length = 0;
+
+        expect(() =>
+            store.applyChanges({
+                get ops() {
+                    store.applyChanges({ ops: large.slice(0, 3).map((entry) => entry.op) });
+                    store.applyChanges({ ops: [...large.slice(3).map((entry) => entry.op), small.op] });
+                    expect(events).toEqual([]);
+                    return [rolledBack.op, { kind: plain, id: "a", baseRevision: null, data: {} }];
+                },
+            }),
+        ).toThrow(ResourceBatchConflictError);
+
+        expect(store.get(plain, "rolled-back")).toEqual(before);
+        expect(publicationPatchBytes(events)).toEqual([nearCap, nearCap, nearCap, nearCap, 0, remainder]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                changes: {
+                    ...empty,
+                    resources: [
+                        ...large.slice(0, 4).map((entry) => ({ ...entry.ref(), patch: entry.patch })),
+                        large[4].ref(),
+                        { ...small.ref(), patch: small.patch },
+                    ],
+                },
             },
         ]);
     });

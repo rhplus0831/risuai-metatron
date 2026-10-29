@@ -86,6 +86,7 @@ async function delivered(client: Client) {
 
 const noteKind: ResourceKind = { name: "notes", schemaVersion: 1, normalize: (value) => value };
 const digestKinds = [...DEFAULT_RESOURCE_KINDS, noteKind];
+const admissionBytes = 4 * 1024 * 1024;
 
 describe("the live-update socket on the server", () => {
     let server: ReturnType<typeof createTestServer>;
@@ -172,6 +173,56 @@ describe("the live-update socket on the server", () => {
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         expect(server.context.eventSockets.size()).toBe(2);
+    });
+
+    it("reconciles a committed refs-only change from the revision listing after admission closes the socket", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const before = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const client = await open();
+        const hello = await frameAt(client, 0);
+        expect(hello).toMatchObject({ type: "hello", epoch: before.epoch, digest: revisionDigest(before) });
+
+        // Even a small refs-only frame cannot fit when only one byte remains. No patch can be
+        // trimmed to rescue it: the reconnect must discover the committed revision instead.
+        const buffered = vi.spyOn(WsClient.prototype, "bufferedAmount", "get").mockReturnValue(admissionBytes - 1);
+        const send = vi.spyOn(WsClient.prototype, "send");
+        const terminate = vi.spyOn(WsClient.prototype, "terminate");
+        let revision: string;
+        try {
+            const response = await request("/api/resources/notes/missed", {
+                ...json(
+                    { baseRevision: null, data: { text: "committed while disconnected" } },
+                    { "x-resource-epoch": before.epoch },
+                ),
+                method: "PUT",
+            });
+            expect(response.status).toBe(200);
+            revision = ((await response.json()) as { revision: string }).revision;
+            expect(send).not.toHaveBeenCalled();
+            expect(terminate).toHaveBeenCalledTimes(1);
+            expect(await client.closed).toBe(1006);
+            expect(client.frames).toEqual([hello]);
+        } finally {
+            buffered.mockRestore();
+            send.mockRestore();
+            terminate.mockRestore();
+        }
+
+        const reconnected = await open();
+        const nextHello = await frameAt(reconnected, 0);
+        const listing = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        expect(listing.resources).toContainEqual({ kind: "notes", id: "missed", revision });
+        expect(nextHello).toEqual({
+            type: "hello",
+            epoch: before.epoch,
+            streaming: [],
+            memoryTasks: [],
+            digest: revisionDigest(listing),
+        });
+        expect(revisionDigest(listing)).not.toBe(revisionDigest(before));
+        await delivered(reconnected);
+        expect(reconnected.frames).toEqual([nextHello]);
     });
 
     it("refuses the raw password, an expired or broken JWT, and no token (401), without a frame", async () => {
@@ -565,6 +616,115 @@ describe("createEventSockets", () => {
             client.ws.terminate();
         }
         sockets.close();
+    });
+
+    it("admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing rejected frames", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+        const frames: EventFeedFrame[] = [
+            {
+                type: "change",
+                epoch: "E",
+                changes: {
+                    resources: [
+                        {
+                            kind: "notes",
+                            id: "n",
+                            revision: "r2",
+                            patch: { baseRevision: "r1", set: { text: "€한😀" }, remove: [] },
+                        },
+                    ],
+                    chats: [],
+                    chatOrders: [],
+                },
+            },
+            {
+                type: "memoryTask",
+                epoch: "E",
+                characterId: "한",
+                chatId: "k",
+                status: { taskId: "t", state: "queued", done: 0, total: 0 },
+            },
+            { type: "epoch", epoch: "새 epoch" },
+            { type: "ping", ts: 15_000 },
+        ];
+        for (const frame of frames) {
+            vi.setSystemTime(0);
+            const { feed, sockets, url } = await host(async () => true);
+            const clients: Client[] = [];
+            // Connect in order so the rejected socket is first in the fan-out.
+            for (let i = 0; i < 3; i++) {
+                const client = connect(url);
+                clients.push(client);
+                await frameAt(client, 0);
+            }
+            const text = JSON.stringify(frame);
+            const bytes = Buffer.byteLength(text);
+            const over = admissionBytes - bytes + 1;
+            if (frame.type !== "ping") {
+                expect(bytes).toBeGreaterThan(text.length);
+                expect(over + text.length).toBeLessThanOrEqual(admissionBytes);
+            }
+            // ws counts buffered strings in UTF-16 code units. Control its getter instead of
+            // relying on real buffering; both the server and clients use this class.
+            const buffered = vi
+                .spyOn(WsClient.prototype, "bufferedAmount", "get")
+                .mockReturnValueOnce(over)
+                .mockReturnValueOnce(admissionBytes - bytes)
+                .mockReturnValue(0);
+            const send = vi.spyOn(WsClient.prototype, "send");
+            const terminate = vi.spyOn(WsClient.prototype, "terminate");
+            try {
+                if (frame.type === "ping") vi.advanceTimersByTime(15_000);
+                else if (frame.type !== "hello") feed.publish(frame);
+                expect(
+                    send.mock.calls.map(([data]) => data),
+                    frame.type,
+                ).toEqual([text, text]);
+                expect(terminate, frame.type).toHaveBeenCalledTimes(1);
+                expect(terminate.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+                expect(await clients[0].closed).toBe(1006);
+                expect(clients[0].frames).toEqual([{ type: "hello", epoch: "E", streaming: [], memoryTasks: [] }]);
+                for (const client of clients.slice(1)) {
+                    expect(await frameAt(client, 1)).toEqual(frame);
+                    expect(client.ws.readyState).toBe(WsClient.OPEN);
+                }
+            } finally {
+                buffered.mockRestore();
+                send.mockRestore();
+                terminate.mockRestore();
+                for (const client of clients) client.ws.terminate();
+                sockets.close();
+            }
+        }
+    });
+
+    it("admits hello on bufferedAmount alone even when its own bytes would exceed 4 MiB", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const buffered = vi.spyOn(WsClient.prototype, "bufferedAmount", "get").mockReturnValue(admissionBytes);
+        const send = vi.spyOn(WsClient.prototype, "send");
+        const clients: Client[] = [];
+        try {
+            const admitted = connect(url);
+            clients.push(admitted);
+            const hello = { type: "hello", epoch: "E", streaming: [], memoryTasks: [] };
+            expect(admissionBytes + Buffer.byteLength(JSON.stringify(hello))).toBeGreaterThan(admissionBytes);
+            expect(await frameAt(admitted, 0)).toEqual(hello);
+            expect(admitted.ws.readyState).toBe(WsClient.OPEN);
+
+            buffered.mockReturnValue(admissionBytes + 1);
+            send.mockClear();
+            const rejected = connect(url);
+            clients.push(rejected);
+            expect(await rejected.closed).toBe(1006);
+            expect(send).not.toHaveBeenCalled();
+            expect(rejected.frames).toEqual([]);
+        } finally {
+            buffered.mockRestore();
+            send.mockRestore();
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
     });
 
     it("pings every 15 s, publishes `epoch` frames, and forgets a closed socket and its timer", async () => {
