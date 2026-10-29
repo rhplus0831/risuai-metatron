@@ -174,7 +174,6 @@ Theme and GUI helpers:
 
 ### Issues
 
-- `chatStatus.svelte.ts` `visibleChatKey` treats the open chat as shown unless the page is hidden or Settings or the grid is open; a full-screen modal over the transcript (the bookmark list, `BookmarkList.svelte`) is not considered, so a reply that finishes behind it counts as viewed (`noteJobDone` adds no unseen mark) and a recovery mark can be cleared ([cross-plan review](../audit/cross-plan-2026-10-29.md#dt3--a-reply-finished-behind-the-bookmark-modal-counts-as-viewed) DT3).
 - Rows bound by index carry only their owner's id as `popupEditorContext` (`PromptDataItem` in the prompt template, `RegexData` in a regex list, a plugin's textarea argument, which uses the plugin's name): when another client reorders the owner's rows while a popup is open and both rows hold the same text, the row stays mounted and its popup writes into the row now at that index. Plugin rows with duplicate names (kept by `setPlugins` and the upstream backup import) share a context the same way. The rows have no ids, and the row object's identity would change on every refreshed record list, which would discard unchanged drafts.
 
 ### Limitations

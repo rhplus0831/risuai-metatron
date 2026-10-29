@@ -189,48 +189,64 @@ afterEach(() => {
 });
 
 describe("chat status sources", () => {
-    it.each(["settings", "grid", "hidden page", "unloaded chat"])(
-        "keeps completion and recovery marks behind %s until the transcript is shown",
-        async (obstruction) => {
-            vi.useFakeTimers();
-            const { settingsOpen, gridOpenStore } = await import("../screenVisibility");
-            const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-            const showPage = (visible: boolean) => {
-                visibility.mockReturnValue(visible ? "visible" : "hidden");
-                document.dispatchEvent(new Event("visibilitychange"));
-            };
-            view(a);
-            watch();
-            const saved = JSON.parse(JSON.stringify(chat.findChat(a)!));
-            const record = { characterId: a.chaId, id: a.chatId, revision: "r1" };
-            const orders = [{ characterId: a.chaId, revision: "o1", ids: [a.chatId] }];
-            if (obstruction === "settings") settingsOpen.set(true);
-            if (obstruction === "grid") gridOpenStore.set(true);
-            if (obstruction === "hidden page") showPage(false);
-            if (obstruction === "unloaded chat") {
-                chat.assembleChats([{ chaId: a.chaId }], [{ ...record, name: saved.name, fmIndex: -1 }], orders);
-                expect(chat.currentChatRef()).toEqual(a);
-                expect(chat.findChat(a)).toBeUndefined();
-            }
-            flushSync();
-            status.noteJobDone(a, done({ messageId: "reply" }));
-            expect(get(status.unseenChatKeys)).toEqual(new Set([keyA]));
-            status.noteJobLost(a, "lost-behind-screen");
-            flushSync();
-            expectMarks([keyA]);
+    it.each([
+        "settings",
+        "grid",
+        "bookmarks",
+        "message search",
+        "HypaV3 memory",
+        "popup editor",
+        "hidden page",
+        "unloaded chat",
+    ])("keeps completion and recovery marks behind %s until the transcript is shown", async (obstruction) => {
+        vi.useFakeTimers();
+        const { settingsOpen, gridOpenStore, bookmarkListOpen, hypaV3ModalOpen } = await import("../screenVisibility");
+        const { messageSearchPanel } = await import("../messageSearch.svelte");
+        const { popUpEditorStore } = await import("../popupEditorSession.svelte");
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        const showPage = (visible: boolean) => {
+            visibility.mockReturnValue(visible ? "visible" : "hidden");
+            document.dispatchEvent(new Event("visibilitychange"));
+        };
+        view(a);
+        watch();
+        const saved = JSON.parse(JSON.stringify(chat.findChat(a)!));
+        const record = { characterId: a.chaId, id: a.chatId, revision: "r1" };
+        const orders = [{ characterId: a.chaId, revision: "o1", ids: [a.chatId] }];
+        if (obstruction === "settings") settingsOpen.set(true);
+        if (obstruction === "grid") gridOpenStore.set(true);
+        if (obstruction === "bookmarks") bookmarkListOpen.set(true);
+        if (obstruction === "message search") messageSearchPanel.open = true;
+        if (obstruction === "HypaV3 memory") hypaV3ModalOpen.set(true);
+        if (obstruction === "popup editor") popUpEditorStore.open = true;
+        if (obstruction === "hidden page") showPage(false);
+        if (obstruction === "unloaded chat") {
+            chat.assembleChats([{ chaId: a.chaId }], [{ ...record, name: saved.name, fmIndex: -1 }], orders);
+            expect(chat.currentChatRef()).toEqual(a);
+            expect(chat.findChat(a)).toBeUndefined();
+        }
+        flushSync();
+        status.noteJobDone(a, done({ messageId: "reply" }));
+        expect(get(status.unseenChatKeys)).toEqual(new Set([keyA]));
+        status.noteJobLost(a, "lost-behind-screen");
+        flushSync();
+        expectMarks([keyA]);
 
-            settingsOpen.set(false);
-            gridOpenStore.set(false);
-            showPage(true);
-            if (obstruction === "unloaded chat") {
-                chat.assembleChats([{ chaId: a.chaId }], [{ ...record, data: saved }], orders);
-            }
-            flushSync();
-            expectMarks([]);
-            status.noteJobDone(a, done({ messageId: "visible-reply" }));
-            expect(get(status.unseenChatKeys)).toEqual(new Set());
-        },
-    );
+        settingsOpen.set(false);
+        gridOpenStore.set(false);
+        bookmarkListOpen.set(false);
+        messageSearchPanel.open = false;
+        hypaV3ModalOpen.set(false);
+        popUpEditorStore.open = false;
+        showPage(true);
+        if (obstruction === "unloaded chat") {
+            chat.assembleChats([{ chaId: a.chaId }], [{ ...record, data: saved }], orders);
+        }
+        flushSync();
+        expectMarks([]);
+        status.noteJobDone(a, done({ messageId: "visible-reply" }));
+        expect(get(status.unseenChatKeys)).toEqual(new Set());
+    });
 
     it("generating reacts to the union of followed chats and real server locks", async () => {
         expect(status.chatStatusKey(a)).toBe(keyA);

@@ -28,7 +28,13 @@ export const sideBarStore = writable(window.innerWidth > 1024);
 export const CurrentTriggerIdStore = writable<string | null>(null);
 export const CharEmotion = writable({} as { [key: string]: [string, string, number][] });
 export const ViewBoxsize = writable({ width: 12 * 16, height: 12 * 16 }); // Default width and height in pixels
-export { settingsOpen, gridOpenStore } from "./screenVisibility";
+export { settingsOpen, gridOpenStore, bookmarkListOpen, hypaV3ModalOpen } from "./screenVisibility";
+export {
+    popUpEditorStore,
+    openPopupEditorSession,
+    isPopupEditorSessionCurrent,
+    closePopupEditorSession,
+} from "./popupEditorSession.svelte";
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
 /**
@@ -43,7 +49,6 @@ export const openModelPresetList = writable<PickerListState>(false);
 export const openPersonaList = writable<PickerListState>(false);
 /** The chat whose binding dialog is open (`ChatBindingDialog.svelte`), or null. */
 export const chatBindingDialog = writable<ChatRef | null>(null);
-export const bookmarkListOpen = writable(false);
 export const SettingsMenuIndex = writable(-1);
 export {
     MODEL_SETTINGS_MENU,
@@ -77,7 +82,6 @@ export const SafeModeStore = writable(false);
 export const CharConfigSubMenu = writable(0);
 /** The alert slot: one status and a queue of dialogs, each answering its own caller (`alertQueue.ts`). */
 export const alertStore = createAlertQueue({ type: "none", msg: "n" });
-export const hypaV3ModalOpen = writable(false);
 /**
  * The legacy HypaV3 overlay: written by a job's `progress` notice and by the client copy of the
  * algorithm. Shown when the selected chat has no memory run of its own (`legacyProgressShown`).
@@ -219,36 +223,6 @@ export const popupStore = $state({
     mouseY: 0,
     openId: 0,
 });
-export const popUpEditorStore = $state({
-    open: false,
-    value: "",
-    mode: "default" as "default",
-    language: "markdown" as string,
-    sessionId: 0,
-});
-
-let nextPopupEditorSessionId = 0;
-
-export function openPopupEditorSession(value: string, language = "markdown"): number {
-    const sessionId = ++nextPopupEditorSessionId;
-    popUpEditorStore.value = value;
-    popUpEditorStore.mode = "default";
-    popUpEditorStore.language = language;
-    popUpEditorStore.sessionId = sessionId;
-    popUpEditorStore.open = true;
-    return sessionId;
-}
-
-export function isPopupEditorSessionCurrent(sessionId: number): boolean {
-    return popUpEditorStore.sessionId === sessionId;
-}
-
-export function closePopupEditorSession(sessionId: number): boolean {
-    if (!isPopupEditorSessionCurrent(sessionId)) return false;
-    popUpEditorStore.open = false;
-    return true;
-}
-
 export const irisStore = $state({
     open: false,
 });

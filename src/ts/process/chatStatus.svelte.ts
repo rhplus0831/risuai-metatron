@@ -4,7 +4,9 @@ import { chatEntry, currentChatRef, findChat, lockedChatKeys, type ChatRef } fro
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { isLocalSend, localSends } from "src/ts/process/localSends";
-import { gridOpenStore, settingsOpen } from "src/ts/screenVisibility";
+import { bookmarkListOpen, gridOpenStore, hypaV3ModalOpen, settingsOpen } from "src/ts/screenVisibility";
+import { messageSearchPanel } from "src/ts/messageSearch.svelte";
+import { popUpEditorStore } from "src/ts/popupEditorSession.svelte";
 import { isPageVisible } from "src/ts/pageVisibility.svelte";
 
 const MAX_UNSEEN_CHATS = 256;
@@ -17,6 +19,8 @@ let recoveryView: { current: ReadonlyMap<string, string> } | undefined;
 let unseenView: { current: ReadonlySet<string> } | undefined;
 let settingsView: { current: boolean } | undefined;
 let gridView: { current: boolean } | undefined;
+let bookmarkView: { current: boolean } | undefined;
+let hypaV3View: { current: boolean } | undefined;
 let foreignView: { current: ReadonlyMap<string, string> } | undefined;
 
 /** The per-tab status key, shared with the followed-job registry. */
@@ -97,12 +101,20 @@ export function noteJobDone(ref: ChatRef, end: GenerationTerminalEvent): void {
     unseenChatKeys.set(next);
 }
 
-/** The loaded chat while its transcript is shown on a visible page, including the playground (reactive). */
+/**
+ * The loaded chat while its transcript is shown on a visible page, including the playground
+ * (reactive). Settings, the grid, and the full-page panels over the transcript (bookmarks, message
+ * search, HypaV3 memory, the popup editor) hide it; the smaller pickers and dialogs do not.
+ */
 export function visibleChatKey(): string | null {
     if (
         !isPageVisible() ||
         (settingsView ??= fromStore(settingsOpen)).current ||
-        (gridView ??= fromStore(gridOpenStore)).current
+        (gridView ??= fromStore(gridOpenStore)).current ||
+        (bookmarkView ??= fromStore(bookmarkListOpen)).current ||
+        (hypaV3View ??= fromStore(hypaV3ModalOpen)).current ||
+        messageSearchPanel.open ||
+        popUpEditorStore.open
     ) {
         return null;
     }
