@@ -26,6 +26,7 @@ vi.mock("../serverAuth", async () =>
 import { AssetRecordParser, encodeAssetRecordHeader } from "../../../../shared/assetBatch.ts";
 import {
     ASSET_BATCH_CLIENT_BYTES,
+    MISSING_CHECK_DEADLINE_MS,
     missingAssets,
     readAsset,
     readAssets,
@@ -543,10 +544,15 @@ describe("missing asset transport", () => {
         await vi.runAllTimersAsync();
         expect(await pending).toEqual({ ok: true });
         expect(uploads()).toEqual(recordsOf(items));
-        expect(calls.filter(({ path }) => path === "/api/assets/missing")).toHaveLength(failure === "network" ? 8 : 1);
+        // Network retries stop at the check's deadline: attempts at 0, 1, 3, 7, and 15 s, then a 16 s wait past it.
+        expect(calls.filter(({ path }) => path === "/api/assets/missing")).toHaveLength(failure === "network" ? 5 : 1);
     });
 
     it("rejects an abort during the check with the signal reason and sends no upload", async () => {
+        // Safari before 17.4 has no `AbortSignal.any`.
+        vi.spyOn(AbortSignal, "any").mockImplementation(() => {
+            throw new TypeError("AbortSignal.any is not a function");
+        });
         const response = deferred<Response>();
         const started = deferred<void>();
         answer.current = () => {
@@ -561,7 +567,30 @@ describe("missing asset transport", () => {
         response.resolve(Response.json({ missing: [] }));
         await pending;
         expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing"]);
-        expect(calls[0].init.signal).toBe(controller.signal);
+        expect(calls[0].init.signal?.aborted).toBe(true);
+        expect(calls[0].init.signal?.reason).toBe(reason);
+    });
+
+    it("uploads everything when the check has not answered by its deadline, and cancels the check", async () => {
+        vi.useFakeTimers();
+        const items = [content("one"), content("two")];
+        const held = deferred<Response>();
+        answer.current = (path) => (path === "/api/assets/missing" ? held.promise : Response.json({ success: true }));
+        let settled = false;
+        const pending = writeAssets(items).finally(() => {
+            settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(MISSING_CHECK_DEADLINE_MS - 1);
+        expect(settled).toBe(false);
+        expect(uploads()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        await pending;
+        expect(uploads()).toEqual(recordsOf(items));
+        expect(calls[0].init.signal?.aborted).toBe(true);
+        // A late answer changes nothing.
+        held.resolve(Response.json({ missing: [] }));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing", "/api/assets/write"]);
     });
 
     it("resolves without a write request when all items are present", async () => {

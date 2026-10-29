@@ -364,7 +364,7 @@ export async function readImage(data: string) {
 
 /**
  * Saves an asset file, skipping a canonical upload when the server already holds verified bytes.
- * A failed check uploads normally; custom ids always write.
+ * A failed or timed-out check uploads normally; custom ids always write.
  *
  * @param {Uint8Array} data - The data of the asset file.
  * @param {string} [customId=''] - The custom ID for the asset file.

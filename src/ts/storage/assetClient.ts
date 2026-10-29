@@ -42,6 +42,11 @@ export const ASSET_BATCH_CLIENT_RECORDS = 500;
 const ASSET_MISSING_PATH = "/api/assets/missing";
 const MAX_ASSET_MISSING_NAMES = 512;
 const MAX_ASSET_MISSING_BODY_BYTES = 64 * 1024;
+/**
+ * How long one request of the missing check may take, retries and the answer's body included. The
+ * check only saves an upload, so one that has not answered by then fails and the bytes go up.
+ */
+export const MISSING_CHECK_DEADLINE_MS = 20_000;
 
 /** Canonical content-name hash; server twin: contentNameHash in server/src/http/assetVerification.ts. */
 export function assetContentHash(key: string): string | null {
@@ -163,9 +168,25 @@ function rethrow(error: unknown, signal: AbortSignal | undefined): never {
     throw error;
 }
 
+/** `work`, or the signal's reason as soon as it fires, whether or not `work` honors the signal. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(abortReason(signal));
+        if (signal.aborted) {
+            void work.catch(() => {});
+            onAbort();
+            return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+        work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+}
+
 /**
  * Returns names the server does not hold verified, checking at most 512 names and 64 KiB of JSON
- * per request. Throws on a failed or malformed answer; an abort throws the signal's reason.
+ * per request. Throws on a failed or malformed answer and on a request that has not answered within
+ * {@link MISSING_CHECK_DEADLINE_MS} (the request is then aborted, so its late answer is never read);
+ * an abort of `signal` throws the signal's reason.
  */
 export async function missingAssets(names: readonly string[], options: AssetRequestOptions = {}): Promise<Set<string>> {
     const { signal } = options;
@@ -196,22 +217,37 @@ export async function missingAssets(names: readonly string[], options: AssetRequ
     }
     const missing = new Set<string>();
     for (const names of batches) {
+        // The caller's abort is forwarded by hand: `AbortSignal.any` is missing before Safari 17.4.
+        const deadline = new AbortController();
+        const requestSignal = deadline.signal;
+        const forward = () => deadline.abort(abortReason(signal!));
+        const timer = setTimeout(
+            () => deadline.abort(new Error("Asset missing check timed out")),
+            MISSING_CHECK_DEADLINE_MS,
+        );
         try {
-            const res = await requestWithRetry(
-                ASSET_MISSING_PATH,
-                () => ({
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ names }),
-                }),
-                signal,
+            if (signal?.aborted) {
+                forward();
+            }
+            signal?.addEventListener("abort", forward, { once: true });
+            const res = await untilAborted(
+                requestWithRetry(
+                    ASSET_MISSING_PATH,
+                    () => ({
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ names }),
+                    }),
+                    requestSignal,
+                ),
+                requestSignal,
             );
-            throwIfAborted(signal);
+            throwIfAborted(requestSignal);
             if (res.status < 200 || res.status >= 300) {
                 throw new Error("Asset missing check failed");
             }
-            const data = await res.json();
-            throwIfAborted(signal);
+            const data = await untilAborted(res.json(), requestSignal);
+            throwIfAborted(requestSignal);
             const asked = new Set(names);
             if (
                 !Array.isArray(data?.missing) ||
@@ -224,6 +260,9 @@ export async function missingAssets(names: readonly string[], options: AssetRequ
             }
         } catch (error) {
             rethrow(error, signal);
+        } finally {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", forward);
         }
     }
     throwIfAborted(signal);
@@ -347,7 +386,7 @@ function joinRecords(batch: readonly WriteRecord[]): Uint8Array {
  * Writes every item under its key with `POST /api/assets/write`, one batch at a time (see
  * {@link writeBatches}), each request retried as described above. Canonical names with matching
  * `sha256` skip the upload when the server holds verified bytes; any raw overwrite of the same key
- * disables that skip for the whole call. A failed check sends everything; an abort rejects.
+ * disables that skip for the whole call. A failed or timed-out check sends everything; an abort rejects.
  * A zero-length item is an empty file. Nothing is sent for an empty list. Throws `"setItem Error"`
  * for a non-2xx answer and the answer's `error` for a refused one, as `writeAsset` does; the
  * batches before the failing one, and possibly some of its records, stay written.

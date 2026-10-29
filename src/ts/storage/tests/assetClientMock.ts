@@ -20,6 +20,7 @@ export function createAssetClientMock(overrides: Partial<AssetClient> = {}): Ass
         MAX_RETRY_AFTER_MS: 60000,
         ASSET_BATCH_CLIENT_BYTES: 64 * 1024 * 1024,
         ASSET_BATCH_CLIENT_RECORDS: 500,
+        MISSING_CHECK_DEADLINE_MS: 20_000,
     } satisfies AssetClient;
     return { ...defaults, ...overrides };
 }

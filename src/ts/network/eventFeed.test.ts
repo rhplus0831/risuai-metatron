@@ -587,6 +587,37 @@ describe("the connection's liveness and the resume reconnect", () => {
         expect(feedEvents().at(-1)).toEqual({ kind: "feed", phase: "stale", attempt: 1 });
     });
 
+    it("gives up a connection whose listing has not answered by its deadline although pings keep it alive, aborts the read, and reconciles on the reconnect, without waiting for a `close`", async () => {
+        const ws = await started();
+        ws.open();
+        // A dead link: closing it fires no `close`, so the reconnect must not wait for one.
+        ws.silent = true;
+        mocks.listRevisions.mockReturnValueOnce(new Promise(() => {}));
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        const signal: AbortSignal = mocks.listRevisions.mock.calls[0][0].signal;
+        let elapsed = 0;
+        while (elapsed + 15_000 < feed.RECONCILE_DEADLINE_MS) {
+            await vi.advanceTimersByTimeAsync(15_000);
+            elapsed += 15_000;
+            ws.frame({ type: "ping", ts: elapsed });
+        }
+        await vi.advanceTimersByTimeAsync(feed.RECONCILE_DEADLINE_MS - elapsed - 1);
+        expect(ws.closed).toBe(false);
+        expect(signal.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(signal.aborted).toBe(true);
+        expect(ws.closed).toBe(true);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1000);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        next.open();
+        next.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).toHaveBeenCalledWith(listing);
+    });
+
     it("abandons a connection not open within 10 s of its start, authentication included (`connectTimeout`), and a delayed authentication of the abandoned connection builds no socket", async () => {
         const auth = (await import("../storage/serverAuth")).getNodeServerProxyAuth as ReturnType<typeof vi.fn>;
         let answer!: (token: string) => void;

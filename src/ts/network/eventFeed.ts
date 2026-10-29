@@ -42,6 +42,12 @@ import {
  */
 
 const MAX_BACKOFF_MS = 30_000;
+/**
+ * How long a connection's revision listing may take. Heartbeats keep a socket alive while its HTTP
+ * read is stuck, so the listing has its own bound: past it the read is aborted and the socket closed
+ * (reconnecting reconciles again).
+ */
+export const RECONCILE_DEADLINE_MS = 30_000;
 
 let started = false;
 let stopped = false;
@@ -189,14 +195,34 @@ function resumeReconnect() {
     void connect();
 }
 
-async function reconcile(gen: number, ws: WebSocket, hello: number, digest: string | undefined) {
+async function reconcile(
+    gen: number,
+    ws: WebSocket,
+    hello: number,
+    digest: string | undefined,
+    connectAttempt: number,
+) {
     try {
         if (gen !== generation) return;
         let listing = advertised?.epoch === getResourceEpoch() ? advertisedListing() : null;
         if (!listing || typeof digest !== "string" || revisionDigest(listing) !== digest) {
             const overlay = emptyRevisionMap();
             listingOverlay = overlay;
-            listing = await listRevisions();
+            // A replaced connection's read is not aborted early: its epoch-mismatch error still counts.
+            const abort = new AbortController();
+            const timer = setTimeout(
+                () => abort.abort(new Error("Live update listing timed out")),
+                RECONCILE_DEADLINE_MS,
+            );
+            try {
+                // The abort settles the wait even if the read does not stop at it.
+                listing = await new Promise<ResourceRevisionListing>((resolve, reject) => {
+                    abort.signal.addEventListener("abort", () => reject(abort.signal.reason), { once: true });
+                    listRevisions({ signal: abort.signal }).then(resolve, reject);
+                });
+            } finally {
+                clearTimeout(timer);
+            }
             if (gen !== generation) return;
             // HTTP answers and socket frames are unordered against each other. Keep the last
             // advertised value of each row, including deletions, on top of the fetched snapshot.
@@ -222,8 +248,12 @@ async function reconcile(gen: number, ws: WebSocket, hello: number, digest: stri
             return;
         }
         console.error("[Live updates]", error);
-        // Reconnecting reconciles again.
+        // Reconnecting reconciles again. It is scheduled here rather than by the socket's `close`,
+        // which a dead link may never fire.
+        retire();
         ws.close();
+        recordClientEvent({ kind: "feed", phase: "disconnected", attempt: connectAttempt });
+        scheduleReconnect();
     }
 }
 
@@ -243,7 +273,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                 connectedSocket = ws;
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
-            void reconcile(gen, ws, hello, frame.digest);
+            void reconcile(gen, ws, hello, frame.digest, connectAttempt);
             return;
         case "change":
             if (frame.epoch === loaded) {
