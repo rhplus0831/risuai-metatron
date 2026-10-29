@@ -59,8 +59,16 @@ the targets' sum, and that a newer permanent failure left an older retry pending
 before landing. It also found that a transient sibling target in the same row (a legacy rendered
 translation) still re-requests the permanent target each round and that a script whose output size
 varies can fail the limit once and fit later. Both are rare combinations whose fix needs per-target
-terminal memory, so the rendering guide's Known Hazards records them. SJ1, DT2, and DT3 remain
-open.
+terminal memory, so the rendering guide's Known Hazards records them.
+
+SJ1 was fixed on 2026-10-29 in `e12741d5a`. Boot discovery hands the status it read to the follow:
+a kept outcome is the end without an attach, and an ended job's terminal stands when the attaches
+run out or the chat cannot be loaded. DT3 was fixed in `339c2a078`. The bookmark list, message
+search, the HypaV3 memory modal, and the popup editor hide the transcript as Settings does, and the
+smaller pickers and dialogs still do not. The new `serverCommands.test.ts` boot case and the
+`chatStatus.test.ts` obstruction cases fail with each guard removed. A GPT-6.1-Sol review of the
+first version found that a failed chat load after discovery still dropped the terminal, and that
+the popup editor was missing from the panels; both were fixed before landing. DT2 remains open.
 
 | ID    | Priority | Seam              | Finding                                                                                 |
 | ----- | -------- | ----------------- | --------------------------------------------------------------------------------------- |
