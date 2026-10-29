@@ -510,6 +510,39 @@ describe("display transform recovery", () => {
         expect(failed.element.querySelector(".chattext")!.textContent).toContain("Rendered: Failed display");
     });
 
+    it("drops a failed source's retry once an edited source renders, and still retries the edit's failure", async () => {
+        const unavailable = () => Response.json({ error: "Unavailable" }, { status: 503 });
+        respond = unavailable;
+        const old = renderChat("Old reply");
+        await settle(16);
+        expect(requests).toHaveLength(1);
+
+        // An edit, or a saved edit from another tab, mounts the transcript row again with the new text.
+        await old.remove();
+        respond = success;
+        const row = renderChat('New reply <input name="draft" value="initial">');
+        await settle(16);
+        expect(requests).toHaveLength(2);
+        const input = row.element.querySelector<HTMLInputElement>('input[name="draft"]')!;
+        input.value = "keep my typing";
+        await settle(5_000);
+        await settle(16);
+        expect(requests).toHaveLength(2);
+        expect(row.element.querySelector('input[name="draft"]')).toBe(input);
+        expect(input.value).toBe("keep my typing");
+
+        respond = unavailable;
+        row.instance.updateRow({ message: "Third reply" });
+        flushSync();
+        await settle(16);
+        expect(requests).toHaveLength(3);
+        respond = success;
+        await settle(5_000);
+        await settle(16);
+        expect(requests).toHaveLength(4);
+        expect(row.element.querySelector(".chattext")!.textContent).toContain("Rendered: Third reply");
+    });
+
     it("retries only failed mounted rows once per round with 5s doubling backoff capped at 60s", async () => {
         appendMessage(ref, { chatId: "unaffected", role: "char", data: "Untouched" });
         const unaffected = renderChat("Untouched", { idx: 1, messageId: "unaffected" });

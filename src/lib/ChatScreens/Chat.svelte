@@ -39,6 +39,8 @@
     import {
         displayTransformMessageKey,
         displayTransformRetryRound,
+        releaseDisplayTransformSource,
+        showDisplayTransformSource,
     } from "src/ts/parser/displayTransformRecovery.svelte";
     import {
         aiLawApplies,
@@ -884,9 +886,23 @@
             : null;
     }
 
+    /** This row's entry in the display transform recovery, so a failure of another source is not retried over it. */
+    const shownOwner = {};
+    let shownTarget: { ref: ChatRef; id: string } | null = null;
     function displaya(message: string) {
         msgDisplay = displayPrePass(message);
         updateBilingualDisplay();
+        untrack(() => {
+            const target = messageTarget();
+            if (shownTarget) releaseDisplayTransformSource(shownTarget.ref, shownTarget.id, shownOwner);
+            shownTarget = target;
+            if (target) {
+                showDisplayTransformSource(target.ref, target.id, shownOwner, {
+                    display: msgDisplay,
+                    bilingual: bilingualDisplay?.source,
+                });
+            }
+        });
     }
 
     const setStatusMessage = (message: string, timeout: number = 0) => {
@@ -932,6 +948,7 @@
 
     onDestroy(() => {
         clearSettledRender();
+        if (shownTarget) releaseDisplayTransformSource(shownTarget.ref, shownTarget.id, shownOwner);
         popupEditorsDestroyed = true;
         if (activeAutoPopupMessageSessionId !== null) {
             closePopupEditorSession(activeAutoPopupMessageSessionId);
