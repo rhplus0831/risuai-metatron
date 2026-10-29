@@ -336,6 +336,11 @@ Domain guides retain their specific assertions and browser gaps.
 
 ## Known Hazards
 
+### Issues
+
+- `measureBoot.mjs` passes `RISU_DIST` unchanged to the temporary directory's symlink. Relative values pass the initial repository-relative existence check but resolve incorrectly at the link; `RISU_DIST=dist` creates a self-loop (`ELOOP`), despite the header showing that value. Use an absolute path until the driver resolves it. [U3](../audit/boot-bytes-2026-10-29.md#u3--relative-build-paths-break-the-measurement-driver).
+- This guide's Flows paragraph beginning ``- Development: `pnpm run server`- CI:`` merges development and CI instructions and repeats its ending. The separate `pnpm dev` plus `pnpm run server` flow needs restoring. [U4](../audit/boot-bytes-2026-10-29.md#u4--the-build-guide-has-lost-its-separate-development-instructions).
+
 ### Gotchas
 
 - Import lucide icons as plain names (`import { X, Check as Ok } from "@lucide/svelte"`). Another form (a type, `icons`, a default or namespace import) keeps that statement on the package's main entry, and every test that reaches it repeats the package main entry and its icon exports; `vitest.lucideImports.test.ts` fails on it.

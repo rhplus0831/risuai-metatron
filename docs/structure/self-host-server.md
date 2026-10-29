@@ -572,6 +572,7 @@ Runtime limits of other subsystems live with their owners:
 
 ### Issues
 
+- Server imports and archive restore skip existing assets without verifying their bytes: `contentAsset.ts` `writeContentAsset`/`publishStagedContentAsset`, `importModule.ts`, and `backups.ts` `restoreValidated`. Reimporting cannot repair an empty or corrupt target even when healthy bytes are supplied. The two content-asset helpers were reproduced; the module/restore branches were confirmed in source. [U2](../audit/boot-bytes-2026-10-29.md#u2--server-reimports-preserve-corrupt-content-addressed-files).
 - Snapshots (`save/backups/`) copy `resources.sqlite`, not assets; retained
   snapshots can keep references to assets that are never deleted, so
   `save/assets/` can grow.

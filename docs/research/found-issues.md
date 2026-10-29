@@ -12,9 +12,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Save journal and recovery](#save-journal-and-recovery) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
 - [Display transform](#display-transform) (3)
-- [Assets and imports](#assets-and-imports) (1)
 - [Chat screen and input](#chat-screen-and-input) (2)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (4)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
 - [Test mocks](#test-mocks) (4)
 
 ## Chat store, sync, and change feeds
@@ -40,9 +39,9 @@ Found during the Durable Drafts plan run (2026-10-28 to 2026-10-29; archived, `g
 
 ### Reads outside the save adapter have no deadline
 
-Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/storage/resourceSync.svelte.ts`); the `resourceClient.ts` read functions take an optional `signal` but have no default deadline. On-demand chat loads now have their own per-request deadline (`CHAT_READ_DEADLINE_MS`, `chatStore.svelte.ts`; [Durable Drafts audit U1](../audit/durable-drafts-2026-10-29.md#u1--an-on-demand-chat-read-can-remain-pending-indefinitely)). Remaining callers to investigate: the socket reconcile's `listRevisions` (`src/ts/network/eventFeed.ts` ~:119), character-order repair (`src/ts/storage/characterOrder.ts` ~:221), job callback recovery (`src/ts/network/jobChannel.ts` ~:599), detached export reads (`src/ts/storage/chatEdits.ts` ~:109), and the boot read. Found while landing Slice 2.
+Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/storage/resourceSync.svelte.ts`); the `resourceClient.ts` read functions take an optional `signal` but have no default deadline. On-demand chat loads now have their own per-request deadline (`CHAT_READ_DEADLINE_MS`, `chatStore.svelte.ts`; [Durable Drafts audit U1](../audit/durable-drafts-2026-10-29.md#u1--an-on-demand-chat-read-can-remain-pending-indefinitely)). The socket reconcile's pending `listRevisions` was reproduced in [Boot Bytes audit U1](../audit/boot-bytes-2026-10-29.md#u1--a-live-socket-does-not-rescue-a-stalled-reconciliation-read) and moved to the persistence guide's Issues. Remaining callers to investigate: character-order repair (`src/ts/storage/characterOrder.ts` ~:221), job callback recovery (`src/ts/network/jobChannel.ts` ~:599), detached export reads (`src/ts/storage/chatEdits.ts` ~:109), and the boot read. Found while landing Slice 2.
 
-**Why it matters:** a stuck read hangs its caller (a reconcile that never ends, an export that never finishes) with no error. It no longer blocks saving.
+**Why it matters:** a stuck read hangs its caller (an export or boot that never finishes) with no error. It no longer blocks saving.
 **Suggested handling:** when touching one of these callers, pass a signal with a bound suited to its payload (a chat load can be large on a slow link, so 20 s may be too short).
 
 ## Server jobs and prompt assembly
@@ -84,15 +83,6 @@ Only reads the save adapter issues go through `deadlineRead` (20 s, `src/ts/stor
 **Why it matters:** a later measurement that copies the probe's number would report no retained heap.
 **Suggested handling:** guard the read with `?.` and measure the heap freed on close (or run the snapshot section alone with a close step); say which method in the table.
 
-## Assets and imports
-
-### Server import and restore skip existing assets on existence alone
-
-Server-side writers of content-addressed assets skip a target that merely exists, without checking its bytes: `writeContentAsset` (`server/src/http/contentAsset.ts:33`, `storageFileExists`) and `publishStagedContentAsset` (`:60`), the `.risum` import (`server/src/routes/importModule.ts:121`, counted as `assetsSkipped`), and backup restore (`server/src/routes/backups.ts:413`, any successful `lstat`). An empty, truncated, or corrupt file under a content name therefore stays forever through every reimport and restore. The client's uploads no longer have this gap: they ask `POST /api/assets/missing`, which counts a file that fails verification as missing (Boot Bytes plan D7 and Q5, which left these server paths out of scope). Recorded 2026-10-29.
-
-**Why it matters:** a damaged asset cannot be repaired by importing the same card, module, or backup again, which is what a user would try.
-**Suggested handling:** in the retention or byte-budget plan, verify an existing target (reuse `assetVerification.verifyFiles` and its budget) and overwrite it when it does not hash to its name.
-
 ## Chat screen and input
 
 ### Latest-message start scroll untested in DefaultChatScreen
@@ -110,20 +100,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Suggested handling:** if it ever shows up, have the opener remember whether its open was the current session at open time and close unconditionally through a store function that compares ids captured outside the teardown, or close in a microtask after destroy.
 
 ## Build, drivers, and e2e
-
-### Build guide Flows bullets merged
-
-`docs/structure/build-test-platforms.md` Flows, the bullet after "Production:" (line 120), reads "- Development: `pnpm run server`- CI: GitHub Actions runs ..." and ends with "agents keep using `pnpm --silent test:agent` (V1). test:agent` (V1)." A bad edit merged two bullets: the Development bullet's text is lost and the CI bullet has a duplicated tail. Found 2026-10-29 by Boot Bytes Slice 2.
-
-**Why it matters:** the guide is the routed doc for build and test work; the merged bullet hides the development flow.
-**Suggested handling:** restore the Development bullet (`pnpm dev` plus `pnpm run server`, see the `dev` script row) as its own bullet and drop the duplicated tail.
-
-### measureBoot takes a relative RISU_DIST as is
-
-`util/playwright/measureBoot.mjs:379` reads `process.env.RISU_DIST` unchanged and later symlinks it as the temp work dir's `dist`. A relative value such as `dist` (the header at `:10` writes `RISU_DIST=dist` as if it were the default) becomes a link to itself (ELOOP), so the server finds no build. Unset and absolute values work; the build-test-platforms guide already says "an absolute path". Found 2026-10-29 by the Boot Bytes Slice 9 challenger.
-
-**Why it matters:** measuring a baseline build is the variable's documented use, and a relative path fails confusingly.
-**Suggested handling:** `path.resolve` the value and fix the header line.
 
 ### measureBoot has no resume after a change made while hidden
 
