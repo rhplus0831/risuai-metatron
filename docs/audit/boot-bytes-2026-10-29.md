@@ -35,6 +35,26 @@ All five remain open. Verified findings are also indexed in the owning guides;
 the corresponding inbox entries have been moved or narrowed, following
 [STRUCTURE.md](../../STRUCTURE.md#doc-maintenance).
 
+**Resolution (2026-10-29).** All five are fixed, each with a regression test except U3
+and U4 (a driver path and a guide paragraph): BB1 and U1 in `d01c3934e`, U2 in
+`91a1493cb`, and U3 and U4 in `a790a3db9`. BB1: each request of the missing check
+(retries and the body included) has a 20 s deadline (`MISSING_CHECK_DEADLINE_MS`), after
+which it is aborted and the upload goes ahead; the caller's abort is forwarded by hand,
+since `AbortSignal.any` is missing before Safari 17.4, inside the build target. U1: the
+listing has a 30 s deadline (`RECONCILE_DEADLINE_MS`), and a failed reconcile gives the
+connection up and schedules the reconnect itself, so a socket whose `close` never comes
+still reconnects. A replaced connection's listing is not aborted on retirement, unlike the
+suggested fix: the feed keeps its rule that an epoch-mismatch error from a replaced
+connection's listing still resets the memory tasks and advertised map. Such an error that
+comes after the deadline is no longer seen; the next `hello` reports the epoch instead. U2:
+an existing content-named file is kept only when it holds its bytes (`holdsVerifiedAsset`);
+the module, CharX, PNG, and Realm imports replace it by rename, and restore replaces it
+when the archive's copy hashes to the name. Non-canonical names and directories are still
+never overwritten. A healthy uncached file above the verifier's 256 MiB read budget is
+rewritten once, and restore now reads existing uncached canonical assets. An adversarial
+GPT-6.1-Sol review found the `close` dependency and the `AbortSignal.any` gap in the first
+version of the fixes; both were fixed before landing.
+
 ## Plan-related findings
 
 ### BB1 — The optional asset preflight can prevent the upload indefinitely
