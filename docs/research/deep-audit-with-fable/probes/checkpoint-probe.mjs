@@ -185,7 +185,7 @@ const jobs = createGenerationJobs({
 
             start = performance.now();
             phase = "scopeAfter";
-            refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+            refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
             t.scopeAfterMs = performance.now() - start;
 
             // Time inside the store's chat reads, measured only while emitRecords runs.

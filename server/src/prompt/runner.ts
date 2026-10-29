@@ -389,7 +389,7 @@ async function runSend(
             }),
             covers ? { covers } : undefined,
         );
-        refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+        refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
         job.emitRecords({ chats: [{ characterId, id: chatId }] });
         return applied.chats[0]?.checkpoints ?? [];
     };

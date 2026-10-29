@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
     Chat,
     Database,
+    Message,
     ModelPreset,
     ModelProfile,
     RisuPersona,
@@ -15,6 +16,7 @@ import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
+import type { ChatWriteChange } from "../data/chatStore.ts";
 import {
     characterShell,
     forwardPersonaRoots,
@@ -52,7 +54,9 @@ import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
  *   layer's own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
- *   read again after the job's own writes and after a callback that may have written.
+ *   read again after the job's own writes and after a callback that may have written. After the
+ *   job's own write of its chat, `refreshChatAfterWrite` lays the write's stored change onto the chat
+ *   instead, and reads the chat whole only when that change cannot be adopted.
  *
  * Both stay on the main thread: neither the projection nor `request` is ever sent to Lua or a tab.
  */
@@ -60,12 +64,13 @@ export type JobScope = {
     db: Database;
     characterId: string;
     chatId: string;
-    /** The chat's revision as last read. */
+    /** The revision of the projection's chat: as last read, or as the adopted own change left it. */
     chatRevision: string;
     /**
      * The chat's source generation (`ResourceStore.readChatSource`), read in the same synchronous
      * call as the chat snapshot the projection holds: a whole-chat `replace` or a delete since then
-     * shows as another value. A `meta` write keeps it.
+     * shows as another value. A by-id write (`meta`, a message op) keeps it, so an adopted own
+     * change keeps the value read with the snapshot it was laid onto.
      */
     chatSourceGeneration?: number;
     /** The job's prompt preset (`context.presetId`). */
@@ -471,7 +476,7 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
                     { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
                 ],
             }));
-            refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+            refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
             job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
         } catch (error) {
             clear();
@@ -551,9 +556,10 @@ export function bindChatMetadata(job: RunningJob, scope: JobScope): void {
 }
 
 /**
- * Reads the job's chat again with its revision (after a write of the job or a callback that may
- * have written): stored data and revision come together, with the pending metadata laid over that
- * snapshot. Pending values carry no stored revision until their own flush commits.
+ * Reads the job's chat again with its revision (before a write of the job, after a callback that
+ * may have written, and after an own write whose change `refreshChatAfterWrite` cannot adopt):
+ * stored data and revision come together, with the pending metadata laid over that snapshot.
+ * Pending values carry no stored revision until their own flush commits.
  * Returns false when the chat is gone.
  */
 export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
@@ -574,30 +580,49 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
     scope.chatSourceGeneration = record.sourceGeneration;
     overlayChatMeta(scope, record.data as Chat);
     if (scope.charactersKind) {
-        addSpeakers(store, scope.charactersKind, scope, record.data as Chat);
+        addSpeakers(store, scope.charactersKind, scope, (record.data as Chat).message ?? []);
     }
     return true;
 }
 
 /**
- * Adopt an own metadata write without reading unchanged messages. A stale write or a subsequent
- * change needs a full refresh: the stored transcript may no longer be the scope's copy.
+ * After the job's own write of its chat: lays the change that write stored (`change`, the write's
+ * `written` entry of the group whose result is `result`) onto the scope's copy instead of reading
+ * the chat again. Only while the copy is exactly the change's base and nothing wrote the chat
+ * since: the group applied on the current revision (not `stale`), the scope held the change's base
+ * revision, and the stored revision is still the change's (a feed listener runs inside the
+ * publishing write and may write the chat again before the write returns). The copy then equals a
+ * fresh read at that revision (`adoptChange`), with the pending metadata laid over it and the
+ * speakers of the changed rows read; `chatSourceGeneration` stays (a by-id change never moves it).
+ * Anything else (no change: a whole-chat write, a remove and reappend of one id, a group that
+ * applied nothing; a stale group; a copy the change does not fit) reads the chat whole
+ * (`refreshChat`). Returns false when the chat is gone.
  */
 export function refreshChatAfterWrite(
     store: ResourceStore,
     scope: JobScope,
-    ops: readonly ChatOp[],
     result: ChatGroupResult | undefined,
+    change: ChatWriteChange | undefined,
 ): boolean {
     const current = scopeChat(scope);
-    if (current && result?.revision && !result.stale && ops.every((op) => op.op === "meta")) {
-        const record = store.chatMeta(scope.characterId, scope.chatId);
-        if (record?.revision === result.revision) {
+    if (
+        current &&
+        change &&
+        result?.revision &&
+        !result.stale &&
+        scope.chatRevision === change.baseRevision &&
+        result.revision === change.revision &&
+        store.chatRevision(scope.characterId, scope.chatId) === change.revision
+    ) {
+        const adopted = adoptChange(current, change);
+        if (adopted) {
             const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId)!;
-            const chat = { ...(record.data as Chat), message: current.message };
-            overlayChatMeta(scope, chat);
-            setChats(owner, [chat]);
-            scope.chatRevision = record.revision;
+            setChats(owner, [adopted.chat]);
+            scope.chatRevision = change.revision;
+            overlayChatMeta(scope, adopted.chat);
+            if (scope.charactersKind) {
+                addSpeakers(store, scope.charactersKind, scope, adopted.rows);
+            }
             return true;
         }
     }
@@ -605,14 +630,114 @@ export function refreshChatAfterWrite(
 }
 
 /**
+ * `chat` (the scope's copy at `change.baseRevision`) with `change` laid onto it, as a fresh read at
+ * `change.revision` has it, and the rows it parsed; null when the change does not fit the copy. It
+ * fits when the copy's message ids are unique and hold every removed id, the change's row ids are
+ * unique, each row's anchor (`after`) is the start, a row the group left alone, or an earlier row
+ * of the change, no two rows share an anchor, and the result has `change.count` messages.
+ *
+ * The rows the group left alone keep their order and their objects (a by-id group never moves
+ * one); the changed and new rows are parsed from their stored `data` and placed after their
+ * anchors, in the change's order (final position order). The metadata is the stored `meta` when
+ * the group changed it, else the copy's. Nothing of `chat` is changed: the chat object is new and
+ * so is its message list (scripts may hold the previous ones), except that a change without rows or
+ * removals (metadata only, or a `begin`) keeps the list, since nothing in it changed.
+ */
+function adoptChange(chat: Chat, change: ChatWriteChange): { chat: Chat; rows: Message[] } | null {
+    const before = chat.message;
+    if (!Array.isArray(before)) {
+        return null;
+    }
+    const rows: Message[] = [];
+    let message = before;
+    if (change.rows.length > 0 || change.removed.length > 0) {
+        const ids = new Set<string>();
+        for (const entry of before) {
+            const id = entry?.chatId;
+            if (typeof id !== "string" || ids.has(id)) {
+                return null;
+            }
+            ids.add(id);
+        }
+        const removed = new Set(change.removed);
+        if (removed.size !== change.removed.length || change.removed.some((id) => !ids.has(id))) {
+            return null;
+        }
+        const rowIndex = new Map<string, number>();
+        change.rows.forEach((row, index) => rowIndex.set(row.id, index));
+        if (rowIndex.size !== change.rows.length) {
+            return null;
+        }
+        // The one row placed right after each anchor (null: the start).
+        const following = new Map<string | null, number>();
+        for (const [index, row] of change.rows.entries()) {
+            const anchor = row.after;
+            const anchorRow = anchor === null ? undefined : rowIndex.get(anchor);
+            const anchored =
+                anchor === null ||
+                (anchorRow !== undefined ? anchorRow < index : ids.has(anchor) && !removed.has(anchor));
+            if (removed.has(row.id) || !anchored || following.has(anchor)) {
+                return null;
+            }
+            following.set(anchor, index);
+        }
+        const next: Message[] = [];
+        let placed = 0;
+        /** Places the rows chained after `anchor`; false when one comes out of the change's order. */
+        const place = (anchor: string | null): boolean => {
+            for (let index = following.get(anchor); index !== undefined; index = following.get(change.rows[index].id)) {
+                if (index !== placed) {
+                    return false;
+                }
+                const row = JSON.parse(change.rows[index].data) as Message;
+                rows.push(row);
+                next.push(row);
+                placed += 1;
+            }
+            return true;
+        };
+        if (!place(null)) {
+            return null;
+        }
+        for (const entry of before) {
+            const id = entry.chatId!;
+            if (removed.has(id) || rowIndex.has(id)) {
+                continue;
+            }
+            next.push(entry);
+            if (!place(id)) {
+                return null;
+            }
+        }
+        if (placed !== change.rows.length) {
+            return null;
+        }
+        message = next;
+    }
+    if (message.length !== change.count) {
+        return null;
+    }
+    const data: Chat =
+        change.meta !== undefined ? { ...(JSON.parse(change.meta) as Chat), message } : { ...chat, message };
+    return { chat: data, rows };
+}
+
+/**
  * Reads into the projection the message speakers (`saying`) it lacks: a message written since the
  * load (by the job, a script, or another tab) may name a character the load did not read.
+ * `messages` are the ones to look through: a whole read's list, or the rows an adopted change
+ * parsed (the copy's other messages were looked through when they were read).
  */
-function addSpeakers(store: ResourceStore, charactersKind: ResourceKind, scope: JobScope, chat: Chat): void {
+function addSpeakers(
+    store: ResourceStore,
+    charactersKind: ResourceKind,
+    scope: JobScope,
+    messages: readonly Message[],
+): void {
     const revisions = (scope.characterRevisions ??= new Map());
     const known = new Set(scope.db.characters.map((entry) => entry?.chaId));
     const missing = new Set<string>();
-    for (const message of chat.message ?? []) {
+    for (const message of messages) {
         if (
             message.saying &&
             !known.has(message.saying) &&

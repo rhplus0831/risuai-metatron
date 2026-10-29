@@ -98,8 +98,8 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
                       ...writeOptions,
                       committed:
                           writeOptions?.committed &&
-                          ((applied) => {
-                              const lists = writeOptions.committed!(applied);
+                          ((applied, written) => {
+                              const lists = writeOptions.committed!(applied, written);
                               if (failing.current) {
                                   throw new Error("bookkeeping failed");
                               }

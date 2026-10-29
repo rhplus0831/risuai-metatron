@@ -119,7 +119,7 @@ export function applyTriggerChat(
             }
             throw error;
         }
-        refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+        refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
         job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
     };
 

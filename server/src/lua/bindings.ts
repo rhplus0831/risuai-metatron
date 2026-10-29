@@ -444,7 +444,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             throw latch(error);
         }
-        if (refreshChatAfterWrite(store, scope, ops, applied.chats[0])) {
+        if (refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0])) {
             lastChat = scopeChat(scope);
         }
         refreshCharacters();

@@ -49,6 +49,7 @@ import {
     ResourceBatchConflictError,
     type ResourceBatchOperation,
     type ResourceStore,
+    type WrittenChanges,
 } from "../data/resourceStore.ts";
 import type { MaintenanceGate, SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, logEvent, recordSafely } from "../diagnostics/log.ts";
@@ -168,6 +169,12 @@ export type JobChanges = {
     chatOrders?: readonly ChatOrderChange[];
 };
 
+/**
+ * What a job write applied (the store's `AppliedChanges`) and, when the store handed them over, its
+ * own chat changes (`written`, aligned with `chats`). Without `written`, nothing is known of them.
+ */
+export type JobWriteResult = AppliedChanges & { written?: WrittenChanges };
+
 type Distribute<T> = T extends unknown ? Omit<T, "epoch"> : never;
 /** Runner chunks carry cumulative text; the registry computes the wire delta and adds the epoch. */
 export type JobEventInput =
@@ -219,6 +226,11 @@ export type RunningJob = {
      * throws `JobWriteConflictError`. A `begin` op takes the message's lock first; a `final`
      * generation write whose checkpoint is `applied` releases it.
      *
+     * Returns what the store applied, with `written`: each chat group's own change as stored by the
+     * attempt that applied (`WrittenChanges`, from `applyChanges` with `changes: true`; undefined
+     * for a group without a by-id change). The job scope adopts its chat's change from it instead of
+     * reading the chat again (`refreshChatAfterWrite`).
+     *
      * `covers`: for a generation write, the newest chunk `seq` its text includes (captured with
      * the text). Once that write applies, the job's chat events tell the client the stored text
      * holds that chunk, so a processed checkpoint is not overwritten by older streamed text. Every
@@ -228,7 +240,7 @@ export type RunningJob = {
     write(
         build: () => JobChanges,
         options?: { covers?: readonly { messageId: string; generationId: string; seq: number }[] },
-    ): AppliedChanges;
+    ): JobWriteResult;
     /** Sequence coordination, available on registry jobs (absent on read-only render facades). */
     sequence?: {
         /** Synchronous preflight immediately before the part's write. An absent stop code means aborted. */
@@ -1092,13 +1104,15 @@ export function createGenerationJobs(options: {
         job: Job,
         build: () => JobChanges,
         covers: readonly { messageId: string; generationId: string; seq: number }[] = [],
-    ): AppliedChanges {
+    ): JobWriteResult {
         for (let attempt = 0; ; attempt += 1) {
             assertLive(job);
             gate.assertOpen();
             const changes = build();
             // Every acquisition in op order with what it replaced, undone in reverse on failure.
             const acquired: { ref: MessageRef; previous: MessageOwner | null }[] = [];
+            // This attempt's own chat changes, as the store hands them to `committed`.
+            let ownChanges: WrittenChanges | undefined;
             try {
                 for (const group of changes.chats ?? []) {
                     for (const op of group.ops) {
@@ -1121,9 +1135,11 @@ export function createGenerationJobs(options: {
                 const applied = store.applyChanges(changes, {
                     epoch: job.epoch,
                     jobToken: job.token,
+                    changes: true,
                     // After the commit and before the change is published, so the published locks
                     // already show a final write's release and a `begin`'s new owner.
-                    committed: (result) => {
+                    committed: (result, changesWritten) => {
+                        ownChanges = changesWritten;
                         (changes.chats ?? []).forEach((group, index) => {
                             const outcomes = result.chats[index]?.checkpoints ?? [];
                             let checkpoint = 0;
@@ -1188,7 +1204,7 @@ export function createGenerationJobs(options: {
                         return [...chats.values()];
                     },
                 });
-                return applied;
+                return ownChanges ? { ...applied, written: ownChanges } : applied;
             } catch (error) {
                 if (error instanceof CommittedWriteError) {
                     // The write is in the store and was published: nothing to restore or retry.

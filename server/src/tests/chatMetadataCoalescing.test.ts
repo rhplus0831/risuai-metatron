@@ -19,6 +19,7 @@ import {
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import { createTriggerRuntime } from "../prompt/triggers.ts";
+import { applyOwnWrite } from "./ownWrite.ts";
 
 // Real storage and runtime boundaries; the fake job deliberately has no setPendingFlush hook.
 const cleanups: (() => void)[] = [];
@@ -62,7 +63,7 @@ function setup() {
     const bound = { presetId: first("presets"), modelPresetId: first("modelPresets"), personaId: first("personas") };
     store.put(kinds.get("characters")!, "c", { chaId: "c", type: "character", name: "Owner" }, null);
     const write = (ops: ChatOp[]) =>
-        store.applyChanges({
+        applyOwnWrite(store, {
             chats: [{ characterId: "c", chatId: "k", baseRevision: store.chatRevision("c", "k"), ops }],
         });
     write([
@@ -110,7 +111,7 @@ function setup() {
         emit() {},
         emitRecords: vi.fn(() => []),
         onClientMessage: () => () => {},
-        write: (build) => store.applyChanges(build(), { epoch: store.epoch() }),
+        write: (build) => applyOwnWrite(store, build(), { epoch: store.epoch() }),
     };
     const workers = { runLua: vi.fn(), regex: vi.fn() };
     const deps = {
@@ -198,12 +199,13 @@ function holdMicrotasks() {
 describe("chat metadata coalescing", () => {
     it("coalesces 1 and 50 synchronous host setters into one write and adoption with immediate reads", async () => {
         const h = setup();
-        const adoption = vi.spyOn(h.store, "chatMeta");
+        // The adoption takes the stored metadata from the write's own change, not from a read.
+        const metadataRead = vi.spyOn(h.store, "chatMeta");
         const samples = [];
         for (const n of [1, 50]) {
             const before = h.store.chatRevision("c", "k")!;
             const oldMap = scopeChat(h.run.scope)!.scriptstate;
-            adoption.mockClear();
+            metadataRead.mockClear();
             vi.mocked(h.job.emitRecords).mockClear();
             h.resetCounts();
             for (let i = 0; i < n; i++) {
@@ -218,7 +220,7 @@ describe("chat metadata coalescing", () => {
             await Promise.resolve();
             expect(h.counts.transactions).toBe(1);
             expect(h.counts.messages).toBe(0);
-            expect(adoption).toHaveBeenCalledTimes(1);
+            expect(metadataRead).not.toHaveBeenCalled();
             expect(h.job.emitRecords).toHaveBeenCalledTimes(1);
             samples.push({ ...h.counts });
             expect(h.stored()).toMatchObject({
@@ -273,8 +275,8 @@ describe("chat metadata coalescing", () => {
         );
         expect(h.services.liveChat().note).toBe("pending note");
         const ops: ChatOp[] = [{ op: "meta", set: { name: "other field" } }];
-        const result = h.write(ops).chats[0];
-        refreshChatAfterWrite(h.store, h.run.scope, ops, result);
+        const applied = h.write(ops);
+        refreshChatAfterWrite(h.store, h.run.scope, applied.chats[0], applied.written?.chats[0]);
         expect(h.services.liveChat()).toMatchObject({
             name: "other field",
             note: "pending note",
