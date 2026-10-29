@@ -24,6 +24,20 @@ Known Hazards `Issues` and remains open. P1 means a recovery path loses user con
 correctness or availability defect on a realistic path; P3 a narrower defect, a wrong notice, a test
 gap, or a documentation defect.
 
+**Resolution (2026-10-29).** JR1, JR2, and JR3 are fixed in `f5e2502a9`, each with a
+regression test. JR2: a send's hand-off has its own journal row (`composer\0<chatKey>\0send`)
+beside the editable draft, so typing or clearing during the send touches only the draft; `restore`
+reads the draft first and the hand-off only when there is none, and a placed or restored hand-off
+is deleted in the transaction that writes the draft. JR1: a landed send drops its ids from a draft
+retyped with the same text instead of deleting it. A reload before the page's own settlement still
+deletes that draft, because it cannot be told from the send's text placed back after a failure;
+the persistence guide's Known Hazards records it. JR3: the split-commit test runs an ordinary save
+cycle while the journal commit is held and fails with the collector's guard removed. An
+adversarial GPT-6.1-Sol review of the first version found that a file queued during a send kept
+an already placed hand-off alive (it came back after the composer was cleared) and that the row
+swaps budgeted both rows near the 64 MiB cap; both were fixed before landing. UI-01, DT1, SJ1,
+DT2, and DT3 remain open.
+
 | ID    | Priority | Seam              | Finding                                                                                 |
 | ----- | -------- | ----------------- | --------------------------------------------------------------------------------------- |
 | JR2   | P1       | journal-recovery  | Typing a follow-up erases an unanswered send's journal row and its request identity     |
