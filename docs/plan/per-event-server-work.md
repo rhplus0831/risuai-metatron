@@ -1,7 +1,7 @@
 # Per-Event Server Work Plan
 
-Status: drafted 2026-10-29, revised 2026-10-30 after an Astra review (see **Review record**). No
-slice has landed.
+Status: drafted 2026-10-29, revised 2026-10-30 after an Astra review (see **Review record**);
+landed: 0 (5c626d329).
 
 Sources: findings SD01, TJ04, ST04 and SD03 of the
 [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md) (at
