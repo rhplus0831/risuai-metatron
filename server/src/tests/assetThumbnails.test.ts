@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { crc32 } from "node:zlib";
-import sharp from "sharp";
+import sharp, { type Sharp } from "sharp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
 import { THUMBNAIL_VERSION, type ThumbnailOptions } from "../http/assetThumbnails.ts";
@@ -132,13 +132,13 @@ function encoder(beforeEncode: () => Promise<void> = async () => {}) {
     const encode = vi.fn(beforeEncode);
     const factory = new Proxy(sharp, {
         apply(target, thisArg, args) {
-            const pipeline = Reflect.apply(target, thisArg, args) as sharp.Sharp;
+            const pipeline = Reflect.apply(target, thisArg, args) as Sharp;
             const toBuffer = pipeline.toBuffer.bind(pipeline);
             // This service uses the promise/no-arguments overload; the rest of sharp stays real.
             pipeline.toBuffer = (async () => {
                 await encode();
                 return toBuffer();
-            }) as sharp.Sharp["toBuffer"];
+            }) as Sharp["toBuffer"];
             return pipeline;
         },
     });
