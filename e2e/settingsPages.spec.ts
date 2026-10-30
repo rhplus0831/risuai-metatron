@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Every settings page still loads and saves through the facade: the settings records are the source
@@ -8,9 +8,6 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // through the page's own controls (a section field bound with `bind:checked`, a nested section
 // field bound with `bind:value`) is saved and survives a reload. The supporter page (77) is left
 // out: it fetches from public services, which this context refuses.
-
-/** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 /** The ops of every batch the page sends, as `kind`. */
 function trackBatches(page: Page): string[][] {

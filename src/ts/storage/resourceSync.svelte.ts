@@ -5206,6 +5206,30 @@ async function waitForWriteDependency(write: Promise<void>): Promise<void> {
 }
 
 /**
+ * Whether the adapter has nothing left to do: no record, membership change, chat write, or
+ * credential write waiting that it could save now, no cycle scheduled or in flight, and no refresh
+ * scheduled or in flight. For the browser harness (`e2e/fixtures.ts` `settle`), which waits on it
+ * instead of sleeping past the debounce; a halted or stopped adapter counts as idle, since nothing
+ * more will happen, and one not started yet does not, since its marks wait for the start.
+ */
+export function resourceSyncIdle(): boolean {
+    if (halted || stopped) {
+        return true;
+    }
+    if (!started) {
+        return false;
+    }
+    return (
+        timer === null &&
+        inFlight === null &&
+        refreshTimer === null &&
+        refreshInFlight === null &&
+        !hasPendingWork() &&
+        !hasRefreshWork()
+    );
+}
+
+/**
  * Settles changes queued before this call. Reports keys discarded since the call (with `scope`,
  * since the scope began), and every key still refused locally when the flush resolves;
  * rejects when saving fails or when a character that must be saved is still being generated.

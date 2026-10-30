@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Page } from "./fixtures";
+import { expect, settle, test, type BrowserContext, type Page } from "./fixtures";
 import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
@@ -37,9 +37,6 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     await new Promise((resolve) => provider.close(resolve));
 });
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 interface Session {
     page: Page;

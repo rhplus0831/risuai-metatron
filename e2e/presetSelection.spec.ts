@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // The forwarding layer and the per-client selection in the browser, against the isolated stack of
@@ -6,9 +6,6 @@ import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 // UI followed by a hotkey switch in the same interaction lands in the preset that was selected and
 // survives a reload, and the selection is per client (a browser context) and per tab
 // (`sessionStorage`), while the presets themselves are shared through the server.
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(3000);
 
 interface PresetView {
     selected: string;
@@ -42,7 +39,10 @@ async function reload(page: Page, baseURL: string) {
     await settle(page);
 }
 
-/** The first boot of the store: skips the onboarding, names the default preset P1, and adds P2. */
+/**
+ * Skips the onboarding, names the first preset P1, and adds P2. Earlier specs of the run may have
+ * left presets of their own in the shared store, so P2 is the preset pushed here, not `presets[1]`.
+ */
 async function seedPresets(page: Page): Promise<[string, string]> {
     const ids = await page.evaluate(async () => {
         const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
@@ -51,7 +51,7 @@ async function seedPresets(page: Page): Promise<[string, string]> {
         settings.ui.useLegacyGUI = true;
         settings.presets[0].name = "P1";
         settings.presets.push(normalizePreset({ name: "P2", temperature: 50, maxResponse: 555 }));
-        return settings.presets.map((preset: any) => preset.id);
+        return [settings.presets[0].id, settings.presets.at(-1).id];
     });
     await settle(page);
     return [ids[0], ids[1]];

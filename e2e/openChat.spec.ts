@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // The closed chat: a selected character shows its closed-chat screen (its name and a button that
@@ -6,9 +6,6 @@ import { openApp } from "../util/playwright/stack.mjs";
 // the sidebar's chat list. While a chat is open the sidebar's chat tab shows Go Back, the author
 // note, and the toggles in place of the list. The URL follows: `/chat/:chaId` closed,
 // `/chat/:chaId/:chatId` open, and the browser's back closes the chat again.
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(3000);
 
 const SHOTS = process.env.RISU_SHOTS;
 const shot = async (page: Page, name: string) => {

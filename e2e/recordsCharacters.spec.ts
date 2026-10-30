@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // The characters are write-through records and `characterList()` is their list's wrapper, which
@@ -12,9 +12,6 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // module converted to a character; then a reload shows all of it. Two tabs on a character edit are
 // `util/playwright/checkLiveUpdates.mjs`'s. The stack's store is shared by every spec of a run, in
 // file order: `0-idleReload.spec.ts` sorts first, since it needs the store fresh.
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 /** The ops of every batch the page sends, as `kind/id`. */
 function trackBatches(page: Page): string[][] {

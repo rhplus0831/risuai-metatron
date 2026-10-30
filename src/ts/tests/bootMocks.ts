@@ -84,6 +84,7 @@ export function createBootMock<K extends keyof BootModules>(
             beginMutationScope: vi.fn<BootModules["resourceSync"]["beginMutationScope"]>(),
             generatingNoticeCount: vi.fn<BootModules["resourceSync"]["generatingNoticeCount"]>(),
             flushResources: vi.fn<BootModules["resourceSync"]["flushResources"]>(),
+            resourceSyncIdle: vi.fn<BootModules["resourceSync"]["resourceSyncIdle"]>(() => true),
             startResourceSync: vi.fn<BootModules["resourceSync"]["startResourceSync"]>(),
             saving: { state: false },
             GenerationBlockedError: class extends Error {

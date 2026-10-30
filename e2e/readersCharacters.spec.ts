@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // The components read the selected character as `$derived(selectedCharacter())` and the list as
@@ -12,9 +12,6 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // - the sidebar avatar, the grid catalog, and the mobile list select the row's character by id;
 // and a reload shows what was saved. The stack's store is shared by the specs of a run: this file
 // uses the characters it creates and deletes them at the end.
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 /** The ops of every batch the page sends, as `kind/id`. */
 function trackBatches(page: Page): string[][] {

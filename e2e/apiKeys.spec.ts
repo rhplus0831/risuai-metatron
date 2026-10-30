@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Shared API keys with the binding on the model profile: the Model menu's API Keys tab and the key
@@ -12,9 +12,6 @@ const API_KEYS_MENU = 17;
 const MODEL_PROFILES_MENU = 18;
 const KEY_VALUE = "sk-e2e-named-SENTINEL-4242";
 const SHOTS = process.env.RISU_E2E_SHOTS;
-
-/** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 const openSettings = (page: Page, index: number) =>
     page.evaluate(async (menu) => {

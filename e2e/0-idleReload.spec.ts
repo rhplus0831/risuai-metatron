@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // The convergence rule in the browser. The stack of `playwright.config.ts` starts with an empty
@@ -23,9 +23,6 @@ function trackBatches(page: Page): string[][] {
     });
     return batches;
 }
-
-/** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(3000);
 
 test("a fresh store: the first boot creates only modules and plugins and records its defaults in ui; an idle reload writes nothing", async ({
     page,

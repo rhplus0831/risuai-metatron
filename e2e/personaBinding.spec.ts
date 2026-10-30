@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, settle, test, type Page } from "./fixtures";
 import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // The persona forwarding and the chat binding (the persona is one of the three fields a chat binds,
@@ -8,9 +8,6 @@ import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 // leaves for home, where the tab's other persona shows, lands on the persona the chooser opened for
 // and keeps its id, so the chat bound to that persona keeps its binding across a reload; and the
 // persona selection is per client while the personas are shared.
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(3000);
 
 // A 1x1 PNG.
 const PNG = Buffer.from(
