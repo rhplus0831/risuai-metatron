@@ -51,6 +51,7 @@ git show 1db8c10a8:docs/plan/display-evaluation.md
 git show bbc747f24:docs/plan/durable-drafts.md
 git show 73c12d29c:docs/plan/job-protocol.md
 git show 2a8f7b93a:docs/plan/boot-bytes.md
+git show aff71b423:docs/plan/per-event-server-work.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -103,6 +104,7 @@ it is not a current architecture guide.
 | Durable Drafts                           | `bbc747f24`: `docs/plan/durable-drafts.md`                                | [persistence](../structure/persistence.md), [chat pipeline](../structure/chat-pipeline.md), [diagnostics](../structure/diagnostics.md), [UI/theming](../structure/ui-theming.md), [app shell](../structure/app-shell.md)                                                                                                                                                                                                                                                                     |
 | Job Protocol                             | `73c12d29c`: `docs/plan/job-protocol.md`                                  | [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [plugins/MCP](../structure/plugins-mcp.md), [diagnostics](../structure/diagnostics.md), [persistence](../structure/persistence.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                 |
 | Boot Bytes                               | `2a8f7b93a`: `docs/plan/boot-bytes.md`                                    | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [app shell](../structure/app-shell.md), [plugins/MCP](../structure/plugins-mcp.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
+| Per-Event Server Work                    | `aff71b423`: `docs/plan/per-event-server-work.md`                         | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md)                                                                                                                                                                                                                                                                                                                                                       |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -961,6 +963,18 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Found by the run (in `docs/research/found-issues.md`): measureBoot gaps; a
     `readersCharacters` e2e timeout behind the Safe boot notice. The server import and
     restore skipping existing assets on existence alone was fixed after the audit (U2).
+- Per-Event Server Work:
+  - Only headless Chrome was checked: the patch-only barrier and the feed's `summary` and
+    `delta` entries have no Firefox, Safari, or mobile run.
+  - Not planned: a by-id read for an over-cap change of a loaded chat (a reply over 64 KiB
+    streaming into a chat another tab has open still reads the chat whole), retiring `patch`
+    for `delta` and dropping whole barriers for sockets without `hydration=patch` once an
+    older client can be refused, a streaming-row text delta on the job socket, and the
+    chat's summary on the job socket for the owner's own list.
+  - Found by the run (in `docs/research/found-issues.md`): a first metadata write that may
+    still diff (cause unconfirmed), duplicate `loreOverrides` kept after an acknowledged
+    write, the test-only `isBarrierFailure`, and the `perChatSends` `localStorage` failure
+    with its `serverTransform` knock-on.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
