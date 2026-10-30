@@ -16,7 +16,14 @@ import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
-import { type ChangeSet, type ChatPatchBody, compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
+import {
+    type ChangeSet,
+    type ChatDeltaBody,
+    type ChatMetaFields,
+    type ChatPatchBody,
+    compareRevision,
+    parseRevisionToken,
+} from "../../../shared/resources.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
@@ -2380,8 +2387,85 @@ function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "ol
     return "applied";
 }
 
-/** The checked row/meta/revision step shared by job hydration and idle change-feed patches. */
-function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number; tail: Message[] }) {
+/**
+ * A feed delta's metadata change (`ChatMetaFields`) checked and prepared against a loaded chat at the
+ * delta's base, before anything changes: the fields to remove, and the fields to set with their new
+ * values (a merged map whole). Null when it is not well formed (a field named twice, `message`, or
+ * `__proto__`) or does not fit the held copy (a merge into a field the chat does not hold as a
+ * map). Set values and merged entries are owned copies; the entries a merge keeps are the mirror's
+ * own. A map is built from entries (never assigned by name, never through `$state.snapshot`), so an
+ * entry named `__proto__` stays an own entry. The result equals the stored metadata as JSON values,
+ * not necessarily in key order.
+ */
+function stagedMetaFields(chat: Chat, fields: unknown): { remove: string[]; set: [string, unknown][] } | null {
+    if (!isPlainRecord(fields)) {
+        return null;
+    }
+    const set = Object.hasOwn(fields, "set") ? fields.set : undefined;
+    const remove = Object.hasOwn(fields, "remove") ? fields.remove : undefined;
+    const merge = Object.hasOwn(fields, "merge") ? fields.merge : {};
+    const mergeUnset = Object.hasOwn(fields, "mergeUnset") ? fields.mergeUnset : {};
+    if (!isPlainRecord(set) || !Array.isArray(remove) || !isPlainRecord(merge) || !isPlainRecord(mergeUnset)) {
+        return null;
+    }
+    const named = new Set<string>();
+    /**
+     * Whether `field` may change: a string, not named before, other than `message` and `__proto__`
+     * (stored metadata never has that as its own field; assigning it would replace the prototype).
+     */
+    const fresh = (field: unknown): field is string => {
+        if (typeof field !== "string" || field === "message" || field === "__proto__" || named.has(field)) {
+            return false;
+        }
+        named.add(field);
+        return true;
+    };
+    const staged: { remove: string[]; set: [string, unknown][] } = { remove: [], set: [] };
+    for (const field of remove as unknown[]) {
+        if (!fresh(field)) {
+            return null;
+        }
+        staged.remove.push(field);
+    }
+    for (const field of Object.keys(set)) {
+        if (!fresh(field)) {
+            return null;
+        }
+        staged.set.push([field, clone(set[field])]);
+    }
+    const held = chat as unknown as Record<string, unknown>;
+    for (const field of new Set([...Object.keys(mergeUnset), ...Object.keys(merge)])) {
+        const removals: unknown = Object.hasOwn(mergeUnset, field) ? mergeUnset[field] : [];
+        const entries: unknown = Object.hasOwn(merge, field) ? merge[field] : {};
+        const current = Object.hasOwn(held, field) ? held[field] : undefined;
+        if (
+            !fresh(field) ||
+            !Array.isArray(removals) ||
+            !removals.every((id) => typeof id === "string") ||
+            !isPlainRecord(entries) ||
+            !isPlainRecord(current)
+        ) {
+            return null;
+        }
+        // The removals first, then the entries, as the server merged them.
+        const dropped = new Set<string>(removals);
+        const kept = Object.entries(current).filter(([id]) => !dropped.has(id));
+        staged.set.push([field, Object.fromEntries([...kept, ...Object.entries(clone(entries))])]);
+    }
+    return staged;
+}
+
+/**
+ * The checked row/meta/revision step shared by job hydration and idle change-feed patches. A whole
+ * `meta` replaces the chat's fields; `fields` (a feed delta's, from `stagedMetaFields`) changes only
+ * the fields it names.
+ */
+function installChatPatch(
+    chat: Chat,
+    patch: ChatPatch,
+    patched: { start: number; tail: Message[] },
+    fields?: { remove: string[]; set: [string, unknown][] },
+) {
     // Only the positions that changed are written (an append writes one; a removal or insertion
     // writes the positions after it), never the whole list as call arguments.
     const { start, tail } = patched;
@@ -2406,6 +2490,14 @@ function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number
                 fields[field] = clone(value);
             }
         }
+    } else if (fields) {
+        const target = chat as unknown as Record<string, unknown>;
+        for (const field of fields.remove) {
+            delete target[field];
+        }
+        for (const [field, value] of fields.set) {
+            target[field] = value;
+        }
     }
     const key = keyOf(patch.characterId, patch.id);
     const heldRevision = chatRevisions.get(key);
@@ -2417,8 +2509,12 @@ function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number
     remoteListener?.({ chaId: patch.characterId, chatId: patch.id });
 }
 
-/** A feed patch is optional: a miss neither marks stale nor touches a job's locks. */
-function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBody): boolean {
+/**
+ * A feed patch or delta is optional: a miss neither marks stale nor touches a job's locks. A delta's
+ * metadata fields are checked against the held copy with its rows, before anything changes; one
+ * that does not fit is a miss.
+ */
+function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBody | ChatDeltaBody): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!isLoaded(ref) || !canRefreshChat(ref) || staleChats.has(key) || chatRevisions.get(key) !== body.baseRevision) {
         return false;
@@ -2439,17 +2535,30 @@ function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBod
     if (!chat) {
         return false;
     }
-    const patch: ChatPatch = { ...body, characterId: ref.chaId, id: ref.chatId, revision };
+    let change: ChatPatchBody = body;
+    let metaFields: ChatMetaFields | undefined;
+    if ("metaFields" in body) {
+        const { metaFields: fields, ...rest } = body;
+        if (Object.hasOwn(rest, "meta")) {
+            // The metadata both whole and by field: not a body this client knows.
+            return false;
+        }
+        change = rest;
+        metaFields = fields;
+    }
+    const patch: ChatPatch = { ...change, characterId: ref.chaId, id: ref.chatId, revision };
     let patched: { start: number; tail: Message[] } | null = null;
+    let fields: ReturnType<typeof stagedMetaFields> | undefined = null;
     try {
         patched = patchedTail(chat.message, patch);
+        fields = metaFields === undefined ? undefined : stagedMetaFields(chat, metaFields);
     } catch (error) {
         console.error("[Save]", error);
     }
-    if (!patched) {
+    if (!patched || fields === null) {
         return false;
     }
-    installChatPatch(chat, patch, patched);
+    installChatPatch(chat, patch, patched, fields);
     return true;
 }
 
@@ -5749,20 +5858,72 @@ function dropAnsweredNotices() {
 }
 
 /**
+ * A feed entry's summary knowledge for a member held only as its summary (not loaded): with
+ * `summary` (the chat's summary at `revision`), that summary is held; with `summaryBase` equal to
+ * the held revision, the held summary is still the chat's. Either way the chat's held revision
+ * becomes `revision` and its notice is settled, with no summary list read. Only that summary and
+ * revision change (membership, order, and order work are left alone). False, for the ordinary
+ * notice: a loaded chat, a revision that is not newer, local work or a generation of this tab
+ * (`canRefreshChat`), a chat marked stale, a revision below an acknowledgement of this client's
+ * edit, a `summary` of another chat or revision, or a `summaryBase` that is not the held revision.
+ */
+function applyRemoteSummary(
+    ref: ChatRef,
+    revision: string,
+    known: { summary?: ChatSummary; summaryBase?: string },
+): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const heldRevision = chatRevisions.get(key);
+    if (
+        !isMember(ref) ||
+        isLoaded(ref) ||
+        heldRevision === undefined ||
+        (compareRevision(revision, heldRevision) ?? 0) <= 0 ||
+        !canRefreshChat(ref) ||
+        staleChats.has(key) ||
+        belowAckedRevision(key, revision)
+    ) {
+        return false;
+    }
+    const summary: unknown = known.summary;
+    if (summary !== undefined) {
+        if (
+            !isPlainRecord(summary) ||
+            summary.characterId !== ref.chaId ||
+            summary.id !== ref.chatId ||
+            summary.revision !== revision
+        ) {
+            return false;
+        }
+        holdingAt(ref.chaId)!.summaries[slot(ref.chatId)] = listedMeta(summary as ChatSummary);
+    } else if (known.summaryBase !== heldRevision) {
+        return false;
+    }
+    holdChatRevision(key, revision);
+    settleNotice(key, revision);
+    changed(key);
+    remoteListener?.(ref);
+    return true;
+}
+
+/**
  * A live update says the server committed this chat at `revision` (null: deleted). A chat the mirror
  * holds at an older revision is read again once it is idle here (no local work, generation, retry
  * block, deferral, or quarantine; `idleChatRefreshes`); a notice at or below the held revision is
  * dropped (this tab's own save, or a job's chat event that applied it first). A chat the mirror does
  * not hold, of a character it holds, is a new chat: `"collection"` asks for the character's chat list
  * (`applyRemoteCollection`). A member that is not loaded is noticed too and also answers
- * `"collection"`: its summary comes with that list (never a whole-chat read). An optional by-id
- * patch applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its
+ * `"collection"`: its summary comes with that list (never a whole-chat read), unless the entry's
+ * summary knowledge (`known`: `summary` or `summaryBase`) settles it at once (`applyRemoteSummary`).
+ * An optional by-id change (`patch`: a `ChatPatchBody`, or a `ChatDeltaBody` with the metadata by
+ * field) applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its
  * base revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
  */
 export function noteRemoteChat(
     ref: ChatRef,
     revision: string | null,
-    patch?: ChatPatchBody,
+    patch?: ChatPatchBody | ChatDeltaBody,
+    known?: { summary?: ChatSummary; summaryBase?: string },
 ): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!findCharacter(ref.chaId)) {
@@ -5780,6 +5941,9 @@ export function noteRemoteChat(
         return "ignored";
     }
     if (revision !== null && patch && applyRemoteChatPatch(ref, revision, patch)) {
+        return "ignored";
+    }
+    if (revision !== null && known && applyRemoteSummary(ref, revision, known)) {
         return "ignored";
     }
     noticeSeq += 1;

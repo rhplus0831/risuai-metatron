@@ -13,7 +13,14 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { Chat, MessageTranslation } from "../../../shared/database.ts";
-import { type ChatPatchBody, MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../shared/resources.ts";
+import {
+    type ChangeSet,
+    type ChatDeltaBody,
+    type ChatMetaFields,
+    type ChatPatchBody,
+    MAX_FEED_PATCH_BYTES,
+    RESOURCE_KIND,
+} from "../../../shared/resources.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -209,6 +216,12 @@ export type ChatWriteChange = {
 };
 
 /**
+ * What a group's feed entry carries beside its ref (`ChangeSet["chats"]`): its by-id change, as a
+ * `patch` or a `delta`, and its summary knowledge. Feed-only: never in the HTTP results.
+ */
+export type ChatFeedPayloads = Pick<ChangeSet["chats"][number], "patch" | "delta" | "summary" | "summaryBase">;
+
+/**
  * Where a by-id group's change leaves a chat's messages, from their ids at its base (`base`, in
  * position order): each entry is the id of a message the group left alone or the index of the
  * change row placed there (`change.rows[index]`). Null when the change does not fit the base: the
@@ -299,6 +312,107 @@ function sortedJson(value: unknown): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Whether two stored JSON values are equal as JSON values, whatever their key order. */
+function sameJson(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b) || sortedJson(a) === sortedJson(b);
+}
+
+type SummaryFields = Omit<ChatSummary, "characterId" | "id" | "revision">;
+
+/**
+ * A chat summary's listed fields: the projection of its stored metadata and the time of its last
+ * message by position, everything but its identity and revision, in the summary's key order.
+ */
+function summaryFields(meta: Record<string, unknown>, lastMessageAt: number | undefined): SummaryFields {
+    const fields: SummaryFields = {
+        name: typeof meta.name === "string" ? meta.name : "",
+        fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
+    };
+    if (lastMessageAt !== undefined) {
+        fields.lastMessageAt = lastMessageAt;
+    }
+    if (typeof meta.folderId === "string") {
+        fields.folderId = meta.folderId;
+    }
+    if (typeof meta.bindedPersona === "string") {
+        fields.bindedPersona = meta.bindedPersona;
+    }
+    if (typeof meta.promptPresetId === "string") {
+        fields.promptPresetId = meta.promptPresetId;
+    }
+    if (typeof meta.modelPresetId === "string") {
+        fields.modelPresetId = meta.modelPresetId;
+    }
+    if (typeof meta.bindingReview === "boolean") {
+        fields.bindingReview = meta.bindingReview;
+    }
+    if (meta.pinned === true) {
+        fields.pinned = true;
+    }
+    // The translation settings: a new chat inherits them.
+    Object.assign(fields, chatTranslationSummary(meta));
+    return fields;
+}
+
+/** Whether two `summaryFields` results are equal (every value is a string, number, or boolean). */
+function sameSummaryFields(a: SummaryFields, b: SummaryFields): boolean {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const keys = Object.keys(left);
+    return (
+        keys.length === Object.keys(right).length &&
+        keys.every((key) => Object.hasOwn(right, key) && left[key] === right[key])
+    );
+}
+
+/**
+ * The field form (`ChatMetaFields`) of the change from one stored metadata value to another, or
+ * null when they are equal as JSON values. Computed from the stored values, never from the ops that
+ * led there (a stale group merges onto the stored base, and normalization rewrites the result).
+ * Built from entries, so a map entry named like an `Object.prototype` member (`__proto__`) stays an
+ * own key, and no value is `undefined`.
+ */
+function chatMetaFields(before: Record<string, unknown>, after: Record<string, unknown>): ChatMetaFields | null {
+    const remove = Object.keys(before).filter((key) => !Object.hasOwn(after, key));
+    const set: [string, unknown][] = [];
+    const merge: [string, Record<string, unknown>][] = [];
+    const mergeUnset: [string, string[]][] = [];
+    for (const key of Object.keys(after)) {
+        const had = Object.hasOwn(before, key);
+        const old = had ? before[key] : undefined;
+        const value = after[key];
+        if (had && sameJson(old, value)) {
+            continue;
+        }
+        if (had && CHAT_META_MERGE_KEYS.includes(key) && isPlainObject(old) && isPlainObject(value)) {
+            // A map at both revisions: by entry.
+            const gone = Object.keys(old).filter((id) => !Object.hasOwn(value, id));
+            const entries = Object.keys(value)
+                .filter((id) => !Object.hasOwn(old, id) || !sameJson(old[id], value[id]))
+                .map((id): [string, unknown] => [id, value[id]]);
+            if (entries.length > 0) {
+                merge.push([key, Object.fromEntries(entries)]);
+            }
+            if (gone.length > 0) {
+                mergeUnset.push([key, gone]);
+            }
+            continue;
+        }
+        set.push([key, value]);
+    }
+    if (remove.length === 0 && set.length === 0 && merge.length === 0 && mergeUnset.length === 0) {
+        return null;
+    }
+    const fields: ChatMetaFields = { set: Object.fromEntries(set), remove };
+    if (merge.length > 0) {
+        fields.merge = Object.fromEntries(merge);
+    }
+    if (mergeUnset.length > 0) {
+        fields.mergeUnset = Object.fromEntries(mergeUnset);
+    }
+    return fields;
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
@@ -850,40 +964,16 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     }
 
     /** A chat's listed metadata and the memoized time of its last message by position. */
-    function chatSummary(characterId: string, row: { seq: number; id: string; revision: number; meta: string }) {
-        const meta = JSON.parse(row.meta) as Record<string, unknown>;
-        const summary: ChatSummary = {
+    function chatSummary(
+        characterId: string,
+        row: { seq: number; id: string; revision: number; meta: string },
+    ): ChatSummary {
+        return {
             characterId,
             id: row.id,
             revision: tokens.token(row.seq, row.revision),
-            name: typeof meta.name === "string" ? meta.name : "",
-            fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
+            ...summaryFields(JSON.parse(row.meta) as Record<string, unknown>, lastMessageAt(row.seq)),
         };
-        const time = lastMessageAt(row.seq);
-        if (time !== undefined) {
-            summary.lastMessageAt = time;
-        }
-        if (typeof meta.folderId === "string") {
-            summary.folderId = meta.folderId;
-        }
-        if (typeof meta.bindedPersona === "string") {
-            summary.bindedPersona = meta.bindedPersona;
-        }
-        if (typeof meta.promptPresetId === "string") {
-            summary.promptPresetId = meta.promptPresetId;
-        }
-        if (typeof meta.modelPresetId === "string") {
-            summary.modelPresetId = meta.modelPresetId;
-        }
-        if (typeof meta.bindingReview === "boolean") {
-            summary.bindingReview = meta.bindingReview;
-        }
-        if (meta.pinned === true) {
-            summary.pinned = true;
-        }
-        // The translation settings: a new chat inherits them.
-        Object.assign(summary, chatTranslationSummary(meta));
-        return summary;
     }
 
     function readOrder(characterId: string): { seq: number; revision: number; ids: string[] } | null {
@@ -1006,63 +1096,84 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     }
 
     /**
-     * The feed's patch of a by-id group from its stored parts, or undefined once its JSON
-     * (`{baseRevision,count,meta?,removed?,messages?}`, in that key order) would pass
-     * `MAX_FEED_PATCH_BYTES`. Measured part by part on the stored strings and given up at the first
-     * byte over: `rows` is iterated only once the metadata and removals fit, and only while the patch
-     * still fits; nothing is parsed until all of it fits.
+     * The feed's by-id change of a group from its stored parts: a `patch` with the metadata whole
+     * (`{baseRevision,count,meta?,removed?,messages?}`, in that key order) when its JSON fits
+     * `MAX_FEED_PATCH_BYTES`, else a `delta` with the metadata by field (`metaFields` in place of
+     * `meta`) when that fits, else neither. One pass, measured part by part on the stored strings:
+     * the whole metadata first, then the removals, then the rows. At the first byte over, a group
+     * that changed the metadata takes its field form (`meta.fields`, which parses both stored
+     * metadata values: an over-cap metadata is parsed, a cost the whole form alone never had) and goes
+     * on from there with the rows already read and the same row iterator; any other group, or one
+     * whose field form does not fit either, gives up there. `rows` is iterated only once the metadata
+     * and removals fit, and only while a form still fits; no row is parsed until all of it fits.
      */
-    function chatFeedPatch(
+    function chatFeedChange(
         baseRevision: string,
         count: number,
-        meta: string | undefined,
+        meta: { stored: string; fields: () => ChatMetaFields | null } | undefined,
         removed: ReadonlySet<string>,
         rows: Iterable<{ after: string | null; data: string }> | null,
-    ): ChatPatchBody | undefined {
-        let bytes = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
-        if (meta !== undefined) {
-            bytes += Buffer.byteLength(meta) + ',"meta":'.length;
-            if (bytes > MAX_FEED_PATCH_BYTES) {
-                return undefined;
+    ): Pick<ChatFeedPayloads, "patch" | "delta"> {
+        const head = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
+        let metaBytes = meta === undefined ? 0 : Buffer.byteLength(meta.stored) + ',"meta":'.length;
+        // Undefined while the metadata goes whole; null: by field, unchanged as JSON values.
+        let fields: ChatMetaFields | null | undefined;
+        let rest = 0;
+        /** Whether the body fits, taking the field form at the first byte over when there is one. */
+        const fits = (): boolean => {
+            if (head + metaBytes + rest <= MAX_FEED_PATCH_BYTES) {
+                return true;
             }
+            if (meta === undefined || fields !== undefined) {
+                return false;
+            }
+            fields = meta.fields();
+            metaBytes = fields === null ? 0 : Buffer.byteLength(JSON.stringify(fields)) + ',"metaFields":'.length;
+            return head + metaBytes + rest <= MAX_FEED_PATCH_BYTES;
+        };
+        if (!fits()) {
+            return {};
         }
         if (removed.size > 0) {
-            bytes += ',"removed":[]'.length;
+            rest += ',"removed":[]'.length;
             let index = 0;
             for (const id of removed) {
-                bytes += Buffer.byteLength(JSON.stringify(id)) + (index > 0 ? 1 : 0);
-                if (bytes > MAX_FEED_PATCH_BYTES) {
-                    return undefined;
+                rest += Buffer.byteLength(JSON.stringify(id)) + (index > 0 ? 1 : 0);
+                if (!fits()) {
+                    return {};
                 }
                 index += 1;
             }
         }
         const kept: { after: string | null; data: string }[] = [];
         if (rows) {
-            bytes += ',"messages":[]'.length;
+            rest += ',"messages":[]'.length;
             for (const row of rows) {
-                bytes +=
+                rest +=
                     Buffer.byteLength(JSON.stringify(row.after)) +
                     Buffer.byteLength(row.data) +
                     '{"after":,"message":}'.length +
                     (kept.length > 0 ? 1 : 0);
-                if (bytes > MAX_FEED_PATCH_BYTES) {
-                    return undefined;
-                }
+                // The row counts in either form: kept before the check, so the field form goes on with it.
                 kept.push(row);
+                if (!fits()) {
+                    return {};
+                }
             }
         }
-        const patch: ChatPatchBody = { baseRevision, count };
-        if (meta !== undefined) {
-            patch.meta = JSON.parse(meta) as Record<string, unknown>;
+        const body: ChatPatchBody & ChatDeltaBody = { baseRevision, count };
+        if (meta !== undefined && fields === undefined) {
+            body.meta = JSON.parse(meta.stored) as Record<string, unknown>;
+        } else if (fields) {
+            body.metaFields = fields;
         }
         if (removed.size > 0) {
-            patch.removed = [...removed];
+            body.removed = [...removed];
         }
         if (rows) {
-            patch.messages = kept.map(({ after, data }) => ({ after, message: JSON.parse(data) }));
+            body.messages = kept.map(({ after, data }) => ({ after, message: JSON.parse(data) }));
         }
-        return patch;
+        return fields === undefined ? { patch: body } : { delta: body };
     }
 
     /**
@@ -1187,7 +1298,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     ): {
         result: ChatGroupResult;
         applied: number;
-        patch?: ChatPatchBody;
+        feed?: ChatFeedPayloads;
         change?: ChatWriteChange;
         invalidated?: true;
         duplicate?: true;
@@ -1257,6 +1368,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             row && group.ops.every((op) => op.op !== "create" && op.op !== "replace" && op.op !== "delete")
                 ? tokens.token(row.seq, row.revision)
                 : null;
+        // The stored metadata and last message time before the group, for its summary (by-id groups).
+        const metaBefore = patchBase ? row!.meta : undefined;
+        /** Taken right before the group's first op that can change its messages, even when absent. */
+        let timeBefore: { time: number | undefined } | undefined;
         const touched = new Set<string>();
         const removedIds = new Set<string>();
         let reappended = false;
@@ -1275,6 +1390,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             applyingOp = opIndex;
             const chatSeq = row?.seq ?? -1;
             if (op.op !== "meta" && op.op !== "begin") {
+                if (patchBase && !timeBefore) {
+                    timeBefore = { time: lastMessageAt(chatSeq) };
+                }
                 lastMessageTimes.delete(chatSeq);
             }
             switch (op.op) {
@@ -1586,32 +1704,76 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             // batch when anything conflicts.
             rememberGroup(row.seq, group.groupId, next, result, messageIdsRenamed);
         }
-        let patch: ChatPatchBody | undefined;
         let change: ChatWriteChange | undefined;
-        if (patchBase && applied > 0 && !reappended) {
-            if (changes) {
-                // The feed's patch from the same rows, so nothing is read twice.
-                change = chatWriteChange(row!, patchBase, revision!, touched, removedIds, insertedHere, metaChanged);
-                patch = chatFeedPatch(
-                    patchBase,
-                    change.count,
-                    change.meta,
-                    removedIds,
-                    touched.size > 0 ? change.rows : null,
-                );
+        let feed: ChatFeedPayloads | undefined;
+        if (patchBase && applied > 0) {
+            // Both stored metadata values, parsed at most once for the field form and the summary.
+            let metaValues: { before: Record<string, unknown>; after: Record<string, unknown> } | undefined;
+            const storedMeta = () =>
+                (metaValues ??= {
+                    before: JSON.parse(metaBefore!) as Record<string, unknown>,
+                    after: JSON.parse(row!.meta) as Record<string, unknown>,
+                });
+            feed = {};
+            if (!reappended) {
+                const meta = metaChanged
+                    ? { stored: row!.meta, fields: () => chatMetaFields(storedMeta().before, storedMeta().after) }
+                    : undefined;
+                if (changes) {
+                    // The feed's change from the same rows, so nothing is read twice.
+                    change = chatWriteChange(
+                        row!,
+                        patchBase,
+                        revision!,
+                        touched,
+                        removedIds,
+                        insertedHere,
+                        metaChanged,
+                    );
+                    feed = chatFeedChange(
+                        patchBase,
+                        change.count,
+                        meta,
+                        removedIds,
+                        touched.size > 0 ? change.rows : null,
+                    );
+                } else {
+                    // Without a change to build, the rows are read only while a form of the feed's change still fits.
+                    const { count } = countMessages.get(row!.seq) as { count: number };
+                    feed = chatFeedChange(
+                        patchBase,
+                        count,
+                        meta,
+                        removedIds,
+                        touched.size > 0 ? touchedRows(row!.seq, touched) : null,
+                    );
+                }
+            }
+            // The summary without its revision: the listed metadata fields (equal stored strings are
+            // equal projections) and the last message's time, which a message op can change without a
+            // metadata change (a removal of the last row) or make absent.
+            const time = timeBefore ? lastMessageAt(row!.seq) : undefined;
+            let summaryChanged = timeBefore !== undefined && time !== timeBefore.time;
+            if (!summaryChanged && metaChanged && metaBefore !== row!.meta) {
+                const { before, after } = storedMeta();
+                summaryChanged = !sameSummaryFields(summaryFields(before, undefined), summaryFields(after, undefined));
+            }
+            if (summaryChanged) {
+                feed.summary = {
+                    characterId,
+                    id: chatId,
+                    // The group's revision: `row` still holds the one before it (`bumpChat` writes only the table).
+                    revision: revision!,
+                    ...summaryFields(
+                        metaValues?.after ?? (JSON.parse(row!.meta) as Record<string, unknown>),
+                        timeBefore ? time : lastMessageAt(row!.seq),
+                    ),
+                };
             } else {
-                // Without a change to build, the rows are read only while the feed's patch still fits.
-                const { count } = countMessages.get(row!.seq) as { count: number };
-                patch = chatFeedPatch(
-                    patchBase,
-                    count,
-                    metaChanged ? row!.meta : undefined,
-                    removedIds,
-                    touched.size > 0 ? touchedRows(row!.seq, touched) : null,
-                );
+                feed.summaryBase = patchBase;
             }
         }
-        return { result, applied, patch, change, ...(invalidated ? { invalidated } : {}) };
+        return { result, applied, change, feed, ...(invalidated ? { invalidated } : {}) };
     }
 
     return {
@@ -1820,9 +1982,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * permutation of the list after this batch's creates and deletes; that check is skipped once
          * anything conflicted (`priorConflicts`: a resource op did), since the batch rolls back and a
          * conflicting change is missing from the list. Returns every conflict found (the caller rolls
-         * back when there is one), the results, the applied count, and the chats a `delete` or
-         * `replace` applied to (`invalidated`, once each, in group order). With `changes`, also each
-         * group's own change (`changes`, aligned with the results; undefined for a group without one).
+         * back when there is one), the results, the applied count, each applied by-id group's feed
+         * payloads (`feed`, by result), and the chats a `delete` or `replace` applied to
+         * (`invalidated`, once each, in group order). With `changes`, also each group's own change
+         * (`changes`, aligned with the results; undefined for a group without one).
          */
         apply(
             groups: readonly PreparedChatGroup[],
@@ -1835,9 +1998,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
             // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
-            const patches = new Map<ChatGroupResult, ChatPatchBody>();
+            const feed = new Map<ChatGroupResult, ChatFeedPayloads>();
             const duplicates = new Set<ChatGroupResult>();
-            // Only for a writer that asked; kept outside the results like the patches.
+            // Only for a writer that asked; kept outside the results like the feed's payloads.
             const written: (ChatWriteChange | undefined)[] | undefined = changes ? [] : undefined;
             const changedOrders = new Set<string>();
             const invalidated: { characterId: string; id: string }[] = [];
@@ -1851,8 +2014,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     if (outcome.duplicate) {
                         duplicates.add(outcome.result);
                     }
-                    if (outcome.patch) {
-                        patches.set(outcome.result, outcome.patch);
+                    if (outcome.feed) {
+                        feed.set(outcome.result, outcome.feed);
                     }
                     if (outcome.invalidated) {
                         invalidated.push({ characterId: group.characterId, id: group.chatId });
@@ -1915,7 +2078,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 results,
                 orders: orderResults,
                 applied,
-                patches,
+                feed,
                 duplicates,
                 invalidated,
                 changes: written,

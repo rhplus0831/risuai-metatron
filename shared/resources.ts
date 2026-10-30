@@ -352,7 +352,8 @@ export type RecordPatch = RecordFieldPatch | RecordItemPatch;
  * A chat's stored changes from `baseRevision` to the containing entry's revision. `messages` holds
  * new or changed rows once each, in final stored order, with the preceding row's id (`after`, null
  * at the start). `removed` names deleted ids; `meta`, when present, replaces all chat fields except
- * `message`. `count` is the final message count. Job socket patches also carry generated rows.
+ * `message`. `count` is the final message count. Job socket patches also carry generated rows and
+ * always carry the metadata whole.
  */
 export type ChatPatchBody = {
     baseRevision: string;
@@ -362,30 +363,70 @@ export type ChatPatchBody = {
     count: number;
 };
 
-/** The largest record or chat patch (UTF-8 bytes of its JSON) a feed entry carries; larger ones are plain refs. */
+/**
+ * A chat's metadata change by field, from the stored metadata at a `ChatDeltaBody`'s base to the
+ * stored metadata at its entry's revision: `remove` names the top-level fields gone, `set` the ones
+ * added or changed (each whole). For a `CHAT_META_MERGE_KEYS` field that is a map at both revisions,
+ * `mergeUnset` names its entries gone and `merge` its entries added or changed (each whole), and the
+ * field is in neither `set` nor `remove`; a field that becomes or stops being a map, or appears or
+ * disappears whole, is in `set` or `remove`. Values compare as JSON values; key order is not part of it.
+ */
+export type ChatMetaFields = {
+    set: Record<string, unknown>;
+    remove: string[];
+    merge?: Record<string, Record<string, unknown>>;
+    mergeUnset?: Record<string, string[]>;
+};
+
+/**
+ * A `ChatPatchBody` whose metadata comes by field (`metaFields`; absent: unchanged) instead of whole.
+ * A feed entry carries it when the whole metadata would pass `MAX_FEED_PATCH_BYTES`.
+ */
+export type ChatDeltaBody = Omit<ChatPatchBody, "meta"> & { metaFields?: ChatMetaFields };
+
+/**
+ * The largest record or chat patch, or chat delta (UTF-8 bytes of its JSON), a feed entry carries;
+ * larger ones are left out.
+ */
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
 /**
- * The most patch bytes one `change` frame carries: the UTF-8 bytes of each patch's JSON, summed over
- * its record and chat entries in wire order. An entry whose patch would pass it is a plain ref.
+ * The most optional-payload bytes one `change` frame carries: the UTF-8 bytes of the JSON of each
+ * record `patch`, chat `patch` or `delta`, `summary`, and `summaryBase`, summed over its record and
+ * chat entries in wire order. A payload that would pass it is left out of its entry.
  */
 export const MAX_FEED_PUBLICATION_PATCH_BYTES = 256 * 1024;
 
 /**
- * What one committed write changed (live updates): refs and their new revisions, and data only as a
- * record patch (`RecordPatch`) or a by-id chat patch (`ChatPatchBody`). A `null` revision is a
- * deletion. A record or chat recorded more than once in the write appears once with its final
- * revision and no patch. A client holding exactly a patch's base revision may apply it when idle (a
- * chat must also be loaded and not stale); otherwise it handles the plain notice as before. Chat
- * revisions advance by the applied op count, not necessarily one. Whole-chat writes, no-op groups,
- * remove-and-reappend groups, and patches over `MAX_FEED_PATCH_BYTES` carry no chat patch. The
- * patches of one publication share `MAX_FEED_PUBLICATION_PATCH_BYTES`: taken in wire order (resources,
- * then chats), one that does not fit leaves its entry a plain ref, and a later smaller one may still
- * fit.
+ * What one committed write changed (live updates): refs and their new revisions, and data only as
+ * optional payloads: a record patch (`RecordPatch`), and for a chat a by-id change (`patch`, or
+ * `delta` with the metadata by field) and what the entry knows about its summary. A `null` revision
+ * is a deletion. A record or chat recorded more than once in the write appears once with its final
+ * revision and no patch or delta. A client holding exactly a patch's or delta's base revision may
+ * apply it when idle (a chat must also be loaded and not stale); otherwise it handles the plain
+ * notice as before. Chat revisions advance by the applied op count, not necessarily one. Whole-chat
+ * writes, no-op groups, remove-and-reappend groups, and changes over `MAX_FEED_PATCH_BYTES` carry
+ * neither; an entry carries at most one of them, a `delta` only when the `patch` would not fit.
+ *
+ * A chat entry carries at most one of `summary` (the chat's summary at the entry's revision, when
+ * the write changed it) and `summaryBase` (a revision, the stored one right before the write: the
+ * summary, `revision` aside, is the same as at that revision). Neither means unknown: a whole-chat
+ * write, a no-op group, a deletion, a payload left out, or a chat recorded twice without that proof.
+ * The payloads of one publication share `MAX_FEED_PUBLICATION_PATCH_BYTES`: taken in wire order
+ * (resources, then chats; within a chat entry `patch` or `delta` before `summary` or `summaryBase`),
+ * one that does not fit is left out of its entry, and a later smaller one may still fit.
  */
 export type ChangeSet = {
     resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch }[];
-    chats: { characterId: string; id: string; revision: string | null; patch?: ChatPatchBody }[];
+    chats: {
+        characterId: string;
+        id: string;
+        revision: string | null;
+        patch?: ChatPatchBody;
+        delta?: ChatDeltaBody;
+        summary?: ChatSummary;
+        summaryBase?: string;
+    }[];
     chatOrders: { characterId: string; revision: string | null }[];
 };
 

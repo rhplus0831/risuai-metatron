@@ -51,6 +51,95 @@ const chatCreate = (id: string, messages: { chatId: string; data: string; role: 
 const empty = { resources: [], chats: [], chatOrders: [] };
 
 describe("the change feed", () => {
+    it("coalesces summary knowledge across writes and nested scopes at the final revision", () => {
+        const cases: { first: ChatOp; last: ChatOp; known: "summary" | "base" | "unknown"; name?: string }[] = [
+            {
+                first: { op: "meta", set: { name: "Renamed" } },
+                last: { op: "setText", id: "m", text: "checkpoint" },
+                known: "summary",
+                name: "Renamed",
+            },
+            {
+                first: { op: "setText", id: "m", text: "one" },
+                last: { op: "setText", id: "m", text: "two" },
+                known: "base",
+            },
+            {
+                first: { op: "meta", set: { name: "First" } },
+                last: { op: "meta", set: { name: "Last" } },
+                known: "summary",
+                name: "Last",
+            },
+            {
+                first: { op: "meta", set: { name: "First" } },
+                last: { op: "replace", chat: { id: "k", name: "Unknown", note: "", localLore: [], message: [] } },
+                known: "unknown",
+            },
+            {
+                first: {
+                    op: "replace",
+                    chat: {
+                        id: "k",
+                        name: "Unknown",
+                        note: "",
+                        localLore: [],
+                        message: [{ chatId: "m", data: "M", role: "char" }],
+                    },
+                },
+                last: { op: "setText", id: "m", text: "two" },
+                known: "unknown",
+            },
+            { first: { op: "meta", set: { name: "First" } }, last: { op: "delete" }, known: "unknown" },
+        ];
+        for (const nested of [false, true])
+            for (const { first, last, known, name } of cases) {
+                const { store, events } = setup();
+                store.put(characters, "c", { chaId: "c" }, null);
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [chatCreate("k", [{ chatId: "m", data: "M", role: "char" }])],
+                        },
+                    ],
+                });
+                const base = store.chatRevision("c", "k");
+                const group = (op: ChatOp) => ({
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: store.chatRevision("c", "k"),
+                    ops: [op],
+                });
+                events.length = 0;
+                // Input evaluation supplies independently committed writes in one publication scope.
+                store.applyChanges({
+                    get chats() {
+                        store.applyChanges({ chats: [group(first)] });
+                        if (nested) store.applyChanges({ chats: [group(last)] });
+                        expect(events).toEqual([]);
+                        return nested ? [] : [group(last)];
+                    },
+                });
+                const revision = store.chatRevision("c", "k");
+                expect(events).toHaveLength(1);
+                const event = events[0];
+                if (event.type !== "change") throw new Error("expected a committed change");
+                expect(event.changes.chats, `${nested}: ${first.op} then ${last.op}`).toEqual([
+                    {
+                        characterId: "c",
+                        id: "k",
+                        revision,
+                        ...(known === "base" ? { summaryBase: base } : {}),
+                        ...(known === "summary"
+                            ? { summary: { characterId: "c", id: "k", revision, name, fmIndex: -1 } }
+                            : {}),
+                    },
+                ]);
+            }
+    });
+
     it("delivers reentrant publications to every listener in publish order even when a listener throws", () => {
         const logged = vi.spyOn(console, "error").mockImplementation(() => {});
         const feed = createChangeFeed();
@@ -271,6 +360,8 @@ describe("the store publishes committed changes", () => {
                             id: "k",
                             revision: reordered.chats[0].revision,
                             patch: { baseRevision: k, messages: [{ after: null, message: stored[0] }], count: 1 },
+                            // The text write leaves the summary as it was at the base.
+                            summaryBase: k,
                         },
                     ],
                     chatOrders: [{ characterId: "c", revision: reordered.chatOrders[0].revision }],
@@ -990,7 +1081,8 @@ describe("the publication patch budget", () => {
         };
     }
 
-    function chat(store: ResourceStore, id: string, bytes = nearCap) {
+    /** `bytes`: the patch's size, or a function of the chat's base revision that returns it. */
+    function chat(store: ResourceStore, id: string, bytes: number | ((baseRevision: string) => number) = nearCap) {
         store.applyChanges({
             chats: [
                 {
@@ -1002,7 +1094,7 @@ describe("the publication patch budget", () => {
             ],
         });
         const baseRevision = store.chatRevision("c", id)!;
-        const patch = sizedPatch(bytes, (data) => ({
+        const patch = sizedPatch(typeof bytes === "number" ? bytes : bytes(baseRevision), (data) => ({
             baseRevision,
             messages: [{ after: null, message: { chatId: "m", data, role: "char" } }],
             count: 1,
@@ -1019,6 +1111,114 @@ describe("the publication patch budget", () => {
         };
     }
 
+    it("shares the publication byte budget across patches, deltas, summaries and summary bases", () => {
+        const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+        for (const excess of [0, 1]) {
+            const { store, events } = budgetSetup();
+            store.put(characters, "c", { chaId: "c" }, null);
+            const memory = "m".repeat(100 * 1024);
+            store.applyChanges({
+                chats: ["delta", "summary", "dropped", "tail", "overflow"].map((id) => ({
+                    characterId: "c",
+                    chatId: id,
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create" as const,
+                            chat: {
+                                id,
+                                name: id,
+                                note: "",
+                                localLore: [],
+                                message: [],
+                                ...(["delta", "overflow"].includes(id) ? { supaMemoryData: memory } : {}),
+                            },
+                        },
+                    ],
+                })),
+            });
+            const base = (id: string) => store.chatRevision("c", id)!;
+            const next = (id: string) => base(id).replace(/:(\d+)$/, (_, n) => `:${Number(n) + 1}`);
+            const metaPatch = (id: string, name: string) => ({
+                baseRevision: base(id),
+                count: 0,
+                meta: { id, name, note: "", localLore: [], fmIndex: -1 },
+            });
+            const summary = (id: string, name: string) => ({
+                characterId: "c",
+                id,
+                revision: next(id),
+                name,
+                fmIndex: -1,
+            });
+            const note = "n".repeat(3000);
+            const name = "한".repeat(400);
+            const droppedName = "x".repeat(1000);
+            const delta = { baseRevision: base("delta"), count: 0, metaFields: { set: { note }, remove: [] } };
+            const keptSummary = summary("summary", name);
+            const keptPatch = metaPatch("summary", name);
+            const droppedPatch = metaPatch("dropped", droppedName);
+            const tailPatch = {
+                baseRevision: base("tail"),
+                count: 0,
+                meta: { id: "tail", name: "tail", note: "tail note", localLore: [], fmIndex: -1 },
+            };
+            const deltaBase = base("delta");
+            const tailBase = base("tail");
+            const remaining = [
+                delta,
+                deltaBase,
+                keptPatch,
+                keptSummary,
+                droppedPatch,
+                tailPatch,
+                tailBase,
+            ].reduce<number>((sum, value) => sum + bytes(value), 0);
+            expect(bytes(summary("dropped", droppedName))).toBeGreaterThan(bytes(tailPatch) + bytes(tailBase));
+            const records = ["a", "b", "c"].map((id) => field(store, id, MAX_FEED_PATCH_BYTES));
+            records.push(field(store, "d", MAX_FEED_PATCH_BYTES - remaining + excess));
+            const groups = [
+                { id: "delta", set: { note } },
+                { id: "summary", set: { name } },
+                { id: "dropped", set: { name: droppedName } },
+                { id: "tail", set: { note: "tail note" } },
+                { id: "overflow", set: { note: "cannot fit" } },
+            ].map(({ id, set }) => ({
+                characterId: "c",
+                chatId: id,
+                baseRevision: base(id),
+                ops: [{ op: "meta" as const, set }],
+            }));
+            events.length = 0;
+            store.applyChanges({ ops: records.map((entry) => entry.op), chats: groups });
+            expect(events).toHaveLength(1);
+            const event = events[0];
+            if (event.type !== "change") throw new Error("expected a committed change");
+            expect(event.changes.resources).toEqual(records.map((entry) => ({ ...entry.ref(), patch: entry.patch })));
+            const ref = (id: string) => ({ characterId: "c", id, revision: base(id) });
+            expect(event.changes.chats).toEqual([
+                { ...ref("delta"), delta, summaryBase: deltaBase },
+                { ...ref("summary"), patch: keptPatch, summary: keptSummary },
+                // A dropped changed projection is unknown, never an unchanged-base claim.
+                { ...ref("dropped"), patch: droppedPatch },
+                { ...ref("tail"), patch: tailPatch, ...(excess ? {} : { summaryBase: tailBase }) },
+                ref("overflow"),
+            ]);
+            const payloads = [
+                ...event.changes.resources.map((entry) => entry.patch),
+                ...event.changes.chats.flatMap(({ patch, delta, summary, summaryBase }) => [
+                    patch,
+                    delta,
+                    summary,
+                    summaryBase,
+                ]),
+            ].filter((payload) => payload !== undefined);
+            expect(payloads.reduce<number>((sum, payload) => sum + bytes(payload), 0)).toBe(
+                MAX_FEED_PUBLICATION_PATCH_BYTES + excess - (excess ? bytes(tailBase) : 0),
+            );
+        }
+    });
+
     it("budgets mixed patches in wire order while preserving later fitting patches, refs, orders and locks", () => {
         const { store, events } = budgetSetup();
         expect(MAX_FEED_PUBLICATION_PATCH_BYTES).toBe(256 * 1024);
@@ -1030,12 +1230,18 @@ describe("the publication patch budget", () => {
             changes: [{ id: "item", set: { blob }, remove: [] }],
         }));
         store.put(characters, "c", { chaId: "c", name: "C" }, null);
-        const chats = [
-            chat(store, "first"),
-            chat(store, "second"),
-            chat(store, "dropped"),
-            chat(store, "small", remainder),
-        ];
+        const first = chat(store, "first");
+        const second = chat(store, "second");
+        const dropped = chat(store, "dropped");
+        // Each text write leaves its chat's summary unchanged, so each entry also carries its base as
+        // `summaryBase`, after its patch on the wire: the small patch fills exactly what the four kept
+        // 60 KiB patches and the four summary bases (the dropped entry's included, which still fits) leave.
+        const summaryBaseBytes = (baseRevision: string) => Buffer.byteLength(JSON.stringify(baseRevision));
+        const smallBytes = (baseRevision: string) =>
+            remainder -
+            [first, second, dropped].reduce((sum, entry) => sum + summaryBaseBytes(entry.group.baseRevision), 0) -
+            summaryBaseBytes(baseRevision);
+        const chats = [first, second, dropped, chat(store, "small", smallBytes)];
         const order = store.readRefs([], { chatCollections: ["c"] }).chatCollections[0].order!;
         const streaming = [
             {
@@ -1068,7 +1274,14 @@ describe("the publication patch budget", () => {
             { committed: () => streaming },
         );
 
-        expect(publicationPatchBytes(events)).toEqual([nearCap, nearCap, nearCap, nearCap, 0, remainder]);
+        expect(publicationPatchBytes(events)).toEqual([
+            nearCap,
+            nearCap,
+            nearCap,
+            nearCap,
+            0,
+            smallBytes(chats[3].group.baseRevision),
+        ]);
         expect(events).toEqual([
             {
                 type: "change",
@@ -1079,10 +1292,10 @@ describe("the publication patch budget", () => {
                         { kind: "list", id: "items", revision: result.results[1].revision, patch: itemPatch },
                     ],
                     chats: [
-                        { ...chats[0].ref(), patch: chats[0].patch },
-                        { ...chats[1].ref(), patch: chats[1].patch },
-                        chats[2].ref(),
-                        { ...chats[3].ref(), patch: chats[3].patch },
+                        { ...chats[0].ref(), patch: chats[0].patch, summaryBase: chats[0].group.baseRevision },
+                        { ...chats[1].ref(), patch: chats[1].patch, summaryBase: chats[1].group.baseRevision },
+                        { ...chats[2].ref(), summaryBase: chats[2].group.baseRevision },
+                        { ...chats[3].ref(), patch: chats[3].patch, summaryBase: chats[3].group.baseRevision },
                     ],
                     chatOrders: [{ characterId: "c", revision: result.chatOrders[0].revision }],
                 },

@@ -278,7 +278,178 @@ describe("the boot from summaries", () => {
 });
 
 describe("live updates of chats that are not loaded", () => {
-    it("a notice for an unloaded chat refreshes its summary through the character's list, never the chat whole; a deleted one leaves the list; a new one arrives as a summary", async () => {
+    it("installs known summaries and advances matching summary bases without collection reads or writes", async () => {
+        const b = await boot();
+        const order = b.chat.heldOrderRevision("c");
+        const base = b.chat.heldChatRevision(refK);
+        b.remoteMeta("c", "k", {
+            name: "Renamed",
+            folderId: "folder",
+            pinned: true,
+            modelPresetId: "model",
+            bindingReview: false,
+        });
+        const entry = {
+            id: "k",
+            name: "Renamed",
+            fmIndex: -1,
+            folderId: "folder",
+            pinned: true,
+            modelPresetId: "model",
+            bindingReview: false,
+        };
+        expect(b.chat.chatEntry(refK)).toEqual(entry);
+        expect(b.chat.heldChatRevision(refK)).not.toBe(base);
+        const renamed = b.chat.heldChatRevision(refK);
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: renamed,
+                ops: [{ op: "setText", id: "b", text: "checkpoint" }],
+            },
+        ]);
+        expect(b.chat.chatEntry(refK)).toEqual(entry);
+        expect(b.chat.heldChatRevision(refK)).not.toBe(renamed);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: b.fake.chat("c", "k")!.revision,
+                ops: [{ op: "append", anchor: { end: true }, messages: [{ ...m("dated", "D"), time: 100 }] }],
+            },
+        ]);
+        expect(b.chat.characterLastChattedAt("c", 777)).toBe(100);
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: b.fake.chat("c", "k")!.revision,
+                ops: [{ op: "remove", ids: ["dated"] }],
+            },
+        ]);
+        expect(b.chat.characterLastChattedAt("c", 777)).toBe(777);
+        await settle(b.fake);
+        expect(b.chat.chatEntry(refK)).toEqual(entry);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.heldOrderRevision("c")).toBe(order);
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual(C_IDS);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.reads()).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        expect(b.chat.hasChatWork()).toBe(false);
+        noNotice();
+    });
+
+    it("reads the summary collection after a missed rename, an unknown notice or a reconnect listing", async () => {
+        for (const notice of ["missed rename", "unknown notice", "reconnect listing"]) {
+            const b = await boot();
+            const base = b.chat.heldChatRevision(refK);
+            b.live.paused = true;
+            b.remoteMeta("c", "k", { name: "Missed rename" });
+            b.live.queue.length = 0;
+            if (notice === "missed rename") {
+                b.live.paused = false;
+                b.fake.chatBatch([
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: b.fake.chat("c", "k")!.revision,
+                        ops: [{ op: "setText", id: "b", text: "checkpoint" }],
+                    },
+                ]);
+            } else if (notice === "reconnect listing") {
+                b.sync.reconcileRemote(b.fake.store.listRevisions());
+            } else {
+                b.sync.noteRemoteChanges({
+                    resources: [],
+                    chats: [{ characterId: "c", id: "k", revision: b.fake.chat("c", "k")!.revision }],
+                    chatOrders: [],
+                });
+            }
+            expect(b.chat.chatEntry(refK)?.name, notice).toBe("K");
+            expect(b.chat.heldChatRevision(refK), notice).toBe(base);
+            expect(b.chat.isChatBehind(refK), notice).toBe(true);
+            await settle(b.fake);
+            expect(b.reads(), notice).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+            expect(b.chat.chatEntry(refK)?.name).toBe("Missed rename");
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.findChat(refK)).toBeUndefined();
+            expect(b.fake.batchCount()).toBe(0);
+            expect(b.chat.hasChatWork()).toBe(false);
+            noNotice();
+            b.fake.close();
+        }
+    });
+
+    it("reads membership for an unheld chat with a summary and for a deletion even without an order notice", async () => {
+        const b = await boot();
+        b.live.paused = true;
+        b.fake.store.applyChanges({ chats: [create("c", "new", {})] });
+        b.live.queue.length = 0;
+        b.remoteMeta("c", "new", { name: "New remote" });
+        const created = b.live.queue[0];
+        if (created.type !== "change") throw new Error("expected a committed change");
+        expect(created.changes.chats[0]).toHaveProperty("summary");
+        b.sync.noteRemoteChanges({ ...created.changes, chatOrders: [] });
+        expect(b.chat.chatEntry({ chaId: "c", chatId: "new" })).toBeUndefined();
+        await settle(b.fake);
+        expect(b.reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual([...C_IDS, "new"]);
+        expect(b.chat.chatEntry({ chaId: "c", chatId: "new" })?.name).toBe("New remote");
+        expect(b.chat.findChat({ chaId: "c", chatId: "new" })).toBeUndefined();
+        b.fake.requests.length = 0;
+        b.live.queue.length = 0;
+        b.fake.chatBatch([
+            { characterId: "c", chatId: "k", baseRevision: b.fake.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
+        ]);
+        const deleted = b.live.queue[0];
+        if (deleted.type !== "change") throw new Error("expected a committed change");
+        b.sync.noteRemoteChanges({ ...deleted.changes, chatOrders: [] });
+        await settle(b.fake);
+        expect(b.reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual([...C_IDS.filter((id) => id !== "k"), "new"]);
+        expect(b.chat.heldChatRevision(refK)).toBeNull();
+        expect(b.fake.batchCount()).toBe(0);
+        expect(b.chat.hasChatWork()).toBe(false);
+        noNotice();
+    });
+
+    it("keeps local work and stale summaries on the collection refresh path", async () => {
+        for (const state of ["local work", "stale"]) {
+            const b = await boot();
+            const base = b.chat.heldChatRevision(refK);
+            if (state === "local work") b.chat.setChatMeta(refK, { folderId: "mine" });
+            else expect(b.chat.markChatStale(refK)).toBe(true);
+            b.remoteMeta("c", "k", { name: "Remote" });
+            expect(b.chat.chatEntry(refK)?.name, state).toBe("K");
+            expect(b.chat.heldChatRevision(refK), state).toBe(base);
+            expect(b.chat.isChatBehind(refK), state).toBe(true);
+            if (state === "local work") expect(b.chat.chatEntry(refK)?.folderId).toBe("mine");
+            await settle(b.fake);
+            expect(b.reads().length).toBeGreaterThan(0);
+            expect(
+                b
+                    .reads()
+                    .every(
+                        (read) =>
+                            read.chats.length === 0 && read.collections.length === 0 && read.summaries.includes("c"),
+                    ),
+            ).toBe(true);
+            expect(b.chat.chatEntry(refK)?.name).toBe("Remote");
+            if (state === "local work") expect(b.chat.chatEntry(refK)?.folderId).toBe("mine");
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.findChat(refK)).toBeUndefined();
+            expect(b.fake.batchCount()).toBe(state === "local work" ? 1 : 0);
+            expect(b.chat.hasChatWork()).toBe(false);
+            noNotice();
+            b.fake.close();
+        }
+    });
+
+    it("a rename of an unloaded chat installs the feed's summary with no read, never the chat whole; a deleted one leaves the list and a new one arrives as a summary through the character's list", async () => {
         const { fake, chat, selection, reads, remoteMeta } = await boot();
         selection.selectCharacter("c");
         await settle(fake);
@@ -296,7 +467,8 @@ describe("live updates of chats that are not loaded", () => {
         });
         expect(chat.findChat({ chaId: "c", chatId: "n0" })).toBeUndefined();
         expect(chat.heldChatRevision({ chaId: "c", chatId: "n0" })).toBe(fake.chat("c", "n0")!.revision);
-        expect(reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+        // The rename's feed entry carries the new summary: neither the list nor the chat is read.
+        expect(reads()).toEqual([]);
         expect(fake.batchCount()).toBe(0);
 
         // Deleted and created by another tab: the list follows; the new chat is a summary.
@@ -316,6 +488,7 @@ describe("live updates of chats that are not loaded", () => {
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual([...C_IDS.filter((id) => id !== "n7"), "n8"]);
         expect(chat.findChat({ chaId: "c", chatId: "n8" })).toBeUndefined();
         expect(chat.heldChatRevision({ chaId: "c", chatId: "n7" })).toBeNull();
+        expect(reads().some((read) => read.summaries.includes("c"))).toBe(true);
         expect(reads().every((read) => read.chats.length === 0)).toBe(true);
         expect(fake.batchCount()).toBe(0);
         // The idle loop afterwards: nothing.

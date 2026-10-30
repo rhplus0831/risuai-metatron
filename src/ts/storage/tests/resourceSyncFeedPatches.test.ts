@@ -75,7 +75,7 @@ const refK = { chaId: "c", chatId: "k" };
  * with the change feed: presets `pa` and `pb`, character `c` (chats `k` with messages a, b, c and
  * `j`, empty) and character `d` (chat `m`), at home. Then live delivery starts.
  */
-async function boot(options: { summaries?: boolean } = {}) {
+async function boot(options: { summaries?: boolean; meta?: Record<string, unknown> } = {}) {
     vi.resetModules();
     const fake = await StoreBackedServer.create({ lock: true, feed: true });
     fake.set("presets", "main", [
@@ -100,6 +100,16 @@ async function boot(options: { summaries?: boolean } = {}) {
             create("d", "m", [m("x", "X")]),
         ],
     });
+    if (options.meta) {
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "meta", set: options.meta }],
+            },
+        ]);
+    }
     server.current = fake;
 
     const client: Client = await import("../resourceClient");
@@ -189,6 +199,103 @@ const quiet = (b: Booted) => {
 };
 
 describe("feed patches through the tab save adapter", () => {
+    it("applies metadata deltas as remote values equal to a whole read without queuing a write", async () => {
+        const memory = "m".repeat(100 * 1024);
+        const b = await boot({
+            meta: {
+                supaMemoryData: memory,
+                folderId: "remove me",
+                scriptstate: { keep: "same", change: "old", gone: "remove" },
+            },
+        });
+        const expected: Record<string, unknown> = {
+            id: "k",
+            name: "k",
+            note: "remote note",
+            localLore: [],
+            fmIndex: -1,
+            message: [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")],
+            supaMemoryData: memory,
+            autoTranslate: true,
+            scriptstate: { keep: "same", change: "new", added: "value" },
+        };
+        const cases: { ops: ChatOp[]; scriptstate?: unknown }[] = [
+            {
+                ops: [
+                    {
+                        op: "meta",
+                        set: { note: "remote note", autoTranslate: true },
+                        unset: ["folderId"],
+                        merge: { scriptstate: { change: "new", added: "value" } },
+                        mergeUnset: { scriptstate: ["gone"] },
+                    },
+                ],
+                scriptstate: expected.scriptstate,
+            },
+            { ops: [{ op: "meta", set: { scriptstate: "legacy string" } }], scriptstate: "legacy string" },
+            { ops: [{ op: "meta", set: { scriptstate: { restored: "map" } } }], scriptstate: { restored: "map" } },
+            { ops: [{ op: "meta", unset: ["scriptstate"] }] },
+            { ops: [{ op: "meta", merge: { scriptstate: { appeared: "map" } } }], scriptstate: { appeared: "map" } },
+        ];
+        for (const { ops, scriptstate } of cases) {
+            remote(b, ops);
+            const event = b.fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("expected a committed change");
+            expect(event.changes.chats[0]).toHaveProperty("delta.metaFields");
+            expect(event.changes.chats[0]).not.toHaveProperty("patch");
+            if (scriptstate === undefined) delete expected.scriptstate;
+            else expected.scriptstate = scriptstate;
+            expect(JSON.parse(JSON.stringify(mirror(b)))).toEqual(expected);
+            expect(JSON.parse(JSON.stringify(mirror(b)))).toEqual(b.fake.chat("c", "k")!.data);
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.isChatBehind(refK)).toBe(false);
+            expect(b.chat.hasUnsavedChatWork()).toBe(false);
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toEqual([]);
+            expect(b.fake.batchCount()).toBe(0);
+            expect(b.fake.requests).toEqual([]);
+            quiet(b);
+        }
+    });
+
+    it("reads a loaded chat for a mismatched delta or a plain reference without echoing metadata", async () => {
+        for (const notice of ["mismatched delta", "plain reference"]) {
+            const b = await boot({ meta: { supaMemoryData: "m".repeat(100 * 1024) } });
+            const base = b.chat.heldChatRevision(refK);
+            b.live.paused = true;
+            remote(b, [{ op: "meta", set: { note: "missed note" } }]);
+            b.live.queue.length = 0;
+            remote(b, [{ op: "meta", set: { autoTranslate: true } }]);
+            const event = b.live.queue[0];
+            if (event.type !== "change") throw new Error("expected a committed change");
+            const entry = event.changes.chats[0];
+            expect(entry.delta?.baseRevision).not.toBe(base);
+            expect(entry.delta).toBeDefined();
+            const { characterId, id, revision } = entry;
+            b.sync.noteRemoteChanges({
+                resources: [],
+                chats: [notice === "plain reference" ? { characterId, id, revision } : entry],
+                chatOrders: [],
+            });
+            expect(mirror(b).autoTranslate).toBeUndefined();
+            expect(mirror(b).note).toBe("");
+            expect(b.chat.heldChatRevision(refK)).toBe(base);
+            expect(b.chat.isChatBehind(refK)).toBe(true);
+            await vi.advanceTimersByTimeAsync(1500);
+            await b.sync.flushResources();
+            expect(reads(b)).toHaveLength(1);
+            expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
+            expect(reads(b)[0].chatSummaryCollections ?? []).toEqual([]);
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(mirror(b)).toMatchObject({ note: "missed note", autoTranslate: true });
+            expect(b.chat.heldChatRevision(refK)).toBe(revision);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+            b.fake.close();
+        }
+    });
+
     it("applies a loaded idle patch immediately without a notice, read, outgoing work, or discard", async () => {
         const b = await boot();
         const scope = b.sync.beginMutationScope();
@@ -213,10 +320,10 @@ describe("feed patches through the tab save adapter", () => {
         quiet(b);
     });
 
-    it.each(["another revision", "stale", "local work", "generating", "summary only"])(
+    it.each(["another revision", "stale", "local work", "generating"])(
         "falls back to the existing notice/read path for %s",
         async (state) => {
-            const b = await boot({ summaries: state === "summary only" });
+            const b = await boot();
             const scope = b.sync.beginMutationScope();
             const base = b.fake.chat("c", "k")!.revision;
             if (state === "another revision") {
@@ -252,8 +359,7 @@ describe("feed patches through the tab save adapter", () => {
             expect(b.chat.heldChatRevision(refK)).toBe(base);
             expect(b.chat.isChatBehind(refK)).toBe(true);
             expect(reads(b)).toEqual([]);
-            if (state === "summary only") expect(b.chat.findChat(refK)).toBeUndefined();
-            else expect(mirror(b).message[1].data).toBe(state === "generating" ? "raw streaming" : "B");
+            expect(mirror(b).message[1].data).toBe(state === "generating" ? "raw streaming" : "B");
             if (state === "generating") {
                 await vi.advanceTimersByTimeAsync(600);
                 expect(reads(b)).toEqual([]);
@@ -262,22 +368,42 @@ describe("feed patches through the tab save adapter", () => {
             expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
             await vi.advanceTimersByTimeAsync(1200);
             expect(reads(b)).toHaveLength(1);
-            if (state === "summary only") {
-                expect(reads(b)[0]).toMatchObject({ chatSummaryCollections: ["c"] });
-                expect(reads(b)[0].chats ?? []).toEqual([]);
-                expect(b.chat.findChat(refK)).toBeUndefined();
-            } else {
-                expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
-                expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
-                expect(mirror(b).message[1].data).toBe("stored checkpoint");
-                if (state === "local work") expect(mirror(b).note).toBe("local note");
-                if (state === "another revision") expect(mirror(b).note).toBe("unseen prior change");
-            }
+            expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(mirror(b).message[1].data).toBe("stored checkpoint");
+            if (state === "local work") expect(mirror(b).note).toBe("local note");
+            if (state === "another revision") expect(mirror(b).note).toBe("unseen prior change");
             expect(b.chat.isChatBehind(refK)).toBe(false);
             expect(b.fake.batchCount()).toBe(state === "local work" ? 1 : 0);
             quiet(b);
         },
     );
+
+    it("never applies a feed patch to a chat held only as its summary: the summary base advances its revision with no read", async () => {
+        const b = await boot({ summaries: true });
+        const scope = b.sync.beginMutationScope();
+        const base = b.fake.chat("c", "k")!.revision;
+        expect(b.chat.heldChatRevision(refK)).toBe(base);
+        remote(b, [{ op: "setText", id: "b", text: "stored checkpoint" }]);
+        const { revision } = latest(b);
+        // A text write leaves the summary as it was at the held revision: the entry's `summaryBase`.
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.chats[0].summaryBase).toBe(base);
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(reads(b)).toEqual([]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
+        await vi.advanceTimersByTimeAsync(1200);
+        // Neither the character's summary list nor the chat whole is read, and nothing is written.
+        expect(reads(b)).toEqual([]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
 
     it("lets the owner's later job patch fit both a locked feed notice and an already applied unlocked feed patch", async () => {
         const b = await boot();

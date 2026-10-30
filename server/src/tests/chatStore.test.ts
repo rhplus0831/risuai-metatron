@@ -787,6 +787,8 @@ describe("patchMessage", () => {
                 characterId: "c",
                 id: "k",
                 revision: patched.revision,
+                // No message has a time and the metadata is untouched: the summary is the stored base's.
+                summaryBase: storedBase,
                 patch: {
                     baseRevision: storedBase,
                     count: 3,
@@ -803,6 +805,7 @@ describe("patchMessage", () => {
                 characterId: "c",
                 id: "k",
                 revision: same.revision,
+                summaryBase: patched.revision,
                 patch: { baseRevision: patched.revision, count: 3 },
             },
         ]);
@@ -2056,6 +2059,8 @@ describe("meta mergeUnset and scriptstate merge", () => {
                 characterId: "c",
                 id: "k",
                 revision: removed.revision,
+                // `scriptstate` is outside the summary: unchanged since the stored base.
+                summaryBase: storedBase,
                 patch: {
                     baseRevision: storedBase,
                     count: 3,
@@ -2437,6 +2442,8 @@ describe("missing targets", () => {
                 characterId: "c",
                 id: "k",
                 revision: result.revision,
+                // Neither the old last row nor the appended one has a time: the summary is the actual base's.
+                summaryBase: current,
                 patch: {
                     baseRevision: current,
                     count: 3,

@@ -27,7 +27,6 @@ import {
 import {
     type BatchConflict,
     type ChangeSet,
-    type ChatPatchBody,
     MAX_FEED_PATCH_BYTES,
     MAX_FEED_PUBLICATION_PATCH_BYTES,
     RESOURCE_KIND,
@@ -43,6 +42,7 @@ import { diffRecordText } from "./recordPatchText.ts";
 import {
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
+    type ChatFeedPayloads,
     type ChatSnapshotRows,
     type ChatWriteChange,
     countChatOperations,
@@ -314,6 +314,32 @@ type ChangeAccumulator = {
     /** Generation locks per chat (`characterId\0id`); the last list given for a chat wins. */
     streaming: Map<string, ChatStreaming>;
 };
+
+type ChatChange = ChangeSet["chats"][number];
+
+/**
+ * One feed entry for a chat recorded twice in a publication, `earlier` then `later`: the later ref,
+ * without a patch or delta (their base would be a revision no client was told about), with only the
+ * summary knowledge the two prove together. The later `summary` stands; else the earlier `summary`,
+ * moved to the later revision, when the later entry says the summary is unchanged since the earlier
+ * revision (`summaryBase`); two such unchanged entries in a row say unchanged since the earlier base.
+ * Anything else (a gap, an entry that knows nothing, a deletion) knows nothing. A new entry: neither
+ * input is changed.
+ */
+function coalescedChat(earlier: ChatChange, later: ChatChange): ChatChange {
+    const { characterId, id, revision } = later;
+    const entry: ChatChange = { characterId, id, revision };
+    if (later.summary) {
+        entry.summary = later.summary;
+    } else if (revision !== null && later.summaryBase !== undefined && later.summaryBase === earlier.revision) {
+        if (earlier.summary) {
+            entry.summary = { ...earlier.summary, revision };
+        } else if (earlier.summaryBase !== undefined) {
+            entry.summaryBase = earlier.summaryBase;
+        }
+    }
+    return entry;
+}
 
 /**
  * A synchronous transaction body. A body whose return type can be a promise does not type-check.
@@ -708,15 +734,19 @@ export function createResourceStore(options: {
         return { resources: new Map(), chats: new Map(), chatOrders: new Map(), streaming: new Map() };
     }
 
-    /** Coalesces refs in write order; a second write loses the patch of an unannounced base. */
+    /**
+     * Coalesces refs in write order (`coalescedChat` for a chat recorded again); a second write loses
+     * the patch of an unannounced base. Never changes an entry of either accumulator in place: a
+     * committed nested accumulator is merged again when its enclosing write fails.
+     */
     function mergeChanges(target: ChangeAccumulator, source: ChangeAccumulator) {
         for (const [key, entry] of source.resources) {
             const { kind, id, revision } = entry;
             target.resources.set(key, target.resources.has(key) ? { kind, id, revision } : entry);
         }
         for (const [key, entry] of source.chats) {
-            const { characterId, id, revision } = entry;
-            target.chats.set(key, target.chats.has(key) ? { characterId, id, revision } : entry);
+            const earlier = target.chats.get(key);
+            target.chats.set(key, earlier ? coalescedChat(earlier, entry) : entry);
         }
         for (const [key, entry] of source.chatOrders) {
             target.chatOrders.set(key, entry);
@@ -727,31 +757,41 @@ export function createResourceStore(options: {
     }
 
     /**
-     * A publication's record and chat entries in wire order, with their patches within
+     * A publication's record and chat entries in wire order, with their optional payloads within
      * `MAX_FEED_PUBLICATION_PATCH_BYTES` together. Called once per publication, on the outermost
      * write's final accumulator, so nested scopes have merged and coalescing has dropped repeated keys'
-     * patches: an entry keeps its patch while the running sum including it fits, and one that does not
-     * fit becomes a copy without it in the same place (a later, smaller patch may still fit). Every
-     * candidate patch is measured, rejected ones included, so the measuring work is proportional to the
-     * patches the write built (each already within `MAX_FEED_PATCH_BYTES` when built), not to the frame.
+     * patches and deltas. The payloads are taken in wire order: resources, then chats, and within a
+     * chat entry its `patch` or `delta`, then its `summary` or `summaryBase`. A payload stays while
+     * the running sum including it fits; one that does not fit is left out of a copy of its entry in
+     * the same place (a later, smaller payload may still fit), so a dropped `summary` leaves the entry
+     * with neither summary field. Every candidate payload is measured, rejected ones included, so the
+     * measuring work is proportional to the payloads the write built (each patch or delta already
+     * within `MAX_FEED_PATCH_BYTES` when built), not to the frame. Refs are never dropped.
      */
     function budgetedEntries(changes: ChangeAccumulator): Pick<ChangeSet, "resources" | "chats"> {
         let spent = 0;
-        const withinBudget = <T extends { patch?: RecordPatch | ChatPatchBody }>(entry: T): T | Omit<T, "patch"> => {
-            if (entry.patch === undefined) {
-                return entry;
+        const withinBudget = <T extends object>(entry: T, payloads: readonly (keyof T)[]): T => {
+            let kept: T | undefined;
+            for (const payload of payloads) {
+                const value = entry[payload];
+                if (value === undefined) {
+                    continue;
+                }
+                const size = Buffer.byteLength(JSON.stringify(value));
+                if (spent + size <= MAX_FEED_PUBLICATION_PATCH_BYTES) {
+                    spent += size;
+                    continue;
+                }
+                kept ??= { ...entry };
+                delete kept[payload];
             }
-            const size = Buffer.byteLength(JSON.stringify(entry.patch));
-            if (spent + size <= MAX_FEED_PUBLICATION_PATCH_BYTES) {
-                spent += size;
-                return entry;
-            }
-            const { patch: _dropped, ...ref } = entry;
-            return ref;
+            return kept ?? entry;
         };
         return {
-            resources: [...changes.resources.values()].map(withinBudget),
-            chats: [...changes.chats.values()].map(withinBudget),
+            resources: [...changes.resources.values()].map((entry) => withinBudget(entry, ["patch"])),
+            chats: [...changes.chats.values()].map((entry) =>
+                withinBudget(entry, ["patch", "delta", "summary", "summaryBase"]),
+            ),
         };
     }
 
@@ -768,13 +808,16 @@ export function createResourceStore(options: {
         );
     }
 
-    function recordChat(characterId: string, id: string, revision: string | null, patch?: ChatPatchBody) {
+    /**
+     * `payloads`: the group's by-id change and summary knowledge (`ChatFeedPayloads`). A chat already
+     * written in this scope coalesces with its earlier entry (`coalescedChat`).
+     */
+    function recordChat(characterId: string, id: string, revision: string | null, payloads?: ChatFeedPayloads) {
         const changes = publishingScope?.changes;
         const key = `${characterId}\u0000${id}`;
-        changes?.chats.set(
-            key,
-            patch && !changes.chats.has(key) ? { characterId, id, revision, patch } : { characterId, id, revision },
-        );
+        const entry: ChangeSet["chats"][number] = { characterId, id, revision, ...payloads };
+        const earlier = changes?.chats.get(key);
+        changes?.chats.set(key, earlier ? coalescedChat(earlier, entry) : entry);
     }
 
     function recordStreaming(entry: ChatStreaming) {
@@ -800,7 +843,7 @@ export function createResourceStore(options: {
      * Runs a write and publishes its refs only after commit, with `transactionState` cleared. Writes
      * inside an open transaction share its scope. An independently committed write nested in input
      * evaluation merges into the enclosing scope on success; if that scope throws, only its nested
-     * commits' refs are published. Only the outermost scope publishes, once, with its patches within
+     * commits' refs are published. Only the outermost scope publishes, once, with its payloads within
      * the publication budget (`budgetedEntries`). The invalidation notices of every committed
      * transaction are delivered after publication, once all publishing scopes (including a feed
      * listener's writes) have ended, even when an enclosing write throws.
@@ -1268,7 +1311,7 @@ export function createResourceStore(options: {
             }
             for (const chat of chatOutcome.results) {
                 if (!chatOutcome.duplicates.has(chat)) {
-                    recordChat(chat.characterId, chat.id, chat.revision, chatOutcome.patches.get(chat));
+                    recordChat(chat.characterId, chat.id, chat.revision, chatOutcome.feed.get(chat));
                 }
             }
             for (const order of chatOutcome.orders) {

@@ -187,7 +187,7 @@ Every other frame is admitted by its own size (`routes/events.ts` `send`): a fan
 
 "+ epoch" means the `x-resource-epoch` header must name the current database epoch (412 `{ error: "EpochMismatch", epoch }` otherwise). Mutations answer 503 with `Retry-After` while a restore or an import runs. During shutdown, new resource requests (including reads), backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed store-closed error maps to the same retryable response. Every `/api/resources` and `/api/llm-secrets` response is `Cache-Control: no-store`. Every read route (`/api/resources?kinds=`, `/api/resources/read`, `/api/resources/:kind`, `/api/resources/:kind/:id`) and the PUT response answer a kind with `project` in its projected form: `llmSecrets` is masked. Every whole chat a read returns (`/api/resources/read` `chats` and `chatCollections`, `/api/resources?chats=1`) carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`, `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none). The tab replaces the chat's feed locks with it ([persistence](persistence.md) Save step 9); a client must treat the field as optional.
 
-Chat summaries (`data/chatStore.ts` `chatSummary`, shared by the full summary listing, collection summary reads, and single-chat binding reads) include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an empty chat or an undated final message. `createChatTables` memoizes both values and absence by chat seq; misses read one row through `messages_position` (`ORDER BY position DESC LIMIT 1`), never MAX(time) or an earlier dated message. Message creation/replacement, append/insert, setMessage, setText, patchMessage, removal, and translation writes invalidate it, as do chat and character cascade deletion; `replaceAll` clears the memo. While `db.isTransaction`, reads query directly and neither read nor fill the memo, so a throwing transaction callback cannot leave rolled-back activity cached. Metadata-only writes keep the memo. The resource database stays at version 3.
+Chat summaries (`data/chatStore.ts` `chatSummary` over `summaryFields`, shared by the full summary listing, collection summary reads, single-chat binding reads, and a feed chat entry's `summary`) include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an empty chat or an undated final message. `createChatTables` memoizes both values and absence by chat seq; misses read one row through `messages_position` (`ORDER BY position DESC LIMIT 1`), never MAX(time) or an earlier dated message. Message creation/replacement, append/insert, setMessage, setText, patchMessage, removal, and translation writes invalidate it, as do chat and character cascade deletion; `replaceAll` clears the memo. While `db.isTransaction`, reads query directly and neither read nor fill the memo, so a throwing transaction callback cannot leave rolled-back activity cached. Metadata-only writes keep the memo. The resource database stays at version 3.
 
 Ordinary send, continue, reroll, and group jobs write chat activity without changing the character or group resource revision; explicit character effects (memory enable, triggers, Lua setters) still write it. Streamed continue refreshes the continued message's time in its existing final write; non-streamed continue sets its time when writing the reply. Preview and previewPrompt change neither activity nor character revision. The stored `lastInteraction` remains a frozen legacy fallback; the client derives last-chatted ordering from chats ([persistence](persistence.md)). Upstream export keeps its independent cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but leave absence as absence (upstream reads it as now).
 
@@ -269,31 +269,69 @@ Resources and chats:
   changed the metadata). It is `undefined` for a group without a by-id change: a
   create, replace, or delete, a remove and reappend of one id, a remembered group, or
   a group that applied nothing. The change is uncapped and built only for a writer
-  that asks: the feed keeps its capped patch (taken from that change, and subject to
-  the publication budget below, which leaves `written` as it is), a write without
-  the option still stops reading at the feed's byte cap, and the HTTP batch body is
-  unchanged.
+  that asks: the feed keeps its capped patch or delta (taken from that change, and
+  subject to the publication budget below, which leaves `written` as it is), a write
+  without the option still stops reading at the feed's byte cap, and the HTTP batch
+  body is unchanged.
+- Feed chat entries (`ChangeSet.chats[]`, `shared/resources.ts`; built in `chatStore.ts`
+  `applyGroup` and kept in a feed-only map by group result, never in `ChatGroupResult`,
+  the HTTP body, or `ChatWriteChange`): every by-id group that applied something
+  carries what it knows about the chat's summary, and its by-id change when that fits.
+  - Summary: `summary` (the chat's summary at the group's revision) when the group
+    changed it, else `summaryBase` (the group's stored base revision: the summary, its
+    `revision` aside, is the same as there). Both parts are compared, never the
+    revision: the listed metadata fields (parsed only when the group changed the stored
+    metadata string) and, for a group with a message op, `lastMessageAt` right before
+    its first one (taken even when absent) and after the group, read inside the
+    transaction (never from the memo), so a note edit with a removal of the last row,
+    or an op that leaves no dated last row, counts. A changed summary of a group without
+    a message op reads the time once to be complete. A remove and reappend carries it
+    too. A whole-chat write, a remembered group, a no-op group, and a deletion carry
+    neither: unknown, which keeps the client's summary-list read.
+  - By-id change (`chatFeedChange`): one pass over the stored parts. A `patch` with the
+    metadata whole when it fits `MAX_FEED_PATCH_BYTES`; at the first byte over, a group
+    that changed the metadata switches to a `delta`, whose `metaFields` (`ChatMetaFields`)
+    is the field diff of the stored metadata before and after the group (never the ops:
+    a stale group merges onto the stored base and normalization rewrites the result):
+    top-level fields `set` or `remove`d, and for a `CHAT_META_MERGE_KEYS` field that is a
+    map on both sides its entries by `merge`/`mergeUnset` (a field that becomes or stops
+    being a map, or appears or disappears, goes through `set`/`remove`), with the rows
+    already read and the same row iterator. Neither when that does not fit either. An
+    entry carries at most one of the two; the job socket's `chatPatch` keeps the whole
+    `meta`. A write without `changes: true` still reads rows only while a form fits (an
+    over-cap metadata is parsed for its field form, never the rows past the cap).
+  - Coalescing (`resourceStore.ts` `coalescedChat`, for a chat recorded again in a
+    publishing scope and for nested scopes in `mergeChanges`): the later ref without a
+    patch or delta; the later `summary`, else the earlier `summary` moved to the later
+    revision when the later entry's `summaryBase` is the earlier revision, else (both
+    unchanged in a row) the earlier `summaryBase`; otherwise neither. Entries are never
+    changed in place, since a failed outer write merges its committed nested scopes
+    again.
 - Change feed events reach listeners in publish order, including events a listener
   publishes while handling another event. Listener failures are logged and the
   feed continues draining. Committed nested writes still publish their refs when
   an enclosing write fails during input evaluation.
 - Publication budget: one committed outermost write is one `change` frame
-  (`feed.publish` once), and the optional payloads of that frame, its record and chat
-  `patch`es (each within `MAX_FEED_PATCH_BYTES`, 64 KiB, when built), total at most
+  (`feed.publish` once), and the optional payloads of that frame (record `patch`es,
+  chat `patch`es and `delta`s, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, when built,
+  and chat `summary` and `summaryBase` fields) total at most
   `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON, `shared/resources.ts`).
   The store applies it only when the outermost publishing scope publishes
   (`resourceStore.ts` `budgetedEntries`): after nested scopes merged, after coalescing
-  dropped the patches of keys recorded twice, and after a failed outer write kept only
-  its committed nested writes. A nested scope neither spends nor resets it, and a feed
-  listener's own write is a later publication with a budget of its own. The walk takes
-  the final entries in wire order (resources, then chats; chat orders carry no
-  payload): a patch stays when the running sum including it fits, otherwise its entry
-  is published as a copy without it in the same place (a plain ref to the client) and
-  the walk goes on, so a later smaller patch can still fit. Every candidate patch is
-  measured, so the cost follows the patches the write built, not the frame. Refs,
-  chat-order entries, and `streaming` lock lists are never dropped, reordered, or
-  split, so a chat's locks stay in the frame of its chat ref and a lock release with no
-  refs (`publishStreaming`) is still published.
+  dropped the patches and deltas of keys recorded twice, and after a failed outer write
+  kept only its committed nested writes. A nested scope neither spends nor resets it,
+  and a feed listener's own write is a later publication with a budget of its own. The
+  walk takes the final entries in wire order (resources, then chats; chat orders carry
+  no payload), and within a chat entry its `patch` or `delta` before its `summary` or
+  `summaryBase` (each measured as its own JSON, a `summaryBase` with its quotes): a
+  payload stays when the running sum including it fits, otherwise its entry is
+  published as a copy without it in the same place (a dropped `summary` leaves neither
+  summary field, so the entry's summary is unknown) and the walk goes on, so a later
+  smaller payload can still fit. Every candidate payload is measured, so the cost
+  follows the payloads the write built, not the frame. Refs, chat-order entries, and
+  `streaming` lock lists are never dropped, reordered, or split, so a chat's locks stay
+  in the frame of its chat ref and a lock release with no refs (`publishStreaming`) is
+  still published.
 
 Generation admission and request identity:
 
@@ -699,15 +737,15 @@ Runtime limits of other subsystems live with their owners:
 - `/api/set_password` and `/api/crypto` are unauthenticated by design and rate
   limited. A server has one password and registered browser keys, not separate
   users. Decision: the server's auth model (`server/src/routes/auth.ts` header).
-- The publication budget bounds a `change` frame's patches only; its refs and lock
-  lists are not bounded (an id can be 512 characters, a character delete records the
-  deletion of every one of its chats, and in-process writes have no op cap). A frame
-  whose refs alone cannot be admitted terminates the socket, and the client reconnects
-  and reconciles from the revision listing (or from its advertised map when the
-  `hello` digest matches). Decision: no frame split; one committed write stays one
-  frame, since the client takes a chat's lock revision from the same frame's chat ref
-  and reads a lock release without refs as `null` (D5 in the
-  [Per-Event Server Work plan](../plan/per-event-server-work.md)).
+- The publication budget bounds a `change` frame's optional payloads only (patches,
+  deltas, and summaries); its refs and lock lists are not bounded (an id can be 512
+  characters, a character delete records the deletion of every one of its chats, and
+  in-process writes have no op cap). A frame whose refs alone cannot be admitted
+  terminates the socket, and the client reconnects and reconciles from the revision
+  listing (or from its advertised map when the `hello` digest matches). Decision: no
+  frame split; one committed write stays one frame, since the client takes a chat's
+  lock revision from the same frame's chat ref and reads a lock release without refs
+  as `null` (D5 in the [Per-Event Server Work plan](../plan/per-event-server-work.md)).
 
 ### Gotchas
 

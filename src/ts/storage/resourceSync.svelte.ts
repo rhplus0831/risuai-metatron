@@ -4506,10 +4506,11 @@ function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
  * client's own save, or a job event that applied it first). A field patch this client can take now
  * is applied at once (`applyRemotePatch`), with no read. A newer record waits for the cycle,
  * which reads and applies it while this client has no unsent change of it (`applyRemoteUpdates`); a
- * chat goes to the chat module with its optional by-id patch (applied at its exact base while
- * loaded and idle, otherwise the ordinary idle refresh); a new chat or a changed chat order reads the
- * character's chat list (also for a character still waiting to be inserted). Never an outgoing
- * write, a discard, or a notice.
+ * chat goes to the chat module with its optional by-id change (`delta`, else `patch`: applied at its
+ * exact base while loaded and idle, otherwise the ordinary idle refresh) and its summary knowledge
+ * (`summary` or `summaryBase`: settles a chat held only as its summary without its character's chat
+ * list when it fits); a new chat or a changed chat order reads the character's chat list (also for a
+ * character still waiting to be inserted). Never an outgoing write, a discard, or a notice.
  */
 export function noteRemoteChanges(changes: ChangeSet) {
     if (halted || !started) {
@@ -4570,7 +4571,13 @@ export function noteRemoteChanges(changes: ChangeSet) {
             }
             continue;
         }
-        const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision, chat.patch);
+        // At most one of the two: a delta carries the metadata by field when the whole one did not fit.
+        const change = chat.delta ?? chat.patch;
+        const { summary, summaryBase } = chat;
+        const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision, change, {
+            summary,
+            summaryBase,
+        });
         if (outcome === "collection") {
             noteRemoteCollection(chat.characterId);
         }

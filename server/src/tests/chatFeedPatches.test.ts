@@ -58,6 +58,102 @@ function setup() {
 }
 
 describe("by-id chat feed patches", () => {
+    it("uses the stored summary base for text checkpoints and unlisted metadata, keeping small metadata whole", () => {
+        const b = setup();
+        const requestedBase = b.read().revision;
+        b.write([{ op: "meta", set: { name: "Renamed elsewhere" } }]);
+        const storedBase = b.read().revision;
+        b.write([{ op: "setText", id: "b", text: "checkpoint" }], requestedBase);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: storedBase,
+            patch: { baseRevision: storedBase, count: 3, messages: [{ after: "a", message: m("b", "checkpoint") }] },
+        });
+        const baseRevision = b.read().revision;
+        b.write([{ op: "meta", set: { note: "unlisted note" } }]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            patch: {
+                baseRevision,
+                count: 3,
+                meta: { id: "k", name: "Renamed elsewhere", note: "unlisted note", fmIndex: -1, localLore: [] },
+            },
+        });
+    });
+
+    it("sends only changed metadata fields beside large memory, including map entries and whole shape transitions", () => {
+        const b = setup();
+        const maps = ["scriptstate", "toolCalls", "GLGlobalVariables", "bookmarkNames"];
+        const entries = (key: string, values: Record<string, string>) =>
+            Object.fromEntries(
+                Object.entries(values).map(([id, text]) => [
+                    id,
+                    key === "toolCalls"
+                        ? { call: { id, name: "t", arg: {} }, response: [{ type: "text", text }] }
+                        : text,
+                ]),
+            );
+        b.write([
+            {
+                op: "meta",
+                set: {
+                    supaMemoryData: "m".repeat(100 * 1024),
+                    ...Object.fromEntries(
+                        maps.map((key) => [key, entries(key, { keep: "same", change: "old", gone: "remove" })]),
+                    ),
+                },
+            },
+        ]);
+        const cases: { ops: ChatOp[]; fields: Record<string, unknown> }[] = [
+            {
+                ops: [{ op: "meta", set: { autoTranslate: true } }],
+                fields: { set: { autoTranslate: true }, remove: [] },
+            },
+            ...maps.map((key) => ({
+                // A whole-map input still produces a diff of the stored entries, not a copy of the op.
+                ops: [
+                    {
+                        op: "meta" as const,
+                        set: { [key]: entries(key, { keep: "same", change: "new", added: "value" }) },
+                    },
+                ],
+                fields: {
+                    set: {},
+                    remove: [],
+                    merge: { [key]: entries(key, { change: "new", added: "value" }) },
+                    mergeUnset: { [key]: ["gone"] },
+                },
+            })),
+            {
+                ops: [{ op: "meta", set: { scriptstate: "legacy string" } }],
+                fields: { set: { scriptstate: "legacy string" }, remove: [] },
+            },
+            {
+                ops: [{ op: "meta", set: { scriptstate: { back: "map" } } }],
+                fields: { set: { scriptstate: { back: "map" } }, remove: [] },
+            },
+            { ops: [{ op: "meta", unset: ["scriptstate"] }], fields: { set: {}, remove: ["scriptstate"] } },
+            {
+                ops: [{ op: "meta", merge: { scriptstate: { appeared: "map" } } }],
+                fields: { set: { scriptstate: { appeared: "map" } }, remove: [] },
+            },
+        ];
+        for (const { ops, fields } of cases) {
+            const baseRevision = b.read().revision;
+            b.write(ops);
+            const entry = b.notice();
+            expect(entry.delta, JSON.stringify(ops)).toEqual({ baseRevision, count: 3, metaFields: fields });
+            expect(entry).not.toHaveProperty("patch");
+            expect(Buffer.byteLength(JSON.stringify(entry.delta))).toBeLessThan(1024);
+            expect(b.read().data.supaMemoryData).toBe("m".repeat(100 * 1024));
+        }
+    });
+
     it("omits remembered groups from the feed while returning their earlier result and publishing newly applied groups", () => {
         const b = setup();
         const baseRevision = b.read().revision;
@@ -136,6 +232,8 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            // The rename changes the summary; no message carries a time, so it has no lastMessageAt.
+            summary: { characterId: "c", id: "k", revision: b.read().revision, name: "renamed", fmIndex: -1 },
             patch: {
                 baseRevision: storedBase,
                 count: 4,
@@ -156,6 +254,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            summaryBase: baseRevision,
             patch: { baseRevision, count: 3 },
         });
         expect(b.read().data).toEqual(initial);
@@ -168,14 +267,21 @@ describe("by-id chat feed patches", () => {
         expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.store.chatRevision("c", "k") });
     });
 
-    it("keeps a remove and reappend of the same id as a plain reference", () => {
+    it("keeps a remove and reappend of the same id without a by-id patch", () => {
         const b = setup();
+        const baseRevision = b.read().revision;
         b.write([
             { op: "remove", ids: ["b"] },
             { op: "append", anchor: { end: true }, messages: [m("b", "moved")] },
         ]);
         expect(b.read().data.message).toEqual([m("a", "A"), m("c", "C"), m("b", "moved")]);
-        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.read().revision });
+        // Neither last row has a time and the metadata is unchanged: the summary is the base's.
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+        });
     });
 
     it("keeps a no-op replay as a plain reference at the unchanged revision", () => {
@@ -203,14 +309,17 @@ describe("by-id chat feed patches", () => {
                 characterId: "c",
                 id: "k",
                 revision: b.read().revision,
+                // The summary base is independent of whether the patch fits.
+                summaryBase: baseRevision,
                 ...(excess ? {} : { patch }),
             });
             expect(b.read().data.message[1].data).toBe(text);
         }
     });
 
-    it("publishes one final plain reference when a chat is recorded twice in a publishing scope", () => {
+    it("publishes one final reference without a patch when a chat is recorded twice in a publishing scope", () => {
         const b = setup();
+        const firstBase = b.read().revision;
         b.events.length = 0;
         // Input evaluation occurs inside the publishing scope, before its transaction.
         // Ordinary batches reject duplicate groups and transactions reject nested batches.
@@ -228,7 +337,8 @@ describe("by-id chat feed patches", () => {
             },
         });
         expect(b.events).toHaveLength(1);
-        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.read().revision });
+        // Two writes that leave the summary unchanged: unchanged since the first write's base.
+        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.read().revision, summaryBase: firstBase });
         expect(b.read().data.message).toEqual([m("a", "A2"), m("b", "B2"), m("c", "C")]);
     });
 });
@@ -281,6 +391,7 @@ describe("a writer's own chat changes", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                summaryBase: baseRevision,
                 patch: { baseRevision, count: 3, messages: [{ after: "a", message: m("b", "B!") }] },
             });
         }
@@ -366,6 +477,7 @@ describe("a writer's own chat changes", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                summary: { characterId: "c", id: "k", revision, name: "renamed", fmIndex: -1 },
                 patch: {
                     baseRevision,
                     count: 1,
@@ -406,7 +518,7 @@ describe("a writer's own chat changes", () => {
                 ],
             };
             expect(committed.mock.calls).toStrictEqual([changes ? [applied, { chats: [change] }] : [applied]]);
-            expect(b.notice()).toEqual({ characterId: "c", id: "k", revision });
+            expect(b.notice()).toEqual({ characterId: "c", id: "k", revision, summaryBase: baseRevision });
         }
     });
 

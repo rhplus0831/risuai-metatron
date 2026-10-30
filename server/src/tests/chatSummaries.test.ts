@@ -2,6 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatOp, ChatSummary } from "../../../shared/chats.ts";
 import type { ResourceReadKindsResult, ResourceReadRefsResult } from "../../../shared/resources.ts";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
@@ -94,6 +95,76 @@ function seedStore() {
 }
 
 describe("the store's summary reads", () => {
+    it("publishes changed list projections with the final row's finite time, including earlier and absent times", () => {
+        const feed = createChangeFeed();
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const store = createResourceStore({ file: ":memory:", kinds, feed });
+        stores.push(store);
+        store.applyChanges({
+            ops: [{ kind: characters, id: "c", baseRevision: null, data: { chaId: "c" } }],
+            chats: [
+                group("k", [
+                    create({
+                        id: "k",
+                        name: "K",
+                        message: [{ ...m("a"), time: 900 }, m("b"), { ...m("c"), time: 100 }, { ...m("d"), time: 200 }],
+                    }),
+                ]),
+            ],
+        });
+        const cases: { ops: ChatOp[]; fields: Record<string, unknown> }[] = [
+            {
+                ops: [{ op: "append", anchor: { end: true }, messages: [{ ...m("e"), time: 300 }] }],
+                fields: { name: "K", lastMessageAt: 300 },
+            },
+            { ops: [{ op: "meta", set: { name: "Renamed" } }], fields: { name: "Renamed", lastMessageAt: 300 } },
+            {
+                ops: [{ op: "meta", set: { folderId: "folder" } }],
+                fields: { name: "Renamed", folderId: "folder", lastMessageAt: 300 },
+            },
+            {
+                ops: [{ op: "meta", set: { pinned: true } }],
+                fields: { name: "Renamed", folderId: "folder", pinned: true, lastMessageAt: 300 },
+            },
+            // The note is not listed, but removing the final row changes the projection in the same group.
+            {
+                ops: [
+                    { op: "meta", set: { note: "private note" } },
+                    { op: "remove", ids: ["e"] },
+                ],
+                fields: { name: "Renamed", folderId: "folder", pinned: true, lastMessageAt: 200 },
+            },
+            // The undated final row hides the older dated row; there is no backward search for a time.
+            { ops: [{ op: "remove", ids: ["c", "d"] }], fields: { name: "Renamed", folderId: "folder", pinned: true } },
+            {
+                ops: [{ op: "setMessage", message: { ...m("b"), time: 50 } }],
+                fields: { name: "Renamed", folderId: "folder", pinned: true, lastMessageAt: 50 },
+            },
+            {
+                ops: [{ op: "append", anchor: { end: true }, messages: [{ ...m("earlier"), time: 25 }] }],
+                fields: { name: "Renamed", folderId: "folder", pinned: true, lastMessageAt: 25 },
+            },
+        ];
+        for (const { ops, fields } of cases) {
+            events.length = 0;
+            const result = store.applyChanges({
+                chats: [{ ...group("k", ops), baseRevision: store.chatRevision("c", "k") }],
+            });
+            const summary = { characterId: "c", id: "k", revision: result.chats[0].revision, fmIndex: -1, ...fields };
+            expect(events).toHaveLength(1);
+            expect(events[0].changes.chats).toHaveLength(1);
+            expect(events[0].changes.chats[0].summary, JSON.stringify(ops)).toEqual(summary);
+            expect(events[0].changes.chats[0]).not.toHaveProperty("summaryBase");
+            expect(store.readKinds([], { chatSummaries: true }).chatSummaries).toEqual([summary]);
+            expect(store.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0].chats).toEqual([
+                summary,
+            ]);
+        }
+    });
+
     it("projects pinned only for stored true, omitting false, absent, and non-boolean metadata", () => {
         const { store } = seedStore();
         const fixtures = [
