@@ -100,7 +100,7 @@
     "@types/streamsaver": "^2.0.5",
     "@types/three": "^0.154.0",
     "@types/web-push": "^3.6.4",
-    "@types/wicg-file-system-access": "^2020.9.8",
+    "@types/wicg-file-system-access": "^2023.10.7",
     "@types/ws": "^8.18.1",
     "autoprefixer": "^10.6.1",
     "fake-indexeddb": "^6.2.6",
