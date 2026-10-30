@@ -55,7 +55,7 @@
     "hono": "^4.13.14",
     "html-to-image": "^1.11.13",
     "ipaddr.js": "^1.9.1",
-    "katex": "^0.16.47",
+    "katex": "^0.19.1",
     "localforage": "^1.10.0",
     "lodash": "^4.18.1",
     "markdown-it": "^14.3.3",
