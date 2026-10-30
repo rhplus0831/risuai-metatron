@@ -13,7 +13,7 @@ import {
     type SettingsRootKey,
 } from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
-import markdownit from "markdown-it";
+import markdownit, { type MarkdownIt } from "markdown-it";
 import {
     appVer,
     type character,
@@ -162,7 +162,7 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
 
 export { risuEscape, risuUnescape };
 
-function renderMarkdown(md: markdownit, data: string) {
+function renderMarkdown(md: MarkdownIt, data: string) {
     let quotes = ["“", "”", "‘", "’"];
     if (settings.ui.customQuotes) {
         quotes = settings.ui.customQuotesData ?? quotes;
