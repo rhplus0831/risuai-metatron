@@ -20,6 +20,11 @@ export default defineConfig({
     test: {
         environment: "happy-dom",
         setupFiles: ["vitest.setup.ts"],
+        // happy-dom 21 turns iframe page loading off by default (its SSRF hardening). The network
+        // guard in `vitest.setup.ts` already refuses every non-loopback load, and the plugin sandbox
+        // appends its iframe before setting `srcdoc`, which off would log a NotSupportedError per
+        // plugin boot and leave the frame without a window.
+        environmentOptions: { happyDOM: { settings: { enableIframePageLoading: true } } },
         // Playwright specs (`pnpm test:e2e`) match Vitest's default `*.spec.ts` include. Claude Code
         // worktrees under `.claude/worktrees/` are full checkouts of other branches.
         exclude: [...configDefaults.exclude, "e2e/**", ".claude/**"],

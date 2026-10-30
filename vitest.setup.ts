@@ -144,7 +144,7 @@ async function installTestNetworkGuard() {
     // happy-dom (`node` environment files have none). Every async request its windows send (fetch,
     // XHR, script, link, and iframe loads, each redirect hop) is a `Fetch` and every sync XHR a
     // `SyncFetch`; both are checked as `send` starts, so a refusal rejects (or throws) as a failed
-    // request would. Not through `settings.fetch.interceptor`: happy-dom 20.14.5 starts an async task
+    // request would. Not through `settings.fetch.interceptor`: happy-dom 21.0.4 starts an async task
     // before `beforeAsyncRequest` and ends it only when the hook returns, so a refusal thrown there
     // would leave `happyDOM.waitUntilComplete()` pending. The window Vitest installed was built
     // before this runs and gets the global guards above; a window built later (an iframe's, or
