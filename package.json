@@ -80,7 +80,7 @@
     "wasmoon": "^1.16.0",
     "wavefile": "^11.0.0",
     "web-push": "^3.6.7",
-    "web-streams-polyfill": "^3.3.3",
+    "web-streams-polyfill": "^4.3.0",
     "ws": "^8.22.0"
   },
   "devDependencies": {
