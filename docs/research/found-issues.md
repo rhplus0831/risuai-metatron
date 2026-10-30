@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,11 +8,11 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (1)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (1)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
 - [Test timing](#test-timing) (1)
 - [Test mocks](#test-mocks) (3)
 
@@ -33,6 +33,20 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
 
+### A first metadata write may rewrite the stored meta
+
+The Per-Event Server Work slice 3 test writer saw a note set A→B→A on a chat created without `fmIndex` still diff as a metadata change, and blamed the `meta` op in `applyGroup` (`server/src/data/chatStore.ts` ~1490) storing `serialize(normalizeChatMeta(current, chatId))` while a `create` stored the meta as sent. On re-check (2026-10-30, by reading only; the repro was not rerun), `create` also normalizes through `prepareWholeChat` (`:439`), so that stated cause is doubtful and the real difference, if any, is still unexplained. The baseline tests seed `fmIndex` explicitly, so they do not cover it.
+
+**Why it matters:** one spurious whole-`meta` payload per chat after creation (bytes only; the client ends the same), and a field delta would show defaults as `set`.
+**Suggested handling:** rerun the repro (create without `fmIndex`, `meta` note B then A, `diffChat` of the two reads). If it reproduces, compare the two stored strings to find the difference; if it does not, delete this entry.
+
+### Client keeps duplicate `loreOverrides` after an acknowledged write
+
+`setChatMeta` (`src/ts/storage/chatStore.svelte.ts` ~3434) clones a submitted `loreOverrides` array and queues it without deduplicating by entry id, while the server's `normalizeChatMeta` (`server/src/data/chats.ts:51`, `firstOverridePerId` at `:106`) keeps the first entry per id. A successful non-stale acknowledgement advances the held revision without installing the returned metadata and does not mark the chat stale for a normalization difference, so an idle chat at the exact stored revision can hold metadata that differs from the server's. Found by the Astra challenger of Per-Event Server Work slice 6.
+
+**Why it matters:** an over-cap metadata change used to fall back to a whole read that repaired the copy; a field `delta` for another key now leaves the duplicate in place. Only reachable with two overrides sharing an id.
+**Suggested handling:** deduplicate on the client write path the same way, or mark the chat stale after acknowledging a normalization-sensitive metadata write.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -41,6 +55,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
+
+### `isBarrierFailure` is used only by its test
+
+`isBarrierFailure` (`server/src/jobs/channel.ts:77`) is exported and tested (`server/src/tests/jobChannel.test.ts:113`), but no production code calls it. Found during Per-Event Server Work slice 7; rechecked with `rg` at `8669ed926`.
+
+**Why it matters:** a test-only export can drift from what production checks, so its test may not protect the real barrier classification.
+**Suggested handling:** route the production comparisons through it, or delete it and its test.
 
 ## Display transform
 
@@ -68,6 +89,13 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a first run on a fresh tree can report a protocol failure that is the dev server's reload.
 **Suggested handling:** if it recurs, have the driver wait for Vite's optimization to settle before the case (`openApp` already answers the prompt again after a reload), or run the dev stack once before the cases.
+
+### perChatSends fails on a localStorage SecurityError and takes serverTransform with it
+
+`e2e/perChatSends.spec.ts:387` ("two chats of one tab send at once") fails at `expect(s.errors).toEqual([])` (`:547`) with one page error: `SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied for this document.` It failed on clean worktrees at `b8da3e227` and `41e37e8b4` and again at `8669ed926`. The failing assertion comes before the spec's cleanup block, so what it seeded stays in the shared e2e store, and `e2e/serverTransform.spec.ts:454` ("switching A to B to A shows confirmed rows before the response and returns them only in same", `body.same` undefined at `:514`) then fails in the same run; it passes alone. Which `localStorage` read throws, and whether that is a client defect or something the spec should tolerate, is unknown.
+
+**Why it matters:** two e2e failures on every run that includes these specs hide new failures in them.
+**Suggested handling:** find the read in the spec's trace (an opaque-origin document such as a sandboxed iframe is the likely source), then guard or fix it. Moving the cleanup into a `finally` stops the knock-on either way.
 
 ## Test timing
 
