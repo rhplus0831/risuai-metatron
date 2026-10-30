@@ -40,7 +40,11 @@ Tooling:
 
 Verification:
 
-- V1. Run `pnpm check` and `pnpm --silent test:agent`. Run affected slow tests with
+- V1. Run `pnpm check` and `pnpm --silent test:agent` once per change, after the
+  last source edit; while iterating, run only the test files the edit reaches
+  (`pnpm --silent test:agent <files or directories>`). A whole-suite run queues
+  behind another one on the machine (the wrapper's lock), so it is not a loop
+  step. Run affected slow tests with
   `pnpm --silent test:agent --tags-filter=slow`, or `--all` for both sets. Changes
   covered by `e2e/` also need `pnpm --silent test:agent --e2e`; supply spec names if
   selection misses them. Build changes also need `pnpm build`. Agents use the

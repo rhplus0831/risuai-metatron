@@ -3,7 +3,7 @@
 // under the reference overload.
 //
 // Picks one CPU this process may use (the last one `taskset -pc` lists, or `--cpu`), pins eight
-// busy-loop burners to it, and runs `util/agentTest.mjs --force --no-rerun <args> --maxWorkers=3`
+// busy-loop burners to it, and runs `util/agentTest.mjs --force --no-rerun --no-lock <args> --maxWorkers=3`
 // pinned to the same CPU, `--runs` times (default 3). The test run gets about 1/9 of a CPU with deschedules of
 // seconds, which is what a test that depends on real time fails under (`STRUCTURE.md` V3). No
 // `--testTimeout` is passed unless given: the gate's own timeout (`vitest.config.ts`) is a hang
@@ -147,7 +147,7 @@ async function main() {
 
     // `--no-rerun`: a failure under the overload is what this run looks for, so it must not be cleared
     // by the wrapper's rerun of failed files alone.
-    const wrapperArgs = ["--force", "--no-rerun", ...args, `--maxWorkers=${MAX_WORKERS}`];
+    const wrapperArgs = ["--force", "--no-rerun", "--no-lock", ...args, `--maxWorkers=${MAX_WORKERS}`];
     if (testTimeout !== undefined) wrapperArgs.push(`--testTimeout=${testTimeout}`);
 
     let supervisor = null;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [vitest args]`:
+// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [--no-lock] [vitest args]`:
 // `pnpm test` for agents.
 //
 // Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with
@@ -12,6 +12,12 @@
 // nothing changed since the last run, the stored output is printed again with the stored exit code
 // instead of running the tests, so two agents checking the same tree pay for one run. Failures are
 // cached too (the same tree gives the same result); `--force` runs anyway and replaces the entry.
+// A whole-suite run (no file filter: the gate, `--tags-filter=slow`, `--all`) first takes a
+// machine-wide lock (GATE_LOCK_PORT) that every checkout and worktree sees, so such runs queue
+// instead of sharing the CPUs: the suite is compute-bound, and three at once each take about
+// two and a half times as long as one, while queued they finish one after another in the single
+// run's time. A filtered run never waits. `--no-lock` skips the lock (`test:overload` passes it:
+// its runs are pinned to one CPU and meant to run under load).
 // An explicit `--tags-filter` replaces the default one. The child gets `AGENT_TEST=1`, which is what
 // lets it through the human gate in `vitest.config.ts` (`util/requireHuman.mjs`).
 // When a run fails in at most MAX_RERUN_FILES files (and has no unhandled errors), each of those files
@@ -61,6 +67,10 @@ const reporter = "./util/agentTestReporter.ts";
 const E2E_LOCK_PORT = 6199;
 /** How long an e2e run waits for the lock, and then for a leftover stack to free its ports. */
 const E2E_LOCK_WAIT_MS = 30 * 60_000;
+/** Held the same way by a whole-suite Vitest run (no file filter), so such runs queue per machine. */
+const GATE_LOCK_PORT = 6198;
+/** How long a whole-suite run waits for the lock before running anyway. */
+const GATE_LOCK_WAIT_MS = 15 * 60_000;
 const E2E_PORTS_WAIT_MS = 2 * 60_000;
 /** How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). */
 const SLOW_TESTS_ENV = "RISU_REPORT_SLOW_TESTS_MS";
@@ -72,6 +82,7 @@ const SLOW_TESTS_DEFAULT_MS = 1000;
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
+const lock = !args.includes("--no-lock");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
 const e2e = args.includes("--e2e");
@@ -104,7 +115,7 @@ if (e2e) {
     const specArgs = e2eSpecArgs();
     const playwrightArgs = args.filter(
         (arg) =>
-            !["--e2e", "--force", "--verbose", "--all"].includes(arg) &&
+            !["--e2e", "--force", "--verbose", "--all", "--no-lock"].includes(arg) &&
             !arg.startsWith("--e2e-since=") &&
             !isSpecArg(arg),
     );
@@ -119,6 +130,7 @@ if (e2e) {
                 arg !== "--verbose" &&
                 arg !== "--all" &&
                 arg !== "--no-rerun" &&
+                arg !== "--no-lock" &&
                 !isSlowTests(arg),
         ),
     );
@@ -208,27 +220,38 @@ function e2eSpecArgs() {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// Listens on E2E_LOCK_PORT for the rest of the process, waiting while another e2e run holds it.
-async function acquireE2eLock() {
-    const deadline = Date.now() + E2E_LOCK_WAIT_MS;
+// Listens on `port` for the rest of the process, waiting while another `what` run holds it. Past
+// `waitMs`, an e2e run exits 1 (its stack's ports would be busy anyway) and a whole-suite run goes
+// ahead without the lock.
+async function acquireLock(port, waitMs, what) {
+    const startedWaiting = Date.now();
     for (let waiting = false; ; waiting = true) {
         const server = createServer();
         const error = await new Promise((done) => {
             server.once("error", done);
-            server.listen(E2E_LOCK_PORT, "127.0.0.1", () => done(null));
+            server.listen(port, "127.0.0.1", () => done(null));
         });
         if (error === null) {
             server.unref();
+            if (waiting) log(`${what}: waited ${Math.round((Date.now() - startedWaiting) / 1000)} s for the lock`);
             return;
         }
         if (error.code !== "EADDRINUSE") throw error;
-        if (Date.now() > deadline) {
-            log(`e2e: another e2e run still holds port ${E2E_LOCK_PORT} after ${E2E_LOCK_WAIT_MS / 60_000} min`);
-            process.exit(1);
+        if (Date.now() - startedWaiting > waitMs) {
+            log(`${what}: another ${what} run still holds port ${port} after ${waitMs / 60_000} min`);
+            if (what === "e2e") process.exit(1);
+            log(`${what}: running without the lock`);
+            return;
         }
-        if (!waiting) log(`e2e: another e2e run is in progress (port ${E2E_LOCK_PORT} held); waiting for it`);
+        if (!waiting) log(`${what}: another ${what} run is in progress (port ${port} held); waiting for it`);
         await sleep(2000);
     }
+}
+
+// Whether the Vitest run covers the whole suite: no file filter among its arguments.
+async function wholeSuite() {
+    const { parseCLI } = await import("vitest/node");
+    return (parseCLI(["vitest", "run", ...vitestArgs]).filter ?? []).length === 0;
 }
 
 function portAnswers(port) {
@@ -438,8 +461,10 @@ async function rerunFailedFiles(full) {
 }
 
 if (e2e) {
-    await acquireE2eLock();
+    if (lock) await acquireLock(E2E_LOCK_PORT, E2E_LOCK_WAIT_MS, "e2e");
     await waitForE2ePorts();
+} else if (lock && (await wholeSuite())) {
+    await acquireLock(GATE_LOCK_PORT, GATE_LOCK_WAIT_MS, "whole-suite");
 }
 const startedAt = Date.now();
 const full = await run(command, slowTestsMs === undefined ? "" : String(slowTestsMs));
