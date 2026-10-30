@@ -27,6 +27,16 @@
 // `feedPatchBytes` / `feedEventBytes` (UTF-8 bytes of `JSON.stringify` of the feed's chat patch and of the
 // whole `change` event), and `wholeTranscriptReads` by phase: `.all()` calls of the store's whole-chat message
 // SELECT at the SQL boundary.
+//
+// A second JSON line (label `feed-entries-st04-sd03`, after the job ended, in its own small store with a feed) reads
+// what a real `change` event carries for the audit's findings ST04 and SD03:
+// - `memoryToggle`: one `meta` set of `autoTranslate` on a three-message chat with 100 KiB of `supaMemoryData`:
+//   the `delta` bytes, whether `patch` is present, the fields, whether the entry has `summaryBase` or `summary`.
+// - `textCheckpoint`: one `setText` on that chat: the bytes of the entry's `summaryBase` and whether `summary` is
+//   present.
+// - `publication`: one `applyChanges` of 100 `setText` groups, one per chat, of 60,000 characters each: the event's
+//   UTF-8 bytes, how many entries kept a patch and a `summaryBase`, the optional payload bytes they sum to, and the
+//   time spent, serialization as `routes/events.ts` does it included.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -55,6 +65,9 @@ const MESSAGE_FILL = 2048;
 const REPLY_CHARS = 32 * 1024;
 const RUNS = 7;
 const WHOLE_TRANSCRIPT_SQL = "SELECT data FROM messages WHERE chatSeq = ? ORDER BY position";
+const FEED_MEMORY_CHARS = 100 * 1024;
+const FEED_CHATS = 100;
+const FEED_TEXT_CHARS = 60000;
 
 function commitOf() {
     if (process.env.PROBE_COMMIT) return process.env.PROBE_COMMIT;
@@ -150,6 +163,90 @@ const median = (values) => {
     const mid = sorted.length >> 1;
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
+
+// The second output line: what the feed's `change` events carry, in a small store of its own.
+function measureFeedEntries() {
+    const entriesFeed = createChangeFeed();
+    const entriesStore = createResourceStore({ file: ":memory:", kinds, feed: entriesFeed });
+    try {
+        let event = null;
+        let frame = "";
+        let serializeMs = 0;
+        entriesFeed.subscribe((published) => {
+            if (published.type !== "change") return;
+            event = published;
+            const at = performance.now();
+            frame = JSON.stringify(published);
+            serializeMs = performance.now() - at;
+        });
+        const group = (chatId, ops) => ({
+            characterId: "c",
+            chatId,
+            baseRevision: entriesStore.chatRevision("c", chatId),
+            ops,
+        });
+        const chatOf = (id, message) => ({ id, name: "K", note: "keep", fmIndex: -1, localLore: [], message });
+        const row = (chatId, data) => ({ chatId, data, role: "char" });
+        entriesStore.put(kinds.get("characters"), "c", { chaId: "c", name: "C" }, null);
+
+        const rows = [row("a", "A"), row("b", "B"), row("c", "C")];
+        entriesStore.applyChanges({ chats: [group("k", [{ op: "create", chat: chatOf("k", rows) }])] });
+        entriesStore.applyChanges({
+            chats: [group("k", [{ op: "meta", set: { supaMemoryData: "m".repeat(FEED_MEMORY_CHARS) } }])],
+        });
+        entriesStore.applyChanges({ chats: [group("k", [{ op: "meta", set: { autoTranslate: true } }])] });
+        const toggle = event.changes.chats[0];
+        const toggleEventBytes = Buffer.byteLength(frame);
+        entriesStore.applyChanges({ chats: [group("k", [{ op: "setText", id: "b", text: "checkpoint" }])] });
+        const checkpoint = event.changes.chats[0];
+
+        const ids = Array.from({ length: FEED_CHATS }, (_, i) => `p${i}`);
+        entriesStore.applyChanges({
+            chats: ids.map((id) => group(id, [{ op: "create", chat: chatOf(id, [row("a", "A")]) }])),
+        });
+        const groups = ids.map((id) =>
+            group(id, [{ op: "setText", id: "a", text: `${id}:`.padEnd(FEED_TEXT_CHARS, "x") }]),
+        );
+        const start = performance.now();
+        entriesStore.applyChanges({ chats: groups });
+        const applyMs = performance.now() - start;
+        const entries = event.changes.chats;
+        const payloads = entries.flatMap((entry) =>
+            ["patch", "delta", "summary", "summaryBase"].filter((name) => name in entry).map((name) => entry[name]),
+        );
+        return {
+            label: "feed-entries-st04-sd03",
+            commit: commitOf(),
+            node: process.version,
+            memoryToggle: {
+                fixture: { messages: rows.length, memoryField: "supaMemoryData", memoryChars: FEED_MEMORY_CHARS },
+                deltaBytes: bytes(toggle.delta),
+                patchPresent: "patch" in toggle,
+                metaFields: toggle.delta.metaFields,
+                summaryBasePresent: "summaryBase" in toggle,
+                summaryPresent: "summary" in toggle,
+                eventBytes: toggleEventBytes,
+            },
+            textCheckpoint: {
+                summaryBaseBytes: bytes(checkpoint.summaryBase),
+                summaryPresent: "summary" in checkpoint,
+            },
+            publication: {
+                fixture: { chats: FEED_CHATS, textChars: FEED_TEXT_CHARS, inputBytes: bytes(groups) },
+                eventBytes: Buffer.byteLength(frame),
+                entries: entries.length,
+                patchesKept: entries.filter((entry) => entry.patch).length,
+                maxPatchBytes: Math.max(...entries.filter((entry) => entry.patch).map((entry) => bytes(entry.patch))),
+                summaryBasesKept: entries.filter((entry) => entry.summaryBase).length,
+                optionalPayloadBytes: payloads.reduce((sum, payload) => sum + bytes(payload), 0),
+                applyIncludingSerializeMs: round(applyMs),
+                serializeMs: round(serializeMs),
+            },
+        };
+    } finally {
+        entriesStore.close();
+    }
+}
 
 let begin;
 const ready = new Promise((r) => (begin = r));
@@ -372,6 +469,7 @@ try {
             2,
         ),
     );
+    console.log(JSON.stringify(measureFeedEntries()));
 } finally {
     ws?.terminate();
     jobs.beginShutdown();

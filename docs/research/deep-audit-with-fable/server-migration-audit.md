@@ -269,6 +269,20 @@ inline figures above were measured at the audit's commit with a fixture that was
 without the reply's generation gives the same reads and timings and a 33,151-byte owner patch), so they are not
 comparable phase by phase; compare later runs with this line.
 
+**After at `ad0f8ef2b`** ([checkpoint-probe.mjs](probes/checkpoint-probe.mjs), the
+`checkpoint-phases-5000-messages-after-all-slices` line of
+[checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt); Node v24.21.0, `--expose-gc`): the Baseline's
+fixture and phase boundaries, all values from the probe, with the change from `78caa182b`, the scope adoption from
+`8a207b1f2` and the working baseline from `b00bd9d72`. Medians: write 3.4 ms (Baseline 2.0 ms), scope 1.3 ms (before
+the write 0.05 ms, `refreshChatAfterWrite` 1.2 ms; Baseline 14.0 ms), `emitRecords` 2.4 ms with no owner read
+(Baseline 31.5 ms); per-run total 7.0 ms (Baseline 47.6 ms), the first 7.4 ms (49.2 ms). Zero whole-transcript reads
+per checkpoint at the SQL boundary (Baseline two). Owner `chatPatch` 33,265 to 33,266 bytes and feed patch 32,989
+bytes, both as in the Baseline; feed `change` event 33,427 to 33,428 bytes (33,370 to 33,371 in the Baseline), the 57
+more being the entry's `summaryBase`. The write phase is the one that rose; the working-baseline line of the same
+output already shows 3.3 ms, and the rise was not broken down further. The recommendation is done, the full refresh
+kept for stale or intervening writes. Unchanged: the feed patch still carries the whole changed message to every
+connected feed socket.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**
@@ -322,6 +336,18 @@ of about 2 KiB, a no-op `editprocess` hook, 500 callbacks answered at once). 500
 bytes, 1,003 frames of 523,877,082 bytes in all, 2 `chatPatch` frames of 466 bytes, 275,500 bytes of `callback`
 frames received and 51,000 bytes of `answer` frames sent, 3,278 ms.
 
+**After at `ad0f8ef2b`** ([job-channel-probe.mjs](probes/job-channel-probe.mjs), the last two lines of
+[job-channel-probe.output.txt](probes/job-channel-probe.output.txt); Node v24.21.0): the Baseline's fixture, all values
+from the probe, with the barrier change from `4291c1a9e`. With `hydration=patch`, as the current tab attaches: 0
+whole-chat frames of 0 bytes (Baseline 500 frames of 523,601,000 bytes), 503 frames of 276,082 bytes in all (1,003
+frames of 523,877,082 bytes), the same 2 `chatPatch` frames of 466 bytes, 275,500 bytes of `callback` frames and
+51,000 bytes of `answer` frames, 99 ms (3,278 ms). With `PROBE_HYDRATION=whole`, an older tab: 500 whole-chat frames
+of 523,601,000 bytes, 1,003 frames of 523,877,082 bytes, 3,218 ms, as in the Baseline. The hook here changes nothing,
+so the patch and read fallbacks are not in these numbers; they are tested, not probed
+(`server/src/tests/generationBarrier.test.ts`, `src/ts/network/jobChannelBarrier.test.ts`). Open: an older tab keeps
+whole barriers ([self-host server](../../structure/self-host-server.md) Known Hazards, Limitations), and the H
+sequential round trips stay, the batched history-transform callback not being built.
+
 ### SD03 — The feed caps each patch, not the frame or the next send
 
 **Measured and confirmed. P2.**
@@ -337,6 +363,22 @@ what it has open.
 
 Recommendation: a per-publication patch budget (drop patches, keep revisions), a per-frame bound, and admission that
 counts the next frame. Preserve publication order and the lock relationship if frames are split.
+
+**After at `ad0f8ef2b`** ([checkpoint-probe.mjs](probes/checkpoint-probe.mjs), the `publication` part of the
+`feed-entries-st04-sd03` line of [checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt); Node v24.21.0),
+with the budget and admission from `12b8ee304` and the `summaryBase` field from `f933026ed`. From the probe: one
+`applyChanges` of 100 `setText` groups of 60,000 characters, one chat each, published one `change` event of 255,115
+bytes (the audit's frame: 6,024,591 bytes) with all 100 refs, 4 entries keeping a patch of 60,146 bytes and all 100
+keeping a `summaryBase` of 42 to 44 bytes (revision tokens contain the chat's sequence number; 4,294 bytes together),
+244,878 bytes of optional payloads in all. `applyChanges` with the listener's serialization took 49.2 ms (71 ms in the
+audit; single observations). The final frame's serialization took 1.0 ms against the audit's 14.7 ms, but that is not
+total serialization work: `budgetedEntries` also serializes every candidate payload to measure it, rejected ones
+included, so these numbers do not show that total serialization fell. Fixture differences: the audit's inline script was not kept, so one row per chat is a reconstruction of its shape from its
+recorded sizes (input 6,013,785 bytes against 6,014,093, largest patch 60,146 bytes against 60,148), and today's
+entries also carry `summaryBase`. From a test, not the probe: admission by the frame's own UTF-8 bytes
+(`server/src/tests/events.test.ts` "admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing
+rejected frames"). Open: a frame's refs and lock lists stay unbounded and frames are not split, so there is no
+per-frame bound on them ([self-host server](../../structure/self-host-server.md) Known Hazards, Limitations).
 
 ### SD02 — Vector eviction is a synchronous run of autocommits
 
@@ -469,6 +511,24 @@ singleton.
 
 Recommendation: summary deltas by changed chat id; field-level metadata and message-row delta reads before the
 whole-chat fallback; keep the byte cap instead of enlarging frames.
+
+**After at `ad0f8ef2b`** ([checkpoint-probe.mjs](probes/checkpoint-probe.mjs), the `memoryToggle` and `textCheckpoint`
+parts of the `feed-entries-st04-sd03` line of [checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt); Node
+v24.21.0), with the entry fields from `f933026ed`. From the probe, on a three-message chat with 102,400 characters of
+`supaMemoryData`: a one-field `autoTranslate` toggle publishes a `delta` of 125 bytes (`metaFields.set` of that field),
+no `patch`, in a 472-byte `change` event, where the audit's toggle carried the whole metadata or, over the cap, cost
+the 4.24 MB read; `autoTranslate` is a summary field, so that entry also has `summary`. A text checkpoint's entry has
+a `summaryBase` of 42 bytes and no `summary`. From tests, not the probe: a chat held only as its summary makes 0
+collection reads, where the audit counted one read of every sibling summary per checkpoint
+(`src/ts/storage/tests/resourceSyncLazyChats.test.ts` "installs known summaries and advances matching summary bases
+without collection reads or writes" asserts no `/api/resources/read` request of any kind after a rename, a `setText`,
+an append and a removal); a missed change and a reconnect listing still read the list once ("reads the summary
+collection after a missed rename, an unknown notice or a reconnect listing"); a loaded chat takes the delta with no
+read (`src/ts/storage/tests/resourceSyncFeedPatches.test.ts` "applies metadata deltas as remote values equal to a
+whole read without queuing a write", over the same 100 KiB of memory data). Open: message-row delta reads were not
+built, so the over-cap change of a loaded chat still reads the chat whole, a reply over 64 KiB streaming into a chat
+another tab has open ([persistence](../../structure/persistence.md) Known Hazards, Limitations). ST01's lore edit is
+not part of this change.
 
 ### ST05 — A completed row still pays a transform round trip on every remount
 

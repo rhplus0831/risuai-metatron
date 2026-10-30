@@ -450,12 +450,12 @@ Generation channels:
   `workingChat`, so the next attach's patch carries every checkpoint since `sentChat`. A `resync`
   sends the chat whole; the end clears both baselines.
 - The callback barrier (`hydrateAll`, run when a `callback` event is built, replays included)
-  first flushes the job's pending own write. For an owner socket that attached with
-  `hydration=patch` it then reads the job chat's revision once: still `sentChat`'s, it sends no
-  chat event and the receipt names that revision; otherwise it sends the patch-mode job chat event
-  (a `chatPatch` from `sentChat`, or whole) and its receipt. A socket without the flag (an older
-  tab) gets the chat whole on every callback. Every other record the job sent goes fresh as
-  before. The skip relies on the job's `streaming` list not changing while the revision stays:
+  first flushes the job's pending own write. When the owner socket attached with
+  `hydration=patch` and a socket took a copy (`sentChat` is set; `hydrateJobChat`), it then reads
+  the job chat's revision once: still `sentChat`'s, it sends no chat event and the receipt names
+  that revision; otherwise it sends the patch-mode job chat event (a `chatPatch` from `sentChat`,
+  or whole) and its receipt. A socket without the flag (an older tab) gets the chat whole on every
+  callback. Every other record the job sent goes fresh as before. The skip relies on the job's `streaming` list not changing while the revision stays:
   watermarks move only with an applied checkpoint, and the one lock release without a chat write
   (`releaseRemovedReplies`) is followed by the job's end or the next sequence part's writes, which
   precede that part's callbacks.
@@ -706,6 +706,12 @@ Runtime limits of other subsystems live with their owners:
   silence. A frozen older tab can therefore hold a provider callback until its own
   deadline (30 minutes) and keep the chat busy. Decision: owner liveness is
   negotiated for compatibility (Generation channels above).
+- An older tab's generation socket without `hydration=patch` still gets the job chat
+  whole at every callback barrier (`hydrateJobChat`). A no-op hook over 500 messages of
+  about 2 KiB stays 500 whole-chat frames of 523,601,000 bytes for that tab
+  (`PROBE_HYDRATION=whole` in `job-channel-probe.mjs`). Decision: the barrier's form
+  is negotiated for compatibility, since an older tab can only apply a remembered
+  whole copy again once its local work settled (Generation channels above).
 - A restart does not resume a running generation: its job reads as ended by `shutdown`, the reply's text since its last successful checkpoint (a 3 s target, `CHECKPOINT_INTERVAL_MS` in `prompt/runner.ts`) is lost, and that message's generation fence stays open until the next ordinary write to the message. A degraded receipt store keeps outcomes in memory only, so a restart then forgets them (the tab shows `serverJob.endedAway`). With degraded or absent receipts, request deduplication lasts only through live/kept memory retention and the tombstone cap; it cannot survive a restart; WAL with `synchronous=NORMAL` can also lose the last receipt writes on a power loss.
   Decision: receipts record how a job ended and never refuse or fail a job (`data/generationReceipts.ts` header); resuming a generation across a restart is out of scope.
 - The SQLite resource store assumes one server process and a local filesystem.
@@ -742,10 +748,24 @@ Runtime limits of other subsystems live with their owners:
   characters, a character delete records the deletion of every one of its chats, and
   in-process writes have no op cap). A frame whose refs alone cannot be admitted
   terminates the socket, and the client reconnects and reconciles from the revision
-  listing (or from its advertised map when the `hello` digest matches). Decision: no
+  listing (or from its advertised map when the `hello` digest matches). The budget
+  also costs the write: every candidate payload is serialized once to be measured,
+  rejected ones included, on top of the final frame's serialization. Decision: no
   frame split; one committed write stays one frame, since the client takes a chat's
   lock revision from the same frame's chat ref and reads a lock release without refs
-  as `null` (D5 in the [Per-Event Server Work plan](../plan/per-event-server-work.md)).
+  as `null` (Publication budget in Flows; SD03 in the
+  [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md)).
+- A chat write pays for its feed entry on the serving thread. A metadata-only write
+  that changes the summary (a rename) reads and parses the chat's last row once for
+  `lastMessageAt`, a `LIMIT 1` query through `messages_position`, and a group with a
+  message op does so before and after the group: all inside the write's transaction,
+  so never from the memo. A metadata change parses the stored metadata before and
+  after it, once, for the summary comparison and, past `MAX_FEED_PATCH_BYTES`, the
+  field form, so an over-cap metadata is parsed where the whole form alone stopped
+  at the cap. Decision: every by-id write says what it knows about the summary, since
+  one indexed row and one parse cost less than a summary list read by every tab
+  (ST04 in the
+  [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md)).
 
 ### Gotchas
 
