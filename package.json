@@ -111,7 +111,7 @@
     "postcss": "^8.5.32",
     "prettier": "^3.9.9",
     "prettier-plugin-svelte": "^4.1.1",
-    "source-map": "^0.7.6",
+    "source-map": "^0.8.0",
     "svelte": "^5.57.1",
     "svelte-check": "^4.7.6",
     "tailwindcss": "^4.3.3",
