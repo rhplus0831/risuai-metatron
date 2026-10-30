@@ -13,6 +13,27 @@ function isNonEmptyString(value: unknown): value is string {
     return typeof value === "string" && value.length > 0;
 }
 
+/**
+ * The first override per `entry.id`, in array order. The merge applies only the first, so dropping
+ * the later ones changes no behavior. An override without a valid id stays for the store's check.
+ */
+export function firstOverridePerId<T extends { readonly entry: { readonly id?: string } }>(
+    overrides: readonly T[],
+): T[] {
+    const seen = new Set<string>();
+    return overrides.filter((override) => {
+        const id = override?.entry?.id;
+        if (!isNonEmptyString(id)) {
+            return true;
+        }
+        if (seen.has(id)) {
+            return false;
+        }
+        seen.add(id);
+        return true;
+    });
+}
+
 function matchOverrides(
     ownerLore: DeepReadonly<loreBook[]>,
     overrides: DeepReadonly<ChatLoreOverride[]>,

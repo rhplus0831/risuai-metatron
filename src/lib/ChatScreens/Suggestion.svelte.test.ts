@@ -206,6 +206,21 @@ describe("Suggestion's requests follow the local sends per chat", () => {
         expect(buttons()).toBe(5);
     });
 
+    it("an answer without suggestions writes nothing over a chat that has none, and clears one that has", async () => {
+        open();
+        await answer(0, "no list here");
+        expect(stored(chatK)).toBeUndefined();
+
+        setChatMeta(chatK, { suggestMessages: ["old"] });
+        flushSync();
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        (target.querySelector("button") as HTMLButtonElement).click();
+        await Promise.resolve();
+        flushSync();
+        await answer(1, "no list here");
+        expect(stored(chatK)).toEqual([]);
+    });
+
     it("opened while the selected chat sends, waits for that send's end to request", () => {
         const end = send(chatK);
         open();

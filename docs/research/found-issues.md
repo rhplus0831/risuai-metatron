@@ -8,8 +8,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (1)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
@@ -33,20 +33,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
 
-### A first metadata write may rewrite the stored meta
-
-The Per-Event Server Work slice 3 test writer saw a note set A→B→A on a chat created without `fmIndex` still diff as a metadata change, and blamed the `meta` op in `applyGroup` (`server/src/data/chatStore.ts` ~1490) storing `serialize(normalizeChatMeta(current, chatId))` while a `create` stored the meta as sent. On re-check (2026-10-30, by reading only; the repro was not rerun), `create` also normalizes through `prepareWholeChat` (`:439`), so that stated cause is doubtful and the real difference, if any, is still unexplained. The baseline tests seed `fmIndex` explicitly, so they do not cover it.
-
-**Why it matters:** one spurious whole-`meta` payload per chat after creation (bytes only; the client ends the same), and a field delta would show defaults as `set`.
-**Suggested handling:** rerun the repro (create without `fmIndex`, `meta` note B then A, `diffChat` of the two reads). If it reproduces, compare the two stored strings to find the difference; if it does not, delete this entry.
-
-### Client keeps duplicate `loreOverrides` after an acknowledged write
-
-`setChatMeta` (`src/ts/storage/chatStore.svelte.ts` ~3434) clones a submitted `loreOverrides` array and queues it without deduplicating by entry id, while the server's `normalizeChatMeta` (`server/src/data/chats.ts:51`, `firstOverridePerId` at `:106`) keeps the first entry per id. A successful non-stale acknowledgement advances the held revision without installing the returned metadata and does not mark the chat stale for a normalization difference, so an idle chat at the exact stored revision can hold metadata that differs from the server's. Found by the Astra challenger of Per-Event Server Work slice 6.
-
-**Why it matters:** an over-cap metadata change used to fall back to a whole read that repaired the copy; a field `delta` for another key now leaves the duplicate in place. Only reachable with two overrides sharing an id.
-**Suggested handling:** deduplicate on the client write path the same way, or mark the chat stale after acknowledging a normalization-sensitive metadata write.
-
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -55,13 +41,6 @@ The Per-Event Server Work slice 3 test writer saw a note set A→B→A on a chat
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
-
-### `isBarrierFailure` is used only by its test
-
-`isBarrierFailure` (`server/src/jobs/channel.ts:77`) is exported and tested (`server/src/tests/jobChannel.test.ts:113`), but no production code calls it. Found during Per-Event Server Work slice 7; rechecked with `rg` at `8669ed926`.
-
-**Why it matters:** a test-only export can drift from what production checks, so its test may not protect the real barrier classification.
-**Suggested handling:** route the production comparisons through it, or delete it and its test.
 
 ## Display transform
 
@@ -92,10 +71,10 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 ### A chat-open suggestion request bumps the chat revision
 
-`src/lib/ChatScreens/Suggestion.svelte` `requestSuggestions`: with `useAutoSuggestions` on, opening a chat without suggestions requests them and writes the answer through `setChatMeta`, an empty list included. That write moves the chat's revision, which is part of the transform key (`server/src/prompt/transform.ts` `baseKey`), so the rows just rendered miss the cache on the next return to the chat: full answers instead of `same`, and a `{{random}}` row changes its text. Seen in an `e2e/serverTransform.spec.ts` trace on 2026-10-30, when `perChatSends` left the setting on; not checked by hand.
+`src/lib/ChatScreens/Suggestion.svelte` `requestSuggestions`: with `useAutoSuggestions` on, opening a chat without suggestions requests them and stores the answer through `setChatMeta`. That write moves the chat's revision, which is part of the transform key (`server/src/prompt/transform.ts` `baseKey`), so the rows just rendered miss the cache on the next return to the chat: full answers instead of `same`, and a `{{random}}` row changes its text. Seen in an `e2e/serverTransform.spec.ts` trace on 2026-10-30, when `perChatSends` left the setting on; not checked by hand. An empty answer over a chat with no suggestions no longer writes, so what is left is a real answer.
 
-**Why it matters:** with auto suggestions on, the first return to a chat downloads and re-runs what the tab already holds.
-**Suggested handling:** skip the write when the list stays empty, and decide whether a non-render chat field such as `suggestMessages` should move the transform key at all.
+**Why it matters:** with auto suggestions on, the first return to a chat after new suggestions downloads and re-runs what the tab already holds.
+**Suggested handling:** decide whether a non-render chat field such as `suggestMessages` should move the transform key at all; the chat revision is also the key's fence against mixed-revision results, so this needs its own design.
 
 ## Test timing
 

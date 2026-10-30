@@ -24,6 +24,8 @@ import {
     compareRevision,
     parseRevisionToken,
 } from "../../../shared/resources.ts";
+import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
+import type { ChatLoreOverride } from "../../../shared/database.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
@@ -2814,13 +2816,18 @@ export function setStreamingState(ref: ChatRef, entry: StreamingEntry | null) {
 /**
  * A chat's defaults that come from its character: `fmIndex`, the greeting the chat
  * starts from, is the character's `firstMsgIndex` (-1: the first message) when absent, and `localLore`
- * is `[]` when absent. An explicit `fmIndex` (also 0 or -1) is kept. Changes `chat` in place.
+ * is `[]` when absent. An explicit `fmIndex` (also 0 or -1) is kept. `loreOverrides` keep the first
+ * per id, as the server stores them (an acknowledgement does not install the server's copy). Changes
+ * `chat` in place.
  */
 export function prepareChatInput(chat: Chat, character: { firstMsgIndex?: unknown }) {
     if (chat.fmIndex === undefined || chat.fmIndex === null) {
         chat.fmIndex = typeof character.firstMsgIndex === "number" ? character.firstMsgIndex : -1;
     }
     chat.localLore ??= [];
+    if (Array.isArray(chat.loreOverrides)) {
+        chat.loreOverrides = firstOverridePerId(chat.loreOverrides);
+    }
 }
 
 /**
@@ -3463,7 +3470,11 @@ export function setChatMeta(
         }
     }
     for (const [key, entry] of Object.entries(requested)) {
-        const value = entry === null && Object.hasOwn(SERVER_META_DEFAULTS, key) ? SERVER_META_DEFAULTS[key]() : entry;
+        let value = entry === null && Object.hasOwn(SERVER_META_DEFAULTS, key) ? SERVER_META_DEFAULTS[key]() : entry;
+        // As the server stores it: an acknowledgement does not install the server's copy.
+        if (key === "loreOverrides" && Array.isArray(value)) {
+            value = firstOverridePerId(value as ChatLoreOverride[]);
+        }
         if (forbiddenMetaKeys.has(key)) {
             throw new Error(`setChatMeta cannot change ${key}`);
         }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
+import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { isValidResourceId, ResourceValidationError } from "./resourceStore.ts";
 
@@ -38,7 +39,6 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
             meta[key] = value;
         }
     }
-    meta.id = id;
     meta.name ??= "";
     meta.note ??= "";
     meta.localLore ??= [];
@@ -63,6 +63,9 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     if (meta.toolCalls !== undefined) {
         assertToolCalls(meta.toolCalls);
     }
+    // Last, after the defaults: the copy above drops `id`, so a chat normalized again keeps its key
+    // order and stored string.
+    meta.id = id;
     return meta;
 }
 
@@ -97,21 +100,6 @@ export function assertLoreOverrides(value: unknown): asserts value is { entry: {
             );
         }
     }
-}
-
-/**
- * The first override per `entry.id`, in array order. The merge already applies only the first
- * (`shared/lore/overrides.ts`), so dropping the later ones changes no behavior.
- */
-function firstOverridePerId<T extends { entry: { id: string } }>(overrides: T[]): T[] {
-    const seen = new Set<string>();
-    return overrides.filter((override) => {
-        if (seen.has(override.entry.id)) {
-            return false;
-        }
-        seen.add(override.entry.id);
-        return true;
-    });
 }
 
 /** One entry of `chat.toolCalls`, and its size (`MAX_TOOL_CALL_RECORD_BYTES`). */

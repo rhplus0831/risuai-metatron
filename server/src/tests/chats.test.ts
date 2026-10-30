@@ -17,6 +17,13 @@ const rejects = (fn: () => unknown, error: string, label = error) => {
 };
 
 describe("normalizeChatMeta", () => {
+    it("keeps its key order when normalized again, so a write back of the same values stores the same string", () => {
+        for (const input of [{}, { name: "K" }, { id: "k", note: "n", localLore: [] }, { fmIndex: 1, id: "k" }]) {
+            const stored = JSON.stringify(normalizeChatMeta(input, "k"));
+            expect(JSON.stringify(normalizeChatMeta(JSON.parse(stored), "k")), stored).toBe(stored);
+        }
+    });
+
     it("leaves lore overrides absent, keeps the first valid override per id, and refuses malformed overrides", () => {
         expect(normalizeChatMeta({}, "k")).not.toHaveProperty("loreOverrides");
         const entry = {

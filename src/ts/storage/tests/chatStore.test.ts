@@ -383,6 +383,25 @@ describe("mirror and queue", () => {
         expect(take().groups).toEqual([]);
     });
 
+    it("keeps the first lore override per id, as the server stores them, in the mirror and the queue", async () => {
+        const { chat, ref, take } = await boot();
+        const entry = (content: string, id = "owner") => ({ id, key: "gate", content }) as any;
+        const first = { entry: entry("first"), off: false };
+        const other = { entry: entry("other", "other"), off: true };
+        chat.setChatMeta(ref, { loreOverrides: [first, other, { entry: entry("later"), off: true }] });
+        expect(chat.findChat(ref)?.loreOverrides).toEqual([first, other]);
+        expect(take().groups[0].ops).toEqual([{ op: "meta", set: { loreOverrides: [first, other] }, unset: [] }]);
+        // Repeating an id over the same list is no change.
+        chat.setChatMeta(ref, { loreOverrides: [first, other, { entry: entry("again"), off: false }] });
+        expect(chat.hasChatWork()).toBe(false);
+        // A whole-chat write too, whichever way it reaches the store.
+        const repeated = [first, { entry: entry("later"), off: true }];
+        chat.replaceChat(ref, { ...chat.findChat(ref)!, loreOverrides: repeated });
+        expect(chat.findChat(ref)?.loreOverrides).toEqual([first]);
+        const created = chat.createChat("c", { id: "n", name: "N", message: [], loreOverrides: repeated } as any);
+        expect(created.loreOverrides).toEqual([first]);
+    });
+
     it("queues a metadata value that differs from the mirror only in a nested own __proto__ key", async () => {
         const { server, chat, ref, commit } = await boot();
         const stored = () => (server.chat("c", "k")!.data as any).scriptstate;

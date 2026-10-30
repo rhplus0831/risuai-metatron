@@ -22,7 +22,7 @@ import {
 } from "../../../shared/llm/request.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
-import type { JobChannel } from "../jobs/channel.ts";
+import { isBarrierFailure, type JobChannel } from "../jobs/channel.ts";
 import { markFailure } from "../jobs/generationJobs.ts";
 import { type ChatBindingRefusal, checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
 import { tokenScopeFromTab, type TokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
@@ -318,7 +318,7 @@ function channelIntercept(p: {
                 }
                 throw p.endWith(
                     `The bodyIntercepter callback failed: ${result.error}`,
-                    strict || result.failure === "barrier",
+                    strict || isBarrierFailure(result),
                 );
             case "timedOut":
             case "disconnected":

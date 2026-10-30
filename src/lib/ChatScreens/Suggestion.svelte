@@ -174,7 +174,11 @@
                         .split("\n")
                         .filter((msg) => msg.startsWith("-"))
                         .map((msg) => msg.replace("-", "").trim());
-                    setChatMeta(requestChatRef, { suggestMessages: suggestMessagesNew });
+                    // An empty answer over no suggestions changes nothing: a write would move the
+                    // chat's revision, and with it every row's transform key.
+                    if (suggestMessagesNew.length > 0 || currentTargetChat.suggestMessages?.length) {
+                        setChatMeta(requestChatRef, { suggestMessages: suggestMessagesNew });
+                    }
                     suggestMessages = suggestMessagesNew;
                 }
             })
