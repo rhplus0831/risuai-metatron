@@ -208,6 +208,77 @@ export type ChatWriteChange = {
     meta?: string;
 };
 
+/**
+ * Where a by-id group's change leaves a chat's messages, from their ids at its base (`base`, in
+ * position order): each entry is the id of a message the group left alone or the index of the
+ * change row placed there (`change.rows[index]`). Null when the change does not fit the base: the
+ * base ids are not unique strings, a removed id is not one of them exactly once, a row id repeats
+ * or was removed, a row's anchor (`after`) is neither the start, a base message the group left
+ * alone, nor an earlier row of the change, two rows share an anchor, or the result does not have
+ * `change.count` messages.
+ *
+ * The messages the group left alone keep their order (a by-id group never moves one); each row
+ * goes right after its anchor, so a row anchored on another row of the change follows that row,
+ * and the rows come out in the change's order (final position order).
+ */
+export function messageOrderAfterChange(base: readonly unknown[], change: ChatWriteChange): (string | number)[] | null {
+    const ids = new Set<string>();
+    for (const id of base) {
+        if (typeof id !== "string" || ids.has(id)) {
+            return null;
+        }
+        ids.add(id);
+    }
+    const removed = new Set(change.removed);
+    if (removed.size !== change.removed.length || change.removed.some((id) => !ids.has(id))) {
+        return null;
+    }
+    const rowIndex = new Map<string, number>();
+    change.rows.forEach((row, index) => rowIndex.set(row.id, index));
+    if (rowIndex.size !== change.rows.length) {
+        return null;
+    }
+    // The one row placed right after each anchor (null: the start).
+    const following = new Map<string | null, number>();
+    for (const [index, row] of change.rows.entries()) {
+        const anchor = row.after;
+        const anchorRow = anchor === null ? undefined : rowIndex.get(anchor);
+        const anchored =
+            anchor === null || (anchorRow !== undefined ? anchorRow < index : ids.has(anchor) && !removed.has(anchor));
+        if (removed.has(row.id) || !anchored || following.has(anchor)) {
+            return null;
+        }
+        following.set(anchor, index);
+    }
+    const order: (string | number)[] = [];
+    let placed = 0;
+    /** Places the rows chained after `anchor`; false when one comes out of the change's order. */
+    const place = (anchor: string | null): boolean => {
+        for (let index = following.get(anchor); index !== undefined; index = following.get(change.rows[index].id)) {
+            if (index !== placed) {
+                return false;
+            }
+            order.push(index);
+            placed += 1;
+        }
+        return true;
+    };
+    if (!place(null)) {
+        return null;
+    }
+    // Unique strings, checked above.
+    for (const id of base as readonly string[]) {
+        if (removed.has(id) || rowIndex.has(id)) {
+            continue;
+        }
+        order.push(id);
+        if (!place(id)) {
+            return null;
+        }
+    }
+    return placed === change.rows.length && order.length === change.count ? order : null;
+}
+
 type TokenFunctions = {
     token(seq: number, revision: number): string;
     parse(value: string): { seq: number; revision: number } | null;

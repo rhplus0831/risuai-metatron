@@ -19,7 +19,9 @@
 // - `scopeMs`: `scopeBeforeMs` (`flushChatMetadata` + `refreshChat` before the write) + `scopeAfterMs`
 //   (`refreshChatAfterWrite`).
 // - `emitMs`: the whole `job.emitRecords(...)`, split into `readMs` (time inside `store.readRefs` and
-//   `store.chatMeta` during it) and `baselineMs = emitMs - readMs` (baseline, diff, and the socket send).
+//   `store.chatMeta` during it) and `baselineMs = emitMs - readMs` (baseline, diff, and the socket send). Once
+//   the job's working baseline makes the patch, `emitMs` reads only the chat's revision (`store.chatRevision`,
+//   counted in `baselineMs`), so `readMs` is 0.
 // - `totalMs`: `writeMs + scopeMs + emitMs`.
 // Also per run: `ownerPatchBytes` (the `chatPatch` frame the owner socket received for that checkpoint),
 // `feedPatchBytes` / `feedEventBytes` (UTF-8 bytes of `JSON.stringify` of the feed's chat patch and of the

@@ -16,7 +16,7 @@ import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
-import type { ChatWriteChange } from "../data/chatStore.ts";
+import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import {
     characterShell,
     forwardPersonaRoots,
@@ -631,10 +631,9 @@ export function refreshChatAfterWrite(
 
 /**
  * `chat` (the scope's copy at `change.baseRevision`) with `change` laid onto it, as a fresh read at
- * `change.revision` has it, and the rows it parsed; null when the change does not fit the copy. It
- * fits when the copy's message ids are unique and hold every removed id, the change's row ids are
- * unique, each row's anchor (`after`) is the start, a row the group left alone, or an earlier row
- * of the change, no two rows share an anchor, and the result has `change.count` messages.
+ * `change.revision` has it, and the rows it parsed; null when the change does not fit the copy
+ * (`messageOrderAfterChange`: unique message ids holding every removed id, placeable rows, and
+ * `change.count` messages after it).
  *
  * The rows the group left alone keep their order and their objects (a by-id group never moves
  * one); the changed and new rows are parsed from their stored `data` and placed after their
@@ -648,71 +647,26 @@ function adoptChange(chat: Chat, change: ChatWriteChange): { chat: Chat; rows: M
     if (!Array.isArray(before)) {
         return null;
     }
-    const rows: Message[] = [];
+    let rows: Message[] = [];
     let message = before;
     if (change.rows.length > 0 || change.removed.length > 0) {
-        const ids = new Set<string>();
-        for (const entry of before) {
-            const id = entry?.chatId;
-            if (typeof id !== "string" || ids.has(id)) {
-                return null;
-            }
-            ids.add(id);
-        }
-        const removed = new Set(change.removed);
-        if (removed.size !== change.removed.length || change.removed.some((id) => !ids.has(id))) {
+        const ids = before.map((entry) => entry?.chatId);
+        const order = messageOrderAfterChange(ids, change);
+        if (!order) {
             return null;
         }
-        const rowIndex = new Map<string, number>();
-        change.rows.forEach((row, index) => rowIndex.set(row.id, index));
-        if (rowIndex.size !== change.rows.length) {
-            return null;
-        }
-        // The one row placed right after each anchor (null: the start).
-        const following = new Map<string | null, number>();
-        for (const [index, row] of change.rows.entries()) {
-            const anchor = row.after;
-            const anchorRow = anchor === null ? undefined : rowIndex.get(anchor);
-            const anchored =
-                anchor === null ||
-                (anchorRow !== undefined ? anchorRow < index : ids.has(anchor) && !removed.has(anchor));
-            if (removed.has(row.id) || !anchored || following.has(anchor)) {
-                return null;
+        rows = change.rows.map((row) => JSON.parse(row.data) as Message);
+        // The kept messages come in their order in `before` (their ids are its unique ids).
+        let next = 0;
+        message = order.map((entry) => {
+            if (typeof entry === "number") {
+                return rows[entry];
             }
-            following.set(anchor, index);
-        }
-        const next: Message[] = [];
-        let placed = 0;
-        /** Places the rows chained after `anchor`; false when one comes out of the change's order. */
-        const place = (anchor: string | null): boolean => {
-            for (let index = following.get(anchor); index !== undefined; index = following.get(change.rows[index].id)) {
-                if (index !== placed) {
-                    return false;
-                }
-                const row = JSON.parse(change.rows[index].data) as Message;
-                rows.push(row);
-                next.push(row);
-                placed += 1;
+            while (ids[next] !== entry) {
+                next += 1;
             }
-            return true;
-        };
-        if (!place(null)) {
-            return null;
-        }
-        for (const entry of before) {
-            const id = entry.chatId!;
-            if (removed.has(id) || rowIndex.has(id)) {
-                continue;
-            }
-            next.push(entry);
-            if (!place(id)) {
-                return null;
-            }
-        }
-        if (placed !== change.rows.length) {
-            return null;
-        }
-        message = next;
+            return before[next++];
+        });
     }
     if (message.length !== change.count) {
         return null;

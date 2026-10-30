@@ -34,6 +34,7 @@ import {
 } from "../../../shared/jobs.ts";
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
+import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import {
     GENERATION_RECEIPT_MS,
@@ -377,13 +378,25 @@ type Job = {
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
     /**
-     * The job chat as last handed to an owner socket (a stored state, read at its `revision`): the
-     * base of the next `chatPatch`. Null once the job ended. It is not what the owner holds: the
-     * owner applies a patch only at exactly its base or its revision, and asks for a resync otherwise.
+     * The job chat as last handed to an owner socket (a stored state at its `revision`: a read, or
+     * `workingChat`): the base of the next `chatPatch`. Null once the job ended. It is not what the
+     * owner holds: the owner applies a patch only at exactly its base or its revision, and asks for a
+     * resync otherwise.
      */
     sentChat: ChatBaseline | null;
-    /** The last own-chat write, only if it changed metadata on exactly its base revision. */
-    metaWrite?: { baseRevision: string; revision: string };
+    /**
+     * The job chat as stored at its `revision`: the chat's last read (at admission, or by a job chat
+     * event that read it, `jobChatEvent`), advanced by each own write whose stored change starts at
+     * that revision (`writeAsJob`'s `committed`). While the stored revision is still its own, the next
+     * `chatPatch` is `sentChat` diffed against it without reading the chat, however many writes no
+     * socket took. Null when unknown: an own write of the chat without a by-id change (a whole-chat
+     * write, a remove and reappend, a group that applied nothing), one whose change starts at another
+     * revision (another writer's change landed first), or a change that did not fit; the next chat
+     * event then reads the chat. Behind the stored revision after another writer's change alone, which
+     * that event finds the same way. Null once the job ended. No baseline is changed in place, so this
+     * one shares its unchanged message strings with the baseline it was advanced from.
+     */
+    workingChat: ChatBaseline | null;
     pendingFlush?: (() => void) | null;
     /** The job chat's messages this job began a generation on: every patch carries their stored rows. */
     generated: Set<string>;
@@ -456,8 +469,17 @@ function isReplyResyncRequest(message: unknown): message is ReplyResyncRequest {
     return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "resyncReply";
 }
 
-/** A stored chat as a patch base: its revision, its fields without `message`, and its messages by id. */
-export type ChatBaseline = { revision: string; meta: string; ids: string[]; texts: Map<string, string> };
+/**
+ * A stored chat as a patch base: its revision, its fields without `message` (as JSON), and its
+ * message ids in order with each message's JSON. Never changed in place: a baseline advanced from
+ * another shares its unchanged parts.
+ */
+export type ChatBaseline = {
+    revision: string;
+    meta: string;
+    ids: readonly string[];
+    texts: ReadonlyMap<string, string>;
+};
 
 /** The fields of a stored chat without `message`. */
 function chatMeta(data: Chat): Record<string, unknown> {
@@ -465,6 +487,10 @@ function chatMeta(data: Chat): Record<string, unknown> {
     return meta;
 }
 
+/**
+ * The baseline of a chat read at `revision`. A message without an id is still listed in `ids`
+ * (as `undefined`), so `diffChat` gives up on the copy.
+ */
 export function chatBaseline(revision: string, data: Chat): ChatBaseline {
     const texts = new Map<string, string>();
     const ids: string[] = [];
@@ -477,15 +503,54 @@ export function chatBaseline(revision: string, data: Chat): ChatBaseline {
 }
 
 /**
- * The change from `base` to the stored chat `data` (`next` is its baseline), as a `chatPatch` body, or null when
- * a patch cannot express it and the chat goes whole: another incarnation or epoch, an older revision,
- * a message without an id or with a repeated one, or surviving messages in another order (a `replace`
- * that reordered them). `generated` messages are always carried (see `GenerationChatPatchEvent`).
+ * `base` (the stored chat at `change.baseRevision`) with the change a write stored laid onto it: the
+ * stored chat at `change.revision`, equal to `chatBaseline` of a read there. The removed ids leave,
+ * and each touched row is placed after its anchor (`messageOrderAfterChange`) with its stored JSON,
+ * which is what a read's `JSON.stringify` of the parsed row gives (a row is stored as the JSON of a
+ * parsed value). The other messages keep their strings. The metadata is the change's only when the
+ * group changed it. Null when the change does not fit `base`.
+ */
+export function advanceChatBaseline(base: ChatBaseline, change: ChatWriteChange): ChatBaseline | null {
+    let { ids, texts } = base;
+    if (change.rows.length > 0 || change.removed.length > 0) {
+        const order = messageOrderAfterChange(ids, change);
+        if (!order) {
+            return null;
+        }
+        ids = order.map((entry) => (typeof entry === "number" ? change.rows[entry].id : entry));
+        const next = new Map(texts);
+        for (const id of change.removed) {
+            next.delete(id);
+        }
+        for (const row of change.rows) {
+            next.set(row.id, row.data);
+        }
+        texts = next;
+    }
+    if (ids.length !== change.count) {
+        return null;
+    }
+    return {
+        revision: change.revision,
+        // Projected as a read projects it: the stored string may differ (an in-process writer's
+        // `toJSON` or `JSON.rawJSON` can store a `message` field or a number in another spelling).
+        meta: change.meta === undefined ? base.meta : JSON.stringify(chatMeta(JSON.parse(change.meta) as Chat)),
+        ids,
+        texts,
+    };
+}
+
+/**
+ * The change from the stored chat `base` to the stored chat `next` (a read's baseline, or the job's
+ * working baseline), as a `chatPatch` body, or null when a patch cannot express it and the chat goes
+ * whole: another incarnation or epoch, an older revision, a message of `next` without an id or with a
+ * repeated one, or surviving messages in another order (a `replace` that reordered them).
+ * `generated` messages are always carried (see `GenerationChatPatchEvent`). Only the carried rows,
+ * and the metadata when it changed, are parsed (from `next`).
  */
 export function diffChat(
     base: ChatBaseline,
     next: ChatBaseline,
-    data: Chat,
     generated: ReadonlySet<string>,
 ): Pick<GenerationChatPatchEvent, "meta" | "removed" | "messages" | "count"> | null {
     const from = parseRevisionToken(base.revision);
@@ -493,15 +558,12 @@ export function diffChat(
     if (!from || !to || from.epoch !== to.epoch || from.seq !== to.seq || from.revision > to.revision) {
         return null;
     }
-    const messages = data.message ?? [];
-    const ids: string[] = [];
+    const ids = next.ids;
     const present = new Set<string>();
-    for (const message of messages) {
-        const id = message.chatId;
+    for (const id of ids) {
         if (typeof id !== "string" || present.has(id)) {
             return null;
         }
-        ids.push(id);
         present.add(id);
     }
     const removed = base.ids.filter((id) => !present.has(id));
@@ -512,17 +574,17 @@ export function diffChat(
         return null;
     }
     const changed: { after: string | null; message: unknown }[] = [];
-    messages.forEach((message, index) => {
-        const id = ids[index];
-        if (generated.has(id) || base.texts.get(id) !== next.texts.get(id)) {
-            changed.push({ after: index > 0 ? ids[index - 1] : null, message });
+    ids.forEach((id, index) => {
+        const text = next.texts.get(id)!;
+        if (generated.has(id) || base.texts.get(id) !== text) {
+            changed.push({ after: index > 0 ? ids[index - 1] : null, message: JSON.parse(text) });
         }
     });
     return {
-        ...(next.meta !== base.meta ? { meta: chatMeta(data) } : {}),
+        ...(next.meta !== base.meta ? { meta: JSON.parse(next.meta) as Record<string, unknown> } : {}),
         ...(removed.length > 0 ? { removed } : {}),
         ...(changed.length > 0 ? { messages: changed } : {}),
-        count: messages.length,
+        count: ids.length,
     };
 }
 
@@ -665,20 +727,23 @@ export function createGenerationJobs(options: {
     }
 
     /** The chat as stored now, or null (gone, another epoch, or the store closed during shutdown). */
-    function readChat(
-        job: Job,
-        characterId: string,
-        id: string,
-        metadataOnly = false,
-    ): { revision: string; data: Chat } | null {
+    function readChat(job: Job, characterId: string, id: string): { revision: string; data: Chat } | null {
         try {
             if (store.epoch() !== job.epoch) {
                 return null;
             }
-            const chat = metadataOnly
-                ? store.chatMeta(characterId, id)
-                : store.readRefs([], { chats: [{ characterId, id }] }).chats[0];
+            const chat = store.readRefs([], { chats: [{ characterId, id }] }).chats[0];
             return chat && chat.revision !== null ? { revision: chat.revision, data: chat.data as Chat } : null;
+        } catch {
+            // The store closed during shutdown: nothing more to hydrate.
+            return null;
+        }
+    }
+
+    /** The chat's stored revision (no metadata or message read), or null as `readChat`. */
+    function readChatRevision(job: Job, characterId: string, id: string): string | null {
+        try {
+            return store.epoch() === job.epoch ? store.chatRevision(characterId, id) : null;
         } catch {
             // The store closed during shutdown: nothing more to hydrate.
             return null;
@@ -750,45 +815,27 @@ export function createGenerationJobs(options: {
      * The job chat as an event, with the baseline it becomes once a socket takes it: a `chatPatch`
      * from `sentChat` when `mode` is `patch` and a patch can express the change (`diffChat`), else
      * the whole chat. Null when the chat is gone.
+     *
+     * A patch while the stored revision is still the working baseline's (`workingChat`) is diffed
+     * against that baseline: one revision read, and only the carried rows parsed. Otherwise the chat
+     * is read whole, and that read becomes the working baseline while the job runs.
      */
     function jobChatEvent(
         job: Job,
         mode: "patch" | "whole",
-        metadataOnly = false,
     ): { event: GenerationEvent; baseline: ChatBaseline } | null {
         const { characterId, chatId } = job.context;
         const base = mode === "patch" ? job.sentChat : null;
-        if (metadataOnly && base && job.metaWrite?.baseRevision === base.revision) {
-            const chat = readChat(job, characterId, chatId, true);
-            if (chat?.revision === job.metaWrite.revision) {
-                const meta = chatMeta(chat.data as Chat);
-                const baseline = { ...base, revision: chat.revision, meta: JSON.stringify(meta) };
-                // Only metadata changed since this baseline, so its stored generated rows are still
-                // exact. Carry them as diffChat does, without parsing any other message.
-                const messages: { after: string | null; message: unknown }[] = [];
-                base.ids.forEach((id, index) => {
-                    if (job.generated.has(id)) {
-                        messages.push({
-                            after: index > 0 ? base.ids[index - 1] : null,
-                            message: JSON.parse(base.texts.get(id)!),
-                        });
-                    }
-                });
-                return {
-                    baseline,
-                    event: {
-                        type: "chatPatch",
-                        epoch: job.epoch,
-                        characterId,
-                        id: chatId,
-                        baseRevision: base.revision,
-                        revision: chat.revision,
-                        ...(baseline.meta !== base.meta ? { meta } : {}),
-                        ...(messages.length > 0 ? { messages } : {}),
-                        count: base.ids.length,
-                        streaming: streamingIn(job, characterId, chatId),
-                    },
-                };
+        const working = job.workingChat;
+        if (base && working) {
+            const revision = readChatRevision(job, characterId, chatId);
+            if (revision === null) {
+                return null;
+            }
+            // A diff that cannot be a patch (survivors reordered) goes whole from the read below.
+            const diff = revision === working.revision ? diffChat(base, working, job.generated) : null;
+            if (diff) {
+                return { event: chatPatchEvent(job, base, working.revision, diff), baseline: working };
             }
         }
         const chat = readChat(job, characterId, chatId);
@@ -796,21 +843,34 @@ export function createGenerationJobs(options: {
             return null;
         }
         const baseline = chatBaseline(chat.revision, chat.data);
-        const diff = base ? diffChat(base, baseline, chat.data, job.generated) : null;
-        const event: GenerationEvent =
+        if (!job.ended) {
+            job.workingChat = baseline;
+        }
+        const diff = base ? diffChat(base, baseline, job.generated) : null;
+        const event =
             base && diff
-                ? {
-                      type: "chatPatch",
-                      epoch: job.epoch,
-                      characterId,
-                      id: chatId,
-                      baseRevision: base.revision,
-                      revision: chat.revision,
-                      ...diff,
-                      streaming: streamingIn(job, characterId, chatId),
-                  }
+                ? chatPatchEvent(job, base, chat.revision, diff)
                 : wholeChatEvent(job, characterId, chatId, chat);
         return { event, baseline };
+    }
+
+    function chatPatchEvent(
+        job: Job,
+        base: ChatBaseline,
+        revision: string,
+        diff: NonNullable<ReturnType<typeof diffChat>>,
+    ): GenerationEvent {
+        const { characterId, chatId } = job.context;
+        return {
+            type: "chatPatch",
+            epoch: job.epoch,
+            characterId,
+            id: chatId,
+            baseRevision: base.revision,
+            revision,
+            ...diff,
+            streaming: streamingIn(job, characterId, chatId),
+        };
     }
 
     /**
@@ -835,8 +895,8 @@ export function createGenerationJobs(options: {
     }
 
     /** Sends the job chat (`jobChatEvent`); a socket taking it makes its copy the next patch's base. */
-    function deliverJobChat(job: Job, mode: "patch" | "whole", metadataOnly = false): GenerationEvent | null {
-        const built = jobChatEvent(job, mode, metadataOnly);
+    function deliverJobChat(job: Job, mode: "patch" | "whole"): GenerationEvent | null {
+        const built = jobChatEvent(job, mode);
         if (!built) {
             return null;
         }
@@ -1037,8 +1097,9 @@ export function createGenerationJobs(options: {
         } catch (error) {
             logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
         } finally {
-            // An attach after the end gets the chat whole: the base is no longer needed.
+            // An attach after the end gets the chat whole: neither baseline is needed any more.
             job.sentChat = null;
+            job.workingChat = null;
             job.resolveFinished();
         }
         if (
@@ -1144,14 +1205,14 @@ export function createGenerationJobs(options: {
                             const outcomes = result.chats[index]?.checkpoints ?? [];
                             let checkpoint = 0;
                             if (group.characterId === job.context.characterId && group.chatId === job.context.chatId) {
-                                const written = result.chats[index];
-                                job.metaWrite =
-                                    group.baseRevision &&
-                                    written?.revision &&
-                                    !written.stale &&
-                                    group.ops.every((op) => op.op === "meta")
-                                        ? { baseRevision: group.baseRevision, revision: written.revision }
-                                        : undefined;
+                                // The working baseline follows the chat only through a change that
+                                // starts at its revision (the stored base, also for a stale group).
+                                const change = changesWritten?.chats[index];
+                                const working = job.workingChat;
+                                job.workingChat =
+                                    working && change && change.baseRevision === working.revision
+                                        ? advanceChatBaseline(working, change)
+                                        : null;
                                 for (const op of group.ops) {
                                     if (op.op === "begin") {
                                         // The client's copy of it can hold streamed text: patches carry its row.
@@ -1329,12 +1390,13 @@ export function createGenerationJobs(options: {
                 for (const ref of records.chats ?? []) {
                     track(job, `chats\u0000${ref.characterId}\u0000${ref.id}`, { kind: "chats", ...ref });
                     if (ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
-                        // Nothing is buffered here. Leave sentChat alone; attach rebuilds from it.
+                        // Nothing is buffered here. Leave sentChat alone: the working baseline keeps
+                        // following the job's own writes, so the next attach's patch carries this one.
                         if (!ownerAttached(job) || ![...job.sockets].some((ws) => ws.readyState === ws.OPEN)) {
                             continue;
                         }
                         // The job chat: what changed since the last copy a socket took.
-                        const event = deliverJobChat(job, "patch", true);
+                        const event = deliverJobChat(job, "patch");
                         if (event) {
                             receipts.push(receiptOf(event));
                         }
@@ -1536,6 +1598,9 @@ export function createGenerationJobs(options: {
             resolveFinished = resolve;
         });
         const startedAt = clock();
+        // The chat at the revision the owner named (checked above): the first patch's base, and
+        // the state the job's own writes advance from.
+        const admitted = admittedChat(characterId, chatId);
         const job: Job = {
             id: randomUUID(),
             clientId: body.clientId,
@@ -1571,8 +1636,8 @@ export function createGenerationJobs(options: {
                 personaId: body.context.personaId ?? "",
             },
             refs: new Map(),
-            // The chat at the revision the owner named (checked above): the first patch's base.
-            sentChat: admittedChat(characterId, chatId),
+            sentChat: admitted,
+            workingChat: admitted,
             generated: new Set(),
             lockChats: new Map(),
             terminal: null,

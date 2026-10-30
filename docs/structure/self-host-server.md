@@ -399,6 +399,18 @@ Generation channels:
 - On attach, buffered notices, outstanding request replays, and first deliveries
   of requests promoted by an expiry are sent in their original request/notice
   order. A promoted request joins that ordered batch and is sent once.
+- The owner's job chat `chatPatch` is the diff (`diffChat`) of two stored states of the job chat:
+  `sentChat`, the last copy a socket took (seeded at admission; a successful `send` advances it,
+  with no acknowledgement from the tab), and `workingChat`, the chat as the job's own writes left
+  it. `writeAsJob`'s `committed` hook advances `workingChat` by each own write's `ChatWriteChange`
+  (`applyChanges` with `changes: true`) when the change starts at its revision, placing the rows as
+  the scope's adoption does (`messageOrderAfterChange`); a write without a by-id change, a change
+  that starts at another revision (another writer's write landed first), or one that does not fit
+  sets it to null. A patch-mode job chat event reads only the chat's revision while `workingChat`
+  is at it and parses only the carried rows; otherwise it reads the chat whole, and that read
+  becomes `workingChat` while the job runs. A checkpoint with no open socket advances only
+  `workingChat`, so the next attach's patch carries every checkpoint since `sentChat`. A `resync`
+  and the callback barrier send the chat whole; the end clears both baselines.
 - A callback's client barrier flushes local work and retries the job's remembered
   hydration copies. A chat copy refused only by the acknowledged floor gets one
   whole resource read, even while streaming, fenced on the callback, epoch, chat

@@ -33,12 +33,12 @@ describe("diffChat", () => {
     const base = chatBaseline(token(1), before);
 
     it("is only the count when nothing changed", () => {
-        expect(diffChat(base, chatBaseline(token(1), before), before, none)).toEqual({ count: 3 });
+        expect(diffChat(base, chatBaseline(token(1), before), none)).toEqual({ count: 3 });
     });
 
     it("carries a changed message with the id before it, and nothing else", () => {
         const after = chat([m("a", "A"), m("b", "B edited", "char"), m("c", "C")]);
-        const patch = diffChat(base, chatBaseline(token(2), after), after, none);
+        const patch = diffChat(base, chatBaseline(token(2), after), none);
         expect(patch).toEqual({
             messages: [{ after: "a", message: m("b", "B edited", "char") }],
             count: 3,
@@ -49,7 +49,7 @@ describe("diffChat", () => {
 
     it("carries inserted messages at the start (after null), in the middle, and at the end, in stored order", () => {
         const after = chat([m("s", "S"), m("a", "A"), m("x", "X"), m("b", "B", "char"), m("c", "C"), m("e", "E")]);
-        const patch = diffChat(base, chatBaseline(token(2), after), after, none);
+        const patch = diffChat(base, chatBaseline(token(2), after), none);
         expect(ids(patch)).toEqual([
             ["s", null],
             ["x", "a"],
@@ -60,27 +60,27 @@ describe("diffChat", () => {
 
     it("names the removed ids, and anchors the message after a removed one on its surviving predecessor", () => {
         const after = chat([m("a", "A"), m("c", "C edited")]);
-        const patch = diffChat(base, chatBaseline(token(2), after), after, none);
+        const patch = diffChat(base, chatBaseline(token(2), after), none);
         expect(patch).toEqual({ removed: ["b"], messages: [{ after: "a", message: m("c", "C edited") }], count: 2 });
     });
 
     it("carries the meta only when it changed, as the chat's fields without the messages", () => {
         const same = chat([m("a", "A"), m("b", "B", "char"), m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(2), same), same, none)).toEqual({ count: 3 });
+        expect(diffChat(base, chatBaseline(token(2), same), none)).toEqual({ count: 3 });
         const renamed = chat([m("a", "A"), m("b", "B", "char"), m("c", "C")], { name: "Renamed", note: "n" });
-        const patch = diffChat(base, chatBaseline(token(2), renamed), renamed, none);
+        const patch = diffChat(base, chatBaseline(token(2), renamed), none);
         expect(patch).toEqual({ meta: { id: "k", name: "Renamed", note: "n", localLore: [] }, count: 3 });
     });
 
     it("always carries the rows of the messages the job began a generation on, changed or not, and only those still stored", () => {
         const generated = new Set(["b", "gone"]);
-        expect(diffChat(base, chatBaseline(token(1), before), before, generated)).toEqual({
+        expect(diffChat(base, chatBaseline(token(1), before), generated)).toEqual({
             messages: [{ after: "a", message: m("b", "B", "char") }],
             count: 3,
         });
         // A generated message removed meanwhile is in `removed`, not in `messages`.
         const after = chat([m("a", "A"), m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(2), after), after, new Set(["b"]))).toEqual({
+        expect(diffChat(base, chatBaseline(token(2), after), new Set(["b"]))).toEqual({
             removed: ["b"],
             count: 2,
         });
@@ -88,28 +88,28 @@ describe("diffChat", () => {
 
     it("gives up (the chat goes whole) when the surviving messages changed their relative order", () => {
         const reordered = chat([m("b", "B", "char"), m("a", "A"), m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(2), reordered), reordered, none)).toBeNull();
+        expect(diffChat(base, chatBaseline(token(2), reordered), none)).toBeNull();
         // A reorder among survivors with insertions and removals around it is still a reorder.
         const mixed = chat([m("n", "N"), m("c", "C"), m("a", "A")]);
-        expect(diffChat(base, chatBaseline(token(2), mixed), mixed, none)).toBeNull();
+        expect(diffChat(base, chatBaseline(token(2), mixed), none)).toBeNull();
     });
 
     it("gives up for another incarnation or epoch, an older revision, and a missing or repeated id", () => {
         const after = chat([m("a", "A"), m("b", "B", "char"), m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(2, 2), after), after, none)).toBeNull();
+        expect(diffChat(base, chatBaseline(token(2, 2), after), none)).toBeNull();
         expect(
-            diffChat(base, chatBaseline(token(2, 1, "22222222-2222-4333-8444-555555555555"), after), after, none),
+            diffChat(base, chatBaseline(token(2, 1, "22222222-2222-4333-8444-555555555555"), after), none),
         ).toBeNull();
-        expect(diffChat(base, chatBaseline(token(0), after), after, none)).toBeNull();
+        expect(diffChat(base, chatBaseline(token(0), after), none)).toBeNull();
         const missing = chat([m("a", "A"), { role: "user", data: "no id" } as never, m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(2), missing), missing, none)).toBeNull();
+        expect(diffChat(base, chatBaseline(token(2), missing), none)).toBeNull();
         const repeated = chat([m("a", "A"), m("a", "A again"), m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(2), repeated), repeated, none)).toBeNull();
+        expect(diffChat(base, chatBaseline(token(2), repeated), none)).toBeNull();
     });
 
     it("expresses the state at the later revision, not the path: a change reverted before the diff is not a change", () => {
         // Edited at revision 2 and restored at revision 3: the 1 -> 3 patch carries nothing of it.
         const restored = chat([m("a", "A"), m("b", "B", "char"), m("c", "C")]);
-        expect(diffChat(base, chatBaseline(token(3), restored), restored, none)).toEqual({ count: 3 });
+        expect(diffChat(base, chatBaseline(token(3), restored), none)).toEqual({ count: 3 });
     });
 });

@@ -164,3 +164,4 @@
     }
   ]
 }
+{"label":"checkpoint-phases-5000-messages-after-scope-adoption-and-working-baseline","commit":"7c2da8be2 + the working-baseline change (the commit that adds this line)","node":"v24.21.0","fixture":{"messages":5000,"messageDataChars":2053,"replyTextChars":32768,"runs":7,"gcBeforeEachRun":true},"terminal":"done","medians":{"writeMs":3.337,"scopeMs":1.281,"scopeBeforeMs":0.054,"scopeAfterMs":1.235,"emitMs":2.404,"readMs":0,"baselineMs":2.404,"totalMs":6.948},"firstTotalMs":6.818,"wholeTranscriptReadsPerRun":[0,0,0,0,0,0,0],"ownerPatchBytes":[33265,33266],"feedPatchBytes":[32989]}
