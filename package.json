@@ -62,7 +62,7 @@
     "mobile-drag-drop": "3.0.0-rc.0",
     "monaco-editor": "^0.57.0",
     "msgpackr": "2.0.6",
-    "ollama": "^0.5.18",
+    "ollama": "^0.6.4",
     "pdfjs-dist": "^4.10.38",
     "png-chunk-text": "^1.0.0",
     "postcss-selector-parser": "^7.1.7",

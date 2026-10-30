@@ -125,8 +125,8 @@ importers:
         specifier: 2.0.6
         version: 2.0.6
       ollama:
-        specifier: ^0.5.18
-        version: 0.5.18
+        specifier: ^0.6.4
+        version: 0.6.4
       pdfjs-dist:
         specifier: ^4.10.38
         version: 4.10.38
@@ -1837,8 +1837,8 @@ packages:
     resolution: {integrity: sha512-XrsrhT5sybtKI6wakr2SPOlGZWWYbUXZ7a0jT8/QOeAPau+1X/bSegNe5YR75oJmEZQbKningirmGOEJCIk61Q==}
     engines: {node: '>=12.20.0'}
 
-  ollama@0.5.18:
-    resolution: {integrity: sha512-lTFqTf9bo7Cd3hpF6CviBe/DEhewjoZYd9N/uCe7O20qYTvGqrNOFOBDj3lbZgFWHUgDv5EeyusYxsZSLS8nvg==}
+  ollama@0.6.4:
+    resolution: {integrity: sha512-KzM6b5Sq0TgipeMTdImuELr/V4eNqrTf37PRzUTHCPPieFmboYw6qPn+pX7+lg0nSP1jsKwy4AFkiQFXhqHeZA==}
 
   onnxruntime-common@1.30.0:
     resolution: {integrity: sha512-7fdVWjAID1dVhH/G8qK3APARunV4VkBFoCQAP7qp4Wkab0mrorvmc+sqiT+mKXOzDqdjN5j+/Z9nb4gzNPWcyA==}
@@ -3484,7 +3484,7 @@ snapshots:
 
   obug@2.2.1: {}
 
-  ollama@0.5.18:
+  ollama@0.6.4:
     dependencies:
       whatwg-fetch: 3.6.20
 
