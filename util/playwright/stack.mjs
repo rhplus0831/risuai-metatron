@@ -205,7 +205,10 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
  * @param {import("playwright-core").BrowserContext | import("playwright-core").Page} target
  */
 export async function clearSafeBootAttempts(target) {
-    await target.addInitScript(() => localStorage.removeItem("risu.safeBoot.attempts"));
+    await target.addInitScript(() => {
+        // Every document runs this: one without an origin (`about:blank`) throws on reading the storage.
+        if (window.origin !== "null") localStorage.removeItem("risu.safeBoot.attempts");
+    });
 }
 
 /**

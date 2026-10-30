@@ -187,15 +187,18 @@ const blank = (chaId: string, name: string, extra: Record<string, unknown> = {})
     ...extra,
 });
 
-/** What the seed changes besides the characters, to be restored at the end (the specs after this one share the store). */
-let restore: {
-    ui: any;
-    modelPresets: any;
-    modelProfiles: any;
-    providers: any;
-    presets: any;
-    memoryTranslateMedia: any;
-} | null = null;
+/** Undoes the seed; set once it is stored. */
+let undoSeed: (() => Promise<void>) | null = null;
+
+// The specs after this one share the store, also when the test failed: its auto suggestions left on
+// would write to every chat they open.
+test.afterEach(async () => {
+    // A failed test can leave jobs running, and the store refuses to delete a generating character:
+    // ending their provider requests ends them, soon after.
+    provider.closeAllConnections();
+    await expect(async () => undoSeed?.()).toPass({ timeout: 20_000 });
+    undoSeed = null;
+});
 
 /** Seeds chats A/B, group chats G1/G2, a separate SupaMemory character and prompt preset, and the mock provider. */
 async function seed(s: Session) {
@@ -215,7 +218,7 @@ async function seed(s: Session) {
     const personas = (await s.api("/api/resources/personas/main")).body;
     const providers = (await s.api("/api/resources/providers/main")).body;
     const memoryTranslateMedia = (await s.api("/api/resources/memoryTranslateMedia/main")).body;
-    restore = {
+    const restore = {
         ui: ui.data,
         modelPresets: modelPresets.data,
         modelProfiles: modelProfiles.data,
@@ -362,6 +365,28 @@ async function seed(s: Session) {
         }),
     });
     expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
+    // The characters (their chats and order go with them), and the records the seed changed as they
+    // were before it.
+    undoSeed = async () => {
+        const ops: unknown[] = [];
+        for (const id of [chaId, groupId, memoryId, memberA, memberB]) {
+            const record = (await s.api(`/api/resources/characters/${id}`)).body;
+            ops.push({ kind: "characters", id, baseRevision: record.revision, delete: true });
+        }
+        for (const kind of [
+            "ui",
+            "modelPresets",
+            "modelProfiles",
+            "providers",
+            "presets",
+            "memoryTranslateMedia",
+        ] as const) {
+            const now = (await s.api(`/api/resources/${kind}/main`)).body;
+            ops.push({ kind, id: "main", baseRevision: now.revision, data: restore[kind] });
+        }
+        const removed = await s.api("/api/resources/batch", { method: "POST", body: JSON.stringify({ ops }) });
+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    };
     return { chaId, groupId, memoryId, members: [memberA, memberB] };
 }
 
@@ -545,25 +570,4 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     expect(sends("g2").length).toBe(0);
 
     expect(s.errors).toEqual([]);
-
-    // Cleanup: the characters (their chats and order go with them), and the records the seed changed
-    // as they were before it (the specs after this one share the store).
-    const ops: unknown[] = [];
-    for (const id of [chaId, groupId, memoryId, ...members]) {
-        const record = (await s.api(`/api/resources/characters/${id}`)).body;
-        ops.push({ kind: "characters", id, baseRevision: record.revision, delete: true });
-    }
-    for (const kind of [
-        "ui",
-        "modelPresets",
-        "modelProfiles",
-        "providers",
-        "presets",
-        "memoryTranslateMedia",
-    ] as const) {
-        const now = (await s.api(`/api/resources/${kind}/main`)).body;
-        ops.push({ kind, id: "main", baseRevision: now.revision, data: restore![kind] });
-    }
-    const removed = await s.api("/api/resources/batch", { method: "POST", body: JSON.stringify({ ops }) });
-    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
 });

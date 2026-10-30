@@ -90,12 +90,12 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Why it matters:** a first run on a fresh tree can report a protocol failure that is the dev server's reload.
 **Suggested handling:** if it recurs, have the driver wait for Vite's optimization to settle before the case (`openApp` already answers the prompt again after a reload), or run the dev stack once before the cases.
 
-### perChatSends fails on a localStorage SecurityError and takes serverTransform with it
+### A chat-open suggestion request bumps the chat revision
 
-`e2e/perChatSends.spec.ts:387` ("two chats of one tab send at once") fails at `expect(s.errors).toEqual([])` (`:547`) with one page error: `SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied for this document.` It failed on clean worktrees at `b8da3e227` and `41e37e8b4` and again at `8669ed926`. The failing assertion comes before the spec's cleanup block, so what it seeded stays in the shared e2e store, and `e2e/serverTransform.spec.ts:454` ("switching A to B to A shows confirmed rows before the response and returns them only in same", `body.same` undefined at `:514`) then fails in the same run; it passes alone. Which `localStorage` read throws, and whether that is a client defect or something the spec should tolerate, is unknown.
+`src/lib/ChatScreens/Suggestion.svelte` `requestSuggestions`: with `useAutoSuggestions` on, opening a chat without suggestions requests them and writes the answer through `setChatMeta`, an empty list included. That write moves the chat's revision, which is part of the transform key (`server/src/prompt/transform.ts` `baseKey`), so the rows just rendered miss the cache on the next return to the chat: full answers instead of `same`, and a `{{random}}` row changes its text. Seen in an `e2e/serverTransform.spec.ts` trace on 2026-10-30, when `perChatSends` left the setting on; not checked by hand.
 
-**Why it matters:** two e2e failures on every run that includes these specs hide new failures in them.
-**Suggested handling:** find the read in the spec's trace (an opaque-origin document such as a sandboxed iframe is the likely source), then guard or fix it. Moving the cleanup into a `finally` stops the knock-on either way.
+**Why it matters:** with auto suggestions on, the first return to a chat downloads and re-runs what the tab already holds.
+**Suggested handling:** skip the write when the list stays empty, and decide whether a non-render chat field such as `suggestMessages` should move the transform key at all.
 
 ## Test timing
 
