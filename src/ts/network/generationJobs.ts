@@ -884,10 +884,13 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             return;
         }
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        // `liveness=1`: this tab answers pings. `hydration=patch`: its callback barrier reads the job
+        // chat itself for a receipt it does not hold, so the server may send that chat only as it
+        // changed (`jobChannel.ts` `barrier`).
         const url =
             `${protocol}//${location.host}/api/generations/${encodeURIComponent(jobId)}/ws` +
             `?risu-auth=${encodeURIComponent(auth)}&clientId=${encodeURIComponent(generationClientId())}` +
-            `&attach=${stamp}&liveness=1`;
+            `&attach=${stamp}&liveness=1&hydration=patch`;
         const socket = new WebSocket(url);
         ws = socket;
         socket.onopen = () => {
@@ -1136,9 +1139,21 @@ export function applyGenerationEvent(
                 ...("streaming" in event && event.streaming ? { job: { jobId, streaming: event.streaming } } : {}),
             };
             const applied = applyHydration(record);
-            // Kept for a later callback's barrier, which applies it again after local work settles.
-            onChannel((channel) => channel.rememberHydration(jobId, record));
-            if (transport && event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId) {
+            const jobChat = event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId;
+            // Kept for a later callback's barrier, which applies it again after local work settles; the
+            // job chat's streaming list also goes with a read of that chat the barrier installs.
+            onChannel((channel) => {
+                channel.rememberHydration(jobId, record);
+                if (jobChat && record.job) {
+                    channel.rememberJobStreaming(jobId, {
+                        characterId: ref.chaId,
+                        id: ref.chatId,
+                        revision: record.revision,
+                        streaming: record.job.streaming,
+                    });
+                }
+            });
+            if (transport && jobChat) {
                 resyncing.delete(transport);
                 if (!applied && isChatStale(ref)) {
                     // A whole copy refused for local work: asked for again once that work is saved.
@@ -1148,7 +1163,6 @@ export function applyGenerationEvent(
             return;
         }
         case "chatPatch": {
-            // Not kept for the barrier: a patch fits only the copy it was made against.
             const outcome = applyPatchHydration(
                 {
                     characterId: event.characterId,
@@ -1162,6 +1176,17 @@ export function applyGenerationEvent(
                 },
                 { jobId, streaming: event.streaming },
             );
+            // The patch is not kept for the barrier (it fits only the copy it was made against); its
+            // streaming list is, for a read of the job chat the barrier installs.
+            if (event.characterId === ref.chaId && event.id === ref.chatId) {
+                const held = {
+                    characterId: ref.chaId,
+                    id: ref.chatId,
+                    revision: event.revision,
+                    streaming: event.streaming,
+                };
+                onChannel((channel) => channel.rememberJobStreaming(jobId, held));
+            }
             if (transport && outcome === "mismatch") {
                 requestResync(transport, ref);
             } else if (transport && outcome === "busy") {

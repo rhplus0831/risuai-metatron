@@ -32,6 +32,7 @@ const stubs = vi.hoisted(() => ({
     registeredHooks: vi.fn<() => Promise<GenerationHooks>>(),
     handleChannelEvent: vi.fn(),
     rememberHydration: vi.fn(),
+    rememberJobStreaming: vi.fn(),
     endJobChannel: vi.fn(),
     changeToPreset: vi.fn(),
     /** `recordClientEvent`: the job link's diagnostics. */
@@ -63,6 +64,7 @@ vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,
     rememberHydration: stubs.rememberHydration,
+    rememberJobStreaming: stubs.rememberJobStreaming,
     endJobChannel: stubs.endJobChannel,
 }));
 // A job's `preset` event applies the preset through the preset actions module.
@@ -667,7 +669,7 @@ describe("the requests", () => {
 });
 
 describe("following a job", () => {
-    it("negotiates owner liveness and echoes each ping timestamp even across an epoch filter", async () => {
+    it("advertises patch hydration beside owner liveness and echoes each ping timestamp even across an epoch filter", async () => {
         vi.useFakeTimers();
         const seen = vi.fn();
         const follow = startFollow("j1", seen);
@@ -675,6 +677,7 @@ describe("following a job", () => {
         await microtasks();
         const [socket] = FakeSocket.instances;
         expect(new URL(socket.url).searchParams.get("liveness")).toBe("1");
+        expect(new URL(socket.url).searchParams.get("hydration")).toBe("patch");
         socket.open();
         // The pong uses the server timestamp, not this tab's clock or its loaded resource epoch.
         vi.setSystemTime(new Date("2030-01-01"));
@@ -1068,7 +1071,7 @@ describe("the event dispatcher and the resume", () => {
         expect(closed.send).toHaveBeenCalledTimes(2);
     });
 
-    it("applies a `chatPatch` through the save adapter without remembering it for the barrier, and asks the follow for the chat whole once per follow on a mismatch, until a whole job chat arrives on that follow", async () => {
+    it("applies a `chatPatch` through the save adapter and remembers only its streaming list for the barrier, and asks the follow for the chat whole once per follow on a mismatch, until a whole job chat arrives on that follow", async () => {
         const follow = { send: vi.fn(() => true) };
         const streaming = [{ messageId: "r", generationId: "g", seq: 1 }];
         const patch = {
@@ -1115,6 +1118,12 @@ describe("the event dispatcher and the resume", () => {
         ]);
         await flush();
         expect(stubs.rememberHydration).not.toHaveBeenCalled();
+        expect(stubs.rememberJobStreaming).toHaveBeenCalledWith("j1", {
+            characterId: "c",
+            id: "k",
+            revision: "x",
+            streaming,
+        });
         expect(follow.send).not.toHaveBeenCalled();
         // Local work kept it out (`busy`) and nothing saves that work (the chat is held): nothing is
         // asked now, and no recovery saves anything (the recovery itself is covered below).

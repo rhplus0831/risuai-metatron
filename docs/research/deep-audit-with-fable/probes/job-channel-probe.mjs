@@ -5,6 +5,9 @@
 // `PROBE_COMMIT` names the measured commit in the output; otherwise `git rev-parse HEAD` of this file's tree,
 // else "unknown". Frame bytes are the WebSocket payload lengths: every frame received (`allFrameBytes`), the
 // whole-chat `resource` frames, the `chatPatch` frames, and the `callback` frames, and the `answer` frames sent.
+// The socket advertises `hydration=patch` as the current tab does, so the barrier sends the unchanged chat
+// not at all; `PROBE_HYDRATION=whole` leaves the flag out, measuring an older tab that gets the chat whole
+// on every callback. The output's `hydration` field names the mode.
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { performance } from "node:perf_hooks";
@@ -21,6 +24,7 @@ import path from "node:path";
 const MESSAGES = 500;
 const MESSAGE_FILL = 2048;
 const CALLBACKS = 500;
+const HYDRATION = process.env.PROBE_HYDRATION === "whole" ? "whole" : "patch";
 function commitOf() {
     if (process.env.PROBE_COMMIT) return process.env.PROBE_COMMIT;
     try {
@@ -108,7 +112,8 @@ if (!created.ok) throw new Error(JSON.stringify(created));
 let ws;
 try {
     ws = new WebSocket(
-        `ws://127.0.0.1:${server.address().port}/api/generations/${created.jobId}/ws?clientId=probe&attach=1`,
+        `ws://127.0.0.1:${server.address().port}/api/generations/${created.jobId}/ws?clientId=probe&attach=1` +
+            (HYDRATION === "patch" ? "&hydration=patch" : ""),
     );
     let bytes = 0,
         chats = 0,
@@ -155,6 +160,7 @@ try {
                         label: "actual-job-socket-500-callbacks",
                         commit: commitOf(),
                         node: process.version,
+                        hydration: HYDRATION,
                         fixture: {
                             messages: MESSAGES,
                             messageDataChars: `${MESSAGES - 1}:`.length + MESSAGE_FILL,

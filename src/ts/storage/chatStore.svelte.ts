@@ -2114,9 +2114,13 @@ export function chatHydrationHold(ref: ChatRef): "none" | "saving" | "held" {
 }
 
 /**
- * A guard for one callback-barrier read when only the acknowledged floor refuses a remembered
- * whole copy. It fences the owner, chat incarnation, and job metadata across the read; admission
- * still goes through `hydrateChat`, which checks local work and the floor again.
+ * A guard for one callback-barrier read of a chat whose receipt neither the flush nor a remembered
+ * job copy made held, at `revision` (the receipt's, or the newer job metadata the read reuses): no
+ * copy at all, an older one, or one refused by the acknowledged floor. The chat must be a member
+ * with a held revision of the same incarnation (and floor, when one is kept), no local work, and job
+ * metadata no newer than `revision`. The guard fences the owner, chat incarnation, and job metadata
+ * across the read; admission still goes through `hydrateChat`, which checks local work and the floor
+ * again.
  */
 export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((server: ChatRecord) => boolean) | null {
     const { chaId, chatId } = ref;
@@ -2132,15 +2136,15 @@ export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((s
         return parsed?.epoch === held.epoch && parsed.seq === held.seq;
     };
     const metadata = jobMetadata.get(key);
+    const floor = ackedRevisions.get(key);
     if (
         !findCharacter(chaId) ||
         !isMember(ref) ||
         absentChats.has(key) ||
         chatHydrationHold(ref) !== "none" ||
         !sameChat(revision) ||
-        !sameChat(ackedRevisions.get(key)) ||
+        (floor !== undefined && !sameChat(floor)) ||
         (compareRevision(revision, heldRevision) ?? -1) < 0 ||
-        !belowAckedRevision(key, revision) ||
         (metadata && (compareRevision(revision, metadata.revision) ?? -1) < 0)
     ) {
         return null;

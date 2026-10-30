@@ -18,6 +18,7 @@ const stubs = vi.hoisted(() => ({
     registeredHooks: vi.fn<() => Promise<GenerationHooks>>(),
     handleChannelEvent: vi.fn(),
     rememberHydration: vi.fn(),
+    rememberJobStreaming: vi.fn(),
     endJobChannel: vi.fn(),
 }));
 
@@ -44,6 +45,7 @@ vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,
     rememberHydration: stubs.rememberHydration,
+    rememberJobStreaming: stubs.rememberJobStreaming,
     endJobChannel: stubs.endJobChannel,
 }));
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: vi.fn() }));

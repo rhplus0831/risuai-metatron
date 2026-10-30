@@ -381,7 +381,9 @@ type Job = {
      * The job chat as last handed to an owner socket (a stored state at its `revision`: a read, or
      * `workingChat`): the base of the next `chatPatch`. Null once the job ended. It is not what the
      * owner holds: the owner applies a patch only at exactly its base or its revision, and asks for a
-     * resync otherwise.
+     * resync otherwise. While the stored revision is still this one's, the callback barrier sends a
+     * socket that advertised `hydration=patch` no chat at all (`hydrateAll`); that tab reads the chat
+     * itself when it does not hold the revision.
      */
     sentChat: ChatBaseline | null;
     /**
@@ -640,6 +642,12 @@ export function createGenerationJobs(options: {
     const hub = options.hub ?? createChannelHub({ now: clock });
     const jobs = new Map<string, Job>();
     const liveness = new WeakMap<WebSocket, { lastFrameAt: number; timer: ReturnType<typeof setTimeout> | null }>();
+    /**
+     * Owner sockets that advertised `hydration=patch` (the `hydration` query): their tab reads the job
+     * chat itself when a callback's receipt names a revision it does not hold, so the callback
+     * barrier sends them the chat only as it changed (`hydrateAll`).
+     */
+    const patchHydration = new WeakSet<WebSocket>();
     /** Chat → its running job. */
     const chatSlots = new Map<string, string>();
     const wsServer = new WebSocketServer({ noServer: true });
@@ -817,18 +825,20 @@ export function createGenerationJobs(options: {
      * the whole chat. Null when the chat is gone.
      *
      * A patch while the stored revision is still the working baseline's (`workingChat`) is diffed
-     * against that baseline: one revision read, and only the carried rows parsed. Otherwise the chat
-     * is read whole, and that read becomes the working baseline while the job runs.
+     * against that baseline: one revision read (none when the caller passes the `stored` revision it
+     * just read), and only the carried rows parsed. Otherwise the chat is read whole, and that read
+     * becomes the working baseline while the job runs.
      */
     function jobChatEvent(
         job: Job,
         mode: "patch" | "whole",
+        stored?: string,
     ): { event: GenerationEvent; baseline: ChatBaseline } | null {
         const { characterId, chatId } = job.context;
         const base = mode === "patch" ? job.sentChat : null;
         const working = job.workingChat;
         if (base && working) {
-            const revision = readChatRevision(job, characterId, chatId);
+            const revision = stored ?? readChatRevision(job, characterId, chatId);
             if (revision === null) {
                 return null;
             }
@@ -895,8 +905,8 @@ export function createGenerationJobs(options: {
     }
 
     /** Sends the job chat (`jobChatEvent`); a socket taking it makes its copy the next patch's base. */
-    function deliverJobChat(job: Job, mode: "patch" | "whole"): GenerationEvent | null {
-        const built = jobChatEvent(job, mode);
+    function deliverJobChat(job: Job, mode: "patch" | "whole", stored?: string): GenerationEvent | null {
+        const built = jobChatEvent(job, mode, stored);
         if (!built) {
             return null;
         }
@@ -973,18 +983,55 @@ export function createGenerationJobs(options: {
     }
 
     /**
-     * The callback barrier: the job chat whole (the client's barrier applies a remembered whole copy
-     * again once its local work settled; a patch cannot be applied that late) and `freshRecords`.
-     * Returns their receipts (synchronously: each receipt names the copy sent).
+     * The callback barrier: the job chat (`hydrateJobChat`), then `freshRecords`, after a pending own
+     * write is written (its chat event, or this barrier's, carries it). Returns their receipts, the
+     * job chat's first (synchronously: each receipt names the copy sent, or the job chat's last copy
+     * a socket took when nothing was sent).
      */
     function hydrateAll(job: Job): HydrationReceipt[] {
         job.pendingFlush?.();
-        const chat = deliverJobChat(job, "whole");
+        const chat = hydrateJobChat(job);
         const events = freshRecords(job);
         for (const event of events) {
             send(job, event);
         }
-        return (chat ? [chat, ...events] : events).map(receiptOf);
+        const receipts = events.map(receiptOf);
+        return chat ? [chat, ...receipts] : receipts;
+    }
+
+    /**
+     * The job chat's part of the callback barrier, as its receipt; null when the chat is gone.
+     *
+     * When every owner socket advertised `hydration=patch` and a socket took a copy (`sentChat`), the
+     * chat goes only as it changed since that copy: nothing while the stored revision is still its
+     * revision (the receipt names it), else a `chatPatch` from it, or the chat whole when no patch can
+     * express the change. Such a tab reads the chat itself when it does not hold the receipt. Without
+     * an owner socket, or for a socket that did not advertise it (an older tab, which can only apply
+     * a remembered whole copy again once its local work settled: a patch cannot be applied that
+     * late), the chat goes whole.
+     */
+    function hydrateJobChat(job: Job): HydrationReceipt | null {
+        const base = job.sentChat;
+        const sockets = [...job.sockets];
+        if (!base || sockets.length === 0 || !sockets.every((ws) => patchHydration.has(ws))) {
+            const event = deliverJobChat(job, "whole");
+            return event ? receiptOf(event) : null;
+        }
+        const { characterId, chatId } = job.context;
+        const revision = readChatRevision(job, characterId, chatId);
+        if (revision === null) {
+            return null;
+        }
+        if (revision === base.revision) {
+            // The copy a socket last took is the stored chat, its `streaming` list included: locks and
+            // watermarks change only with a write of the chat (a `begin`, an applied checkpoint), except
+            // in `releaseRemovedReplies`, which releases the locks of removed messages without one. Its
+            // caller then ends the job or starts the next sequence part, whose own writes and chat
+            // events come before that part's callbacks.
+            return { kind: "chats", id: chatId, characterId, revision };
+        }
+        const event = deliverJobChat(job, "patch", revision);
+        return event ? receiptOf(event) : null;
     }
 
     function assertLive(job: Job) {
@@ -1857,7 +1904,13 @@ export function createGenerationJobs(options: {
         };
     }
 
-    function attach(job: Job, ws: WebSocket, negotiated: boolean) {
+    /**
+     * Makes `ws` the job's one owner socket. `negotiated`: the tab answers pings (`liveness=1`), so
+     * its silence ends ownership. `hydratesByPatch`: the tab reads the job chat itself for a callback
+     * receipt it does not hold (`hydration=patch`), so callback barriers send this socket the chat only
+     * as it changed since the last copy a socket took (`hydrateAll`), starting from this attach's.
+     */
+    function attach(job: Job, ws: WebSocket, negotiated: boolean, hydratesByPatch: boolean) {
         expireSilentOwners(job);
         job.channelLink.expireOverdue();
         // One delivery stream per job: a new attach of the owner replaces the older sockets, so a
@@ -1869,6 +1922,9 @@ export function createGenerationJobs(options: {
         if (negotiated) {
             liveness.set(ws, { lastFrameAt: clock(), timer: null });
             armSilence(job, ws);
+        }
+        if (hydratesByPatch) {
+            patchHydration.add(ws);
         }
         job.channelLink.ownerChanged();
         for (const old of previous) {
@@ -1978,6 +2034,7 @@ export function createGenerationJobs(options: {
      * The `upgrade` handler for `/api/generations/:id/ws` (the server's one dispatcher calls it).
      * False, leaving the socket untouched, for any other path. The handshake needs a JWT (`risu-auth`
      * query or header) and the job's `clientId` query; another client's or an unknown job is a 404.
+     * The `liveness=1` and `hydration=patch` queries advertise what the tab supports (`attach`).
      */
     function handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean {
         let url: URL;
@@ -2021,7 +2078,12 @@ export function createGenerationJobs(options: {
                         ws.close();
                         return;
                     }
-                    attach(job, ws, url.searchParams.get("liveness") === "1");
+                    attach(
+                        job,
+                        ws,
+                        url.searchParams.get("liveness") === "1",
+                        url.searchParams.get("hydration") === "patch",
+                    );
                 });
             } catch {
                 socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");

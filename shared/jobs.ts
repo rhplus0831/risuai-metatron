@@ -618,7 +618,12 @@ export type CallbackTargets = {
     personaId: string;
 };
 
-/** A record the job hydrated before a callback, at the revision sent: the client must hold it at least that new. */
+/**
+ * A record the job hydrated before a callback, at the revision sent: the client must hold it at least
+ * that new. For an owner socket that advertised `hydration=patch`, the job chat's names that chat's
+ * last copy the socket took when nothing changed since (nothing is sent then), and a `chatPatch`'s
+ * revision when only a patch was sent: a client that does not hold it reads the chat.
+ */
 export type HydrationReceipt = { kind: string; id: string; characterId?: string; revision: string };
 
 export type GenerationQuestionEvent = {

@@ -23,7 +23,12 @@ vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string)
 vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: new Map() }));
 
-vi.mock("./jobChannel", () => ({ rememberHydration: vi.fn(), endJobChannel: vi.fn(), handleChannelEvent: vi.fn() }));
+vi.mock("./jobChannel", () => ({
+    rememberHydration: vi.fn(),
+    rememberJobStreaming: vi.fn(),
+    endJobChannel: vi.fn(),
+    handleChannelEvent: vi.fn(),
+}));
 vi.mock("../diagnostics/collector", async () =>
     (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),
 );
