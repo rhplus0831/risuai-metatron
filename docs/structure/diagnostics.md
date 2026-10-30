@@ -101,8 +101,9 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   (the server stayed unreachable), `gone` (the server no longer knows the job), `kept`
   (the end came from the server's kept outcome of a collected job), and `recovered`
   (the chat read after a lost or gone follow took); `stale` (no frame for 45 s while
-  visible), `connectTimeout` (not open within 10 s), and `resumeReconnect` (an attach
-  replaced because the page came back). `feed` phases: `connected` (a `hello` of the
+  visible), `connectTimeout` (not open within 10 s), `resumeReconnect` (an attach
+  replaced because the page came back), and `closedAway` (a close while the page was hidden or the
+  browser offline, not counted against the attach budget). `feed` phases: `connected` (a `hello` of the
   loaded epoch), `disconnected`, `connectFailed`, and the same `stale`, `connectTimeout`,
   and `resumeReconnect`. `page` phases: `boot`, `visible`, `hidden`, `online`, `offline`, and the Page
   Lifecycle's `freeze` (which also flushes the mirror) and `resume`.
@@ -111,7 +112,8 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   holds a push subscription, false without a worker registration or push manager; `standalone`,
   `display-mode: standalone`; a value that could not be read, or a subscription lookup over 2 s, is left
   out rather than false), and `dismissedByPage` with the `count` of completion notifications
-  `pushNotifications.ts` closed when the page became visible (only when it closed any). The service
+  `pushNotifications.ts` closed when the page became visible (only when it closed any), and `chatRefresh` when a completion push had the page read a chat no follow
+  of its own covers (`serverCommands.ts` `refreshChatAfterPush`). The service
   worker's records (`public/sw.js`): `received` (stamped on arrival, before the display queue),
   `shown`, `shownSilent`, `closedInFront`, `showFailed` with `inFront` (the in-front predicate the display
   used; `closedInFront` carries the second check's) and `focusedHidden` (some window focused but not

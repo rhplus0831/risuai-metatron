@@ -615,6 +615,7 @@ describe("projectDiagnosticEvent", () => {
             "clicked",
             "browserState",
             "dismissedByPage",
+            "chatRefresh",
         ]);
         expect(PUSH_DROP_REASONS).toEqual(["closed", "noKeys", "queueFull", "noSubscriptions", "unreadable"]);
         expect(PUSH_SERVICES).toEqual(["fcm", "apple", "mozilla", "windows", "other"]);

@@ -751,7 +751,10 @@ describe("following a job", () => {
         expect(await settled(follow.closed)).toBe("pending");
         socket.message({ type: "done", epoch: EPOCH, revision: null });
         expect(socket.closeCalls).toBe(1);
-        await expect(follow.closed).resolves.toEqual({ terminal: { type: "done", epoch: EPOCH, revision: null } });
+        await expect(follow.closed).resolves.toEqual({
+            terminal: { type: "done", epoch: EPOCH, revision: null },
+            received: true,
+        });
         expect(follow.send({ late: true })).toBe(false);
         // Another follow's stamp is higher.
         const next = startFollow("j1", () => {});
@@ -849,7 +852,7 @@ describe("following a job", () => {
         socketB.message({ type: "progress", epoch: EPOCH, payload: "late for b" });
         expect(seenB).toHaveLength(1);
         expect(b.send({})).toBe(false);
-        await expect(b.closed).resolves.toEqual({ terminal: null });
+        await expect(b.closed).resolves.toEqual({ terminal: null, received: true });
         stubs.auth[2].resolve("jwt-c");
         await flush();
         expect(FakeSocket.instances).toHaveLength(2);
@@ -861,7 +864,7 @@ describe("following a job", () => {
         // Closing the newest follow explicitly; a follow of another job is independent.
         c.close();
         expect(socketC.closeCalls).toBe(1);
-        await expect(c.closed).resolves.toEqual({ terminal: null });
+        await expect(c.closed).resolves.toEqual({ terminal: null, received: true });
     });
 
     it("cancels a socket that is still connecting when superseded", async () => {
@@ -1561,7 +1564,7 @@ describe("the follow's liveness", () => {
         expect(socket.closeCalls).toBe(0);
         await vi.advanceTimersByTimeAsync(1);
         expect(socket.closeCalls).toBe(1);
-        await expect(follow.closed).resolves.toEqual({ terminal: null });
+        await expect(follow.closed).resolves.toEqual({ terminal: null, received: true });
         await tick();
         expect(links()).toEqual([
             { kind: "jobLink", phase: "attach", jobId: "j1" },
@@ -1623,7 +1626,7 @@ describe("the follow's liveness", () => {
         expect(await state(follow.closed)).toBe("pending");
         expect(socket.closeCalls).toBe(0);
         await vi.advanceTimersByTimeAsync(150);
-        await expect(follow.closed).resolves.toEqual({ terminal: null, resumed: true });
+        await expect(follow.closed).resolves.toEqual({ terminal: null, resumed: true, received: true });
         await tick();
         expect(links()).toEqual([
             { kind: "jobLink", phase: "attach", jobId: "j1" },
@@ -1650,7 +1653,7 @@ describe("the follow's liveness", () => {
         expect(socket.closeCalls).toBe(1);
         expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
         socket.onclose!({ code: 1000 });
-        await expect(follow.closed).resolves.toEqual({ terminal: done });
+        await expect(follow.closed).resolves.toEqual({ terminal: done, received: true });
     });
 });
 

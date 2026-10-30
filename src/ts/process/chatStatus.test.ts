@@ -408,6 +408,30 @@ describe("chat status sources", () => {
         expectMarks([]);
     });
 
+    it("viewing a lost chat reads it again (`readChatAgain`): the chat is marked stale and refreshed, once per cleared recovery mark, and an unseen-only chat is not read", async () => {
+        const { refreshStaleChat } = await import("../storage/resourceSync.svelte");
+        const refresh = vi.mocked(refreshStaleChat);
+        refresh.mockClear();
+        // The fixture chats hold no server revision: the stale mark is taken as given.
+        const stale = vi.spyOn(chat, "markChatStale").mockReturnValue(true);
+        status.noteJobLost(a, "lost");
+        status.noteJobDone(b, done({ messageId: "reply" }));
+        watch();
+        view(a);
+        flushSync();
+        expect(get(status.recoveryChatKeys)).toEqual(new Map());
+        expect(get(status.unseenChatKeys)).toEqual(new Set([keyB]));
+        await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+        expect(refresh).toHaveBeenCalledWith(a);
+        expect(stale).toHaveBeenCalledWith(a);
+        view(b);
+        flushSync();
+        expect(get(status.unseenChatKeys)).toEqual(new Set());
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
     it("marks added for an already visible chat are cleared without another selection change", () => {
         view(a);
         watch();

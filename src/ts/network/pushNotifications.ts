@@ -2,6 +2,7 @@ import { get, writable } from "svelte/store";
 import {
     isCompletionNotificationTag,
     NOTIFICATION_ICON,
+    parseChatRoutePath,
     PUSH_KEY_PATH,
     PUSH_REGISTRATION_REFRESH_MS,
     PUSH_SUBSCRIPTION_PATH,
@@ -630,9 +631,13 @@ export async function showCompletionNotification(payload: {
 
 /**
  * Starts this browser's push (once, after the router started): availability, the server key, the
- * worker's "open this chat" messages, the foreground cleanup, and the first sync.
+ * worker's "open this chat" messages, its completion messages (`onCompletionPush` gets the chat of
+ * every completion push the worker showed, from the payload's same-origin chat route; a push for no
+ * chat is not reported), the foreground cleanup, and the first sync.
  */
-export function startPushNotifications() {
+export function startPushNotifications(
+    options: { onCompletionPush?: (ref: { chaId: string; chatId: string }) => void } = {},
+) {
     if (started) {
         return;
     }
@@ -649,11 +654,19 @@ export function startPushNotifications() {
         // not navigate the window instead.
         navigator.serviceWorker.addEventListener("message", (event) => {
             const data = event.data as { type?: unknown; url?: unknown } | null;
-            if (data?.type !== "risu-open-route" || typeof data.url !== "string") {
+            if (typeof data?.url !== "string") {
                 return;
             }
-            const opened = openRoute(data.url);
-            event.ports[0]?.postMessage({ opened });
+            if (data.type === "risu-open-route") {
+                const opened = openRoute(data.url);
+                event.ports[0]?.postMessage({ opened });
+            } else if (data.type === "risu-push-completion") {
+                // A completion the worker showed: the chat may have a reply this tab does not follow.
+                const ref = parseChatRoutePath(data.url);
+                if (ref) {
+                    options.onCompletionPush?.(ref);
+                }
+            }
         });
     }
     if (document.visibilityState === "visible") {

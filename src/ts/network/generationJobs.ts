@@ -802,9 +802,10 @@ export type GenerationFollow = {
     /**
      * Resolves when the socket closes, with the terminal event if one arrived. `resumed`: the follow
      * gave up a socket that had opened because the page came back (`watchResume`), not because the
-     * link failed.
+     * link failed. `received`: the socket delivered at least one frame (a ping included), so the
+     * server was reached through it.
      */
-    closed: Promise<{ terminal: GenerationTerminalEvent | null; resumed?: boolean }>;
+    closed: Promise<{ terminal: GenerationTerminalEvent | null; resumed?: boolean; received?: boolean }>;
     /** True once the socket opened; false when the follow settled before it opened. */
     opened: Promise<boolean>;
 };
@@ -835,12 +836,14 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
     let ws: WebSocket | null = null;
     let cancelled = false;
     let terminal: GenerationTerminalEvent | null = null;
+    type Closed = { terminal: GenerationTerminalEvent | null; resumed?: boolean; received?: boolean };
     // Settles on the socket's close or on cancellation, whichever comes first (even before auth).
-    let resolveClosed!: (value: { terminal: GenerationTerminalEvent | null; resumed?: boolean }) => void;
-    const closed = new Promise<{ terminal: GenerationTerminalEvent | null; resumed?: boolean }>((resolve) => {
+    let resolveClosed!: (value: Closed) => void;
+    const closed = new Promise<Closed>((resolve) => {
         resolveClosed = resolve;
     });
     let wasOpened = false;
+    let received = false;
     let resumed = false;
     let resolveOpened!: (value: boolean) => void;
     const opened = new Promise<boolean>((resolve) => {
@@ -850,7 +853,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         watch.stop();
         stopResume();
         resolveOpened(false);
-        resolveClosed(resumed ? { terminal, resumed } : { terminal });
+        resolveClosed({ terminal, ...(resumed ? { resumed } : {}), ...(received ? { received } : {}) });
     };
     const handle = {
         cancel() {
@@ -905,6 +908,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             if (cancelled) {
                 return;
             }
+            received = true;
             watch.frame();
             let event: GenerationEvent;
             try {

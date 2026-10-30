@@ -68,9 +68,11 @@ import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
 
 /**
- * How often a follow whose socket closed before the job's end attaches, and the wait before each
- * attach after the first (doubling, so a network still waking up gets about 15 s). The status reads
- * of `discover` and the chat loads of `loadJobChat` retry on the same schedule.
+ * How many attaches a follow whose socket closed before the job's end may spend on a server it
+ * cannot reach, and the wait before each attach after the first (doubling, so a network still waking
+ * up gets about 15 s). A socket that delivered a frame reached the server and starts the count
+ * again; a close while the page is hidden or the browser is offline spends nothing (`followOnce`).
+ * The status reads of `discover` and the chat loads of `loadJobChat` retry on the same schedule.
  */
 const MAX_ATTACHES = 5;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
@@ -240,6 +242,13 @@ export function followJobToEnd(
                 if (typeof result === "string") {
                     recordClientEvent({ kind: "jobLink", phase: result, jobId });
                     releaseGenerationJob(jobId);
+                    // No longer a follow that covers its chat: a completion push for the chat during
+                    // the read below must read it again (`refreshChatAfterPush`).
+                    followedJobs.update((jobs) => {
+                        const next = new Map(jobs);
+                        next.delete(jobId);
+                        return next;
+                    });
                 } else if (!result.applied) {
                     if (result.kept) {
                         recordClientEvent({ kind: "jobLink", phase: "kept", jobId });
@@ -305,6 +314,39 @@ function needsChatRead(result: FollowEnd, ref: ChatRef): boolean {
 /** The chat reads after a follow that have not ended, one per chat: chat key → its end (a newer one ends it). */
 const recoveries = new Map<string, () => void>();
 
+/** The recovery reads out per chat (`readRecoveringChat`), by chat key. */
+const chatReads = new Map<string, Promise<boolean>>();
+
+/**
+ * One recovery read of a chat (`refreshStaleChat`), after the chat's earlier recovery read has
+ * settled: the chat is marked stale again right before it, since the earlier read's copy may have
+ * taken meanwhile (an ended recovery's read still writes the mirror) and cleared the mark this read
+ * needs (`finishIdleChatRefresh` adopts only a stale or noticed chat). Reads of one chat therefore
+ * never overlap, and the newest always sees the server's newest copy. A read that throws is false.
+ */
+function readRecoveringChat(ref: ChatRef): Promise<boolean> {
+    const key = chatKeyOf(ref);
+    const previous = chatReads.get(key) ?? Promise.resolve(false);
+    const read = previous.then(async () => {
+        if (!markChatStale(ref)) {
+            return false;
+        }
+        try {
+            return await refreshStaleChat(ref);
+        } catch (error) {
+            console.error("[Generation]", error);
+            return false;
+        }
+    });
+    chatReads.set(key, read);
+    void read.finally(() => {
+        if (chatReads.get(key) === read) {
+            chatReads.delete(key);
+        }
+    });
+    return read;
+}
+
 /**
  * Reads a followed job's chat again (the caller pinned it): it is marked stale, whether or not the
  * job still locked anything in it, and read through the idle refresh's rules (`refreshStaleChat`: no
@@ -314,8 +356,10 @@ const recoveries = new Map<string, () => void>();
  * local work, a read past the deadline) is tried once more, at the next `visibilitychange` to visible
  * or `online` (one listener pair); a chat whose stale mark is gone by then was read another way, and
  * nothing more is done. A read past the deadline still counts when it takes. One recovery per chat:
- * a newer one ends the older, whose late results and listeners then do nothing. A chat this tab does
- * not hold (it could not be loaded) is not read: its next load reads it whole.
+ * a newer one ends the older, whose late results and listeners then report nothing; the reads
+ * themselves run one at a time per chat (`readRecoveringChat`), the newer after the older's copy has
+ * settled. A chat this tab does not hold (it could not be loaded) is not read: its next load reads
+ * it whole.
  */
 async function recoverJobChat(ref: ChatRef, jobId: string, after: "lost" | "gone" | "outcome"): Promise<boolean> {
     const key = chatKeyOf(ref);
@@ -349,11 +393,7 @@ async function recoverJobChat(ref: ChatRef, jobId: string, after: "lost" | "gone
             recordClientEvent({ kind: "notice", notice: "serverJobEndedAway" });
         }
     };
-    const refresh = () =>
-        refreshStaleChat(ref).catch((error) => {
-            console.error("[Generation]", error);
-            return false;
-        });
+    const refresh = () => readRecoveringChat(ref);
     const retry = () => {
         if (document.visibilityState !== "visible") {
             return;
@@ -390,6 +430,46 @@ async function recoverJobChat(ref: ChatRef, jobId: string, after: "lost" | "gone
     document.addEventListener("visibilitychange", retry);
     window.addEventListener("online", retry);
     return false;
+}
+
+/**
+ * Reads a chat again, as a lost chat is read: for a lost chat that is viewed (`chatStatus.svelte.ts`
+ * clears its recovery mark, which `serverJob.lost` asks the user to do) and for a completion push
+ * (`refreshChatAfterPush`), since the lost job may have been writing still (the server was out of
+ * reach, not stopped). One serialized recovery read (`readRecoveringChat`), pinned for at most the
+ * step deadline; a read that did not take leaves the stale mark to the idle refresh. It is not a
+ * recovery of its own: a pending one (a gone job's, with its notice) goes on unchanged.
+ */
+export function readChatAgain(ref: ChatRef): void {
+    const release = pinChat(ref);
+    void (async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([
+                readRecoveringChat(ref),
+                new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, STEP_DEADLINE_MS);
+                }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+            release();
+        }
+    })();
+}
+
+/**
+ * A completion push for a chat (`pushNotifications.ts`): the job that ended may be one this tab lost
+ * (its follow gave up while the page was away; a lost follow leaves `followedJobs` before its
+ * recovery read) or another device's, so unless a follow of this tab covers the chat (its own
+ * terminal brings the reply), the chat is read again (`readChatAgain`). Records `push` `chatRefresh`.
+ */
+export function refreshChatAfterPush(ref: ChatRef): void {
+    if (followedJobsOf(get(followedJobs), ref).length > 0) {
+        return;
+    }
+    recordClientEvent({ kind: "push", phase: "chatRefresh" });
+    readChatAgain(ref);
 }
 
 /**
@@ -435,34 +515,50 @@ async function discover(jobId: string): Promise<{ ref: ChatRef; status: Generati
     return "lost";
 }
 
+/** Whether the page is hidden or the browser reports itself offline: a failed link then says nothing about the server. */
+function pageAway(): boolean {
+    return document.visibilityState === "hidden" || navigator.onLine === false;
+}
+
 /**
- * One follow of a job to its end through at most `MAX_ATTACHES` attaches. The transport gives up an
- * attach whose socket does not open within 10 s, or that goes silent (`followGenerationJob`). An
- * opened socket the transport replaced because the page came back (`resumed`) is not counted and
- * the next attach does not wait: only failed links spend the budget. After every close without the
- * terminal the job's status is read (bounded by `STEP_DEADLINE_MS`): a failed read attaches again
- * (the server may be out of reach), a job the server does not know is `"gone"`, its kept outcome is
- * the end, and a job still running or ended but still live is attached again. When the attaches run
- * out, or the job is no longer known after an ended status was read, the terminal of the last ended
- * status read is the end, if there was one; `"lost"` (or `"gone"`) otherwise. `read` is a status
- * read before the follow (the boot resume's discovery): its kept outcome is the end without an
- * attach (one would be refused), and its ended terminal is the first one known.
+ * One follow of a job to its end through at most `MAX_ATTACHES` attaches on a server that cannot be
+ * reached. The transport gives up an attach whose socket does not open within 10 s, or that goes
+ * silent (`followGenerationJob`). Only a failed link spends the budget: an opened socket the
+ * transport replaced because the page came back (`resumed`) is not counted and the next attach does
+ * not wait; a socket that delivered a frame (`received`) reached the server, so the budget starts
+ * again at its close (the link failed afterwards, not the server); and a close while the page is
+ * hidden or the browser is offline (a phone that cuts the app's network in the background) is not
+ * counted either, since the server was not tried: the follow keeps attaching on the retry schedule
+ * (its last wait repeated) until the page is back and the attaches fail in front of the user. After
+ * every close without the terminal the job's status is read (bounded by `STEP_DEADLINE_MS`): a
+ * failed read attaches again (the server may be out of reach), a job the server does not know is
+ * `"gone"`, its kept outcome is the end, and a job still running or ended but still live is attached
+ * again. When the attaches run out, or the job is no longer known after an ended status was read,
+ * the terminal of the last ended status read is the end, if there was one; `"lost"` (or `"gone"`)
+ * otherwise. `read` is a status read before the follow (the boot resume's discovery): its kept
+ * outcome is the end without an attach (one would be refused), and its ended terminal is the first
+ * one known.
  */
 async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus): Promise<FollowEnd> {
     if (read?.kept && read.terminal) return { terminal: read.terminal, applied: false, kept: true };
     let known: GenerationTerminalEvent | null = read?.state === "ended" ? (read.terminal ?? null) : null;
-    // Attaches counted against the budget, and whether the last socket was replaced on the page's return.
+    // Attaches counted against the budget since the server was last reached, the closes without a
+    // frame since then (the wait before the next attach), and whether the last socket was replaced on
+    // the page's return.
     let attach = 0;
+    let failures = 0;
     let resumed = false;
+    let attached = false;
     while (attach < MAX_ATTACHES) {
         const replay = replayedStatuses.get(jobId);
         if (replay?.terminal) return { terminal: replay.terminal, applied: false, kept: replay.kept === true };
-        if (attach > 0 || resumed) {
+        if (attached) {
             if (!resumed) {
-                await sleep(retryDelay(attach));
+                await sleep(retryDelay(Math.max(failures, 1)));
             }
             recordClientEvent({ kind: "jobLink", phase: "reattach", jobId, attempt: attach });
         }
+        attached = true;
         const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
             applyGenerationEvent(jobId, ref, event, follow);
             if (event.type === "sequence") {
@@ -477,8 +573,17 @@ async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus):
             return { terminal: closed.terminal, applied: true, kept: false };
         }
         resumed = closed.resumed === true;
-        if (!resumed) {
-            attach += 1;
+        if (closed.received) {
+            attach = 0;
+            failures = 0;
+        }
+        if (!resumed && !closed.received) {
+            failures += 1;
+            if (pageAway()) {
+                recordClientEvent({ kind: "jobLink", phase: "closedAway", jobId });
+            } else {
+                attach += 1;
+            }
         }
         let status;
         try {

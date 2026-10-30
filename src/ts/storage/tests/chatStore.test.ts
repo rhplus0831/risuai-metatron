@@ -243,6 +243,32 @@ describe("display install state", () => {
         expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
     });
 
+    it("an idle read that takes while a later idle read of the chat is out leaves the stale mark for that read's copy", async () => {
+        const { server, chat, ref } = await boot();
+        const copy = server.chat("c", "k")!;
+        expect(chat.markChatStale(ref)).toBe(true);
+        chat.noteIdleChatRead(ref, 1);
+        chat.noteIdleChatRead(ref, 2);
+        // The earlier read's copy takes, and the mark stays for the later read.
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 1 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(true);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 2 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(false);
+        // The only read out: its copy ends the mark.
+        expect(chat.markChatStale(ref)).toBe(true);
+        chat.noteIdleChatRead(ref, 3);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 3 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(false);
+        // The newest read's answer ends the bookkeeping even when the gate ignores its copy: the next
+        // lone read's copy does not leave the mark behind.
+        chat.noteIdleChatRead(ref, 4);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 4 } as any)).toBe(false);
+        expect(chat.markChatStale(ref)).toBe(true);
+        chat.noteIdleChatRead(ref, 5);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 5 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(false);
+    });
+
     it("keeps a deferred collection reload unacknowledged after the job unlocks", async () => {
         const { server, chat, ref, take } = await boot();
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });

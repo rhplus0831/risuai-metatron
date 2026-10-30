@@ -100,6 +100,7 @@ export const JOB_LINK_PHASES = [
     "stale",
     "connectTimeout",
     "resumeReconnect",
+    "closedAway",
 ] as const;
 
 /**
@@ -192,6 +193,7 @@ export const BROWSER_PUSH_PHASES = [
     "clicked",
     "browserState",
     "dismissedByPage",
+    "chatRefresh",
 ] as const;
 
 /**

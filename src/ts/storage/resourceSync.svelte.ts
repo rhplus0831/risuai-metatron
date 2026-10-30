@@ -146,6 +146,7 @@ import {
     summaryRefreshNotices,
     chatNoticeSeq,
     finishIdleChatRefresh,
+    noteIdleChatRead,
     settleUnloadWork,
     takeChatWork,
     trackUnloadWork,
@@ -4329,6 +4330,9 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
     const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, heldChatRevision(ref)]));
     const readStamp = issueChatReadStamp();
+    for (const ref of refs) {
+        noteIdleChatRead(ref, readStamp);
+    }
     const read = await deadlineRead((signal) =>
         readRefs([], {
             chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),

@@ -8,11 +8,15 @@ import { warmModules } from "../storage/tests/mutationStoresHarness";
 // lifecycle per job shared by every caller (a button, a busy job of this tab, the boot resume), the
 // bounded reattach after a socket closed without the terminal (growing waits, a failed status read
 // retried, an opened socket the transport replaced on the page's return attached again at once and
-// not counted), the end read from the job's status (the
+// not counted, a socket that delivered a frame starting the budget again, a close while the page is
+// hidden or offline not counted), the end read from the job's status (the
 // server's kept outcome of a collected job, or the last ended status when the attaches run out), a
 // job the server no longer knows (gone: no lost alert, the chat read again, then the `endedAway`
 // toast) told from a server that stays unreachable (lost), the chat read again after a lost or gone
-// follow with its one retry at the next visible or online, the end reported once, the boot discovery
+// follow with its one retry at the next visible or online (a lost follow leaving `followedJobs`
+// before that read; one chat's recovery reads one at a time, each marking the chat stale first), the
+// chat read again for a completion push (`refreshChatAfterPush`) and for a lost chat viewed
+// (`readChatAgain`), the end reported once, the boot discovery
 // joining an active follow and never releasing it, and `runServerButton`'s preflight (ids before the
 // flush, a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
 // `runServerJob` itself: the send kinds with their context, the `unknown` outcome of a create
@@ -1550,6 +1554,188 @@ describe("the end read from the job's status, and the chat read after the follow
         expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
     });
 
+    const reattachAttempts = () =>
+        links()
+            .filter((link) => (link as { phase: string }).phase === "reattach")
+            .map((link) => (link as { attempt: number }).attempt);
+    const closedAway = () => links().filter((link) => (link as { phase: string }).phase === "closedAway");
+    /** Closes the newest socket without a terminal and lets the follow read the status and attach again. */
+    const cut = async () => {
+        follows().at(-1)!.end(null);
+        await flush();
+        await flush();
+    };
+
+    it("starts the attach budget again after a socket that delivered a frame: only links that failed in a row count", async () => {
+        stubs.read.mockResolvedValue(status);
+        const end = commands.followJobToEnd("j", ref);
+        await flush();
+        // Four failed links spend four of the five attaches.
+        for (let failed = 0; failed < 4; failed += 1) {
+            await cut();
+        }
+        expect(follows()).toHaveLength(5);
+        // The fifth socket opens and gets a frame before the network cuts it: the server was reached,
+        // so this close spends nothing and the next attach waits the first wait again.
+        const reached = follows().at(-1)!;
+        reached.open();
+        reached.frame();
+        await cut();
+        expect(follows()).toHaveLength(6);
+        expect(reattachAttempts()).toEqual([1, 2, 3, 4, 0]);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000, 1000]);
+        // Five failed links in a row again before the follow is lost.
+        for (let failed = 0; failed < 5; failed += 1) {
+            await cut();
+        }
+        expect(await end).toBe("lost");
+        expect(follows()).toHaveLength(10);
+        expect(reattachAttempts()).toEqual([1, 2, 3, 4, 0, 1, 2, 3, 4]);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000, 1000, 1000, 2000, 4000, 8000]);
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(closedAway()).toEqual([]);
+    });
+
+    it("does not count a close while the page is hidden or the browser is offline (`closedAway`): the follow keeps attaching on the schedule, and the budget applies once the page is back", async () => {
+        stubs.read.mockRejectedValue(new RequestError(0, "offline"));
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
+        try {
+            const end = commands.followJobToEnd("j", ref);
+            await flush();
+            // Seven links fail while the page is hidden: none counted, the last wait repeated.
+            for (let failed = 0; failed < 7; failed += 1) {
+                await cut();
+            }
+            expect(follows()).toHaveLength(8);
+            expect(closedAway()).toEqual(Array(7).fill({ kind: "jobLink", phase: "closedAway", jobId: "j" }));
+            expect(reattachAttempts()).toEqual(Array(7).fill(0));
+            expect(sleeps()).toEqual([1000, 2000, 4000, 8000, 8000, 8000, 8000]);
+            // Visible but offline: not counted either.
+            visibility.mockReturnValue("visible");
+            online.mockReturnValue(false);
+            await cut();
+            expect(follows()).toHaveLength(9);
+            expect(closedAway()).toHaveLength(8);
+            // Back online in front of the user: five failed links spend the budget.
+            online.mockReturnValue(true);
+            for (let failed = 0; failed < 5; failed += 1) {
+                await cut();
+            }
+            expect(await end).toBe("lost");
+            expect(follows()).toHaveLength(13);
+            expect(closedAway()).toHaveLength(8);
+            expect(reattachAttempts().slice(8)).toEqual([1, 2, 3, 4]);
+            expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        } finally {
+            visibility.mockRestore();
+            online.mockRestore();
+        }
+    });
+
+    it("a lost follow leaves `followedJobs` before its recovery read, so a completion push meanwhile reads the chat again: one chat's recovery reads run one at a time, the newer after the older's copy settled and marking the chat stale again first", async () => {
+        stubs.read.mockRejectedValue(new RequestError(0, "offline"));
+        let answerFirst!: (current: boolean) => void;
+        stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerFirst = resolve)));
+        const end = commands.followJobToEnd("j", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await flush();
+            await flush();
+            follows()[attach].end(null);
+        }
+        await flush();
+        await flush();
+        // Lost: released and no longer listed while its recovery read is still out.
+        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual([]);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        // The push of the job that finished meanwhile: read again, after the pending read.
+        stubs.markStale.mockClear();
+        commands.refreshChatAfterPush({ ...ref });
+        await flush();
+        expect(links()).toContainEqual({ kind: "push", phase: "chatRefresh" });
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        answerFirst(true);
+        await flush();
+        // Marked stale again right before its own read (the older copy may have cleared the mark).
+        expect(stubs.markStale).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(await end).toBe("lost");
+        // The push's read is no recovery of its own: the lost recovery still reports its read.
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j" });
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+    });
+
+    it("readChatAgain reads a chat again once, pinned meanwhile, with no notice and no record, and a gone job's pending recovery keeps its notice", async () => {
+        // A gone job's recovery read is out when the chat is viewed: the view's read waits behind it,
+        // and the recovery's `endedAway` toast still shows once its own read took.
+        let answerGone!: (current: boolean) => void;
+        stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerGone = resolve)));
+        stubs.read.mockResolvedValue(null);
+        const gone = commands.followJobToEnd("g", ref);
+        await closeLatest();
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        commands.readChatAgain({ ...ref });
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        answerGone(true);
+        expect(await gone).toBe("lost");
+        await flush();
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("ended away");
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        stubs.refresh.mockClear();
+        stubs.markStale.mockClear();
+        stubs.record.mockClear();
+        stubs.alertToast.mockClear();
+
+        stubs.pin.mockClear();
+        commands.readChatAgain({ ...ref });
+        expect(stubs.pin).toHaveBeenCalledExactlyOnceWith(ref);
+        const release = stubs.pin.mock.results[0].value as ReturnType<typeof vi.fn>;
+        await flush();
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(links()).toEqual([]);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        // Not held: nothing read.
+        stubs.markStale.mockReturnValueOnce(false);
+        commands.readChatAgain({ ...ref });
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshChatAfterPush reads a chat again for a completion push, pinned meanwhile and recording `chatRefresh`, unless a follow of this tab covers it or the tab does not hold it", async () => {
+        const quiet: GenerationTerminalEvent = { type: "done", epoch: EPOCH, revision: null };
+        const end = commands.followJobToEnd("j", ref);
+        await flush();
+        commands.refreshChatAfterPush({ ...ref });
+        await flush();
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        endWith(follows()[0], quiet);
+        expect(await end).toEqual(quiet);
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        stubs.pin.mockClear();
+        commands.refreshChatAfterPush({ ...ref });
+        expect(stubs.pin).toHaveBeenCalledExactlyOnceWith(ref);
+        const release = stubs.pin.mock.results[0].value as ReturnType<typeof vi.fn>;
+        expect(release).not.toHaveBeenCalled();
+        await flush();
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(links()).toEqual([{ kind: "push", phase: "chatRefresh" }]);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        // Not held: nothing read.
+        stubs.markStale.mockReturnValueOnce(false);
+        commands.refreshChatAfterPush({ ...ref });
+        await flush();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+    });
+
     it("reports an unreachable server as lost and reads the chat once more at the next `online` or visible, once, unless the stale mark is gone by then", async () => {
         stubs.read.mockRejectedValue(new RequestError(0, "offline"));
         stubs.refresh.mockResolvedValueOnce(false);
@@ -1611,7 +1797,7 @@ describe("the end read from the job's status, and the chat read after the follow
         expect(stubs.alertToast).not.toHaveBeenCalled();
     });
 
-    it("does not read a chat this tab does not hold, and reads nothing twice for one chat: a newer recovery ends the older, whose late result does nothing", async () => {
+    it("does not read a chat this tab does not hold, and runs one chat's recovery reads one at a time: a newer recovery ends the older's reporting and reads after its copy settled, marking the chat stale again first", async () => {
         stubs.markStale.mockReturnValueOnce(false);
         stubs.read.mockResolvedValue(null);
         const unheld = commands.followJobToEnd("j", ref);
@@ -1632,10 +1818,19 @@ describe("the end read from the job's status, and the chat read after the follow
         const second = commands.followJobToEnd("j3", ref);
         await flush();
         follows()[2].end(null);
+        await flush();
+        await flush();
+        // The newer recovery waits for the older's read: nothing read or reported yet.
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        stubs.markStale.mockClear();
+        answerFirst(true);
         expect(await second).toBe("lost");
+        // Marked stale again before its own read, which took: the gone toast, `recovered` for j3 only.
+        expect(stubs.markStale).toHaveBeenCalledTimes(1);
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
         expect(stubs.alertToast).toHaveBeenCalledTimes(1);
         expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j3" });
-        answerFirst(true);
         expect(await first).toBe("lost");
         expect(stubs.alertToast).toHaveBeenCalledTimes(1);
         expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });

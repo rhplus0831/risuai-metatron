@@ -61,7 +61,7 @@ export class GenerationCreateError extends Error {
  * out or watches the page on its own: the test drives every settlement.
  */
 export function createFollowStub(jobId: string) {
-    type Closed = { terminal: GenerationTerminalEvent | null; resumed?: boolean };
+    type Closed = { terminal: GenerationTerminalEvent | null; resumed?: boolean; received?: boolean };
     let settleClosed!: (value: Closed) => void;
     let settleOpened!: (value: boolean) => void;
     const closed = new Promise<Closed>((resolve) => {
@@ -70,17 +70,22 @@ export function createFollowStub(jobId: string) {
     const opened = new Promise<boolean>((resolve) => {
         settleOpened = resolve;
     });
+    let received = false;
     const end = (terminal: GenerationTerminalEvent | null) => {
         settleOpened(false);
-        settleClosed({ terminal });
+        settleClosed({ terminal, ...(received ? { received } : {}) });
     };
     return {
         jobId,
         open: () => settleOpened(true),
+        /** A frame arrived through the socket (the server was reached): its close reports `received`. */
+        frame: () => {
+            received = true;
+        },
         end,
         resume: () => {
             settleOpened(false);
-            settleClosed({ terminal: null, resumed: true });
+            settleClosed({ terminal: null, resumed: true, ...(received ? { received } : {}) });
         },
         follow: {
             send: () => true,

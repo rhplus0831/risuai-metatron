@@ -98,6 +98,19 @@ export function chatRoutePath(chaId: string, chatId: string): string {
     return `/chat/${encodeURIComponent(chaId)}/${encodeURIComponent(chatId)}`;
 }
 
+/** The chat a `chatRoutePath` names, or null for any other path (a query, a hash, or a bad escape included). */
+export function parseChatRoutePath(path: string): { chaId: string; chatId: string } | null {
+    const match = /^\/chat\/([^/?#]+)\/([^/?#]+)$/.exec(path);
+    if (!match) {
+        return null;
+    }
+    try {
+        return { chaId: decodeURIComponent(match[1]), chatId: decodeURIComponent(match[2]) };
+    } catch {
+        return null;
+    }
+}
+
 /**
  * A 53-bit string hash (cyrb53) in base 36: at most 11 characters whatever the ids' length, so the tag
  * never counts against the payload budget the way the route does.

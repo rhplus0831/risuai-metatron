@@ -328,6 +328,7 @@ function dropChatRevision(key: string) {
     chatRevisions.delete(key);
     ackedRevisions.delete(key);
     absentChats.delete(key);
+    idleReadStamps.delete(key);
     dirtyChatJournal(key, "pending");
     dirtyOrderJournal(key.split("\u0000")[0], "latest");
     releaseFeedLocks(`${key}\u0000`);
@@ -3894,6 +3895,7 @@ export function seedChats(
     orderRevisions.clear();
     staleChats.clear();
     noticedChats.clear();
+    idleReadStamps.clear();
     for (const chat of chats) {
         chatRevisions.set(keyOf(chat.characterId, chat.id), chat.revision);
     }
@@ -5759,9 +5761,47 @@ export function chatNoticeSeq(ref: ChatRef): number {
 export function finishIdleChatRefresh(server: RemoteChat, notice = 0, issued?: string | null): boolean {
     const key = keyOf(server.characterId, server.id);
     if (!staleChats.has(key) && !noticedChats.has(key)) {
+        laterIdleReadOut(key, server.readStamp);
         return false;
     }
-    return adoptChatRead(server, notice, issued);
+    const taken = adoptChatRead(server, notice, issued);
+    if (taken && server.revision !== null && laterIdleReadOut(key, server.readStamp)) {
+        // A later read of this chat is out: the copy that took may predate what that read was asked
+        // for (a job's end), so the mark stays for its copy.
+        staleChats.add(key);
+    }
+    return taken;
+}
+
+/**
+ * Whether an idle read of the chat issued after the one `readStamp` answers is still out; the newest
+ * read's answer ends the bookkeeping, whether or not its copy took.
+ */
+function laterIdleReadOut(key: string, readStamp: number | undefined): boolean {
+    const newest = idleReadStamps.get(key);
+    if (newest === undefined || readStamp === undefined) {
+        return false;
+    }
+    if (newest <= readStamp) {
+        idleReadStamps.delete(key);
+        return false;
+    }
+    return true;
+}
+
+/** The newest idle read stamp issued per chat (`noteIdleChatRead`), until that read answers. */
+const idleReadStamps = new Map<string, number>();
+
+/**
+ * An idle read of the chat was issued with `readStamp` (`readIdleChats`): an earlier read's copy that
+ * takes before this one answers leaves the stale mark, so this read's copy, asked for later, can take
+ * too (`finishIdleChatRefresh` adopts only a stale or noticed chat).
+ */
+export function noteIdleChatRead(ref: ChatRef, readStamp: number): void {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if ((idleReadStamps.get(key) ?? 0) < readStamp) {
+        idleReadStamps.set(key, readStamp);
+    }
 }
 
 /** Applies a chat read by ref under the idle refresh's safeguards (`finishIdleChatRefresh`, without its mark). */

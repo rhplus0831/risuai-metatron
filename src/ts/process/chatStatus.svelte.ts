@@ -2,7 +2,7 @@ import { fromStore, get, writable } from "svelte/store";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import { chatEntry, currentChatRef, findChat, lockedChatKeys, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
-import { followedJobs } from "src/ts/process/serverCommands";
+import { followedJobs, readChatAgain } from "src/ts/process/serverCommands";
 import { isLocalSend, localSends } from "src/ts/process/localSends";
 import { bookmarkListOpen, gridOpenStore, hypaV3ModalOpen, settingsOpen } from "src/ts/screenVisibility";
 import { messageSearchPanel } from "src/ts/messageSearch.svelte";
@@ -70,7 +70,7 @@ export function foreignJobChatKeys(): ReadonlySet<string> {
     return keys;
 }
 
-/** Lost follows, held until the chat is viewed or another job of it is followed. */
+/** Lost follows, held until the chat is viewed (which reads it again, `readChatAgain`) or another job of it is followed. */
 export const recoveryChatKeys = writable<ReadonlyMap<string, string>>(new Map());
 
 /** Replies that landed away from this tab's open chat, oldest first. */
@@ -146,6 +146,10 @@ export function watchChatVisibility(): () => void {
                 const next = new Map(recovery);
                 next.delete(key);
                 recoveryChatKeys.set(next);
+                // The lost job may have written since the chat was last read: read it again now that it
+                // is shown (outside the effect; `readChatAgain` writes chat state).
+                const [chaId, chatId] = key.split("\u0000");
+                queueMicrotask(() => readChatAgain({ chaId, chatId }));
             }
         });
 

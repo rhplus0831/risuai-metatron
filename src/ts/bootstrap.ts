@@ -172,8 +172,10 @@ export async function loadData() {
             void scheduleBootCacheCommit(commitBootCache);
             // Web Push: this browser's subscription kept in line, and the one-time banner offered.
             // Nothing here asks for the permission.
-            void import("./network/pushNotifications")
-                .then(({ startPushNotifications }) => startPushNotifications())
+            void Promise.all([import("./network/pushNotifications"), import("./process/serverCommands")])
+                .then(([{ startPushNotifications }, { refreshChatAfterPush }]) =>
+                    startPushNotifications({ onCompletionPush: refreshChatAfterPush }),
+                )
                 .catch((error) => console.error("[Push]", error));
             // Clear this tab's unseen and recovery marks when its open chat changes.
             void import("./process/chatStatus.svelte")

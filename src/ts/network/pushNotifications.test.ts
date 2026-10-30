@@ -13,7 +13,7 @@ import { languageEnglish } from "../../lang/en";
 // tab's notification (suppressed while subscribed or while the page is in front with the focus, the
 // worker's `showNotification`, the page's `Notification` fallback with the click opening the chat),
 // the foreground cleanup of the tagged notifications (with its `push` `dismissedByPage` event counting
-// what it closed), and the worker's `risu-open-route` message. A
+// what it closed), and the worker's `risu-open-route` and `risu-push-completion` messages. A
 // browser unsubscribe that rejects or resolves `false` (at a disable, and for an older key's
 // subscription) is reported in `error` and retried at the next sync, dropped by a re-enable, and
 // repaired when another tab turns this browser on mid-retry; the failure details follow the selected
@@ -162,9 +162,9 @@ function deferred<T = void>() {
 async function settle() {
     await vi.advanceTimersByTimeAsync(0);
 }
-async function boot() {
+async function boot(options?: Parameters<typeof import("./pushNotifications").startPushNotifications>[0]) {
     const module = await import("./pushNotifications");
-    module.startPushNotifications();
+    module.startPushNotifications(options);
     await settle();
     return module;
 }
@@ -1119,7 +1119,8 @@ describe("the page shown and the worker's messages", () => {
     });
 
     it("opens the chat of a `risu-open-route` message and answers the worker; other messages are ignored", async () => {
-        await boot();
+        const onCompletionPush = vi.fn();
+        await boot({ onCompletionPush });
         const port = { postMessage: vi.fn() };
         container.emit({ data: { type: "risu-open-route", url: "/chat/a/b" }, ports: [port] });
         expect(deps.openRoute).toHaveBeenCalledWith("/chat/a/b");
@@ -1131,6 +1132,19 @@ describe("the page shown and the worker's messages", () => {
         container.emit({ data: { type: "other", url: "/chat/a/b" }, ports: [port] });
         container.emit({ data: { type: "risu-open-route", url: 7 }, ports: [port] });
         container.emit({ data: null, ports: [] });
+        expect(deps.openRoute).not.toHaveBeenCalled();
+        expect(onCompletionPush).not.toHaveBeenCalled();
+    });
+
+    it("reports the chat of a `risu-push-completion` message, decoded from its route, and nothing for another path", async () => {
+        const onCompletionPush = vi.fn();
+        await boot({ onCompletionPush });
+        container.emit({ data: { type: "risu-push-completion", url: "/chat/a%20b/c%2Fd" }, ports: [] });
+        expect(onCompletionPush).toHaveBeenCalledExactlyOnceWith({ chaId: "a b", chatId: "c/d" });
+        container.emit({ data: { type: "risu-push-completion", url: "/" }, ports: [] });
+        container.emit({ data: { type: "risu-push-completion", url: "/chat/a" }, ports: [] });
+        container.emit({ data: { type: "risu-push-completion", url: 7 }, ports: [] });
+        expect(onCompletionPush).toHaveBeenCalledTimes(1);
         expect(deps.openRoute).not.toHaveBeenCalled();
     });
 });

@@ -398,6 +398,24 @@ function showPush(event){
 }
 
 /**
+ * Tells the app's windows (`windowState`'s list) which chat a completion push is for
+ * (`risu-push-completion`), so a tab whose follow of that job was lost reads the chat again
+ * (`pushNotifications.ts`). Sent before the display, whatever it does; a push for no chat says
+ * nothing. Best effort: a window whose post fails is skipped, and nothing of the payload but the
+ * checked route is sent.
+ */
+function announceCompletion(windows, route){
+    if(route === '/'){
+        return
+    }
+    for(const client of windows){
+        try {
+            client.postMessage({ type: 'risu-push-completion', url: route })
+        } catch {}
+    }
+}
+
+/**
  * Every push shows a notification (Safari ends a subscription whose pushes show none). While a window of
  * the app is in front (`windowState`'s `inFront`), the notification is silent, so it does not sound
  * after the page's message sound (`playMessage`), and it is closed once shown if the window is still in
@@ -411,6 +429,7 @@ function showPush(event){
 async function showPushNow(event, records){
     const push = readPush(event)
     const state = await windowState()
+    announceCompletion(state.windows, push.url)
     records[0].inFront = state.inFront
     records[0].focusedHidden = state.focusedHidden
     const inFront = state.inFront
@@ -457,20 +476,22 @@ async function showPushNow(event, records){
 }
 
 /**
- * Whether a window of the app is in front (`inFront`): focused and visible on the same window. A focused
- * window can be hidden (an Android PWA left for another app keeps the focus), and a push for it must still
- * sound and stay; `focusedHidden` says such a window was there. A failed lookup counts as no window.
+ * The app's same-origin windows (`windows`) and whether one is in front (`inFront`): focused and visible
+ * on the same window. A focused window can be hidden (an Android PWA left for another app keeps the
+ * focus), and a push for it must still sound and stay; `focusedHidden` says such a window was there. A
+ * failed lookup counts as no window.
  */
 async function windowState(){
     try {
         const windows = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
             .filter((client) => new URL(client.url).origin === self.location.origin)
         return {
+            windows,
             inFront: windows.some((client) => client.focused && client.visibilityState === 'visible'),
             focusedHidden: windows.some((client) => client.focused && client.visibilityState !== 'visible'),
         }
     } catch {
-        return { inFront: false, focusedHidden: false }
+        return { windows: [], inFront: false, focusedHidden: false }
     }
 }
 

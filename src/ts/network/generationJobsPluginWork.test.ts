@@ -212,7 +212,10 @@ describe("a job of this tab", () => {
         await flush();
         expect(active()).toBe(false);
         expect(listener).toHaveBeenCalled();
-        await expect(follow.closed).resolves.toEqual({ terminal: { type: "done", epoch: EPOCH, revision: null } });
+        await expect(follow.closed).resolves.toEqual({
+            terminal: { type: "done", epoch: EPOCH, revision: null },
+            received: true,
+        });
     });
 });
 

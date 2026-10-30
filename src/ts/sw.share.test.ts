@@ -314,6 +314,41 @@ describe("completion push", () => {
         expect(sw.shown.find((notification) => notification.tag === other)!.close).not.toHaveBeenCalled();
     });
 
+    it("tells every same-origin window the chat route of a completion push before its display, nothing for a push without one, and a window whose post fails does not fail the push", async () => {
+        const front = appWindow(true);
+        const back = appWindow(false, origin + "/settings");
+        const foreign = appWindow(true, "https://elsewhere.example/chat/c/a");
+        const sw = worker([front, back, foreign]);
+        const tag = completionNotificationTag("c", "a");
+        await sw.push(payload(tag));
+        for (const window of [front, back]) {
+            expect(window.postMessage).toHaveBeenCalledExactlyOnceWith({
+                type: "risu-push-completion",
+                url: "/chat/c/a",
+            });
+        }
+        expect(foreign.postMessage).not.toHaveBeenCalled();
+        front.postMessage.mockClear();
+        back.postMessage.mockClear();
+        await sw.push({ ...payload(tag), url: "https://elsewhere.example/chat/c/a" });
+        await sw.push({ ...payload(tag), url: undefined });
+        expect(front.postMessage).not.toHaveBeenCalled();
+        expect(back.postMessage).not.toHaveBeenCalled();
+        const broken = appWindow(true);
+        broken.postMessage.mockImplementation(() => {
+            throw new Error("gone");
+        });
+        const failing = worker([broken]);
+        await failing.push(payload(tag));
+        expect(broken.postMessage).toHaveBeenCalledTimes(1);
+        expect(shownTags(failing)).toEqual([tag]);
+        // A failed window lookup: no one told, the push still shown.
+        failing.clients.matchAll.mockRejectedValueOnce(new Error("no clients"));
+        await failing.push(payload(tag));
+        expect(broken.postMessage).toHaveBeenCalledTimes(1);
+        expect(shownTags(failing)).toEqual([tag, tag]);
+    });
+
     it("sounds and keeps the push when the app's windows are unfocused, foreign, or cannot be listed", async () => {
         const tag = completionNotificationTag("c", "a");
         for (const sw of [
