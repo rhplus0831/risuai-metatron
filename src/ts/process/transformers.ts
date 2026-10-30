@@ -2,8 +2,8 @@ import type {
     SummarizationOutput,
     TextToAudioPipeline,
     FeatureExtractionPipeline,
-    TextGenerationConfig,
     TextGenerationOutput,
+    TextGenerationPipeline,
     ImageToTextOutput,
 } from "@huggingface/transformers";
 import { language } from "src/lang";
@@ -14,6 +14,8 @@ import { selectSingleFileHandle, asBuffer } from "src/ts/util";
 import { readZipEntry, readZipIndex, type ZipFileIndex } from "./zipFile";
 import { v4 } from "uuid";
 import type { OnnxModelFiles } from "../../../shared/settings.ts";
+/** The generation options of the text-generation pipeline; the package stopped exporting the type by name. */
+type TextGenerationConfig = NonNullable<Parameters<TextGenerationPipeline["_call"]>[1]>;
 let tfCache: Cache = null;
 let tfLoaded = false;
 let tfMap: { [key: string]: string } = {};
