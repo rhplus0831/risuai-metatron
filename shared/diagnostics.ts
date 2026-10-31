@@ -757,7 +757,11 @@ export type DiagnosticsState = {
     uptimeSec: number;
     settings: { requestHistoryContent: boolean | null; requestHistoryLimit: number | null } | null;
     history: { rows: number | null; bytes: number | null } | null;
-    journal: { eventBytes: number; writeFailures: number };
+    /**
+     * `dropped` counts the event lines the queue cap refused. Optional: a state from before this field
+     * existed (a report an older tab built) has none.
+     */
+    journal: { eventBytes: number; writeFailures: number; dropped?: number };
     /**
      * The copies the folder's `shared/` holds, null when it could not be read. Optional: a state
      * from before this field existed (a report an older tab built) has none.

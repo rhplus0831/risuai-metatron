@@ -2,7 +2,8 @@ import { createHash, webcrypto } from "node:crypto";
 import { readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
+import { type DurableFs, mkdirDurableSync, writeFileDurable, writeFileDurableSync } from "../data/durableWrite.ts";
+import { createOrderedWriter, type OrderedWriter } from "../data/orderedWriter.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import { limitedBody } from "./limitedBody.ts";
@@ -12,6 +13,9 @@ export const CRYPTO_PATH = "/api/crypto";
 export const SET_PASSWORD_PATH = "/api/set_password";
 /** These routes read their bodies before any authentication; a body is a password, or a digest and a JWK. */
 export const MAX_AUTH_BODY_BYTES = 16 * 1024;
+
+const KNOWN_KEYS_KEY = "auth:keys";
+const PASSWORD_KEY = "auth:password";
 
 type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature";
 
@@ -75,9 +79,19 @@ function readKnownPublicKeys(file: string): string[] {
  * loopback-only `pnpm dev:agent` server, `listenConfig.ts`) accepts every token and answers
  * `/api/test_auth` with success, so the tab never asks for a password. `passwordSeed` initializes a
  * missing password file; an empty file keeps setup closed until the operator fixes or deletes it.
+ *
+ * A login and a password set are operations on `writer`, one key each: the operation reads the current
+ * state, derives the next, writes it durably, and installs it in memory only after the write, so two
+ * logins keep both keys and two sets have one winner. `fs` is what those writes call (tests inject
+ * latency and failures; default `node:fs/promises`).
  */
-export function createAuthStore(savePath: string, options: { bypass?: boolean; passwordSeed?: string } = {}) {
+export function createAuthStore(
+    savePath: string,
+    options: { bypass?: boolean; passwordSeed?: string; writer?: OrderedWriter; fs?: DurableFs } = {},
+) {
     const bypass = options.bypass === true;
+    const writer = options.writer ?? createOrderedWriter();
+    const fs = options.fs;
     const serverDir = path.join(savePath, "server");
     mkdirDurableSync(serverDir);
     const passwordPath = path.join(serverDir, "password");
@@ -206,9 +220,12 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
             }
             const body = parsed.body;
             if (typeof body.password === "string" && isStoredPassword(body.password)) {
-                const next = [...knownPublicKeysHashes, hashJSON(body.publicKey)];
-                writeFileDurableSync(knownPublicKeysPath, JSON.stringify(next));
-                knownPublicKeysHashes = next;
+                const hash = hashJSON(body.publicKey);
+                await writer.run(KNOWN_KEYS_KEY, async () => {
+                    const next = [...knownPublicKeysHashes, hash];
+                    await writeFileDurable(knownPublicKeysPath, JSON.stringify(next), { fs });
+                    knownPublicKeysHashes = next;
+                });
                 return c.json({ status: "success" });
             }
             return c.json({ error: "Password incorrect" }, 400);
@@ -231,26 +248,29 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
             if (!parsed.ok) {
                 return parsed.response;
             }
-            if (password.state === "damaged") {
-                return c.json({ error: damagedPasswordMessage }, 400);
-            }
-            if (password.state === "set") {
-                return c.text("already set", 400);
-            }
-            const nextPassword = parsed.body.password;
-            if (typeof nextPassword !== "string" || !nextPassword.trim()) {
-                return c.json({ error: "Password must be a non-empty string" }, 400);
-            }
-            try {
-                writeFileDurableSync(passwordPath, nextPassword);
-            } catch (error) {
-                // Directory sync can fail after publication. Keep setup closed until disk state is known.
-                password = { state: "damaged" };
-                password = readPasswordState(passwordPath);
-                throw error;
-            }
-            password = { state: "set", value: nextPassword };
-            return c.json({ status: "success" });
+            // The checks run inside the operation: of two calls, the second sees the first's password.
+            return await writer.run(PASSWORD_KEY, async () => {
+                if (password.state === "damaged") {
+                    return c.json({ error: damagedPasswordMessage }, 400);
+                }
+                if (password.state === "set") {
+                    return c.text("already set", 400);
+                }
+                const nextPassword = parsed.body.password;
+                if (typeof nextPassword !== "string" || !nextPassword.trim()) {
+                    return c.json({ error: "Password must be a non-empty string" }, 400);
+                }
+                try {
+                    await writeFileDurable(passwordPath, nextPassword, { fs });
+                } catch (error) {
+                    // Directory sync can fail after publication. Keep setup closed until disk state is known.
+                    password = { state: "damaged" };
+                    password = readPasswordState(passwordPath);
+                    throw error;
+                }
+                password = { state: "set", value: nextPassword };
+                return c.json({ status: "success" });
+            });
         });
     }
 

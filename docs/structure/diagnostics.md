@@ -47,9 +47,10 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
 ### Journal, reports, and support copies
 
 - `shared/diagnostics.ts`: event/state contracts and exact-key projections.
-  `server/src/diagnostics/journal.ts` `createDiagnosticsJournal`: `record`, `recent`,
-  `state`, `start`, `writeState`, `close`, `saveReport`, `saveShare`, `commitShare`, `discardShare`,
-  `removeShares`, `removeAllShares`, `listShares`, `eventsFor`.
+  `server/src/diagnostics/journal.ts` `createDiagnosticsJournal`: `record`, `recordFatal`,
+  `settled`, `recent`, `state`, `start`, `writeState`, `writeStateSync`, `close`, `finish`,
+  `saveReport`, `saveShare`, `commitShare`, `discardShare`, `removeShares`, `removeAllShares`,
+  `listShares`, `eventsFor`.
   A `job` error end from an explicit chat stop by another client includes the content-free
   `stoppedBy: "otherClient"`, retained by the journal and report projection. Its reason stays
   `aborted`: `isJobFailureEvent` excludes all user aborts, including these, from
@@ -62,15 +63,38 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   `dropped` with `reason` `closed` | `noKeys` | `queueFull` | `noSubscriptions` | `unreadable`. Fields:
   `service` (`fcm` | `apple` | `mozilla` | `windows` | `other`, from the endpoint host, never the URL)
   and `jobId` (passed beside the notification by the runner's `notifyCompletion`, never in the payload).
-  Journal and share/report work is synchronous. Failed daily JSONL appends truncate
-  back; a partial final line is separated before the next append. Whole-file state,
-  report, and share writes flush the temporary file before rename and sync the folder
-  afterwards; a folder-sync failure is counted even though the renamed file is treated
-  as landed. Daily event appends are not flushed to disk.
+  Appends and `state.json` publications run off the serving thread over `fs.promises`, as
+  operations on the context's ordered writer ([self-host server](self-host-server.md)), one
+  key each. `record` is synchronous for the ring and the job failures, then queues the line;
+  an append and the prune after it are one operation, so an append never races the deletion
+  of its file. Past `MAX_QUEUED_WRITE_BYTES` (8 MiB of queued lines) a line is not queued: the
+  event stays in the ring and `dropped` counts it (in the state and in reports).
+  `writeState` queues a publication; one not yet started is shared by later calls and builds
+  its state when it starts, so the latest state wins and a started one completes. Boot uses
+  `writeStateSync` (nothing is served yet).
+  `recordFatal` (both `main.ts` fatal paths) raises the terminal fence and takes over on the
+  calling stack: the queued lines in order, the fault's event, then the state, synchronously.
+  `finish` (dispose) closes the timers, waits for the two keys for at most 1 s, then does the
+  same takeover without an event, so the final state is published last. Past the fence a queued
+  operation does nothing, one in flight stops at its next check and touches no count, and
+  `record` and `writeState` work synchronously. A partial append's truncation, a prune's unlink,
+  and the publishing rename run on the JS thread behind that check, never as a submitted call,
+  which could land after the takeover. The synchronous path never prunes (a prune could delete
+  the fault's event when its day file alone passes the cap); the next creation's scan does.
+  A line whose first write was already submitted at the fence may land after the fault's.
+  Reports and shares stay synchronous with their unique-file publication, so a share stays one
+  step from its first read to its last write.
+  Failed daily JSONL appends truncate back; a partial final line is separated before the next
+  append. Whole-file state, report, and share writes flush the temporary file before rename
+  and sync the folder afterwards; a folder-sync failure is counted even though the renamed
+  file is treated as landed. Daily event appends are not flushed to disk.
   Failed writes increment a counter and log the first error code without throwing.
 - `server/src/diagnostics/share.ts` `createRequestShares`: `history.readShare` takes
   one transaction snapshot, oldest rows first; content-off rows contribute summaries.
   A share includes matching journal events and the last job error's checked fields.
+  The route awaits `settled` (every event accepted before the request is on disk) before its
+  shutdown recheck, then `share` runs without an await, so no withdrawal or "Delete all" can
+  interleave; a line dropped in the interval marks `eventsPartial`.
   `loadStoredSecrets` must succeed before sharing; every string is redacted again,
   headers masked by name, and trailing credential prefixes trimmed from cut fields.
   Replacement order is new file → mark every row → remove older files. A failed mark
@@ -185,9 +209,11 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   included when it alone exceeds the cap. The in-memory ring keeps 300 events.
 - `state.json` is replaced atomically: checked version and build id (`app.build`, from
   `server/src/buildInfo.ts` `readServerBuildInfo`)/runtime, uptime, history
-  settings/stats, journal bytes/failures, worker counters, live jobs, and last 20
-  non-abort failures. Writes occur at creation, every 10 minutes, within 5 s
-  of an error, on fatal fault, and after admitted work drains at disposal.
+  settings/stats, journal bytes/failures/dropped, worker counters, live jobs, and last 20
+  non-abort failures. Writes occur at creation, every 10 minutes, on fatal fault, and last
+  at disposal, after admitted work drains and the queues settle. An error queues one within
+  5 s, and the promise is that delay plus the publication's completion: 5.11 s from the event
+  to the file at a 100 ms fsync (`byte-budgets-probe.mjs`, `statePublication`).
 - `reports/<UTC stamp>-<8 hex>.txt`: newest 50 matching regular files retained;
   the new save survives a prune failure. `shared/<UTC stamp>-job-<id>.json` or
   `-request-<id>.json`: explicit request-content snapshots, bounded at 32 MiB of
@@ -222,8 +248,12 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
 - Preserve checked filenames, regular-file checks, and child-path symlink refusal.
   The configured diagnostics root itself may be a symlink or mount. Created
   directories/files use 0750/0640. Symlinked/non-directory `events`, `reports`, or
-  `shared` are refused; event handles use `O_NOFOLLOW | O_NONBLOCK` plus `fstat`.
-  State uses temp+rename; report/share temp creation is exclusive and no-follow.
+  `shared` are refused; event handles use `O_NOFOLLOW | O_NONBLOCK` plus `fstat`, on the
+  queued and the synchronous append alike. State uses temp+rename; state, report, and share
+  temp creation is exclusive and no-follow.
+- Nothing may land after the final state: every step that can undo or replace bytes on disk
+  runs on the JS thread behind the terminal fence, and a fatal fault's event and state are
+  written synchronously.
 - A diagnostics-only sftp account is the support-access boundary: restrict it to
   this folder and prevent access to `save/data/` or the wider `save/`. The app
   creates no sftp account/chroot. Support copies require explicit user action and
@@ -266,6 +296,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   by the push service and the job, also for a subscription rekeyed meanwhile; one `dropped` per
   reason; a throwing recorder changes nothing). `src/ts/sw.share.test.ts` covers the worker's records
   ([build-test](build-test-platforms.md)).
+  `server/src/tests/orderedWriter.test.ts` covers the writer's order, cap, and fairness.
   `server/src/tests/diagnosticsCrash.test.ts` covers fatal faults in fresh Node
   processes and is slow; select it through [build-test](build-test-platforms.md).
 - `src/ts/diagnostics/{collector,report,workerRecords}.test.ts`: ring/mirror/fetch-wrapper behavior,
@@ -309,7 +340,11 @@ job, and saving a phone browser report. The automated tests above do not cover t
   window collector.
   Decision: Out of scope of the Request History and Diagnostics plan (`ab11ea9d0`,
   [archive](../archived-plan/README.md)).
-- Journal/share work is synchronous. Folder write failures leave in-memory diagnostics
+- Reports, shares, and `eventsFor`'s day-file reads are synchronous: a 32 MiB share's writes and
+  fsync run on the serving thread. Folder write failures leave in-memory diagnostics
   available. A client timeout after report dispatch can leave a successfully saved file.
-  Decision: synchronous journal writes are an accepted trade-off
+  Decision: a share stays one synchronous step, since an await inside it lets a withdrawal be
+  undone; asynchronous copies would need a queue across a whole share
   (`server/src/diagnostics/journal.ts`).
+- A process that ends during a queued publication leaves its `.state-*.tmp`; creation does not
+  remove it. Accepted: one small file per crash.

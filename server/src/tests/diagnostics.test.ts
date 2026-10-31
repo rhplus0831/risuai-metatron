@@ -13,12 +13,14 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
+import promises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DiagnosticEvent, type DiagnosticEventInput, ROUTE_TEMPLATES } from "../../../shared/diagnostics.ts";
 import { BASE_LLM_MODELS } from "../../../shared/llm/models.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { createOrderedWriter } from "../data/orderedWriter.ts";
 import { createRequestHistory } from "../data/requestHistory.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
@@ -28,7 +30,7 @@ import {
     MAX_DIAGNOSTIC_REPORT_BYTES,
     REPORT_FILE_PATTERN,
 } from "../../../shared/diagnosticsReport.ts";
-import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "../diagnostics/journal.ts";
+import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES, type JournalFs } from "../diagnostics/journal.ts";
 import { type DiagnosticsRecorder, errorFields, logEvent, recordSafely } from "../diagnostics/log.ts";
 import { createGenerationJobs, GenerationRunnerError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
@@ -47,13 +49,14 @@ import { createResourceTestClient, createTestServer, sleep, TEST_INDEX_HTML, wai
 // broken folder never fails a job), the `request` events from the history observer, the `runtime`
 // events from `logEvent`, the lifecycle events (boot, shutdown, maintenance, restore), and the final
 // state at dispose while the stores are open. The crash hooks of `main.ts` run in a fresh process in
-// `diagnosticsCrash.test.ts`. The reports: `saveReport` and `reports/` (the name, the modes, the temp
-// file and rename with a taken name drawn again and a temp name never created never cleaned up, the
-// newest 50 kept by name with the one just saved always retained and other entries left alone, at
-// creation too, a symlinked or non-directory `reports/` refused, a failed prune leaving the save in
-// place), and `POST /api/diagnostics/report` (the canonical check before the write, the body limit by
-// declared and by actual bytes, the shutdown recheck after the body read, a failed save, `no-store`
-// on every answer, the text never logged).
+// `diagnosticsCrash.test.ts`. Appends and `state.json` publications are queued, so a test reads the
+// disk after `settled` or an awaited `writeState`. The reports: `saveReport` and `reports/` (the name,
+// the modes, the temp file and rename with a taken name drawn again and a temp name never created
+// never cleaned up, the newest 50 kept by name with the one just saved always retained and other
+// entries left alone, at creation too, a symlinked or non-directory `reports/` refused, a failed prune
+// leaving the save in place), and `POST /api/diagnostics/report` (the canonical check before the
+// write, the body limit by declared and by actual bytes, the shutdown recheck after the body read, a
+// failed save, `no-store` on every answer, the text never logged).
 
 const { fsOverrides, randomQueue } = vi.hoisted(() => ({
     fsOverrides: {
@@ -89,6 +92,22 @@ vi.mock("node:crypto", async (importOriginal) => {
 /** The real `node:fs`, outside the mock. */
 const realFs = process.getBuiltinModule("node:fs") as typeof import("node:fs");
 
+type QueuedWrite = (buffer: Buffer, offset: number, length: number) => Promise<{ bytesWritten: number }>;
+/** Answers each write of `writingFs`'s file handles in place of `real`, for one journal operation. */
+let queuedWrite: null | ((real: QueuedWrite, buffer: Buffer, offset: number) => Promise<{ bytesWritten: number }>) =
+    null;
+/** A journal's `fs`: `node:fs/promises` as it is, except a file handle `write` a test may replace. */
+const writingFs: JournalFs = {
+    ...promises,
+    async open(file, flags, mode) {
+        const handle = await promises.open(file, flags, mode);
+        const real: QueuedWrite = handle.write.bind(handle);
+        const write: QueuedWrite = (buffer, offset, length) =>
+            queuedWrite ? queuedWrite(real, buffer, offset) : real(buffer, offset, length);
+        return Object.assign(handle, { write });
+    },
+};
+
 const posix = process.platform !== "win32";
 const notRoot = posix && process.getuid?.() !== 0;
 const ID = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
@@ -118,6 +137,7 @@ beforeEach(() => {
 afterEach(async () => {
     fsOverrides.writeSync = null;
     fsOverrides.unlinkSync = null;
+    queuedWrite = null;
     randomQueue.length = 0;
     vi.useRealTimers();
     for (const cleanup of cleanups.splice(0).reverse()) {
@@ -161,12 +181,15 @@ function makeRoot(): string {
     return root;
 }
 
-/** A journal in `<temp>/diag` with the test clock; `sources` and the sizes as given. */
+/**
+ * A journal in `<temp>/diag` with the test clock; `sources` and the sizes as given. It is finished
+ * before the folder goes, so nothing queued outlives it (here and for the journals tests open directly).
+ */
 function openJournal(options: Partial<Parameters<typeof createDiagnosticsJournal>[0]> = {}) {
     const root = tempDir();
     const dir = options.dir ?? path.join(root, "diag");
     const journal = createDiagnosticsJournal({ now: () => clock, ...options, dir });
-    cleanups.push(() => journal.close());
+    cleanups.push(() => journal.finish());
     return { root, dir, events: path.join(dir, "events"), journal };
 }
 const lines = (file: string): DiagnosticEvent[] =>
@@ -191,16 +214,17 @@ const warnedCodes = () => warnings().map((call) => call[1]);
 const WARNING = "[Diagnostics] Could not write the diagnostics folder:";
 
 describe("the journal's folder and events", () => {
-    it("creates the folder and `events/` (0750), appends each projected event as one JSON line to the UTC day's file (0640), and counts the bytes", () => {
+    it("creates the folder and `events/` (0750), appends each projected event as one JSON line to the UTC day's file (0640), and counts the bytes", async () => {
         const { dir, events, journal } = openJournal();
         expect(lstatSync(events).isDirectory()).toBe(true);
-        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 0 });
+        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 0, dropped: 0 });
         expect(readdirSync(events)).toEqual([]);
 
         journal.record(boot);
         journal.record({ ...HTTP_LINE, url: "/secret?x=1" });
         clock += DAY_MS;
         journal.record({ kind: "lifecycle", phase: "shutdown", message: "secret" });
+        await journal.settled();
 
         expect(readdirSync(events).sort()).toEqual([dayFile(DAY_ONE), dayFile(DAY_ONE + DAY_MS)]);
         expect(lines(path.join(events, dayFile(DAY_ONE)))).toEqual([
@@ -223,13 +247,14 @@ describe("the journal's folder and events", () => {
         expect(warnings()).toEqual([]);
     });
 
-    it("drops an event the projection refuses, with nothing written", () => {
+    it("drops an event the projection refuses, with nothing written", async () => {
         const { events, journal } = openJournal();
         journal.record({ kind: "script", name: "Error" } as never);
         journal.record({ kind: "Private" } as never);
+        await journal.settled();
         expect(readdirSync(events)).toEqual([]);
         expect(journal.recent()).toEqual([]);
-        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 0 });
+        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 0, dropped: 0 });
     });
 
     it("keeps the last 300 events in the ring and the last 20 job failures (an owner's abort is not one), as copies", () => {
@@ -262,7 +287,7 @@ describe("the journal's folder and events", () => {
         expect(journal.recent().at(-1)!.stack).toEqual(["server/src/app.ts:1:1"]);
     });
 
-    it("prunes past the cap: the oldest day file first, the current day too when it alone passes, and the next event starts it again", () => {
+    it("prunes past the cap: the oldest day file first, the current day too when it alone passes, and the next event starts it again", async () => {
         const { events, journal } = openJournal({ maxBytes: 400 });
         // Two days of two lines (91 bytes each) fit under 400; a third day's first line does not.
         const LINE = Buffer.byteLength(JSON.stringify({ at: DAY_ONE, ...HTTP_LINE })) + 1;
@@ -273,9 +298,11 @@ describe("the journal's folder and events", () => {
         clock += DAY_MS;
         journal.record(HTTP_LINE);
         journal.record(HTTP_LINE);
+        await journal.settled();
         expect(totalSize(events)).toBe(4 * LINE);
         clock += DAY_MS;
         journal.record(HTTP_LINE);
+        await journal.settled();
         expect(readdirSync(events).sort()).toEqual([dayFile(DAY_ONE + DAY_MS), dayFile(DAY_ONE + 2 * DAY_MS)]);
         expect(journal.stats().eventBytes).toBe(totalSize(events));
         expect(totalSize(events)).toBe(3 * LINE);
@@ -283,21 +310,24 @@ describe("the journal's folder and events", () => {
         // The current day grows past the cap: the older day goes first.
         journal.record(HTTP_LINE);
         journal.record(HTTP_LINE);
+        await journal.settled();
         expect(readdirSync(events)).toEqual([dayFile(DAY_ONE + 2 * DAY_MS)]);
         expect(lines(path.join(events, dayFile(DAY_ONE + 2 * DAY_MS)))).toHaveLength(3);
         // A day that alone passes the cap is deleted; the next event starts it again.
         journal.record(BIG_LINE);
+        await journal.settled();
         expect(readdirSync(events)).toEqual([]);
         expect(journal.stats().eventBytes).toBe(0);
         journal.record(HTTP_LINE);
+        await journal.settled();
         expect(lines(path.join(events, dayFile(DAY_ONE + 2 * DAY_MS)))).toEqual([{ at: clock, ...HTTP_LINE }]);
-        expect(journal.stats()).toEqual({ eventBytes: LINE, writeFailures: 0 });
+        expect(journal.stats()).toEqual({ eventBytes: LINE, writeFailures: 0, dropped: 0 });
         // The ring keeps what the files lost.
         expect(journal.recent().length).toBe(9);
         expect(warnings()).toEqual([]);
     });
 
-    it("prunes an oversized folder at creation, counting only day files and leaving every other entry alone", () => {
+    it("prunes an oversized folder at creation, counting only day files and leaving every other entry alone", async () => {
         const root = tempDir();
         const dir = path.join(root, "diag");
         const events = path.join(dir, "events");
@@ -309,7 +339,7 @@ describe("the journal's folder and events", () => {
         writeFileSync(path.join(events, "2026-01-04.jsonl.bak"), "x".repeat(1000));
         mkdirSync(path.join(events, "2026-01-05.jsonl"));
         const journal = createDiagnosticsJournal({ dir, maxBytes: 250, now: () => clock });
-        cleanups.push(() => journal.close());
+        cleanups.push(() => journal.finish());
         expect(readdirSync(events).sort()).toEqual([
             "2026-01-02.jsonl",
             "2026-01-03.jsonl",
@@ -317,16 +347,17 @@ describe("the journal's folder and events", () => {
             "2026-01-05.jsonl",
             "notes.txt",
         ]);
-        expect(journal.stats()).toEqual({ eventBytes: 200, writeFailures: 0 });
+        expect(journal.stats()).toEqual({ eventBytes: 200, writeFailures: 0, dropped: 0 });
         // A file that went away on its own is not a failure; a line over the cap on its own leaves no file.
         rmSync(path.join(events, "2026-01-02.jsonl"));
         journal.record(BIG_LINE);
-        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 0 });
+        await journal.settled();
+        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 0, dropped: 0 });
         expect(readdirSync(events).sort()).toEqual(["2026-01-04.jsonl.bak", "2026-01-05.jsonl", "notes.txt"]);
         expect(warnings()).toEqual([]);
     });
 
-    it("starts the next line on a new line when the day file does not end in one (a partial tail from an earlier process)", () => {
+    it("starts the next line on a new line when the day file does not end in one (a partial tail from an earlier process)", async () => {
         const root = tempDir();
         const dir = path.join(root, "diag");
         const events = path.join(dir, "events");
@@ -334,13 +365,14 @@ describe("the journal's folder and events", () => {
         const file = path.join(events, dayFile(DAY_ONE));
         writeFileSync(file, '{"at":1,"kind":"lifecycle","phase":"boot"}\n{"at":2,"ki');
         const journal = createDiagnosticsJournal({ dir, now: () => clock });
-        cleanups.push(() => journal.close());
+        cleanups.push(() => journal.finish());
         journal.record(boot);
+        await journal.settled();
         const text = readFileSync(file, "utf8");
         expect(text).toBe(
             `{"at":1,"kind":"lifecycle","phase":"boot"}\n{"at":2,"ki\n{"at":${DAY_ONE},"kind":"lifecycle","phase":"boot"}\n`,
         );
-        expect(journal.stats()).toEqual({ eventBytes: Buffer.byteLength(text), writeFailures: 0 });
+        expect(journal.stats()).toEqual({ eventBytes: Buffer.byteLength(text), writeFailures: 0, dropped: 0 });
         // Every complete line parses; only the cut one does not.
         const parsed = text.split("\n").filter(Boolean);
         expect(parsed).toHaveLength(3);
@@ -348,46 +380,50 @@ describe("the journal's folder and events", () => {
         expect(() => JSON.parse(parsed[2])).not.toThrow();
     });
 
-    it("truncates a failed append back to the line before it, resyncs the count from the file, and appends cleanly next", () => {
-        const { events, journal } = openJournal();
+    it("truncates a failed append back to the line before it, resyncs the count from the file, and appends cleanly next", async () => {
+        const { events, journal } = openJournal({ fs: writingFs });
         journal.record(boot);
+        await journal.settled();
         const file = path.join(events, dayFile(DAY_ONE));
         const before = statSync(file).size;
         // A short write, then the disk is full.
         let calls = 0;
-        fsOverrides.writeSync = (fd, buffer, offset) => {
+        queuedWrite = async (real, buffer, offset) => {
             calls++;
             if (calls === 1) {
-                return realFs.writeSync(fd, buffer, offset, 3);
+                return real(buffer, offset, 3);
             }
             throw Object.assign(new Error("No space left on device"), { code: "ENOSPC" });
         };
         journal.record({ kind: "lifecycle", phase: "shutdown" });
-        fsOverrides.writeSync = null;
+        await journal.settled();
+        queuedWrite = null;
         expect(calls).toBe(2);
         expect(statSync(file).size).toBe(before);
-        expect(journal.stats()).toEqual({ eventBytes: before, writeFailures: 1 });
+        expect(journal.stats()).toEqual({ eventBytes: before, writeFailures: 1, dropped: 0 });
         expect(warnings()).toEqual([[WARNING, "ENOSPC"]]);
         journal.record({ kind: "lifecycle", phase: "shutdown" });
+        await journal.settled();
         expect(lines(file)).toEqual([
             { at: DAY_ONE, kind: "lifecycle", phase: "boot" },
             { at: DAY_ONE, kind: "lifecycle", phase: "shutdown" },
         ]);
-        expect(journal.stats()).toEqual({ eventBytes: statSync(file).size, writeFailures: 1 });
+        expect(journal.stats()).toEqual({ eventBytes: statSync(file).size, writeFailures: 1, dropped: 0 });
         // The ring kept the event the file lost.
         expect(journal.recent().map((event) => event.phase)).toEqual(["boot", "shutdown", "shutdown"]);
         // A write that makes no progress is a failure, not a loop.
-        fsOverrides.writeSync = () => 0;
+        queuedWrite = async () => ({ bytesWritten: 0 });
         journal.record(boot);
-        fsOverrides.writeSync = null;
-        expect(journal.stats()).toEqual({ eventBytes: statSync(file).size, writeFailures: 2 });
+        await journal.settled();
+        queuedWrite = null;
+        expect(journal.stats()).toEqual({ eventBytes: statSync(file).size, writeFailures: 2, dropped: 0 });
         expect(lines(file)).toHaveLength(2);
         expect(warnings()).toHaveLength(1);
     });
 });
 
 describe("the journal's refusals and failures", () => {
-    it("refuses a symlinked `events/`: nothing is written or pruned through it, the failure is counted, warned once with its code", () => {
+    it("refuses a symlinked `events/`: nothing is written or pruned through it, the failure is counted, warned once with its code", async () => {
         const root = tempDir();
         const dir = path.join(root, "diag");
         const elsewhere = path.join(root, "elsewhere");
@@ -396,26 +432,28 @@ describe("the journal's refusals and failures", () => {
         writeFileSync(path.join(elsewhere, "2020-01-01.jsonl"), "x".repeat(1000));
         symlinkSync(elsewhere, path.join(dir, "events"), "dir");
         const journal = createDiagnosticsJournal({ dir, maxBytes: 10, now: () => clock });
-        cleanups.push(() => journal.close());
-        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 1 });
+        cleanups.push(() => journal.finish());
+        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 1, dropped: 0 });
         journal.record(boot);
         journal.record(boot);
-        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 3 });
+        await journal.settled();
+        expect(journal.stats()).toEqual({ eventBytes: 0, writeFailures: 3, dropped: 0 });
         expect(readdirSync(elsewhere)).toEqual(["2020-01-01.jsonl"]);
         expect(statSync(path.join(elsewhere, "2020-01-01.jsonl")).size).toBe(1000);
         expect(lstatSync(path.join(dir, "events")).isSymbolicLink()).toBe(true);
         expect(journal.recent()).toHaveLength(2);
         expect(warnings()).toEqual([[WARNING, "ESYMLINK"]]);
         // `state.json` is still written beside it.
-        journal.writeState();
+        await journal.writeState();
         expect(readState(dir)).toMatchObject({ journal: { eventBytes: 0, writeFailures: 3 } });
     });
 
-    it("refuses a regular file in place of `events/`, and a symlink or a FIFO in place of the day file, without following or blocking", () => {
+    it("refuses a regular file in place of `events/`, and a symlink or a FIFO in place of the day file, without following or blocking", async () => {
         const asFile = openJournal({ dir: path.join(tempDir(), "f") });
         rmSync(asFile.events, { recursive: true });
         writeFileSync(asFile.events, "not a directory");
         asFile.journal.record(boot);
+        await asFile.journal.settled();
         expect(readFileSync(asFile.events, "utf8")).toBe("not a directory");
         expect(asFile.journal.stats().writeFailures).toBe(1);
 
@@ -424,6 +462,7 @@ describe("the journal's refusals and failures", () => {
         writeFileSync(target, "keep\n");
         symlinkSync(target, path.join(events, dayFile(DAY_ONE)));
         journal.record(boot);
+        await journal.settled();
         expect(readFileSync(target, "utf8")).toBe("keep\n");
         expect(lstatSync(path.join(events, dayFile(DAY_ONE))).isSymbolicLink()).toBe(true);
         expect(journal.stats().writeFailures).toBe(1);
@@ -431,27 +470,31 @@ describe("the journal's refusals and failures", () => {
             clock += DAY_MS;
             execFileSync("mkfifo", [path.join(events, dayFile(clock))]);
             journal.record(boot);
+            await journal.settled();
             expect(lstatSync(path.join(events, dayFile(clock))).isFIFO()).toBe(true);
             expect(journal.stats().writeFailures).toBe(2);
         }
         // Another day is unaffected.
         clock += DAY_MS;
         journal.record(boot);
+        await journal.settled();
         expect(lines(path.join(events, dayFile(clock)))).toEqual([{ at: clock, kind: "lifecycle", phase: "boot" }]);
         expect(journal.stats().eventBytes).toBe(statSync(path.join(events, dayFile(clock))).size);
         // One warning per journal.
         expect(warnedCodes()).toEqual(["ESYMLINK", "ESYMLINK"]);
     });
 
-    it.runIf(notRoot)("counts and warns once when the folder is not writable, and nothing throws", () => {
+    it.runIf(notRoot)("counts and warns once when the folder is not writable, and nothing throws", async () => {
         const { dir, events, journal } = openJournal();
         journal.record(boot);
+        await journal.settled();
         chmodSync(events, 0o500);
         chmodSync(dir, 0o500);
         clock += DAY_MS;
         expect(() => journal.record(boot)).not.toThrow();
         expect(() => journal.record(boot)).not.toThrow();
-        expect(() => journal.writeState()).not.toThrow();
+        await journal.settled();
+        await expect(journal.writeState()).resolves.toBeUndefined();
         expect(journal.stats().writeFailures).toBe(3);
         expect(warnings()).toEqual([[WARNING, "EACCES"]]);
         expect(readdirSync(dir).sort()).toEqual(["events"]);
@@ -459,21 +502,23 @@ describe("the journal's refusals and failures", () => {
         chmodSync(dir, 0o750);
         chmodSync(events, 0o750);
         journal.record(boot);
-        journal.writeState();
+        await journal.settled();
+        await journal.writeState();
         expect(readdirSync(events).sort()).toEqual([dayFile(DAY_ONE), dayFile(DAY_ONE + DAY_MS)]);
         expect(readState(dir)).toMatchObject({ journal: { writeFailures: 3 } });
     });
 
-    it("works without its folder: a file in its place, or the folder removed later, fails every write quietly", () => {
+    it("works without its folder: a file in its place, or the folder removed later, fails every write quietly", async () => {
         const root = tempDir();
         const asFile = path.join(root, "diag");
         writeFileSync(asFile, "a file");
         const journal = createDiagnosticsJournal({ dir: asFile, now: () => clock });
-        cleanups.push(() => journal.close());
+        cleanups.push(() => journal.finish());
         expect(journal.stats().writeFailures).toBe(1);
         expect(() => journal.record(boot)).not.toThrow();
+        await journal.settled();
         expect(journal.stats().writeFailures).toBe(2);
-        expect(() => journal.writeState()).not.toThrow();
+        await expect(journal.writeState()).resolves.toBeUndefined();
         expect(journal.recent()).toHaveLength(1);
         // The state's open is one failure; a temp name the open never created is not cleaned up (not a second one).
         expect(journal.stats().writeFailures).toBe(3);
@@ -483,23 +528,26 @@ describe("the journal's refusals and failures", () => {
 
         const gone = openJournal();
         gone.journal.record(boot);
+        await gone.journal.settled();
         rmSync(gone.dir, { recursive: true });
-        expect(() => gone.journal.writeState()).not.toThrow();
+        await expect(gone.journal.writeState()).resolves.toBeUndefined();
         expect(gone.journal.stats().writeFailures).toBe(1);
         expect(warnedCodes()[1]).toBe("ENOENT");
         // `events/` is created again on the next append (the folder came back), the count following the file.
         mkdirSync(gone.dir);
         gone.journal.record(boot);
+        await gone.journal.settled();
         expect(lines(path.join(gone.events, dayFile(DAY_ONE)))).toHaveLength(1);
         expect(gone.journal.stats()).toEqual({
             eventBytes: statSync(path.join(gone.events, dayFile(DAY_ONE))).size,
             writeFailures: 1,
+            dropped: 0,
         });
     });
 });
 
 describe("state.json", () => {
-    it("is built from explicit checked fields, each source on its own: a throwing source is null, a wrong value null, the version bounded", () => {
+    it("is built from explicit checked fields, each source on its own: a throwing source is null, a wrong value null, the version bounded", async () => {
         const { dir, journal } = openJournal({
             sources: {
                 appVersion: () => "2.0.1-beta+3",
@@ -512,7 +560,8 @@ describe("state.json", () => {
         });
         journal.record(failure());
         journal.record(failure("aborted"));
-        journal.writeState();
+        await journal.settled();
+        await journal.writeState();
         const state = readState(dir);
         expect(state).toEqual({
             version: 1,
@@ -525,7 +574,7 @@ describe("state.json", () => {
             uptimeSec: state.uptimeSec,
             settings: { requestHistoryContent: false, requestHistoryLimit: 250 },
             history: { rows: 3, bytes: 4096 },
-            journal: { eventBytes: journal.stats().eventBytes, writeFailures: 0 },
+            journal: { eventBytes: journal.stats().eventBytes, writeFailures: 0, dropped: 0 },
             // The copies in `shared/` (none yet; the folder is made by the first share).
             shared: { files: 0 },
             workers: { workers: 2, busy: 1, queued: 0, spawned: 5, terminated: 3 },
@@ -572,12 +621,12 @@ describe("state.json", () => {
         });
     });
 
-    it("is replaced atomically: a temp file renamed over it, none left behind, a symlink at its path replaced and never followed, a directory there a counted failure", () => {
+    it("is replaced atomically: a temp file renamed over it, none left behind, a symlink at its path replaced and never followed, a directory there a counted failure", async () => {
         const { root, dir, journal } = openJournal();
-        journal.writeState();
+        await journal.writeState();
         const first = readState(dir);
         clock += 1000;
-        journal.writeState();
+        await journal.writeState();
         expect(readState(dir).writtenAt).not.toBe(first.writtenAt);
         expect(readdirSync(dir).sort()).toEqual(["events", "state.json"]);
 
@@ -585,7 +634,7 @@ describe("state.json", () => {
         writeFileSync(target, "keep");
         rmSync(path.join(dir, "state.json"));
         symlinkSync(target, path.join(dir, "state.json"));
-        journal.writeState();
+        await journal.writeState();
         expect(readFileSync(target, "utf8")).toBe("keep");
         expect(lstatSync(path.join(dir, "state.json")).isSymbolicLink()).toBe(false);
         expect(readState(dir)).toMatchObject({ version: 1 });
@@ -593,46 +642,55 @@ describe("state.json", () => {
 
         rmSync(path.join(dir, "state.json"));
         mkdirSync(path.join(dir, "state.json"));
-        expect(() => journal.writeState()).not.toThrow();
+        await expect(journal.writeState()).resolves.toBeUndefined();
         expect(journal.stats().writeFailures).toBe(1);
         expect(readdirSync(dir).sort()).toEqual(["events", "state.json"]);
         expect(readdirSync(path.join(dir, "state.json"))).toEqual([]);
         expect(warnings()).toHaveLength(1);
     });
 
-    it("is written at most 5 s after the first error event (not postponed by later ones), every 10 minutes once started, and no more after close", () => {
+    it("is written at most 5 s after the first error event (not postponed by later ones), every 10 minutes once started, and no more after close", async () => {
         vi.useFakeTimers({ now: DAY_ONE });
-        const { dir, journal } = openJournal();
+        const writer = createOrderedWriter();
+        const { dir, journal } = openJournal({ writer });
+        // A publication a timer queued, or a timer that must not have queued one.
+        const landed = () => writer.settled("diagnostics:state");
         const written = () => (existsSync(path.join(dir, "state.json")) ? readState(dir).writtenAt : null);
         journal.record(HTTP_LINE);
         journal.record(failure("aborted"));
         vi.advanceTimersByTime(10_000);
+        await landed();
         expect(written()).toBeNull();
 
         journal.record(failure());
         vi.advanceTimersByTime(4_000);
+        await landed();
         expect(written()).toBeNull();
         journal.record(failure());
         journal.record({ ...HTTP_LINE, status: 500 });
         clock += 5_000;
         vi.advanceTimersByTime(1_000);
+        await landed();
         expect(written()).toBe(new Date(DAY_ONE + 5_000).toISOString());
         // A write made by the caller clears a pending one.
         journal.record({ kind: "request", requestId: ID, status: "error" });
         clock += 1_000;
-        journal.writeState();
+        await journal.writeState();
         expect(written()).toBe(new Date(DAY_ONE + 6_000).toISOString());
         clock += 10_000;
         vi.advanceTimersByTime(10_000);
+        await landed();
         expect(written()).toBe(new Date(DAY_ONE + 6_000).toISOString());
 
         journal.start();
         journal.start();
         clock += 10 * 60_000;
         vi.advanceTimersByTime(10 * 60_000);
+        await landed();
         expect(written()).toBe(new Date(DAY_ONE + 16_000 + 10 * 60_000).toISOString());
         clock += 10 * 60_000;
         vi.advanceTimersByTime(10 * 60_000);
+        await landed();
         expect(written()).toBe(new Date(DAY_ONE + 16_000 + 20 * 60_000).toISOString());
 
         journal.close();
@@ -640,26 +698,32 @@ describe("state.json", () => {
         journal.record({ kind: "runtime", origin: "dispose" });
         clock += 10 * 60_000;
         vi.advanceTimersByTime(20 * 60_000);
+        await landed();
         expect(written()).toBe(new Date(DAY_ONE + 16_000 + 20 * 60_000).toISOString());
         journal.start();
         vi.advanceTimersByTime(20 * 60_000);
+        await landed();
         expect(written()).toBe(new Date(DAY_ONE + 16_000 + 20 * 60_000).toISOString());
         // Closed, the journal still records and writes on demand (a fatal fault, the final state).
         expect(journal.recent().at(-1)).toMatchObject({ kind: "runtime", origin: "dispose" });
-        journal.writeState();
+        await journal.writeState();
         expect(written()).toBe(new Date(DAY_ONE + 16_000 + 30 * 60_000).toISOString());
         expect(journal.stats().writeFailures).toBe(0);
     });
 
-    it("never throws from a timer when the write fails: the failure is counted", () => {
+    it("never throws from a timer when the write fails: the failure is counted", async () => {
         vi.useFakeTimers({ now: DAY_ONE });
-        const { dir, journal } = openJournal();
+        const writer = createOrderedWriter();
+        const { dir, journal } = openJournal({ writer });
         journal.start();
         rmSync(dir, { recursive: true });
         journal.record(failure());
         expect(() => vi.advanceTimersByTime(10 * 60_000)).not.toThrow();
-        // The append, the error event's write, and the interval's write all failed.
-        expect(journal.stats().writeFailures).toBe(3);
+        await journal.settled();
+        await writer.settled("diagnostics:state");
+        // The append failed, and so did the one publication the error event's timer and the interval
+        // shared: the timers fire in one step, so the second finds the first still queued.
+        expect(journal.stats().writeFailures).toBe(2);
         expect(warnings()).toHaveLength(1);
     });
 });
@@ -945,6 +1009,7 @@ describe("the job registry", () => {
         expect(recorded[5]).not.toHaveProperty("requestId");
         expect(recorded[7]).toMatchObject({ phase: "error", reason: "aborted" });
         expect(journal.state().recentJobFailures.map((event) => event.jobId)).toEqual([failed, marked]);
+        await journal.settled();
         const text = readFileSync(path.join(events, dayFile(DAY_ONE)), "utf8");
         expect(text).not.toContain("secret");
         expect(lines(path.join(events, dayFile(DAY_ONE)))).toHaveLength(8);
@@ -955,7 +1020,7 @@ describe("the job registry", () => {
         const asFile = path.join(root, "diag");
         writeFileSync(asFile, "a file");
         const journal = createDiagnosticsJournal({ dir: asFile, now: () => clock });
-        cleanups.push(() => journal.close());
+        cleanups.push(() => journal.finish());
         const broken = setup(journal);
         const jobId = broken.create(async (job) => {
             job.emit({ type: "done", revision: job.context.chatRevision });
@@ -963,6 +1028,7 @@ describe("the job registry", () => {
         await broken.ended(jobId);
         expect(broken.jobs.status(jobId, "tab")).toMatchObject({ state: "ended" });
         expect(journal.recent().map((event) => event.phase)).toEqual(["accepted", "done"]);
+        await journal.settled();
         expect(journal.stats().writeFailures).toBe(3);
         expect(readFileSync(asFile, "utf8")).toBe("a file");
 
@@ -1036,6 +1102,8 @@ describe("the server context", () => {
         await a.app.request("/nowhere");
         expect(b.context.diagnostics.recent()).toHaveLength(1);
         expect(a.context.diagnostics.recent()).toHaveLength(2);
+        await a.context.diagnostics.settled();
+        await b.context.diagnostics.settled();
         const [fileA] = readdirSync(path.join(dirA, "events"));
         expect(lines(path.join(dirA, "events", fileA))).toHaveLength(2);
         const [fileB] = readdirSync(path.join(dirB, "events"));
@@ -1091,6 +1159,7 @@ describe("the server context", () => {
         for (const event of events) {
             expect(event.durationMs).toBeGreaterThanOrEqual(0);
         }
+        await s.context.diagnostics.settled();
         const [file] = readdirSync(path.join(s.savePath, "diagnostics", "events"));
         const text = readFileSync(path.join(s.savePath, "diagnostics", "events", file), "utf8");
         expect(text).not.toContain("alice");
@@ -1194,6 +1263,7 @@ describe("the read route and the route table", () => {
             state: readFileSync(path.join(dir, "state.json"), "utf8"),
             events: sizes(path.join(dir, "events")),
         });
+        await s.context.diagnostics.settled();
         const before = folder();
         const res = await s.request("/api/diagnostics");
         expect(res.status).toBe(200);
@@ -1208,11 +1278,12 @@ describe("the read route and the route table", () => {
             status: 400,
         });
         expect(Object.keys(body.state).sort()).toEqual(Object.keys(s.context.diagnostics.state()).sort());
-        expect(body.state.journal).toEqual({ eventBytes: expect.any(Number), writeFailures: 0 });
+        expect(body.state.journal).toEqual({ eventBytes: expect.any(Number), writeFailures: 0, dropped: 0 });
         const slash = await s.request("/api/diagnostics/");
         expect(slash.status).toBe(200);
         expect(slash.headers.get("cache-control")).toBe("no-store");
         expect(((await slash.json()) as { events: unknown[] }).events).toEqual(body.events);
+        await s.context.diagnostics.settled();
         expect(folder()).toEqual(before);
     });
 
@@ -1371,7 +1442,7 @@ describe("the report journal", () => {
         const link = reportName(DAY_ONE - 1000, "ffffffff");
         symlinkSync(path.join(reports, "keep.txt"), path.join(reports, link));
         const journal = createDiagnosticsJournal({ dir, now: () => clock });
-        cleanups.push(() => journal.close());
+        cleanups.push(() => journal.finish());
         expect(readdirSync(reports).sort()).toEqual([...names.slice(5), "keep.txt", link].sort());
         expect(readFileSync(path.join(reports, "keep.txt"), "utf8")).toBe("mine");
         expect(journal.stats().writeFailures).toBe(0);
@@ -1381,7 +1452,7 @@ describe("the report journal", () => {
         expect(fresh.journal.stats().writeFailures).toBe(0);
     });
 
-    it("refuses a symlinked `reports/` or a regular file in its place: nothing is written or pruned through it, the failure counted and warned once with its code", () => {
+    it("refuses a symlinked `reports/` or a regular file in its place: nothing is written or pruned through it, the failure counted and warned once with its code", async () => {
         const { root, dir, journal } = openJournal();
         const elsewhere = path.join(root, "elsewhere");
         mkdirSync(elsewhere);
@@ -1396,7 +1467,7 @@ describe("the report journal", () => {
         expect(warnings()).toEqual([[WARNING, "ESYMLINK"]]);
         // At creation too (the startup prune), and a regular file in its place.
         const linked = createDiagnosticsJournal({ dir, now: () => clock });
-        cleanups.push(() => linked.close());
+        cleanups.push(() => linked.finish());
         expect(linked.stats().writeFailures).toBe(1);
         expect(readdirSync(elsewhere)).toHaveLength(60);
 
@@ -1406,11 +1477,11 @@ describe("the report journal", () => {
         expect(asFile.journal.stats().writeFailures).toBe(1);
         expect(readFileSync(path.join(asFile.dir, "reports"), "utf8")).toBe("not a directory");
         // `state.json` is still written beside it.
-        asFile.journal.writeState();
+        await asFile.journal.writeState();
         expect(readState(asFile.dir)).toMatchObject({ journal: { writeFailures: 1 } });
     });
 
-    it("never deletes an entry it did not create: a temp name already taken fails the write (one counted failure), the entry kept as it was; for `state.json` too", () => {
+    it("never deletes an entry it did not create: a temp name already taken fails the write (one counted failure), the entry kept as it was; for `state.json` too", async () => {
         const { dir, journal } = openJournal();
         const reports = path.join(dir, "reports");
         mkdirSync(reports);
@@ -1425,12 +1496,12 @@ describe("the report journal", () => {
 
         writeFileSync(path.join(dir, ".state-0badf00d.tmp"), "theirs");
         randomQueue.push("0badf00d");
-        journal.writeState();
+        await journal.writeState();
         expect(readFileSync(path.join(dir, ".state-0badf00d.tmp"), "utf8")).toBe("theirs");
         expect(existsSync(path.join(dir, "state.json"))).toBe(false);
         expect(journal.stats().writeFailures).toBe(2);
         // A name that is free works, and the stray temp files stay.
-        journal.writeState();
+        await journal.writeState();
         expect(readState(dir)).toMatchObject({ journal: { writeFailures: 2 } });
         expect(readdirSync(dir).sort()).toEqual([".state-0badf00d.tmp", "events", "reports", "state.json"]);
     });
@@ -1739,3 +1810,433 @@ async function createCommandJob(s: Awaited<ReturnType<typeof createResourceTestC
     expect(res.status).toBe(200);
     return ((await res.json()) as { jobId: string }).jobId;
 }
+
+function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((yes, no) => {
+        resolve = yes;
+        reject = no;
+    });
+    return { promise, resolve, reject };
+}
+
+describe("queued journal writes", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] }));
+
+    it("appends a day's lines in order and finishes pruning that file before the next append", async () => {
+        const writeEntered = deferred<void>();
+        const releaseWrite = deferred<void>();
+        const pruneEntered = deferred<void>();
+        const releasePrune = deferred<void>();
+        let appended = 0;
+        let pruning = false;
+        let pruneHeld = false;
+        let crossedPrune = false;
+        const fs: JournalFs = {
+            ...promises,
+            async lstat(file) {
+                if (path.basename(file) === "events" && appended === 3 && !pruneHeld) {
+                    pruning = true;
+                    pruneHeld = true;
+                    pruneEntered.resolve();
+                    await releasePrune.promise;
+                } else if (pruning) crossedPrune = true;
+                return realFs.lstatSync(file);
+            },
+            async open(file, flags, mode) {
+                const handle = await promises.open(file, flags, mode);
+                const write = handle.write.bind(handle);
+                if (file.endsWith(".jsonl"))
+                    Object.assign(handle, {
+                        write: async (buffer: Buffer, offset: number, length: number) => {
+                            if (appended === 0) {
+                                writeEntered.resolve();
+                                await releaseWrite.promise;
+                            }
+                            const result = await write(buffer, offset, length);
+                            appended++;
+                            return result;
+                        },
+                    });
+                return handle;
+            },
+        };
+        const { events, journal } = openJournal({ fs, maxBytes: 200 });
+        const file = path.join(events, dayFile(clock));
+        for (const status of [400, 401, 402, 403]) journal.record({ ...HTTP_LINE, status });
+        const settled = journal.settled();
+        try {
+            await writeEntered.promise;
+            expect(readFileSync(file, "utf8")).toBe("");
+            releaseWrite.resolve();
+            await pruneEntered.promise;
+            await vi.advanceTimersByTimeAsync(0);
+            expect(crossedPrune).toBe(false);
+            expect(lines(file).map((event) => event.status)).toEqual([400, 401, 402]);
+            pruning = false;
+            // The next append sees a fresh file after the over-cap day's deletion.
+            releasePrune.resolve();
+            await settled;
+            expect(lines(file)).toEqual([{ at: DAY_ONE, ...HTTP_LINE, status: 403 }]);
+            expect(journal.stats().eventBytes).toBe(statSync(file).size);
+        } finally {
+            releaseWrite.resolve();
+            releasePrune.resolve();
+            await settled;
+        }
+    });
+
+    it("drops appends beyond the queued byte cap and publishes the count in state and a canonical report", async () => {
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const fs: JournalFs = {
+            ...promises,
+            async open(file, flags, mode) {
+                if (file.endsWith(".jsonl")) {
+                    entered.resolve();
+                    await release.promise;
+                }
+                return promises.open(file, flags, mode);
+            },
+        };
+        const { dir, events, journal } = openJournal({ fs, maxQueuedBytes: 200, stateDelayMs: 5 });
+        journal.record({ ...HTTP_LINE, status: 500 });
+        await entered.promise;
+        journal.record({ ...HTTP_LINE, status: 501 });
+        journal.record({ ...HTTP_LINE, status: 502 });
+        journal.record({ ...HTTP_LINE, status: 503 });
+        try {
+            expect(journal.state().journal.dropped).toBe(2);
+            expect(journal.recent().map((event) => event.status)).toEqual([500, 501, 502, 503]);
+            release.resolve();
+            await journal.settled();
+            await journal.writeState();
+            expect(lines(path.join(events, dayFile(clock))).map((event) => event.status)).toEqual([500, 501]);
+            expect(readState(dir)).toMatchObject({ journal: { dropped: 2 } });
+            const report = reportOf(journal);
+            expect(report).toContain('"dropped":2');
+            expect(canonicalDiagnosticReport(report)).toBe(report);
+        } finally {
+            release.resolve();
+            await journal.settled();
+        }
+    });
+
+    it("completes a started state publication and collapses queued publications to the latest state", async () => {
+        const entered = [deferred<void>(), deferred<void>()];
+        const releases = [deferred<void>(), deferred<void>()];
+        let publications = 0;
+        let live = 1;
+        const fs: JournalFs = {
+            ...promises,
+            async open(file, flags, mode) {
+                const handle = await promises.open(file, flags, mode);
+                if (path.basename(file).startsWith(".state-")) {
+                    const index = publications++;
+                    const sync = handle.sync.bind(handle);
+                    Object.assign(handle, {
+                        sync: async () => {
+                            entered[index]?.resolve();
+                            await releases[index]?.promise;
+                            await sync();
+                        },
+                    });
+                }
+                return handle;
+            },
+        };
+        const { dir, journal } = openJournal({ fs, sources: { liveJobs: () => live } });
+        const first = journal.writeState();
+        await entered[0].promise;
+        live = 2;
+        const second = journal.writeState();
+        live = 3;
+        const third = journal.writeState();
+        try {
+            releases[0].resolve();
+            await first;
+            await entered[1].promise;
+            expect(readState(dir)).toMatchObject({ jobs: { live: 1 } });
+            releases[1].resolve();
+            await Promise.all([second, third]);
+            expect(readState(dir)).toMatchObject({ jobs: { live: 3 } });
+            expect(publications).toBe(2);
+        } finally {
+            releases.forEach((release) => release.resolve());
+            await Promise.all([first, second, third]);
+        }
+    });
+
+    it("tolerates EINVAL and EPERM when flushing a published state directory and counts other errors", async () => {
+        for (const code of ["EINVAL", "EPERM", "EIO"]) {
+            const fs: JournalFs = {
+                ...promises,
+                async open(file, flags, mode) {
+                    const handle = await promises.open(file, flags, mode);
+                    if (flags === "r")
+                        Object.assign(handle, {
+                            sync: async () => {
+                                throw Object.assign(new Error(code), { code });
+                            },
+                        });
+                    return handle;
+                },
+            };
+            const { dir, journal } = openJournal({ fs });
+            await journal.writeState();
+            expect(readState(dir)).toMatchObject({ version: 1 });
+            expect(journal.state().journal.writeFailures, code).toBe(code === "EIO" ? 1 : 0);
+        }
+    });
+
+    it("takes over queued lines and publishes the fatal state without pruning or allowing an older publication to replace it", async () => {
+        const appendEntered = deferred<void>();
+        const appendRelease = deferred<void>();
+        const stateEntered = deferred<void>();
+        const stateRelease = deferred<void>();
+        const writer = createOrderedWriter();
+        let live = 1;
+        const fs: JournalFs = {
+            ...promises,
+            async open(file, flags, mode) {
+                if (file.endsWith(".jsonl")) {
+                    appendEntered.resolve();
+                    await appendRelease.promise;
+                }
+                const handle = await promises.open(file, flags, mode);
+                if (path.basename(file).startsWith(".state-")) {
+                    const sync = handle.sync.bind(handle);
+                    Object.assign(handle, {
+                        sync: async () => {
+                            stateEntered.resolve();
+                            await stateRelease.promise;
+                            await sync();
+                        },
+                    });
+                }
+                return handle;
+            },
+        };
+        const { dir, events, journal } = openJournal({ fs, writer, maxBytes: 80, sources: { liveJobs: () => live } });
+        const publishing = journal.writeState();
+        journal.record(boot);
+        await Promise.all([appendEntered.promise, stateEntered.promise]);
+        journal.record(failure());
+        live = 0;
+        const fatal: DiagnosticEventInput = { kind: "runtime", origin: "uncaughtException", name: "TypeError" };
+        try {
+            journal.recordFatal(fatal);
+            const file = path.join(events, dayFile(clock));
+            expect(lines(file)).toEqual([
+                { at: clock, ...boot },
+                { at: clock, ...failure() },
+                { at: clock, ...fatal },
+            ]);
+            expect(readState(dir)).toMatchObject({
+                jobs: { live: 0 },
+                journal: { eventBytes: statSync(file).size, writeFailures: 0 },
+            });
+            const final = readFileSync(path.join(dir, "state.json"), "utf8");
+            appendRelease.resolve();
+            stateRelease.resolve();
+            await publishing;
+            await writer.settled("diagnostics:events");
+            expect(readFileSync(path.join(dir, "state.json"), "utf8")).toBe(final);
+            expect(lines(file).at(-1)).toEqual({ at: clock, ...fatal });
+        } finally {
+            appendRelease.resolve();
+            stateRelease.resolve();
+            await publishing;
+            await writer.settled("diagnostics:events");
+        }
+    });
+
+    it("prevents a submitted state rename from landing after the fatal publication", async () => {
+        const renameEntered = deferred<void>();
+        const releaseRename = deferred<void>();
+        let live = 1;
+        const fs = {
+            ...promises,
+            async rename(from: string, to: string) {
+                renameEntered.resolve();
+                await releaseRename.promise;
+                await promises.rename(from, to);
+            },
+        };
+        const { dir, journal } = openJournal({ fs, sources: { liveJobs: () => live } });
+        const publishing = journal.writeState();
+        // A synchronous publication has ended here. A submitted rename would still be in flight.
+        await Promise.race([publishing, renameEntered.promise]);
+        try {
+            live = 0;
+            journal.recordFatal({ kind: "runtime", origin: "uncaughtException", name: "TypeError" });
+            const final = readFileSync(path.join(dir, "state.json"), "utf8");
+            expect(JSON.parse(final)).toMatchObject({ jobs: { live: 0 } });
+            releaseRename.resolve();
+            await publishing;
+            expect(readFileSync(path.join(dir, "state.json"), "utf8")).toBe(final);
+        } finally {
+            releaseRename.resolve();
+            await publishing;
+        }
+    });
+
+    it("never lets a failed append's deferred truncation erase a fatal event", async () => {
+        const failed = deferred<void>();
+        const release = deferred<void>();
+        const writer = createOrderedWriter();
+        const fs: JournalFs = {
+            ...promises,
+            async open(file, flags, mode) {
+                const handle = await promises.open(file, flags, mode);
+                if (!file.endsWith(".jsonl")) return handle;
+                const write = handle.write.bind(handle);
+                const stat = handle.stat.bind(handle);
+                const truncate = handle.truncate.bind(handle);
+                let writes = 0;
+                let broken = false;
+                return Object.assign(handle, {
+                    write: async (buffer: Buffer, offset: number) => {
+                        if (writes++ === 0) return write(buffer, offset, 8);
+                        broken = true;
+                        throw Object.assign(new Error("partial append"), { code: "EIO" });
+                    },
+                    // A queued truncate would still be outstanding when the fatal path takes over.
+                    truncate: async (size: number) => {
+                        failed.resolve();
+                        await release.promise;
+                        await truncate(size);
+                    },
+                    stat: async () => {
+                        if (broken) {
+                            failed.resolve();
+                            await release.promise;
+                        }
+                        return stat();
+                    },
+                });
+            },
+        };
+        const { events, journal } = openJournal({ fs, writer });
+        journal.record(boot);
+        await failed.promise;
+        const fatal: DiagnosticEventInput = { kind: "runtime", origin: "uncaughtException", name: "TypeError" };
+        try {
+            journal.recordFatal(fatal);
+            release.resolve();
+            await writer.settled("diagnostics:events");
+            expect(lines(path.join(events, dayFile(clock)))).toEqual([{ at: clock, ...fatal }]);
+        } finally {
+            release.resolve();
+            await writer.settled("diagnostics:events");
+        }
+    });
+
+    it("truncates its own synchronous partial append and keeps the next fatal line parseable", async () => {
+        const { events, journal } = openJournal();
+        journal.recordFatal(boot);
+        const file = path.join(events, dayFile(clock));
+        const before = readFileSync(file, "utf8");
+        let writes = 0;
+        fsOverrides.writeSync = (fd, buffer, offset, length) => {
+            if (writes++ === 0) return realFs.writeSync(fd, buffer, offset, Math.min(8, length));
+            throw Object.assign(new Error("short synchronous append"), { code: "EIO" });
+        };
+        try {
+            journal.record(HTTP_LINE);
+        } finally {
+            fsOverrides.writeSync = null;
+        }
+        expect(readFileSync(file, "utf8")).toBe(before);
+        const fatal: DiagnosticEventInput = { kind: "runtime", origin: "uncaughtException", name: "TypeError" };
+        journal.recordFatal(fatal);
+        expect(lines(file)).toEqual([
+            { at: clock, ...boot },
+            { at: clock, ...fatal },
+        ]);
+        expect(journal.state().journal.writeFailures).toBe(1);
+    });
+
+    it("drains before the final state and takes over a stalled queue at the drain deadline without losing lines", async () => {
+        for (const stalled of [false, true]) {
+            const appendEntered = deferred<void>();
+            const appendRelease = deferred<void>();
+            const stateEntered = deferred<void>();
+            const stateRelease = deferred<void>();
+            const writer = createOrderedWriter();
+            let live = 1;
+            const fs: JournalFs = {
+                ...promises,
+                async open(file, flags, mode) {
+                    if (file.endsWith(".jsonl")) {
+                        appendEntered.resolve();
+                        await appendRelease.promise;
+                    }
+                    const handle = await promises.open(file, flags, mode);
+                    if (path.basename(file).startsWith(".state-")) {
+                        const sync = handle.sync.bind(handle);
+                        Object.assign(handle, {
+                            sync: async () => {
+                                stateEntered.resolve();
+                                await stateRelease.promise;
+                                await sync();
+                            },
+                        });
+                    }
+                    return handle;
+                },
+            };
+            const { dir, events, journal } = openJournal({
+                fs,
+                writer,
+                drainDeadlineMs: 25,
+                sources: { liveJobs: () => live },
+            });
+            const publishing = journal.writeState();
+            journal.record(boot);
+            await Promise.all([appendEntered.promise, stateEntered.promise]);
+            journal.record({ kind: "lifecycle", phase: "shutdown" });
+            live = 0;
+            let finished = false;
+            const finishing = journal.finish().then(() => {
+                finished = true;
+            });
+            try {
+                await vi.advanceTimersByTimeAsync(24);
+                expect(finished).toBe(false);
+                if (stalled) {
+                    await vi.advanceTimersByTimeAsync(1);
+                    expect(finished).toBe(true);
+                } else {
+                    appendRelease.resolve();
+                    await journal.settled();
+                    expect(finished).toBe(false);
+                    stateRelease.resolve();
+                }
+                await finishing;
+                const file = path.join(events, dayFile(clock));
+                expect(lines(file)).toEqual([
+                    { at: clock, ...boot },
+                    { at: clock, kind: "lifecycle", phase: "shutdown" },
+                ]);
+                expect(readState(dir)).toMatchObject({
+                    jobs: { live: 0 },
+                    journal: { eventBytes: statSync(file).size, writeFailures: 0 },
+                });
+                const final = readFileSync(path.join(dir, "state.json"), "utf8");
+                appendRelease.resolve();
+                stateRelease.resolve();
+                await publishing;
+                await writer.settled("diagnostics:events");
+                expect(readFileSync(path.join(dir, "state.json"), "utf8")).toBe(final);
+            } finally {
+                appendRelease.resolve();
+                stateRelease.resolve();
+                await publishing;
+                await finishing;
+                await writer.settled("diagnostics:events");
+            }
+        }
+    });
+});

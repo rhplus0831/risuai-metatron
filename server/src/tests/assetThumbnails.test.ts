@@ -246,9 +246,15 @@ describe("asset thumbnails", () => {
                 expect(response.headers.get("cache-control")).toBe("no-store");
             }
         }
-        // Static serving may stat `dist/` first; nothing under `save/` is touched before the JWT check.
+        // Static serving may stat `dist/` first; nothing under `save/` is touched before the JWT check,
+        // except the diagnostics folder, which receives the journal's own `http` events of the refusals.
+        const diagnostics = path.join(s.savePath, "diagnostics") + path.sep;
         for (const access of accesses) {
-            expect(access.mock.calls.filter(([file]) => String(file).startsWith(s.savePath))).toEqual([]);
+            expect(
+                access.mock.calls.filter(
+                    ([file]) => String(file).startsWith(s.savePath) && !String(file).startsWith(diagnostics),
+                ),
+            ).toEqual([]);
         }
         expect(loader).not.toHaveBeenCalled();
         expect(await entries(s)).toEqual([]);

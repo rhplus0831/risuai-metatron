@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
     existsSync,
     mkdirSync,
+    mkdtempSync,
     readdirSync,
     readFileSync,
     rmSync,
@@ -13,6 +14,11 @@ import {
 } from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import { Hono } from "hono";
+import { createAuthStore } from "../routes/auth.ts";
+import type { DurableFs } from "../data/durableWrite.ts";
+import type { AppEnv } from "../types.ts";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
@@ -1171,6 +1177,7 @@ describe("storage routes", () => {
             "assets/",
             "assets/" + "가".repeat(60),
         ];
+        await s.context.diagnostics.settled();
         const open = vi.spyOn(fsPromises, "open");
         for (const key of unsupported) {
             const res = await read(s, key);
@@ -1312,6 +1319,142 @@ describe("storage routes", () => {
             expect(await db.text()).toBe("db");
         } finally {
             await restarted.dispose();
+        }
+    });
+});
+
+function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((yes, no) => {
+        resolve = yes;
+        reject = no;
+    });
+    return { promise, resolve, reject };
+}
+
+describe("serialized auth persistence", () => {
+    function authApp(save: string, fs: DurableFs, passwordSeed?: string) {
+        const auth = createAuthStore(save, { fs, passwordSeed });
+        const app = new Hono<AppEnv>();
+        const pass = async (_c: unknown, next: () => Promise<void>) => {
+            await next();
+        };
+        auth.registerRoutes(app, { auth: pass, login: pass });
+        return { auth, app };
+    }
+
+    it("keeps both concurrent login keys, answers after durability, and rejects a failed login without installing its key", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const save = mkdtempSync(path.join(os.tmpdir(), "risu-auth-operations-"));
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        let held = false;
+        let fail = false;
+        const fs: DurableFs = {
+            ...fsPromises,
+            async open(file, flags, mode) {
+                const handle = await fsPromises.open(file, flags, mode);
+                const sync = handle.sync.bind(handle);
+                Object.assign(handle, {
+                    sync: async () => {
+                        if (flags === "r" && !held) {
+                            held = true;
+                            entered.resolve();
+                            await release.promise;
+                        }
+                        if (flags === "wx" && fail) throw Object.assign(new Error("disk failure"), { code: "EIO" });
+                        await sync();
+                    },
+                });
+                return handle;
+            },
+        };
+        const { auth, app } = authApp(save, fs, "pw");
+        const [a, b, refused] = await Promise.all([createSigner(), createSigner(), createSigner()]);
+        const login = (signer: typeof a) =>
+            app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+        let answered = false;
+        const first = Promise.resolve(login(a)).then((response) => {
+            answered = true;
+            return response;
+        });
+        await entered.promise;
+        const second = login(b);
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(answered).toBe(false);
+            expect(await auth.isAuthorizedToken(await a.jwt())).toBe(false);
+            release.resolve();
+            expect((await first).status).toBe(200);
+            expect((await second).status).toBe(200);
+            const file = path.join(save, "server", "known_public_key_hashes.json");
+            const expected = [a, b].map((signer) =>
+                createHash("sha256").update(JSON.stringify(signer.publicJwk)).digest("hex"),
+            );
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expected);
+            expect(await auth.isAuthorizedToken(await a.jwt())).toBe(true);
+            expect(await auth.isAuthorizedToken(await b.jwt())).toBe(true);
+            fail = true;
+            expect((await login(refused)).status).toBe(500);
+            expect(await auth.isAuthorizedToken(await refused.jwt())).toBe(false);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expected);
+        } finally {
+            release.resolve();
+            await Promise.all([first, second]);
+            vi.useRealTimers();
+            rmSync(save, { recursive: true, force: true });
+        }
+    });
+
+    it("gives concurrent password setup one durable winner and answers already set to the loser", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const save = mkdtempSync(path.join(os.tmpdir(), "risu-password-operations-"));
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const fs: DurableFs = {
+            ...fsPromises,
+            async open(file, flags, mode) {
+                const handle = await fsPromises.open(file, flags, mode);
+                const sync = handle.sync.bind(handle);
+                if (flags === "wx")
+                    Object.assign(handle, {
+                        sync: async () => {
+                            entered.resolve();
+                            await release.promise;
+                            await sync();
+                        },
+                    });
+                return handle;
+            },
+        };
+        const { auth, app } = authApp(save, fs);
+        let answered = false;
+        const first = Promise.resolve(app.request("/api/set_password", json({ password: "first" }))).then(
+            (response) => {
+                answered = true;
+                return response;
+            },
+        );
+        await entered.promise;
+        const second = app.request("/api/set_password", json({ password: "second" }));
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(answered).toBe(false);
+            expect(await (await app.request("/api/test_auth")).json()).toEqual({ status: "unset" });
+            release.resolve();
+            expect((await first).status).toBe(200);
+            const loser = await second;
+            expect(loser.status).toBe(400);
+            expect(await loser.text()).toBe("already set");
+            expect(readFileSync(path.join(save, "server", "password"), "utf8")).toBe("first");
+            expect(await auth.isAuthorizedProxyToken("first")).toBe(true);
+            expect(await auth.isAuthorizedProxyToken("second")).toBe(false);
+        } finally {
+            release.resolve();
+            await Promise.all([first, second]);
+            vi.useRealTimers();
+            rmSync(save, { recursive: true, force: true });
         }
     });
 });

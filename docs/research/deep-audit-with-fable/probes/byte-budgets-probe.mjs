@@ -50,12 +50,14 @@
 //   baseline reset to null before each run, autoKeep 2, so a run saves, writes the policy and prunes).
 // - `open` (SD05): on `library`, `createResourceStore` then `close`, nothing changed between runs, with a
 //   `listRevisions` comparison and a count of the statements that ran against `resources` during the opens.
-// - `statePublication` (SD06): `diagnostics.writeState()` of a real context, which is synchronous, so its duration is
-//   the serving thread's blocked time. The journal has no injectable `fs` and calls `fsyncSync` synchronously, so a
-//   caller cannot wait for a promise. `realFsync` measures the real fsync on this filesystem. `asyncFsyncStub` patches
-//   `fs.fsyncSync` through `syncBuiltinESMExports` (which reaches the named imports of `journal.ts` and
-//   `durableWrite.ts`) with a stub that counts the call, starts an unref'd 100 ms timer and returns at once; never a
-//   blocking stand-in. `blockedAt100MsFsyncMs` is derived from those: the stub's blocked ms + `fsyncCalls` x 100.
+// - `statePublication` (SD06): `writeState()` of a journal on its own (`createDiagnosticsJournal({ dir, fs })`), `RUNS`
+//   publications. `delayedFsync` injects an `fs` over `node:fs/promises` whose handle `sync()`, the directory sync
+//   included, resolves after an asynchronous 100 ms (a timer, never a blocking stand-in); `realFsync` is the same with
+//   this filesystem's own fsync. For each: `writeStateCall`, the synchronous cost of the call; `longestTickGap`, the
+//   longest gap between two turns of a `setImmediate` loop while the publication runs, which is the serving thread's
+//   blocked time; `completion`, from the call until its promise resolves; `fsyncCalls` per publication; `writeFailures`.
+//   `errorState` is the five-second promise at the 100 ms fsync and the default `stateDelayMs`: one error event
+//   recorded, then the time until `state.json` carries it.
 // - `continuation` (F07): the client's loop against the read route. `routeBudget` is the real contract: a loop over
 //   `POST /api/resources/read` with `continue: true`, re-sending the answer's `unanswered` until it has none, at the
 //   route's default budget (`MAX_READ_RESPONSE_BYTES`): rounds, bytes per round, total ms. `budgets` plays a budget the
@@ -69,8 +71,8 @@
 //   `syncTrafficFixture` runs both on the library as it stands (10 chats, 300 characters).
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import fs, { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import promises from "node:fs/promises";
 import { loadavg, tmpdir } from "node:os";
 import path from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
@@ -81,6 +83,7 @@ import { createServerContext } from "../../../../server/src/app.ts";
 import { createCheckpointService } from "../../../../server/src/data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../../server/src/data/kinds.ts";
 import { createResourceStore } from "../../../../server/src/data/resourceStore.ts";
+import { createDiagnosticsJournal } from "../../../../server/src/diagnostics/journal.ts";
 import { MAX_AUTO_EVERY } from "../../../../shared/chatCheckpoints.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../../shared/resources.ts";
 
@@ -735,74 +738,98 @@ async function open([fixture]) {
     };
 }
 
-async function statePublication() {
-    const rootDir = createRoot("statePublication");
-    return withContext(rootDir, { authBypass: true }, async ({ diagnostics }) => {
-        const blocked = () => {
-            const start = performance.now();
-            diagnostics.writeState();
-            return performance.now() - start;
-        };
-
-        const realFsync = [];
-        for (let run = 0; run < RUNS; run++) {
-            globalThis.gc?.();
-            realFsync.push(blocked());
-        }
-
-        const stubbed = [];
-        const original = fs.fsyncSync;
-        let fsyncCalls = 0;
-        let timersFiredAfterReturn = 0;
-        let timersFiredBeforeReturn = 0;
-        const perPublication = [];
-        for (let run = 0; run < RUNS; run++) {
-            globalThis.gc?.();
-            const callsBefore = fsyncCalls;
-            let returned = false;
-            fs.fsyncSync = () => {
-                fsyncCalls += 1;
-                setTimeout(() => {
-                    if (returned) timersFiredAfterReturn += 1;
-                    else timersFiredBeforeReturn += 1;
-                }, FSYNC_DELAY_MS).unref();
-            };
-            syncBuiltinESMExports();
-            try {
-                stubbed.push(blocked());
-                returned = true;
-            } finally {
-                fs.fsyncSync = original;
-                syncBuiltinESMExports();
-            }
-            perPublication.push(fsyncCalls - callsBefore);
-            await yieldFor(FSYNC_DELAY_MS + 50);
-        }
-        if (fsyncCalls === 0) throw new Error("the fsync stub was never called: the patch did not reach the journal");
-
-        const stub = timing(stubbed);
-        const callsPerPublication = median(perPublication);
-        return {
-            note:
-                "The journal has no injectable fs and calls fsyncSync synchronously, so no caller can wait for a " +
-                "promise. asyncFsyncStub returns at once and starts an unref'd timer, so its blocked time excludes " +
-                "fsync; blockedAt100MsFsyncMs adds it back.",
-            writeFailures: diagnostics.stats().writeFailures,
-            realFsync: timing(realFsync),
-            asyncFsyncStub: {
-                ...stub,
-                fsyncCalls: callsPerPublication,
-                fsyncCallsRuns: perPublication,
-                timersFiredAfterReturn,
-                timersFiredBeforeReturn,
-            },
-            blockedAt100MsFsyncMs: {
-                derived: true,
-                value: round(stub.medianMs + callsPerPublication * FSYNC_DELAY_MS),
-                note: "A synchronous fsync blocks the thread for its whole duration.",
-            },
-        };
+/** `node:fs/promises` counting every handle's `sync()`, which resolves after `delayMs` when one is given. */
+function countingFs(delayMs) {
+    const counts = { syncs: 0 };
+    const wrap = (handle) => ({
+        fd: handle.fd,
+        stat: () => handle.stat(),
+        read: (...args) => handle.read(...args),
+        write: (...args) => handle.write(...args),
+        chmod: (mode) => handle.chmod(mode),
+        close: () => handle.close(),
+        async sync() {
+            counts.syncs += 1;
+            await (delayMs === undefined ? handle.sync() : yieldFor(delayMs));
+        },
     });
+    return { counts, fs: { ...promises, open: async (...args) => wrap(await promises.open(...args)) } };
+}
+
+/** One publication: its call's cost, the longest turn of the event loop while it ran, and the time to its end. */
+async function publication(journal) {
+    let running = true;
+    let longest = 0;
+    let last = performance.now();
+    const tick = () => {
+        const at = performance.now();
+        longest = Math.max(longest, at - last);
+        last = at;
+        if (running) setImmediate(tick);
+    };
+    setImmediate(tick);
+    const start = performance.now();
+    const done = journal.writeState();
+    const callMs = performance.now() - start;
+    await done;
+    const completionMs = performance.now() - start;
+    running = false;
+    return { callMs, longestGapMs: longest, completionMs };
+}
+
+async function publications(name, delayMs) {
+    const { counts, fs } = countingFs(delayMs);
+    const journal = createDiagnosticsJournal({ dir: path.join(scratch, "statePublication", name), fs });
+    const runs = [];
+    const perPublication = [];
+    for (let run = 0; run < RUNS; run++) {
+        globalThis.gc?.();
+        const syncsBefore = counts.syncs;
+        runs.push(await publication(journal));
+        perPublication.push(counts.syncs - syncsBefore);
+    }
+    await journal.finish();
+    return {
+        writeStateCall: timing(runs.map((run) => run.callMs)),
+        longestTickGap: timing(runs.map((run) => run.longestGapMs)),
+        completion: timing(runs.map((run) => run.completionMs)),
+        fsyncCalls: median(perPublication),
+        fsyncCallsRuns: perPublication,
+        writeFailures: journal.stats().writeFailures,
+    };
+}
+
+/** An error event recorded on a journal with the default state delay, until `state.json` carries it. */
+async function errorState() {
+    const dir = path.join(scratch, "statePublication", "errorState");
+    const journal = createDiagnosticsJournal({ dir, fs: countingFs(FSYNC_DELAY_MS).fs });
+    const carried = () => {
+        try {
+            return JSON.parse(readFileSync(path.join(dir, "state.json"), "utf8")).recentJobFailures.length > 0;
+        } catch {
+            return false;
+        }
+    };
+    const start = performance.now();
+    journal.record({ kind: "job", phase: "error", jobId: randomUUID(), reason: "failed" });
+    while (!carried()) {
+        await yieldFor(5);
+    }
+    const untilStateMs = round(performance.now() - start);
+    await journal.finish();
+    return { untilStateMs, writeFailures: journal.stats().writeFailures };
+}
+
+async function statePublication() {
+    return {
+        note:
+            "writeState queues its publication: the fsyncs run off the serving thread, so longestTickGap stays near " +
+            "the idle loop's whatever the fsync costs, and completion carries it instead.",
+        fsyncDelayMs: FSYNC_DELAY_MS,
+        delayedFsync: await publications("delayedFsync", FSYNC_DELAY_MS),
+        realFsync: await publications("realFsync"),
+        errorState: await errorState(),
+    };
 }
 
 /** The charges `playBudget` spends: stored bytes read with SQL, before anything is parsed. */

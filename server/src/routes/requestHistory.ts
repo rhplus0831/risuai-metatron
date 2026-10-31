@@ -157,13 +157,17 @@ export function registerRequestHistoryRoutes(
         if (!body) {
             return c.json({ error: "Expected { jobId | requestId, shared }" }, 400);
         }
+        const { shared, ...query } = body;
+        // A share holds every event accepted before it was asked; `share` itself never awaits.
+        if (shared) {
+            await shares.settled();
+        }
         if (shuttingDown()) {
             return closing(c);
         }
         if (!history.available()) {
             return unavailable(c);
         }
-        const { shared, ...query } = body;
         const outcome = shared ? shares.share(query) : shares.withdraw(query);
         if (!outcome.ok) {
             if (outcome.status === 503) {

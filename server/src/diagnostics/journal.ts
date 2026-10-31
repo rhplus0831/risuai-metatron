@@ -16,6 +16,7 @@ import {
     unlinkSync,
     writeSync,
 } from "node:fs";
+import fsPromises, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import {
     type DiagnosticEvent,
@@ -34,16 +35,23 @@ import {
     SHARE_JOB_ID,
     SHARE_REQUEST_ID,
 } from "../../../shared/requestHistory.ts";
-import { syncDirSync } from "../data/durableWrite.ts";
+import { syncDir, syncDirSync } from "../data/durableWrite.ts";
+import { createOrderedWriter, type OrderedWriter } from "../data/orderedWriter.ts";
 import type { DiagnosticsRecorder } from "./log.ts";
 
 /** `RISU_DIAGNOSTICS_MAX_BYTES`' default: the cap of `events/`. */
 export const DIAGNOSTICS_MAX_BYTES = 64 * 1024 * 1024;
 
+/** `maxQueuedBytes`' default: the bytes of event lines waiting for the disk. */
+export const MAX_QUEUED_WRITE_BYTES = 8 * 1024 * 1024;
+
 const RING_SIZE = 300;
 const RECENT_JOB_FAILURES = 20;
 const STATE_INTERVAL_MS = 10 * 60_000;
 const STATE_DELAY_MS = 5_000;
+const DRAIN_DEADLINE_MS = 1_000;
+const EVENTS_KEY = "diagnostics:events";
+const STATE_KEY = "diagnostics:state";
 const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const STATE_FILE = "state.json";
 const REPORTS_KEPT = 50;
@@ -59,6 +67,19 @@ const FILE_MODE = 0o640;
 /** Not defined on Windows: there the open does not protect the final component (the `lstat` before it remains). */
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const NONBLOCK = constants.O_NONBLOCK ?? 0;
+const APPEND_FLAGS = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | NOFOLLOW | NONBLOCK;
+const TEMP_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW;
+
+/** The `node:fs/promises` file handle members the queued writes call. */
+export type JournalFileHandle = Pick<FileHandle, "fd" | "stat" | "read" | "write" | "chmod" | "sync" | "close">;
+
+/** The `node:fs/promises` members the queued writes call (tests inject latency and failures). */
+export type JournalFs = {
+    open(file: string, flags: string | number, mode?: number): Promise<JournalFileHandle>;
+    lstat(file: string): Promise<{ isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }>;
+    mkdir(folder: string, options: { mode: number }): Promise<unknown>;
+    chmod(file: string, mode: number): Promise<void>;
+};
 
 /** What `state.json` reports besides the journal's own fields; each source is read on its own. */
 export type DiagnosticsStateSources = {
@@ -76,19 +97,39 @@ export type DiagnosticsJournal = DiagnosticsRecorder & {
     recent(): DiagnosticEvent[];
     /** The state `state.json` would hold now. */
     state(): DiagnosticsState;
-    /** Writes `state.json` now (temp file, then rename). */
-    writeState(): void;
+    /**
+     * Queues a `state.json` publication (temp file, then rename) and resolves when it ended. One queued
+     * and not yet started is shared, and builds its state when it starts. Past the fence it publishes
+     * synchronously. Never rejects: a failure is counted.
+     */
+    writeState(): Promise<void>;
+    /** Publishes `state.json` before it returns (the boot state: nothing is served yet). */
+    writeStateSync(): void;
+    /**
+     * A fault that ends the process: raises the fence, then appends what is still queued and the fault's
+     * event, and publishes the state, all before it returns.
+     */
+    recordFatal(input: DiagnosticEventInput): void;
+    /** Resolves once every append accepted before this call has landed. */
+    settled(): Promise<void>;
     /** Starts the 10-minute `state.json` timer. Idempotent. */
     start(): void;
     /** Stops the timers and the state writes they would make; `record` and `writeState` still work. Idempotent. */
     close(): void;
-    stats(): { eventBytes: number; writeFailures: number };
+    /**
+     * The end of a graceful shutdown: closes the timers, waits for the queues (at most
+     * `drainDeadlineMs`), then raises the fence as `recordFatal` does, so what is left is flushed, not
+     * lost, and publishes the final state last. Idempotent.
+     */
+    finish(): Promise<void>;
+    stats(): { eventBytes: number; writeFailures: number; dropped: number };
     /** Saves a checked report to `reports/` (newest 50 kept). Never throws: a failure is counted. */
     saveReport(text: string): SaveReportResult;
     /**
      * The server events `match` accepts, from the day files of `fromMs`'s UTC day (an hour before it)
-     * on, and the ring; oldest first. `partial` when a day file or `events/` could not be read or a
-     * line was skipped. Never throws.
+     * on, and the ring; oldest first. `partial` when a day file or `events/` could not be read, a line
+     * was skipped, or the queue cap dropped an append in that interval. An append still queued is read
+     * from the ring (`settled` first, for all of them). Never throws.
      */
     eventsFor(
         match: (event: DiagnosticEvent) => boolean,
@@ -115,6 +156,9 @@ export type DiagnosticsJournal = DiagnosticsRecorder & {
 export type SaveReportResult = { ok: true; name: string } | { ok: false };
 
 type ShareFile = { name: string; target: RequestHistoryShareTarget; at: number };
+
+/** An event line waiting for the disk. */
+type QueuedLine = { name: string; line: string; bytes: number };
 
 /** The target of a share kind and id, or null when the id is not of the server's shapes. */
 function shareTarget(kind: string, id: string): RequestHistoryShareTarget | null {
@@ -184,19 +228,35 @@ class RefusedPathError extends Error {
  * - `events/` is capped at `maxBytes`: past it, the oldest day file is deleted, the current one too
  *   when it alone passes the cap (the next event starts it again). Only `YYYY-MM-DD.jsonl` regular
  *   files are counted and deleted; anything else in the folder is left alone. The cap is enforced at
- *   creation and after every append.
- * - `state.json` is written at creation of the server context (the caller's `writeState`), every 10
- *   minutes (`start`), at most 5 s after an error event (`isDiagnosticErrorEvent`; a pending write is
- *   not postponed by later ones), and when the caller asks (a fatal fault, the final state at dispose).
- * - The writes are synchronous (an accepted trade-off): every job transition, request end, and
- *   HTTP answer of 400 or more blocks the event loop for one small append, and a fatal fault's event
- *   and state land before the process exits.
+ *   creation and after every queued append.
+ * - `state.json` is written at creation of the server context (the caller's `writeStateSync`), every
+ *   10 minutes (`start`), when a publication queued at most 5 s after an error event ends
+ *   (`isDiagnosticErrorEvent`; a pending write is not postponed by later ones), and when the caller
+ *   asks (`writeState`; `recordFatal` and `finish` publish the final state).
+ * - Appends and `state.json` publications leave the serving thread: `record` and `writeState` queue
+ *   them on `writer`, one key each, over `fs`. An append and the prune after it are one operation, so
+ *   an append never races the deletion of its file. A line that would take the queued bytes past
+ *   `maxQueuedBytes` is not queued: the event stays in the ring and is counted (`dropped`), and
+ *   `eventsFor` calls that interval partial. A publication not yet started is shared by later calls and
+ *   builds its state when it starts, so the latest state wins.
+ * - The fence: `recordFatal` and `finish` raise `terminal` and take over on the calling stack. What
+ *   is queued is appended synchronously in order, a fault's event after it, and the state is published,
+ *   so all of it lands before the process ends. Past the fence, a queued operation does nothing, one in
+ *   flight stops at its next check and touches no count, and `record` and `writeState` work
+ *   synchronously. The synchronous path never prunes: a prune could delete the fault's event when its
+ *   day file alone passes the cap (the next creation's scan prunes). Every step that can undo or
+ *   replace bytes on disk (a partial append's truncation, a prune's unlink, the publishing rename) runs
+ *   on the JS thread behind that check, never as a submitted call, which could land after the
+ *   takeover's own writes. A publication stopped by the fence removes its temp file.
+ * - Reports and shared copies stay synchronous (`writeAtomic`): a share runs as one synchronous step
+ *   (`share.ts`), and making them asynchronous would take a queue across a whole share.
  * - Trust: the folder is the server's own; a group may read it (directories 0750, files 0640, set on
  *   what the journal creates; existing entries keep their modes). Inside it nothing is followed: a
  *   symlinked or non-directory `events/` stops every operation below it, a day file that is not a
- *   regular file is refused (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` and `fstat`), and a symlink at
- *   `state.json` is replaced by the rename, not followed. The folder itself may be a symlink (a
- *   mount). This guards against a stray entry, not against a writer racing the server in its own folder.
+ *   regular file is refused (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` and `fstat`, on both append
+ *   paths), and a symlink at `state.json` is replaced by the rename, not followed. The folder itself
+ *   may be a symlink (a mount). This guards against a stray entry, not against a writer racing the
+ *   server in its own folder.
  * - `reports/` holds the reports the Diagnostics panel saves (`saveReport`): each written
  *   whole (temp file, then rename), the newest 50 kept (after a save, and at creation). The same
  *   refusals apply: a symlinked or non-directory `reports/` is not used, and only report-named
@@ -213,7 +273,7 @@ class RefusedPathError extends Error {
  *   and is written after every change of them.
  * - `eventsFor` reads the day files back (bounded chunks, a line over 64 KiB skipped, each line
  *   projected again) for a share's events. Refused entries, failed reads, oversized or malformed
- *   lines, and unterminated tails mark the result partial.
+ *   lines, unterminated tails, and a drop in the interval mark the result partial.
  * - A failed write never fails the caller: it is counted (`writeFailures`, in the next state that
  *   lands) and the first one is logged with its error code only.
  */
@@ -224,6 +284,14 @@ export function createDiagnosticsJournal(options: {
     sources?: DiagnosticsStateSources;
     stateIntervalMs?: number;
     stateDelayMs?: number;
+    /** The server context's writer; default one of its own. */
+    writer?: OrderedWriter;
+    /** What the queued writes call; default `node:fs/promises`. */
+    fs?: JournalFs;
+    /** The bytes of event lines that may wait for the disk; default `MAX_QUEUED_WRITE_BYTES`. */
+    maxQueuedBytes?: number;
+    /** How long `finish` waits for the queues; default 1 s. */
+    drainDeadlineMs?: number;
 }): DiagnosticsJournal {
     const dir = options.dir;
     const eventsDir = path.join(dir, "events");
@@ -232,17 +300,34 @@ export function createDiagnosticsJournal(options: {
     const maxBytes = options.maxBytes ?? DIAGNOSTICS_MAX_BYTES;
     const now = options.now ?? Date.now;
     const sources = options.sources ?? {};
+    const writer = options.writer ?? createOrderedWriter();
+    const fs = options.fs ?? fsPromises;
+    const maxQueuedBytes = options.maxQueuedBytes ?? MAX_QUEUED_WRITE_BYTES;
     const processStartedAt = Date.now() - Math.round(process.uptime() * 1000);
     const ring: DiagnosticEvent[] = [];
     const jobFailures: DiagnosticEvent[] = [];
     /** Day file name → its bytes. */
     const files = new Map<string, number>();
+    /** The lines whose operation has not started, in order. */
+    const pending: QueuedLine[] = [];
+    /** The line of the running operation until its first write is submitted: the takeover writes it then. */
+    let unwritten: QueuedLine | null = null;
+    /** `pending` and the running operation's line. */
+    let queuedBytes = 0;
     let eventBytes = 0;
     let writeFailures = 0;
+    let dropped = 0;
+    /** The time of the last event the queue cap dropped. */
+    let lastDropAt: number | null = null;
     /** The copies in `shared/`, null when it could not be read. */
     let sharedFiles: number | null = 0;
     let warned = false;
     let closed = false;
+    /** The fence: see `createDiagnosticsJournal`. Never lowered. */
+    let terminal = false;
+    /** The publication queued and not yet started. */
+    let nextPublication: Promise<void> | null = null;
+    let finishing: Promise<void> | null = null;
     let stateTimer: ReturnType<typeof setTimeout> | null = null;
     let interval: ReturnType<typeof setInterval> | null = null;
 
@@ -269,6 +354,25 @@ export function createDiagnosticsJournal(options: {
             closeSync(fd);
         } catch (error) {
             fail(error);
+        }
+    }
+
+    async function closeQueued(handle: JournalFileHandle) {
+        try {
+            await handle.close();
+        } catch (error) {
+            fail(error);
+        }
+    }
+
+    /** Removes a temp file this journal made; one already gone is no failure. */
+    function removeTemp(temp: string) {
+        try {
+            unlinkSync(temp);
+        } catch (error) {
+            if (!isMissing(error)) {
+                fail(error);
+            }
         }
     }
 
@@ -306,15 +410,57 @@ export function createDiagnosticsJournal(options: {
 
     const eventsReady = (create: boolean) => folderReady(eventsDir, create);
 
+    /** `folderReady` over `fs`, for a queued operation (which checks the fence after it). */
+    async function folderReadyQueued(folder: string, create: boolean): Promise<boolean> {
+        try {
+            const stat = await fs.lstat(folder);
+            if (stat.isSymbolicLink() || !stat.isDirectory()) {
+                fail(new RefusedPathError("Not a directory"));
+                return false;
+            }
+            return true;
+        } catch (error) {
+            if (!isMissing(error)) {
+                fail(error);
+                return false;
+            }
+        }
+        if (!create) {
+            return false;
+        }
+        try {
+            await fs.mkdir(folder, { mode: DIR_MODE });
+            await fs.chmod(folder, DIR_MODE);
+            return true;
+        } catch (error) {
+            fail(error);
+            return false;
+        }
+    }
+
+    const noProgress = () => Object.assign(new Error("No progress"), { code: "EIO" });
+
     /** Writes all of `bytes` to `fd`; a write that makes no progress is a failure. */
     function writeAll(fd: number, bytes: Buffer) {
         let offset = 0;
         while (offset < bytes.length) {
             const written = writeSync(fd, bytes, offset, bytes.length - offset);
             if (written <= 0) {
-                throw Object.assign(new Error("No progress"), { code: "EIO" });
+                throw noProgress();
             }
             offset += written;
+        }
+    }
+
+    /** `writeAll` over `fs`. Past the fence it submits no further write. */
+    async function writeAllQueued(handle: JournalFileHandle, bytes: Buffer) {
+        let offset = 0;
+        while (offset < bytes.length && !terminal) {
+            const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+            if (bytesWritten <= 0) {
+                throw noProgress();
+            }
+            offset += bytesWritten;
         }
     }
 
@@ -335,7 +481,7 @@ export function createDiagnosticsJournal(options: {
      * short, here or by an earlier process) gets one first, so the new line parses. A failed write
      * is truncated back where it can be; the count follows the file.
      */
-    function append(name: string, line: string) {
+    function appendSync(name: string, line: string) {
         if (!eventsReady(true)) {
             return;
         }
@@ -354,11 +500,7 @@ export function createDiagnosticsJournal(options: {
         let fd = -1;
         let size = -1;
         try {
-            fd = openSync(
-                file,
-                constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | NOFOLLOW | NONBLOCK,
-                FILE_MODE,
-            );
+            fd = openSync(file, APPEND_FLAGS, FILE_MODE);
             const stat = fstatSync(fd);
             if (!stat.isFile()) {
                 throw new RefusedPathError("Not a file");
@@ -401,13 +543,131 @@ export function createDiagnosticsJournal(options: {
     }
 
     /**
-     * Deletes the oldest day files while `events/` passes the cap; stops at a deletion that fails
-     * (a file already gone counts as deleted). Nothing is deleted through a refused `events/`.
+     * `appendSync` over `fs`, for a queued operation: the same refusals, newline repair, complete
+     * writes, truncation, and count. Past the fence it stops where it is: the line is the takeover's
+     * until its first write is submitted (so it lands once), and no count or file is touched after.
      */
-    function prune() {
-        if (eventBytes <= maxBytes || !eventsReady(false)) {
+    async function appendQueued(name: string, line: string) {
+        if (!(await folderReadyQueued(eventsDir, true)) || terminal) {
             return;
         }
+        const file = path.join(eventsDir, name);
+        try {
+            if (!(await fs.lstat(file)).isFile()) {
+                fail(new RefusedPathError("Not a file"));
+                return;
+            }
+        } catch (error) {
+            if (!isMissing(error)) {
+                fail(error);
+                return;
+            }
+        }
+        if (terminal) {
+            return;
+        }
+        let handle: JournalFileHandle | null = null;
+        try {
+            handle = await fs.open(file, APPEND_FLAGS, FILE_MODE);
+            const stat = await handle.stat();
+            if (!stat.isFile()) {
+                throw new RefusedPathError("Not a file");
+            }
+            const size = stat.size;
+            if (size === 0) {
+                await handle.chmod(FILE_MODE);
+            }
+            let prefix = "";
+            if (size > 0) {
+                const last = Buffer.alloc(1);
+                const { bytesRead } = await handle.read(last, 0, 1, size - 1);
+                if (bytesRead === 1 && last[0] !== 0x0a) {
+                    prefix = "\n";
+                }
+            }
+            if (terminal) {
+                return;
+            }
+            const bytes = Buffer.from(prefix + line, "utf8");
+            unwritten = null;
+            try {
+                await writeAllQueued(handle, bytes);
+            } catch (error) {
+                if (!terminal) {
+                    try {
+                        ftruncateSync(handle.fd, size);
+                    } catch {}
+                }
+                throw error;
+            }
+            if (!terminal) {
+                setFileBytes(name, size + bytes.length);
+            }
+        } catch (error) {
+            fail(error);
+            if (handle) {
+                try {
+                    const { size } = await handle.stat();
+                    if (!terminal) {
+                        setFileBytes(name, size);
+                    }
+                } catch {}
+            } else if (isMissing(error) && !terminal) {
+                forget(name);
+            }
+        } finally {
+            if (handle) {
+                await closeQueued(handle);
+            }
+        }
+    }
+
+    /** One queued line: its append, then the prune, in one operation, so the two never race. */
+    async function appendNext() {
+        const entry = pending.shift();
+        if (!entry) {
+            return;
+        }
+        unwritten = entry;
+        try {
+            await appendQueued(entry.name, entry.line);
+            unwritten = null;
+            await pruneQueued();
+        } finally {
+            queuedBytes -= entry.bytes;
+        }
+    }
+
+    /** Queues an accepted event's line; at the cap it is counted instead (the ring keeps the event). */
+    function queueLine(name: string, line: string, at: number) {
+        const bytes = Buffer.byteLength(line, "utf8");
+        if (queuedBytes + bytes > maxQueuedBytes) {
+            dropped++;
+            lastDropAt = at;
+            return;
+        }
+        queuedBytes += bytes;
+        pending.push({ name, line, bytes });
+        void writer.run(EVENTS_KEY, appendNext).catch(fail);
+    }
+
+    /** Raises the fence and appends what is still queued, in order. No prune: see `createDiagnosticsJournal`. */
+    function takeOver() {
+        terminal = true;
+        close();
+        const lines = unwritten ? [unwritten, ...pending] : [...pending];
+        unwritten = null;
+        pending.length = 0;
+        for (const { name, line } of lines) {
+            appendSync(name, line);
+        }
+    }
+
+    /**
+     * Deletes the oldest day files while `events/` passes the cap; stops at a deletion that fails
+     * (a file already gone counts as deleted).
+     */
+    function deleteOldest() {
         while (eventBytes > maxBytes && files.size > 0) {
             const oldest = [...files.keys()].sort()[0];
             try {
@@ -419,6 +679,20 @@ export function createDiagnosticsJournal(options: {
                 }
             }
             forget(oldest);
+        }
+    }
+
+    /** Nothing is deleted through a refused `events/`. */
+    function prune() {
+        if (eventBytes > maxBytes && eventsReady(false)) {
+            deleteOldest();
+        }
+    }
+
+    /** `prune` for a queued operation: the unlinks run on the JS thread, behind the fence. */
+    async function pruneQueued() {
+        if (eventBytes > maxBytes && (await folderReadyQueued(eventsDir, false)) && !terminal) {
+            deleteOldest();
         }
     }
 
@@ -494,6 +768,9 @@ export function createDiagnosticsJournal(options: {
         }
     }
 
+    const tempPath = (folder: string, prefix: string) =>
+        path.join(folder, `.${prefix}-${randomBytes(4).toString("hex")}.tmp`);
+
     /**
      * Writes `text` (or its chunks, in order) to `target` in `folder`: a temp file there
      * (`O_EXCL | O_NOFOLLOW`, 0640), flushed before close, then a rename and directory sync. Whether
@@ -504,8 +781,8 @@ export function createDiagnosticsJournal(options: {
         let temp: string | null = null;
         let fd = -1;
         try {
-            const name = path.join(folder, `.${tempPrefix}-${randomBytes(4).toString("hex")}.tmp`);
-            fd = openSync(name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, FILE_MODE);
+            const name = tempPath(folder, tempPrefix);
+            fd = openSync(name, TEMP_FLAGS, FILE_MODE);
             temp = name;
             fchmodSync(fd, FILE_MODE);
             for (const chunk of typeof text === "string" ? [text] : text) {
@@ -531,13 +808,7 @@ export function createDiagnosticsJournal(options: {
                 closeFd(fd);
             }
             if (temp !== null) {
-                try {
-                    unlinkSync(temp);
-                } catch (error) {
-                    if (!isMissing(error)) {
-                        fail(error);
-                    }
-                }
+                removeTemp(temp);
             }
         }
     }
@@ -711,7 +982,7 @@ export function createDiagnosticsJournal(options: {
                 }
                 const landed = writeAtomic(sharedDir, file, chunks, `share-${key}`);
                 recountShares();
-                writeState();
+                void writeState();
                 return landed ? { ok: true, name } : { ok: false };
             }
             fail(Object.assign(new Error("Every name drawn was taken"), { code: "EEXIST" }));
@@ -730,7 +1001,7 @@ export function createDiagnosticsJournal(options: {
         } catch (error) {
             fail(error);
         }
-        writeState();
+        void writeState();
         return ok;
     }
 
@@ -887,6 +1158,9 @@ export function createDiagnosticsJournal(options: {
                 found.push({ event: copied, text });
             }
         }
+        if (lastDropAt !== null && lastDropAt >= fromMs - 60 * 60_000) {
+            partial = true;
+        }
         // Stable: equal times keep the file order, then the ring's.
         const events = found.map((entry) => entry.event).sort((a, b) => a.at - b.at);
         return { events, partial };
@@ -917,7 +1191,7 @@ export function createDiagnosticsJournal(options: {
                 requestHistoryLimit: countOrNull(settings.requestHistoryLimit),
             },
             history: history && { rows: countOrNull(history.rows), bytes: countOrNull(history.bytes) },
-            journal: { eventBytes, writeFailures },
+            journal: { eventBytes, writeFailures, dropped },
             shared: { files: sharedFiles },
             workers: workers && {
                 workers: countOrNull(workers.workers),
@@ -931,29 +1205,131 @@ export function createDiagnosticsJournal(options: {
         };
     }
 
-    /** Writes `state.json` (temp file, then rename). Never throws: a failure is counted. */
-    function writeState() {
+    const stateText = () => `${JSON.stringify(state(), null, 2)}\n`;
+
+    function clearStateTimer() {
         if (stateTimer) {
             clearTimeout(stateTimer);
             stateTimer = null;
         }
+    }
+
+    /** Publishes `state.json` before it returns (temp file, then rename). Never throws: a failure is counted. */
+    function writeStateSync() {
+        clearStateTimer();
         try {
-            writeAtomic(dir, path.join(dir, STATE_FILE), `${JSON.stringify(state(), null, 2)}\n`, "state");
+            writeAtomic(dir, path.join(dir, STATE_FILE), stateText(), "state");
         } catch (error) {
             fail(error);
         }
     }
 
-    /** At most `stateDelayMs` after the first error event since the last write. */
+    /**
+     * One queued publication: `writeAtomic` over `fs`, with its state built here, so the latest wins,
+     * and its rename on the JS thread behind the fence, so nothing lands after the final state. Past the
+     * fence it does nothing, and one in flight removes its temp file. Never throws: a failure is counted.
+     */
+    async function publishState() {
+        nextPublication = null;
+        if (terminal) {
+            return;
+        }
+        let temp: string | null = null;
+        let handle: JournalFileHandle | null = null;
+        try {
+            const bytes = Buffer.from(stateText(), "utf8");
+            const name = tempPath(dir, "state");
+            handle = await fs.open(name, TEMP_FLAGS, FILE_MODE);
+            temp = name;
+            await handle.chmod(FILE_MODE);
+            await writeAllQueued(handle, bytes);
+            await handle.sync();
+            const opened = handle;
+            handle = null;
+            await opened.close();
+            if (terminal) {
+                return;
+            }
+            renameSync(temp, path.join(dir, STATE_FILE));
+            temp = null;
+            try {
+                await syncDir(dir, fs);
+            } catch (error) {
+                fail(error);
+            }
+        } catch (error) {
+            fail(error);
+        } finally {
+            if (handle) {
+                await closeQueued(handle);
+            }
+            if (temp !== null) {
+                removeTemp(temp);
+            }
+        }
+    }
+
+    /** The marker clears when the publication starts, so a call during its I/O queues a successor. */
+    function writeState(): Promise<void> {
+        clearStateTimer();
+        if (terminal) {
+            writeStateSync();
+            return Promise.resolve();
+        }
+        nextPublication ??= writer.run(STATE_KEY, publishState).catch(fail);
+        return nextPublication;
+    }
+
+    /** Queues a publication at most `stateDelayMs` after the first error event since the last write. */
     function scheduleState() {
         if (stateTimer || closed) {
             return;
         }
         stateTimer = setTimeout(() => {
             stateTimer = null;
-            writeState();
+            void writeState();
         }, options.stateDelayMs ?? STATE_DELAY_MS);
         stateTimer.unref?.();
+    }
+
+    function close() {
+        closed = true;
+        clearStateTimer();
+        if (interval) {
+            clearInterval(interval);
+            interval = null;
+        }
+    }
+
+    /** Keeps an accepted event in the ring and the job failures; null when the projection refuses it. */
+    function remember(input: DiagnosticEventInput): DiagnosticEvent | null {
+        const event = projectDiagnosticEvent({ ...input, at: now() });
+        if (!event) {
+            return null;
+        }
+        ring.push(event);
+        if (ring.length > RING_SIZE) {
+            ring.shift();
+        }
+        if (isJobFailureEvent(event)) {
+            jobFailures.push(event);
+            if (jobFailures.length > RECENT_JOB_FAILURES) {
+                jobFailures.shift();
+            }
+        }
+        return event;
+    }
+
+    const dayFileOf = (event: DiagnosticEvent) => `${new Date(event.at).toISOString().slice(0, 10)}.jsonl`;
+
+    /** Waits for what the two keys hold, at most `drainDeadlineMs` (a stalled disk must not hold a shutdown). */
+    async function drained() {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, options.drainDeadlineMs ?? DRAIN_DEADLINE_MS);
+        });
+        await Promise.race([Promise.all([writer.settled(EVENTS_KEY), writer.settled(STATE_KEY)]), deadline]);
+        clearTimeout(timer);
     }
 
     scan();
@@ -961,22 +1337,16 @@ export function createDiagnosticsJournal(options: {
     return {
         record(input) {
             try {
-                const event = projectDiagnosticEvent({ ...input, at: now() });
+                const event = remember(input);
                 if (!event) {
                     return;
                 }
-                ring.push(event);
-                if (ring.length > RING_SIZE) {
-                    ring.shift();
+                const line = `${JSON.stringify(event)}\n`;
+                if (terminal) {
+                    appendSync(dayFileOf(event), line);
+                } else {
+                    queueLine(dayFileOf(event), line, event.at);
                 }
-                if (isJobFailureEvent(event)) {
-                    jobFailures.push(event);
-                    if (jobFailures.length > RECENT_JOB_FAILURES) {
-                        jobFailures.shift();
-                    }
-                }
-                append(`${new Date(event.at).toISOString().slice(0, 10)}.jsonl`, `${JSON.stringify(event)}\n`);
-                prune();
                 if (isDiagnosticErrorEvent(event)) {
                     scheduleState();
                 }
@@ -984,28 +1354,43 @@ export function createDiagnosticsJournal(options: {
                 fail(error);
             }
         },
+        recordFatal(input) {
+            takeOver();
+            try {
+                const event = remember(input);
+                if (event) {
+                    appendSync(dayFileOf(event), `${JSON.stringify(event)}\n`);
+                }
+            } catch (error) {
+                fail(error);
+            }
+            writeStateSync();
+        },
+        settled: () => (terminal ? Promise.resolve() : writer.settled(EVENTS_KEY)),
         recent: () => ring.map(copy),
         state,
         writeState,
+        writeStateSync,
         start() {
             if (interval || closed) {
                 return;
             }
-            interval = setInterval(() => writeState(), options.stateIntervalMs ?? STATE_INTERVAL_MS);
+            interval = setInterval(() => void writeState(), options.stateIntervalMs ?? STATE_INTERVAL_MS);
             interval.unref?.();
         },
-        close() {
-            closed = true;
-            if (stateTimer) {
-                clearTimeout(stateTimer);
-                stateTimer = null;
-            }
-            if (interval) {
-                clearInterval(interval);
-                interval = null;
-            }
+        close,
+        finish() {
+            finishing ??= (async () => {
+                close();
+                if (!terminal) {
+                    await drained();
+                }
+                takeOver();
+                writeStateSync();
+            })();
+            return finishing;
         },
-        stats: () => ({ eventBytes, writeFailures }),
+        stats: () => ({ eventBytes, writeFailures, dropped }),
         saveReport,
         eventsFor,
         saveShare,

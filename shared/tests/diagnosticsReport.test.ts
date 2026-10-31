@@ -1114,3 +1114,32 @@ describe("the build id", () => {
         expect(canonicalDiagnosticReport(report.replace(`"build":"${BUILD}"`, `"build":"${PRIVATE}"`))).toBeNull();
     });
 });
+
+describe("journal drop counts in reports", () => {
+    it("round-trips counted drops and preserves a report without the field byte for byte", () => {
+        const legacy = buildDiagnosticReport(input());
+        expect(legacy).not.toContain('"dropped"');
+        expect(projectDiagnosticsState(state())!.journal).toEqual({ eventBytes: 128, writeFailures: 0 });
+        expect(canonicalDiagnosticReport(legacy)).toBe(legacy);
+        for (const dropped of [0, 2]) {
+            const current = state({ journal: { eventBytes: 128, writeFailures: 0, dropped } });
+            expect(projectDiagnosticsState(current)!.journal).toEqual({ eventBytes: 128, writeFailures: 0, dropped });
+            const text = buildDiagnosticReport(input({ server: { state: current, events: [serverJob] } }));
+            expect(text).toContain(`"journal":{"eventBytes":128,"writeFailures":0,"dropped":${dropped}}`);
+            expect(canonicalDiagnosticReport(text)).toBe(text);
+        }
+        for (const dropped of [null, undefined, -1, 1.5, "2", true, Number.MAX_SAFE_INTEGER + 1]) {
+            expect(
+                projectDiagnosticsState(state({ journal: { eventBytes: 128, writeFailures: 0, dropped } })),
+                String(dropped),
+            ).toBeNull();
+            if (dropped !== undefined) {
+                const invalid = legacy.replace(
+                    '"writeFailures":0}',
+                    `"writeFailures":0,"dropped":${JSON.stringify(dropped)}}`,
+                );
+                expect(canonicalDiagnosticReport(invalid), String(dropped)).toBeNull();
+            }
+        }
+    });
+});

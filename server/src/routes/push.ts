@@ -17,11 +17,11 @@ const MAX_PUSH_BODY_BYTES = 16 * 1024;
  * authenticated before their body (capped at 16 KiB) is read; every answer is `no-store`.
  *
  * - `GET /api/push/key`: `{ publicKey }`, null while push is off on the server;
- * - `PUT /api/push/subscription` `{ subscription }` (a `PushSubscription.toJSON()`): 204; 400 for an
- *   invalid subscription or an endpoint outside the allowed push services; 503 while push is off;
- *   500 when the subscriptions file could not be written (nothing changed);
- * - `DELETE /api/push/subscription` `{ endpoint }`: 204 (also when it was not registered); 500 when the
- *   file could not be written (the endpoint stays registered).
+ * - `PUT /api/push/subscription` `{ subscription }` (a `PushSubscription.toJSON()`): 204 once the file
+ *   holds it; 400 for an invalid subscription or an endpoint outside the allowed push services; 503
+ *   while push is off; 500 when the subscriptions file could not be written (nothing changed);
+ * - `DELETE /api/push/subscription` `{ endpoint }`: 204 once the file no longer holds it (also when it
+ *   was not registered); 500 when the file could not be written (the endpoint stays registered).
  */
 export function registerPushRoutes(
     app: Hono<AppEnv>,
@@ -51,7 +51,7 @@ export function registerPushRoutes(
         if (push.publicKey() === null) {
             return c.json({ error: "Push notifications are off on this server" }, 503);
         }
-        const outcome = isPlainObject(read.body) ? push.register(read.body.subscription) : "invalid";
+        const outcome = isPlainObject(read.body) ? await push.register(read.body.subscription) : "invalid";
         switch (outcome) {
             case "ok":
                 return c.body(null, 204);
@@ -73,7 +73,7 @@ export function registerPushRoutes(
         if (!isPlainObject(read.body) || typeof read.body.endpoint !== "string") {
             return c.json({ error: "endpoint must be a string" }, 400);
         }
-        if (!push.remove(read.body.endpoint)) {
+        if (!(await push.remove(read.body.endpoint))) {
             return c.json({ error: "The removal could not be saved" }, 500);
         }
         return c.body(null, 204);

@@ -15,6 +15,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from ".
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createCheckpointService } from "./data/checkpointService.ts";
 import { mkdirDurableSync } from "./data/durableWrite.ts";
+import { createOrderedWriter } from "./data/orderedWriter.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
@@ -216,8 +217,10 @@ export function createServerContext(options: {
     const trust = compileTrust(parseTrustProxyEnv(options.trustProxy));
     const clientIp = (c: Parameters<typeof getClientIp>[0]) => getClientIp(c, trust);
 
+    // The auxiliary files' writes (the auth, diagnostics, and push files) leave the serving thread here.
+    const writer = createOrderedWriter();
     const passwordSeed = parsePasswordSeed(options.passwordSeed ?? process.env.RISU_PASSWORD_SHA256);
-    const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed });
+    const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed, writer });
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     let appVersion: string | null | undefined;
     // The checkout's build, asked of git once, for a server without `dist/build-info.json`.
@@ -230,6 +233,7 @@ export function createServerContext(options: {
             ? path.resolve(options.rootDir, process.env.RISU_DIAGNOSTICS_DIR)
             : path.join(savePath, "diagnostics"),
         maxBytes: parseDiagnosticsMaxBytes(process.env.RISU_DIAGNOSTICS_MAX_BYTES),
+        writer,
         sources: {
             appVersion: () => {
                 if (appVersion === undefined) {
@@ -423,6 +427,7 @@ export function createServerContext(options: {
         savePath,
         ...(options.pushTransport ? { transport: options.pushTransport } : {}),
         diagnostics,
+        writer,
     });
     // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
     // the script workers; a context whose resource kinds have no characters (tests) has none.
@@ -641,16 +646,21 @@ export function createServerContext(options: {
             c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH ||
             c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
         const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;
+        // The login, the password set, and the subscription writes end in a durable write that dispose
+        // must wait for, so they are refused and tracked like resource handlers.
+        const stateWrite =
+            (c.req.method === "POST" && (fileImportRoute === LOGIN_PATH || fileImportRoute === SET_PASSWORD_PATH)) ||
+            ((c.req.method === "PUT" || c.req.method === "DELETE") && fileImportRoute === PUSH_SUBSCRIPTION_PATH);
         if (shuttingDown) {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup || fileImport || history || tokenRoute)) {
+            if (shuttingDown && (resource || backup || fileImport || history || tokenRoute || stateWrite)) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
             }
-            if (resource) {
+            if (resource || stateWrite) {
                 await snapshots.track(next);
             } else {
                 await next();
@@ -949,7 +959,8 @@ export function createServerContext(options: {
     });
 
     diagnostics.record({ kind: "lifecycle", phase: "boot" });
-    diagnostics.writeState();
+    // Synchronous: nothing is served yet.
+    diagnostics.writeStateSync();
 
     return {
         app,
@@ -1002,10 +1013,12 @@ export function createServerContext(options: {
         /**
          * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
          * their abort deadline), disposes the script workers, waits for admitted resource handlers
-         * and backup operations, then closes the store. The diagnostics' timers stop and its final
-         * `state.json` is written once the jobs and the admitted operations ended, while the stores it
-         * reads are open; a failure is a `runtime` event and another state. The HTTP entrypoint drains connections before
-         * calling this; in-process callers can use it alone. Calling it again returns the same promise.
+         * and backup operations, then closes the store. Once the jobs and the admitted operations
+         * ended, the subscription writes they left are waited for, the diagnostics' timers stop, what
+         * it has queued is written (`finish`, bounded by its own deadline), and its final `state.json`
+         * is published last, while the stores it reads are open; a failure is a `runtime` event and
+         * another state. The HTTP entrypoint drains connections before calling this; in-process callers
+         * can use it alone. Calling it again returns the same promise.
          */
         dispose: () => {
             beginShutdown();
@@ -1024,10 +1037,8 @@ export function createServerContext(options: {
                 .then(() => realmStaging.close())
                 .then(() => upstreamStaging.close())
                 .then(() => upstreamExportStaging.close())
-                .then(() => {
-                    diagnostics.close();
-                    diagnostics.writeState();
-                })
+                .then(() => push.drain())
+                .then(() => diagnostics.finish())
                 .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())
                 .then(() => transformers.dispose())
@@ -1036,10 +1047,11 @@ export function createServerContext(options: {
                 .then(() => requestHistory.close())
                 .then(() => generationReceipts.close())
                 .then(() => resources.close())
-                .catch((error: unknown) => {
-                    diagnostics.close();
+                .catch(async (error: unknown) => {
                     diagnostics.record({ kind: "runtime", origin: "dispose", ...errorFields(error) });
-                    diagnostics.writeState();
+                    await diagnostics.finish();
+                    // After a `finish` that had already run, the event landed on its own and needs this state.
+                    await diagnostics.writeState();
                     throw error;
                 });
             return disposing;

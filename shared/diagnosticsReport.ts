@@ -181,7 +181,8 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
         !isCount(state.uptimeSec) ||
         !journal ||
         !isCount(journal.eventBytes) ||
-        !isCount(journal.writeFailures)
+        !isCount(journal.writeFailures) ||
+        (Object.hasOwn(journal, "dropped") && !isCount(journal.dropped))
     ) {
         return null;
     }
@@ -213,7 +214,12 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
             requestHistoryLimit: countOrNull(settings.requestHistoryLimit),
         },
         history: history && { rows: countOrNull(history.rows), bytes: countOrNull(history.bytes) },
-        journal: { eventBytes: journal.eventBytes, writeFailures: journal.writeFailures },
+        journal: {
+            eventBytes: journal.eventBytes,
+            writeFailures: journal.writeFailures,
+            // v1 grows: only a state that has the count gets it back, as with `shared` below.
+            ...(Object.hasOwn(journal, "dropped") ? { dropped: journal.dropped as number } : {}),
+        },
         // v1 grows: only a state that has the section gets it back, so a report without it stays canonical.
         ...(Object.hasOwn(state, "shared") ? { shared: shared && { files: countOrNull(shared.files) } } : {}),
         workers: workers && {

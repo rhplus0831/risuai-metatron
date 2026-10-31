@@ -25,6 +25,8 @@ export type RequestShares = {
     list(): RequestHistoryShareEntry[] | null;
     /** Removes every shared copy (before a "Delete all"); whether every one is gone. */
     removeAll(): boolean;
+    /** The barrier a route awaits before `share`: every event accepted before the call is on disk. */
+    settled(): Promise<void>;
 };
 
 /**
@@ -50,7 +52,10 @@ export type RequestShares = {
  *   the files and the marks agree as they did before. Failed removal of an older copy keeps the new
  *   copy and marks but answers an error. A withdrawal removes the files first (they are
  *   what the developer can read), then clears the marks.
- * - Everything is synchronous (`SHARE_MAX_BYTES` bounds the work), so two shares never interleave.
+ * - `share` and `withdraw` are synchronous from their first read to their last write (`SHARE_MAX_BYTES`
+ *   bounds the work), so two shares never interleave and a withdrawal or a "Delete all" cannot undo
+ *   part of one. The route awaits `settled` before it calls `share`, never inside it, so a share holds
+ *   the events accepted before it was asked.
  */
 export function createRequestShares(options: {
     history: RequestHistory;
@@ -142,7 +147,13 @@ export function createRequestShares(options: {
         return { ok: true, result: { ...target, shared: false, sharedAt: null, ids } };
     }
 
-    return { share, withdraw, list: () => journal.listShares(), removeAll: () => journal.removeAllShares() };
+    return {
+        share,
+        withdraw,
+        list: () => journal.listShares(),
+        removeAll: () => journal.removeAllShares(),
+        settled: () => journal.settled(),
+    };
 }
 
 /** The copy's text, a row at a time (each redacted as it is written). */

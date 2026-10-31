@@ -8,7 +8,8 @@ import {
     PUSH_REGISTRATION_REFRESH_MS,
     type CompletionNotification,
 } from "../../../shared/notifications.ts";
-import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
+import { type DurableFs, mkdirDurableSync, writeFileDurable, writeFileDurableSync } from "../data/durableWrite.ts";
+import { createOrderedWriter, type OrderedWriter } from "../data/orderedWriter.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 
 /** At most this many browsers are subscribed; registering one more drops the least recently refreshed. */
@@ -20,6 +21,7 @@ const MAX_ENDPOINT_LENGTH = 4096;
 const DEFAULT_CONTACT = "mailto:risuai@example.invalid";
 const VAPID_FILE = "web_push_vapid.json";
 const SUBSCRIPTIONS_FILE = "push_subscriptions.json";
+const SUBSCRIPTIONS_KEY = "push:subscriptions";
 
 /**
  * The push services the server posts to. The server sends a request to whatever endpoint a browser
@@ -45,6 +47,9 @@ type StoredSubscription = {
     updatedAt: number;
 };
 
+/** What a settled delivery left for the next operation to apply: `status` is null for no HTTP answer. */
+type DeliveryOutcome = { target: StoredSubscription; status: number | null; ok: boolean };
+
 export type PushTransport = Pick<typeof webPush, "sendNotification">;
 
 /** A registration's outcome: stored, refused (invalid or outside the allowed hosts), push off, or not saved. */
@@ -54,11 +59,11 @@ export type PushService = {
     /** The VAPID public key browsers subscribe with, or null when push is disabled. */
     publicKey(): string | null;
     /** Stores a browser's `PushSubscription.toJSON()`; an unchanged, healthy registration within the refresh interval writes nothing. */
-    register(subscription: unknown): PushRegistration;
+    register(subscription: unknown): Promise<PushRegistration>;
     /** `register(...) === "ok"`. */
-    upsert(subscription: unknown): boolean;
+    upsert(subscription: unknown): Promise<boolean>;
     /** Removes an endpoint (also in its noncanonical spelling); false only when the file could not be written. */
-    remove(endpoint: unknown): boolean;
+    remove(endpoint: unknown): Promise<boolean>;
     /**
      * Sends to every subscription in the background. Never rejects; resolves once delivered or dropped.
      * `context.jobId` (the job that completed) goes only into the diagnostic events, never the payload.
@@ -66,6 +71,11 @@ export type PushService = {
     send(notification: CompletionNotification, context?: { jobId?: string }): Promise<void>;
     /** Shutdown: later sends are dropped. */
     close(): void;
+    /**
+     * Waits for the operations queued on the subscriptions, not for a delivery in flight: a shutdown
+     * does not wait out its transport timeout, and a late outcome's write is best effort.
+     */
+    drain(): Promise<void>;
 };
 
 /** A browser's keys may carry `=` padding; `web-push` accepts a VAPID key only without it. */
@@ -246,9 +256,10 @@ function loadVapidKeys(serverDir: string, env: NodeJS.ProcessEnv): VapidKeys | n
     return generated;
 }
 
-function errorCategory(error: unknown): { status: number | null; label: string } {
-    const status = isPlainObject(error) && typeof error.statusCode === "number" ? error.statusCode : null;
-    return { status, label: status === null ? "network" : `HTTP ${status}` };
+const failureLabel = (status: number | null) => (status === null ? "network" : `HTTP ${status}`);
+
+function errorStatus(error: unknown): number | null {
+    return isPlainObject(error) && typeof error.statusCode === "number" ? error.statusCode : null;
 }
 
 /** The push service of a stored endpoint, from its host, as a diagnostic event names it (never the endpoint). */
@@ -295,6 +306,11 @@ function completionTopic(tag: string): string | undefined {
  * routes, backups, and snapshots. Completions are delivered one at a time (each to every subscription
  * in parallel); a subscription the push service reports gone (404, 410) is removed.
  *
+ * The list changes only inside operations on `writer`, one key: an operation applies what deliveries
+ * left, reads the list, derives the next one, writes it durably, and installs it in memory only after
+ * the write, so two registrations cannot lose each other. A delivery only leaves its outcomes; one
+ * operation per settled batch applies and writes them, and nothing waits for that write.
+ *
  * Each completion leaves content-free `push` events in `diagnostics`: one per subscription it was sent
  * to (`accepted`, `failed`, `removed`, with the push service and the job), or one `dropped` with the
  * reason nothing was sent. A recorder that throws never changes delivery.
@@ -307,8 +323,13 @@ export function createPushService(options: {
     /** The diagnostics journal. */
     diagnostics?: DiagnosticsRecorder;
     now?: () => number;
+    /** The server context's writer; default one of its own. */
+    writer?: OrderedWriter;
+    /** What the subscription writes call (tests inject latency and failures); default `node:fs/promises`. */
+    fs?: DurableFs;
 }): PushService {
     const env = options.env ?? process.env;
+    const writer = options.writer ?? createOrderedWriter();
     const transport = options.transport ?? webPush;
     const now = options.now ?? Date.now;
     const serverDir = path.join(options.savePath, "server");
@@ -337,6 +358,12 @@ export function createPushService(options: {
     let diskUncertain = false;
     /** The file exists but could not be read: its contents are unknown, so nothing replaces it. */
     let unreadable = false;
+    /** The settled transport outcomes no operation has applied yet. */
+    const pendingOutcomes: DeliveryOutcome[] = [];
+    /** Memory holds applied outcomes the file does not. */
+    let dirty = false;
+    /** A bookkeeping operation is queued and not yet started. */
+    let bookkeepingQueued = false;
     let closed = false;
     let queue: Promise<void> = Promise.resolve();
     let pending = 0;
@@ -399,9 +426,12 @@ export function createPushService(options: {
     }
 
     /** Writes `next` and only then makes it the list; false (the list unchanged) when the write failed. */
-    function commit(next: StoredSubscription[]): boolean {
+    async function commit(next: StoredSubscription[]): Promise<boolean> {
         try {
-            writeJsonAtomic(subscriptionsFile, { version: 1, subscriptions: next });
+            await writeFileDurable(subscriptionsFile, JSON.stringify({ version: 1, subscriptions: next }), {
+                mode: 0o600,
+                fs: options.fs,
+            });
         } catch (error) {
             diskUncertain = true;
             console.error("[Push] The subscriptions could not be saved", error);
@@ -409,19 +439,8 @@ export function createPushService(options: {
         }
         subscriptions = next;
         diskUncertain = false;
+        dirty = false;
         return true;
-    }
-
-    /** Delivery bookkeeping (failure counts, a 404/410 removal): best effort, kept in memory either way. */
-    function save() {
-        if (unreadable) {
-            return;
-        }
-        const next = list();
-        if (!commit(next)) {
-            subscriptions = next;
-            diskUncertain = true;
-        }
     }
 
     /** The stored entry `sent` was, if it is still stored with the same keys (not removed or registered again). */
@@ -432,6 +451,53 @@ export function createPushService(options: {
                 entry.keys.p256dh === sent.keys.p256dh &&
                 entry.keys.auth === sent.keys.auth,
         );
+    }
+
+    /** Moves the settled outcomes into memory. Runs first in every operation, so it sees all of them. */
+    function applyOutcomes() {
+        for (const { target, status, ok } of pendingOutcomes.splice(0)) {
+            const entry = current(target);
+            if (ok) {
+                if (entry && (entry.failureCount !== 0 || entry.lastError !== undefined)) {
+                    entry.failureCount = 0;
+                    delete entry.lastError;
+                    dirty = true;
+                }
+                continue;
+            }
+            if (!entry) {
+                continue;
+            }
+            dirty = true;
+            // Memory runs ahead of the file until a write lands.
+            diskUncertain = true;
+            if (status === 404 || status === 410) {
+                subscriptions = list().filter((other) => other !== entry);
+                continue;
+            }
+            entry.failureCount += 1;
+            entry.lastError = failureLabel(status);
+        }
+    }
+
+    /**
+     * Delivery bookkeeping (failure counts, a 404/410 removal): one operation after a settled batch,
+     * awaited by no one. Best effort: a failed write keeps memory and leaves the file uncertain.
+     */
+    function scheduleBookkeeping() {
+        if (bookkeepingQueued) {
+            return;
+        }
+        bookkeepingQueued = true;
+        writer
+            .run(SUBSCRIPTIONS_KEY, async () => {
+                bookkeepingQueued = false;
+                applyOutcomes();
+                if (dirty && !unreadable) {
+                    await commit(list());
+                }
+            })
+            .catch((error) => console.error("[Push] The subscriptions could not be saved", error));
     }
 
     async function deliver(notification: CompletionNotification, jobId: string | undefined) {
@@ -452,7 +518,6 @@ export function createPushService(options: {
             dropped(unreadable ? "unreadable" : "noSubscriptions", jobId);
             return;
         }
-        let changed = false;
         await Promise.all(
             targets.map(async (target) => {
                 const service = pushServiceOf(target.endpoint);
@@ -471,43 +536,26 @@ export function createPushService(options: {
                     // The transport's outcome is recorded even when the subscription was removed or
                     // registered again meanwhile.
                     recordSafely(options.diagnostics, { kind: "push", phase: "accepted", service, jobId });
-                    const entry = current(target);
-                    if (entry && (entry.failureCount !== 0 || entry.lastError !== undefined)) {
-                        entry.failureCount = 0;
-                        delete entry.lastError;
-                        changed = true;
-                    }
+                    pendingOutcomes.push({ target, status: null, ok: true });
                 } catch (error) {
-                    const { status, label } = errorCategory(error);
+                    const status = errorStatus(error);
                     recordSafely(
                         options.diagnostics,
                         status === 404 || status === 410
                             ? { kind: "push", phase: "removed", service, jobId }
                             : { kind: "push", phase: "failed", service, jobId, status },
                     );
-                    const entry = current(target);
-                    if (!entry) {
-                        return;
+                    pendingOutcomes.push({ target, status, ok: false });
+                    if (status !== 404 && status !== 410 && current(target)) {
+                        console.warn(`[Push] A delivery failed (${failureLabel(status)})`);
                     }
-                    changed = true;
-                    // Memory runs ahead of the file until the bookkeeping write below lands.
-                    diskUncertain = true;
-                    if (status === 404 || status === 410) {
-                        subscriptions = list().filter((other) => other !== entry);
-                        return;
-                    }
-                    entry.failureCount += 1;
-                    entry.lastError = label;
-                    console.warn(`[Push] A delivery failed (${label})`);
                 }
             }),
         );
-        if (changed) {
-            save();
-        }
+        scheduleBookkeeping();
     }
 
-    function register(raw: unknown): PushRegistration {
+    async function register(raw: unknown): Promise<PushRegistration> {
         if (!keys) {
             return "disabled";
         }
@@ -515,44 +563,50 @@ export function createPushService(options: {
         if (!parsed) {
             return "invalid";
         }
-        if (!known()) {
-            return "unsaved";
-        }
-        const at = now();
-        const existing = list().find((entry) => entry.endpoint === parsed.endpoint);
-        if (
-            existing &&
-            existing.keys.p256dh === parsed.keys.p256dh &&
-            existing.keys.auth === parsed.keys.auth &&
-            existing.expirationTime === parsed.expirationTime &&
-            existing.failureCount === 0 &&
-            existing.lastError === undefined &&
-            at - existing.updatedAt >= 0 &&
-            at - existing.updatedAt < PUSH_REGISTRATION_REFRESH_MS &&
-            !diskUncertain
-        ) {
-            return "ok";
-        }
-        const others = list().filter((entry) => entry.endpoint !== parsed.endpoint);
-        const next = [{ ...parsed, failureCount: 0, updatedAt: at }, ...others].slice(0, MAX_PUSH_SUBSCRIPTIONS);
-        return commit(next) ? "ok" : "unsaved";
+        return await writer.run(SUBSCRIPTIONS_KEY, async () => {
+            applyOutcomes();
+            if (!known()) {
+                return "unsaved";
+            }
+            const at = now();
+            const existing = list().find((entry) => entry.endpoint === parsed.endpoint);
+            if (
+                existing &&
+                existing.keys.p256dh === parsed.keys.p256dh &&
+                existing.keys.auth === parsed.keys.auth &&
+                existing.expirationTime === parsed.expirationTime &&
+                existing.failureCount === 0 &&
+                existing.lastError === undefined &&
+                at - existing.updatedAt >= 0 &&
+                at - existing.updatedAt < PUSH_REGISTRATION_REFRESH_MS &&
+                !diskUncertain
+            ) {
+                return "ok";
+            }
+            const others = list().filter((entry) => entry.endpoint !== parsed.endpoint);
+            const next = [{ ...parsed, failureCount: 0, updatedAt: at }, ...others].slice(0, MAX_PUSH_SUBSCRIPTIONS);
+            return (await commit(next)) ? "ok" : "unsaved";
+        });
     }
 
     return {
         publicKey: () => keys?.publicKey ?? null,
         register,
-        upsert: (raw) => register(raw) === "ok",
-        remove(endpoint) {
+        upsert: async (raw) => (await register(raw)) === "ok",
+        async remove(endpoint) {
             const href = canonicalEndpoint(endpoint);
             if (href === null) {
                 return true;
             }
-            if (!known()) {
-                return false;
-            }
-            const before = list();
-            const after = before.filter((entry) => entry.endpoint !== href);
-            return (after.length === before.length && !diskUncertain) || commit(after);
+            return await writer.run(SUBSCRIPTIONS_KEY, async () => {
+                applyOutcomes();
+                if (!known()) {
+                    return false;
+                }
+                const before = list();
+                const after = before.filter((entry) => entry.endpoint !== href);
+                return (after.length === before.length && !diskUncertain) || (await commit(after));
+            });
         },
         send(notification, context) {
             const jobId = context?.jobId;
@@ -573,5 +627,6 @@ export function createPushService(options: {
         close() {
             closed = true;
         },
+        drain: () => writer.settled(SUBSCRIPTIONS_KEY),
     };
 }
