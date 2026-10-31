@@ -3,8 +3,10 @@
 ## Scope
 
 - Owns:
-  - the tab's side of a send: the input box to the server job (`sendChat` is the job client) and the reply as the job's events and records bring it,
-  - the prompt editor's helpers (`prompt.ts`, the templates, `templateCheck`), the lorebook codecs and the DevTool lore preview,
+  - the tab's side of a send: the input box to the server job (`sendChat` is the job client) and the reply as the job's
+    events and records bring it,
+  - the prompt editor's helpers (`prompt.ts`, the templates, `templateCheck`), the lorebook codecs and the DevTool lore
+    preview,
   - group membership (`group.ts`),
   - reroll,
   - slash commands,
@@ -19,10 +21,12 @@
   - `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`
   - The send handlers in `src/lib/ChatScreens/DefaultChatScreen.svelte`
 - Not here:
-  - Prompt assembly, token trimming, the request, streaming, and the post-processing tail run in the server job → `self-host-server.md` (`runPromptJob`, `assemblePrompt`).
+  - Prompt assembly, token trimming, the request, streaming, and the post-processing tail run in the server job →
+    `self-host-server.md` (`runPromptJob`, `assemblePrompt`).
   - Memory algorithms → `memory.md`.
   - `requestChatData` internals → `llm-requests.md`.
-  - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`, `src/ts/tokenizer.ts`, `src/ts/tokenCountField.ts`) → `llm-requests.md`.
+  - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`, `src/ts/tokenizer.ts`,
+    `src/ts/tokenCountField.ts`) → `llm-requests.md`.
   - Message-search panel presentation → `ui-theming.md`; endpoint implementation details → `self-host-server.md`.
   - PDF conversion used by MCP filesystem tools → `plugins-mcp.md`.
   - Regex and trigger internals → `scripts-triggers.md`.
@@ -32,136 +36,504 @@
 ## Files
 
 - `index.svelte.ts`: the send's job client (the browser assembly path was removed).
-  - Exports `sendChat(chatProcessIndex, arg)` (`arg`: `serverGeneration.ts` `ServerSendArg` plus `onServerRefused` and `onEnd` (whether the send settled, its outcome and request uncertainty, and the chats a blocked flush waited on); `chatProcessIndex` is kept for the plugin API's signature and not read), `previewChat(kind, target?)` (a `preview` or `previewPrompt` job in the target, default the selected chat, admitted and held as `sendChat` is; returns the formatted messages or the request body, null when it did not run or ended without them), and the `OpenAIChat`/`MultiModal` types (declared in `shared/openai.ts`).
-- `localSends.ts`: the local send registry, the sends this tab runs, one per chat (`svelte/store`, no runes, type-only imports, so the hand-written mocks of `index.svelte` do not reach its readers). `localSends` maps a chat key (`${chaId}\u0000${chatId}`) to its chat, and a send without a chat holds the tab entry (`""` → null), which fences no chat; `beginLocalSend(ref)` takes an entry before the send's first await and returns its release (idempotent), or null when that chat already has one; `isLocalSend(ref, current?)` (pass `$localSends` or a `fromStore(localSends)` view's `.current` to read it reactively); `anyLocalSend` (derived: a `localSends` subscriber may read it one update late, so admission reads the Map).
-- `jobStages.ts`: the latest presentation stage per followed job (`svelte/store`, no runes, type-only imports); `setJobStage`, `dropJobStage`, `chatStageOf`, and the read-only `jobStages` Map.
+  - Exports `sendChat(chatProcessIndex, arg)` (`arg`: `serverGeneration.ts` `ServerSendArg` plus `onServerRefused` and
+    `onEnd` (whether the send settled, its outcome and request uncertainty, and the chats a blocked flush waited on);
+    `chatProcessIndex` is kept for the plugin API's signature and not read), `previewChat(kind, target?)` (a `preview`
+    or `previewPrompt` job in the target, default the selected chat, admitted and held as `sendChat` is; returns the
+    formatted messages or the request body, null when it did not run or ended without them), and the
+    `OpenAIChat`/`MultiModal` types (declared in `shared/openai.ts`).
+- `localSends.ts`: the local send registry, the sends this tab runs, one per chat (`svelte/store`, no runes, type-only
+  imports, so the hand-written mocks of `index.svelte` do not reach its readers). `localSends` maps a chat key
+  (`${chaId}\u0000${chatId}`) to its chat, and a send without a chat holds the tab entry (`""` → null), which fences no
+  chat; `beginLocalSend(ref)` takes an entry before the send's first await and returns its release (idempotent), or null
+  when that chat already has one; `isLocalSend(ref, current?)` (pass `$localSends` or a `fromStore(localSends)` view's
+  `.current` to read it reactively); `anyLocalSend` (derived: a `localSends` subscriber may read it one update late, so
+  admission reads the Map).
+- `jobStages.ts`: the latest presentation stage per followed job (`svelte/store`, no runes, type-only imports);
+  `setJobStage`, `dropJobStage`, `chatStageOf`, and the read-only `jobStages` Map.
 - `serverGeneration.ts` `sendChatOnServer(arg)`: the send as a server job (below).
-- Display scope: `server/src/prompt/displayScope.ts`'s `createDisplayScopeLoader` supplies the transform's own `load` beside generation's `loadJobScope` (`server/src/jobs/jobScope.ts`), which generation jobs still use with unchanged reads. Its raw configuration LRU is bounded at 2 entries / 32 MiB, keyed by epoch and the full non-character revision vector; its transcript LRU at 8 entries / 64 MiB, keyed by epoch, owner/chat ids, chat revision and source generation. Sizes are retained-object estimates; the character-identity memo holds at most 1,024 entries by id and revision. Raw entries are shared read-only; each request builds a fresh context projection and reads its characters, and each target gets its own writable overlay ([CBS rendering](cbs-rendering.md)).
-- `src/ts/process/chatStatus.svelte.ts`: per-tab, in-memory generating, recovery, and unseen reply sources, with `chatStatusKey`, `isChatBusy(ref)` (a local send, a followed job, or a lock in that chat: the per-chat busy check used by `/multisend`, the DevTool preview and autopilot, the PO file run, the `previewRequest` hotkey, and the plugin `sendChat`; the helper's local busy check and `sendChat`/`previewChat`'s local registry admission are per chat; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply; the plugin also refuses while any job channel callback runs), the terminal hooks, and the visibility watcher.
-- `prompt.ts`: `tokenizePreset` and legacy-preset conversion; re-exports the prompt types declared in `shared/prompt.ts`.
+- Display scope: `server/src/prompt/displayScope.ts`'s `createDisplayScopeLoader` supplies the transform's own `load`
+  beside generation's `loadJobScope` (`server/src/jobs/jobScope.ts`), which generation jobs still use with unchanged
+  reads. Its raw configuration LRU is bounded at 2 entries / 32 MiB, keyed by epoch and the full non-character revision
+  vector; its transcript LRU at 8 entries / 64 MiB, keyed by epoch, owner/chat ids, chat revision and source generation.
+  Sizes are retained-object estimates; the character-identity memo holds at most 1,024 entries by id and revision. Raw
+  entries are shared read-only; each request builds a fresh context projection and reads its characters, and each target
+  gets its own writable overlay ([CBS rendering](cbs-rendering.md)).
+- `src/ts/process/chatStatus.svelte.ts`: per-tab, in-memory generating, recovery, and unseen reply sources, with
+  `chatStatusKey`, `isChatBusy(ref)` (a local send, a followed job, or a lock in that chat: the per-chat busy check used
+  by `/multisend`, the DevTool preview and autopilot, the PO file run, the `previewRequest` hotkey, and the plugin
+  `sendChat`; the helper's local busy check and `sendChat`/`previewChat`'s local registry admission are per chat; shared
+  resource flush (`GenerationBlockedError`), binding, and server refusals still apply; the plugin also refuses while any
+  job channel callback runs), the terminal hooks, and the visibility watcher.
+- `prompt.ts`: `tokenizePreset` and legacy-preset conversion; re-exports the prompt types declared in
+  `shared/prompt.ts`.
   - Types: `PromptItem` (discriminated union), `PromptSettings`, `PromptRole`.
   - `tokenizePreset`.
   - Legacy import: `detectPromptJSONType`, `stChatConvert`, `promptConvertion`.
-- `shared/lore/activation.ts` `activateLore(input, host)`: lore activation, shared with the server. It merges three sources: character `globalLore` with the chat's `loreOverrides` applied (`mergeOwnerLore`), chat `localLore`, and the module lore the caller resolved; matches keys, regex keys (`/pattern/flags`: the last `/` ends the pattern, empty flags allowed), and decorators over the scanned messages; recurses; applies the token budget and `@@inject_lore`; and returns `{ actives, matchLog, budget }`. `budget` (`LoreBudget`) is the budget pass: `used` (the kept entries' tokens before `@@inject_lore` edits, accepted injectors included), `limit`, and the entries the pass rejected (`rejectedCount`, `rejectedTokens`, and `rejected`: each by name (trimmed comment, else trimmed key, else `lorebook <index>`; a child by its linked entry) and tokens, in the order the pass tried them, priority descending; an entry rejected after it recursed still activated what it matched). Lua `test_lorebook` returns the whole result as JSON. `LoreHost` supplies the clone, the speaker names, the chat variables (the keep and don't-activate-after-match flags), CBS, the token count, and the regex test (on the server, the script worker's).
-- `shared/contextReport.ts`: the context report the server's `assemblePrompt` writes into `MessageGenerationInfo.context` (`ContextReport`, `v: 1`) and its readers' helpers. Readers go through `parseContextReport` (a wrong shape, non-finite or negative count, duplicate section kind, or sparse array reads as no report; `adjustment` remains signed); `historyDigest` (shared eligibility rule `eligibleHistory`, which assembly's history uses too), `turnCount`, `fixedShare`, and `displacement` are pure.
-  - Sections are counted where assembly already counts: the first template switch per card kind (`plain` cards by `type2`: `main`, `globalNote`, `plain`) or each legacy `unformated` key, example messages, trigger additions, depth lore (`lorebook`), the memory entries as sent (their recheck counts), and history (the greeting and each stored message as pushed). One row per kind; `adjustment = input − sum(sections)` is signed (merges, trimming, continue text, `depth_prompt`, duplicate chat ranges).
-  - `lore`: the budget pass's totals and, in `rejected`, its first 8 rejected entries (`reportedLoreRejections`, `CONTEXT_LORE_REJECTED`: each name at most 80 code points, longer ones cut with an ellipsis); reports written before entries were named have no `rejected`.
-  - Kept history is the set of sources in the final prompt: each history-side entry's source is kept by identity (across `systemizeChat`, `pushPrompts` merges, which union into a copy of the destination entry, and copies a memory algorithm returns, matched by message id before signature; memory entries never adopt history sources). An `editRequest` that changes the list (checked against captured identities and fields, in-place rewrites included) or a recheck removal of an entry without a whole source makes `attributionExact` false. A greeting or message left blank by its scripts with no media (`ContextSource.empty`) has nothing to send: formatting drops it and HypaV3 never summarizes it, so the report does not count it as history (`total`, `totalUser`, `droppedTokens`, `summarized`, and the lost-history check behind `coverage` leave it out).
-  - `trim` (no memory only): the headroom after the trim loop and its next 8 entries with the counts the loop subtracts; the uncounted new-chat marker takes its recheck count when it reached the prompt unchanged, and without one the report has no `trim`. A queued greeting or message absent from the final prompt also omits `trim`, since it cannot be displaced again. `replyPrefix` names a continue's target (`AssembleInput.continueMessageId`, the runner's resolved id). `historyDigest` leaves that target out.
-  - `memory`: the branch run; `coverage` is `"gap"` when a trimmed HypaV3 selection dropped uncovered history, `"covered"` for other HypaV3 selections unless the stored summaries end past the history or raw history the step kept was lost later; coverage is also `"unknown"` when returned memory has no traced memory-only survivor or any surviving memory provenance is untraced, and `"unknown"` for HypaV2, SupaMemory, and Hanurai. HypaV3 reports `budget`, the memory budget the step applied (`resolveHypaV3Budget`, [memory](memory.md)), and, when a token-mode preset did not fit the context, `budgetReduced`: each reduced amount's `field` (`memory`, `headroom`, `extra`, in that order), `configured`, and `applied` value (present only when non-empty; `parseContextReport` checks known fields, each at most once, with non-negative counts). HypaV3 adds the meter's fields: `summarized`, the history sources left out whose message id a summary's `chatMemos` holds after the step (the greeting by its `null`/`undefined` memo, never a legacy message without an id; absent when the returned memory did not survive, and at most the messages left out, which `parseContextReport` checks), `prepared` (the kept history sources a deferred summary covers, absent at 0, at most the messages kept), and the next send's `reserved`, `summarizeIn`, and, when a task could run (an input job with a task input, no blocking reason, and no stored coverage ahead of the input) and a window has a message to summarize, `lookaheadIn` (`forecastHypaV3` from the step's prepared ledger and its execution's cursor and count, so history trimmed without a summary still counts and later formatting does not, [memory](memory.md)). `tokenScope` is the job's `tokenizerIdentityKey` (`AssemblyHost.tokenScope`, `pluginTokenizer: "none"`).
-- `shared/lore/overrides.ts`: chat overrides of the owner's lore (`Chat.loreOverrides`, `ChatLoreOverride`: a frozen full copy linked by `entry.id`, and `off`). `mergeOwnerLore(ownerLore, overrides)` returns `{ lore, orphans }`: an override matches the first owner entry with its non-empty id, a non-off one replaces that entry in place, an off one removes it, later owner entries with the same id stay, the first override of an id applies and later ones are ignored, and an override that matches no owner entry is an orphan, returned and not inserted. An off override of an owner folder (`mode: "folder"`) also removes every entry inside it, whatever their own overrides (those are not orphans): membership follows the owner's current non-empty string folder keys, never the frozen copy's, a removed nested folder adds its key until nothing changes, and a keyless folder collects no ungrouped entry. `findOrphanedOverrides` and `offOverrideIds(ownerLore, overrides)` follow the same rule; the off ids are the first-per-id off overrides' ids (orphans included) plus the non-empty owner ids of every entry an off folder removes. It returns references and never clones (the client passes live `$state` proxies); callers that mutate copy first. `orphanedOverrideEntries` projects the orphans to `{ id, name }` for server and client refusals, naming each by its trimmed non-empty string `comment`, then `key`, then id.
-- `src/ts/process/loreOverrides.ts`: `chatOrphanedOverrideEntries(ref)` checks the loaded chat against its owner's `globalLore`; `chatLoreOverrideRefusalText(entries)` names the orphans and their fixes in the same localized alert for local and server refusals; `refuseOrphanedOverrides(ref)` shows that alert and answers whether the chat is refused.
+- `shared/lore/activation.ts` `activateLore(input, host)`: lore activation, shared with the server. It merges three
+  sources: character `globalLore` with the chat's `loreOverrides` applied (`mergeOwnerLore`), chat `localLore`, and the
+  module lore the caller resolved; matches keys, regex keys (`/pattern/flags`: the last `/` ends the pattern, empty
+  flags allowed), and decorators over the scanned messages; recurses; applies the token budget and `@@inject_lore`; and
+  returns `{ actives, matchLog, budget }`. `budget` (`LoreBudget`) is the budget pass: `used` (the kept entries' tokens
+  before `@@inject_lore` edits, accepted injectors included), `limit`, and the entries the pass rejected
+  (`rejectedCount`, `rejectedTokens`, and `rejected`: each by name (trimmed comment, else trimmed key, else
+  `lorebook <index>`; a child by its linked entry) and tokens, in the order the pass tried them, priority descending; an
+  entry rejected after it recursed still activated what it matched). Lua `test_lorebook` returns the whole result as
+  JSON. `LoreHost` supplies the clone, the speaker names, the chat variables (the keep and don't-activate-after-match
+  flags), CBS, the token count, and the regex test (on the server, the script worker's).
+- `shared/contextReport.ts`: the context report the server's `assemblePrompt` writes into
+  `MessageGenerationInfo.context` (`ContextReport`, `v: 1`) and its readers' helpers. Readers go through
+  `parseContextReport` (a wrong shape, non-finite or negative count, duplicate section kind, or sparse array reads as no
+  report; `adjustment` remains signed); `historyDigest` (shared eligibility rule `eligibleHistory`, which assembly's
+  history uses too), `turnCount`, `fixedShare`, and `displacement` are pure.
+  - Sections are counted where assembly already counts: the first template switch per card kind (`plain` cards by
+    `type2`: `main`, `globalNote`, `plain`) or each legacy `unformated` key, example messages, trigger additions, depth
+    lore (`lorebook`), the memory entries as sent (their recheck counts), and history (the greeting and each stored
+    message as pushed). One row per kind; `adjustment = input − sum(sections)` is signed (merges, trimming, continue
+    text, `depth_prompt`, duplicate chat ranges).
+  - `lore`: the budget pass's totals and, in `rejected`, its first 8 rejected entries (`reportedLoreRejections`,
+    `CONTEXT_LORE_REJECTED`: each name at most 80 code points, longer ones cut with an ellipsis); reports written before
+    entries were named have no `rejected`.
+  - Kept history is the set of sources in the final prompt: each history-side entry's source is kept by identity (across
+    `systemizeChat`, `pushPrompts` merges, which union into a copy of the destination entry, and copies a memory
+    algorithm returns, matched by message id before signature; memory entries never adopt history sources). An
+    `editRequest` that changes the list (checked against captured identities and fields, in-place rewrites included) or
+    a recheck removal of an entry without a whole source makes `attributionExact` false. A greeting or message left
+    blank by its scripts with no media (`ContextSource.empty`) has nothing to send: formatting drops it and HypaV3 never
+    summarizes it, so the report does not count it as history (`total`, `totalUser`, `droppedTokens`, `summarized`, and
+    the lost-history check behind `coverage` leave it out).
+  - `trim` (no memory only): the headroom after the trim loop and its next 8 entries with the counts the loop subtracts;
+    the uncounted new-chat marker takes its recheck count when it reached the prompt unchanged, and without one the
+    report has no `trim`. A queued greeting or message absent from the final prompt also omits `trim`, since it cannot
+    be displaced again. `replyPrefix` names a continue's target (`AssembleInput.continueMessageId`, the runner's
+    resolved id). `historyDigest` leaves that target out.
+  - `memory`: the branch run; `coverage` is `"gap"` when a trimmed HypaV3 selection dropped uncovered history,
+    `"covered"` for other HypaV3 selections unless the stored summaries end past the history or raw history the step
+    kept was lost later; coverage is also `"unknown"` when returned memory has no traced memory-only survivor or any
+    surviving memory provenance is untraced, and `"unknown"` for HypaV2, SupaMemory, and Hanurai. HypaV3 reports
+    `budget`, the memory budget the step applied (`resolveHypaV3Budget`, [memory](memory.md)), and, when a token-mode
+    preset did not fit the context, `budgetReduced`: each reduced amount's `field` (`memory`, `headroom`, `extra`, in
+    that order), `configured`, and `applied` value (present only when non-empty; `parseContextReport` checks known
+    fields, each at most once, with non-negative counts). HypaV3 adds the meter's fields: `summarized`, the history
+    sources left out whose message id a summary's `chatMemos` holds after the step (the greeting by its
+    `null`/`undefined` memo, never a legacy message without an id; absent when the returned memory did not survive, and
+    at most the messages left out, which `parseContextReport` checks), `prepared` (the kept history sources a deferred
+    summary covers, absent at 0, at most the messages kept), and the next send's `reserved`, `summarizeIn`, and, when a
+    task could run (an input job with a task input, no blocking reason, and no stored coverage ahead of the input) and a
+    window has a message to summarize, `lookaheadIn` (`forecastHypaV3` from the step's prepared ledger and its
+    execution's cursor and count, so history trimmed without a summary still counts and later formatting does not,
+    [memory](memory.md)). `tokenScope` is the job's `tokenizerIdentityKey` (`AssemblyHost.tokenScope`,
+    `pluginTokenizer: "none"`).
+- `shared/lore/overrides.ts`: chat overrides of the owner's lore (`Chat.loreOverrides`, `ChatLoreOverride`: a frozen
+  full copy linked by `entry.id`, and `off`). `mergeOwnerLore(ownerLore, overrides)` returns `{ lore, orphans }`: an
+  override matches the first owner entry with its non-empty id, a non-off one replaces that entry in place, an off one
+  removes it, later owner entries with the same id stay, the first override of an id applies and later ones are ignored,
+  and an override that matches no owner entry is an orphan, returned and not inserted. An off override of an owner
+  folder (`mode: "folder"`) also removes every entry inside it, whatever their own overrides (those are not orphans):
+  membership follows the owner's current non-empty string folder keys, never the frozen copy's, a removed nested folder
+  adds its key until nothing changes, and a keyless folder collects no ungrouped entry. `findOrphanedOverrides` and
+  `offOverrideIds(ownerLore, overrides)` follow the same rule; the off ids are the first-per-id off overrides' ids
+  (orphans included) plus the non-empty owner ids of every entry an off folder removes. It returns references and never
+  clones (the client passes live `$state` proxies); callers that mutate copy first. `orphanedOverrideEntries` projects
+  the orphans to `{ id, name }` for server and client refusals, naming each by its trimmed non-empty string `comment`,
+  then `key`, then id.
+- `src/ts/process/loreOverrides.ts`: `chatOrphanedOverrideEntries(ref)` checks the loaded chat against its owner's
+  `globalLore`; `chatLoreOverrideRefusalText(entries)` names the orphans and their fixes in the same localized alert for
+  local and server refusals; `refuseOrphanedOverrides(ref)` shows that alert and answers whether the chat is refused.
 - `lorebook.svelte.ts`: the client wrapper of lore activation and the lorebook codecs.
-  - `loadLoreBookV3Prompt(chatRef?)` runs `activateLore` for the chat with `getModuleLorebooks(ref)`, `loreBookDepth`, `loreBookToken`, and `getUserName(ref)` (the bound persona's name), and the client host.
-  - Also `addLorebook`, `addLorebookFolder`, `importLoreBook`, `exportLoreBook`, `convertExternalLorebook`. Lorebook file import/export supports character (`"global"`) and chat (`"local"`) lore; persisted global lore pages have no editor or file-codec mode. Local export refuses an unloaded chat with `localLoreExportNotLoaded`.
-- `shared/prompt/chatTemplate.ts`: `renderChatTemplate(messages, { type, jinjaTemplate, characterName, userName })` (Hugging Face Jinja), `chatTemplates` (built-in Llama/Gemma/Mistral/...), `templateEffect`. `templates/chatTemplate.ts` re-exports `chatTemplates` and `templateEffect` (not `renderChatTemplate`), and its `applyChatTemplate(messages, { type?, custom? })` supplies the selected model preset's `instructChatTemplate`/`JinjaTemplate`, the selected character, and the user's name.
-- `templates/templates.ts`: re-exports `prebuiltPresets` and `prebuiltNAIpresets` from `shared/presetTemplates.ts` (templates carry no id; a use goes through `normalizePreset`).
-- `shared/prompt/templateCheck.ts` `templateCheck({ promptTemplate })`: prompt-template warnings (`templates/templateCheck.ts` re-exports it).
-- `shared/messageSearch.ts` defines `POST /api/chats/search` query, hit, and page shapes (`all`, character, or chat scope; cursor paging). `messageSearch.svelte.ts` builds requests and owns the pending message-jump coordinator. `server/src/routes/messageSearch.ts` registers the endpoint; scan and limit details are in [self-host server](self-host-server.md). The panel and jump presentation are in [UI theming](ui-theming.md).
+  - `loadLoreBookV3Prompt(chatRef?)` runs `activateLore` for the chat with `getModuleLorebooks(ref)`, `loreBookDepth`,
+    `loreBookToken`, and `getUserName(ref)` (the bound persona's name), and the client host.
+  - Also `addLorebook`, `addLorebookFolder`, `importLoreBook`, `exportLoreBook`, `convertExternalLorebook`. Lorebook
+    file import/export supports character (`"global"`) and chat (`"local"`) lore; persisted global lore pages have no
+    editor or file-codec mode. Local export refuses an unloaded chat with `localLoreExportNotLoaded`.
+- `shared/prompt/chatTemplate.ts`: `renderChatTemplate(messages, { type, jinjaTemplate, characterName, userName })`
+  (Hugging Face Jinja), `chatTemplates` (built-in Llama/Gemma/Mistral/...), `templateEffect`.
+  `templates/chatTemplate.ts` re-exports `chatTemplates` and `templateEffect` (not `renderChatTemplate`), and its
+  `applyChatTemplate(messages, { type?, custom? })` supplies the selected model preset's
+  `instructChatTemplate`/`JinjaTemplate`, the selected character, and the user's name.
+- `templates/templates.ts`: re-exports `prebuiltPresets` and `prebuiltNAIpresets` from `shared/presetTemplates.ts`
+  (templates carry no id; a use goes through `normalizePreset`).
+- `shared/prompt/templateCheck.ts` `templateCheck({ promptTemplate })`: prompt-template warnings
+  (`templates/templateCheck.ts` re-exports it).
+- `shared/messageSearch.ts` defines `POST /api/chats/search` query, hit, and page shapes (`all`, character, or chat
+  scope; cursor paging). `messageSearch.svelte.ts` builds requests and owns the pending message-jump coordinator.
+  `server/src/routes/messageSearch.ts` registers the endpoint; scan and limit details are in
+  [self-host server](self-host-server.md). The panel and jump presentation are in [UI theming](ui-theming.md).
 - `stringlize.ts`: serializers for non-chat-completion backends and stop strings.
   - `stringlizeChat`, `stringlizeAINChat`, `unstringlizeChat`, `getStopStrings`.
   - `stringlizeChatOba` is unreferenced. `multiChatReplacer` is empty.
 - `group.ts`: `groupOrder` (name mentions, then shuffle and talkativeness), `addGroupChar`, `rmCharFromGroup`.
-- `prereroll.ts`: `Prereroll`, `PreUnreroll`, `addRerolls`. In-memory swipe history keyed by `generationId`, with the chat and message the reply was generated in. A swipe first stores the reply's current text into the candidate on display (an edit is what swiping back brings), and works only while the selected chat is that chat (a copied chat keeps the reply's ids and generation but not its candidates); an empty candidate (an emptied reply or an empty alternative) is shown like any other, since the screen applies every candidate that is not null.
-- `rerollHistory.ts` `restoreRerolledReplies`: a reroll's restore after a send that brought no reply (Flows step 3). `createRerollHistory`: the screen's per-chat bundle history (`record`, `begin`, `canForward`, `forward`, `back`, `clear`), up to 16 chats by last use; owned copies with an anchor message id and a cursor, swapped through `editChatSync` only while the anchor and current tail ids still match. The bundle at the cursor is refreshed from the chat's current tail when `begin` keeps the slot and before `move` swaps it away, so an edit of a recorded reply is kept.
-- `sendDraft.ts` `createSendDrafts`: the screen's per-chat send drafts (`idsFor`, `idFor`, `settle`, `takeUnplaced`); failed sends keep their text and `userMessageId` until restored, and keep the message id after restoration. `idsFor` captures a request id before dispatch; only uncertain attempts keep it after settlement. Continue always gets a fresh request id. `takeUnplaced` includes a retained request id. `adopt` seeds an already placed journal recovery, including its request id; `retryIdFor` returns the message id and any retained request id while the serialized send text matches. `composerSendText` is the shared serialization of input plus queued attachments, in order.
-- `composerDrafts.svelte.ts` `createComposer`: the screen's composer, per chat. The live fields (`input`, `translate`, `files`: the text, translation draft, and queued inlay ids) belong to the shown chat; `switchTo(key)` stashes the leaving chat's nonempty draft and loads the next chat's; `at(key)` routes delayed writes to their captured chat. Text setters, file assignments, `addFile`, and `removeFileAt` explicitly track edits; getters never schedule writes. With the screen's `pageDraftJournal()`, edits are journaled after 500 ms of quiet per chat, and every dirty chat flushes on page hide or screen destruction. Opening an empty composer is not an edit. `beginSend` immediately journals the consumed composer as the chat's hand-off row, deleting its draft row, with its message id and, for ordinary Send, its request id and the injected current epoch; Continue carries only the message id. Typing or clearing during the send writes only the draft row. When the send landed or succeeded, `settleSend` deletes the hand-off and drops the send's ids from a draft typed again with the same text, keeping that draft. Otherwise it conditionally updates request identity on both rows after send-draft settlement, even for hidden or unmounted chats: a known end clears it from the matching attempt, and an uncertain end adds it to a matching row that lacks it. A different stored request id is left alone; text, attachments and `createdAt` survive the update. The hand-off stays until the failed send's text is placed back: `placeSend` (the screen's settlement restore and `takeUnplaced`) puts the text in the composer and writes the draft at once, replacing the hand-off; a file queued during the send stays and makes the draft a new input without the send's ids. Active send ids outlive their screen so a remount cannot restore a send still running. The `chatKey` effect runs `switchTo`, `takeUnplaced`, then `restore`: a journal read applies only to the same still-empty, unchanged composer. `restore` reads the draft row first and the hand-off only when there is none, so a follow-up typed during a send comes back first and the send's text waits for an empty composer, as `takeUnplaced` does in the page. Recovery loads the chat to check the user message id, drops a landed send, and otherwise restores without sending; a restored hand-off becomes the draft in the transaction that deletes it. An unknown load outcome keeps the draft and message id. `restore` returns a request id only when the row's `requestEpoch` matches the injected current epoch; the screen adopts both ids so the next ordinary Send of that text reuses the request id. A different epoch preserves text and message id but the next Send mints a fresh request id. Same-epoch recovery in another tab keeps request identity; the server replay resolves ownership. Missing inlays are dropped, failed lookups keep them, and dropping an attachment invalidates both ids. A module-level `onChatRemoved` subscription clears journal rows even without a mounted screen, invalidates pending restores and writes, drops stashed drafts, and fences late `at(key)` callbacks until the key is shown again. A composer without a journal stays in memory only.
-- `inputTranslation.svelte.ts` `createInputTranslation`: the screen's input auto-translation (`run(reverse)`, `invalidate`, `compositionStart`/`compositionEnd`). Each run supersedes the previous one and captures the source text, the destination's current text, and the chat key; a result is published only while the run is the newest, both fields and the chat are unchanged, input translation is still on, and the destination is not composing (otherwise it is dropped, not deferred). The experimental translator stays reverse-only with its 1500 ms debounce and rechecks after it. The screen invalidates at a consumed send or slash command, a chat switch, turning input translation off, and destroy. `handleMainComposerKeydown`/`handleTranslationComposerKeydown`: the composers' Enter-send and Ctrl+M reroll, skipped while composing (`src/ts/ime.ts` `isImeComposing`: `isComposing` or `keyCode` 229, Safari's commit key; no `preventDefault`, so the IME keeps the key). The partial editor's Escape and Ctrl/Meta+Enter use the same guard.
-- `sendAborts.svelte.ts` `createSendAborts`: the screen's own sends by chat, each with the `AbortController` its Stop aborts (`begin` returns the signal and a release that removes the entry only while it is still that send's, `has` (reactive), `abort`); Stop in one chat never aborts another chat's send.
-- `command.ts` `processMultiCommand(line, ref?)`: the chat input's slash commands (`/send`, `/sendas`, `/cut`, `/del`, `/multisend`, `/trigger`, variables, TTS, `?` help). `/trigger` runs on the server (`runServerManualTrigger`, `scripts-triggers.md`); a trigger's `v2Command` runs the server's command executor. `runMultisend` (the typed `/multisend`) checks its chat (`isChatBusy`, then orphaned lore overrides) before each part's clear and append and stops at a part refused so or whose send returns false (refused, failed, lost, or stopped). These local busy/admission checks are per chat; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply. DevTool autopilot, the PO file run, and plugin `sendChat` check their chat the same way. A command job runs its queued `/multisend` parts on the server under one job id and chat slot ([self-host server](self-host-server.md)).
+- `prereroll.ts`: `Prereroll`, `PreUnreroll`, `addRerolls`. In-memory swipe history keyed by `generationId`, with the
+  chat and message the reply was generated in. A swipe first stores the reply's current text into the candidate on
+  display (an edit is what swiping back brings), and works only while the selected chat is that chat (a copied chat
+  keeps the reply's ids and generation but not its candidates); an empty candidate (an emptied reply or an empty
+  alternative) is shown like any other, since the screen applies every candidate that is not null.
+- `rerollHistory.ts` `restoreRerolledReplies`: a reroll's restore after a send that brought no reply (Flows step 3).
+  `createRerollHistory`: the screen's per-chat bundle history (`record`, `begin`, `canForward`, `forward`, `back`,
+  `clear`), up to 16 chats by last use; owned copies with an anchor message id and a cursor, swapped through
+  `editChatSync` only while the anchor and current tail ids still match. The bundle at the cursor is refreshed from the
+  chat's current tail when `begin` keeps the slot and before `move` swaps it away, so an edit of a recorded reply is
+  kept.
+- `sendDraft.ts` `createSendDrafts`: the screen's per-chat send drafts (`idsFor`, `idFor`, `settle`, `takeUnplaced`);
+  failed sends keep their text and `userMessageId` until restored, and keep the message id after restoration. `idsFor`
+  captures a request id before dispatch; only uncertain attempts keep it after settlement. Continue always gets a fresh
+  request id. `takeUnplaced` includes a retained request id. `adopt` seeds an already placed journal recovery, including
+  its request id; `retryIdFor` returns the message id and any retained request id while the serialized send text
+  matches. `composerSendText` is the shared serialization of input plus queued attachments, in order.
+- `composerDrafts.svelte.ts` `createComposer`: the screen's composer, per chat. The live fields (`input`, `translate`,
+  `files`: the text, translation draft, and queued inlay ids) belong to the shown chat; `switchTo(key)` stashes the
+  leaving chat's nonempty draft and loads the next chat's; `at(key)` routes delayed writes to their captured chat. Text
+  setters, file assignments, `addFile`, and `removeFileAt` explicitly track edits; getters never schedule writes. With
+  the screen's `pageDraftJournal()`, edits are journaled after 500 ms of quiet per chat, and every dirty chat flushes on
+  page hide or screen destruction. Opening an empty composer is not an edit. `beginSend` immediately journals the
+  consumed composer as the chat's hand-off row, deleting its draft row, with its message id and, for ordinary Send, its
+  request id and the injected current epoch; Continue carries only the message id. Typing or clearing during the send
+  writes only the draft row. When the send landed or succeeded, `settleSend` deletes the hand-off and drops the send's
+  ids from a draft typed again with the same text, keeping that draft. Otherwise it conditionally updates request
+  identity on both rows after send-draft settlement, even for hidden or unmounted chats: a known end clears it from the
+  matching attempt, and an uncertain end adds it to a matching row that lacks it. A different stored request id is left
+  alone; text, attachments and `createdAt` survive the update. The hand-off stays until the failed send's text is placed
+  back: `placeSend` (the screen's settlement restore and `takeUnplaced`) puts the text in the composer and writes the
+  draft at once, replacing the hand-off; a file queued during the send stays and makes the draft a new input without the
+  send's ids. Active send ids outlive their screen so a remount cannot restore a send still running. The `chatKey`
+  effect runs `switchTo`, `takeUnplaced`, then `restore`: a journal read applies only to the same still-empty, unchanged
+  composer. `restore` reads the draft row first and the hand-off only when there is none, so a follow-up typed during a
+  send comes back first and the send's text waits for an empty composer, as `takeUnplaced` does in the page. Recovery
+  loads the chat to check the user message id, drops a landed send, and otherwise restores without sending; a restored
+  hand-off becomes the draft in the transaction that deletes it. An unknown load outcome keeps the draft and message id.
+  `restore` returns a request id only when the row's `requestEpoch` matches the injected current epoch; the screen
+  adopts both ids so the next ordinary Send of that text reuses the request id. A different epoch preserves text and
+  message id but the next Send mints a fresh request id. Same-epoch recovery in another tab keeps request identity; the
+  server replay resolves ownership. Missing inlays are dropped, failed lookups keep them, and dropping an attachment
+  invalidates both ids. A module-level `onChatRemoved` subscription clears journal rows even without a mounted screen,
+  invalidates pending restores and writes, drops stashed drafts, and fences late `at(key)` callbacks until the key is
+  shown again. A composer without a journal stays in memory only.
+- `inputTranslation.svelte.ts` `createInputTranslation`: the screen's input auto-translation (`run(reverse)`,
+  `invalidate`, `compositionStart`/`compositionEnd`). Each run supersedes the previous one and captures the source text,
+  the destination's current text, and the chat key; a result is published only while the run is the newest, both fields
+  and the chat are unchanged, input translation is still on, and the destination is not composing (otherwise it is
+  dropped, not deferred). The experimental translator stays reverse-only with its 1500 ms debounce and rechecks after
+  it. The screen invalidates at a consumed send or slash command, a chat switch, turning input translation off, and
+  destroy. `handleMainComposerKeydown`/`handleTranslationComposerKeydown`: the composers' Enter-send and Ctrl+M reroll,
+  skipped while composing (`src/ts/ime.ts` `isImeComposing`: `isComposing` or `keyCode` 229, Safari's commit key; no
+  `preventDefault`, so the IME keeps the key). The partial editor's Escape and Ctrl/Meta+Enter use the same guard.
+- `sendAborts.svelte.ts` `createSendAborts`: the screen's own sends by chat, each with the `AbortController` its Stop
+  aborts (`begin` returns the signal and a release that removes the entry only while it is still that send's, `has`
+  (reactive), `abort`); Stop in one chat never aborts another chat's send.
+- `command.ts` `processMultiCommand(line, ref?)`: the chat input's slash commands (`/send`, `/sendas`, `/cut`, `/del`,
+  `/multisend`, `/trigger`, variables, TTS, `?` help). `/trigger` runs on the server (`runServerManualTrigger`,
+  `scripts-triggers.md`); a trigger's `v2Command` runs the server's command executor. `runMultisend` (the typed
+  `/multisend`) checks its chat (`isChatBusy`, then orphaned lore overrides) before each part's clear and append and
+  stops at a part refused so or whose send returns false (refused, failed, lost, or stopped). These local busy/admission
+  checks are per chat; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply.
+  DevTool autopilot, the PO file run, and plugin `sendChat` check their chat the same way. A command job runs its queued
+  `/multisend` parts on the server under one job id and chat slot ([self-host server](self-host-server.md)).
   - Pipes are `|`.
   - Unknown commands return `false` and fall through as ordinary text.
 - `infunctions.ts` `calcString`: calculator for the CBS calc function.
 - `inlayScreen.ts`:
-  - `runInlayScreen`: turns image/emotion commands in the output into `{{inlay::id}}` via `generateAIImage(..., 'inlay')` and `writeInlayImage`.
+  - `runInlayScreen`: turns image/emotion commands in the output into `{{inlay::id}}` via
+    `generateAIImage(..., 'inlay')` and `writeInlayImage`.
   - `updateInlayScreen`.
-- `files/inlays.ts`: inlays on the server. Metadata is the `inlays` resource (id = inlay id, `InlayResource` in `shared/resources.ts`); media bytes are assets named by content hash (`assets/inlay_<sha256>.<ext>`), so the same bytes are stored once; a signature keeps its JSON in the metadata `text`.
+- `files/inlays.ts`: inlays on the server. Metadata is the `inlays` resource (id = inlay id, `InlayResource` in
+  `shared/resources.ts`); media bytes are assets named by content hash (`assets/inlay_<sha256>.<ext>`), so the same
+  bytes are stored once; a signature keeps its JSON in the metadata `text`.
   - `writeInlayImage`: normalizes to PNG and caps the size at 1024² pixels.
-  - `postInlayAsset`, `setInlayAsset` (Blob or data URI), `saveInlayedSignature`, `getInlayAsset` (base64 data URI), `getInlayAssetBlob` (Blob), `listInlayAssets` (metadata only, read fresh; replaces the cached view), `removeInlayAsset` (metadata only; the blob stays because retained snapshots may reference it), `getInlayMetadata`, `verifyInlay` and `repairInlayMedia` (the browser-local import), `invalidateInlayCaches`.
-  - Caches: metadata seeded at boot (`seedInlays`) plus a GET on a miss, a negative cache for unknown ids that expires after 30 s, a 64 MiB blob cache (content-addressed, so never stale), and in-flight de-duplication. Metadata is only as fresh as this tab's own writes plus `invalidateInlayCaches`, which `bootstrap.ts` runs whenever the save adapter brought another tab's records into the mirror (`onRemoteRecordApplied`). Every public write to one id (preparation, upload, and metadata) runs after the previous one; a conflict with another tab re-reads once and writes over it (last writer wins, as before).
+  - `postInlayAsset`, `setInlayAsset` (Blob or data URI), `saveInlayedSignature`, `getInlayAsset` (base64 data URI),
+    `getInlayAssetBlob` (Blob), `listInlayAssets` (metadata only, read fresh; replaces the cached view),
+    `removeInlayAsset` (metadata only; the blob stays because retained snapshots may reference it), `getInlayMetadata`,
+    `verifyInlay` and `repairInlayMedia` (the browser-local import), `invalidateInlayCaches`.
+  - Caches: metadata seeded at boot (`seedInlays`) plus a GET on a miss, a negative cache for unknown ids that expires
+    after 30 s, a 64 MiB blob cache (content-addressed, so never stale), and in-flight de-duplication. Metadata is only
+    as fresh as this tab's own writes plus `invalidateInlayCaches`, which `bootstrap.ts` runs whenever the save adapter
+    brought another tab's records into the mirror (`onRemoteRecordApplied`). Every public write to one id (preparation,
+    upload, and metadata) runs after the previous one; a conflict with another tab re-reads once and writes over it
+    (last writer wins, as before).
   - `supportsInlayImage`.
-  - Rendering ([CBS rendering](cbs-rendering.md) `parseInlayAssets`): `getInlayMedia` gives the media type and asset key. Images use `getFileSrc`. Audio and video use the direct `/api/asset/<hex>` URL when a capable worker controls the page (`getDirectAssetSrc`), and otherwise `getInlayObjectUrl`, a typed object URL per asset key (`mediaObjectUrls`) kept for the page and never revoked, since rendered and cached HTML holds it. The `<source>` type comes from `shared/assetMime.ts` for the key's extension.
-- `files/multisend.ts` `postChatFile`: file attachments (PO, TXT, XML retrieval, media → inlays). The PDF branch is unreachable from the picker. The PO run sends each entry in the chat selected at its start and stops, downloading nothing, when that chat is gone, busy (`isChatBusy`), or has orphaned lore overrides before an entry, or an entry's send does not run.
+  - Rendering ([CBS rendering](cbs-rendering.md) `parseInlayAssets`): `getInlayMedia` gives the media type and asset
+    key. Images use `getFileSrc`. Audio and video use the direct `/api/asset/<hex>` URL when a capable worker controls
+    the page (`getDirectAssetSrc`), and otherwise `getInlayObjectUrl`, a typed object URL per asset key
+    (`mediaObjectUrls`) kept for the page and never revoked, since rendered and cached HTML holds it. The `<source>`
+    type comes from `shared/assetMime.ts` for the key's extension.
+- `files/multisend.ts` `postChatFile`: file attachments (PO, TXT, XML retrieval, media → inlays). The PDF branch is
+  unreachable from the picker. The PO run sends each entry in the chat selected at its start and stops, downloading
+  nothing, when that chat is gone, busy (`isChatBusy`), or has orphaned lore overrides before an entry, or an entry's
+  send does not run.
 
 ## Flows
 
 Send, in `DefaultChatScreen.svelte`:
 
 1. `send`/`sendContinue` → `sendMain`:
-   1. Capture the selected chat and its composer draft. If it has work of its own (`chatStatus.svelte.ts` `isChatBusy`: a send of this tab, a followed job, or a lock), alert `chatGenerating` and stop before the text, translation draft, attachments, or reroll history are consumed. Other chats' sends, jobs, and locks are not checked: different chats of the tab send at the same time, and switching chats or characters mid-send is allowed.
+   1. Capture the selected chat and its composer draft. If it has work of its own (`chatStatus.svelte.ts` `isChatBusy`:
+      a send of this tab, a followed job, or a lock), alert `chatGenerating` and stop before the text, translation
+      draft, attachments, or reroll history are consumed. Other chats' sends, jobs, and locks are not checked: different
+      chats of the tab send at the same time, and switching chats or characters mid-send is allowed.
    2. `processMultiCommand`; a line that is not a command checks the chat again after it, as in step 1.
-   3. An incomplete binding (`chatBinding(ref)`, [chat bindings](persistence.md)) opens the chat's binding dialog (`chatBindingDialog`) and stops before anything is consumed (also for Continue): the text, the translation draft, and the attachments stay. The send button reads "Set up this chat" meanwhile (it keeps `button-icon-send`, so the send hotkey opens the setup too), and both composers are read-only.
-   4. Orphaned lore overrides refuse locally with an alert naming the entries and fixes, before anything is consumed (also for Continue).
+   3. An incomplete binding (`chatBinding(ref)`, [chat bindings](persistence.md)) opens the chat's binding dialog
+      (`chatBindingDialog`) and stops before anything is consumed (also for Continue): the text, the translation draft,
+      and the attachments stay. The send button reads "Set up this chat" meanwhile (it keeps `button-icon-send`, so the
+      send hotkey opens the setup too), and both composers are read-only.
+   4. Orphaned lore overrides refuse locally with an alert naming the entries and fixes, before anything is consumed
+      (also for Continue).
    5. Append queued `{{inlayed::id}}` tags.
-   6. A nonempty input becomes the job's input with a new `userMessageId` (the job runs the input trigger, `editinput`, and appends the user message); an empty input appends "_says nothing_" when `useSayNothing` is on and the last message is not the user's (a continue from an empty input does it too).
+   6. A nonempty input becomes the job's input with a new `userMessageId` (the job runs the input trigger, `editinput`,
+      and appends the user message); an empty input appends "_says nothing_" when `useSayNothing` is on and the last
+      message is not the user's (a continue from an empty input does it too).
    7. `sendChatMain`, with no await between consuming the input and the send's admission.
-2. `sendChatMain` rechecks the captured chat's busy state, creates that chat's Stop controller, and calls `sendChat` with the captured target and input ids. The local send entry is taken synchronously, so each chat has one send per tab while different chats can run together. Stop aborts the selected chat's controller and followed jobs. Auto mode stays with its starting chat and ends on Stop, an unsuccessful round (`ok` false: refused, failed, or stopped), toggling it off, or leaving/closing that chat. Failed input drafts return only to an empty composer for their chat and keep the same `userMessageId` for a safe retry.
-3. `reroll`/`unReroll` refuse while the selected chat is busy. Swipe candidates are tried first, then the per-chat bundle history. A history swap uses `editChatSync` only while its anchor and tail message ids still match; edits to a displayed bundle are retained. A new reroll refuses orphaned lore overrides with the same alert before removing the captured tail; otherwise it removes the tail and sends in the captured chat. A send that brought no reply puts the removed tail back (`rerollHistory.ts` `restoreRerolledReplies`): a refusal first withdraws the matching removal while it still owns the end of the save queue, and after an ambiguous response that restoration is provisional ([persistence](persistence.md)); otherwise, once the send settled (it did not run, or its job ended: not after an unanswered create or a lost follow, when the job may still write), the tail is written back after the anchor while the chat still ends there, holds none of those ids, and its character is the same. A chat whose mirror may lack the job's end (marked behind, or local work that kept the job's chat copy from applying) is saved and read again first, pinned meanwhile; a reply that read brings is recorded in the bundle history, so Undo Reroll reaches the removed tail. It stays removed, with `rerollRepliesNotRestored`, when that still cannot be told, or when another send or generation writes into the chat (`isChatBusy`, a create refused for another tab's job, or a flush whose `GenerationBlockedError` names this chat). A new user send clears that chat's bundle history.
+2. `sendChatMain` rechecks the captured chat's busy state, creates that chat's Stop controller, and calls `sendChat`
+   with the captured target and input ids. The local send entry is taken synchronously, so each chat has one send per
+   tab while different chats can run together. Stop aborts the selected chat's controller and followed jobs. Auto mode
+   stays with its starting chat and ends on Stop, an unsuccessful round (`ok` false: refused, failed, or stopped),
+   toggling it off, or leaving/closing that chat. Failed input drafts return only to an empty composer for their chat
+   and keep the same `userMessageId` for a safe retry.
+3. `reroll`/`unReroll` refuse while the selected chat is busy. Swipe candidates are tried first, then the per-chat
+   bundle history. A history swap uses `editChatSync` only while its anchor and tail message ids still match; edits to a
+   displayed bundle are retained. A new reroll refuses orphaned lore overrides with the same alert before removing the
+   captured tail; otherwise it removes the tail and sends in the captured chat. A send that brought no reply puts the
+   removed tail back (`rerollHistory.ts` `restoreRerolledReplies`): a refusal first withdraws the matching removal while
+   it still owns the end of the save queue, and after an ambiguous response that restoration is provisional
+   ([persistence](persistence.md)); otherwise, once the send settled (it did not run, or its job ended: not after an
+   unanswered create or a lost follow, when the job may still write), the tail is written back after the anchor while
+   the chat still ends there, holds none of those ids, and its character is the same. A chat whose mirror may lack the
+   job's end (marked behind, or local work that kept the job's chat copy from applying) is saved and read again first,
+   pinned meanwhile; a reply that read brings is recorded in the bundle history, so Undo Reroll reaches the removed
+   tail. It stays removed, with `rerollRepliesNotRestored`, when that still cannot be told, or when another send or
+   generation writes into the chat (`isChatBusy`, a create refused for another tab's job, or a flush whose
+   `GenerationBlockedError` names this chat). A new user send clears that chat's bundle history.
 
 ### Job client and reply
 
-`sendChat` in `index.svelte.ts` refuses a deleted target and takes the target's local send entry before its first await; the entry is released when the send ends. Each chat admits one send from this tab, so sends in different chats can run concurrently. `serverGeneration.ts` builds the job request and `serverCommands.ts` flushes pending resource writes, creates the server job, follows it through its terminal, and maps its outcome to the caller. The job guard checks the chat binding; server-side admission and job lifecycle are documented in [self-host server](self-host-server.md).
+`sendChat` in `index.svelte.ts` refuses a deleted target and takes the target's local send entry before its first await;
+the entry is released when the send ends. Each chat admits one send from this tab, so sends in different chats can run
+concurrently. `serverGeneration.ts` builds the job request and `serverCommands.ts` flushes pending resource writes,
+creates the server job, follows it through its terminal, and maps its outcome to the caller. The job guard checks the
+chat binding; server-side admission and job lifecycle are documented in [self-host server](self-host-server.md).
 
-The tab follows jobs by id in `followedJobs` and records each job's latest `stage` event in `jobStages`. Creation and `accepted` seed `preparing` only when that job has no stage yet, so the spinner shows it before the first stage event; a later `accepted` never resets a known stage. Streaming chunks update the locked reply; the terminal supplies reroll alternatives, preview results, or an error. Stop aborts the selected chat's own send and followed jobs. `createGenerationJob` freezes its request body (including hooks, client id and request id) and epoch, and retries an unanswered create three times after 1, 2 and 4 s. Each attempt races authentication, dispatch and response decoding against 10 s; a late authentication result cannot dispatch. `creatingJobs` stays held across preparation and retries. Stop before dispatch sends nothing; after dispatch it immediately sends request-id cancel with an independent 10 s per attempt and the same retry schedule. A retained uncertain id is cancelled even if this invocation stops before dispatch. A known owned job still uses owner-scoped DELETE while followed.
+The tab follows jobs by id in `followedJobs` and records each job's latest `stage` event in `jobStages`. Creation and
+`accepted` seed `preparing` only when that job has no stage yet, so the spinner shows it before the first stage event; a
+later `accepted` never resets a known stage. Streaming chunks update the locked reply; the terminal supplies reroll
+alternatives, preview results, or an error. Stop aborts the selected chat's own send and followed jobs.
+`createGenerationJob` freezes its request body (including hooks, client id and request id) and epoch, and retries an
+unanswered create three times after 1, 2 and 4 s. Each attempt races authentication, dispatch and response decoding
+against 10 s; a late authentication result cannot dispatch. `creatingJobs` stays held across preparation and retries.
+Stop before dispatch sends nothing; after dispatch it immediately sends request-id cancel with an independent 10 s per
+attempt and the same retry schedule. A retained uncertain id is cancelled even if this invocation stops before dispatch.
+A known owned job still uses owner-scoped DELETE while followed.
 
-For a chat with a server lock or a known job this tab does not follow, an extra Stop control appears beside Send (or chat setup). The advisory `foreignJobs` mark never participates in `isChatBusy` or removes the Send hotkey. `stopChatJob(ref)` captures the clicked chat and admits one confirmation flow per chat, even across screen remounts. `readChatGeneration` looks up the current slot without attaching or holding plugin work; the confirmation names its localized kind, stage ("running" when absent), and sequence part when known. `stopChatGeneration` sends that exact job id with the current epoch. Each of the two exchanges has a 10 s deadline covering authentication, the request and its body; a timeout shows its error and ends the flow, so another click looks the chat up again (the confirmation wait itself is not bounded). A 409 `jobChanged` reads and confirms the replacement; 404 clears the mark and stops nothing. A successful stop leaves the mark through abort grace; a later idle lookup, an owned/followed lookup, the release of that chat's server lock, or a new local send/follow clears it. Only the explicit chat stop attributes another client; request-id cancel remains an ordinary silent abort.
+For a chat with a server lock or a known job this tab does not follow, an extra Stop control appears beside Send (or
+chat setup). The advisory `foreignJobs` mark never participates in `isChatBusy` or removes the Send hotkey.
+`stopChatJob(ref)` captures the clicked chat and admits one confirmation flow per chat, even across screen remounts.
+`readChatGeneration` looks up the current slot without attaching or holding plugin work; the confirmation names its
+localized kind, stage ("running" when absent), and sequence part when known. `stopChatGeneration` sends that exact job
+id with the current epoch. Each of the two exchanges has a 10 s deadline covering authentication, the request and its
+body; a timeout shows its error and ends the flow, so another click looks the chat up again (the confirmation wait
+itself is not bounded). A 409 `jobChanged` reads and confirms the replacement; 404 clears the mark and stops nothing. A
+successful stop leaves the mark through abort grace; a later idle lookup, an owned/followed lookup, the release of that
+chat's server lock, or a new local send/follow clears it. Only the explicit chat stop attributes another client;
+request-id cancel remains an ordinary silent abort.
 
-A replay is classified before saving a job, setting its stage or holding it live. An owned running replay is followed as this action (`outcome: "replayed"`), with `onStart` once. An owned ended replay feeds its terminal into the shared follow lifecycle, applies it and reads the chat again; a failed later read cannot turn that known terminal into a lost follow. Non-owned running replays refuse as busy and retain the job id in `chatStatus.svelte.ts` `foreignJobs`, as does a `chatBusy` refusal whose owner status cannot be read. Non-owned ended replays and missing status payloads reconcile the chat and expose whether that read succeeded, without fabricating a successful terminal or starting success-driven loops. A cancel naming an owned job follows that job to its terminal; a foreign cancel reconciles its chat and remains uncertain while it is still running. Unowned jobs are never saved or held live.
+A replay is classified before saving a job, setting its stage or holding it live. An owned running replay is followed as
+this action (`outcome: "replayed"`), with `onStart` once. An owned ended replay feeds its terminal into the shared
+follow lifecycle, applies it and reads the chat again; a failed later read cannot turn that known terminal into a lost
+follow. Non-owned running replays refuse as busy and retain the job id in `chatStatus.svelte.ts` `foreignJobs`, as does
+a `chatBusy` refusal whose owner status cannot be read. Non-owned ended replays and missing status payloads reconcile
+the chat and expose whether that read succeeded, without fabricating a successful terminal or starting success-driven
+loops. A cancel naming an owned job follows that job to its terminal; a foreign cancel reconciles its chat and remains
+uncertain while it is still running. Unowned jobs are never saved or held live.
 
-After an unanswered create, a decoded registry answer resolves the exchange only when it fences a delayed copy of the original POST: success or replay, `requestCancelled`, `requestIdReused`, and refusals that stay true for the same frozen body (`stale`, `chatBindingMismatch`, 404 `Chat not found`). Refusals the original could still pass later (both 503s, `chatBusy`, `chatBindingIncomplete`, `chatLoreOverrideOrphaned`) show their usual message but keep the request uncertain; an uncertain `chatBusy` is not followed, since a job of this request id would have been replayed. Failures before lookup (auth, rate limit, body limit, epoch mismatch) and generic/undecodable errors also leave it uncertain; the epoch notice still runs. See [self-host server](self-host-server.md) for admission ordering and receipt retention.
+After an unanswered create, a decoded registry answer resolves the exchange only when it fences a delayed copy of the
+original POST: success or replay, `requestCancelled`, `requestIdReused`, and refusals that stay true for the same frozen
+body (`stale`, `chatBindingMismatch`, 404 `Chat not found`). Refusals the original could still pass later (both 503s,
+`chatBusy`, `chatBindingIncomplete`, `chatLoreOverrideOrphaned`) show their usual message but keep the request
+uncertain; an uncertain `chatBusy` is not followed, since a job of this request id would have been replayed. Failures
+before lookup (auth, rate limit, body limit, epoch mismatch) and generic/undecodable errors also leave it uncertain; the
+epoch notice still runs. See [self-host server](self-host-server.md) for admission ordering and receipt retention.
 
-The ordinary composer's draft keeps its request id only for an unanswered create, a lost follow, an unsuccessful replay reconciliation, an unfenced refusal of an uncertain create (above), or a local preflight refusal of an already uncertain attempt. A known terminal (error, stopped or aborted included) or definite refusal drops the request id while preserving an unlanded input's message id. `sendChat.onEnd` carries the outcome and uncertainty to settlement; its boolean return is unchanged. Continue, reroll, commands and page-owned loops mint a new id per action. The composer journal carries that identity across reloads for the same epoch, through `restore` and `adopt`. Dispatch does not await IndexedDB: if the page dies after the POST but before the hand-off write commits, recovery may have only the earlier text without the request id. A crash before a settlement update commits can likewise leave the previous identity in the journal.
+The ordinary composer's draft keeps its request id only for an unanswered create, a lost follow, an unsuccessful replay
+reconciliation, an unfenced refusal of an uncertain create (above), or a local preflight refusal of an already uncertain
+attempt. A known terminal (error, stopped or aborted included) or definite refusal drops the request id while preserving
+an unlanded input's message id. `sendChat.onEnd` carries the outcome and uncertainty to settlement; its boolean return
+is unchanged. Continue, reroll, commands and page-owned loops mint a new id per action. The composer journal carries
+that identity across reloads for the same epoch, through `restore` and `adopt`. Dispatch does not await IndexedDB: if
+the page dies after the POST but before the hand-off write commits, recovery may have only the earlier text without the
+request id. A crash before a settlement update commits can likewise leave the previous identity in the journal.
 
-The server owns prompt assembly and the reply tail. Before a completed send ends, it can hand off the replies and input for detached translation ([media and auxiliary work](media-aux.md)); plugin providers and chat callbacks use job-channel callbacks. The server's barrier sends the job chat only when it changed since the owner socket's last copy; the tab's barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered copy, an unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming metadata before running the hook ([persistence](persistence.md)). See [self-host server](self-host-server.md) for the job event and callback contract. HypaV3 selection, blocking summaries, gap questions, progress, stop control, and background task hand-off are documented in [memory](memory.md).
+The server owns prompt assembly and the reply tail. Before a completed send ends, it can hand off the replies and input
+for detached translation ([media and auxiliary work](media-aux.md)); plugin providers and chat callbacks use job-channel
+callbacks. The server's barrier sends the job chat only when it changed since the owner socket's last copy; the tab's
+barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered copy, an
+unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming metadata
+before running the hook ([persistence](persistence.md)). See [self-host server](self-host-server.md) for the job event
+and callback contract. HypaV3 selection, blocking summaries, gap questions, progress, stop control, and background task
+hand-off are documented in [memory](memory.md).
 
-A command sequence's live `sequence` event counts one `messages` statistic and installs the part's alternatives through `serverGeneration.ts` `installReplyAlternatives`; it keeps the job followed and its channel open. A `done.sequence.stopped` shows `serverJob.sequenceStopped` with the sent count, total, and localized refusal reason (unknown codes show as received). A failed terminal is shown through `alertJobError` with copyable checked debug fields and a request-history link ([diagnostics](diagnostics.md)); sequence errors prefix the shown message with the progress and leave those fields intact. An abort with `abortedBy: "other"` shows the neutral `serverJob.stoppedElsewhere` toast; every other abort stays silent. `followJobToEnd` records a lost follow or a completed unseen reply in `chatStatus.svelte.ts`.
+A command sequence's live `sequence` event counts one `messages` statistic and installs the part's alternatives through
+`serverGeneration.ts` `installReplyAlternatives`; it keeps the job followed and its channel open. A
+`done.sequence.stopped` shows `serverJob.sequenceStopped` with the sent count, total, and localized refusal reason
+(unknown codes show as received). A failed terminal is shown through `alertJobError` with copyable checked debug fields
+and a request-history link ([diagnostics](diagnostics.md)); sequence errors prefix the shown message with the progress
+and leave those fields intact. An abort with `abortedBy: "other"` shows the neutral `serverJob.stoppedElsewhere` toast;
+every other abort stays silent. `followJobToEnd` records a lost follow or a completed unseen reply in
+`chatStatus.svelte.ts`.
 
-A follow whose socket closes before the terminal attaches again up to `MAX_ATTACHES` times, waiting 1, 2, 4, then 8 s (`RETRY_DELAYS_MS`; boot discovery and the chat load retry the same way). The transport gives up an attach that does not open within 10 s of its start or that goes silent for 45 s while the page is visible, and replaces an attach when the page comes back (`followGenerationJob`, `socketLiveness.ts`); only links that failed in a row spend `MAX_ATTACHES`: an opened socket replaced on the page's return (`closed` `resumed`) is attached again at once and not counted; a socket that delivered a frame (`closed` `received`) reached the server, so its close starts the count again (the next attach waits the first wait); and a close while the page is hidden or `navigator.onLine` is false (`jobLink` `closedAway`: a phone cutting the app's network in the background) is not counted either, the follow attaching again on the schedule with its last wait repeated until the page is back and its links fail in front of the user. Each status read (`readGenerationJob(jobId, { deadlineMs })`) is bounded by `STEP_DEADLINE_MS` (10 s). After every close without the terminal the follow reads the job's status:
+A follow whose socket closes before the terminal attaches again up to `MAX_ATTACHES` times, waiting 1, 2, 4, then 8 s
+(`RETRY_DELAYS_MS`; boot discovery and the chat load retry the same way). The transport gives up an attach that does not
+open within 10 s of its start or that goes silent for 45 s while the page is visible, and replaces an attach when the
+page comes back (`followGenerationJob`, `socketLiveness.ts`); only links that failed in a row spend `MAX_ATTACHES`: an
+opened socket replaced on the page's return (`closed` `resumed`) is attached again at once and not counted; a socket
+that delivered a frame (`closed` `received`) reached the server, so its close starts the count again (the next attach
+waits the first wait); and a close while the page is hidden or `navigator.onLine` is false (`jobLink` `closedAway`: a
+phone cutting the app's network in the background) is not counted either, the follow attaching again on the schedule
+with its last wait repeated until the page is back and its links fail in front of the user. Each status read
+(`readGenerationJob(jobId, { deadlineMs })`) is bounded by `STEP_DEADLINE_MS` (10 s). After every close without the
+terminal the follow reads the job's status:
 
-- a failed read is an unreachable server: attach again; when the attaches run out the follow is lost (`serverJob.lost`), unless an earlier read named an ended job's terminal, which then is the end (also when a later read finds the job unknown);
-- a running job, or an ended one the server still holds, is attached again (its attach sends the final records and the terminal);
-- the server's kept outcome of a collected job (`GenerationStatus.kept`, kept up to 24 h, across a server restart too through the job receipts; see `server/src/jobs/generationJobs.ts` and [self-host server](self-host-server.md) State) is the end: it is applied as the socket's terminal would be (`applyGenerationEvent`, which releases the job), a `done` marks the unseen reply, an error shows `alertJobError` as when watched live (a job that was running when the server stopped reads as a kept `shutdown` error), sequence progress is retained, and a stopped sequence shows `serverJob.sequenceStopped` as when watched live;
-- a job the server does not know (404 or another epoch: expired, pruned, a restore or import, or a restart while the server's receipt store was degraded) is gone: no `serverJob.lost` alert; the chat is read again and then the neutral toast `serverJob.endedAway` shows. Callers still get `"lost"`, since the outcome is unknown.
+- a failed read is an unreachable server: attach again; when the attaches run out the follow is lost (`serverJob.lost`),
+  unless an earlier read named an ended job's terminal, which then is the end (also when a later read finds the job
+  unknown);
+- a running job, or an ended one the server still holds, is attached again (its attach sends the final records and the
+  terminal);
+- the server's kept outcome of a collected job (`GenerationStatus.kept`, kept up to 24 h, across a server restart too
+  through the job receipts; see `server/src/jobs/generationJobs.ts` and [self-host server](self-host-server.md) State)
+  is the end: it is applied as the socket's terminal would be (`applyGenerationEvent`, which releases the job), a `done`
+  marks the unseen reply, an error shows `alertJobError` as when watched live (a job that was running when the server
+  stopped reads as a kept `shutdown` error), sequence progress is retained, and a stopped sequence shows
+  `serverJob.sequenceStopped` as when watched live;
+- a job the server does not know (404 or another epoch: expired, pruned, a restore or import, or a restart while the
+  server's receipt store was degraded) is gone: no `serverJob.lost` alert; the chat is read again and then the neutral
+  toast `serverJob.endedAway` shows. Callers still get `"lost"`, since the outcome is unknown.
 
-The boot resume's discovery read counts as the first of these reads (`discover` hands its status to `followOnce`): a kept outcome is the end without an attach, and an ended job's terminal stands if the server cannot be reached afterwards, also when the chat cannot be loaded.
+The boot resume's discovery read counts as the first of these reads (`discover` hands its status to `followOnce`): a
+kept outcome is the end without an attach, and an ended job's terminal stands if the server cannot be reached
+afterwards, also when the chat cannot be loaded.
 
-After a lost or gone follow, and after an end read from the status that this tab's copy may lack (an error, or a `done` whose `revision` is newer than `heldChatRevision`), `recoverJobChat` marks the chat stale (`markChatStale`, whether or not the job still locked anything) and awaits `refreshStaleChat` within the step deadline, while the chat is still pinned. One such recovery per chat: a newer one ends the older's reporting and listeners (its read, see below, still settles first). A read that did not take (offline, local work, past the deadline) is tried once more at the next `visibilitychange` to visible or `online` (one listener pair per chat; a chat whose stale mark is gone by then was read another way). The read follows the idle-refresh rules, so it never discards local work. The whole read carries the chat's lock list, so a feed lock whose release frame was missed is released by it once the job has ended, and one the job still holds stays; only a feed frame or `hello` that arrived while the read was out keeps the feed's locks instead ([persistence](persistence.md) Save step 9).
+After a lost or gone follow, and after an end read from the status that this tab's copy may lack (an error, or a `done`
+whose `revision` is newer than `heldChatRevision`), `recoverJobChat` marks the chat stale (`markChatStale`, whether or
+not the job still locked anything) and awaits `refreshStaleChat` within the step deadline, while the chat is still
+pinned. One such recovery per chat: a newer one ends the older's reporting and listeners (its read, see below, still
+settles first). A read that did not take (offline, local work, past the deadline) is tried once more at the next
+`visibilitychange` to visible or `online` (one listener pair per chat; a chat whose stale mark is gone by then was read
+another way). The read follows the idle-refresh rules, so it never discards local work. The whole read carries the
+chat's lock list, so a feed lock whose release frame was missed is released by it once the job has ended, and one the
+job still holds stays; only a feed frame or `hello` that arrived while the read was out keeps the feed's locks instead
+([persistence](persistence.md) Save step 9).
 
-A lost job may still be writing (the server was out of reach, not stopped), so the chat is read again later too, through `readChatAgain(ref)` (one serialized recovery read, `readRecoveringChat`, pinned for at most the step deadline; a read that did not take leaves the stale mark to the idle refresh; no recovery of its own, so a pending gone recovery still shows its notice): when the lost chat is viewed (`chatStatus.svelte.ts` `watchChatVisibility` clears its recovery mark and reads it, outside its effect), and for a completion push (`refreshChatAfterPush(ref)`, from `pushNotifications.ts` `onCompletionPush` and the service worker's `risu-push-completion` message: unless a follow of this tab covers the chat, it is read again and `push` `chatRefresh` recorded, so a reply that landed after a lost follow, or from another device, shows without opening the chat). A lost or gone follow leaves `followedJobs` before its recovery read, so a push during that read is not taken as covered. One chat's recovery reads run one at a time (`readRecoveringChat`): a newer read waits for the older's copy to settle and marks the chat stale again right before its own, since an ended recovery's read still writes the mirror and its older copy would clear the mark the newer read needs (`finishIdleChatRefresh` adopts only a stale or noticed chat). The idle refresh's own read of the chat may overlap these; a copy that takes while a later idle read of the chat is out leaves the stale mark for that read's copy ([persistence](persistence.md), `noteIdleChatRead`).
+A lost job may still be writing (the server was out of reach, not stopped), so the chat is read again later too, through
+`readChatAgain(ref)` (one serialized recovery read, `readRecoveringChat`, pinned for at most the step deadline; a read
+that did not take leaves the stale mark to the idle refresh; no recovery of its own, so a pending gone recovery still
+shows its notice): when the lost chat is viewed (`chatStatus.svelte.ts` `watchChatVisibility` clears its recovery mark
+and reads it, outside its effect), and for a completion push (`refreshChatAfterPush(ref)`, from `pushNotifications.ts`
+`onCompletionPush` and the service worker's `risu-push-completion` message: unless a follow of this tab covers the chat,
+it is read again and `push` `chatRefresh` recorded, so a reply that landed after a lost follow, or from another device,
+shows without opening the chat). A lost or gone follow leaves `followedJobs` before its recovery read, so a push during
+that read is not taken as covered. One chat's recovery reads run one at a time (`readRecoveringChat`): a newer read
+waits for the older's copy to settle and marks the chat stale again right before its own, since an ended recovery's read
+still writes the mirror and its older copy would clear the mark the newer read needs (`finishIdleChatRefresh` adopts
+only a stale or noticed chat). The idle refresh's own read of the chat may overlap these; a copy that takes while a
+later idle read of the chat is out leaves the stale mark for that read's copy ([persistence](persistence.md),
+`noteIdleChatRead`).
 
 Not in `sendChat`:
 
 - Input auto-translation happens in `DefaultChatScreen` through `createInputTranslation` (Files).
 - Display translation happens in `ChatBody.svelte`.
-- Suggestions come from `Suggestion.svelte`, which calls `requestChatData` directly. It follows the local send registry per chat: an entry taken for a chat cancels and clears only that chat's suggestions; other chats keep theirs visible. An entry's release requests suggestions if that chat is selected (or the send had no chat), else queues its chat key for a request when selected and loaded (only if suggestions are empty). Opened while no send runs, it requests for the selected chat. Other selection changes request nothing; a new send or deletion drops the queued key.
-- `writeInlayImage` rejects when the image has no pixels or fails to load; its per-id queue moves on to the next write, so a caller handles the rejection.
-- A continue on a group runs the group speaker loop like a send (`continueSend` false): the continue target is not passed to each speaker.
-- The chat screen renders a window over the selected chat's loaded messages (`chatLoadInitialPages`, `chatLoadAdditionalPages`); paging never fetches, and selecting a chat that is not loaded shows the loading state (or the error with a retry) until it is.
+- Suggestions come from `Suggestion.svelte`, which calls `requestChatData` directly. It follows the local send registry
+  per chat: an entry taken for a chat cancels and clears only that chat's suggestions; other chats keep theirs visible.
+  An entry's release requests suggestions if that chat is selected (or the send had no chat), else queues its chat key
+  for a request when selected and loaded (only if suggestions are empty). Opened while no send runs, it requests for the
+  selected chat. Other selection changes request nothing; a new send or deletion drops the queued key.
+- `writeInlayImage` rejects when the image has no pixels or fails to load; its per-id queue moves on to the next write,
+  so a caller handles the rejection.
+- A continue on a group runs the group speaker loop like a send (`continueSend` false): the continue target is not
+  passed to each speaker.
+- The chat screen renders a window over the selected chat's loaded messages (`chatLoadInitialPages`,
+  `chatLoadAdditionalPages`); paging never fetches, and selecting a chat that is not loaded shows the loading state (or
+  the error with a retry) until it is.
 
 ## State
 
-- `src/ts/process/chatStatus.svelte.ts` holds per-tab sources keyed by `${chaId}\u0000${chatId}`: reactive `generatingChatKeys()` unions `followedJobs` values with `chatStore.svelte.ts` `lockedChatKeys()`, `recoveryChatKeys` maps a lost chat to its job id, and `unseenChatKeys` holds up to 256 chats whose `done` carried a reply `messageId` while that chat was not visible (oldest dropped). `watchChatVisibility`, started once from `bootstrap.ts`, tracks visibility and both mark stores, clearing recovery and unseen for the chat whose transcript is shown (a cleared recovery mark also reads the chat again, `serverCommands.ts` `readChatAgain`) (`visibleChatKey`: the selected chat is loaded, its chat screen is open (screen 0, or 2 for `§playground`), no full-page screen covers it (`settingsOpen`, `gridOpenStore`, or the bookmark list, message search, HypaV3 memory, or popup editor panel; the smaller pickers and dialogs do not count), and the page is visible (`pageVisibility.svelte.ts`); a reply that ends otherwise is marked unseen) even when a lost follow adds a mark without a visibility change; new follows clear that chat's recovery, and followed-job changes prune recovery for deleted chats. The writable inputs use lazy `fromStore` views for reactive reads without permanent mirror subscriptions; `resetChatStatusForTests` clears the marks and those views. `foreignJobs` is an advisory chat key → job id Map, updated by `noteForeignJob` and `clearForeignJob`; `foreignJobChatKeys()` unions its keys with server locks and removes followed chats for the extra Stop control.
+- `src/ts/process/chatStatus.svelte.ts` holds per-tab sources keyed by `${chaId}\u0000${chatId}`: reactive
+  `generatingChatKeys()` unions `followedJobs` values with `chatStore.svelte.ts` `lockedChatKeys()`, `recoveryChatKeys`
+  maps a lost chat to its job id, and `unseenChatKeys` holds up to 256 chats whose `done` carried a reply `messageId`
+  while that chat was not visible (oldest dropped). `watchChatVisibility`, started once from `bootstrap.ts`, tracks
+  visibility and both mark stores, clearing recovery and unseen for the chat whose transcript is shown (a cleared
+  recovery mark also reads the chat again, `serverCommands.ts` `readChatAgain`) (`visibleChatKey`: the selected chat is
+  loaded, its chat screen is open (screen 0, or 2 for `§playground`), no full-page screen covers it (`settingsOpen`,
+  `gridOpenStore`, or the bookmark list, message search, HypaV3 memory, or popup editor panel; the smaller pickers and
+  dialogs do not count), and the page is visible (`pageVisibility.svelte.ts`); a reply that ends otherwise is marked
+  unseen) even when a lost follow adds a mark without a visibility change; new follows clear that chat's recovery, and
+  followed-job changes prune recovery for deleted chats. The writable inputs use lazy `fromStore` views for reactive
+  reads without permanent mirror subscriptions; `resetChatStatusForTests` clears the marks and those views.
+  `foreignJobs` is an advisory chat key → job id Map, updated by `noteForeignJob` and `clearForeignJob`;
+  `foreignJobChatKeys()` unions its keys with server locks and removes followed chats for the extra Stop control.
 - `OpenAIChat` has `role`, `content`, `memo`, `removable`, `attr`, `multimodals`, `thoughts`, and `cachePoint`.
   - `memo` values `supaMemory`/`hypaMemory` mark memory cards.
-- `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`, `authornote`, `chat` (with a range), and `cache`.
-- Reactive singletons: the records (through `settingsViews.svelte.ts` and `characterStore.svelte.ts`), `selection`, `localSends` (`localSends.ts`: this tab's sends per chat, entries owned by `sendChat`; `anyLocalSend` is its tab-wide view for plugin reload deferral and translator cache-only mode; screen controls and suggestions follow the selected chat's own work), `followedJobs` (`serverCommands.ts`: the jobs this tab follows, job id → `${chaId}\u0000${chatId}`; `followedJobsOf` selects a chat's job ids), `jobStages` (`jobStages.ts`: the latest stage of each job this tab follows, job id → { chat key, stage }; seeded as `preparing` at creation or accept until a stage is known, then set by `applyGenerationEvent`, removed with the job's `followedJobs` entry at its follow's end; `chatStageOf` picks a chat's newest staged job), `CharEmotion`.
-- The tab never mutates the chat in place: the chats are held by `src/ts/storage/chatStore.svelte.ts` (the screen reads `selectedChat()` and the lists `chatList()`), and every write goes through it (see `persistence.md`), addressed by chat and message id. Autosave does not see chats.
-- Chats load on demand. The chat screen renders nothing chat-dependent while the selected chat loads (`selectedChatLoad()`: a loading state, or the error with a retry). A server job's target chat is pinned and loaded before the job is created (`runServerJob`; `followJobToEnd` for a resumed or followed job, through every reconnect, sequence part, and the terminal's hydration), and a send's chat stays pinned until `sendChatOnServer` has read the reply's alternatives; a target that cannot be loaded runs nothing. A typed command line (`processMultiCommand`), an auxiliary LLM request (`requestServer`: its chat and its parse chat, until its event stream ends), `editChat`, and a group output listener's speaker (`chatOutput`: its chats, before each listener) pin and load what they read. The synchronous chat readers (`chatVar`, `getModules(ref)`, the CBS host, `transformClient`'s context, the MCP tool records) read loaded chats only; their chat is the selected one, a pinned job or request target, or a plugin context that awaited its load, and an unloaded chat reads as gone, never as another chat. The bound persona (`checkPersonaBinded`, `capturePluginContext`) is read from the chat's list entry, so it holds while the chat is not loaded.
-- Streaming display: a server job's message is locked while it streams (`isMessageLocked`); `Chat.svelte` disables its controls and renders it without the server transform until the lock ends. The display optimization (`streamingDisplayOptimizationMode`) follows the stream: `applyServerGeneration` sets its chat's streaming entry (`streamingEntry(ref)`) on the generation's first stream update with the configured mode, and that generation's lock release clears only that entry (`persistence.md`); each chat has its own entry, so jobs in two chats each keep their message shown as streaming. `Chats.svelte` keeps the streaming row mounted in every mode while it streams (rows are keyed by message id; `Chat.updateRow` passes the text in) and mounts it again when it ends, `off` parses it like any message, and `strong` renders that text raw, without markdown (`util/playwright/checkStreamingModes.mjs`). Whatever the mode, the chat module writes the streamed text into the mirror at most once per frame (`persistence.md`), so a streaming row parses once per frame, not once per chunk.
+- `PromptItem` types: `plain|jailbreak|cot`, `chatML`, typed `persona|description|lorebook|postEverything|memory`,
+  `authornote`, `chat` (with a range), and `cache`.
+- Reactive singletons: the records (through `settingsViews.svelte.ts` and `characterStore.svelte.ts`), `selection`,
+  `localSends` (`localSends.ts`: this tab's sends per chat, entries owned by `sendChat`; `anyLocalSend` is its tab-wide
+  view for plugin reload deferral and translator cache-only mode; screen controls and suggestions follow the selected
+  chat's own work), `followedJobs` (`serverCommands.ts`: the jobs this tab follows, job id → `${chaId}\u0000${chatId}`;
+  `followedJobsOf` selects a chat's job ids), `jobStages` (`jobStages.ts`: the latest stage of each job this tab
+  follows, job id → { chat key, stage }; seeded as `preparing` at creation or accept until a stage is known, then set by
+  `applyGenerationEvent`, removed with the job's `followedJobs` entry at its follow's end; `chatStageOf` picks a chat's
+  newest staged job), `CharEmotion`.
+- The tab never mutates the chat in place: the chats are held by `src/ts/storage/chatStore.svelte.ts` (the screen reads
+  `selectedChat()` and the lists `chatList()`), and every write goes through it (see `persistence.md`), addressed by
+  chat and message id. Autosave does not see chats.
+- Chats load on demand. The chat screen renders nothing chat-dependent while the selected chat loads
+  (`selectedChatLoad()`: a loading state, or the error with a retry). A server job's target chat is pinned and loaded
+  before the job is created (`runServerJob`; `followJobToEnd` for a resumed or followed job, through every reconnect,
+  sequence part, and the terminal's hydration), and a send's chat stays pinned until `sendChatOnServer` has read the
+  reply's alternatives; a target that cannot be loaded runs nothing. A typed command line (`processMultiCommand`), an
+  auxiliary LLM request (`requestServer`: its chat and its parse chat, until its event stream ends), `editChat`, and a
+  group output listener's speaker (`chatOutput`: its chats, before each listener) pin and load what they read. The
+  synchronous chat readers (`chatVar`, `getModules(ref)`, the CBS host, `transformClient`'s context, the MCP tool
+  records) read loaded chats only; their chat is the selected one, a pinned job or request target, or a plugin context
+  that awaited its load, and an unloaded chat reads as gone, never as another chat. The bound persona
+  (`checkPersonaBinded`, `capturePluginContext`) is read from the chat's list entry, so it holds while the chat is not
+  loaded.
+- Streaming display: a server job's message is locked while it streams (`isMessageLocked`); `Chat.svelte` disables its
+  controls and renders it without the server transform until the lock ends. The display optimization
+  (`streamingDisplayOptimizationMode`) follows the stream: `applyServerGeneration` sets its chat's streaming entry
+  (`streamingEntry(ref)`) on the generation's first stream update with the configured mode, and that generation's lock
+  release clears only that entry (`persistence.md`); each chat has its own entry, so jobs in two chats each keep their
+  message shown as streaming. `Chats.svelte` keeps the streaming row mounted in every mode while it streams (rows are
+  keyed by message id; `Chat.updateRow` passes the text in) and mounts it again when it ends, `off` parses it like any
+  message, and `strong` renders that text raw, without markdown (`util/playwright/checkStreamingModes.mjs`). Whatever
+  the mode, the chat module writes the streamed text into the mirror at most once per frame (`persistence.md`), so a
+  streaming row parses once per frame, not once per chunk.
 
 ## Coupling
 
 - `sendChat` imports `serverGeneration.ts` (and through it `serverCommands.ts`, the job channel) and the chat module.
-- Callers: `DefaultChatScreen.svelte`, `command.ts` (`/send`, `/multisend`), `files/multisend.ts`, `hotkey.ts`, `DevTool.svelte` (preview, autopilot), `plugins/apiV3` (`sendChat` permission).
+- Callers: `DefaultChatScreen.svelte`, `command.ts` (`/send`, `/multisend`), `files/multisend.ts`, `hotkey.ts`,
+  `DevTool.svelte` (preview, autopilot), `plugins/apiV3` (`sendChat` permission).
 
 ## Invariants
 
 - `chatId` is the address of every message write. Never address a message by index after an await; resolve the id again.
-- A send captures its target chat before any await and passes it to the job; the job's prompt and model presets and persona are the chat's binding, fixed at its creation (a plugin's `sendChat` inside a hook passes `pluginContext`, so the job acts on the hook's chat and preset). Nothing falls back to the tab's selection: a chat whose binding is incomplete is not sent, and the server refuses it independently ([chat bindings](persistence.md)).
-- Every context builder takes its ids from the captured chat, never from the views: a job or chat request from `chatBinding(ref)` (`runPinnedServerJob`, `requestChatDataServer`), a render or plugin context from `chatDisplayIds(ref)` (`captureTransform`, `capturePluginContext`). The tab's chat LLM requests have the same guard (`requestChatData` before its hooks and tools, again at `requestChatDataMain`; a request inside a job callback is compared with the job's targets). A request without a chat is not a send: it carries no `chatRef`, is never refused by a binding, and runs on the settings views, read once before any await.
-- The reply being generated is locked by its server job: the tab's writes to it are refused by the server and skipped by the chat module.
-- The server refuses every generation job for a chat with orphaned lore overrides at admission with 409 `chatLoreOverrideOrphaned` and `entries: [{ id, name }]`. The tab refuses first, with the same alert, wherever a send would write the chat before that admission: Send, Continue, and Reroll, and `/multisend` (its clear too), the PO file run, DevTool autopilot, and plugin `sendChat` (`refuseOrphanedOverrides`). The DevTool lore preview and token counting do not refuse; activation drops orphans silently.
-- Requests that are not generation jobs run for such a chat, by the owner's decision of 2026-10-25: `/api/llm/request` with a `chatRef` (suggestions, MCP AIAccess), the detached memory and translation tasks, and the tab's plugin-provider and WebLLM requests. Most of them do not activate lore.
+- A send captures its target chat before any await and passes it to the job; the job's prompt and model presets and
+  persona are the chat's binding, fixed at its creation (a plugin's `sendChat` inside a hook passes `pluginContext`, so
+  the job acts on the hook's chat and preset). Nothing falls back to the tab's selection: a chat whose binding is
+  incomplete is not sent, and the server refuses it independently ([chat bindings](persistence.md)).
+- Every context builder takes its ids from the captured chat, never from the views: a job or chat request from
+  `chatBinding(ref)` (`runPinnedServerJob`, `requestChatDataServer`), a render or plugin context from
+  `chatDisplayIds(ref)` (`captureTransform`, `capturePluginContext`). The tab's chat LLM requests have the same guard
+  (`requestChatData` before its hooks and tools, again at `requestChatDataMain`; a request inside a job callback is
+  compared with the job's targets). A request without a chat is not a send: it carries no `chatRef`, is never refused by
+  a binding, and runs on the settings views, read once before any await.
+- The reply being generated is locked by its server job: the tab's writes to it are refused by the server and skipped by
+  the chat module.
+- The server refuses every generation job for a chat with orphaned lore overrides at admission with 409
+  `chatLoreOverrideOrphaned` and `entries: [{ id, name }]`. The tab refuses first, with the same alert, wherever a send
+  would write the chat before that admission: Send, Continue, and Reroll, and `/multisend` (its clear too), the PO file
+  run, DevTool autopilot, and plugin `sendChat` (`refuseOrphanedOverrides`). The DevTool lore preview and token counting
+  do not refuse; activation drops orphans silently.
+- Requests that are not generation jobs run for such a chat, by the owner's decision of 2026-10-25: `/api/llm/request`
+  with a `chatRef` (suggestions, MCP AIAccess), the detached memory and translation tasks, and the tab's plugin-provider
+  and WebLLM requests. Most of them do not activate lore.
 - Script modes (run by the server since the cutover):
 
   | Mode          | Stage                       |
@@ -171,70 +543,180 @@ Not in `sendChat`:
   | `editoutput`  | model output                |
   | `editdisplay` | render                      |
 
-  Lua edit triggers skip `editprocess`. The `request` trigger runs on the server job's requests only; the tab's own requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
+  Lua edit triggers skip `editprocess`. The `request` trigger runs on the server job's requests only; the tab's own
+  requests (translation, suggestions, the HypaV3 modal, plugins) go out without it.
 
-- The prompt budget is `maxContext − maxResponse`: `assemblePrompt` counts from `maxResponse + 50`, and its no-memory trim, the HypaV3 step (`responseCorrection: false`, [memory](memory.md)), and the final token recheck after formatting (removable entries first, then the too-many-tokens error) all keep the response budget free, as the context meter's percentages assume. SupaMemory and Hanurai count from the same total; HypaV2 keeps its legacy subtraction, so for it the recheck is what frees the response budget, with its last two chats protected.
-- A new `PromptItem` type needs handling in both template switches of the server's `assemblePrompt`, plus `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate` (`shared/presets.ts`).
+- The prompt budget is `maxContext − maxResponse`: `assemblePrompt` counts from `maxResponse + 50`, and its no-memory
+  trim, the HypaV3 step (`responseCorrection: false`, [memory](memory.md)), and the final token recheck after formatting
+  (removable entries first, then the too-many-tokens error) all keep the response budget free, as the context meter's
+  percentages assume. SupaMemory and Hanurai count from the same total; HypaV2 keeps its legacy subtraction, so for it
+  the recheck is what frees the response budget, with its last two chats protected.
+- A new `PromptItem` type needs handling in both template switches of the server's `assemblePrompt`, plus
+  `tokenizePreset`, `templateCheck`, import conversion, `PromptDataItem.svelte`, and `normalizePromptTemplate`
+  (`shared/presets.ts`).
 - Lore matching (`shared/lore/activation.ts`):
   - Only the last `scanDepth` messages are scanned.
   - Keys starting with `/` are regex.
   - Supports selective secondary keys, negative keys, and all-key mode.
-  - Recursion is controlled by `recursiveScanning` and `@@recursive`/`@@unrecursive`/`@@no_recursive_search`, with no explicit depth counter.
+  - Recursion is controlled by `recursiveScanning` and `@@recursive`/`@@unrecursive`/`@@no_recursive_search`, with no
+    explicit depth counter.
   - Decorators are parsed with `CCardLib.decorator.parse`.
-  - Overrides apply to the chat owner's `globalLore` only (a group chat's: the group's own), never to module lore. Activation drops orphans silently; the merged view is for chat-scoped readers, while editors, token estimates, and import/export read the raw character lore.
-  - A `child` entry ("Always active in this chat") activates from the first earlier entry with its id when that entry did not activate, copying its `comment` and `content` and taking its `insertorder` as order and priority (`@@priority` in the content still wins). A child whose id is turned off by the chat's overrides (`offOverrideIds`, which includes the entries inside an off folder) never activates, even when another entry shares the id or its content has `@@activate`.
-  - `@@keep_activate_after_match` and `@@dont_activate_after_match` are per entry: an activated entry writes `__internal_ka_<id>`/`__internal_da_<id>` (its `id`, else `pickHashRand(5555, content)`) only for its own decorator. On later runs a set `__internal_ka_` activates the entry without a key match, and a set `__internal_da_` keeps it off.
-- Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
-- Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them (`captionImage`, `memory.md`).
+  - Overrides apply to the chat owner's `globalLore` only (a group chat's: the group's own), never to module lore.
+    Activation drops orphans silently; the merged view is for chat-scoped readers, while editors, token estimates, and
+    import/export read the raw character lore.
+  - A `child` entry ("Always active in this chat") activates from the first earlier entry with its id when that entry
+    did not activate, copying its `comment` and `content` and taking its `insertorder` as order and priority
+    (`@@priority` in the content still wins). A child whose id is turned off by the chat's overrides (`offOverrideIds`,
+    which includes the entries inside an off folder) never activates, even when another entry shares the id or its
+    content has `@@activate`.
+  - `@@keep_activate_after_match` and `@@dont_activate_after_match` are per entry: an activated entry writes
+    `__internal_ka_<id>`/`__internal_da_<id>` (its `id`, else `pickHashRand(5555, content)`) only for its own decorator.
+    On later runs a set `__internal_ka_` activates the entry without a key match, and a set `__internal_da_` keeps it
+    off.
+- Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the
+  `{{inlay::id}}` tags that name it; deleting messages never removes inlays.
+- Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them
+  (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce role rules: Gemma has no system role, and Mistral requires alternating roles.
-- A suggestion result is applied only while its request token and the captured character and chat ids still match (`Suggestion.svelte`), never by the old chat index. The suggestions' display translation translates a copy of the list taken when it starts and shows the whole result only while its run is current and the same chat is selected; a newer list, toggle, chat, or unmount ends it.
+- A suggestion result is applied only while its request token and the captured character and chat ids still match
+  (`Suggestion.svelte`), never by the old chat index. The suggestions' display translation translates a copy of the list
+  taken when it starts and shows the whole result only while its run is current and the same chat is selected; a newer
+  list, toggle, chat, or unmount ends it.
 
 ## Recipes
 
-- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both template switches in `server/src/prompt/assemble.ts`, `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate` (`shared/presets.ts`). Verify the prompt preview (DevTool), token counts, and a preset reload.
-- Change input processing: `DefaultChatScreen.sendMain` and the job's input stage (`server/src/prompt/runner.ts`). Verify character and group chats and slash-command fallthrough.
-- Add a response command or inlay: the job's tail (`server/src/prompt/postProcess.ts` `runInlayScreen`) and `files/inlays.ts` or the parser.
-- Change lore activation: `shared/lore/activation.ts` (search, decorators, budget) and the position mapping in `assemblePrompt`.
+- Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both template switches in `server/src/prompt/assemble.ts`,
+  `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate` (`shared/presets.ts`). Verify
+  the prompt preview (DevTool), token counts, and a preset reload.
+- Change input processing: `DefaultChatScreen.sendMain` and the job's input stage (`server/src/prompt/runner.ts`).
+  Verify character and group chats and slash-command fallthrough.
+- Add a response command or inlay: the job's tail (`server/src/prompt/postProcess.ts` `runInlayScreen`) and
+  `files/inlays.ts` or the parser.
+- Change lore activation: `shared/lore/activation.ts` (search, decorators, budget) and the position mapping in
+  `assemblePrompt`.
 - Add a slash command: `command.ts:processCommand`, plus its `?` help text.
-- Change backend prompt serialization: `shared/prompt/chatTemplate.ts` or the server's request layer (`llm-requests.md`).
+- Change backend prompt serialization: `shared/prompt/chatTemplate.ts` or the server's request layer
+  (`llm-requests.md`).
 
 ## Tests
 
-- Send-job and prompt contracts: `server/src/tests/promptRunner.test.ts`, `assemble.test.ts`, and `promptTail.test.ts`; server implementation details are in [self-host server](self-host-server.md). Memory job and task contracts are in [memory](memory.md).
-- Send admission and tab state: `src/ts/process/{localSends,serverGeneration,jobStages,chatStatus}.test.ts`, `index.test.ts`, and `sendAborts.svelte.test.ts` cover per-chat admission, stage tracking, terminal/lost status, and Stop controllers; `chatStatus.test.ts` also covers the foreign mark cleared by a released lock, `serverCommands.test.ts` the `stoppedElsewhere` notice, and `src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts` the extra Stop beside Send (shown for an unfollowed lock, busy refusal, or replay; the confirm naming the looked-up job; a `jobChanged` confirmed again; an idle answer stopping nothing). `e2e/perChatSends.spec.ts` covers two chats running at once, per-chat Stop and suggestions, and auto mode across a chat switch.
-- Lore activation and chat overrides: `server/src/tests/lore.test.ts` ("chat lore overrides": first-match merge, orphans, overridden content, off folders by the owner's current keys, off beating `child` links (off-folder members included), child insert order); `cbs.test.ts` (`{{lorebook}}` with overrides and an off folder). Override persistence: `chats.test.ts` (validation, first override per id), `chatCheckpoints.test.ts` (capture and load), `transform.test.ts` (cache key), `upstreamExport.test.ts` and `upstreamImportCharacters.test.ts` (strip and repair).
-- Caller workflows: `src/ts/process/command.test.ts` covers slash commands and per-chat `/multisend`; `rerollHistory.test.ts` and `sendDraft.test.ts` cover chat-scoped reroll bundles, the restore after a reroll that brought no reply, and draft recovery; `composerDrafts.test.ts` covers the per-chat composer (drafts kept across switches and to no chat, `at(key)` writes after a switch, a draft for a chat not shown yet) and its journal rows (the 500 ms debounce, restore of shown and stashed drafts, the send hand-off kept apart from a follow-up typed and cleared during the send, its placement (also beside a file queued meanwhile), a retyped identical draft kept when the send lands, the landed/unlanded recovery of hand-off and older draft-row hand-offs, late reads after a switch or typing, missing inlays, removal purges, `createdAt` expiry); `src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts` mounts the screen over real stores for the hand-off (also across a reload after a follow-up was typed and cleared), the switch restore, the page-hide flush, the file button and attachment removal, and in-page send recovery; `inputTranslation.test.ts` covers stale, superseded, and composing translation results and the composers' IME-guarded shortcuts (`src/lib/ChatScreens/tests/PartialEditControllerIme.test.ts` the partial editor's); `src/ts/process/request/tests/{requestChat,transport}.test.ts` covers pinned chat context and cancellation after target replacement.
-- Files and media: `src/ts/process/files/tests/multisend.test.ts` covers TXT/XML retrieval and PO sends; `inlays.test.ts` covers metadata, media caching, ordered writes, conflict recovery, and cancellation. The chat module's save paths are in [persistence](persistence.md).
-- Message search: `src/ts/messageSearch.test.ts` covers request scopes, paging, errors, and jump state; panel behavior is covered in [UI theming](ui-theming.md). The server scan is covered in [self-host server](self-host-server.md).
-- Browser checks: `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`, and `checkSidebarChatStatus.mjs` exercise send/recovery, reroll/group, and sidebar status. `checkJobProtocol.mjs` drives the job client with a real plugin provider: the same-id retry of a create whose answer was lost, a reload during a command sequence, Stop from another browser context, a closed owner page, and a server killed between checkpoints ([build-test-platforms](build-test-platforms.md)).
-- Not covered: in-tab Jinja rendering; mounted screen wiring for per-chat reroll, the paste write, input translation invalidation, and auto mode closing the chat; IME behavior on real devices (Android Korean, desktop Japanese); Stop on a resumed job beside another chat's send. `src/lib/SideBars/DevTool.test.ts` covers the instruct preview and the autopilot refusal of orphaned overrides; the rest of the DevTool preview and autopilot is checked by hand.
+- Send-job and prompt contracts: `server/src/tests/promptRunner.test.ts`, `assemble.test.ts`, and `promptTail.test.ts`;
+  server implementation details are in [self-host server](self-host-server.md). Memory job and task contracts are in
+  [memory](memory.md).
+- Send admission and tab state: `src/ts/process/{localSends,serverGeneration,jobStages,chatStatus}.test.ts`,
+  `index.test.ts`, and `sendAborts.svelte.test.ts` cover per-chat admission, stage tracking, terminal/lost status, and
+  Stop controllers; `chatStatus.test.ts` also covers the foreign mark cleared by a released lock,
+  `serverCommands.test.ts` the `stoppedElsewhere` notice, and `src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts` the
+  extra Stop beside Send (shown for an unfollowed lock, busy refusal, or replay; the confirm naming the looked-up job; a
+  `jobChanged` confirmed again; an idle answer stopping nothing). `e2e/perChatSends.spec.ts` covers two chats running at
+  once, per-chat Stop and suggestions, and auto mode across a chat switch.
+- Lore activation and chat overrides: `server/src/tests/lore.test.ts` ("chat lore overrides": first-match merge,
+  orphans, overridden content, off folders by the owner's current keys, off beating `child` links (off-folder members
+  included), child insert order); `cbs.test.ts` (`{{lorebook}}` with overrides and an off folder). Override persistence:
+  `chats.test.ts` (validation, first override per id), `chatCheckpoints.test.ts` (capture and load), `transform.test.ts`
+  (cache key), `upstreamExport.test.ts` and `upstreamImportCharacters.test.ts` (strip and repair).
+- Caller workflows: `src/ts/process/command.test.ts` covers slash commands and per-chat `/multisend`;
+  `rerollHistory.test.ts` and `sendDraft.test.ts` cover chat-scoped reroll bundles, the restore after a reroll that
+  brought no reply, and draft recovery; `composerDrafts.test.ts` covers the per-chat composer (drafts kept across
+  switches and to no chat, `at(key)` writes after a switch, a draft for a chat not shown yet) and its journal rows (the
+  500 ms debounce, restore of shown and stashed drafts, the send hand-off kept apart from a follow-up typed and cleared
+  during the send, its placement (also beside a file queued meanwhile), a retyped identical draft kept when the send
+  lands, the landed/unlanded recovery of hand-off and older draft-row hand-offs, late reads after a switch or typing,
+  missing inlays, removal purges, `createdAt` expiry); `src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts` mounts the
+  screen over real stores for the hand-off (also across a reload after a follow-up was typed and cleared), the switch
+  restore, the page-hide flush, the file button and attachment removal, and in-page send recovery;
+  `inputTranslation.test.ts` covers stale, superseded, and composing translation results and the composers' IME-guarded
+  shortcuts (`src/lib/ChatScreens/tests/PartialEditControllerIme.test.ts` the partial editor's);
+  `src/ts/process/request/tests/{requestChat,transport}.test.ts` covers pinned chat context and cancellation after
+  target replacement.
+- Files and media: `src/ts/process/files/tests/multisend.test.ts` covers TXT/XML retrieval and PO sends;
+  `inlays.test.ts` covers metadata, media caching, ordered writes, conflict recovery, and cancellation. The chat
+  module's save paths are in [persistence](persistence.md).
+- Message search: `src/ts/messageSearch.test.ts` covers request scopes, paging, errors, and jump state; panel behavior
+  is covered in [UI theming](ui-theming.md). The server scan is covered in [self-host server](self-host-server.md).
+- Browser checks: `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`, and `checkSidebarChatStatus.mjs`
+  exercise send/recovery, reroll/group, and sidebar status. `checkJobProtocol.mjs` drives the job client with a real
+  plugin provider: the same-id retry of a create whose answer was lost, a reload during a command sequence, Stop from
+  another browser context, a closed owner page, and a server killed between checkpoints
+  ([build-test-platforms](build-test-platforms.md)).
+- Not covered: in-tab Jinja rendering; mounted screen wiring for per-chat reroll, the paste write, input translation
+  invalidation, and auto mode closing the chat; IME behavior on real devices (Android Korean, desktop Japanese); Stop on
+  a resumed job beside another chat's send. `src/lib/SideBars/DevTool.test.ts` covers the instruct preview and the
+  autopilot refusal of orphaned overrides; the rest of the DevTool preview and autopilot is checked by hand.
 
 ## Known Hazards
 
 ### Issues
 
-- A reroll's restore cannot see another tab's job that started in the chat but holds no lock yet and was not met at this tab's create (for example a send stopped before its create): the restored replies are written while that job runs, like any other edit made then (see `refreshChat` below).
-- Stop stays visible between a followed job's `done` and its socket close, when aborting the ended job does nothing. A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as lost.
+- A reroll's restore cannot see another tab's job that started in the chat but holds no lock yet and was not met at this
+  tab's create (for example a send stopped before its create): the restored replies are written while that job runs,
+  like any other edit made then (see `refreshChat` below).
+- Stop stays visible between a followed job's `done` and its socket close, when aborting the ended job does nothing. A
+  boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
+  lost.
 - `disable_ui_prompt` lore decorators are collected into `disabledUIPrompts`, but that array is never consumed.
-- `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom template occupies its caller's thread.
-- `prereroll.ts` history and the screen's per-chat reroll history are in memory only. Composer recovery depends on the browser journal being available. The hide flush lands only while the page lives on after it (switching away, a backgrounded PWA killed later): Chrome aborts IndexedDB writes begun in `pagehide` when the page unloads, so a reload, close, or navigation within 500 ms of the last edit loses that edit. In-page send recovery restores the serialized send text without its translation draft; journal recovery restores the pre-consumption composer. Neither restores a send whose job ended `done` (`ok`) after a script removed its user message.
-- Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/` becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a malformed later entry ends that key search instead of being skipped. Kept for parity at Phase 5 Stop B (2026-10-02) as a candidate for a later fix.
+- `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom
+  template occupies its caller's thread.
+- `prereroll.ts` history and the screen's per-chat reroll history are in memory only. Composer recovery depends on the
+  browser journal being available. The hide flush lands only while the page lives on after it (switching away, a
+  backgrounded PWA killed later): Chrome aborts IndexedDB writes begun in `pagehide` when the page unloads, so a reload,
+  close, or navigation within 500 ms of the last edit loses that edit. In-page send recovery restores the serialized
+  send text without its translation draft; journal recovery restores the pre-consumption composer. Neither restores a
+  send whose job ended `done` (`ok`) after a script removed its user message.
+- Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/`
+  becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a
+  malformed later entry ends that key search instead of being skipped. Kept for parity at Phase 5 Stop B (2026-10-02) as
+  a candidate for a later fix.
 
 ### Limitations
 
-- Sequence events are live-only, with no replay on attach. Parts completed without an attached socket do not install alternatives or count statistics in that tab; a received part counts the statistic, but its alternatives are not installed if the tab's chat copy lacks its reply. Decision: these are best-effort tab effects; server chat writes and receipt counts are authoritative ([self-host server](self-host-server.md)).
+- Sequence events are live-only, with no replay on attach. Parts completed without an attached socket do not install
+  alternatives or count statistics in that tab; a received part counts the statistic, but its alternatives are not
+  installed if the tab's chat copy lacks its reply. Decision: these are best-effort tab effects; server chat writes and
+  receipt counts are authoritative ([self-host server](self-host-server.md)).
 
-- Accepted limits of sends in different chats at once (kept, not fixed: D1 and D6 of Per-Chat Send in the [archive](../archived-plan/README.md); each chat has one local send and one server job, and different chats of a tab run together):
-  - Ordinary send, continue, reroll, and group jobs leave the character revision unchanged: last-chatted activity is derived from the chats' final-message times (`ChatSummary.lastMessageAt` for unloaded chats). Streamed continue refreshes the message time in its existing final write; previews move neither activity nor the character revision. Explicit character effects (memory enable, triggers, Lua setters) still patch the character without a character lock. Field patches keep unrelated fields, but simultaneous writes of the same field are last writer wins; a group job and a member's own chat can patch that member the same way.
-  - `CharEmotion` (`stores.svelte.ts`) is keyed by character, so two chats of one character share its emotion history; `stopTTS()` (`tts.ts`) stops every chat's speech; `alertWait`'s single status slot and the legacy `progress` overlay (`jobChannel.ts` `progressJobId`) show the newest job.
-  - Plugin hooks and providers of one tab stay serialized by the server's per-client channel lane (`self-host-server.md`): a slow provider in one chat delays the other chat's hooks. A queued callback's deadline starts at its dispatch, so the wait does not time it out.
-- The server's `refreshChat` (`server/src/jobs/jobScope.ts`) reloads the stored chat after job writes and callbacks that may write. An unrelated edit made to that chat while the job runs can therefore enter a later prompt stage, as in the former live `chatNow()` path. Decision: the job's live overlay is read again after its writes and callbacks by design (`server/src/jobs/jobScope.ts` header).
-  - After the job's own by-id write of its chat, `refreshChatAfterWrite` adopts that write's stored change instead (`RunningJob.write` returns it as `written`, from `applyChanges` with `changes: true`; [self-host server](self-host-server.md) "Own chat changes"): the touched rows are parsed from their stored strings and placed after their anchors, the other message objects are kept, the metadata comes from the change when it moved, and the pending metadata is laid over it, so a streaming checkpoint reads no transcript. It does so only while the scope held exactly the change's base revision, the group was not stale, and the stored revision is still the change's when the write returns (a feed listener may write the chat inside the publishing write). Any other case (a whole write, a remove and reappend, a stale group, a moved revision, a change that does not fit the copy) reads the chat whole as above. The chat object is always new, and so is its message list unless the change moved no message, so scripts holding the previous copy see it unchanged.
+- Accepted limits of sends in different chats at once (kept, not fixed: D1 and D6 of Per-Chat Send in the
+  [archive](../archived-plan/README.md); each chat has one local send and one server job, and different chats of a tab
+  run together):
+  - Ordinary send, continue, reroll, and group jobs leave the character revision unchanged: last-chatted activity is
+    derived from the chats' final-message times (`ChatSummary.lastMessageAt` for unloaded chats). Streamed continue
+    refreshes the message time in its existing final write; previews move neither activity nor the character revision.
+    Explicit character effects (memory enable, triggers, Lua setters) still patch the character without a character
+    lock. Field patches keep unrelated fields, but simultaneous writes of the same field are last writer wins; a group
+    job and a member's own chat can patch that member the same way.
+  - `CharEmotion` (`stores.svelte.ts`) is keyed by character, so two chats of one character share its emotion history;
+    `stopTTS()` (`tts.ts`) stops every chat's speech; `alertWait`'s single status slot and the legacy `progress` overlay
+    (`jobChannel.ts` `progressJobId`) show the newest job.
+  - Plugin hooks and providers of one tab stay serialized by the server's per-client channel lane
+    (`self-host-server.md`): a slow provider in one chat delays the other chat's hooks. A queued callback's deadline
+    starts at its dispatch, so the wait does not time it out.
+- The server's `refreshChat` (`server/src/jobs/jobScope.ts`) reloads the stored chat after job writes and callbacks that
+  may write. An unrelated edit made to that chat while the job runs can therefore enter a later prompt stage, as in the
+  former live `chatNow()` path. Decision: the job's live overlay is read again after its writes and callbacks by design
+  (`server/src/jobs/jobScope.ts` header).
+  - After the job's own by-id write of its chat, `refreshChatAfterWrite` adopts that write's stored change instead
+    (`RunningJob.write` returns it as `written`, from `applyChanges` with `changes: true`;
+    [self-host server](self-host-server.md) "Own chat changes"): the touched rows are parsed from their stored strings
+    and placed after their anchors, the other message objects are kept, the metadata comes from the change when it
+    moved, and the pending metadata is laid over it, so a streaming checkpoint reads no transcript. It does so only
+    while the scope held exactly the change's base revision, the group was not stale, and the stored revision is still
+    the change's when the write returns (a feed listener may write the chat inside the publishing write). Any other case
+    (a whole write, a remove and reappend, a stale group, a moved revision, a change that does not fit the copy) reads
+    the chat whole as above. The chat object is always new, and so is its message list unless the change moved no
+    message, so scripts holding the previous copy see it unchanged.
 
 ### Gotchas
 
-- A foreign-job mark clears when that chat's server lock is released, but a job this tab never saw a lock for (a command without a generation lock, or a feed that lagged) leaves it until a click looks the chat up. It leaves only the extra Stop visible and never blocks Send.
-- `editChat`/`editChatSync` (`src/ts/storage/chatEdits.ts`) capture the baseline before their edit works on its copy, so they keep another writer's change to a field the edit left alone; where both changed the same field, the edit's value wins. A plugin's whole-chat setter captures its baseline only at the call; that stale-copy overwrite is a [plugins and MCP](plugins-mcp.md) issue.
-- `DevTool.svelte`'s autopilot sends each line as a job in the chat selected when it started; a group's speakers are chosen by the server.
-- Group prompt assembly names a speaker it cannot resolve (`host.findCharacter`) `Unknown Character` in the group wrapper.
-- Group lore activation takes the group as the character: its own `globalLore`, the chat's, and the modules'; the members' `globalLore` is not included, even with the group's `useCharacterLore`.
+- A foreign-job mark clears when that chat's server lock is released, but a job this tab never saw a lock for (a command
+  without a generation lock, or a feed that lagged) leaves it until a click looks the chat up. It leaves only the extra
+  Stop visible and never blocks Send.
+- `editChat`/`editChatSync` (`src/ts/storage/chatEdits.ts`) capture the baseline before their edit works on its copy, so
+  they keep another writer's change to a field the edit left alone; where both changed the same field, the edit's value
+  wins. A plugin's whole-chat setter captures its baseline only at the call; that stale-copy overwrite is a
+  [plugins and MCP](plugins-mcp.md) issue.
+- `DevTool.svelte`'s autopilot sends each line as a job in the chat selected when it started; a group's speakers are
+  chosen by the server.
+- Group prompt assembly names a speaker it cannot resolve (`host.findCharacter`) `Unknown Character` in the group
+  wrapper.
+- Group lore activation takes the group as the character: its own `globalLore`, the chat's, and the modules'; the
+  members' `globalLore` is not included, even with the group's `useCharacterLore`.

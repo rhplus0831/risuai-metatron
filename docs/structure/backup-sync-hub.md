@@ -3,11 +3,13 @@
 ## Scope
 
 - Owns:
-  - local `.bin` backup export and import (full and partial) and the server snapshot restore button, as client UI over the server backup routes,
+  - local `.bin` backup export and import (full and partial) and the server snapshot restore button, as client UI over
+    the server backup routes,
   - Realm hub browse and download (upload, report, and remove were removed),
   - the settings report export.
 - Paths:
-  - `src/ts/drive/*` (the folder name is historical; Google Drive sync, Risu Account sync, and Kei auto-backup were removed)
+  - `src/ts/drive/*` (the folder name is historical; Google Drive sync, Risu Account sync, and Kei auto-backup were
+    removed)
   - `src/ts/realmBlocking.ts` (creator block-list rules used by the Realm UI and card entry points)
   - `src/ts/realmTerms.ts` (the RisuRealm terms acceptance every Realm entry point awaits)
   - `src/lib/UI/Realm/*`
@@ -22,74 +24,259 @@
 ## Files
 
 - `drive/backuplocal.ts` (the server builds and reads the archive; see `self-host-server.md`):
-  - `SaveLocalBackup`: `flushResources`, then `POST /api/backups/export` (every asset on the server, inlays included, plus a snapshot of the resources), streamed to a file through `LocalWriter.write`. The manifest (first record) is read from the stream head; assets the database references but the archive lacks are reported. When the pre-backup flush replaced a local change (`flushResources`' `discarded` is non-empty: another writer's version is what the archive holds), the success alert or the missing-asset report says so (`backupDiscardedChanges`); the reload notice, in its own store, also stays above the progress alerts. Full and partial exports also carry the flush’s `refused` keys: the archive is still produced, and the report names each refused item with the refusal banner’s labels (ids when names are missing) and warns that it holds the server’s copy without those local changes (`backupRefusedChanges`).
-  - `SavePartialLocalBackup`: the same with `{ partial: true }`; the server selects character/group profile images, persona icons (including the selected user icon), background, folder images, and preset images from the resource snapshot it archives (no inlays, emotion images, additional assets, VITS, or CC assets). `shared/backups.ts` `selectPartialBackupAssets` defines these categories for both sides; the client's `partialAssets` uses it only to label the manifest's `missing` entries. A key absent from the client's inventory is reported as "Unknown Asset".
-  - `SaveUpstreamLocalBackup` ("RisuAI-compatible backup"): a `.bin` upstream RisuAI's "Load Backup" restores. See Flows. It shares `streamToFile` (the `LocalWriter` loop with the size wait text, cancel and abort on failure) with `downloadArchive`, and names the file `upstreamBackupFileName()` (`RisuAI-backup-YYYY-MM-DD.bin`, local date).
-  - `LoadLocalBackup`: reads the chosen file's first record name (`readFirstRecordName`, from `file.slice(0, 4 + 4096)`). `manifest.json` (a version-2 archive): posts the `File` to `POST /api/backups/import` and reloads. Anything else goes to the upstream import (`upstreamBackupClient.ts`, loaded on demand): upstream RisuAI backups and metatron's older upstream-format backups (`database.risudat`), which the compatibility rule (`persistence.md` Invariants) owes a one-way migration.
-- `drive/upstreamBackupClient.ts` (routes in `self-host-server.md`): `prepareUpstreamImport(file, onProgress)` (the file as the body with the tab's epoch, through `serverImportClient.ts` `importOverServer`; its `readResult` reads each `{ phase, done, total }` line's phase), `commitUpstreamImport(token, acceptWrites?)` (`{ committed }`, or `{ changedWrites }` for the server's `409 changedSinceReview`; a 412 goes through `epochMismatch`), `cancelUpstreamImport(token)` (best effort), and `restoreUpstreamBackup(file)`, the flow below. The export side (`server/src/routes/backupsUpstreamExport.ts`): `tabExportRequest(includeSecrets)`, `prepareUpstreamExport(request)` (`{ token, report }`), `downloadUpstreamExport(token)` (the response, the token used up), `cancelUpstreamExport(token)` (best effort); a refusal is `UpstreamExportRequestError` (status and the server's text).
-- `lib/Setting/Pages/UpstreamImportReport.svelte`: the report dialog (`alert.ts` `alertUpstreamImportReport(report, { changedWrites? })`, alert type `upstreamImportReport`, rendered by `AlertComp` like the request logs popup): the counts, the converted and left-out lists (each code one `language.upstreamImport` line with its count and example names), the missing assets by owner and role (the first 50; non-`.png` ones marked as never backed up by RisuAI), the full-replace warning, Cancel and Restore.
-- `globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`): lists the server snapshots (taken every 10 minutes while data changes, 20 kept), restores the chosen one, reloads. The server validates the snapshot off its serving thread before anything closes, and a second restore waits for the first, then answers 412 when the first went through. A restore replaces the chat checkpoints (and auto-checkpoint policies) with the snapshot's: a checkpoint saved after that snapshot is gone, and the safety snapshot taken before the restore still holds it.
-- `UI/Realm/RealmMain.svelte`: browse via `characterCards.ts:getRisuHub`, reactively filter blocked creators, and open the management list from the menu.
+  - `SaveLocalBackup`: `flushResources`, then `POST /api/backups/export` (every asset on the server, inlays included,
+    plus a snapshot of the resources), streamed to a file through `LocalWriter.write`. The manifest (first record) is
+    read from the stream head; assets the database references but the archive lacks are reported. When the pre-backup
+    flush replaced a local change (`flushResources`' `discarded` is non-empty: another writer's version is what the
+    archive holds), the success alert or the missing-asset report says so (`backupDiscardedChanges`); the reload notice,
+    in its own store, also stays above the progress alerts. Full and partial exports also carry the flush’s `refused`
+    keys: the archive is still produced, and the report names each refused item with the refusal banner’s labels (ids
+    when names are missing) and warns that it holds the server’s copy without those local changes
+    (`backupRefusedChanges`).
+  - `SavePartialLocalBackup`: the same with `{ partial: true }`; the server selects character/group profile images,
+    persona icons (including the selected user icon), background, folder images, and preset images from the resource
+    snapshot it archives (no inlays, emotion images, additional assets, VITS, or CC assets). `shared/backups.ts`
+    `selectPartialBackupAssets` defines these categories for both sides; the client's `partialAssets` uses it only to
+    label the manifest's `missing` entries. A key absent from the client's inventory is reported as "Unknown Asset".
+  - `SaveUpstreamLocalBackup` ("RisuAI-compatible backup"): a `.bin` upstream RisuAI's "Load Backup" restores. See
+    Flows. It shares `streamToFile` (the `LocalWriter` loop with the size wait text, cancel and abort on failure) with
+    `downloadArchive`, and names the file `upstreamBackupFileName()` (`RisuAI-backup-YYYY-MM-DD.bin`, local date).
+  - `LoadLocalBackup`: reads the chosen file's first record name (`readFirstRecordName`, from
+    `file.slice(0, 4 + 4096)`). `manifest.json` (a version-2 archive): posts the `File` to `POST /api/backups/import`
+    and reloads. Anything else goes to the upstream import (`upstreamBackupClient.ts`, loaded on demand): upstream
+    RisuAI backups and metatron's older upstream-format backups (`database.risudat`), which the compatibility rule
+    (`persistence.md` Invariants) owes a one-way migration.
+- `drive/upstreamBackupClient.ts` (routes in `self-host-server.md`): `prepareUpstreamImport(file, onProgress)` (the file
+  as the body with the tab's epoch, through `serverImportClient.ts` `importOverServer`; its `readResult` reads each
+  `{ phase, done, total }` line's phase), `commitUpstreamImport(token, acceptWrites?)` (`{ committed }`, or
+  `{ changedWrites }` for the server's `409 changedSinceReview`; a 412 goes through `epochMismatch`),
+  `cancelUpstreamImport(token)` (best effort), and `restoreUpstreamBackup(file)`, the flow below. The export side
+  (`server/src/routes/backupsUpstreamExport.ts`): `tabExportRequest(includeSecrets)`, `prepareUpstreamExport(request)`
+  (`{ token, report }`), `downloadUpstreamExport(token)` (the response, the token used up),
+  `cancelUpstreamExport(token)` (best effort); a refusal is `UpstreamExportRequestError` (status and the server's text).
+- `lib/Setting/Pages/UpstreamImportReport.svelte`: the report dialog (`alert.ts`
+  `alertUpstreamImportReport(report, { changedWrites? })`, alert type `upstreamImportReport`, rendered by `AlertComp`
+  like the request logs popup): the counts, the converted and left-out lists (each code one `language.upstreamImport`
+  line with its count and example names), the missing assets by owner and role (the first 50; non-`.png` ones marked as
+  never backed up by RisuAI), the full-replace warning, Cancel and Restore.
+- `globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`): lists the server
+  snapshots (taken every 10 minutes while data changes, 20 kept), restores the chosen one, reloads. The server validates
+  the snapshot off its serving thread before anything closes, and a second restore waits for the first, then answers 412
+  when the first went through. A restore replaces the chat checkpoints (and auto-checkpoint policies) with the
+  snapshot's: a checkpoint saved after that snapshot is gone, and the safety snapshot taken before the restore still
+  holds it.
+- `UI/Realm/RealmMain.svelte`: browse via `characterCards.ts:getRisuHub`, reactively filter blocked creators, and open
+  the management list from the menu.
 - `RealmPopUp.svelte`: detail, copy link, block creator, and `downloadRisuHub`.
 - `RealmBlockedCreators.svelte`: the blocked creators list (name and id), unblock and refetch, and empty state.
 - `src/ts/realmBlocking.ts`: pure block lookup, add/remove, and card filtering helpers.
-- `src/ts/realmTerms.ts`: `REALM_TERMS_VERSION`, the terms and privacy URLs (RisuAI's), and `ensureRealmTerms()`: true at once when `settings.ui.realmTermsAccepted` holds this version; otherwise `alert.ts` `alertRealmTerms`, whose Accept stores the version (one dialog shared by concurrent callers).
+- `src/ts/realmTerms.ts`: `REALM_TERMS_VERSION`, the terms and privacy URLs (RisuAI's), and `ensureRealmTerms()`: true
+  at once when `settings.ui.realmTermsAccepted` holds this version; otherwise `alert.ts` `alertRealmTerms`, whose Accept
+  stores the version (one dialog shared by concurrent callers).
 - `RealmHubIcon.svelte`, `RealmLicense.svelte` (`CCLicenseData`).
-- `SettingsExportButtons.svelte`: the redacted settings report (`buildSettingsReport` and its complete field projection are in [persistence](persistence.md)), the request logs popup (`alertRequestLogs`, [global-api](global-api.md)), and statistics.
+- `SettingsExportButtons.svelte`: the redacted settings report (`buildSettingsReport` and its complete field projection
+  are in [persistence](persistence.md)), the request logs popup (`alertRequestLogs`, [global-api](global-api.md)), and
+  statistics.
 
 ## Flows
 
 - Entry points:
-  - `UserSettings.svelte`: local backup buttons (full, partial, RisuAI-compatible), internal backup restore, dataset export.
-- RisuAI-compatible backup (`SaveUpstreamLocalBackup`): after the button's backup confirmation, "Include API keys?" (`alertConfirm`; No is the recommended answer, and the text says it covers every key: without it the auxiliary service keys, the characters' TTS keys, and the MCP OAuth secrets are blank too, unlike the version-2 archive, which keeps those). Then `flushResources` (a failure stops here), and the prepare with `tabExportRequest`: this tab's selection (`settingsViews.svelte.ts` `tabSelectionIds`, ignoring the open chat's binding), its open chat (`chatStore.svelte.ts` `currentChatRef`, as `selectedChat`), and the keys answer. The report (`shared/upstreamExportReport.ts`: counts, the converted and left-out lists with examples, the first 20 missing assets by owner and role, the flush's discarded-change note and named refused-change warning that the archive holds the server’s copy without those local changes) is a confirmation ending in "Download it now?". No cancels the prepared export; yes downloads it (the token is used up) and streams it through `LocalWriter` to `RisuAI-backup-<date>.bin`. Nothing is read from the stream (the file has no manifest). A refusal (409 too many waiting, 413 too large, 404 expired) shows the server's text.
-- Upstream RisuAI backup restore (`restoreUpstreamBackup`): the upload and the server's conversion show as a wait alert with the phase and its counts. A refusal (the message refusing a Risu Account backup, a damaged file, a backup too large or over the worker's memory limit, another import waiting) is an `alertError` and nothing changes; a 412 reloads. Then the report dialog: Cancel cancels the prepared import. Restore commits with a wait alert; the server verifies the staged file first and reads no row of it. A `409 changedSinceReview`, also for a write that landed during that check, asks again in the same report dialog with the count of changes saved since the preview (on this or another device; the safety snapshot keeps them), and Restore resends with `acceptWrites` set to that count (asked again if more arrived), Cancel cancels. Only the report dialog’s own Restore button authorizes a commit. The selection (the upstream-selected prompt preset, model preset, and persona) is known from the prepare's answer. Before each commit, `resourceSync.svelte.ts` `beforeRestoreReload` registers a synchronous hook that writes it with `selection.svelte.ts` `persistSelection` (storage only, not applied) when a restore is detected, before the terminal notice. The notice never waits for the commit's answer; a successful answer writes its own selection and reloads. A changed-since-review answer or definite refusal unregisters the hook (before epoch handling for a 412); a lost connection keeps it registered and reports that the restore may have happened. A prepared import not committed (cancelled, refused, or failed) is cancelled on the server. Other tabs see the maintenance 503 retries, then the new epoch, and reload.
+  - `UserSettings.svelte`: local backup buttons (full, partial, RisuAI-compatible), internal backup restore, dataset
+    export.
+- RisuAI-compatible backup (`SaveUpstreamLocalBackup`): after the button's backup confirmation, "Include API keys?"
+  (`alertConfirm`; No is the recommended answer, and the text says it covers every key: without it the auxiliary service
+  keys, the characters' TTS keys, and the MCP OAuth secrets are blank too, unlike the version-2 archive, which keeps
+  those). Then `flushResources` (a failure stops here), and the prepare with `tabExportRequest`: this tab's selection
+  (`settingsViews.svelte.ts` `tabSelectionIds`, ignoring the open chat's binding), its open chat (`chatStore.svelte.ts`
+  `currentChatRef`, as `selectedChat`), and the keys answer. The report (`shared/upstreamExportReport.ts`: counts, the
+  converted and left-out lists with examples, the first 20 missing assets by owner and role, the flush's
+  discarded-change note and named refused-change warning that the archive holds the server’s copy without those local
+  changes) is a confirmation ending in "Download it now?". No cancels the prepared export; yes downloads it (the token
+  is used up) and streams it through `LocalWriter` to `RisuAI-backup-<date>.bin`. Nothing is read from the stream (the
+  file has no manifest). A refusal (409 too many waiting, 413 too large, 404 expired) shows the server's text.
+- Upstream RisuAI backup restore (`restoreUpstreamBackup`): the upload and the server's conversion show as a wait alert
+  with the phase and its counts. A refusal (the message refusing a Risu Account backup, a damaged file, a backup too
+  large or over the worker's memory limit, another import waiting) is an `alertError` and nothing changes; a 412
+  reloads. Then the report dialog: Cancel cancels the prepared import. Restore commits with a wait alert; the server
+  verifies the staged file first and reads no row of it. A `409 changedSinceReview`, also for a write that landed during
+  that check, asks again in the same report dialog with the count of changes saved since the preview (on this or another
+  device; the safety snapshot keeps them), and Restore resends with `acceptWrites` set to that count (asked again if
+  more arrived), Cancel cancels. Only the report dialog’s own Restore button authorizes a commit. The selection (the
+  upstream-selected prompt preset, model preset, and persona) is known from the prepare's answer. Before each commit,
+  `resourceSync.svelte.ts` `beforeRestoreReload` registers a synchronous hook that writes it with `selection.svelte.ts`
+  `persistSelection` (storage only, not applied) when a restore is detected, before the terminal notice. The notice
+  never waits for the commit's answer; a successful answer writes its own selection and reloads. A changed-since-review
+  answer or definite refusal unregisters the hook (before epoch handling for a 412); a lost connection keeps it
+  registered and reports that the restore may have happened. A prepared import not committed (cancelled, refused, or
+  failed) is cancelled on the server. Other tabs see the maintenance 503 retries, then the new epoch, and reload.
 - PeerJS multiuser chat (rooms, peer sync, and the `peerjs` dependency) was removed.
-- Realm: `MainMenu` (the Explore card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` → `downloadRisuHub`. There is no upload path. The popup block button confirms the creator, writes `settings.ui.blockedRealmCreators`, closes, and shows a notice. `getRisuHub` filters both listing response shapes; `RealmMain` also filters reactively so a block from either popup host or another tab hides cards immediately. The menu’s blocked creators list removes an entry and refetches after unblocking. Cards without creator metadata stay visible.
-- RisuRealm terms: RisuRealm is RisuAI's service, so using it needs RisuAI's Terms of Service and Privacy Policy accepted once; the app itself asks for no terms (the startup terms dialog and the legal notice page were removed). `RealmMain` awaits `ensureRealmTerms` before its first listing and leaves the Realm screen (`OpenRealmStore` false) on decline; `getRisuHub` (answering `[]`), `getRealmInfo` (after consuming the `?realm=` parameter), and `downloadRisuHub` (before the creator lookup, the wait alert, and `prepareRealmImport`) await it too and send nothing when it is declined. The acceptance is the version string in the `ui` settings, so every device of this server shares it; raising `REALM_TERMS_VERSION` asks again. The previous browser-local `tos4` acceptance (upstream RisuAI's, for the whole app) is not carried over, and `bootstrap.ts` `cleanLegacyAccountData` still removes it.
-- Realm access: client-side guards refuse blocked creators with a notice for URL/id downloads, the popup’s Chat button, and `?realm=` detail links. Downloads check before any wait alert or `prepareRealmImport`; a non-empty block list and no supplied creator require an info lookup, whose failure alerts and stops the import. The current list is re-read after the lookup; absent creator metadata is allowed. An empty list adds no lookup. Deep links consume the parameter with `replaceState` and do not open a blocked card. The server route is unchanged and stages nothing for a client-refused card.
-- Realm download: `downloadRisuHub(id)` asks the server to download and stage the card (`prepareRealmImport`, `POST /api/import/realm`, `storage/realmImportClient.ts`, `self-host-server.md`); the tab never fetches realm.risuai.net or holds the file. The server validates a CharX or PNG card, writes nothing, and answers its card text (a CharX file's embedded `module.risum` too) and a token. The tab then reads the card and asks its questions (`commitRealmCard` in `characterCards.ts`): an `rcc` card's password (decrypted in the tab, `readPngCard`) and the `lowLevelAccess` confirmation (`confirmCardLowLevelAccess`). A card that is declined, has a wrong password, or fails to read is cancelled (`cancelRealmImport`, `POST /api/import/realm/cancel`), so nothing is stored; otherwise the tab commits (`commitRealmImport`, `POST /api/import/realm/commit`), the server stores the assets and the image and answers their keys, and the tab builds the character (`importCharxCard`/`importPngCharacter`, the question not asked again). A commit that fails is cancelled too (404 `Import expired` after 10 minutes is `realmImportExpired`; a prepare refused while 4 imports wait is `realmImportTooManyWaiting`). A legacy JSON answer is passed through and imported in hub mode as before (its portrait and hub-mode assets fetched through `/hub-proxy`).
+- Realm: `MainMenu` (the Explore card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` →
+  `downloadRisuHub`. There is no upload path. The popup block button confirms the creator, writes
+  `settings.ui.blockedRealmCreators`, closes, and shows a notice. `getRisuHub` filters both listing response shapes;
+  `RealmMain` also filters reactively so a block from either popup host or another tab hides cards immediately. The
+  menu’s blocked creators list removes an entry and refetches after unblocking. Cards without creator metadata stay
+  visible.
+- RisuRealm terms: RisuRealm is RisuAI's service, so using it needs RisuAI's Terms of Service and Privacy Policy
+  accepted once; the app itself asks for no terms (the startup terms dialog and the legal notice page were removed).
+  `RealmMain` awaits `ensureRealmTerms` before its first listing and leaves the Realm screen (`OpenRealmStore` false) on
+  decline; `getRisuHub` (answering `[]`), `getRealmInfo` (after consuming the `?realm=` parameter), and
+  `downloadRisuHub` (before the creator lookup, the wait alert, and `prepareRealmImport`) await it too and send nothing
+  when it is declined. The acceptance is the version string in the `ui` settings, so every device of this server shares
+  it; raising `REALM_TERMS_VERSION` asks again. The previous browser-local `tos4` acceptance (upstream RisuAI's, for the
+  whole app) is not carried over, and `bootstrap.ts` `cleanLegacyAccountData` still removes it.
+- Realm access: client-side guards refuse blocked creators with a notice for URL/id downloads, the popup’s Chat button,
+  and `?realm=` detail links. Downloads check before any wait alert or `prepareRealmImport`; a non-empty block list and
+  no supplied creator require an info lookup, whose failure alerts and stops the import. The current list is re-read
+  after the lookup; absent creator metadata is allowed. An empty list adds no lookup. Deep links consume the parameter
+  with `replaceState` and do not open a blocked card. The server route is unchanged and stages nothing for a
+  client-refused card.
+- Realm download: `downloadRisuHub(id)` asks the server to download and stage the card (`prepareRealmImport`,
+  `POST /api/import/realm`, `storage/realmImportClient.ts`, `self-host-server.md`); the tab never fetches
+  realm.risuai.net or holds the file. The server validates a CharX or PNG card, writes nothing, and answers its card
+  text (a CharX file's embedded `module.risum` too) and a token. The tab then reads the card and asks its questions
+  (`commitRealmCard` in `characterCards.ts`): an `rcc` card's password (decrypted in the tab, `readPngCard`) and the
+  `lowLevelAccess` confirmation (`confirmCardLowLevelAccess`). A card that is declined, has a wrong password, or fails
+  to read is cancelled (`cancelRealmImport`, `POST /api/import/realm/cancel`), so nothing is stored; otherwise the tab
+  commits (`commitRealmImport`, `POST /api/import/realm/commit`), the server stores the assets and the image and answers
+  their keys, and the tab builds the character (`importCharxCard`/`importPngCharacter`, the question not asked again). A
+  commit that fails is cancelled too (404 `Import expired` after 10 minutes is `realmImportExpired`; a prepare refused
+  while 4 imports wait is `realmImportTooManyWaiting`). A legacy JSON answer is passed through and imported in hub mode
+  as before (its portrait and hub-mode assets fetched through `/hub-proxy`).
 
 ## State
 
 - `ui.realmTermsAccepted` ([persistence](persistence.md)): the accepted RisuRealm terms version, `""` when none.
-- Realm has no account token field (the boot never installs the removed legacy `account` token); old saves may still carry an unused character `realmId`.
+- Realm has no account token field (the boot never installs the removed legacy `account` token); old saves may still
+  carry an unused character `realmId`.
 - UI state: `OpenRealmStore` in `stores.svelte.ts` ([app-shell](app-shell.md)).
 
 ## Coupling
 
-- Depends on `database.svelte.ts`, `globalApi.svelte.ts` (`LocalWriter`, fetch), `storage/resourceClient.ts` (`exportBackup`, `importBackup`, `listBackups`, `restoreBackup`), `storage/resourceSync.svelte.ts` (`flushResources`, `beforeRestoreReload`), `storage/serverImportClient.ts` (`importOverServer`), `storage/selection.svelte.ts` (`persistSelection`), `storage/settingsViews.svelte.ts` (`tabSelectionIds`), `storage/chatStore.svelte.ts` (`currentChatRef`), `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`.
+- Depends on `database.svelte.ts`, `globalApi.svelte.ts` (`LocalWriter`, fetch), `storage/resourceClient.ts`
+  (`exportBackup`, `importBackup`, `listBackups`, `restoreBackup`), `storage/resourceSync.svelte.ts` (`flushResources`,
+  `beforeRestoreReload`), `storage/serverImportClient.ts` (`importOverServer`), `storage/selection.svelte.ts`
+  (`persistSelection`), `storage/settingsViews.svelte.ts` (`tabSelectionIds`), `storage/chatStore.svelte.ts`
+  (`currentChatRef`), `characterCards.ts` (`hubURL` and hub APIs), `alert.ts`, `platform.ts`.
 
 ## Invariants
 
-- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads the manifest. An archive or snapshot whose resource database schema version differs from the server's current version (3, with settings sections and collections) is refused with a message; metatron does not migrate these archive schemas. Archives in the upstream format (upstream RisuAI and older metatron backups with `database.risudat`) are restored through the upstream import under the compatibility rule ([persistence](persistence.md#invariants)): a one-way, full-replace migration with a report before anything is replaced. That covers both `database.risudat` encodings, the legacy MessagePack save and the block save current upstream backups write (its SaveKV namespaces are listed under the excluded code `savekv-namespace`, by namespace without a `kv:` prefix; this code lists every distinct namespace instead of applying the usual five-example cap); a live block save whose data lies outside the file (a remote block, or a directory naming a block the file lacks) is refused with a message; the version-2 import route still refuses them with a message naming the upstream import. A Risu Account backup (`encryption.risudat`) is refused with a message.
-- The upstream import reads plugin storage (`pluginCustomStorage`, converted by `server/src/data/upstream/importCollections.ts` `convertPluginStorage` into the `pluginStorage` record, v3 values under `_pluginStorage`) in each form upstream wrote: inline top-level values (copied into `_pluginStorage` only in a file without one), the older per-key `_coldplugin` pointers, and current upstream's `_coldpluginIndex`, the id of one cold-storage record `{ type: "risu-plugin-storage-index", entries: [{ k, s?, l? }], trash }` whose `s` is a small value's JSON text and whose `l` names another cold record holding a large value of any JSON type (`trash` is dropped). Cold records are read as `data` (a list, or an object with `character` or `message`) or `plugin` (any other JSON; `archive.ts` `readColdRecord`), and when both name forms of one key exist, character and chat restores read the last `data` record while plugin storage reads the last `plugin` one, as upstream's restore does. With an index, inline copies override index values, which override `_coldplugin` (used only for keys no index entry claims, a failed one included); without one, `_coldplugin` overrides an inline copy as before. Index entries are decided before their values are read: `l` beats `s`, and a later entry of a key replaces an earlier one even when it then fails. Problems are listed in the report and the rest imports: a missing or unreadable index record (`cold-missing`, `_coldpluginIndex`: the keys cannot be named without it), a record that is not an index (`invalid-setting`), an entry without a key or value or a displaced duplicate or unparsable `s` (`invalid-data`), a large value whose record is missing, over the per-record cap, or not JSON (`cold-missing`, by key). The commit stays all-or-nothing, so plugins never run against a half-restored store.
-- Export, change, and restore are covered end to end on a version-3 store: an archive import undoes changes made after the export (a plugin `setCharacter`, an MCP tool), and restoring the safety snapshot the import took brings them back.
-- A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards because every revision the tab held is void (new epoch).
-- A refused snapshot or archive, one over the server's restore memory limit (`RISU_RESTORE_HEAP_MB`) included, is refused before maintenance, so it ends no running job and takes no safety snapshot; the route's `error` text is what the tab shows.
-- Full version-2 archives carry private data, including `googleSearchCredentials`, the Iris dialogue, plugin storage, and the plugin permission grants.
+- The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads
+  the manifest. An archive or snapshot whose resource database schema version differs from the server's current version
+  (3, with settings sections and collections) is refused with a message; metatron does not migrate these archive
+  schemas. Archives in the upstream format (upstream RisuAI and older metatron backups with `database.risudat`) are
+  restored through the upstream import under the compatibility rule ([persistence](persistence.md#invariants)): a
+  one-way, full-replace migration with a report before anything is replaced. That covers both `database.risudat`
+  encodings, the legacy MessagePack save and the block save current upstream backups write (its SaveKV namespaces are
+  listed under the excluded code `savekv-namespace`, by namespace without a `kv:` prefix; this code lists every distinct
+  namespace instead of applying the usual five-example cap); a live block save whose data lies outside the file (a
+  remote block, or a directory naming a block the file lacks) is refused with a message; the version-2 import route
+  still refuses them with a message naming the upstream import. A Risu Account backup (`encryption.risudat`) is refused
+  with a message.
+- The upstream import reads plugin storage (`pluginCustomStorage`, converted by
+  `server/src/data/upstream/importCollections.ts` `convertPluginStorage` into the `pluginStorage` record, v3 values
+  under `_pluginStorage`) in each form upstream wrote: inline top-level values (copied into `_pluginStorage` only in a
+  file without one), the older per-key `_coldplugin` pointers, and current upstream's `_coldpluginIndex`, the id of one
+  cold-storage record `{ type: "risu-plugin-storage-index", entries: [{ k, s?, l? }], trash }` whose `s` is a small
+  value's JSON text and whose `l` names another cold record holding a large value of any JSON type (`trash` is dropped).
+  Cold records are read as `data` (a list, or an object with `character` or `message`) or `plugin` (any other JSON;
+  `archive.ts` `readColdRecord`), and when both name forms of one key exist, character and chat restores read the last
+  `data` record while plugin storage reads the last `plugin` one, as upstream's restore does. With an index, inline
+  copies override index values, which override `_coldplugin` (used only for keys no index entry claims, a failed one
+  included); without one, `_coldplugin` overrides an inline copy as before. Index entries are decided before their
+  values are read: `l` beats `s`, and a later entry of a key replaces an earlier one even when it then fails. Problems
+  are listed in the report and the rest imports: a missing or unreadable index record (`cold-missing`,
+  `_coldpluginIndex`: the keys cannot be named without it), a record that is not an index (`invalid-setting`), an entry
+  without a key or value or a displaced duplicate or unparsable `s` (`invalid-data`), a large value whose record is
+  missing, over the per-record cap, or not JSON (`cold-missing`, by key). The commit stays all-or-nothing, so plugins
+  never run against a half-restored store.
+- Export, change, and restore are covered end to end on a version-3 store: an archive import undoes changes made after
+  the export (a plugin `setCharacter`, an MCP tool), and restoring the safety snapshot the import took brings them back.
+- A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards
+  because every revision the tab held is void (new epoch).
+- A refused snapshot or archive, one over the server's restore memory limit (`RISU_RESTORE_HEAP_MB`) included, is
+  refused before maintenance, so it ends no running job and takes no safety snapshot; the route's `error` text is what
+  the tab shows.
+- Full version-2 archives carry private data, including `googleSearchCredentials`, the Iris dialogue, plugin storage,
+  and the plugin permission grants.
 
 ## Recipes
 
-- Add a partial-backup asset category: `selectPartialBackupAssets` in `shared/backups.ts`, its labels and inventory mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/routes/backups.ts` if another kind is needed (a full backup already takes every asset).
-- Change the archive format: the server side (see `self-host-server.md`) and `tryReadManifest` here. Add a round-trip test.
-- Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts` (`persistence.md`; metatron-only chat fields such as `loreOverrides` are in its `METATRON_CHAT_FIELDS` strip list); a new report code goes into `shared/upstreamExportReport.ts` and `language.upstreamExport` (`en.ts`, `ko.ts`). The record layout (assets by basename, then `database.risudat`) is upstream's restore format: keep `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import reads every export back.
-- Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node (`/hub-proxy`).
+- Add a partial-backup asset category: `selectPartialBackupAssets` in `shared/backups.ts`, its labels and inventory
+  mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/routes/backups.ts` if
+  another kind is needed (a full backup already takes every asset).
+- Change the archive format: the server side (see `self-host-server.md`) and `tryReadManifest` here. Add a round-trip
+  test.
+- Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts`
+  (`persistence.md`; metatron-only chat fields such as `loreOverrides` are in its `METATRON_CHAT_FIELDS` strip list); a
+  new report code goes into `shared/upstreamExportReport.ts` and `language.upstreamExport` (`en.ts`, `ko.ts`). The
+  record layout (assets by basename, then `database.risudat`) is upstream's restore format: keep
+  `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import reads every export back.
+- Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node
+  (`/hub-proxy`).
 
 ## Tests
 
-- `src/ts/drive/backuplocal.test.ts`: over a fake `authFetch` and a fake `LocalWriter`: the flush before an export, the archive streamed to the file with the manifest read across chunk boundaries, the missing-asset report by character and role, no export when the flush fails, response cancelled when the writer cannot open, stream cancelled and writer aborted on a write failure, writer aborted on a broken download, a refused export reported; a non-empty `discarded` from the flush named in the success alert and ahead of the missing-asset report (full and partial); the partial backup's two confirmations and missing-asset labels; `LoadLocalBackup` routing by the first record name (`readFirstRecordName`: the name from the file head, null for an empty or short file, a zero or over-long name length, or a non-UTF-8 name): a manifest-first file posted to the version-2 import with the epoch header and reloading, the server's refusal shown, a 412 reloading without an error; any other file through the upstream import (`restoreUpstreamBackup` over fake prepare/commit/cancel answers and a fake `beforeRestoreReload`): the upload with the epoch, the phase wait texts, the report shown, Restore committing with the token, the commit's selection stored (`persistSelection`) and the reload; Cancel cancelling on the server without a commit; a `409 changedSinceReview` re-asked in the report dialog with the count and resent with `acceptWrites` (twice), or cancelled when declined; refusals (the Risu Account refusal text, 413, a body-less 502, a failure line, a result line without a selection) shown with nothing else sent; a 412 at the prepare reloading; a 412 at the commit unregistering the hook before the epoch listener runs, reloading and cancelling; the hook storing the prepared selection when the restore is detected before the commit answers; a connection lost during the commit reported as uncertain with the hook kept; a refused commit unregistering it; a connection lost during the upload reported as nothing replaced. `SaveUpstreamLocalBackup` over fake export answers: the keys question first, the flush before the prepare, the prepare's body (the tab's selection, `includeSecrets` from the answer, no `selectedChat` at home), the report text (counts, lists with examples, missing assets, the discarded-change note, the download question), the download by token streamed to `RisuAI-backup-<date>.bin`; a declined report cancelling without a download; no prepare after a failed flush; refusals (409, 404 at the download, a body-less 502) shown with nothing written; the writer aborted on a broken download; `upstreamBackupFileName` by the local date.
-- `src/ts/alertUpstreamImportReport.test.ts`: the report dialog's answer is its own: Restore through the dialog's `answer(true)` resolves true, Cancel false, a generic "yes" close false (another confirmation opened meanwhile waits behind it in the alert queue and answers only itself), a cancelled dialog false; `changedWrites` reaches the dialog.
-- `src/ts/storage/tests/selection.test.ts` `persistSelection`: both storages written with the lorebook page reset, the live selection untouched until `loadSelection`, throwing storages survived. `src/ts/storage/tests/resourceSync.test.ts` "restore (412) and errors": `beforeRestoreReload` runs synchronously after saving halts and before the restore notice, once; a later hook replaces an earlier one, an unregistered one is forgotten, a throwing one is logged and does not block the notice.
-- `src/ts/drive/backuplocalSnapshot.test.ts`: `SavePartialLocalBackup` against the real export route (node environment, the flush stubbed): an image another writer commits while the client waits for its flush is in the archive and its resource snapshot, and a referenced image the server lacks is reported under the character's label. `shared/tests/backups.test.ts`: the selector's categories, deduplication, and what it ignores.
-- `src/ts/characterCardsRealmImport.test.ts` "Realm creator blocking": both listing shapes filtered (cards without a creator kept, an unblocked creator's cards back); an id download of a blocked creator's card refused after the info lookup with no Realm import request, and imported without a lookup once unblocked; a supplied blocked creator refused without a lookup; a failed lookup alerting and importing nothing; a blocked deep link never opening the popup. "RisuRealm terms" (the other cases start accepted): a different stored version asks once and stores this one; declined, a listing, a download, and a deep link send nothing to Realm or the server's import; concurrent callers share one dialog. `src/ts/realmBlocking.test.ts`: block and unblock by id. The upstream mapping of the list: `server/src/tests/upstreamImportSettings.test.ts`.
+- `src/ts/drive/backuplocal.test.ts`: over a fake `authFetch` and a fake `LocalWriter`: the flush before an export, the
+  archive streamed to the file with the manifest read across chunk boundaries, the missing-asset report by character and
+  role, no export when the flush fails, response cancelled when the writer cannot open, stream cancelled and writer
+  aborted on a write failure, writer aborted on a broken download, a refused export reported; a non-empty `discarded`
+  from the flush named in the success alert and ahead of the missing-asset report (full and partial); the partial
+  backup's two confirmations and missing-asset labels; `LoadLocalBackup` routing by the first record name
+  (`readFirstRecordName`: the name from the file head, null for an empty or short file, a zero or over-long name length,
+  or a non-UTF-8 name): a manifest-first file posted to the version-2 import with the epoch header and reloading, the
+  server's refusal shown, a 412 reloading without an error; any other file through the upstream import
+  (`restoreUpstreamBackup` over fake prepare/commit/cancel answers and a fake `beforeRestoreReload`): the upload with
+  the epoch, the phase wait texts, the report shown, Restore committing with the token, the commit's selection stored
+  (`persistSelection`) and the reload; Cancel cancelling on the server without a commit; a `409 changedSinceReview`
+  re-asked in the report dialog with the count and resent with `acceptWrites` (twice), or cancelled when declined;
+  refusals (the Risu Account refusal text, 413, a body-less 502, a failure line, a result line without a selection)
+  shown with nothing else sent; a 412 at the prepare reloading; a 412 at the commit unregistering the hook before the
+  epoch listener runs, reloading and cancelling; the hook storing the prepared selection when the restore is detected
+  before the commit answers; a connection lost during the commit reported as uncertain with the hook kept; a refused
+  commit unregistering it; a connection lost during the upload reported as nothing replaced. `SaveUpstreamLocalBackup`
+  over fake export answers: the keys question first, the flush before the prepare, the prepare's body (the tab's
+  selection, `includeSecrets` from the answer, no `selectedChat` at home), the report text (counts, lists with examples,
+  missing assets, the discarded-change note, the download question), the download by token streamed to
+  `RisuAI-backup-<date>.bin`; a declined report cancelling without a download; no prepare after a failed flush; refusals
+  (409, 404 at the download, a body-less 502) shown with nothing written; the writer aborted on a broken download;
+  `upstreamBackupFileName` by the local date.
+- `src/ts/alertUpstreamImportReport.test.ts`: the report dialog's answer is its own: Restore through the dialog's
+  `answer(true)` resolves true, Cancel false, a generic "yes" close false (another confirmation opened meanwhile waits
+  behind it in the alert queue and answers only itself), a cancelled dialog false; `changedWrites` reaches the dialog.
+- `src/ts/storage/tests/selection.test.ts` `persistSelection`: both storages written with the lorebook page reset, the
+  live selection untouched until `loadSelection`, throwing storages survived.
+  `src/ts/storage/tests/resourceSync.test.ts` "restore (412) and errors": `beforeRestoreReload` runs synchronously after
+  saving halts and before the restore notice, once; a later hook replaces an earlier one, an unregistered one is
+  forgotten, a throwing one is logged and does not block the notice.
+- `src/ts/drive/backuplocalSnapshot.test.ts`: `SavePartialLocalBackup` against the real export route (node environment,
+  the flush stubbed): an image another writer commits while the client waits for its flush is in the archive and its
+  resource snapshot, and a referenced image the server lacks is reported under the character's label.
+  `shared/tests/backups.test.ts`: the selector's categories, deduplication, and what it ignores.
+- `src/ts/characterCardsRealmImport.test.ts` "Realm creator blocking": both listing shapes filtered (cards without a
+  creator kept, an unblocked creator's cards back); an id download of a blocked creator's card refused after the info
+  lookup with no Realm import request, and imported without a lookup once unblocked; a supplied blocked creator refused
+  without a lookup; a failed lookup alerting and importing nothing; a blocked deep link never opening the popup.
+  "RisuRealm terms" (the other cases start accepted): a different stored version asks once and stores this one;
+  declined, a listing, a download, and a deep link send nothing to Realm or the server's import; concurrent callers
+  share one dialog. `src/ts/realmBlocking.test.ts`: block and unblock by id. The upstream mapping of the list:
+  `server/src/tests/upstreamImportSettings.test.ts`.
 - Adjacent: `src/ts/network/localNetwork.test.ts`.
-- `util/upstream/checkBinCompat.mjs` (manual, not in `pnpm test`; `build-test-platforms.md`): the RisuAI-compatible export read by upstream RisuAI's own decoder and boot defaults against either pinned target (`--target legacy`, the default, or `--target current`); the current target also runs upstream's plugin storage migration. `--bin` checks an existing export; target pins and harness details: [build/test platforms](build-test-platforms.md#files).
+- `util/upstream/checkBinCompat.mjs` (manual, not in `pnpm test`; `build-test-platforms.md`): the RisuAI-compatible
+  export read by upstream RisuAI's own decoder and boot defaults against either pinned target (`--target legacy`, the
+  default, or `--target current`); the current target also runs upstream's plugin storage migration. `--bin` checks an
+  existing export; target pins and harness details: [build/test platforms](build-test-platforms.md#files).
 - Not tested: the terms dialog's rendering and `RealmMain` leaving the Realm screen on decline (component level).
-- Not tested: `LocalWriter` itself (streamSaver; a manual check downloaded both RisuAI-compatible exports through it, with its helper page served locally), the Realm components (the listing filter, the download and deep-link refusals, and the import of the block list are tested: `characterCardsRealmImport.test.ts`, `upstreamImportSettings.test.ts`), settings redaction. A RisuAI-compatible export has not been restored in upstream RisuAI's own app: `checkBinCompat.mjs` runs upstream's decoder and boot defaults, plus plugin storage migration for the current target, without its `LoadLocalBackup` or UI.
+- Not tested: `LocalWriter` itself (streamSaver; a manual check downloaded both RisuAI-compatible exports through it,
+  with its helper page served locally), the Realm components (the listing filter, the download and deep-link refusals,
+  and the import of the block list are tested: `characterCardsRealmImport.test.ts`, `upstreamImportSettings.test.ts`),
+  settings redaction. A RisuAI-compatible export has not been restored in upstream RisuAI's own app:
+  `checkBinCompat.mjs` runs upstream's decoder and boot defaults, plus plugin storage migration for the current target,
+  without its `LoadLocalBackup` or UI.
 
 ## Known Hazards
 
 ### Issues
 
 - `RealmMain` renders `hubAdditionalHTML` via `{@html}`.
-- The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not check `ui.realmTermsAccepted`.
+- The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
+  check `ui.realmTermsAccepted`.

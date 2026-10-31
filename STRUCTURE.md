@@ -1,11 +1,11 @@
 # STRUCTURE
 
-Agent map for the RisuAI metatron fork: a Svelte 5 + TypeScript client served by
-its Hono/Node self-host server, installable as a PWA. The client requires that
-server; standalone static hosting, Tauri, and Capacitor are not supported.
+Agent map for the RisuAI metatron fork: a Svelte 5 + TypeScript client served by its Hono/Node self-host server,
+installable as a PWA. The client requires that server; standalone static hosting, Tauri, and Capacitor are not
+supported.
 
-Documentation audit: 2026-10-24. Paths and identifiers are lookup anchors; verify
-current code before changing it. Test results belong to the current run, not this map.
+Documentation audit: 2026-10-24. Paths and identifiers are lookup anchors; verify current code before changing it. Test
+results belong to the current run, not this map.
 
 ## Agent Read Protocol
 
@@ -21,151 +21,126 @@ current code before changing it. Test results belong to the current run, not thi
 
 Tooling:
 
-- T1. Use `pnpm` (`packageManager: pnpm@10.34.1`) and Node `>=24.0.0`.
-  The server runs TypeScript through Node type stripping.
-- T2. `src/...` resolves to `/src` in Vite and Vitest; match surrounding import style.
-  `shared/` has no alias. Imports between shared modules use relative `.ts` paths and `import type` for
-  types. Shared code runs in both client and strict server projects: no DOM types,
-  runes, enums, namespaces, or parameter properties. See [persistence](docs/structure/persistence.md).
-- T3. Svelte runes belong only in `*.svelte` and `*.svelte.ts`. Legacy stores coexist
-  with runes; preserve established store boundaries.
-- T4. Format changed files with `pnpm exec prettier --write <files>` and honor
-  `.prettierignore`; `pnpm format:check` is the repository formatting check.
-- T5. Code comments, test titles, identifiers, and file names describe current
-  behavior, not the work item that added it: no plan, phase, slice, stop, or audit
-  labels such as `(Phase 6 slice 5)`, `data-loss slice 6b`, or `docs/plan/<plan>.md S2`.
-  Plans move to the archive when done, so these labels go stale. State the reason
-  itself ("since chats became their own records", not "since slice 9"); history
-  belongs in commits and [the archive](docs/archived-plan/README.md).
+- T1. Use `pnpm` (`packageManager: pnpm@10.34.1`) and Node `>=24.0.0`. The server runs TypeScript through Node type
+  stripping.
+- T2. `src/...` resolves to `/src` in Vite and Vitest; match surrounding import style. `shared/` has no alias. Imports
+  between shared modules use relative `.ts` paths and `import type` for types. Shared code runs in both client and
+  strict server projects: no DOM types, runes, enums, namespaces, or parameter properties. See
+  [persistence](docs/structure/persistence.md).
+- T3. Svelte runes belong only in `*.svelte` and `*.svelte.ts`. Legacy stores coexist with runes; preserve established
+  store boundaries.
+- T4. Format changed files with `pnpm exec prettier --write <files>` and honor `.prettierignore`; `pnpm format:check` is
+  the repository formatting check.
+- T5. Code comments, test titles, identifiers, and file names describe current behavior, not the work item that added
+  it: no plan, phase, slice, stop, or audit labels such as `(Phase 6 slice 5)`, `data-loss slice 6b`, or
+  `docs/plan/<plan>.md S2`. Plans move to the archive when done, so these labels go stale. State the reason itself
+  ("since chats became their own records", not "since slice 9"); history belongs in commits and
+  [the archive](docs/archived-plan/README.md).
 
 Verification:
 
-- V1. Run `pnpm check` and `pnpm --silent test:agent` once per change, after the
-  last source edit; while iterating, run only the test files the edit reaches
-  (`pnpm --silent test:agent <files or directories>`). A whole-suite run queues
-  behind another one on the machine (the wrapper's lock), so it is not a loop
-  step. Run affected slow tests with
-  `pnpm --silent test:agent --tags-filter=slow`, or `--all` for both sets. Changes
-  covered by `e2e/` also need `pnpm --silent test:agent --e2e`; supply spec names if
-  selection misses them. Build changes also need `pnpm build`. Agents use the
-  wrapper, never `HUMAN` to bypass the human/CI command gate. Wrapper caching,
-  `--force`, `FLAKY` warnings, browser selection, and commands belong to
-  [build-test-platforms](docs/structure/build-test-platforms.md).
-- V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories.
-  Vitest defaults to happy-dom; server tests select Node. Setup mocks, clone/DOM
-  differences, and the deny-by-default network guard are documented in
-  [build-test-platforms](docs/structure/build-test-platforms.md).
-  Domain guides own focused test paths and coverage gaps.
-- V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real
-  wall-clock time, CPU time, or the scheduler: no elapsed-time or throughput
-  assertion, no sleep as synchronization, no real production deadline raced by test
-  work. Control the clock (fake timers, an injected `now`, a deferred or latch, a
-  test-only limit option) or tag the test `slow`. A gate timeout is a hang guard,
-  not a performance budget. Add tests only for code the task changes, and keep a
-  test only when a plausible wrong implementation would fail it. Timing policy
-  and overload checks: [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
-- V4. Before committing, `rg` each changed product export and file name across `src`,
-  `server`, `shared`, `public`, `util`, `e2e`, and `docs`, and update the consumers it finds
-  (scripts that read source as text and guides that name it included).
-- V5. A check that could not start, or was not run, is reported as unverified, never
-  as passed.
-- V6. A new test is shown to fail once with the line it guards broken; a bug fix's test
-  reproduces the bug before the fix.
-- V7. Mock only process and I/O boundaries (network, file system, clock, workers, the
-  server, dialogs). A module mocked in more than one file gets one shared, typed
-  factory in a `tests/` directory whose defaults `satisfies` the module's export type,
-  so a new export breaks `pnpm check` instead of a run under load. `src/ts/alert.ts`
-  has `createAlertMock` (`src/ts/tests/alertMock.ts`).
-- V8. Product code never imports test code (`tests/` directories, `*.test.*`,
-  test-only helpers); test-only helpers live in a `tests/` directory so the rule is
-  checkable. `pnpm check:tests` checks it, and that every test file belongs to exactly
-  one runner and the slow-test table matches the `slow` tags; run it after adding,
-  moving, or tagging a test.
-- V9. A test reads product source through `node:fs`, never a Vite `?raw` import (which
-  pulls the file into the module graph and coverage as text).
+- V1. Run `pnpm check` and `pnpm --silent test:agent` once per change, after the last source edit; while iterating, run
+  only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A whole-suite run queues
+  behind another one on the machine (the wrapper's lock), so it is not a loop step. Run affected slow tests with
+  `pnpm --silent test:agent --tags-filter=slow`, or `--all` for both sets. Changes covered by `e2e/` also need
+  `pnpm --silent test:agent --e2e`; supply spec names if selection misses them. Build changes also need `pnpm build`.
+  Agents use the wrapper, never `HUMAN` to bypass the human/CI command gate. Wrapper caching, `--force`, `FLAKY`
+  warnings, browser selection, and commands belong to [build-test-platforms](docs/structure/build-test-platforms.md).
+- V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories. Vitest defaults to happy-dom; server
+  tests select Node. Setup mocks, clone/DOM differences, and the deny-by-default network guard are documented in
+  [build-test-platforms](docs/structure/build-test-platforms.md). Domain guides own focused test paths and coverage
+  gaps.
+- V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real wall-clock time, CPU time, or the
+  scheduler: no elapsed-time or throughput assertion, no sleep as synchronization, no real production deadline raced by
+  test work. Control the clock (fake timers, an injected `now`, a deferred or latch, a test-only limit option) or tag
+  the test `slow`. A gate timeout is a hang guard, not a performance budget. Add tests only for code the task changes,
+  and keep a test only when a plausible wrong implementation would fail it. Timing policy and overload checks:
+  [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
+- V4. Before committing, `rg` each changed product export and file name across `src`, `server`, `shared`, `public`,
+  `util`, `e2e`, and `docs`, and update the consumers it finds (scripts that read source as text and guides that name it
+  included).
+- V5. A check that could not start, or was not run, is reported as unverified, never as passed.
+- V6. A new test is shown to fail once with the line it guards broken; a bug fix's test reproduces the bug before the
+  fix.
+- V7. Mock only process and I/O boundaries (network, file system, clock, workers, the server, dialogs). A module mocked
+  in more than one file gets one shared, typed factory in a `tests/` directory whose defaults `satisfies` the module's
+  export type, so a new export breaks `pnpm check` instead of a run under load. `src/ts/alert.ts` has `createAlertMock`
+  (`src/ts/tests/alertMock.ts`).
+- V8. Product code never imports test code (`tests/` directories, `*.test.*`, test-only helpers); test-only helpers live
+  in a `tests/` directory so the rule is checkable. `pnpm check:tests` checks it, and that every test file belongs to
+  exactly one runner and the slow-test table matches the `slow` tags; run it after adding, moving, or tagging a test.
+- V9. A test reads product source through `node:fs`, never a Vite `?raw` import (which pulls the file into the module
+  graph and coverage as text).
 
 Data and persistence:
 
-- D1. The client holds resource records, not a whole `Database`: settings views,
-  character records, and the chat module are its live state. Legacy snapshots are
-  detached copies. All chat writes go through `chatStore.svelte.ts`, addressed by
-  chat id and message id (`Message.chatId`), never an index after an await. Bind chat
-  fields through getter/setter functions or a synced editing copy.
-- D2. A persisted field needs its shared type, ownership in `shared/sections.ts`,
-  and server defaults/migration in `server/src/data/normalize/`. Boot installs the
-  server's records without client normalization. Chat/message fields are stored
-  largely as sent; default missing values at their readers. Settings views follow
-  the open chat's bound records when available, then tab selection; a send requires
-  all three chat bindings and never uses that fallback. Model ids are derived from
-  slots/profiles and are written synchronously. Details: [persistence](docs/structure/persistence.md)
+- D1. The client holds resource records, not a whole `Database`: settings views, character records, and the chat module
+  are its live state. Legacy snapshots are detached copies. All chat writes go through `chatStore.svelte.ts`, addressed
+  by chat id and message id (`Message.chatId`), never an index after an await. Bind chat fields through getter/setter
+  functions or a synced editing copy.
+- D2. A persisted field needs its shared type, ownership in `shared/sections.ts`, and server defaults/migration in
+  `server/src/data/normalize/`. Boot installs the server's records without client normalization. Chat/message fields are
+  stored largely as sent; default missing values at their readers. Settings views follow the open chat's bound records
+  when available, then tab selection; a send requires all three chat bindings and never uses that fallback. Model ids
+  are derived from slots/profiles and are written synchronously. Details: [persistence](docs/structure/persistence.md)
   and [LLM requests](docs/structure/llm-requests.md).
-- D3. Preserve persisted spellings, including `seperateModels`, `seperateParameters`,
-  `moduleIntergration`, and `PresensePenalty`.
-- D4. Resource writes carry revision and epoch. Stale writes merge independent units;
-  same-unit conflicts reload, keeping eligible local work as a recovery draft;
-  by-id message operations and per-field chat metadata can apply to an older chat
-  revision while their targets exist. Preserve optimistic message ids and append
-  collision refusal. Add/remove/replace characters through `characterStore`; a
-  structural write through the character-list wrapper throws. External contracts
-  use the validated mutation modules. Save/conflict rules: [persistence](docs/structure/persistence.md).
-- D5. Cards (`.png` `chara`/`ccv3`, `.json`, `.charx`), modules (`.risum`), presets
-  (`.risup`/`.risupreset`), translator presets (`.risutl`), and plugin scripts are
-  cross-user formats. Preserve old readers and paired client/server import
-  compatibility; format-specific parity rules and intentional refusal differences
-  belong to [characters/modules](docs/structure/characters-modules.md) `Invariants`. Never
-  renumber `LLMFlags`, `LLMFormat`, `LLMProvider`, `LLMTokenizer`, or rename persisted
-  discriminator values.
+- D3. Preserve persisted spellings, including `seperateModels`, `seperateParameters`, `moduleIntergration`, and
+  `PresensePenalty`.
+- D4. Resource writes carry revision and epoch. Stale writes merge independent units; same-unit conflicts reload,
+  keeping eligible local work as a recovery draft; by-id message operations and per-field chat metadata can apply to an
+  older chat revision while their targets exist. Preserve optimistic message ids and append collision refusal.
+  Add/remove/replace characters through `characterStore`; a structural write through the character-list wrapper throws.
+  External contracts use the validated mutation modules. Save/conflict rules:
+  [persistence](docs/structure/persistence.md).
+- D5. Cards (`.png` `chara`/`ccv3`, `.json`, `.charx`), modules (`.risum`), presets (`.risup`/`.risupreset`), translator
+  presets (`.risutl`), and plugin scripts are cross-user formats. Preserve old readers and paired client/server import
+  compatibility; format-specific parity rules and intentional refusal differences belong to
+  [characters/modules](docs/structure/characters-modules.md) `Invariants`. Never renumber `LLMFlags`, `LLMFormat`,
+  `LLMProvider`, `LLMTokenizer`, or rename persisted discriminator values.
 
 Platform and network:
 
-- P1. Only `src/main.ts` gates on `isNodeServer` (`globalThis.__NODE__`, injected by
-  Hono or Vite). It imports `boot.ts` only with the server present; otherwise it
-  mounts `NodeServerRequired`. Code past that gate assumes the server exists.
+- P1. Only `src/main.ts` gates on `isNodeServer` (`globalThis.__NODE__`, injected by Hono or Vite). It imports `boot.ts`
+  only with the server present; otherwise it mounts `NodeServerRequired`. Code past that gate assumes the server exists.
   Do not add browser-only storage/network branches. `isMobile` is user-agent based.
-- P2. Generation and provider requests run on the server; plugin providers and
-  browser WebLLM are explicit exceptions. The tab never reads LLM credential
-  values (`llmSecrets` is write-only). Credentialed auxiliary operations use
-  `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy,
-  local-network policy, and logs. See [global-api](docs/structure/global-api.md).
+- P2. Generation and provider requests run on the server; plugin providers and browser WebLLM are explicit exceptions.
+  The tab never reads LLM credential values (`llmSecrets` is write-only). Credentialed auxiliary operations use
+  `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy, local-network policy, and logs. See
+  [global-api](docs/structure/global-api.md).
 
 Security:
 
-- S1. Untrusted user/model/card/module/plugin HTML passes through `ParseMarkdown`
-  and `trimMarkdown` (DOMPurify) before `{@html}`. Keep CSS scoped to `.chattext`
-  and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML.
-- S2. Server Lua network/LLM calls and low-level trigger effects require the
-  relevant character/module/trigger `lowLevelAccess` gates. Do not widen them.
+- S1. Untrusted user/model/card/module/plugin HTML passes through `ParseMarkdown` and `trimMarkdown` (DOMPurify) before
+  `{@html}`. Keep CSS scoped to `.chattext` and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML.
+- S2. Server Lua network/LLM calls and low-level trigger effects require the relevant character/module/trigger
+  `lowLevelAccess` gates. Do not widen them.
 
 UI:
 
-- U1. Use theme tokens from `src/styles.css` (`bg-bgcolor`, `bg-darkbg`,
-  `bg-darkbutton`, `bg-selected`, `text-textcolor`, `text-textcolor2`,
-  `border-borderc`, `border-darkborderc`, `text-draculared`, and the
-  `primary|secondary|danger|neutral|success-50..900` families). Opacity modifiers
-  are supported; avoid raw gray/black colors.
-- U2. User-visible strings belong in `src/lang/en.ts`, the source and type.
-  Other locales are `DeepPartial` overrides merged by `changeLanguage`.
-  Components import `{ language } from 'src/lang'`.
+- U1. Use theme tokens from `src/styles.css` (`bg-bgcolor`, `bg-darkbg`, `bg-darkbutton`, `bg-selected`,
+  `text-textcolor`, `text-textcolor2`, `border-borderc`, `border-darkborderc`, `text-draculared`, and the
+  `primary|secondary|danger|neutral|success-50..900` families). Opacity modifiers are supported; avoid raw gray/black
+  colors.
+- U2. User-visible strings belong in `src/lang/en.ts`, the source and type. Other locales are `DeepPartial` overrides
+  merged by `changeLanguage`. Components import `{ language } from 'src/lang'`.
 - U3. Use `src/ts/alert.ts` helpers for errors and confirmations.
-- U4. Stores choose the screen; the URL router applies URLs to them and mirrors
-  settled changes into history. Screen actions change stores. Resolve characters
-  by `selection.characterId`/`selectedCharacter()` and use `selectCharacter(chaId)`;
-  `null` is home. Never retain a list index as an asynchronous address.
-  See [app-shell](docs/structure/app-shell.md).
+- U4. Stores choose the screen; the URL router applies URLs to them and mirrors settled changes into history. Screen
+  actions change stores. Resolve characters by `selection.characterId`/`selectedCharacter()` and use
+  `selectCharacter(chaId)`; `null` is home. Never retain a list index as an asynchronous address. See
+  [app-shell](docs/structure/app-shell.md).
 
 Release:
 
-- R1. `version.json` and `appVer` (`APP_VERSION_POINT`) in `src/ts/storage/database.svelte.ts`
-  are the compatibility version: the upstream RisuAI release the ledger has triaged through
-  ([upstream ledger](docs/research/upstream-ledger.md)). Change both together, and only then.
-  What people see is the build id (`shared/buildInfo.ts`), taken from git at build time.
-  `package.json`'s version is unused.
+- R1. `version.json` and `appVer` (`APP_VERSION_POINT`) in `src/ts/storage/database.svelte.ts` are the compatibility
+  version: the upstream RisuAI release the ledger has triaged through
+  ([upstream ledger](docs/research/upstream-ledger.md)). Change both together, and only then. What people see is the
+  build id (`shared/buildInfo.ts`), taken from git at build time. `package.json`'s version is unused.
 
 ## Choose By Task
 
-Guide links below are the current ownership map, including behavior once described
-by completed plans. [Active plans](docs/plan/README.md) describe unfinished work;
-[migration history](docs/archived-plan/README.md) records completed plans and retrieval commands.
+Guide links below are the current ownership map, including behavior once described by completed plans.
+[Active plans](docs/plan/README.md) describe unfinished work; [migration history](docs/archived-plan/README.md) records
+completed plans and retrieval commands.
 
 | Task                                                                                     | Guide                                                          |
 | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -189,87 +164,70 @@ by completed plans. [Active plans](docs/plan/README.md) describe unfinished work
 
 ## Path Ownership
 
-Apply the specific ownership below before the fallback directories. Guide names
-refer to **Choose By Task**; each guide's `Files` section has identifiers. These are
-starting points: for behavior sharing a UI or transport file, use **Choose By Task**
-and the owner's coupling links (for example, send handlers inside a chat screen).
+Apply the specific ownership below before the fallback directories. Guide names refer to **Choose By Task**; each
+guide's `Files` section has identifiers. These are starting points: for behavior sharing a UI or transport file, use
+**Choose By Task** and the owner's coupling links (for example, send handlers inside a chat screen).
 
-- **diagnostics**: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`,
-  `server/src/data/requestHistory.ts`, `server/src/diagnostics/`,
-  `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
+- **diagnostics**: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`, `server/src/data/requestHistory.ts`,
+  `server/src/diagnostics/`, `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
   `src/ts/network/requestHistory.ts`, `src/lib/Others/RequestLogs/`,
   `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte`.
 - **memory**: `src/ts/process/memory/`, `server/src/prompt/memory/`,
-  `server/src/prompt/{embeddings,transformers,transformersWorker}.ts`,
-  `server/src/data/vectorCache.ts`, `shared/taskRateLimiter.ts`,
-  `shared/{memory,hypaV3Presets}.ts`, `src/ts/process/{transformers,memoryTasks.svelte}.ts`,
-  `src/lib/Others/HypaV3*`, `src/lib/Playground/PlaygroundEmbedding.svelte`.
-- **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`,
-  `src/ts/model/`, `shared/llm.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
-  `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`,
-  `src/ts/horde/`, `src/ts/{tokenizer,tokenCountField}.ts`, `shared/tokenizerChoice.ts`,
-  `shared/prompt/{chatTokens,imageTokens}.ts`, `src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte`,
-  `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`,
-  `src/lib/Setting/Pages/ApiKeysSettings.svelte`, `src/lib/UI/GUI/CredentialSelect.svelte`.
-- **plugins-mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`,
-  `src/ts/process/dynamicutils/pdf.ts`, `shared/plugins.ts`,
-  `src/ts/storage/pluginStorageStore.svelte.ts`,
-  `src/ts/plugins/`, `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`,
-  `src/lib/Others/Plugin*.svelte`, `src/lib/Playground/PlaygroundMCP.svelte`,
-  `public/plugin_start.7z`.
-- **scripts-triggers**: `shared/scripts/`, `shared/triggers.ts`,
-  `server/src/{scripts,lua}/`,
+  `server/src/prompt/{embeddings,transformers,transformersWorker}.ts`, `server/src/data/vectorCache.ts`,
+  `shared/taskRateLimiter.ts`, `shared/{memory,hypaV3Presets}.ts`,
+  `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
+  `src/lib/Playground/PlaygroundEmbedding.svelte`.
+- **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`, `shared/llm.ts`,
+  `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`, `server/src/prompt/tokens.ts`,
+  `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`, `src/ts/{tokenizer,tokenCountField}.ts`,
+  `shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`,
+  `src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte`,
+  `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`, `src/lib/Setting/Pages/ApiKeysSettings.svelte`,
+  `src/lib/UI/GUI/CredentialSelect.svelte`.
+- **plugins-mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`, `src/ts/process/dynamicutils/pdf.ts`,
+  `shared/plugins.ts`, `src/ts/storage/pluginStorageStore.svelte.ts`, `src/ts/plugins/`, `plugins.md`,
+  `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`,
+  `src/lib/Playground/PlaygroundMCP.svelte`, `public/plugin_start.7z`.
+- **scripts-triggers**: `shared/scripts/`, `shared/triggers.ts`, `server/src/{scripts,lua}/`,
   `src/ts/process/{regexFiles,serverCommands}.ts`, `src/lib/SideBars/Scripts/`,
-  `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`,
-  `src/etc/docs/regex.cbs`.
-- **persistence**: `src/ts/storage/`, `src/ts/checkpoints/`, `src/ts/toggles/`,
-  `src/ts/chatLoadPages.ts`, `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted
-  shapes. Runtime semantics in `shared/` stay with their domain guide.
-- **characters-modules**: `src/ts/process/{processzip,modules}.ts`,
-  `shared/{charxImport,moduleImport,rpack}.ts`,
+  `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`, `src/etc/docs/regex.cbs`.
+- **persistence**: `src/ts/storage/`, `src/ts/checkpoints/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,
+  `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted shapes. Runtime semantics in `shared/` stay with
+  their domain guide.
+- **characters-modules**: `src/ts/process/{processzip,modules}.ts`, `shared/{charxImport,moduleImport,rpack}.ts`,
   `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList}.ts`,
-  `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`,
-  `src/lib/Setting/Pages/Module/`, `src/lib/Setting/Pages/PersonaSettings.svelte`,
-  `src/lib/Setting/listedPersona.svelte`, `src/lib/Others/GridCatalog.svelte`,
-  `src/lib/ChatScreens/AssetInput.svelte`, `src/ts/rpack/`.
-- **media-aux**: `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`,
-  `src/ts/translator/`, `shared/translation/`, `shared/translatorPresets.ts`,
-  `server/src/translation/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`,
-  `src/lib/UI/3DLoader.svelte`,
-  `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`,
-  `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`, remaining `src/lib/Playground/`
-  tools. `src/lib/Playground/PlaygroundMenu.svelte` belongs to **ui-theming**.
-- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`,
-  `shared/lore/`, remaining `shared/prompt/`
-  and `src/ts/process/`.
+  `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`,
+  `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/listedPersona.svelte`,
+  `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte`, `src/ts/rpack/`.
+- **media-aux**: `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/translator/`, `shared/translation/`,
+  `shared/translatorPresets.ts`, `server/src/translation/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`,
+  `src/lib/UI/3DLoader.svelte`, `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`,
+  `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`, remaining `src/lib/Playground/` tools.
+  `src/lib/Playground/PlaygroundMenu.svelte` belongs to **ui-theming**.
+- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`, `shared/lore/`, remaining
+  `shared/prompt/` and `src/ts/process/`.
 - **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
-  `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`,
-  `src/lib/ChatScreens/PartialEditController.svelte`, `src/lib/Others/MonacoEditor.svelte`,
-  `src/etc/airisu.cbs`, `src/etc/docs/`.
+  `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`,
+  `src/lib/Others/MonacoEditor.svelte`, `src/etc/airisu.cbs`, `src/etc/docs/`.
 - **backup-sync-hub**: `src/ts/drive/`, `src/ts/realmBlocking.ts`, `src/lib/UI/Realm/`,
   `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`.
 - **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
   `src/ts/{alert,alertQueue}.ts`, `shared/{localNetwork,notifications}.ts`, remaining `src/ts/network/`,
-  `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`,
-  `src/lib/Others/{AlertComp,IrisModal}.svelte`.
-- **settings-i18n**: `src/ts/setting/`, `src/ts/settingsMenu.ts`,
-  remaining `src/lib/Setting/`, `src/lang/`,
+  `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`, `src/lib/Others/{AlertComp,IrisModal}.svelte`.
+- **settings-i18n**: `src/ts/setting/`, `src/ts/settingsMenu.ts`, remaining `src/lib/Setting/`, `src/lang/`,
   `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.
 - **app-shell**: `index.html`, `src/{main,boot,startApp}.ts`, `src/App.svelte`,
   `src/lib/Others/NodeServerRequired.svelte`,
   `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`,
-  `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`,
-  `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
+  `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
 - **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`.
 - **self-host-server**: remaining `server/`, `Dockerfile`, `server.sh`, `server.bat`.
-- **build-test-platforms**: `package.json`, `vite.config.ts`, `vitest.*`,
-  `tsconfig*.json`, `playwright.config.ts`, `e2e/`, `util/`, `public/sw.js`,
-  `public/manifest.json`, `version.json`, root dotfiles.
+- **build-test-platforms**: `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `playwright.config.ts`,
+  `e2e/`, `util/`, `public/sw.js`, `public/manifest.json`, `version.json`, root dotfiles.
 - Tests follow the code they exercise; browser harness ownership stays with build-test-platforms.
 
-Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`,
-`src/etc/docs/`, `src/ts/rpack/`. Use a targeted path for those payloads; follow
-[AGENTS.md](AGENTS.md) for search flags.
+Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`, `src/etc/docs/`,
+`src/ts/rpack/`. Use a targeted path for those payloads; follow [AGENTS.md](AGENTS.md) for search flags.
 
 ## Glossary
 
@@ -289,27 +247,25 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
 
 ## Doc Maintenance
 
-- Focused guides use `Scope`, `Files`, `Flows`, `State`, `Coupling`, `Invariants`,
-  `Recipes`, `Tests`, `Known Hazards`, in that order. Use subordinate headings for detail.
-- Keep only cross-cutting rules in this file. Put subsystem contracts and focused
-  test anchors in their owner; link across domains instead of copying inventories.
-- `Known Hazards` records what can still catch someone working in the subsystem, under
-  up to three subordinate headings, in this order (omit an empty one). One bullet holds
-  one kind: split a bullet that mixes them. Fixed issues are deleted.
-  - `Issues`: remaining defects and advertised but unwired features, to fix. This is
-    the default when no decision to keep the behavior is recorded; mark an
-    unreproduced claim `Unconfirmed:`. Delete an entry in the commit that fixes it.
-  - `Limitations`: behavior the owner chose to keep, or a direct consequence of a
-    recorded design choice. Each entry names where that decision is recorded; when the
-    decision is reversed, the entry moves to `Issues`.
-  - `Gotchas`: facts that are not defects but cause mistakes: ordering and
-    test-environment rules, unused files that look live, measured costs.
-- [Found issues](docs/research/found-issues.md) is the inbox for out-of-scope findings
-  that a session could not verify or place. Once an entry is re-checked in code and
-  has an owning guide, move it to that guide's `Issues` (or `Limitations`, once the
-  owner accepts it) and delete it from the inbox.
+- Focused guides use `Scope`, `Files`, `Flows`, `State`, `Coupling`, `Invariants`, `Recipes`, `Tests`, `Known Hazards`,
+  in that order. Use subordinate headings for detail.
+- Keep only cross-cutting rules in this file. Put subsystem contracts and focused test anchors in their owner; link
+  across domains instead of copying inventories.
+- `Known Hazards` records what can still catch someone working in the subsystem, under up to three subordinate headings,
+  in this order (omit an empty one). One bullet holds one kind: split a bullet that mixes them. Fixed issues are
+  deleted.
+  - `Issues`: remaining defects and advertised but unwired features, to fix. This is the default when no decision to
+    keep the behavior is recorded; mark an unreproduced claim `Unconfirmed:`. Delete an entry in the commit that fixes
+    it.
+  - `Limitations`: behavior the owner chose to keep, or a direct consequence of a recorded design choice. Each entry
+    names where that decision is recorded; when the decision is reversed, the entry moves to `Issues`.
+  - `Gotchas`: facts that are not defects but cause mistakes: ordering and test-environment rules, unused files that
+    look live, measured costs.
+- [Found issues](docs/research/found-issues.md) is the inbox for out-of-scope findings that a session could not verify
+  or place. Once an entry is re-checked in code and has an owning guide, move it to that guide's `Issues` (or
+  `Limitations`, once the owner accepts it) and delete it from the inbox.
 - Use paths plus identifiers, without stale line numbers, test counts, or pass guarantees.
-- `db.<field>` is a flat persisted `Database` name: client views and server request
-  projections can expose it without holding a whole-database object.
-- Completed plans and phase chronology belong in [the archive](docs/archived-plan/README.md).
-  Link current guidance to current guides; mark historical paths as history.
+- `db.<field>` is a flat persisted `Database` name: client views and server request projections can expose it without
+  holding a whole-database object.
+- Completed plans and phase chronology belong in [the archive](docs/archived-plan/README.md). Link current guidance to
+  current guides; mark historical paths as history.

@@ -2,8 +2,14 @@
 
 ## Scope
 
-- Owns: the summarization and retrieval memory algorithms (SupaMemory, HypaMemory V2, HypaMemory V3, Hanurai), the embedding processors, the rate limiter, local Transformers.js models, the HypaV3 editor modal, the progress overlay, and the embedding playground.
-- Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3Modal.svelte`, `src/lib/Others/HypaV3Modal/*`, `src/lib/Others/HypaV3Progress.svelte`, `src/lib/Playground/PlaygroundEmbedding.svelte`; the server copies in `server/src/prompt/memory/*`, `server/src/prompt/embeddings.ts`, `server/src/prompt/transformers.ts`, `server/src/prompt/transformersWorker.ts`, `server/src/data/vectorCache.ts`; `shared/taskRateLimiter.ts`.
+- Owns: the summarization and retrieval memory algorithms (SupaMemory, HypaMemory V2, HypaMemory V3, Hanurai), the
+  embedding processors, the rate limiter, local Transformers.js models, the HypaV3 editor modal, the progress overlay,
+  and the embedding playground.
+- Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3Modal.svelte`,
+  `src/lib/Others/HypaV3Modal/*`, `src/lib/Others/HypaV3Progress.svelte`,
+  `src/lib/Playground/PlaygroundEmbedding.svelte`; the server copies in `server/src/prompt/memory/*`,
+  `server/src/prompt/embeddings.ts`, `server/src/prompt/transformers.ts`, `server/src/prompt/transformersWorker.ts`,
+  `server/src/data/vectorCache.ts`; `shared/taskRateLimiter.ts`.
 - Not here:
   - Where memory plugs into the prompt → `chat-pipeline.md` (`sendChat`, memory step).
   - Settings UI placement → `settings-i18n.md` (`MemorySettings.svelte`, menu 2, `/settings/memory`).
@@ -12,39 +18,90 @@
 
 Algorithms:
 
-- SupaMemory, HypaV2, and Hanurai run only in the server job (`server/src/prompt/memory/`, below); their browser copies were removed with the browser generation path. Their data shapes stay in `shared/memory.ts` (`HypaV2Data`, `SerializableHypaV2Data`, `convertOldToNewHypaV2Data`); `Chat.supaMemoryData` is `lastId + '\n' + text`, or `hypa:\n` followed by JSON `HypaData[]` (`asHyper`).
-- `memory/hypav3.ts`: the V3 implementation the tab keeps for the modal (resummarize, reroll) and the oracle; a send's V3 step is the server's port, split into parts (Server, below).
-  - Entry: `hypaMemoryV3`, the legacy composition only. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp` when the active preset has `useExperimentalImpl`; the server copy has no mains (its `hypaMemoryV3` composes the parts).
-  - Exports: `summarize(oaiMessages, isResummarize?, context?)` (`context`: the `SummarizeContext` of the send or the modal action, its chat and plugin call context, passed to `requestChatData`), `getCurrentHypaV3Preset`, `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one), `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
-  - Private: the processor subclass `HypaProcesserEx`. In both copies, contextual chunk vectors are keyed by their context-qualified cache key so identical paragraphs in different summary contexts keep their own vectors. The server copy's key also names the chunk's position in its summary and a key version (`|chunk-cache-v2|index:<n>`), so a paragraph repeated inside one summary keeps a vector per position; the tab's copy keeps the old key (Invariants).
+- SupaMemory, HypaV2, and Hanurai run only in the server job (`server/src/prompt/memory/`, below); their browser copies
+  were removed with the browser generation path. Their data shapes stay in `shared/memory.ts` (`HypaV2Data`,
+  `SerializableHypaV2Data`, `convertOldToNewHypaV2Data`); `Chat.supaMemoryData` is `lastId + '\n' + text`, or `hypa:\n`
+  followed by JSON `HypaData[]` (`asHyper`).
+- `memory/hypav3.ts`: the V3 implementation the tab keeps for the modal (resummarize, reroll) and the oracle; a send's
+  V3 step is the server's port, split into parts (Server, below).
+  - Entry: `hypaMemoryV3`, the legacy composition only. Dispatches to `hypaMemoryV3Main`, or to `hypaMemoryV3MainExp`
+    when the active preset has `useExperimentalImpl`; the server copy has no mains (its `hypaMemoryV3` composes the
+    parts).
+  - Exports: `summarize(oaiMessages, isResummarize?, context?)` (`context`: the `SummarizeContext` of the send or the
+    modal action, its chat and plugin call context, passed to `requestChatData`), `getCurrentHypaV3Preset`,
+    `createHypaV3Preset` (re-exported from `shared/hypaV3Presets.ts`; keeps a valid `id` or assigns one),
+    `HypaV3Settings`, `SerializableHypaV3Data`, `SerializableSummary`.
+  - Private: the processor subclass `HypaProcesserEx`. In both copies, contextual chunk vectors are keyed by their
+    context-qualified cache key so identical paragraphs in different summary contexts keep their own vectors. The server
+    copy's key also names the chunk's position in its summary and a key version (`|chunk-cache-v2|index:<n>`), so a
+    paragraph repeated inside one summary keeps a vector per position; the tab's copy keeps the old key (Invariants).
 
 Embedding processors:
 
 - `memory/hypamemory.ts`: the shared V1 embedding engine, used well beyond memory.
   - `HypaProcesser` has `addText`, `similaritySearchScored`, and `getEmbeds`.
   - Also exports the `HypaModel` union, the `localModels` registry, and `similarity`/`cosineSimilarity`/`contextHash`.
-- `memory/hypamemoryv2.ts` `HypaProcessorV2`: the newer generic processor, used only by experimental V3. Supports batching, rate limits, and grouped contextual documents.
-- `memory/contextualEmbedding.ts`: `ContextualEmbeddingProvider`, `isContextModel`, `getContextProvider`. The Voyage contextual models (Context 3 and 4, `voyageApiKey`) are the only providers.
-- `shared/memory.ts` `VOYAGE_CONTEXT_MODELS` and `VOYAGE_EMBEDDING_MODELS`: the Voyage models by `hypaModel` value (API id, settings name), with `isVoyageContextModel`, `isVoyageEmbeddingModel`, and `voyageKeyMissing`; both copies and the settings options read them. The `/v1/embeddings` models (Voyage 4 Large, 4, and 4 Lite) go through `voyageEmbeds` (`hypamemory.ts`, and its server copy) with `input_type` `document` for stored texts and `query` for a search.
-- `shared/taskRateLimiter.ts` `TaskRateLimiter` (re-exported by `memory/taskRateLimiter.ts`; the server's memory code uses the same file): per-minute and concurrency limits, `failFast`, `TaskCanceledError`.
+- `memory/hypamemoryv2.ts` `HypaProcessorV2`: the newer generic processor, used only by experimental V3. Supports
+  batching, rate limits, and grouped contextual documents.
+- `memory/contextualEmbedding.ts`: `ContextualEmbeddingProvider`, `isContextModel`, `getContextProvider`. The Voyage
+  contextual models (Context 3 and 4, `voyageApiKey`) are the only providers.
+- `shared/memory.ts` `VOYAGE_CONTEXT_MODELS` and `VOYAGE_EMBEDDING_MODELS`: the Voyage models by `hypaModel` value (API
+  id, settings name), with `isVoyageContextModel`, `isVoyageEmbeddingModel`, and `voyageKeyMissing`; both copies and the
+  settings options read them. The `/v1/embeddings` models (Voyage 4 Large, 4, and 4 Lite) go through `voyageEmbeds`
+  (`hypamemory.ts`, and its server copy) with `input_type` `document` for stored texts and `query` for a search.
+- `shared/taskRateLimiter.ts` `TaskRateLimiter` (re-exported by `memory/taskRateLimiter.ts`; the server's memory code
+  uses the same file): per-minute and concurrency limits, `failFast`, `TaskCanceledError`.
 - `process/transformers.ts`: Transformers.js wrappers backed by Cache Storage `tfCache`.
   - `runEmbedding`: caches only the extractor, not the vectors.
   - `runSummarizer`, `runImageEmbedding` (captioning), `runVITS`, `runTransformers`.
 
 UI:
 
-- `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize, reset, and V2→V3 conversion. A send's memory data is written by the job and by the background memory task (below). The modal writes nothing (`memoryWriteFence`) while a send of this tab or a job this tab knows of runs in the chat (`isLocalSend`, `generatingChatKeys`; the `chatGenerating` notice), or while the chat's memory task fence holds (`memoryTaskFenced`, `src/ts/process/memoryTasks.svelte.ts`; the `memoryTasks.editFenced` notice): from a task's start or queueing until the chat mirror holds the task's `terminalRevision` (see [ui theming](ui-theming.md) for the fence states and [persistence](persistence.md) for the rule). A refused change is undone in the copy, never replayed, and the conversion reports no success. The saving effect never writes the empty default of a chat without memory data; the immediate initialization write is quietly refused while fenced. Under the header the modal shows the chat's task status (queued, running `k/n`, the last notable end with its reason), "Summarize now" (`startMemoryTask`: fences the chat, saves this tab's pending changes (a discarded change, or a draft of the chat or its character's chat order an earlier save left refused, stops it with the `discarded` or `serverJob.refusedDraft` notice: the server would summarize its older copy), then `POST /api/memory/tasks`; a `pendingManual` answer says the next send hands the chat off), and "Cancel" (`cancelMemoryTask`). Lore writes are not fenced by tasks.
-- The modal's resummarize and reroll actions capture the open chat (`currentChatRef`) and its plugin context (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request is that chat's whatever is selected when it runs.
-- The bulk resummary (`resummarizeBulkSelected`) keeps its selection as `BulkResummaryState.targets`: each summary's object in the copy and its identity (`shared/memory.ts` `summaryKey`, with whether it was unique at the selection), plus the chat (`chatKey`). Retry and Apply resolve them in the copy as it is then (`resolveBulkTargets`: the object while the copy holds it, else, for an identity that was unique, the one summary with it now), since a memory write can replace the copy during the summarization await; when the chat is no longer selected or a target is gone or ambiguous (summaries sharing an identity, such as legacy ones without message ids, once the copy was replaced), they refuse with `hypaV3Modal.bulkResummaryTargetsGone` and change nothing (the result stays shown until Cancel). Cancel, Apply, Retry, and a new run discard earlier requests, so late summary or translation results and failures show nothing. A sync replacement from another writer or a fenced edit's undo clears the bulk-edit selection and closes the tag manager. Local summary deletions drop deleted selection indexes and shift later indexes down; a tag manager whose target is deleted or shifts closes and resets its editing state. Bulk resummary Apply also closes the tag manager. Tag handlers and rendering ignore a missing summary, and delete confirmations resolve the captured summary by object identity before removing anything.
-- `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and the server transform's `editprocess` (`serverProcessScript`; `scripts-triggers.md`); without a context (a chat not saved on the server yet) the CBS-parsed text stays.
-- `HypaV3Progress.svelte` renders the selected chat's `memoryProgress` entry (`memoryProgressStore`: phase, reason, `done/total` or the embedding queue text, and "Stop here and continue" for an initial run), else the legacy `hypaV3ProgressStore` ([ui theming](ui-theming.md)).
+- `HypaV3Modal.svelte` and its children in `HypaV3Modal/` edit a synced copy of the current chat's `hypaV3Data` (passed
+  down as the `hypaV3Data` prop) and save every change with `setChatMeta`: search, filters, categories, tags, bulk edit,
+  resummarize, reset, and V2→V3 conversion. A send's memory data is written by the job and by the background memory task
+  (below). The modal writes nothing (`memoryWriteFence`) while a send of this tab or a job this tab knows of runs in the
+  chat (`isLocalSend`, `generatingChatKeys`; the `chatGenerating` notice), or while the chat's memory task fence holds
+  (`memoryTaskFenced`, `src/ts/process/memoryTasks.svelte.ts`; the `memoryTasks.editFenced` notice): from a task's start
+  or queueing until the chat mirror holds the task's `terminalRevision` (see [ui theming](ui-theming.md) for the fence
+  states and [persistence](persistence.md) for the rule). A refused change is undone in the copy, never replayed, and
+  the conversion reports no success. The saving effect never writes the empty default of a chat without memory data; the
+  immediate initialization write is quietly refused while fenced. Under the header the modal shows the chat's task
+  status (queued, running `k/n`, the last notable end with its reason), "Summarize now" (`startMemoryTask`: fences the
+  chat, saves this tab's pending changes (a discarded change, or a draft of the chat or its character's chat order an
+  earlier save left refused, stops it with the `discarded` or `serverJob.refusedDraft` notice: the server would
+  summarize its older copy), then `POST /api/memory/tasks`; a `pendingManual` answer says the next send hands the chat
+  off), and "Cancel" (`cancelMemoryTask`). Lore writes are not fenced by tasks.
+- The modal's resummarize and reroll actions capture the open chat (`currentChatRef`) and its plugin context
+  (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request is that chat's whatever
+  is selected when it runs.
+- The bulk resummary (`resummarizeBulkSelected`) keeps its selection as `BulkResummaryState.targets`: each summary's
+  object in the copy and its identity (`shared/memory.ts` `summaryKey`, with whether it was unique at the selection),
+  plus the chat (`chatKey`). Retry and Apply resolve them in the copy as it is then (`resolveBulkTargets`: the object
+  while the copy holds it, else, for an identity that was unique, the one summary with it now), since a memory write can
+  replace the copy during the summarization await; when the chat is no longer selected or a target is gone or ambiguous
+  (summaries sharing an identity, such as legacy ones without message ids, once the copy was replaced), they refuse with
+  `hypaV3Modal.bulkResummaryTargetsGone` and change nothing (the result stays shown until Cancel). Cancel, Apply, Retry,
+  and a new run discard earlier requests, so late summary or translation results and failures show nothing. A sync
+  replacement from another writer or a fenced edit's undo clears the bulk-edit selection and closes the tag manager.
+  Local summary deletions drop deleted selection indexes and shift later indexes down; a tag manager whose target is
+  deleted or shifts closes and resets its editing state. Bulk resummary Apply also closes the tag manager. Tag handlers
+  and rendering ignore a missing summary, and delete confirmations resolve the captured summary by object identity
+  before removing anything.
+- `HypaV3Modal/utils.ts` `processRegexScript`: routes messages through `risuChatParser` and the server transform's
+  `editprocess` (`serverProcessScript`; `scripts-triggers.md`); without a context (a chat not saved on the server yet)
+  the CBS-parsed text stays.
+- `HypaV3Progress.svelte` renders the selected chat's `memoryProgress` entry (`memoryProgressStore`: phase, reason,
+  `done/total` or the embedding queue text, and "Stop here and continue" for an initial run), else the legacy
+  `hypaV3ProgressStore` ([ui theming](ui-theming.md)).
 
 ## Flows
 
 Selection, in `sendChat`:
 
 - Memory runs only when `nowChatroom.supaMemory` is set on the character or group.
-- The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by `supaModelType`).
+- The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by
+  `supaModelType`).
 - The result is written back to the current chat: `hypaV2Data`, `hypaV3Data`, or `supaMemoryData`.
 - `memoryAlgorithmType` is written by the UI and never read.
 
@@ -64,111 +121,436 @@ V3 `summarize`:
 
 Embedding routing:
 
-- `HypaProcesser.getEmbeds` tries, in order: contextual Voyage, then `localModels` (Transformers.js), then custom, OpenAI, or Voyage `/v1/embeddings` APIs through `globalFetch`.
+- `HypaProcesser.getEmbeds` tries, in order: contextual Voyage, then `localModels` (Transformers.js), then custom,
+  OpenAI, or Voyage `/v1/embeddings` APIs through `globalFetch`.
 - Vector records are cached in LocalForage `hypaVector`.
 
 ### Server
 
-A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate and priority of the former browser `sendChat`). The browser code above serves the HypaV3 modal and the playground.
+A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate and priority of the former browser
+`sendChat`). The browser code above serves the HypaV3 modal and the playground.
 
-- `server/src/prompt/memory/{supaMemory,hypav2,hypav3,hanurai}.ts`: the four algorithms, ported statement for statement. Each takes a `MemoryHost` (`memory/host.ts`) first: the job's settings projection, `tokenize`, `request` (the job's `memory` request with its `request` trigger and retries), `completions` (OpenAI's `/v1/completions` with the stored memory key; an answer that is not JSON is a failure, and a successful one that carries the key is refused, as the browser path's proxy refuses it), `summarizer`, the job's `EmbeddingEnv`, `regex` (a script-worker operation with an optional deadline and the run's abort), the optional `separatorLimits` (HypaV3's separator budget and per-split deadline; absent, the production ones, which tests lengthen through `createServerContext`'s `generationHypaV3SeparatorLimits`), `parseChatML` with the job's CBS, the effective persona's name, `progress`, `random`, `redact`, `fence`, and the run's signal. The client's console output is not ported (it prints the chat).
-- Persistence: `assemblePrompt` writes memory as `meta` operations on the chat as stored then (`AssemblyHost.writeMemory`: the runner reads the chat again and builds and writes the operation in one turn). HypaV2, SupaMemory, and Hanurai write once, what the algorithm returns: `hypaV2Data` on success; `supaMemoryData` and `lastMemory` with the stored values as fallbacks; nothing for Hanurai. HypaV3 writes each new summary at its checkpoint (`mergeHypaV3Write` through the checkpoint's `merge`) and then, unless the step ended with an error, the selection (`mergeHypaV3SelectionWrite`; below); a provider failure keeps the summaries already saved and writes nothing more (an orphan cleanup with no checkpoint before the failure is not saved). The V3 and V2 values are placed onto the stored value (`shared/memory.ts` `mergeHypaV3Write`, `mergeHypaV2Write`), since a change can be saved during the summarization await: unchanged since the algorithm's read, the result is written as it is; otherwise summaries are matched by the message ids they cover (`summaryKey`; summaries have no id; a V2 main chunk by its id with them), the ones the algorithm removed as orphaned (their messages are absent from the algorithm's input, including disabled messages) leave the stored value (an edit made meanwhile goes with them), every other stored summary stays as stored, and the new ones are appended. A `mergeHypaV3Write` carries the result's `metrics` only with `metricsRecomputed`; the checkpoints pass false, so off the fast path the stored metrics are shifted past the removals (the fast path keeps the candidate's, moved to its summaries by identity), and the selection's metrics arrive with the selection write; `categories` and `modalSettings` are the stored ones. A write is skipped (a server warning; the stored value stands) when the placement is not sound: damaged V3 summary containers or items, duplicate identities, a stored last summary that ends at another message than the kept one (a reset, "delete after", tail deletion or conversion only when it moves that cursor), a new summary covering a message already covered, and for V2 an old-shape or damaged value, duplicate numeric ids in baseline or stored, or an added id colliding with a retained stored id. A skipped V2 write costs that send's summaries (this send's prompt used them; the next send summarizes again what the stored summaries do not cover); a skipped V3 checkpoint ends the summarization with `writeSkipped`, keeping the summaries committed before it (experimental can also discard later summaries whose requests had already started). The writes happen before the provider request, as in the tab, and a preview makes them too. An algorithm's error is the send's `throwError`; Hanurai's "too many tokens" is the job's error without the inlay error message (the tab alerts).
-- HypaV3 parts (`server/src/prompt/memory/hypav3.ts`, server only): `prepareHypaV3` (the immutable `HypaV3Prepared`: the input chats, the pre-cleanup `snapshot`, the cleaned `data`, the summarized-prefix cursor, `appliedSummaries` (how many of `data.summaries`, from the first, the prompt uses), `coverage` (the cursor after the last stored summary and the tokens between the two cursors), `budget` (the preset's thresholds, `resolveHypaV3Budget` with `C` and `db.maxResponse`, resolved once so the deferred replay, every plan, the forecast, and the selection read the same values), and the `HypaV3Ledger` token accounting with the reservation as its own item; `{ cleanup: false }` skips the orphan cleanup, `{ responseCorrection: false }` keeps `maxResponse` in the incoming count instead of the legacy subtraction (`ledger.responseCorrection` 0), `{ deferStored: true }` defers stored summaries (below), and `coverageAhead` says the stored coverage reaches past the input's history), `planHypaV3Summaries` (the windows with their `scannedIds`, the planned LLM calls, and a stop reason, without a request; a prediction, never a cursor after a failure; `{ lookahead: true }` starts at the stored coverage, triggers above the resolved lookahead trigger and targets the resolved lookahead target (`resolveHypaV3Budget`; in ratio mode `C × (1 − h)` with the preset's `lookaheadHeadroomRatio` `h` (default 0.15) and `max(0, C × (1 − h − extraSummarizationRatio))`), counting the full memory budget as a planning cost; an ordinary plan triggers above `C` and targets the resolved ordinary target, `C × (1 − extraSummarizationRatio)` in ratio mode), `executeHypaV3Plan` (the `HypaV3ExecutionResult`: the accepted consecutive prefix, the cumulative data, the cursor, the last committed `baseline`, and the end reason `complete`, `stopped`, `writeSkipped`, `sourceInvalid`, or `providerFailed`; hooks `progress`, `checkpoint`, `validate`, `shouldStop`, `sequential`), `emptyHypaV3Execution`, `selectHypaV3` (each main's selection, from `appliedHypaV3Summaries` only: the prepared step's applied summaries and every new one; the returned memory keeps the deferred ones, with empty metrics when none was in and their indices in `metrics.lastDeferredSummaries` (absent when none is deferred), which the HypaV3 modal marks as ready; `trimUncovered` drops the uncovered history oldest first, keeping the last `queryChatCount` history entries, and reports the `gap` and the `protected` tail; `correction` reuses a similarity-correction query), `warmHypaV3Vectors` (a task's new summaries' document vectors through the active processor), `forecastHypaV3` (for the context meter, after a step's execution: `reserved`, the reservation the next send holds, the full budget once there are summaries, else the empty card (standard) or nothing; `summarizeIn`, the fewest tokens the history can grow by before an ordinary plan summarizes, in the ledger's count without the reservation, with standard's empty-card-while-it-fits rule (`min(empty card, budget)` without summaries); `lookaheadIn`, the fewest before a lookahead plan accepts its first window with a message to summarize (past the lookahead trigger and either that window leaving the lookahead target reached or starting over `C`), scanning from the execution's cursor (the stored coverage, with the deferred history counted as summarized, while summaries are deferred) with the plan's window scan (`scanHypaV3Window`), or null when no window before the protected tail has one), and the D15 helpers `hypaV3SourceHash` and `createHypaV3SourceValidator`. The server's `hypaMemoryV3` composes them with no options or hooks and keeps the fixture's results and each main's error position (standard reports a planning exhaustion after summarizing the windows before it, experimental before any request); production calls the parts.
-- The job's HypaV3 modes (`server/src/prompt/assemble.ts` `hypaV3Step`; the job wiring, the gap question, and the hand-off are in [chat pipeline](chat-pipeline.md)). With the server's memory task service (production): a `preview`/`previewPrompt` selects only (no history summary, question, or hand-off; the selection write and standard's one similarity-correction call stay); an input job blocks (summarizes in the job, under the chat's writer lease) when its summary requests need the job: the `memory` slot resolves to `LLMFormat.Plugin` (`pluginModel`, the request runs in the tab, which must stay connected) or the owner has an applicable `request` trigger (`requestTrigger`); any other input job selects only: the stored summaries, then the uncovered history trimmed behind the protected tail. A gap (the trimmed history's `tokenizeChat` total) over the preset's `gapConfirmTokens` (default 10000, 0 asks on any gap) asks `memoryGap` with the planned call count, at most once per job (the answer serves its later speakers and rounds) and never while the chat's task is queued or running: `generate` runs an initial summarization (the lease, a fresh prepare and plan on the memory stored now, windows one at a time with the stop control, then a trimmed selection); `continue`, a dismissed, timed-out, or disconnected question keeps the select-only result; another answer ends the send. Without a service (the `memoryTasks: "disabled"` test override) every step blocks. A preset whose `summarizationModel` is not `subModel` still fails wherever a summary is attempted.
-- Summary writers: every production writer of new summaries (a job's blocking or initial run, a memory task) saves each accepted summary at its checkpoint, so one chat has one writer at a time: a blocking or initial run holds the chat's summary writer lease (`MemoryTaskService.acquireSummaryWriter`; a select-only job writes no summary), and a task starts only while no lease is held. Taking the lease ends the chat's running task (`cancelled`, reason `writerLease`; its write fence closes at once, so a late provider result writes nothing) and makes hand-offs and manual starts only queue until `release()`. The checkpoint merges onto the stored value from the executor's `baseline`, an independent copy of the last committed candidate (the pre-cleanup snapshot before the first), never the merged stored value: a concurrent edit stays stored and keeps the next merge on the divergent path. Before each save the executor revalidates the accepted prefix and the window against the chat as stored now (D15, `createHypaV3SourceValidator`): the window's message ids in sequence with nothing inserted or re-enabled between them, every scanned message enabled, after the last `allBefore`, with the text hash captured with its processed entry, and a greeting window's `fmIndex` and greeting text hash. The first failing window ends with `sourceInvalid` and is dropped with every later one. A job then ends with the retryable "the chat changed during summarization" error and no selection write; after `writeSkipped` (a reset or a moved cursor saved meanwhile) it selects only from the memory stored now and makes its main request (D16). The job's last write is `mergeHypaV3SelectionWrite` (`shared/memory.ts`): from the algorithm's data only the orphan removals and, when a selection was made, its metrics mapped by identity (`remapHypaV3MetricsByIdentity`); every stored summary, including one appended meanwhile, stays as stored, and none is added or recreated after a reset.
-- The background memory task (`server/src/prompt/memory/memoryTasks.ts` `createMemoryTasks`, on the detached host `memoryTaskHost.ts`; wiring, routes, and the feed frame in [self-host server](self-host-server.md)): right before a job emits `done`, the runner hands it the job's `MemoryTaskInput` (a deep copy of the processed history with its sources, the token policy, the settings fingerprint, the epoch, the admitted revision, and the source generation read with the history's snapshot) when a lookahead plan says summaries are due or a manual start waits (`pendingManual`); a queued input starts after the current turn, so after the job's terminal is enqueued. Per chat one running task and one queued input (a newer hand-off replaces it); `MEMORY_TASK_LIMITS`: 4 running server-wide, 32 queued chats, 64 MiB of retained inputs (idle ones evicted least recently used first), 30 minutes per task, terminals kept 10 minutes. At start, on a fresh scope, the task ends `skipped` with its reason when the chat is gone, the input is stale (epoch, source generation, or fingerprint), the binding is invalid, memory is off, V3 is not the active method, a blocking condition holds, or the summarization model is local. It prepares without cleanup (`coverageAhead` skips it as `staleInput`), plans with lookahead, executes with checkpoints and the D15 validator (experimental keeps its concurrency), writes through the persistence rules ([persistence](persistence.md)), and warms the saved summaries' vectors (a warming failure keeps them, `done` with reason `warmingFailed`). Its host requests through `requestChatDataOuter` with mode and source `"memory"`, a synthetic job id, no request trigger, no plugin hooks, no tools, and write-disabled CBS. A manual start (`POST /api/memory/tasks`) reuses the chat's retained input when its epoch, source generation, and fingerprint are current, else answers `pendingManual` and the next input job hands off even when nothing is due. A source-generation notice, an epoch change, maintenance, and shutdown end the chat's tasks; a restart loses the registry.
-- Progress and the stop control: the legacy `progress` notices are unchanged; every run also sends a `memoryProgress` notice (`shared/jobs.ts`: `chatRef`, `runId`, phase `blocking`/`initial`/`selection`, reason `pluginModel`/`requestTrigger`/`gap`/null, `done`/`total` or an embedding queue's text), opened before any legacy notice of the same work; standard now counts `k/n` too. An initial run registers its stop control (`RunningJob.registerMemoryControl`, `POST /api/generations/:id/memory-stop`, the owner client only): the window in progress finishes and is saved, no further window starts, the selection trims the rest, the chat is handed off, and the job's later speakers and rounds select only. A task reports through its `memoryTask` status frames, not `memoryProgress`.
-- Protection at the final re-check: the history entries a select-only, initial, or `writeSkipped` selection kept (its protected tail) are never removable in the later token re-check (a merged system message containing one is not either; an `editRequest` result is removable only when it matches a removable entry), so a prompt still over the context with them ends with the too-many-tokens error.
-- The no-memory trim question: when a memory method is set (the gate's second half) but the owner's `supaMemory` is off, and the no-memory trim would drop chat history (the greeting or a stored message, counted as the trim counts; the example dialogue and the new-chat marker do not count), `assemblePrompt` calls `AssemblyHost.memoryTrim.confirm()` before trimming. The runner (`confirmMemoryTrim`) skips the question for a preview (it trims), when the owner stored now has memory on (memory runs), or when the chat's `memoryTrimAck` equals the owner's `supaMemoryOnCount` (it trims). Otherwise it asks the owner's tab a `memoryTrim` channel question (`shared/jobs.ts`; the tab shows its localized `alertSelect` in `jobChannel.ts`) and acts on the `MemoryTrimChoice`: `memory` turns the owner's toggle on in the store (counting the off→on transition, read inside the write) and runs memory, `once` trims, `ignore` trims and writes `memoryTrimAck`. The user's answer serves the job's later speakers and rounds (`JobRunState.memoryTrim`; the `memoryTrimAck` check is made anew each time, so a turn-on during the job voids it; `memoryTrim.enabled()` keeps memory on past the job's frozen owner). An unanswered question (timeout, a lost owner) ends the job like a Lua question; an invalid answer ends it with `SendError`. The late removable-message cleanup after formatting is not covered: it is a safety net that also runs with memory on.
-- `server/src/prompt/embeddings.ts`: `HypaProcesser`, `HypaProcessorV2`, and the Voyage providers on an `EmbeddingEnv` bound to one job (`createEmbeddings(...).forJob`). The cache keys are the client's, except the contextual document keys, which add the chunk's position and a key version (Invariants). The providers are called from the server: OpenAI with `llmSecrets.supaMemoryKey`, Voyage and the custom URL with the keys in `secrets`. A provider's answer is checked before it is ranked or stored (the expected count, finite numbers, one length; a contextual answer whose group count or a group's vector count differs from what was sent is a `ContextualEmbeddingCountError`, checked for the whole answer before any vector of it is stored), and every error text is redacted of the three keys (a value of whitespace only is not a key). `HypaProcesser.testText` is not ported (nothing calls it). `HypaProcessorV2`'s local batch size is the server's core count (at most 10).
-- `server/src/data/vectorCache.ts`: the vectors, in `save/data/vectors.sqlite` (see `self-host-server.md`). One cache for all clients; browser vectors are not migrated.
-- `server/src/prompt/transformers.ts` and `transformersWorker.ts`: the local models in one child process (embeddings, the `distilbart` summarizer, the captioner, text generation), one task at a time. Model files come from `huggingface.co` into `save/models/transformers` (the browser's mirror is not used). The `GPU` embedding variants run the same model on the CPU.
-- HypaV3's local summarization models (`summarizationModel` other than `subModel`) need the browser's WebLLM engine: on the server a summary with such a preset fails with `Local summarization models are unsupported on the server` (a blocking or initial run), and a background task ends `skipped` with `localSummarization`. A send that needs no new summary still works.
-- HypaV3's progress overlay is fed by `progress` notices and, per job and chat, by `memoryProgress` notices (`memoryProgressStore` in `stores.svelte.ts`, kept by `jobChannel.ts`); the tab closes an overlay a job left open and drops the job's entry when that job ends (`endJobChannel`), since an abort closes the job's channel before a closing notice can arrive. The random selection draws from the job's random source.
-- Other users of the server embeddings: `additionalInformations` and image captions in `assemblePrompt`, the dynamic-asset step of `server/src/prompt/scripts.ts` (`editoutput` and the display transform's `editdisplay` with `dynamicAssetsEditDisplay`, with or without regex scripts; embeddings start only for an uncached unknown marker), Lua `similarity` and `v2CheckSimilarity` (`LuaBindingServices.similarity`).
+- `server/src/prompt/memory/{supaMemory,hypav2,hypav3,hanurai}.ts`: the four algorithms, ported statement for statement.
+  Each takes a `MemoryHost` (`memory/host.ts`) first: the job's settings projection, `tokenize`, `request` (the job's
+  `memory` request with its `request` trigger and retries), `completions` (OpenAI's `/v1/completions` with the stored
+  memory key; an answer that is not JSON is a failure, and a successful one that carries the key is refused, as the
+  browser path's proxy refuses it), `summarizer`, the job's `EmbeddingEnv`, `regex` (a script-worker operation with an
+  optional deadline and the run's abort), the optional `separatorLimits` (HypaV3's separator budget and per-split
+  deadline; absent, the production ones, which tests lengthen through `createServerContext`'s
+  `generationHypaV3SeparatorLimits`), `parseChatML` with the job's CBS, the effective persona's name, `progress`,
+  `random`, `redact`, `fence`, and the run's signal. The client's console output is not ported (it prints the chat).
+- Persistence: `assemblePrompt` writes memory as `meta` operations on the chat as stored then
+  (`AssemblyHost.writeMemory`: the runner reads the chat again and builds and writes the operation in one turn). HypaV2,
+  SupaMemory, and Hanurai write once, what the algorithm returns: `hypaV2Data` on success; `supaMemoryData` and
+  `lastMemory` with the stored values as fallbacks; nothing for Hanurai. HypaV3 writes each new summary at its
+  checkpoint (`mergeHypaV3Write` through the checkpoint's `merge`) and then, unless the step ended with an error, the
+  selection (`mergeHypaV3SelectionWrite`; below); a provider failure keeps the summaries already saved and writes
+  nothing more (an orphan cleanup with no checkpoint before the failure is not saved). The V3 and V2 values are placed
+  onto the stored value (`shared/memory.ts` `mergeHypaV3Write`, `mergeHypaV2Write`), since a change can be saved during
+  the summarization await: unchanged since the algorithm's read, the result is written as it is; otherwise summaries are
+  matched by the message ids they cover (`summaryKey`; summaries have no id; a V2 main chunk by its id with them), the
+  ones the algorithm removed as orphaned (their messages are absent from the algorithm's input, including disabled
+  messages) leave the stored value (an edit made meanwhile goes with them), every other stored summary stays as stored,
+  and the new ones are appended. A `mergeHypaV3Write` carries the result's `metrics` only with `metricsRecomputed`; the
+  checkpoints pass false, so off the fast path the stored metrics are shifted past the removals (the fast path keeps the
+  candidate's, moved to its summaries by identity), and the selection's metrics arrive with the selection write;
+  `categories` and `modalSettings` are the stored ones. A write is skipped (a server warning; the stored value stands)
+  when the placement is not sound: damaged V3 summary containers or items, duplicate identities, a stored last summary
+  that ends at another message than the kept one (a reset, "delete after", tail deletion or conversion only when it
+  moves that cursor), a new summary covering a message already covered, and for V2 an old-shape or damaged value,
+  duplicate numeric ids in baseline or stored, or an added id colliding with a retained stored id. A skipped V2 write
+  costs that send's summaries (this send's prompt used them; the next send summarizes again what the stored summaries do
+  not cover); a skipped V3 checkpoint ends the summarization with `writeSkipped`, keeping the summaries committed before
+  it (experimental can also discard later summaries whose requests had already started). The writes happen before the
+  provider request, as in the tab, and a preview makes them too. An algorithm's error is the send's `throwError`;
+  Hanurai's "too many tokens" is the job's error without the inlay error message (the tab alerts).
+- HypaV3 parts (`server/src/prompt/memory/hypav3.ts`, server only): `prepareHypaV3` (the immutable `HypaV3Prepared`: the
+  input chats, the pre-cleanup `snapshot`, the cleaned `data`, the summarized-prefix cursor, `appliedSummaries` (how
+  many of `data.summaries`, from the first, the prompt uses), `coverage` (the cursor after the last stored summary and
+  the tokens between the two cursors), `budget` (the preset's thresholds, `resolveHypaV3Budget` with `C` and
+  `db.maxResponse`, resolved once so the deferred replay, every plan, the forecast, and the selection read the same
+  values), and the `HypaV3Ledger` token accounting with the reservation as its own item; `{ cleanup: false }` skips the
+  orphan cleanup, `{ responseCorrection: false }` keeps `maxResponse` in the incoming count instead of the legacy
+  subtraction (`ledger.responseCorrection` 0), `{ deferStored: true }` defers stored summaries (below), and
+  `coverageAhead` says the stored coverage reaches past the input's history), `planHypaV3Summaries` (the windows with
+  their `scannedIds`, the planned LLM calls, and a stop reason, without a request; a prediction, never a cursor after a
+  failure; `{ lookahead: true }` starts at the stored coverage, triggers above the resolved lookahead trigger and
+  targets the resolved lookahead target (`resolveHypaV3Budget`; in ratio mode `C × (1 − h)` with the preset's
+  `lookaheadHeadroomRatio` `h` (default 0.15) and `max(0, C × (1 − h − extraSummarizationRatio))`), counting the full
+  memory budget as a planning cost; an ordinary plan triggers above `C` and targets the resolved ordinary target,
+  `C × (1 − extraSummarizationRatio)` in ratio mode), `executeHypaV3Plan` (the `HypaV3ExecutionResult`: the accepted
+  consecutive prefix, the cumulative data, the cursor, the last committed `baseline`, and the end reason `complete`,
+  `stopped`, `writeSkipped`, `sourceInvalid`, or `providerFailed`; hooks `progress`, `checkpoint`, `validate`,
+  `shouldStop`, `sequential`), `emptyHypaV3Execution`, `selectHypaV3` (each main's selection, from
+  `appliedHypaV3Summaries` only: the prepared step's applied summaries and every new one; the returned memory keeps the
+  deferred ones, with empty metrics when none was in and their indices in `metrics.lastDeferredSummaries` (absent when
+  none is deferred), which the HypaV3 modal marks as ready; `trimUncovered` drops the uncovered history oldest first,
+  keeping the last `queryChatCount` history entries, and reports the `gap` and the `protected` tail; `correction` reuses
+  a similarity-correction query), `warmHypaV3Vectors` (a task's new summaries' document vectors through the active
+  processor), `forecastHypaV3` (for the context meter, after a step's execution: `reserved`, the reservation the next
+  send holds, the full budget once there are summaries, else the empty card (standard) or nothing; `summarizeIn`, the
+  fewest tokens the history can grow by before an ordinary plan summarizes, in the ledger's count without the
+  reservation, with standard's empty-card-while-it-fits rule (`min(empty card, budget)` without summaries);
+  `lookaheadIn`, the fewest before a lookahead plan accepts its first window with a message to summarize (past the
+  lookahead trigger and either that window leaving the lookahead target reached or starting over `C`), scanning from the
+  execution's cursor (the stored coverage, with the deferred history counted as summarized, while summaries are
+  deferred) with the plan's window scan (`scanHypaV3Window`), or null when no window before the protected tail has one),
+  and the D15 helpers `hypaV3SourceHash` and `createHypaV3SourceValidator`. The server's `hypaMemoryV3` composes them
+  with no options or hooks and keeps the fixture's results and each main's error position (standard reports a planning
+  exhaustion after summarizing the windows before it, experimental before any request); production calls the parts.
+- The job's HypaV3 modes (`server/src/prompt/assemble.ts` `hypaV3Step`; the job wiring, the gap question, and the
+  hand-off are in [chat pipeline](chat-pipeline.md)). With the server's memory task service (production): a
+  `preview`/`previewPrompt` selects only (no history summary, question, or hand-off; the selection write and standard's
+  one similarity-correction call stay); an input job blocks (summarizes in the job, under the chat's writer lease) when
+  its summary requests need the job: the `memory` slot resolves to `LLMFormat.Plugin` (`pluginModel`, the request runs
+  in the tab, which must stay connected) or the owner has an applicable `request` trigger (`requestTrigger`); any other
+  input job selects only: the stored summaries, then the uncovered history trimmed behind the protected tail. A gap (the
+  trimmed history's `tokenizeChat` total) over the preset's `gapConfirmTokens` (default 10000, 0 asks on any gap) asks
+  `memoryGap` with the planned call count, at most once per job (the answer serves its later speakers and rounds) and
+  never while the chat's task is queued or running: `generate` runs an initial summarization (the lease, a fresh prepare
+  and plan on the memory stored now, windows one at a time with the stop control, then a trimmed selection); `continue`,
+  a dismissed, timed-out, or disconnected question keeps the select-only result; another answer ends the send. Without a
+  service (the `memoryTasks: "disabled"` test override) every step blocks. A preset whose `summarizationModel` is not
+  `subModel` still fails wherever a summary is attempted.
+- Summary writers: every production writer of new summaries (a job's blocking or initial run, a memory task) saves each
+  accepted summary at its checkpoint, so one chat has one writer at a time: a blocking or initial run holds the chat's
+  summary writer lease (`MemoryTaskService.acquireSummaryWriter`; a select-only job writes no summary), and a task
+  starts only while no lease is held. Taking the lease ends the chat's running task (`cancelled`, reason `writerLease`;
+  its write fence closes at once, so a late provider result writes nothing) and makes hand-offs and manual starts only
+  queue until `release()`. The checkpoint merges onto the stored value from the executor's `baseline`, an independent
+  copy of the last committed candidate (the pre-cleanup snapshot before the first), never the merged stored value: a
+  concurrent edit stays stored and keeps the next merge on the divergent path. Before each save the executor revalidates
+  the accepted prefix and the window against the chat as stored now (D15, `createHypaV3SourceValidator`): the window's
+  message ids in sequence with nothing inserted or re-enabled between them, every scanned message enabled, after the
+  last `allBefore`, with the text hash captured with its processed entry, and a greeting window's `fmIndex` and greeting
+  text hash. The first failing window ends with `sourceInvalid` and is dropped with every later one. A job then ends
+  with the retryable "the chat changed during summarization" error and no selection write; after `writeSkipped` (a reset
+  or a moved cursor saved meanwhile) it selects only from the memory stored now and makes its main request (D16). The
+  job's last write is `mergeHypaV3SelectionWrite` (`shared/memory.ts`): from the algorithm's data only the orphan
+  removals and, when a selection was made, its metrics mapped by identity (`remapHypaV3MetricsByIdentity`); every stored
+  summary, including one appended meanwhile, stays as stored, and none is added or recreated after a reset.
+- The background memory task (`server/src/prompt/memory/memoryTasks.ts` `createMemoryTasks`, on the detached host
+  `memoryTaskHost.ts`; wiring, routes, and the feed frame in [self-host server](self-host-server.md)): right before a
+  job emits `done`, the runner hands it the job's `MemoryTaskInput` (a deep copy of the processed history with its
+  sources, the token policy, the settings fingerprint, the epoch, the admitted revision, and the source generation read
+  with the history's snapshot) when a lookahead plan says summaries are due or a manual start waits (`pendingManual`); a
+  queued input starts after the current turn, so after the job's terminal is enqueued. Per chat one running task and one
+  queued input (a newer hand-off replaces it); `MEMORY_TASK_LIMITS`: 4 running server-wide, 32 queued chats, 64 MiB of
+  retained inputs (idle ones evicted least recently used first), 30 minutes per task, terminals kept 10 minutes. At
+  start, on a fresh scope, the task ends `skipped` with its reason when the chat is gone, the input is stale (epoch,
+  source generation, or fingerprint), the binding is invalid, memory is off, V3 is not the active method, a blocking
+  condition holds, or the summarization model is local. It prepares without cleanup (`coverageAhead` skips it as
+  `staleInput`), plans with lookahead, executes with checkpoints and the D15 validator (experimental keeps its
+  concurrency), writes through the persistence rules ([persistence](persistence.md)), and warms the saved summaries'
+  vectors (a warming failure keeps them, `done` with reason `warmingFailed`). Its host requests through
+  `requestChatDataOuter` with mode and source `"memory"`, a synthetic job id, no request trigger, no plugin hooks, no
+  tools, and write-disabled CBS. A manual start (`POST /api/memory/tasks`) reuses the chat's retained input when its
+  epoch, source generation, and fingerprint are current, else answers `pendingManual` and the next input job hands off
+  even when nothing is due. A source-generation notice, an epoch change, maintenance, and shutdown end the chat's tasks;
+  a restart loses the registry.
+- Progress and the stop control: the legacy `progress` notices are unchanged; every run also sends a `memoryProgress`
+  notice (`shared/jobs.ts`: `chatRef`, `runId`, phase `blocking`/`initial`/`selection`, reason
+  `pluginModel`/`requestTrigger`/`gap`/null, `done`/`total` or an embedding queue's text), opened before any legacy
+  notice of the same work; standard now counts `k/n` too. An initial run registers its stop control
+  (`RunningJob.registerMemoryControl`, `POST /api/generations/:id/memory-stop`, the owner client only): the window in
+  progress finishes and is saved, no further window starts, the selection trims the rest, the chat is handed off, and
+  the job's later speakers and rounds select only. A task reports through its `memoryTask` status frames, not
+  `memoryProgress`.
+- Protection at the final re-check: the history entries a select-only, initial, or `writeSkipped` selection kept (its
+  protected tail) are never removable in the later token re-check (a merged system message containing one is not either;
+  an `editRequest` result is removable only when it matches a removable entry), so a prompt still over the context with
+  them ends with the too-many-tokens error.
+- The no-memory trim question: when a memory method is set (the gate's second half) but the owner's `supaMemory` is off,
+  and the no-memory trim would drop chat history (the greeting or a stored message, counted as the trim counts; the
+  example dialogue and the new-chat marker do not count), `assemblePrompt` calls `AssemblyHost.memoryTrim.confirm()`
+  before trimming. The runner (`confirmMemoryTrim`) skips the question for a preview (it trims), when the owner stored
+  now has memory on (memory runs), or when the chat's `memoryTrimAck` equals the owner's `supaMemoryOnCount` (it trims).
+  Otherwise it asks the owner's tab a `memoryTrim` channel question (`shared/jobs.ts`; the tab shows its localized
+  `alertSelect` in `jobChannel.ts`) and acts on the `MemoryTrimChoice`: `memory` turns the owner's toggle on in the
+  store (counting the off→on transition, read inside the write) and runs memory, `once` trims, `ignore` trims and writes
+  `memoryTrimAck`. The user's answer serves the job's later speakers and rounds (`JobRunState.memoryTrim`; the
+  `memoryTrimAck` check is made anew each time, so a turn-on during the job voids it; `memoryTrim.enabled()` keeps
+  memory on past the job's frozen owner). An unanswered question (timeout, a lost owner) ends the job like a Lua
+  question; an invalid answer ends it with `SendError`. The late removable-message cleanup after formatting is not
+  covered: it is a safety net that also runs with memory on.
+- `server/src/prompt/embeddings.ts`: `HypaProcesser`, `HypaProcessorV2`, and the Voyage providers on an `EmbeddingEnv`
+  bound to one job (`createEmbeddings(...).forJob`). The cache keys are the client's, except the contextual document
+  keys, which add the chunk's position and a key version (Invariants). The providers are called from the server: OpenAI
+  with `llmSecrets.supaMemoryKey`, Voyage and the custom URL with the keys in `secrets`. A provider's answer is checked
+  before it is ranked or stored (the expected count, finite numbers, one length; a contextual answer whose group count
+  or a group's vector count differs from what was sent is a `ContextualEmbeddingCountError`, checked for the whole
+  answer before any vector of it is stored), and every error text is redacted of the three keys (a value of whitespace
+  only is not a key). `HypaProcesser.testText` is not ported (nothing calls it). `HypaProcessorV2`'s local batch size is
+  the server's core count (at most 10).
+- `server/src/data/vectorCache.ts`: the vectors, in `save/data/vectors.sqlite` (see `self-host-server.md`). One cache
+  for all clients; browser vectors are not migrated.
+- `server/src/prompt/transformers.ts` and `transformersWorker.ts`: the local models in one child process (embeddings,
+  the `distilbart` summarizer, the captioner, text generation), one task at a time. Model files come from
+  `huggingface.co` into `save/models/transformers` (the browser's mirror is not used). The `GPU` embedding variants run
+  the same model on the CPU.
+- HypaV3's local summarization models (`summarizationModel` other than `subModel`) need the browser's WebLLM engine: on
+  the server a summary with such a preset fails with `Local summarization models are unsupported on the server` (a
+  blocking or initial run), and a background task ends `skipped` with `localSummarization`. A send that needs no new
+  summary still works.
+- HypaV3's progress overlay is fed by `progress` notices and, per job and chat, by `memoryProgress` notices
+  (`memoryProgressStore` in `stores.svelte.ts`, kept by `jobChannel.ts`); the tab closes an overlay a job left open and
+  drops the job's entry when that job ends (`endJobChannel`), since an abort closes the job's channel before a closing
+  notice can arrive. The random selection draws from the job's random source.
+- Other users of the server embeddings: `additionalInformations` and image captions in `assemblePrompt`, the
+  dynamic-asset step of `server/src/prompt/scripts.ts` (`editoutput` and the display transform's `editdisplay` with
+  `dynamicAssetsEditDisplay`, with or without regex scripts; embeddings start only for an uncached unknown marker), Lua
+  `similarity` and `v2CheckSimilarity` (`LuaBindingServices.similarity`).
 
 ## State
 
 - DB settings:
-  - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`, `memoryAlgorithmType` (unused).
-  - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`. `supaMemoryKey` is edited only on the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status and links there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state, so the round trip through the settings keeps it.
+  - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`,
+    `memoryAlgorithmType` (unused).
+  - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`. `supaMemoryKey` is edited only on
+    the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status and
+    links there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state,
+    so the round trip through the settings keeps it.
   - Sizing: `hypaChunkSize`, `hypaAllocatedTokens`, `hypaCustomSettings`.
-  - Presets: `hypaV3Presets`, `hypaV3PresetId` (the selected preset's id; `selectedHypaV3Preset` in `shared/hypaV3Presets.ts` resolves it, falling back to the first). Both travel in the `hypaV3Presets` record as `{ items, selectedId }`. A preset's `gapConfirmTokens` (integer ≥ 0, default 10000) is the gap a send leaves without asking.
-    - Budget mode: `budgetMode` (`"ratio"` or `"tokens"`; a missing or invalid value normalizes to `"ratio"`) says how the memory budget, the background summary headroom (how far below the context background summaries are made), and the extra summarization are given. Ratio mode reads shares of `C`: `memoryTokensRatio` (default 0.2), `lookaheadHeadroomRatio` (in [0, 1), default 0.15), `extraSummarizationRatio` (default 0). Token mode reads token amounts: `memoryBudgetTokens`, `lookaheadHeadroomTokens`, `extraSummarizationTokens` (integers ≥ 0, defaults 6000, 4000, 0). Each mode keeps the other's fields, and both share `hypaV3Data`; `recentMemoryRatio` and `similarMemoryRatio` split the memory budget in both.
-    - `resolveHypaV3Budget(settings, C, maxResponse)` (`shared/hypaV3Presets.ts`) gives the step's thresholds: `memoryTokens` (the full budget), `targetTokens` (the ordinary target), `lookaheadTrigger`, `lookaheadTarget`, and `reduced`. Ratio mode keeps the ratio expressions in their floating-point order (`floor(C × r)`, `C × (1 − e)`, `C × (1 − h)`, `max(0, C × (1 − h − e))`) and reduces nothing. Token mode reduces an amount that does not fit, never refuses it: with `P = max(0, C − maxResponse)` and `half = floor(P / 2)`, memory is at most `half`, and headroom plus extra at most `half`, the headroom reduced first; the thresholds are then `memory`, `C − extra`, `C − headroom`, and `max(0, C − headroom − extra)`. `reduced` lists each amount changed (`{ field, configured, applied }`); the server reports it as `ContextReport.memory.budgetReduced` ([chat pipeline](chat-pipeline.md)).
-    - The server seeds a missing or empty list with one token-mode preset (`normalizeHypaV3Presets`); a stored or imported preset without `budgetMode` stays in ratio mode. The upstream export writes token-mode presets as ratios ([persistence](persistence.md)).
-- Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
-- Per-owner fields (character or group): `supaMemory` (the toggle), `supaMemoryOnCount` (its off→on transitions; read through `supaMemoryOnCount` in `shared/characters.ts`).
-- Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`, `memoryProgressStore` (per job). The tab's task statuses and fences: `src/ts/process/memoryTasks.svelte.ts` (module state, keyed by `chatStatusKey`).
-- Server process memory: the memory task registry (running, queued, and retained inputs, `pendingManual`, terminal statuses, leases) and the chats' source generations; neither survives a restart.
+  - Presets: `hypaV3Presets`, `hypaV3PresetId` (the selected preset's id; `selectedHypaV3Preset` in
+    `shared/hypaV3Presets.ts` resolves it, falling back to the first). Both travel in the `hypaV3Presets` record as
+    `{ items, selectedId }`. A preset's `gapConfirmTokens` (integer ≥ 0, default 10000) is the gap a send leaves without
+    asking.
+    - Budget mode: `budgetMode` (`"ratio"` or `"tokens"`; a missing or invalid value normalizes to `"ratio"`) says how
+      the memory budget, the background summary headroom (how far below the context background summaries are made), and
+      the extra summarization are given. Ratio mode reads shares of `C`: `memoryTokensRatio` (default 0.2),
+      `lookaheadHeadroomRatio` (in [0, 1), default 0.15), `extraSummarizationRatio` (default 0). Token mode reads token
+      amounts: `memoryBudgetTokens`, `lookaheadHeadroomTokens`, `extraSummarizationTokens` (integers ≥ 0, defaults 6000,
+      4000, 0). Each mode keeps the other's fields, and both share `hypaV3Data`; `recentMemoryRatio` and
+      `similarMemoryRatio` split the memory budget in both.
+    - `resolveHypaV3Budget(settings, C, maxResponse)` (`shared/hypaV3Presets.ts`) gives the step's thresholds:
+      `memoryTokens` (the full budget), `targetTokens` (the ordinary target), `lookaheadTrigger`, `lookaheadTarget`, and
+      `reduced`. Ratio mode keeps the ratio expressions in their floating-point order (`floor(C × r)`, `C × (1 − e)`,
+      `C × (1 − h)`, `max(0, C × (1 − h − e))`) and reduces nothing. Token mode reduces an amount that does not fit,
+      never refuses it: with `P = max(0, C − maxResponse)` and `half = floor(P / 2)`, memory is at most `half`, and
+      headroom plus extra at most `half`, the headroom reduced first; the thresholds are then `memory`, `C − extra`,
+      `C − headroom`, and `max(0, C − headroom − extra)`. `reduced` lists each amount changed
+      (`{ field, configured, applied }`); the server reports it as `ContextReport.memory.budgetReduced`
+      ([chat pipeline](chat-pipeline.md)).
+    - The server seeds a missing or empty list with one token-mode preset (`normalizeHypaV3Presets`); a stored or
+      imported preset without `budgetMode` stays in ratio mode. The upstream export writes token-mode presets as ratios
+      ([persistence](persistence.md)).
+- Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's
+  `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
+- Per-owner fields (character or group): `supaMemory` (the toggle), `supaMemoryOnCount` (its off→on transitions; read
+  through `supaMemoryOnCount` in `shared/characters.ts`).
+- Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`, `memoryProgressStore` (per job). The tab's task statuses and fences:
+  `src/ts/process/memoryTasks.svelte.ts` (module state, keyed by `chatStatusKey`).
+- Server process memory: the memory task registry (running, queued, and retained inputs, `pendingManual`, terminal
+  statuses, leases) and the chats' source generations; neither survives a restart.
 
 ## Coupling
 
-- The tab's HypaV3 depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `risuChatParser`, `inlayTokenRegex`, localforage, and Transformers.js. The server ports depend on `MemoryHost` only.
-- Users of the tab's `HypaProcesser`: `files/multisend.ts`, `mcp/graphmem.ts` (the tab's graph memory host), HypaV3, and the playground. Dynamic assets, Lua `similarity`, and the similarity effects use the server's (`server/src/prompt/embeddings.ts`).
+- The tab's HypaV3 depends on `requestChatData`, `webllm`, `ChatTokenizer`, `parseChatML`, `risuChatParser`,
+  `inlayTokenRegex`, localforage, and Transformers.js. The server ports depend on `MemoryHost` only.
+- Users of the tab's `HypaProcesser`: `files/multisend.ts`, `mcp/graphmem.ts` (the tab's graph memory host), HypaV3, and
+  the playground. Dynamic assets, Lua `similarity`, and the similarity effects use the server's
+  (`server/src/prompt/embeddings.ts`).
 
 ## Invariants
 
 - Never persist a runtime `Set`. Use the `toSerializable*` and `to*Data` converters in both directions.
-- A memory write is built from the chat as stored at the write (`writeMemory`'s builder argument, a task's `chatMeta` read in its checkpoint), never from the copy the algorithm read before an await: `hypaV2Data` goes through `mergeHypaV2Write`, a HypaV3 summary save through `mergeHypaV3Write` from the last committed candidate, a job's HypaV3 selection through `mergeHypaV3SelectionWrite`, and the other fields fall back to the stored values. A new summary algorithm or summary field keeps that rule (and `summaryKey`'s order: the last message id is where the next summary starts).
-- A chat has one writer of new HypaV3 summaries at a time (a job's blocking or initial run holds the summary writer lease; a task runs only without one and is cancelled when a job takes it). Every such writer validates each window's source (D15) before its save and saves each summary on its own; the cursor never passes history whose summary was not saved. Only a job removes orphaned summaries (its checkpoints and selection write carry its cleanup, from a fresh source); a task prepares without cleanup.
-- The HypaV3 modal and the local lore draft (`localLoreDraft.svelte.ts`) write nothing while a send of this tab or a job this tab knows of runs in the chat, and the modal nothing while the chat's memory task fence holds (until the mirror holds the task's `terminalRevision`); a refused change is undone in the copy, never kept to be written after the job or task.
-- `chatMemos` reference `Message.chatId` values. Rewriting chat IDs orphans summaries, which get cleaned unless `preserveOrphanedMemory` is set.
-- The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly (`assemblePrompt`). Do not rename them.
-- Deferred stored summaries: the job (with a task service) prepares with `deferStored`, so a summary a task made ahead of need replaces its messages only once the original rules would have summarized them. The stored summaries become windows (`deferredSteps`): each ends after its last message, never before the previous window; a summary whose messages are already behind the previous window (a merge of summaries that were not next to each other, an orphan kept by `preserveOrphanedMemory`) comes in with that window; and for standard, the windows of `maxChatsPerSummary` entries with nothing to summarize (examples, the new-chat marker) before a summary are windows of their own. `deferredStepCount` replays the original rules over those windows as the history grew, one message at a time, with the rest of the prompt as it is now: at each length the count over `C` takes windows in order until the ordinary target (the resolved `targetTokens`; `C × (1 − extraSummarizationRatio)` in ratio mode), the next one would go under the target while the count fits, or the next one reaches into that length's protected tail; a window without a summary is taken again at each length (the original rules keep only summaries). Then, while the ordinary plan from that cursor would request a summary, the next stored summary comes in, so no stored history is summarized again; this can take a stored summary that reaches into the protected tail (after `queryChatCount` grew), as the original rules, which use every stored summary, do. A history that fits with no summary in takes none and is tokenized only up to the stored coverage. The result is close to, not the same as, the original rules: a stored window differs from the one the ordinary plan would scan when a lookahead plan cut it at the protected tail, or after an edit or merge, and the replay then takes the stored window whole (up to one window earlier than the original rules). The replay is stateless (message deletion, a larger context, or a lore swing in the rest of the prompt can bring messages back raw) and keeps the original rules' pause between the target and `C`. A step makes summaries only once every stored one is in. The task prepares without it: its lookahead plan, like the job's, starts at the stored coverage.
-- V3 token accounting reserves memory tokens, keeps `queryChatCount` recent chats, and in production keeps the response budget: the job (with a task service) and the task prepare with `responseCorrection: false`, so memory plans, selects, and trims within `maxContext − maxResponse`, the prompt budget of the no-memory trim, the final recheck, and the context meter. Since the plan counts the full memory budget, which the selected summaries may not fill, a blocking run whose plan reaches the protected tail over the context (`cannotSummarizeFurther`) runs its windows and then selects with `trimUncovered`, as an initial run does; the too-many-tokens error comes only when the real card and the protected tail do not fit. The no-option compositions (the fixture, the `memoryTasks: "disabled"` test override) and HypaV2 keep the legacy subtraction in their own count, which can plan up to the whole context; the job's final recheck then drops removable entries to keep the response budget free, never HypaV2's last two chats (the job protects them, so the recheck ends with the too-many-tokens error instead). A behavioral change covers both implementations, standard and experimental, in the server's parts where it applies; the client's `hypaMemoryV3Main` and `hypaMemoryV3MainExp` change only with the legacy behavior both copies share (next item).
-- Only the legacy composition, the shared settings normalization (`createHypaV3Preset`), and the embedding keys and processors stay alike in both copies (`src/ts/process/memory/` and `server/src/prompt/memory/` with `server/src/prompt/embeddings.ts`); a change to them is made in both. One exception: the server's contextual document keys carry the chunk's position and a key version, its processors embed a partially cached group whole in its original order, check each group call's vector count, send each contextual request through the processor's rate limiter (`embeddingRequestsPerMinute`, `embeddingMaxConcurrent`, abort, progress), and take an in-memory contextual hit by its cache key, not the item id; the tab's copies keep the old key and grouping because their embedding path does not run in production (the HypaV3 modal uses only `summarize`). A later change to the tab's copies adopts the server's key. The parts, hooks, select-only, the lease, D15, and the task are server-only (D12), and so is the token budget mode: the tab's copy reads the ratio fields only and never `budgetMode`, so its parity with the legacy composition holds for ratio mode (the server's parts read `resolveHypaV3Budget`). SupaMemory, HypaV2, and Hanurai exist only on the server. The server copies keep the former client statements and texts except for Hanurai's corrected prefix length and kept-document duplicate check; `server/src/tests/fixtures/memory/algorithms.json` is never regenerated.
-- The embedding keys stay inside `embeddings.ts` and the runner's `MemoryHost`: no CBS text, Lua value, notice, error, log line, or cache row carries one.
-- Embedding cache keys must include the model identity. Voyage contextual keys also include the group hash; their suffix names the `hypaModel` value, so Context 3 keeps its `|voyageContext3` keys. On the server a contextual document key ends with `|chunk-cache-v2|index:<n>` (`contextualChunkCacheKey`, the key version `CONTEXTUAL_CHUNK_CACHE_VERSION` and the chunk's 0-based position in its group, a group of one included), so the same text at two positions of a group never shares a vector; vectors cached under the earlier keys miss once and are embedded again. A group is taken from the cache only when every member hits; otherwise it is embedded whole, in its original order, and the results map to the chunks by identity, never by text. `HypaProcessorV2` keeps the query vectors of the Voyage models (both kinds) under `|query`: a query is embedded with `input_type: "query"` and differs from the document vector of the same text, which for a contextual one-text group otherwise has the same key. `HypaProcesser` caches no query. `testText` caches by raw text only.
-- Adding a local embedding model means updating `HypaModel`, `localModels.models`, `localModels.gpuModels`, the narrower `EmbeddingModel` union in `transformers.ts`, and the options in both settings and the playground.
+- A memory write is built from the chat as stored at the write (`writeMemory`'s builder argument, a task's `chatMeta`
+  read in its checkpoint), never from the copy the algorithm read before an await: `hypaV2Data` goes through
+  `mergeHypaV2Write`, a HypaV3 summary save through `mergeHypaV3Write` from the last committed candidate, a job's HypaV3
+  selection through `mergeHypaV3SelectionWrite`, and the other fields fall back to the stored values. A new summary
+  algorithm or summary field keeps that rule (and `summaryKey`'s order: the last message id is where the next summary
+  starts).
+- A chat has one writer of new HypaV3 summaries at a time (a job's blocking or initial run holds the summary writer
+  lease; a task runs only without one and is cancelled when a job takes it). Every such writer validates each window's
+  source (D15) before its save and saves each summary on its own; the cursor never passes history whose summary was not
+  saved. Only a job removes orphaned summaries (its checkpoints and selection write carry its cleanup, from a fresh
+  source); a task prepares without cleanup.
+- The HypaV3 modal and the local lore draft (`localLoreDraft.svelte.ts`) write nothing while a send of this tab or a job
+  this tab knows of runs in the chat, and the modal nothing while the chat's memory task fence holds (until the mirror
+  holds the task's `terminalRevision`); a refused change is undone in the copy, never kept to be written after the job
+  or task.
+- `chatMemos` reference `Message.chatId` values. Rewriting chat IDs orphans summaries, which get cleaned unless
+  `preserveOrphanedMemory` is set.
+- The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly
+  (`assemblePrompt`). Do not rename them.
+- Deferred stored summaries: the job (with a task service) prepares with `deferStored`, so a summary a task made ahead
+  of need replaces its messages only once the original rules would have summarized them. The stored summaries become
+  windows (`deferredSteps`): each ends after its last message, never before the previous window; a summary whose
+  messages are already behind the previous window (a merge of summaries that were not next to each other, an orphan kept
+  by `preserveOrphanedMemory`) comes in with that window; and for standard, the windows of `maxChatsPerSummary` entries
+  with nothing to summarize (examples, the new-chat marker) before a summary are windows of their own.
+  `deferredStepCount` replays the original rules over those windows as the history grew, one message at a time, with the
+  rest of the prompt as it is now: at each length the count over `C` takes windows in order until the ordinary target
+  (the resolved `targetTokens`; `C × (1 − extraSummarizationRatio)` in ratio mode), the next one would go under the
+  target while the count fits, or the next one reaches into that length's protected tail; a window without a summary is
+  taken again at each length (the original rules keep only summaries). Then, while the ordinary plan from that cursor
+  would request a summary, the next stored summary comes in, so no stored history is summarized again; this can take a
+  stored summary that reaches into the protected tail (after `queryChatCount` grew), as the original rules, which use
+  every stored summary, do. A history that fits with no summary in takes none and is tokenized only up to the stored
+  coverage. The result is close to, not the same as, the original rules: a stored window differs from the one the
+  ordinary plan would scan when a lookahead plan cut it at the protected tail, or after an edit or merge, and the replay
+  then takes the stored window whole (up to one window earlier than the original rules). The replay is stateless
+  (message deletion, a larger context, or a lore swing in the rest of the prompt can bring messages back raw) and keeps
+  the original rules' pause between the target and `C`. A step makes summaries only once every stored one is in. The
+  task prepares without it: its lookahead plan, like the job's, starts at the stored coverage.
+- V3 token accounting reserves memory tokens, keeps `queryChatCount` recent chats, and in production keeps the response
+  budget: the job (with a task service) and the task prepare with `responseCorrection: false`, so memory plans, selects,
+  and trims within `maxContext − maxResponse`, the prompt budget of the no-memory trim, the final recheck, and the
+  context meter. Since the plan counts the full memory budget, which the selected summaries may not fill, a blocking run
+  whose plan reaches the protected tail over the context (`cannotSummarizeFurther`) runs its windows and then selects
+  with `trimUncovered`, as an initial run does; the too-many-tokens error comes only when the real card and the
+  protected tail do not fit. The no-option compositions (the fixture, the `memoryTasks: "disabled"` test override) and
+  HypaV2 keep the legacy subtraction in their own count, which can plan up to the whole context; the job's final recheck
+  then drops removable entries to keep the response budget free, never HypaV2's last two chats (the job protects them,
+  so the recheck ends with the too-many-tokens error instead). A behavioral change covers both implementations, standard
+  and experimental, in the server's parts where it applies; the client's `hypaMemoryV3Main` and `hypaMemoryV3MainExp`
+  change only with the legacy behavior both copies share (next item).
+- Only the legacy composition, the shared settings normalization (`createHypaV3Preset`), and the embedding keys and
+  processors stay alike in both copies (`src/ts/process/memory/` and `server/src/prompt/memory/` with
+  `server/src/prompt/embeddings.ts`); a change to them is made in both. One exception: the server's contextual document
+  keys carry the chunk's position and a key version, its processors embed a partially cached group whole in its original
+  order, check each group call's vector count, send each contextual request through the processor's rate limiter
+  (`embeddingRequestsPerMinute`, `embeddingMaxConcurrent`, abort, progress), and take an in-memory contextual hit by its
+  cache key, not the item id; the tab's copies keep the old key and grouping because their embedding path does not run
+  in production (the HypaV3 modal uses only `summarize`). A later change to the tab's copies adopts the server's key.
+  The parts, hooks, select-only, the lease, D15, and the task are server-only (D12), and so is the token budget mode:
+  the tab's copy reads the ratio fields only and never `budgetMode`, so its parity with the legacy composition holds for
+  ratio mode (the server's parts read `resolveHypaV3Budget`). SupaMemory, HypaV2, and Hanurai exist only on the server.
+  The server copies keep the former client statements and texts except for Hanurai's corrected prefix length and
+  kept-document duplicate check; `server/src/tests/fixtures/memory/algorithms.json` is never regenerated.
+- The embedding keys stay inside `embeddings.ts` and the runner's `MemoryHost`: no CBS text, Lua value, notice, error,
+  log line, or cache row carries one.
+- Embedding cache keys must include the model identity. Voyage contextual keys also include the group hash; their suffix
+  names the `hypaModel` value, so Context 3 keeps its `|voyageContext3` keys. On the server a contextual document key
+  ends with `|chunk-cache-v2|index:<n>` (`contextualChunkCacheKey`, the key version `CONTEXTUAL_CHUNK_CACHE_VERSION` and
+  the chunk's 0-based position in its group, a group of one included), so the same text at two positions of a group
+  never shares a vector; vectors cached under the earlier keys miss once and are embedded again. A group is taken from
+  the cache only when every member hits; otherwise it is embedded whole, in its original order, and the results map to
+  the chunks by identity, never by text. `HypaProcessorV2` keeps the query vectors of the Voyage models (both kinds)
+  under `|query`: a query is embedded with `input_type: "query"` and differs from the document vector of the same text,
+  which for a contextual one-text group otherwise has the same key. `HypaProcesser` caches no query. `testText` caches
+  by raw text only.
+- Adding a local embedding model means updating `HypaModel`, `localModels.models`, `localModels.gpuModels`, the narrower
+  `EmbeddingModel` union in `transformers.ts`, and the options in both settings and the playground.
 - `TaskRateLimiter` rejects `maxConcurrentTasks > tasksPerMinute`.
-- Every core-app path that turns `supaMemory` on bumps `supaMemoryOnCount` (the sidebar toggle in `Toggles.svelte`, HypaV3's `alwaysToggleOn` in `characterStore.svelte.ts`, the trim question's `memory` answer in the runner, a plugin character applied over the same `chaId` in `applyPluginCharacter`); otherwise a chat's "don't ask again" outlives the turn-on. The count stays in the tab (the server only reads it, except the runner's own answer): a server-side count would double-count the tab's bumps unless every one of them moved. A plugin's copy never replaces the stored count (`applyPluginCharacter` writes the stored value, plus one on a turn-on). Other raw record writes (a plugin character with another `chaId`, a new character) are not counted.
+- Every core-app path that turns `supaMemory` on bumps `supaMemoryOnCount` (the sidebar toggle in `Toggles.svelte`,
+  HypaV3's `alwaysToggleOn` in `characterStore.svelte.ts`, the trim question's `memory` answer in the runner, a plugin
+  character applied over the same `chaId` in `applyPluginCharacter`); otherwise a chat's "don't ask again" outlives the
+  turn-on. The count stays in the tab (the server only reads it, except the runner's own answer): a server-side count
+  would double-count the tab's bumps unless every one of them moved. A plugin's copy never replaces the stored count
+  (`applyPluginCharacter` writes the stored value, plus one on a turn-on). Other raw record writes (a plugin character
+  with another `chaId`, a new character) are not counted.
 
 ## Recipes
 
-- Add or change a top-level algorithm: the selector in `MemorySettings.svelte`, the fields in `shared/sections.ts` and their defaults in the server normalizer, and the branch plus persistence in the server's `assemblePrompt`. Verify the `supaMemory` gate and the priority order.
-- Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`, `transformers.ts` `EmbeddingModel`, and the UI options. A Voyage model is one entry in `VOYAGE_EMBEDDING_MODELS` or `VOYAGE_CONTEXT_MODELS` plus its `HypaModel` value; the settings list both tables.
-- Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and `HypaProcesserEx.addSummaryChunksContextual`.
-- Change V3 behavior: the server's parts (both implementations; the job step and the task call them), the client's mains when the change reaches the legacy composition the fixture pins, `HypaV3Settings`, `createHypaV3Preset`, and the settings bindings. A memory-relevant setting the task reads also joins `memorySettingsFingerprint` (`server/src/jobs/jobScope.ts`). The shared constructor defaults invalid settings (numbers must be finite; `maxChatsPerSummary` and `queryChatCount` must be integers >= 1, `gapConfirmTokens` and the three token amounts integers >= 0, `lookaheadHeadroomRatio` in [0, 1), `budgetMode` `"ratio"` or `"tokens"`), including through the server normalizer. A setting that sizes the budget goes through `resolveHypaV3Budget`, never a site's own formula. Server host capabilities also need `MemoryHost`, the runner adapter, and the fixture's `hostOf`. The server alone runs valid summary separators through `MemoryHost.regex`, sequentially with at most 1,000 ms per operation and a 5,000 ms cumulative chunking budget (the production `MemoryHost.separatorLimits`); invalid patterns keep the double-newline fallback. Worker errors return memory before embedding work starts. The tab keeps its synchronous separator.
-- Add summary metadata: the serializable types in `shared/memory.ts` (with `HypaV3Data`, `Summary`, and `DISPLAY_MODE`), `HypaV3Modal/types.ts`, the modal, and its child components. Keep the modal's `$derived`/`$effect.pre` patterns.
+- Add or change a top-level algorithm: the selector in `MemorySettings.svelte`, the fields in `shared/sections.ts` and
+  their defaults in the server normalizer, and the branch plus persistence in the server's `assemblePrompt`. Verify the
+  `supaMemory` gate and the priority order.
+- Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`,
+  `transformers.ts` `EmbeddingModel`, and the UI options. A Voyage model is one entry in `VOYAGE_EMBEDDING_MODELS` or
+  `VOYAGE_CONTEXT_MODELS` plus its `HypaModel` value; the settings list both tables.
+- Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and
+  `HypaProcesserEx.addSummaryChunksContextual`.
+- Change V3 behavior: the server's parts (both implementations; the job step and the task call them), the client's mains
+  when the change reaches the legacy composition the fixture pins, `HypaV3Settings`, `createHypaV3Preset`, and the
+  settings bindings. A memory-relevant setting the task reads also joins `memorySettingsFingerprint`
+  (`server/src/jobs/jobScope.ts`). The shared constructor defaults invalid settings (numbers must be finite;
+  `maxChatsPerSummary` and `queryChatCount` must be integers >= 1, `gapConfirmTokens` and the three token amounts
+  integers >= 0, `lookaheadHeadroomRatio` in [0, 1), `budgetMode` `"ratio"` or `"tokens"`), including through the server
+  normalizer. A setting that sizes the budget goes through `resolveHypaV3Budget`, never a site's own formula. Server
+  host capabilities also need `MemoryHost`, the runner adapter, and the fixture's `hostOf`. The server alone runs valid
+  summary separators through `MemoryHost.regex`, sequentially with at most 1,000 ms per operation and a 5,000 ms
+  cumulative chunking budget (the production `MemoryHost.separatorLimits`); invalid patterns keep the double-newline
+  fallback. Worker errors return memory before embedding work starts. The tab keeps its synchronous separator.
+- Add summary metadata: the serializable types in `shared/memory.ts` (with `HypaV3Data`, `Summary`, and `DISPLAY_MODE`),
+  `HypaV3Modal/types.ts`, the modal, and its child components. Keep the modal's `$derived`/`$effect.pre` patterns.
 
 ## Tests
 
-- Preset defaults and client/server algorithm parity: `src/ts/process/memory/hypaV3Presets.test.ts`, `memoryOracle.test.ts`, and `server/src/tests/memoryAlgorithms.test.ts` cover preset selection, fixture scenarios, and the server's documented algorithm differences.
-- HypaV3 planning and writes: `server/src/tests/{hypaV3Parts,hypaV3MemoryWrite,memoryJobs}.test.ts` cover planning, checkpoints, source validation, selection, concurrent edits, and job integration. The job's memory-step contract is summarized above; detailed server runner coverage is indexed in [self-host server](self-host-server.md).
-- Background tasks: `server/src/tests/{memoryTasks,memoryTaskHost}.test.ts` cover queueing, admission, writes, invalidation, terminal status, and embeddings; `src/ts/process/memoryTasks.test.ts` covers client status, synchronization fences, start (a still-refused draft of the chat or its order refuses it without a request), and cancel. Service wiring and routes are in [self-host server](self-host-server.md).
-- Modal and progress UI: `src/lib/Others/HypaV3Modal.fence.test.ts`, `HypaV3Progress.test.ts`, and `src/lib/Setting/Pages/MemorySettings.hypaV3Export.test.ts` cover editor fences, progress, and preset import/export.
-- Embeddings and local models: `server/src/tests/{embeddings,vectorCache,transformers}.test.ts` and the client oracle cover Voyage request shapes, contextual vectors, cache behavior, and the Transformers.js service.
-- Limits and focused memory writes: `server/src/tests/hypaV3Limits.test.ts` covers numeric defaults, separator deadlines, and no-progress limits; `server/src/tests/hypaV3MemoryWrite.test.ts` also covers V2 write merging.
-- Not covered: Voyage models in the Playground; modal behavior beyond the write fence and bulk-resummary target handling; standalone rate-limiter behavior; browser Transformers wrappers. Not tested end to end: the runner's completion-key check or its `captionImage` and local-generation wiring.
+- Preset defaults and client/server algorithm parity: `src/ts/process/memory/hypaV3Presets.test.ts`,
+  `memoryOracle.test.ts`, and `server/src/tests/memoryAlgorithms.test.ts` cover preset selection, fixture scenarios, and
+  the server's documented algorithm differences.
+- HypaV3 planning and writes: `server/src/tests/{hypaV3Parts,hypaV3MemoryWrite,memoryJobs}.test.ts` cover planning,
+  checkpoints, source validation, selection, concurrent edits, and job integration. The job's memory-step contract is
+  summarized above; detailed server runner coverage is indexed in [self-host server](self-host-server.md).
+- Background tasks: `server/src/tests/{memoryTasks,memoryTaskHost}.test.ts` cover queueing, admission, writes,
+  invalidation, terminal status, and embeddings; `src/ts/process/memoryTasks.test.ts` covers client status,
+  synchronization fences, start (a still-refused draft of the chat or its order refuses it without a request), and
+  cancel. Service wiring and routes are in [self-host server](self-host-server.md).
+- Modal and progress UI: `src/lib/Others/HypaV3Modal.fence.test.ts`, `HypaV3Progress.test.ts`, and
+  `src/lib/Setting/Pages/MemorySettings.hypaV3Export.test.ts` cover editor fences, progress, and preset import/export.
+- Embeddings and local models: `server/src/tests/{embeddings,vectorCache,transformers}.test.ts` and the client oracle
+  cover Voyage request shapes, contextual vectors, cache behavior, and the Transformers.js service.
+- Limits and focused memory writes: `server/src/tests/hypaV3Limits.test.ts` covers numeric defaults, separator
+  deadlines, and no-progress limits; `server/src/tests/hypaV3MemoryWrite.test.ts` also covers V2 write merging.
+- Not covered: Voyage models in the Playground; modal behavior beyond the write fence and bulk-resummary target
+  handling; standalone rate-limiter behavior; browser Transformers wrappers. Not tested end to end: the runner's
+  completion-key check or its `captionImage` and local-generation wiring.
 
 ## Known Hazards
 
 ### Issues
 
 - `memoryAlgorithmType` can disagree with the actual boolean flags on old saves.
-- The modal and lore-draft fence knows only this tab's sends and the jobs it follows or sees locked: another tab's modal (no job ownership on the change feed), the HypaV2 chunk editor (`AlertComp.svelte` `setHypaV2ChunkText`), and a plugin's whole-chat result (`applyChatResult`) still write a whole memory value, and one that lands after the job's write replaces the job's summaries (`meta set` replaces the field). The job's own write keeps a change saved before it. A memory task's writes fence the modal of every connected tab (its `memoryTask` frames), but a plugin's whole-chat result that lands after a task's write still replaces its summaries.
-- An edit right after a refused final job hydration can still use a stale modal or lore copy: the job fence drops before the idle refresh catches up, and a whole-field write can replace the job's data. This is the persistence layer's stale-copy freshness limit (`persistence.md`, chat hydration and idle refresh).
-- Experimental's rate limiter is per execution: successive runs of one chat and simultaneous runs of several chats share no provider-wide allowance.
-- Not checked in a real browser: the overlay's per-chat gating, the stop button, the sidebar memory badge, and the reconnect fence (unit and mounted tests only).
-- Voyage `/v1/embeddings` batches are 50 texts per request (as for OpenAI), with no per-request token count: 50 long texts can pass Voyage 4 Large's 120K-token request limit and fail. The contextual batching counts inputs and chunks, not tokens either (Voyage's API reference gives 120K total tokens; its newer contextual guide 32K without `enable_auto_chunking`, which these requests do not set).
-- The Voyage group hash is a 32-bit hash of the group's texts (joined with `\0`), so two different groups can still share a key; the server's contextual document keys add only the chunk's position and the key version.
-- A cancelled `TaskRateLimiter` batch clears its queued work but leaves an already scheduled rate-window retry timer alive until the window advances (up to 60 seconds); that timer starts no task.
-- The custom embedding URL is fetched directly by the server with no local-target restriction. The setting names the URL the server requests.
-- The catalogue's Transformers.js generation models publish no 8-bit `model_quantized.onnx`: they do not load in the browser. The server loads their `fp32` weights, so a job can use `opt-350m` and `tiny-random-mistral`; `gpt2-large-conversational` has no usable file in either place.
+- The modal and lore-draft fence knows only this tab's sends and the jobs it follows or sees locked: another tab's modal
+  (no job ownership on the change feed), the HypaV2 chunk editor (`AlertComp.svelte` `setHypaV2ChunkText`), and a
+  plugin's whole-chat result (`applyChatResult`) still write a whole memory value, and one that lands after the job's
+  write replaces the job's summaries (`meta set` replaces the field). The job's own write keeps a change saved before
+  it. A memory task's writes fence the modal of every connected tab (its `memoryTask` frames), but a plugin's whole-chat
+  result that lands after a task's write still replaces its summaries.
+- An edit right after a refused final job hydration can still use a stale modal or lore copy: the job fence drops before
+  the idle refresh catches up, and a whole-field write can replace the job's data. This is the persistence layer's
+  stale-copy freshness limit (`persistence.md`, chat hydration and idle refresh).
+- Experimental's rate limiter is per execution: successive runs of one chat and simultaneous runs of several chats share
+  no provider-wide allowance.
+- Not checked in a real browser: the overlay's per-chat gating, the stop button, the sidebar memory badge, and the
+  reconnect fence (unit and mounted tests only).
+- Voyage `/v1/embeddings` batches are 50 texts per request (as for OpenAI), with no per-request token count: 50 long
+  texts can pass Voyage 4 Large's 120K-token request limit and fail. The contextual batching counts inputs and chunks,
+  not tokens either (Voyage's API reference gives 120K total tokens; its newer contextual guide 32K without
+  `enable_auto_chunking`, which these requests do not set).
+- The Voyage group hash is a 32-bit hash of the group's texts (joined with `\0`), so two different groups can still
+  share a key; the server's contextual document keys add only the chunk's position and the key version.
+- A cancelled `TaskRateLimiter` batch clears its queued work but leaves an already scheduled rate-window retry timer
+  alive until the window advances (up to 60 seconds); that timer starts no task.
+- The custom embedding URL is fetched directly by the server with no local-target restriction. The setting names the URL
+  the server requests.
+- The catalogue's Transformers.js generation models publish no 8-bit `model_quantized.onnx`: they do not load in the
+  browser. The server loads their `fp32` weights, so a job can use `opt-350m` and `tiny-random-mistral`;
+  `gpt2-large-conversational` has no usable file in either place.
 - The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.
-- Unconfirmed: `HypaProcesser` keeps the original comparator `a.similarity > b.similarity ? -1 : 0` (not a total order); the representative rankings tested come out right, but whether a pathological input orders wrongly is not established.
+- Unconfirmed: `HypaProcesser` keeps the original comparator `a.similarity > b.similarity ? -1 : 0` (not a total order);
+  the representative rankings tested come out right, but whether a pathological input orders wrongly is not established.
 
 ### Limitations
 
-- A message edited after a hand-off invalidates its window and every later one (D15): a chat edited often while a long backlog is summarized can restart the backlog more than once (not measured). Decision: a changed source ends the run with a retryable error (`server/src/prompt/assemble.ts`).
-- A select-only send leaves out the oldest uncovered history that does not fit the context (the protected tail always stays) until a task covers it; a task that fails or is skipped (shown in the modal; a failure also as the gap question's `lastTaskError`) leaves the gap for the next send's hand-off or question. Decision: select-only sends, the gap question, and hand-offs of HypaV3 Background Memory ([archive](../archived-plan/README.md)).
-- `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section: the tab reads them, and the job's settings projection holds them. Only `supaMemoryKey` is write-only. Decision: auxiliary credentials stay client-readable (`shared/sections.ts` `secrets`).
-- The embedding cache key names the model, not the endpoint: a custom server changed under the same model name reuses the old vectors. The server keeps the client's key bases in a cache every client shares. Decision: kept on purpose (`server/src/prompt/embeddings.ts` header).
-- The server and the tab do not share vectors or model files, and their local models can differ in weights revision and kernels: a ranking near a tie can differ between the two paths. Decision: the server/tab split is on purpose (`server/src/prompt/embeddings.ts` header).
-- The Transformers.js child process has no memory limit of its own. The queue bounds admitted task count and queued payload size, but not a running task's inputs or model allocations; system or container memory pressure can still end the server. Decision: recorded as not a memory bound (`server/src/prompt/transformers.ts` header).
+- A message edited after a hand-off invalidates its window and every later one (D15): a chat edited often while a long
+  backlog is summarized can restart the backlog more than once (not measured). Decision: a changed source ends the run
+  with a retryable error (`server/src/prompt/assemble.ts`).
+- A select-only send leaves out the oldest uncovered history that does not fit the context (the protected tail always
+  stays) until a task covers it; a task that fails or is skipped (shown in the modal; a failure also as the gap
+  question's `lastTaskError`) leaves the gap for the next send's hand-off or question. Decision: select-only sends, the
+  gap question, and hand-offs of HypaV3 Background Memory ([archive](../archived-plan/README.md)).
+- `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section: the tab reads them, and the
+  job's settings projection holds them. Only `supaMemoryKey` is write-only. Decision: auxiliary credentials stay
+  client-readable (`shared/sections.ts` `secrets`).
+- The embedding cache key names the model, not the endpoint: a custom server changed under the same model name reuses
+  the old vectors. The server keeps the client's key bases in a cache every client shares. Decision: kept on purpose
+  (`server/src/prompt/embeddings.ts` header).
+- The server and the tab do not share vectors or model files, and their local models can differ in weights revision and
+  kernels: a ranking near a tie can differ between the two paths. Decision: the server/tab split is on purpose
+  (`server/src/prompt/embeddings.ts` header).
+- The Transformers.js child process has no memory limit of its own. The queue bounds admitted task count and queued
+  payload size, but not a running task's inputs or model allocations; system or container memory pressure can still end
+  the server. Decision: recorded as not a memory bound (`server/src/prompt/transformers.ts` header).
 
 ### Gotchas
 
-- The vector cache's 256 MiB default bounds vector bytes, not the SQLite file, its index, or WAL. Eviction runs synchronously on the server thread, removing at most 256 rows per `set` (configurable with `trimRowsPerSet`) in the same transaction as the insert. Once a write would exceed the bound, trimming continues toward 90% on later inserts; a vector that still cannot fit after the row budget is skipped, so no write ends above the byte bound. Startup trims an over-bound cache to 90% in transactions of that row budget before serving.
-- On the server, HypaV3's dot products and sorts still run on the main thread, outside the CBS limits. Summary separator matching runs on script workers under deadlines; a task's deadline starts when a worker takes it, so queue wait can extend the chunking step beyond its budget.
+- The vector cache's 256 MiB default bounds vector bytes, not the SQLite file, its index, or WAL. Eviction runs
+  synchronously on the server thread, removing at most 256 rows per `set` (configurable with `trimRowsPerSet`) in the
+  same transaction as the insert. Once a write would exceed the bound, trimming continues toward 90% on later inserts; a
+  vector that still cannot fit after the row budget is skipped, so no write ends above the byte bound. Startup trims an
+  over-bound cache to 90% in transactions of that row budget before serving.
+- On the server, HypaV3's dot products and sorts still run on the main thread, outside the CBS limits. Summary separator
+  matching runs on script workers under deadlines; a task's deadline starts when a worker takes it, so queue wait can
+  extend the chunking step beyond its budget.
