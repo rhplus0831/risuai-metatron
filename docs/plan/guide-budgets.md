@@ -140,8 +140,12 @@ and the maintenance rules. It is within budget and is not the problem.
   characters per list item (the item and its continuation lines, code spans included), parentheses
   at most two deep outside code spans. Until a guide is under budget its ceiling is its size in
   `util/docsBudget.json`, which a slice may only lower; the check fails when a guide grows past its
-  ceiling, so trimmed guides stay trimmed while the run is in progress. Slice 7 deletes the per-guide
-  ceilings once every guide meets the uniform budget.
+  ceiling, so trimmed guides stay trimmed while the run is in progress. The one exception is a guide
+  that receives moved content while still over budget (`global-api` and `characters-modules` in
+  Slice 2): its ceiling rises by exactly the bytes moved in, the commit says so, and Slice 5 takes it
+  under 40,000. A file already at or under 40,000 has no ceiling entry and the uniform budget applies,
+  so it can grow to take moved content or new table rows. Slice 7 deletes the per-guide ceilings once
+  every guide meets the uniform budget.
 - **D3. What leaves a guide.** Three content types move out or go, by rule, not by judgment:
   - A `Tests` section names the harnesses, fakes and fixtures (what they stand in for, what they
     control), the focused commands for the area, the `slow` and `e2e` memberships, and the gaps

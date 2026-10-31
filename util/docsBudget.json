@@ -1,20 +1,16 @@
 {
   "ceilings": {
-    "STRUCTURE.md": 23597,
     "docs/structure/app-shell.md": 41327,
-    "docs/structure/backup-sync-hub.md": 25766,
     "docs/structure/build-test-platforms.md": 108148,
     "docs/structure/cbs-rendering.md": 43828,
     "docs/structure/characters-modules.md": 55182,
     "docs/structure/chat-pipeline.md": 67116,
-    "docs/structure/diagnostics.md": 25974,
     "docs/structure/global-api.md": 46850,
     "docs/structure/llm-requests.md": 42338,
     "docs/structure/media-aux.md": 40937,
     "docs/structure/memory.md": 52523,
     "docs/structure/persistence.md": 308576,
     "docs/structure/plugins-mcp.md": 55849,
-    "docs/structure/scripts-triggers.md": 17403,
     "docs/structure/self-host-server.md": 149019,
     "docs/structure/settings-i18n.md": 41910,
     "docs/structure/ui-theming.md": 53001
