@@ -1,7 +1,7 @@
 # Guide Budgets Plan
 
 Status: drafted 2026-11-01; the user answered Q1–Q4 the same day, accepting each
-recommendation (see **Answered questions**). No slice landed yet.
+recommendation (see **Answered questions**). Slices landed: 0 (326caa04d).
 Measurements and the persistence.md inventory were taken at `be5b60b9c`; re-measure with the
 Slice 0 report before each slice.
 
@@ -344,9 +344,12 @@ different guides; the links into persistence.md's successors are retargeted by S
 
 - `pnpm check:docs` and `pnpm format:check` pass after every slice; `pnpm check:tests` still
   passes after Slice 4 (the slow table moved with its constant).
-- Baseline (`be5b60b9c`, `pnpm check:docs --report`): 17 guides, 1,156,344 bytes, 52 `###`
-  headings, 14 guides over 40,000 bytes, largest leaf 116,731 bytes, 422 list items over 600
-  characters. After: filled in by Slice 8.
+- Baseline (`pnpm check:docs --report`, guides unchanged since `be5b60b9c`): 17 guides, 1,156,344
+  bytes, 52 `###` headings, 14 guides over 40,000 bytes, largest leaf 116,767 bytes, 460 list
+  items over 600 characters, 0 table rows over 600, 2 segments above parenthesis depth 2, 0
+  unresolved links. The report counts nested and numbered items, measures leaves in bytes, and
+  skips code spans and link destinations, so it differs from the survey in **Current state**.
+  After: filled in by Slice 8.
 - **Reader acceptance**, run for every split or trimmed guide over 30,000 bytes: for three tasks
   the guide's `Choose By Task` row names, a fresh agent given only `STRUCTURE.md` and the guide's
   heading list picks one heading, reads that subsection (under 8,000 bytes), and names the files
