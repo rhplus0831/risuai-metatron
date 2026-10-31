@@ -1807,6 +1807,12 @@ export function createResourceStore(options: {
             return chatTables.chatRevision(characterId, id);
         },
 
+        /** How many of a chat's messages have the user role, or null when it does not exist (no message row read). */
+        countUserTurns(characterId: string, id: string): number | null {
+            assertOpen();
+            return chatTables.countUserTurns(characterId, id);
+        },
+
         /** A chat's summary (listed fields, revision, and memoized last-message time), or null when it does not exist. */
         chatSummary(characterId: string, id: string): ChatSummary | null {
             assertOpen();

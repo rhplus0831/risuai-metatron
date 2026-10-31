@@ -2,6 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
@@ -163,6 +164,53 @@ function setup(hook?: Parameters<typeof createGenerationJobs>[0]["onChatJobDone"
 }
 
 describe("automatic chat checkpoints", () => {
+    it("reads no message rows on unchanged or not-due turns and saves at turns 1 and 3", () => {
+        const prepare = DatabaseSync.prototype.prepare;
+        const reads: string[] = [];
+        vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepare.call(this, sql);
+            // Every SELECT over the message table, whatever its columns; a bare COUNT(*) reads no row.
+            if (/^SELECT\b.*\bmessages\b/s.test(sql) && !/^SELECT COUNT\(\*\) AS count FROM/.test(sql)) {
+                for (const method of ["all", "get", "iterate"] as const) {
+                    const run = statement[method];
+                    statement[method] = function (...args) {
+                        reads.push(`${method}: ${sql}`);
+                        return Reflect.apply(run, this, args);
+                    };
+                }
+            }
+            return statement;
+        });
+        const s = setup();
+        s.policy(2);
+        const autoSave = () => s.service.autoSave(ref.characterId, ref.chatId);
+        autoSave();
+        const first = s.autos()[0];
+        expect(first).toMatchObject({ kind: "auto", userTurns: 1, messageCount: 2 });
+        expect(s.baseline()).toBe(1);
+
+        reads.length = 0;
+        autoSave();
+        expect(reads).toEqual([]);
+        expect(s.autos()).toEqual([first]);
+        s.appendUser(2);
+        reads.length = 0;
+        autoSave();
+        expect(reads).toEqual([]);
+        expect(s.autos()).toEqual([first]);
+        expect(s.baseline()).toBe(1);
+
+        s.appendUser(3);
+        reads.length = 0;
+        autoSave();
+        expect(reads.length).toBeGreaterThan(0);
+        expect(s.autos().map(({ userTurns, messageCount }) => ({ userTurns, messageCount }))).toEqual([
+            { userTurns: 3, messageCount: 4 },
+            { userTurns: 1, messageCount: 2 },
+        ]);
+        expect(s.baseline()).toBe(3);
+    });
+
     it("saves done sends at user turns 1 and 3 with autoEvery 2, skipping turn 2 and unchanged turns", async () => {
         const s = setup();
         s.policy();

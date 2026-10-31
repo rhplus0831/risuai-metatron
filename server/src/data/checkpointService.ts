@@ -104,11 +104,10 @@ export function createCheckpointService({
             if (!policy) {
                 return;
             }
-            const chat = store.readChatSource(characterId, chatId);
-            if (chat.data === null) {
+            const userTurns = store.countUserTurns(characterId, chatId);
+            if (userTurns === null) {
                 return;
             }
-            const userTurns = chat.data.message.filter((message) => message.role === "user").length;
             const { autoEvery, autoKeep } = policy;
             if (policy.lastAutoTurns !== null && userTurns < policy.lastAutoTurns) {
                 store.checkpoints.writePolicy(characterId, chatId, { autoEvery, autoKeep, lastAutoTurns: userTurns });

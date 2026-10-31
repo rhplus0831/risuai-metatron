@@ -1662,7 +1662,12 @@ describe("snapshots", () => {
                 `UPDATE messages SET data = '{"role":"user","data":"X","chatId":"y"}' WHERE id = 'x'`,
                 "message row 4: message.chatId must equal the row id",
             ],
-            ["message not JSON", "UPDATE messages SET data = 'nope' WHERE id = 'x'", "message row 4: data is not JSON"],
+            // Only a file without the role index can hold such a row; the index parses `data` on every write.
+            [
+                "message not JSON",
+                "DROP INDEX messages_role; UPDATE messages SET data = 'nope' WHERE id = 'x'",
+                "message row 4: data is not JSON",
+            ],
             [
                 "message bad role",
                 `UPDATE messages SET data = '{"role":"system","data":"X","chatId":"x"}' WHERE id = 'x'`,

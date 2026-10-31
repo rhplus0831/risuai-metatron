@@ -22,6 +22,7 @@ import type {
 import type { Chat, Message } from "../../../shared/database.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { normalizeChatMeta, normalizeMessage } from "./chats.ts";
+import { COUNT_USER_TURNS_SQL } from "./chatStore.ts";
 import {
     isValidResourceId,
     nextRevision,
@@ -32,7 +33,8 @@ import {
 
 /**
  * Checkpoints belong to a chat incarnation; deleting it cascades to checkpoints, refs, and policy.
- * Content pages are shared across chats and collected separately, after their last ref disappears.
+ * Content pages are shared across chats: `prune` and `delete` remove the pages they freed, and the
+ * table-wide sweep at open collects the rest, such as the pages a chat's cascade left unreferenced.
  * Snapshots carry all four tables together; restore replaces them on the restored chat incarnations.
  */
 const CHECKPOINT_TABLES_SQL = `
@@ -139,13 +141,18 @@ function assertKind(kind: CheckpointKind) {
  * Creates the checkpoint tables and their synchronous readers and writers. Writers join the caller's
  * already-open transaction; they never begin or commit one. Non-null save/rename/delete results,
  * prune's deleted/pagesRemoved counts, writePolicy's boolean, and sweep's count report changes so
- * the owner can count only committed writes. The single-statement sweep also works in autocommit.
+ * the owner can count only committed writes. `prune` and `delete` remove only the content pages their
+ * own checkpoints freed; `sweep` scans the whole page table and, as a single statement, also works in
+ * autocommit.
  */
 export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions) {
     db.exec(CHECKPOINT_TABLES_SQL);
     db.exec(RESTORE_FLOORS_SQL);
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectMessages = db.prepare("SELECT id, data FROM messages WHERE chatSeq = ? ORDER BY position");
+    const selectLastMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 2");
+    const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
+    const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
     const summaryColumns = "seq, id, kind, name, createdAt, revision, userTurns, messageCount, preview";
     const selectSummaries = db.prepare(
         `SELECT ${summaryColumns} FROM chatCheckpoints WHERE chatSeq = ? ORDER BY seq DESC`,
@@ -171,13 +178,18 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
     const insertRef = db.prepare("INSERT INTO checkpointPageRefs (checkpointSeq, hash) VALUES (?, ?)");
     const renameCheckpoint = db.prepare("UPDATE chatCheckpoints SET name = ?, revision = ? WHERE seq = ?");
     const deleteCheckpoint = db.prepare("DELETE FROM chatCheckpoints WHERE seq = ?");
-    const pruneCheckpoints = db.prepare(
-        "DELETE FROM chatCheckpoints WHERE seq IN " +
-            "(SELECT seq FROM chatCheckpoints WHERE chatSeq = ? AND kind = ? ORDER BY seq DESC LIMIT -1 OFFSET ?)",
+    const prunedSeqs =
+        "SELECT seq FROM chatCheckpoints WHERE chatSeq = ? AND kind = ? ORDER BY seq DESC LIMIT -1 OFFSET ?";
+    const pruneCheckpoints = db.prepare(`DELETE FROM chatCheckpoints WHERE seq IN (${prunedSeqs})`);
+    const selectPrunedHashes = db.prepare(
+        `SELECT DISTINCT hash FROM checkpointPageRefs WHERE checkpointSeq IN (${prunedSeqs})`,
     );
-    const sweepPages = db.prepare(
-        "DELETE FROM checkpointPages WHERE NOT EXISTS " +
-            "(SELECT 1 FROM checkpointPageRefs r WHERE r.hash = checkpointPages.hash)",
+    const selectCheckpointHashes = db.prepare("SELECT hash FROM checkpointPageRefs WHERE checkpointSeq = ?");
+    const unreferencedPage = "NOT EXISTS (SELECT 1 FROM checkpointPageRefs r WHERE r.hash = checkpointPages.hash)";
+    const sweepPages = db.prepare(`DELETE FROM checkpointPages WHERE ${unreferencedPage}`);
+    // One bound JSON array, so the number of hashes never meets the bound-parameter limit.
+    const deleteFreedPages = db.prepare(
+        `DELETE FROM checkpointPages WHERE hash IN (SELECT value FROM json_each(?)) AND ${unreferencedPage}`,
     );
     const selectPolicy = db.prepare(
         "SELECT autoEvery, autoKeep, lastAutoTurns FROM chatCheckpointPolicy WHERE chatSeq = ?",
@@ -234,9 +246,17 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
         }
     }
 
-    /** Returns the number of unreferenced content pages removed. */
+    /** Scans the whole page table for unreferenced content pages; returns the number removed. */
     function sweep(): number {
         return Number(sweepPages.run().changes);
+    }
+
+    /** Removes those of the collected pages that no ref names any more; returns the number removed. */
+    function removeFreedPages(collected: readonly { hash: string }[]): number {
+        if (collected.length === 0) {
+            return 0;
+        }
+        return Number(deleteFreedPages.run(JSON.stringify(collected.map((row) => row.hash))).changes);
     }
 
     return {
@@ -252,7 +272,10 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             return !!chat && Number(upsertFloor.run(chat.seq, chat.revision).changes) > 0;
         },
 
-        /** Captures stored message text and story fields without changing the chat. Missing chat: null. */
+        /**
+         * Captures stored message text and story fields without changing the chat. Missing chat: null.
+         * Counts come from SQL and pages from the stored row texts; only the two preview rows are parsed.
+         */
         save(characterId: string, chatId: string, name: string, kind: CheckpointKind): CheckpointSummary | null {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
             if (!chat) {
@@ -266,8 +289,18 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
                 );
             }
             const meta = JSON.parse(chat.meta) as Record<string, unknown>;
+            const lastRows = selectLastMessages.all(chat.seq) as { data: string }[];
             const preview: CheckpointPreview = {
-                messages: [],
+                messages: lastRows.reverse().map((row) => {
+                    const message = JSON.parse(row.data) as Message;
+                    return {
+                        role: message.role,
+                        text:
+                            typeof message.data === "string"
+                                ? truncateCheckpointText(message.data, CHECKPOINT_PREVIEW_TEXT_LENGTH)
+                                : "",
+                    };
+                }),
                 summaries:
                     isPlainObject(meta.hypaV3Data) && Array.isArray(meta.hypaV3Data.summaries)
                         ? meta.hypaV3Data.summaries.length
@@ -278,26 +311,11 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             const pages: string[] = [];
             let rowTexts: string[] = [];
             let pageBytes = 0;
-            let userTurns = 0;
-            let messageCount = 0;
+            const { count: messageCount } = countMessages.get(chat.seq) as { count: number };
+            const { count: userTurns } = countUserTurns.get(chat.seq) as { count: number };
             for (const row of selectMessages.iterate(chat.seq) as Iterable<{ id: string; data: string }>) {
                 rowTexts.push(row.data);
                 pageBytes += Buffer.byteLength(row.data, "utf8");
-                const message = JSON.parse(row.data) as Message;
-                messageCount += 1;
-                if (message.role === "user") {
-                    userTurns += 1;
-                }
-                preview.messages.push({
-                    role: message.role,
-                    text:
-                        typeof message.data === "string"
-                            ? truncateCheckpointText(message.data, CHECKPOINT_PREVIEW_TEXT_LENGTH)
-                            : "",
-                });
-                if (preview.messages.length > 2) {
-                    preview.messages.shift();
-                }
                 // Id anchors keep later pages stable when a nearby row changes. Cuts include the row.
                 if (
                     createHash("sha256").update(row.id, "utf8").digest()[0] % 16 === 0 ||
@@ -356,7 +374,10 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             };
         },
 
-        /** Keeps the newest `keep` checkpoints of this kind, then sweeps. A missing chat changes nothing. */
+        /**
+         * Keeps the newest `keep` checkpoints of this kind and removes the content pages only the
+         * deleted ones referenced. A missing chat changes nothing.
+         */
         prune(characterId: string, chatId: string, kind: CheckpointKind, keep: number) {
             assertKind(kind);
             if (!Number.isSafeInteger(keep) || keep < 0) {
@@ -366,8 +387,9 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             if (!chat) {
                 return { deleted: 0, pagesRemoved: 0 };
             }
+            const collected = selectPrunedHashes.all(chat.seq, kind, keep) as { hash: string }[];
             const deleted = Number(pruneCheckpoints.run(chat.seq, kind, keep).changes);
-            return { deleted, pagesRemoved: sweep() };
+            return { deleted, pagesRemoved: removeFreedPages(collected) };
         },
 
         /** Newest first by insertion sequence, without reading content pages. Missing chat: null. */
@@ -395,15 +417,19 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             return summary({ ...row, name: normalizedName, revision });
         },
 
-        /** Deletes at exactly the supplied revision and sweeps; missing chat or checkpoint: null. */
+        /**
+         * Deletes at exactly the supplied revision and removes the content pages only that checkpoint
+         * referenced; missing chat or checkpoint: null.
+         */
         delete(characterId: string, chatId: string, id: string, baseRevision: string) {
             const row = findCheckpoint(characterId, chatId, id);
             if (!row) {
                 return null;
             }
             assertRevision(row, baseRevision);
+            const collected = selectCheckpointHashes.all(row.seq) as { hash: string }[];
             deleteCheckpoint.run(row.seq);
-            return { deleted: true, pagesRemoved: sweep() };
+            return { deleted: true, pagesRemoved: removeFreedPages(collected) };
         },
 
         /** Builds a detached chat from saved story state and current kept fields; writes nothing. */

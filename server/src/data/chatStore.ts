@@ -132,6 +132,21 @@ export const CHAT_SUMMARY_TABLE_SQL = `
     ) STRICT;
 `;
 
+/**
+ * A message's role as `messages_role` indexes it. A query reaches that index only through this exact
+ * expression, so every statement that counts by role builds on this text.
+ */
+const MESSAGE_ROLE_SQL = "json_extract(data, '$.role')";
+
+/**
+ * Lets a count by role read no message row. Created when missing (`openChatSchema`), not part of the
+ * snapshot layout (`CHAT_TABLE_COLUMNS`); SQLite maintains it on every write of a message's `data`.
+ */
+const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON messages (chatSeq, ${MESSAGE_ROLE_SQL});`;
+
+/** A chat's user messages, answered from `messages_role` alone: no message row is read. */
+export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
+
 const UPSERT_CHAT_SUMMARY_SQL =
     "INSERT INTO chatSummaries (chatSeq, revision, text) VALUES (?, ?, ?) " +
     "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision, text = excluded.text";
@@ -897,19 +912,21 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 
 /**
  * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
- * of `createChatTables` is prepared: creates `chatGroups` and `chatSummaries` when missing and rebuilds
- * the stored projections. Every chat's when the `meta` table's `summaryProjectionVersion` is missing
- * or differs from `SUMMARY_PROJECTION_VERSION`, otherwise only the chats with no row or a row at
- * another revision, so an open with nothing to rebuild writes nothing. The seqs come first and each
- * chat's metadata is read alone, so a store with a large chat never holds them all. The only pass that
- * parses metadata for summaries at open; its rows are derived data, not store writes. A metadata
- * value that cannot be projected throws, naming the chat, with the transaction left for the caller
- * to roll back.
+ * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries` and the `messages_role`
+ * index when missing (on a fresh and an existing file alike; building the index parses every message
+ * row once) and rebuilds the stored projections. Every chat's when the `meta` table's
+ * `summaryProjectionVersion` is missing or differs from `SUMMARY_PROJECTION_VERSION`, otherwise only
+ * the chats with no row or a row at another revision, so an open with nothing to create or rebuild
+ * writes nothing. The seqs come first and each chat's metadata is read alone, so a store with a large
+ * chat never holds them all. The only pass that parses metadata for summaries at open; its rows are
+ * derived data, not store writes. A metadata value that cannot be projected throws, naming the chat,
+ * with the transaction left for the caller to roll back.
  */
 export function openChatSchema(db: DatabaseSync): void {
     db.exec("BEGIN IMMEDIATE");
     db.exec(CHAT_GROUP_TABLE_SQL);
     db.exec(CHAT_SUMMARY_TABLE_SQL);
+    db.exec(MESSAGE_ROLE_INDEX_SQL);
     const version = String(SUMMARY_PROJECTION_VERSION);
     const stored = db.prepare("SELECT value FROM meta WHERE key = 'summaryProjectionVersion'").get() as
         { value: string } | undefined;
@@ -1021,6 +1038,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
+    const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
     const selectPatchMessages = db.prepare(
         "SELECT m.id, m.data, (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position " +
             "ORDER BY p.position DESC LIMIT 1) AS after FROM messages m " +
@@ -2000,6 +2018,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         chatRevision(characterId: string, id: string): string | null {
             const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
             return row ? tokens.token(row.seq, row.revision) : null;
+        },
+
+        /** How many of the chat's messages have the user role, or null when it does not exist (no message row read). */
+        countUserTurns(characterId: string, id: string): number | null {
+            const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq"> | undefined;
+            return row ? (countUserTurns.get(row.seq) as { count: number }).count : null;
         },
 
         /** A chat's summary (listed fields and memoized last-message time), or null when it does not exist. */

@@ -9,6 +9,7 @@ import { CHECKPOINT_CHAT_FIELDS } from "../../../shared/chatCheckpoints.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import { COUNT_USER_TURNS_SQL } from "../data/chatStore.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
@@ -227,6 +228,160 @@ function fullChat(): Required<Chat> {
 }
 
 describe("chat checkpoints", () => {
+    it("saves counts, ordered previews and page hashes while parsing at most two message rows", () => {
+        const { store, db } = fileStore();
+        const [anchor] = messageIds(true, 1);
+        const [tail, insertedUser, insertedReply] = messageIds(false, 3);
+        seed(store, {
+            name: "K",
+            note: "note",
+            localLore: captured.localLore,
+            scriptstate: { chapter: 3, ready: true },
+            hypaV3Data: captured.hypaV3Data,
+            message: [],
+        });
+        const capture = (
+            messageCount: number,
+            userTurns: number,
+            messages: { role: Message["role"]; text: string }[],
+            groups: string[][],
+        ) => {
+            const texts = new Set(rowTexts(db));
+            const { meta } = db.prepare("SELECT meta FROM chats WHERE characterId = 'c' AND id = 'k'").get() as {
+                meta: string;
+            };
+            const parse = vi.spyOn(JSON, "parse");
+            let saved;
+            try {
+                saved = save(store);
+                expect(parse.mock.calls.filter(([text]) => texts.has(text)).length).toBeLessThanOrEqual(2);
+                expect(parse.mock.calls.filter(([text]) => text === meta)).toHaveLength(1);
+            } finally {
+                parse.mockRestore();
+            }
+            const preview = { messages, summaries: 1, loreEntries: 1, variables: 2 };
+            expect(saved).toMatchObject({ messageCount, userTurns, preview });
+            expect(store.checkpoints.list("c", "k")![0]).toEqual(saved);
+            expectMessagePages(db, saved.id, groups);
+        };
+        capture(0, 0, [], []);
+
+        edit(store, [{ op: "append", anchor: { end: true }, messages: [m(anchor, "Older reply", "char")] }]);
+        capture(1, 0, [{ role: "char", text: "Older reply" }], [rowTexts(db)]);
+
+        edit(store, [
+            { op: "append", anchor: { end: true }, messages: [m(tail, "Latest question")] },
+            {
+                op: "append",
+                anchor: { start: true },
+                messages: [m(insertedUser, "Inserted question"), m(insertedReply, "Inserted reply", "char")],
+            },
+        ]);
+        const rows = rowTexts(db);
+        capture(
+            4,
+            2,
+            [
+                { role: "char", text: "Older reply" },
+                { role: "user", text: "Latest question" },
+            ],
+            [rows.slice(0, 3), rows.slice(3)],
+        );
+    });
+
+    it.each(["prune", "delete"] as const)(
+        "%s removes only its freed message and field pages and leaves unrelated orphans for reopening",
+        (action) => {
+            const { store, db, file } = fileStore();
+            const [anchor] = messageIds(true, 1);
+            const [privateId] = messageIds(false, 1);
+            const shared = m(anchor, "Shared reply", "char");
+            seed(store, { name: "K", note: "Private note", localLore: [], message: [shared, m(privateId)] });
+            const target = save(store, "Target", "auto");
+            const rows = rowTexts(db);
+            const [sharedMessage, privateMessage] = expectMessagePages(db, target.id, [[rows[0]], [rows[1]]]);
+            const privateField = sha256(JSON.stringify("Private note"));
+            expect(checkpoint(db, target.id).fields).toMatchObject({ note: privateField, localLore: sha256("[]") });
+
+            seed(store, { name: "Other", note: "Surviving note", localLore: [], message: [shared] }, "other");
+            const survivor = store.checkpoints.save("other", "k", "Survivor", "manual")!;
+            expect(checkpoint(db, survivor.id)).toMatchObject({
+                pages: [sharedMessage],
+                fields: { localLore: sha256("[]") },
+            });
+
+            seed(store, { name: "Orphan", note: "Orphan note", localLore: [], message: [] }, "orphan");
+            store.checkpoints.save("orphan", "k", "Orphan", "manual");
+            store.applyChanges({
+                chats: [group(store.chatRevision("orphan", "k"), [{ op: "delete" }], "orphan")],
+            });
+            const orphanHash = sha256(JSON.stringify("Orphan note"));
+            expect(pages(db)[orphanHash]).toBe(JSON.stringify("Orphan note"));
+            expect(db.prepare("SELECT hash FROM checkpointPageRefs WHERE hash = ?").all(orphanHash)).toEqual([]);
+            const before = pages(db);
+
+            const result =
+                action === "prune"
+                    ? store.checkpoints.prune("c", "k", "auto", 0)
+                    : store.checkpoints.delete("c", "k", target.id, target.revision);
+            expect(result).toEqual({ deleted: action === "prune" ? 1 : true, pagesRemoved: 2 });
+            expect(store.checkpoints.list("c", "k")).toEqual([]);
+            expect(store.checkpoints.list("other", "k")).toEqual([survivor]);
+            const remaining = Object.fromEntries(
+                Object.entries(before).filter(([hash]) => hash !== privateMessage && hash !== privateField),
+            );
+            expect(pages(db)).toEqual(remaining);
+
+            store.close();
+            const reopened = createResourceStore({ file, kinds });
+            stores.push(reopened);
+            expect(reopened.checkpoints.list("other", "k")).toEqual([survivor]);
+            expect(pages(db)).toEqual(
+                Object.fromEntries(Object.entries(remaining).filter(([hash]) => hash !== orphanHash)),
+            );
+        },
+    );
+
+    it("creates a missing role index on open and counts user turns through message changes", () => {
+        const { store, db, file } = fileStore();
+        seed(store, {
+            name: "K",
+            note: "note",
+            localLore: [],
+            message: [m("u1"), m("reply", "Reply", "char"), m("reply-extra", "Extra reply", "char")],
+        });
+        store.close();
+        const writer = new DatabaseSync(file);
+        try {
+            writer.exec("DROP INDEX IF EXISTS messages_role");
+        } finally {
+            writer.close();
+        }
+        const index = () =>
+            db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'messages_role'").get();
+        expect(index()).toBeUndefined();
+        const reopened = createResourceStore({ file, kinds });
+        stores.push(reopened);
+        expect(index()).toEqual({
+            sql: expect.stringMatching(/ON messages\s*\(chatSeq,\s*json_extract\(data,\s*'\$\.role'\)\)/),
+        });
+        const { seq } = db.prepare("SELECT seq FROM chats WHERE characterId = 'c' AND id = 'k'").get() as {
+            seq: number;
+        };
+        const plan = db.prepare(`EXPLAIN QUERY PLAN ${COUNT_USER_TURNS_SQL}`).all(seq) as { detail: string }[];
+        expect(plan.map(({ detail }) => detail).join("\n")).toContain("messages_role");
+        expect(reopened.countUserTurns("c", "k")).toBe(1);
+        edit(reopened, [
+            { op: "append", anchor: { end: true }, messages: [m("u2"), m("reply2", "Another reply", "char")] },
+        ]);
+        expect(reopened.countUserTurns("c", "k")).toBe(2);
+        edit(reopened, [{ op: "setText", id: "u2", text: "Edited question" }]);
+        expect(reopened.countUserTurns("c", "k")).toBe(2);
+        edit(reopened, [{ op: "remove", ids: ["u1", "reply2"] }]);
+        expect(reopened.countUserTurns("c", "k")).toBe(1);
+        expect(reopened.countUserTurns("c", "missing")).toBeNull();
+    });
+
     it("loads saved lore overrides and removes current overrides when the checkpoint had none", () => {
         const { store } = fileStore();
         seed(store);
