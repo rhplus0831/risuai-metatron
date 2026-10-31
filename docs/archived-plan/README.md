@@ -407,7 +407,7 @@ slices: CC1 Checkpoint tables and store (`b8b75f2e6`); CC2 Snapshots, restore, a
 takes about 110–170 ms synchronously when it saves and about 30 ms when nothing needs saving.
 Still open: one browser check of the Checkpoints dialog's auto-policy row against the real policy
 routes (CC5 was checked with an adapter stand-in before CC4 landed); Firefox, Safari, and mobile
-layouts (CC5). Client checkpoint rules are in `persistence.md` (CC6); the restore floor's
+layouts (CC5). Client checkpoint rules are in [chat store](../structure/chat-store.md#chat-checkpoints) (CC6); the restore floor's
 `fmIndex` edge and the unreported order-conflict discard stay as project memories.
 
 Small Fixes (independent small defects left by finished plans and the fork research) landed all
@@ -712,7 +712,7 @@ becomes refused work and a draft at the next boot (7); `llmSecrets` merges its r
 as one unit, both sides reordering a collection conflicts, and a merged empty required collection
 conflicts (11). Q3 did not hold as planned: headless Chrome 156 restored the page from the
 back/forward cache while it held its journal owner lock (`pageshow.persisted`, `notRestoredReasons:
-null`; a persistence Gotcha), and pending writes across such a cached return were not driven.
+null`; a draft recovery Gotcha), and pending writes across such a cached return were not driven.
 Findings outside the plan went to `docs/research/found-issues.md` (Save journal and recovery). Still
 open: the device checks (an Android PWA killed from the task switcher, the iOS Home Screen app,
 Safari including the bfcache return, Firefox), the recovery dialog at phone width, and the

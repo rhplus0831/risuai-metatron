@@ -303,11 +303,11 @@ Languages (`src/lang/`):
     `settings.presets`/`modules`/`plugins`/`pluginStorage`;
   - `activePreset.<field>`: the selected prompt preset under its own field names (`name`, `image`, and
     `PROMPT_PRESET_FIELDS`: `NAISettings`, `reasonEffort`, `regex`, ...); `activeModelPreset.<field>`: the selected
-    model preset (`name`, `MODEL_PRESET_FIELDS`). Both with the selection rules of `persistence.md` ("The selected
-    preset and persona"): a read resolves the selection (the first preset when it names none) and a missing value reads
-    as a fresh copy of its default, so a change inside that copy saves nothing; a write goes to the preset selected now
-    or is dropped. `activePersona.<field>` likewise (`name`, `icon`, `note`, `personaPrompt`, `largePortrait`). Both
-    follow the selection: a handler that awaits captures `activePreset.id` first, and
+    model preset (`name`, `MODEL_PRESET_FIELDS`). Both with the [selection rules](persistence.md#settings-records): a
+    read resolves the selection (the first preset when it names none) and a missing value reads as a fresh copy of its
+    default, so a change inside that copy saves nothing; a write goes to the preset selected now or is dropped.
+    `activePersona.<field>` likewise (`name`, `icon`, `note`, `personaPrompt`, `largePortrait`). Both follow the
+    selection: a handler that awaits captures `activePreset.id` first, and
     `currentPresetRecord()`/`currentPersonaRecord()` return the record itself (or `undefined`);
   - `selectedLoreBookPage()` with `selectLoreBookPage` (the page this client shows),
     `readSettingsRoot`/`writeSettingsRoot` for a root name (the registry, `NullableTextColorToggle`'s dynamic field).

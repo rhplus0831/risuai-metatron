@@ -4,8 +4,8 @@ import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resource
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Per `docs/structure/persistence.md` (save loop steps 2, 3, 5, and 9), a held character or
-// `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch is
+// Per `docs/structure/resource-sync.md` ("Serialization", "Record patches", "Record merge", "Live updates"),
+// a held character or `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch is
 // applied from the change feed without a read (`applyModulesPatch`), under the real boot, the real
 // save loop, the real mutation modules, and the real server store with its normalizers and change
 // feed (`storeBackedServer.ts`; every commit is handed to `noteRemoteChanges` as the live-update
@@ -937,7 +937,7 @@ describe("modules item patches another tab committed", () => {
         // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
         expect(reads()).toBe(0);
     });
-    // `mergeItemCollection` (persistence.md Save step 5): an item this tab added goes over another tab's
+    // `mergeItemCollection` (`resource-sync.md` "Record merge"): an item this tab added goes over another tab's
     // list; the feed patch still waits behind the unsent add, and the conflict's recovery rebuilds the
     // server's record from it and merges.
     it("rebases an unsent module add over another tab's rename of a different module: both changes kept, the retry on the server's revision, no discard, no notice, no read, no echo; the added module is then patched like any other", async () => {

@@ -31,7 +31,7 @@ reads the draft first and the hand-off only when there is none, and a placed or 
 is deleted in the transaction that writes the draft. JR1: a landed send drops its ids from a draft
 retyped with the same text instead of deleting it. A reload before the page's own settlement still
 deletes that draft, because it cannot be told from the send's text placed back after a failure;
-the persistence guide's Known Hazards records it. JR3: the split-commit test runs an ordinary save
+the draft recovery guide's Known Hazards records it. JR3: the split-commit test runs an ordinary save
 cycle while the journal commit is held and fails with the collector's guard removed. An
 adversarial GPT-6.1-Sol review of the first version found that a file queued during a send kept
 an already placed hand-off alive (it came back after the composer was cleared) and that the row

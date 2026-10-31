@@ -348,9 +348,9 @@ MCP:
     the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values (throws on BigInt). The top level
     holds the non-`allowedDbKeys` properties written through `setDatabase`/`setDatabaseLite`.
   - Every plugin shares the one record. The storage writes resolve when queued, not when saved. A conflict with another
-    tab's or device's write is merged key by key (`persistence.md` Save step 5): writes of different keys both stay; the
-    same key written to two values discards this tab's unsaved values with the reload notice, and `onStorageDiscarded`
-    tells every listening plugin which keys lost a value.
+    tab's or device's write is [merged key by key](resource-sync.md#record-merge): writes of different keys both stay;
+    the same key written to two values discards this tab's unsaved values with the reload notice, and
+    `onStorageDiscarded` tells every listening plugin which keys lost a value.
   - `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved too, under the reserved `_safeLocalPluginStorage`
     sub-object of `pluginCustomStorage` (legacy browser-local values are imported at boot). Values must be plain JSON
     (`isJsonValue`); anything else throws `TypeError` and changes nothing. `setItem(key, undefined)` stores `null`. Any
@@ -595,7 +595,7 @@ MCP:
   id first and await `ensureChatLoaded`. The setters (`setChar`/`setCharacter`, `setCharacterToIndex`,
   `setDatabase`/`setDatabaseLite` with `characters`) capture their targets, pin and load the chats, then apply
   synchronously as before; they now return Promises (the bridge always awaited them).
-- Plugins hand back whole objects, but chats are saved as changes (`persistence.md`).
+- Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
   `applyPluginCharacter`/`applyPluginCharacters` (`v3.svelte.ts`) write a character's own fields and pass its `chats` to
   `reconcileCharacterChats`: a chat with a known id is diffed against the chat as it is at the call and applied
   (`applyChatResult`; its stale-copy overwrite is under Issues), a chat without an id or with a new one is created, a

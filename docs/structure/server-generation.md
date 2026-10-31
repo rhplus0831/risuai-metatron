@@ -331,7 +331,7 @@ status carried by a failed WebLLM request.
   one whole resource read of the job chat, even while streaming, fenced on the callback, epoch, chat owner and
   incarnation, and job metadata, and installs it with the job's newest held `streaming` list.
 - Normal hydration admission still protects local work and the floor; the callback runs only when the client holds every
-  receipt or a newer revision ([persistence](persistence.md)).
+  receipt or a newer revision ([chat store](chat-store.md#callback-hydration)).
 
 ## State
 
@@ -417,7 +417,7 @@ status carried by a failed WebLLM request.
 - Change generation jobs: `shared/jobs.ts` (the contract), `server/src/jobs/generationJobs.ts` (the retained events an
   attach replays: the job chat, the sent records, the `preset`, the running job's `stage`, the current reply, the
   terminal), `server/src/routes/generations.ts`, the client transport `src/ts/network/generationJobs.ts`, and the client
-  primitives (`applyServerGeneration`, `hydrateChat`, `applyHydration`, `persistence.md`).
+  primitives (`applyServerGeneration`, `hydrateChat`, `applyHydration`, `chat-store.md`).
 
 ## Tests
 

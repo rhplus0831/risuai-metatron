@@ -5,8 +5,8 @@
 - Owns the server side of the resources: the SQLite resource store, chat tables, resource kinds and normalization, chat
   checkpoints, snapshots, version-2 and upstream backups, the module, CharX, and Realm import transfers, and their
   routes.
-- Persisted shapes, revisions, and chat mutation contracts belong to [persistence](persistence.md); the backup UI and
-  the client's archive reader to [backup-sync-hub](backup-sync-hub.md).
+- Shapes and revisions belong to [persistence](persistence.md), chat writes to [chat-store](chat-store.md); the backup
+  UI and the client's archive reader to [backup-sync-hub](backup-sync-hub.md).
 - Neighbors: [self-host server](self-host-server.md) owns the process, the middleware order, request bodies, limiters,
   auth, asset storage, and the `save/` map; [server generation and live channels](server-generation.md) owns the jobs
   and the live-update feed this store publishes to.
@@ -175,7 +175,7 @@ routes cap their bodies at 4 KiB.
   carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`,
   `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store
   read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none).
-- The tab replaces the chat's feed locks with it ([persistence](persistence.md) Save step 9); a client must treat the
+- The tab replaces the chat's feed locks with it ([feed locks](resource-sync.md#feed-locks)); a client must treat the
   field as optional.
 
 ### Read budget
@@ -216,9 +216,9 @@ Ordinary send, continue, reroll, and group jobs write chat activity without chan
 revision; explicit character effects (memory enable, triggers, Lua setters) still write it. Streamed continue refreshes
 the continued message's time in its existing final write; non-streamed continue sets its time when writing the reply.
 Preview and previewPrompt change neither activity nor character revision. The stored `lastInteraction` remains a frozen
-legacy fallback; the client derives last-chatted ordering from chats ([persistence](persistence.md)). Upstream export
-keeps its independent cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but leave absence
-as absence (upstream reads it as now).
+legacy fallback; the client derives last-chatted ordering from chats ([chat store](chat-store.md#last-chatted)).
+Upstream export keeps its independent cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but
+leave absence as absence (upstream reads it as now).
 
 ### Chat writes and checkpoints
 
@@ -415,13 +415,14 @@ filesystems ([Limitations](#limitations)). Request history, the job receipts, an
   [token rule](server-generation.md#invariants), and `onChatInvalidated` has one production listener,
   `memoryTasks.invalidate` (`app.ts`). The transform loader does not subscribe: `prompt/displayScope.ts` keys its
   transcript cache by `chatSourceGeneration`.
-- [Persistence](persistence.md) and [backup-sync-hub](backup-sync-hub.md) hold the client side.
+- [Resource sync](resource-sync.md) and [backup-sync-hub](backup-sync-hub.md) hold the client side.
 
 ## Invariants
 
 - Mutations carry the current resource epoch; stale epochs fail without writing. Resource revisions, chat groups,
-  restore floors, generation write fences, and optimistic recovery are detailed in [persistence](persistence.md). The
-  resource store publishes a change only after commit ([Publication budget](server-generation.md#publication-budget)).
+  restore floors, generation write fences, and optimistic recovery are detailed in
+  [chat store](chat-store.md#restore-floor). The resource store publishes a change only after commit
+  ([Publication budget](server-generation.md#publication-budget)).
 - Restore and import install under maintenance, after a safety snapshot, with reads open. The store replaces its
   resource state atomically, in one transaction: a rollback leaves rows, epoch, write count, memos, and the feed as they
   were, and a commit makes every earlier token stale and publishes one `epoch` event.

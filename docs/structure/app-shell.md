@@ -8,9 +8,9 @@
   `src/App.svelte`,
   `src/ts/{bootstrap,safeBoot,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex,keepAliveAudio}.ts`,
   `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
-- Not here: DB shape and migrations → `persistence.md`. The save loop → [persistence](persistence.md); `globalFetch` →
-  [global-api](global-api.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route fallback
-  (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers →
+- Not here: DB shape and migrations → `persistence.md`. The save loop → [save cycle](resource-sync.md#save-cycle);
+  `globalFetch` → [global-api](global-api.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route
+  fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers →
   `settings-i18n.md`.
 
 ## Files
@@ -49,9 +49,10 @@
   - `loadData`: reads through `loadBootSnapshot` (`readBoot` with an IndexedDB cache and a plain `readKinds` fallback),
     then installs server records, applies first-boot defaults, awaits durable record, chat, and order recovery, runs
     maintenance and presentation setup, starts resource sync, imports browser-local data, loads plugins, sets
-    `loadedStore = true`, then starts services. Cache rules and tests belong to [persistence](persistence.md), Load.
+    `loadedStore = true`, then starts services. Cache rules and tests belong to
+    [boot cache](resource-sync.md#boot-cache).
   - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see
-    `persistence.md`, Load); no whole-database object is built.
+    [boot load](resource-sync.md#boot-load)); no whole-database object is built.
   - `applyFirstBootDefaults`: on a store's first boot (`settings.ui.didFirstSetup` unset) the UI language follows the
     browser's when the UI has it, then the flag is set. There is no first-run wizard: the app opens on the home screen,
     and every other setting keeps the server's default until the settings pages change it.
@@ -126,7 +127,7 @@ Boot:
    `App` shows the loading branch while `$loadedStore` is false.
 3. `bootstrap.ts:loadData` first calls `beginSafeBoot()` (the `?safe` query, before anything navigates; Safe boot,
    below), then reads through `loadBootSnapshot`: `readBoot` claims the IndexedDB boot cache, with `readKinds` as
-   fallback. See [persistence](persistence.md), Load, for cache behavior and fallback rules.
+   fallback. See [cache behavior and fallback rules](resource-sync.md#boot-cache).
    `seedResources`/`seedChats`/`seedInlays` capture the returned snapshot before installation, and
    `seedPluginPermissions` puts the boot answer's `pluginPermissions` record (its grants and revision; empty at no
    revision when absent) into the permission store, so the boot makes no second permissions read, then `loadSelection`,
@@ -149,10 +150,11 @@ Boot:
       `updateHeightMode`, `updateErrorHandling`, `updateGuisize`.
    3. `startResourceSync()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches
       whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`), and
-      after another writer's `characterOrder` it queues the add-only order repair (`queueRemoteCharOrderRepair`,
-      `persistence.md` Save step 9). Then `characterURLImport` (not awaited): after the start, so a link's or share's
-      module import waits for its save's acknowledgement (`addImportedModule`,
-      [characters and modules](characters-modules.md)); before the router, which writes URLs without a query or hash.
+      after another writer's `characterOrder` it queues the add-only
+      [order repair](persistence.md#character-order-repair) (`queueRemoteCharOrderRepair`). Then `characterURLImport`
+      (not awaited): after the start, so a link's or share's module import waits for its save's acknowledgement
+      (`addImportedModule`, [characters](characters-modules.md)); before the router, which writes URLs without a query
+      or hash.
    4. `importBrowserLocalData` (moves old browser-only data to the server; its legacy permission migration reads the
       grants again after its merge), install remote-record owners, start the event feed (the first `hello`'s reconcile
       reads the grants again when another writer changed them after the boot read), then `loadPluginsForBoot` (nothing
@@ -178,7 +180,7 @@ field changes.
   as none). `markSafeBootContentStage` reads it and writes `count + 1` just before the theme, so a boot that fails
   earlier (an unreachable server, the service worker's reload) does not count.
 - Failure latch: a rejected boot plugin load, the `loadData` catch, or a plugin this boot started whose script threw or
-  did not run (`SandboxHost.startup` is `failed`, [plugins-mcp](plugins-mcp.md)) fails the attempt; nothing clears it in
+  did not run (`SandboxHost.startup` is `failed`, [plugins](plugins-mcp.md)) fails the attempt; nothing clears it in
   this page load. A guest unloaded before it reported (a toggle, a reload) follows its replacement after the
   `pluginReload` chain finishes, repeatedly until it reports or the settle window ends. No replacement counts as started
   only when that name is no longer an enabled API 3.0 plugin; otherwise it fails. Reloads of guests that already
@@ -192,8 +194,8 @@ field changes.
   user content and did not settle (killed, failed, or reloaded within the window) make the third safe; a safe boot that
   settles clears the record, so the next reload is normal.
 - Effects, this page load only: `plugins` off → `loadPlugins` loads nothing and registers no remote listener, so the
-  deferred plugin reload never runs and the plugin settings save without loading ([plugins-mcp](plugins-mcp.md)); `css`
-  off → `SafeModeStore` set before `updateTextThemeAndCSS` (custom CSS empty) and `Chat.svelte` renders the classic row
+  deferred plugin reload never runs and the plugin settings save without loading ([plugins](plugins-mcp.md)); `css` off
+  → `SafeModeStore` set before `updateTextThemeAndCSS` (custom CSS empty) and `Chat.svelte` renders the classic row
   instead of the `customHTML` theme's GUI HTML while it is set. The `toggleCSS` hotkey still flips `SafeModeStore` both
   ways.
 - Notice: one `alertNormal` dialog (the alert queue) at the content stage when anything is off, naming what is off, why
@@ -303,13 +305,13 @@ All of these live in `src/ts/stores.svelte.ts`.
     transform's applied emotions and its result cache's generation, `cbs-rendering.md`).
   - `ReloadChatPointer`.
 - The message search panel's open state and scope (`messageSearchPanel`, `openMessageSearch`) and the pending jump to a
-  message live in `src/ts/messageSearch.svelte.ts`, not here ([ui-theming](ui-theming.md) `MessageSearch.svelte`): a
-  jump is dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is another
-  one at any flush (so coming back never runs it again) or when its chat closes. Selecting the same chat again keeps it:
+  message live in `src/ts/messageSearch.svelte.ts`, not here ([UI](ui-theming.md) `MessageSearch.svelte`): a jump is
+  dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is another one at
+  any flush (so coming back never runs it again) or when its chat closes. Selecting the same chat again keeps it:
   closing the catalog over that chat makes the router re-apply its URL with `selectChat`, which bumps
   `chatSelectionVersion` without a move. A move away and back inside one flush is not seen.
 - The Checkpoints dialog and its busy state live in `src/ts/checkpoints/chatCheckpoints.svelte.ts`, not here; see
-  [ui-theming](ui-theming.md). Its load blocks global hotkeys until the save, request, and refresh finish.
+  [UI](ui-theming.md). Its load blocks global hotkeys until the save, request, and refresh finish.
 - Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay),
   `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, the
   picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen
@@ -403,7 +405,7 @@ All of these live in `src/ts/stores.svelte.ts`.
   window; `src/ts/bootstrap.safeBoot.test.ts` covers those behaviors through `loadData`, including the content-stage
   order and plugin-start outcomes.
 - Boot cache is tested in `src/ts/storage/tests/bootCache.test.ts` and `src/ts/storage/tests/bootCacheServer.test.ts`;
-  see [persistence](persistence.md), Load, for ownership and cache behavior.
+  see [ownership and cache behavior](resource-sync.md#boot-cache).
 - `src/ts/hotkey.test.ts`: Ctrl+1–9 preset routing, suppression by picker/dialog layers, Escape layer order, Ctrl+Q
   (`quickSettings`: the removal notice, the default prevented; `activeHotkeys` hides it from the table),
   `previewRequest` (the `previewChat` body shown; a refused preview shows nothing and clears only its own wait; a busy

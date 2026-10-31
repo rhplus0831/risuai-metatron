@@ -27,8 +27,8 @@
   - `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`, `src/lib/Setting/Pages/ApiKeysSettings.svelte`,
     `src/lib/UI/GUI/CredentialSelect.svelte`
 - Not here:
-  - The `credentials` collection, `llmSecrets.credentials`, and their save path → `persistence.md` (the write-only
-    record: `server-resources.md`).
+  - The `credentials` collection, `llmSecrets.credentials` → `persistence.md` (the write-only record:
+    `server-resources.md`); [save path](resource-sync.md#credential-writes).
   - Transport (`globalFetch`/`fetchNative`) → `global-api.md`.
   - MCP tool definitions → `plugins-mcp.md`.
   - Prompt assembly → `chat-pipeline.md`.
@@ -125,7 +125,7 @@
   captures the chat/preset/persona and tokenizer scope before awaiting the resource flush, then posts serializable
   request args and tool descriptors. It consumes result and stream events, handles log/inlay/tool records, and answers
   MCP/CBS callbacks; cancelling the response aborts the request, and a stream without a terminal is an error. Only a
-  plugin callback carries its `channelCall` parentage (see [plugins and MCP](plugins-mcp.md)).
+  plugin callback carries its `channelCall` parentage (see [plugins](plugins-mcp.md)).
 - The provider adapters exist only on the server (`server/src/llm/`); the tab has no copy. `process/stringlize.ts` stays
   (`unstringlizeChat` for the tab's plugin provider path).
 - `server/src/llm/request.ts` `requestChatDataMain(arg, mode, ctx)`: the server resolves the shared slot/profile, builds
@@ -156,7 +156,7 @@
   - `requests.ts` `createLlmRequests`: owns request admission and `runInJob`, which carries the job's frozen settings,
     tokenizer scope, tools, callbacks, and abort signal into a request. Its `strongBan` token cache is keyed by
     tokenizer identity. Request history and observer details are in [diagnostics](diagnostics.md) and
-    [self-host server](self-host-server.md).
+    [server](self-host-server.md).
   - `outer.ts` `requestChatDataOuter(arg, mode, deps)`: the client's outer `requestChatData` loop for a job (retries
     with `antiServerOverloads`, `escape`, the plugin replacers through the job's channel, the `request`-trigger slot,
     `banCharacterset`). Charset rejections count against `requestRetrys` and end with a failure when exhausted. The loop
@@ -241,7 +241,7 @@
 - `src/ts/tokenCountField.ts` `createTokenCountField`: reusable UI count lifecycle. The first input runs immediately or
   through a caller-provided scheduler; later inputs wait 400 ms by default, abort superseded work, ignore late results,
   and keep the last applied value after failure. It runs the count untracked so the caller's input is the reactive
-  dependency. Editor call sites and component behavior are indexed in [UI theming](ui-theming.md).
+  dependency. Editor call sites and component behavior are indexed in [UI](ui-theming.md).
 - `CustomModelsSettings.svelte`: edits `db.customModels` entries
   `{id:'xcustom:::uuid', internalId, url, format, tokenizer, name, params, flags}`: definitions with no key; a profile
   that uses one picks the key.
@@ -261,10 +261,10 @@
   `Model/ProviderDefaultKeys.svelte` (each provider's flat default key for the models the selected model preset's slots
   use, and the Vertex default key's client email and project id; the OpenAI and Google keys are also listed while the
   image provider is DALL-E or Imagen, or when a status link asked for them, which opens the accordion on them: the only
-  place that edits them, see [settings-i18n](settings-i18n.md)), the named keys (name, type, the write-only value
-  through `SecretInput` on `{ kind: "entry", field: "credentials", id }`, the Vertex client email and project id), Add
-  key, a delete confirmed with `credentialsUsing`, and every profile binding with a missing key marked and a "Use
-  default key" action.
+  place that edits them, see [settings](settings-i18n.md)), the named keys (name, type, the write-only value through
+  `SecretInput` on `{ kind: "entry", field: "credentials", id }`, the Vertex client email and project id), Add key, a
+  delete confirmed with `credentialsUsing`, and every profile binding with a missing key marked and a "Use default key"
+  action.
 
 ## Flows
 

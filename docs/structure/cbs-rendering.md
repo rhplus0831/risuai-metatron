@@ -134,12 +134,12 @@
   has neither unacknowledged work nor a locked message, then drains each registration once. `Chat.svelte` disposes
   registrations on unmount or a chat/message change and bumps `chatBodyRevision` for the refresh, through the caches.
 - `parser/chatVar.svelte.ts`: variable accessors.
-  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A write merges that one entry
-    (`mergeChatMeta`, a `meta` op's `merge`; `persistence.md`), so the other variables keep what another tab or a job
-    set meanwhile (the same variable is last writer wins). A parse given `chatRef` (`risuChatParser(text, { chatRef })`,
-    set by the send pipeline, triggers, and Lua) reads and writes that chat's variables and messages
-    (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `shared/cbs/registry.ts`); without it, the selected
-    character's selected chat.
+  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A write
+    [merges that one entry](chat-store.md#map-merges) (`mergeChatMeta`, a `meta` op's `merge`), so the other variables
+    keep what another tab or a job set meanwhile (the same variable is last writer wins). A parse given `chatRef`
+    (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and writes that chat's
+    variables and messages (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `shared/cbs/registry.ts`);
+    without it, the selected character's selected chat.
   - Globals: `getGlobalChatVar`/`getGlobalChatVarOf` use `shared/prompt/toggles.ts:resolveGlobalChatVar`: chat override,
     legacy global, then a defined toggle's kind default (`"0"` for checkbox/select, `""` for text/textarea), else
     `"null"`. Empty text/textarea values count as set. Definitions come from the ref/scope's preset, enabled modules,
@@ -452,7 +452,7 @@ Display:
 - `runLLMModel`, `postPluginChannelMessage` and `loadPlugins` are unguarded: LLM transport can persist returned inlays,
   channel messages do not propagate the context, and newly loaded plugin instances do not inherit it. General networking
   and consent bookkeeping also remain available. This boundary governs host data setters, not every possible side
-  effect. Decision: the [read-only continuation exclusions](../../plugins.md#read-only-transform-continuations).
+  effect. Decision: the [read-only exclusions](../../plugins.md#read-only-transform-continuations).
 - The transform's invalidation guarantee does not cover inlay records or file existence read by Lua
   `getCharacterImage`/`getPersonaImage`; those inputs are not keyed.
 - The tab's plugin handlers are opaque: their output is cached under the server key and handler-set identity, refreshed

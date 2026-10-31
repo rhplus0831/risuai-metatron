@@ -15,7 +15,7 @@
   - `src/lib/UI/Realm/*`
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
 - Not here:
-  - The save adapter and resources → `persistence.md`.
+  - The save adapter → `resource-sync.md`; resources → `persistence.md`.
   - The archive format, snapshots, and the backup routes → `server-resources.md`.
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
   - Node `/hub-proxy` → `self-host-server.md`.
@@ -59,6 +59,13 @@
   like the request logs popup): the counts, the converted and left-out lists (each code one `language.upstreamImport`
   line with its count and example names), the missing assets by owner and role (the first 50; non-`.png` ones marked as
   never backed up by RisuAI), the full-replace warning, Cancel and Restore.
+- `shared/upstreamBackup.ts` `UpstreamImportReport`: `counts` (settings records, characters without groups, groups,
+  chats, messages, modules, plugins); `converted`/`excluded` entries `{ code, count, examples }` with at most
+  `UPSTREAM_REPORT_EXAMPLE_LIMIT` names (except `savekv-namespace`, which lists every distinct namespace) and never a
+  value, each code counting in its own unit; and `missingAssets` (`UpstreamMissingAsset`: a referenced key the archive
+  lacks, its first user and role, and `expected` for a non-`.png` key upstream never backs up).
+- The stable codes are `UPSTREAM_CONVERTED_CODES`/`UPSTREAM_EXCLUDED_CODES`, which the client maps to `language.*`. Also
+  `UpstreamImportSelection`, `UpstreamAssetReference`, `addUpstreamReportEntry`.
 - `globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`): lists the server
   snapshots (taken every 10 minutes while data changes, 20 kept), restores the chosen one, reloads. The server validates
   the snapshot off its serving thread before anything closes, and a second restore waits for the first, then answers 412
@@ -143,6 +150,121 @@
   while 4 imports wait is `realmImportTooManyWaiting`). A legacy JSON answer is passed through and imported in hub mode
   as before (its portrait and hub-mode assets fetched through `/hub-proxy`).
 
+### Upstream database import
+
+`.bin` conversion, a writer of resources: `server/src/data/upstream/importDatabase.ts` `convertUpstreamDatabase`.
+
+- It turns the decoded upstream flat `Database` into `{ kind, id, data }` records, the selection to apply
+  (`UpstreamImportSelection`), and the report. Pure and synchronous; the input is not mutated.
+- Each record's data is its kind's normalizer output for the stored form of the converted input, checked with the
+  store's `serialize`, so it is a fixed point the staged store accepts. Section fields and list entries the kind refuses
+  are dropped individually; a record it still refuses becomes the fresh-boot value. These repairs are reported as
+  `invalid-setting`, or `invalid-custom-model` for rejected custom model definitions.
+- It runs the root's upstream load migrations that metatron's normalizers do not apply (the `formatversion` < 5
+  `loreBookToken` floor, the old main prompts, the Ollama cloud fields, `antiClaudeOverload`,
+  `largeChatPerformanceMode`).
+- Each upstream preset's effective settings are upstream `setPreset` on the root (fields a preset lacks keep the root's
+  value or upstream's fixed default; `openAIKey`, the NanoGPT and Ollama options, and `customTokenizer` are global), and
+  the selected preset (`botPresetsId`) takes every field the root holds.
+- Each preset becomes a prompt preset (`maxContext` seeds an unset `maxContextOverrideSize`, as `importPreset` does) and
+  a model preset of the same name whose main, sub, and set auxiliary slots name model profiles shared across presets by
+  content (sorted-key JSON without `id` and `name`, so `maxContext` and `credentialId` count), next to the materialized
+  `default` profile.
+- Each distinct `proxyKey` becomes a `custom` named key bound by the `reverse_proxy` profiles of the presets that hold
+  it (that model reads no flat key), a preset `openAIKey` other than the root's an unbound `openai` named key (upstream
+  reads only the root's), and a `customModels[].key` a `custom` named key bound by the profiles of the first surviving
+  `xcustom:::` definition with that id.
+- The root persona fields go into the persona at `selectedPersona`; upstream's numeric
+  `translatorPresetId`/`hypaV3PresetId` become the selected item's id; `blockedRealmCreators` is mapped to
+  `{ id, name }` entries before serialization, reporting an invalid list or entry as `invalid-setting` (by index), while
+  name fallbacks and duplicate removal are silent repairs.
+- Root fields in no `shared/sections.ts` list are reported (`unknown-setting`), and fields of removed features only when
+  they hold a value (`risu-account`, `loadouts`, `removed-feature`).
+
+### Upstream library import
+
+`.bin` conversion of the library: `importCharacters.ts`, `importCollections.ts`, `assetReferences.ts` beside the
+converter.
+
+- The converter also takes the archive's cold-storage payloads (`cold`: `readColdEntry` results by key) and asset keys
+  (`assetKeys`) and returns `characters` (`characters` records) and `chats` (one ready create `ChatGroup` per chat,
+  every message `chatId` valid and unique).
+- The staged-import writer puts the singleton `resources` at the staged store's current revision or creates the ones it
+  lacks (`modules`, `plugins`, `pluginStorage`), then creates each character (which creates its empty chat order), then
+  sends the chats through `applyChanges` in batches in array order, so each chat order is upstream's.
+- Cold storage is folded on import only: a stub character (`coldstorage`) becomes its payload's `character` when the
+  `chaId` matches and it converts, a chat whose first message is the `U+EF01 COLDSTORAGE U+EF01` pointer takes the
+  payload's messages and memory, and `pluginCustomStorage._coldplugin` values and `_coldpluginIndex` entries go into
+  `_pluginStorage` (where metatron's v3 storage lives; index shape, `s`/`l` entries, and inline > index > `_coldplugin`
+  precedence: [Invariants](#invariants)).
+- A pointer without a usable payload keeps the stub (name, image, an empty chat) or the chat without messages and is
+  reported (`cold-missing`).
+- Characters follow the client's creation steps (`prepareNewCharacter`, ported) and the `characters` normalizer;
+  `§temp`/`§playground` are dropped, a missing, invalid, or repeated `chaId` is replaced (an invalid one held once is
+  rewritten in group members, message speakers, and `characterOrder`), group members that name no kept character are
+  removed with their talk and active entries.
+- Chats are bound to the converted selection (`bindedPersona` kept when it names a converted persona, no
+  `bindingReview`), `useLocallySetGlobalVariables` is dropped and `GLGlobalVariables` kept except its `""` `toggle_*`
+  values (upstream reads a chat value first, with or without the flag, and ignores `""`); a message, chat, character,
+  module, or plugin the store would refuse is left out or repaired on its own and reported.
+- `characterOrder` keeps only kept characters' ids, `enabledModules` only entries naming a kept module's id or
+  namespace. Upstream's top-level plugin storage values (its v3 storage before cold storage) stay at the top level and,
+  in a file without `_pluginStorage`, are also copied into it.
+- Asset keys the converted records reference and the archive lacks go to `missingAssets` (`assetReferences.ts`
+  `collectAssetReferences` places the records in upstream's shape and runs the export's walker, so both directions
+  report the same fields and roles); chats showing inlays, which upstream keeps outside its backups, are counted.
+
+### Upstream database export
+
+`.bin` export, a reader of every kind: `server/src/data/upstream/exportDatabase.ts`
+`buildUpstreamDatabase(rows, chats, options)`.
+
+- It projects the rows of a validated store copy (`readSnapshotFile` of a `backupTo` file in the export worker,
+  `exportStage.ts`: the resource rows and the chat tables) to an upstream flat `Database` that `encodeUpstreamDatabase`
+  writes as `database.risudat`, with the referenced asset keys (`assetReferences.ts` `collectUpstreamAssetReferences`,
+  the import's walker too; `hasAsset` moves absent ones to the report's `missing`) and the report.
+- The report is `shared/upstreamExportReport.ts` `UpstreamExportReport`: counts, `converted`/`excluded` entries of the
+  import report's shape, `missing`, `UpstreamAssetReference`s. Pure and synchronous; the rows are parsed, so the result
+  shares nothing with them.
+- The settings steps are the job projection's (`server/src/data/databaseProjection.ts`: `projectSections`,
+  `projectCollections`, `forwardSelectedPreset`, `forwardPersonaRoots`, `characterShell`, also used by `loadJobScope`).
+- One upstream preset per prompt preset, in stored order, each with the chosen model preset's slot model ids and its
+  main profile's options (differing sub/aux profile options reported as `slot-options-flattened`, excluding root-only
+  options and the separately projected `maxContext`; the NanoGPT, Ollama, and tokenizer options only at the root, as
+  upstream reads them), `maxContext` from the prompt preset's override or the profile, no `id`, `archived`, or override
+  fields.
+- The chosen prompt preset, model preset, and persona fill the root and the selection indexes (a missing id falls back
+  to the first record, reported).
+- The translator presets as upstream's `{ name, prompt, maxResponse }` from the first enabled step, and both translator
+  and HypaV3 selections as list positions. HypaV3 presets without `budgetMode` and the three token amounts (upstream has
+  no token mode), a token-mode one with its amounts as ratios of the exported root `maxContext` (rounded to 2 decimals
+  and kept in the sliders' ranges: memory in [0, 1], extra summarization in [0, 1 − memory], headroom in [0, 0.99]; its
+  stored ratios when that `maxContext` is not a positive number).
+- Metatron-only settings, character fields, chat fields (`loreOverrides` among them: as upstream chat lore they would
+  add entries instead of replacing them), and message translations are stripped (a setting reported only when it differs
+  from its fresh-boot value).
+- A chat with toggle values gets `useLocallySetGlobalVariables` (upstream reads the chat's toggles first whatever the
+  flag; the flag keeps its writes in the chat), `lastDate` at least its newest message time, and a character without
+  chats upstream's empty `Chat 1` (upstream reads `chats[chatPage]` unguarded; the import adds the same chat).
+- A character's numeric frozen legacy `lastInteraction` is raised to at least its newest chat `lastDate` (the export
+  keeps this rule because upstream's cold storage, on by default without plugins, moves a character or chat idle for ten
+  days; an absent field stays absent, which upstream reads as now), and a finite positive `trashTime` older than three
+  days is refreshed (upstream's boot deletes characters trashed three days ago).
+- Shapes upstream's boot walks unchecked are repaired in the copy (folder `data` lists, lorebook entry lists and their
+  `content`). `pluginCustomStorage` loses `_pluginStorage` and `_safeLocalPluginStorage` (upstream keeps them on the
+  device) and inlays are not exported, both counted. `formatversion: 5` comes last.
+- Credentials without `includeSecrets`: every `llmSecrets` field is the client mirror's `""`, and the auxiliary keys of
+  the `secrets` section, characters' `oaiTTSConfig.apiKey`, and the MCP OAuth secrets are cleared too, with
+  `vertexAccessTokenExpires` reset to 0.
+- With `includeSecrets`: the stored keys, plus each named key a chosen slot binds written into the one field upstream
+  reads for that model (main → sub → enabled aux slots, default-backed slots reserving their fields before later named
+  bindings, `proxyKey` for the reverse proxy, `customModels[].key` for a custom model: the import's inverse). A placed
+  Vertex binding also supplies `google.projectId` when present and clears the cached token and expiry, while a binding
+  without a client email is skipped.
+- Every stored named key no field holds is reported as `named-keys`, including displaced bindings and keys without
+  metadata (named by id). Only those credential fields are controlled: a key typed into free text (a message, a
+  lorebook, plugin storage) is exported as it is.
+
 ## State
 
 - `ui.realmTermsAccepted` ([persistence](persistence.md)): the accepted RisuRealm terms version, `""` when none.
@@ -207,10 +329,11 @@
 - Change the archive format: the server side (see `server-resources.md`) and `tryReadManifest` here. Add a round-trip
   test.
 - Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts`
-  (`persistence.md`; metatron-only chat fields such as `loreOverrides` are in its `METATRON_CHAT_FIELDS` strip list); a
-  new report code goes into `shared/upstreamExportReport.ts` and `language.upstreamExport` (`en.ts`, `ko.ts`). The
-  record layout (assets by basename, then `database.risudat`) is upstream's restore format: keep
-  `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import reads every export back.
+  ([Upstream database export](#upstream-database-export); metatron-only chat fields such as `loreOverrides` are in its
+  `METATRON_CHAT_FIELDS` strip list); a new report code goes into `shared/upstreamExportReport.ts` and
+  `language.upstreamExport` (`en.ts`, `ko.ts`). The record layout (assets by basename, then `database.risudat`) is
+  upstream's restore format: keep `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import
+  reads every export back.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node
   (`/hub-proxy`).
 

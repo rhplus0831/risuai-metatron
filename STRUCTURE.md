@@ -89,7 +89,7 @@ Data and persistence:
   older chat revision while their targets exist. Preserve optimistic message ids and append collision refusal.
   Add/remove/replace characters through `characterStore`; a structural write through the character-list wrapper throws.
   External contracts use the validated mutation modules. Save/conflict rules:
-  [persistence](docs/structure/persistence.md).
+  [resource-sync](docs/structure/resource-sync.md).
 - D5. Cards (`.png` `chara`/`ccv3`, `.json`, `.charx`), modules (`.risum`), presets (`.risup`/`.risupreset`), translator
   presets (`.risutl`), and plugin scripts are cross-user formats. Preserve old readers and paired client/server import
   compatibility; format-specific parity rules and intentional refusal differences belong to
@@ -145,7 +145,10 @@ completed plans and retrieval commands.
 | Boot, screen selection, URL/history, stores, flags, hotkeys                              | [app-shell](docs/structure/app-shell.md)                       |
 | Network/proxy transport, assets/thumbnails, notifications, alerts, utility helpers       | [global-api](docs/structure/global-api.md)                     |
 | Request history, checked failures, diagnostics, reports, support shares                  | [diagnostics](docs/structure/diagnostics.md)                   |
-| Persisted fields, records, normalization, save/live sync, chat bindings/checkpoints      | [persistence](docs/structure/persistence.md)                   |
+| Persisted fields, records, settings views, normalization, chat bindings                  | [persistence](docs/structure/persistence.md)                   |
+| Boot load and cache, save loop, conflicts, credential writes, live updates               | [resource-sync](docs/structure/resource-sync.md)               |
+| Chat module, chat writes, job hydration, chat checkpoints, restore floor                 | [chat-store](docs/structure/chat-store.md)                     |
+| Draft journal, composer rows, boot recovery, recovery drafts                             | [draft-recovery](docs/structure/draft-recovery.md)             |
 | Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search | [chat-pipeline](docs/structure/chat-pipeline.md)               |
 | SupaMemory, HypaV2/V3, Hanurai, embeddings                                               | [memory](docs/structure/memory.md)                             |
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                 |
@@ -192,14 +195,22 @@ guide's `Files` section has identifiers. These are starting points: for behavior
 - **scripts-triggers**: `shared/scripts/`, `shared/triggers.ts`, `server/src/{scripts,lua}/`,
   `src/ts/process/{regexFiles,serverCommands}.ts`, `src/lib/SideBars/Scripts/`,
   `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`, `src/etc/docs/regex.cbs`.
-- **persistence**: `src/ts/storage/`, `src/ts/checkpoints/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,
+- **resource-sync**: `src/ts/storage/{resourceSync.svelte,resourceClient,bootCache,recordMerge,readDeadline}.ts`,
+  `src/ts/network/{eventFeed,socketLiveness}.ts`, `loadData` in `src/ts/bootstrap.ts`.
+- **chat-store**:
+  `src/ts/storage/{chatStore.svelte,chatEdits,chatFieldDraft.svelte,localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`,
+  `src/ts/checkpoints/`, the hydration memory in `src/ts/network/jobChannel.ts`.
+- **draft-recovery**: `src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts`,
+  `chatJournal` in `chatStore.svelte.ts`, the journal part of `resourceSync.svelte.ts`.
+- **persistence**: remaining `src/ts/storage/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,
   `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted shapes. Runtime semantics in `shared/` stay with
   their domain guide.
 - **characters-modules**: `src/ts/process/{processzip,modules}.ts`, `shared/{charxImport,moduleImport,rpack}.ts`,
   `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList}.ts`,
   `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`,
   `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/listedPersona.svelte`,
-  `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte`, `src/ts/rpack/`.
+  `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte`, `src/ts/rpack/`,
+  `src/ts/storage/{serverImportClient,moduleImportClient,charxImportClient}.ts`.
 - **media-aux**: `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/translator/`, `shared/translation/`,
   `shared/translatorPresets.ts`, `server/src/translation/`, `src/ts/media/`, `src/ts/voice.ts`, `src/ts/3d/`,
   `src/lib/UI/3DLoader.svelte`, `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`,
@@ -210,10 +221,12 @@ guide's `Files` section has identifiers. These are starting points: for behavior
 - **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
   `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`,
   `src/lib/Others/MonacoEditor.svelte`, `src/etc/airisu.cbs`, `src/etc/docs/`.
-- **backup-sync-hub**: `src/ts/drive/`, `src/ts/realmBlocking.ts`, `src/lib/UI/Realm/`,
-  `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`.
+- **backup-sync-hub**: `src/ts/drive/`, `src/ts/realmBlocking.ts`, `src/ts/storage/realmImportClient.ts`,
+  `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `server/src/data/upstream/`,
+  `shared/{upstreamBackup,upstreamExportReport}.ts`.
 - **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
-  `src/ts/{alert,alertQueue}.ts`, `shared/{localNetwork,notifications}.ts`, remaining `src/ts/network/`,
+  `src/ts/{alert,alertQueue}.ts`, `shared/{assetBatch,localNetwork,notifications}.ts`,
+  `src/ts/storage/{assetClient,assetQueue}.ts`, remaining `src/ts/network/`,
   `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`, `src/lib/Others/{AlertComp,IrisModal}.svelte`.
 - **settings-i18n**: `src/ts/setting/`, `src/ts/settingsMenu.ts`, remaining `src/lib/Setting/`, `src/lang/`,
   `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.

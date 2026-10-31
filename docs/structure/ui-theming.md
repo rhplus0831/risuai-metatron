@@ -256,23 +256,23 @@ Sidebar:
 Others:
 
 - `BookmarkList.svelte`, `ChatList.svelte`, `GithubStars.svelte`, `Help.svelte`, `SavePopupIcon.svelte`.
-- `Others/RecoveryDrafts.svelte`: the recovery dialog over `recoveryDrafts` ([persistence](persistence.md), boot
-  recovery), rendered by `ReloadNotice.svelte` while `recoveryDrafts.isOpen` and opened from the notice's Review button
-  or the Settings → Advanced "Recovered changes" row. A fixed modal (`z-[45]`, under alerts so its `alertConfirm`
-  confirmations show above it) that takes focus, traps Tab, closes on Escape unless busy, and keeps key events from
-  reaching app shortcuts. Each draft shows its name, creation time, and time left before the 48-hour expiry, with Export
-  (JSON), Discard (confirmed), and Apply (confirmed; absent for another epoch's draft and other drafts that cannot
-  apply, disabled while its character or chat generates); Export all downloads every draft. One action runs at a time;
-  Apply reports skipped ops.
+- `Others/RecoveryDrafts.svelte`: the recovery dialog over [`recoveryDrafts`](draft-recovery.md#recovery-drafts),
+  rendered by `ReloadNotice.svelte` while `recoveryDrafts.isOpen` and opened from the notice's Review button or the
+  Settings → Advanced "Recovered changes" row. A fixed modal (`z-[45]`, under alerts so its `alertConfirm` confirmations
+  show above it) that takes focus, traps Tab, closes on Escape unless busy, and keeps key events from reaching app
+  shortcuts. Each draft shows its name, creation time, and time left before the 48-hour expiry, with Export (JSON),
+  Discard (confirmed), and Apply (confirmed; absent for another epoch's draft and other drafts that cannot apply,
+  disabled while its character or chat generates); Export all downloads every draft. One action runs at a time; Apply
+  reports skipped ops.
 - `Others/ChatCheckpointsDialog.svelte`: per-chat checkpoints UI, mounted by `App` beneath alerts and above binding
   dialogs. The checkpoint module owns its store and server operations. Actions capture the chat and row revision before
   prompts; a load holds the modal and blocks hotkeys through save, request, and refresh. See
-  `ChatCheckpointsDialog.test.ts` and [persistence](persistence.md), Chat checkpoints.
+  `ChatCheckpointsDialog.test.ts` and [checkpoints](chat-store.md#chat-checkpoints).
 - `MessageSearch.svelte`: search panel mounted by `App`, opened for one character from the chat list or all characters
   from the catalog. It supports this chat, this character, and all-character scopes; debounces queries, cancels stale
   requests, displays snippets as text, and opens a hit through `openPinnedChat` before requesting the guarded message
   jump. Search state and shared request types belong to [chat-pipeline](chat-pipeline.md); the route is in
-  [server-resources](server-resources.md).
+  [server](server-resources.md).
 - `PopupEditor.svelte`: popup backed by `popUpEditorStore`, editing in Monaco or a plain textarea. A header checkbox
   switches them; `src/ts/gui/popupEditorMode.ts` keeps the choice in this browser's `localStorage` (per device, not
   synced), starts a device without a stored choice on the textarea when its pointer is coarse, and Monaco is imported
@@ -327,7 +327,7 @@ GUI primitives (`src/lib/UI/GUI/*`):
   `IntersectionObserver`, 200px margin) and renders its snippet with it. The loading effect releases its hold on a path
   change or unmount; a reused row waits to be seen again. Unpinned fallback object URLs are revoked after the last hold
   and a short grace period (`global-api.md`). Asset lists preview through it; filtering, paging, live-row indices, and
-  name-cache rules belong to [characters-modules](characters-modules.md).
+  name-cache rules belong to [characters](characters-modules.md).
 - `LazyCharImage`: defers `getCharImage` until its wrapper nears the viewport and restarts the read on a path change; it
   loads immediately without `IntersectionObserver`. Its optional 256/512 `thumb` class requests server thumbnails
   through `getCharImage`; catalog, sidebar, pins, and persona lists use 256, while chat avatars and active
@@ -338,7 +338,7 @@ GUI primitives (`src/lib/UI/GUI/*`):
 
 Editor token counts in `CharConfig`, `ChatNoteEditor`, `LoreBookData`, `PromptSettings`, `PromptPresetSettings` (the
 legacy prompt fields), `PopupEditor`, and `PlaygroundTokenizer` use `createTokenCountField` (as does the `ContextMeter`
-estimate, above); see [llm-requests](llm-requests.md). Each input carries the tokenizer scope (`tokenCountInput` or
+estimate, above); see [LLM](llm-requests.md). Each input carries the tokenizer scope (`tokenCountInput` or
 `tokenScopeKey`), so switching the main model recounts unchanged text: expanded fields compare the expanded text and
 scope, `ChatNoteEditor` compares raw text and scope (its CBS parse stays behind the idle-first scheduling),
 `PopupEditor` reuses its expanded preview, and the playground names its tokenizer. The first count runs on open, later
@@ -450,12 +450,12 @@ Theme and GUI helpers:
   position/streaming fields or display-only `name?: string` and `img?: string | Promise<string>` props; name/image
   updates never reset the `ChatBody` key. Never read every row's text in the structural effect; per-chunk transcript
   JavaScript work must not grow with mounted row count.
-- Chat structure operations go through the chat module (`createChat`, `deleteChat`, `reorderChats`, `setChatMeta` for
-  `folderId`; `persistence.md`) and select with `changeChatTo`/`selectChat`; `chatPage` is derived from the per-tab
-  selected chat id and is never assigned. Components never `bind:` a chat field directly: bind a getter/setter pair that
-  calls the module, or a synced editing copy. A locked message (`isMessageLocked`: generating, or its final write not
-  yet acknowledged) has its edit, delete, and regenerate controls disabled; reroll and chat deletion alert
-  `chatGenerating` while the chat holds a lock.
+- Chat structure operations go through the [chat module](chat-store.md#chat-writes) (`createChat`, `deleteChat`,
+  `reorderChats`, `setChatMeta` for `folderId`) and [select](chat-store.md#selection) with `changeChatTo`/`selectChat`;
+  `chatPage` is derived from the per-tab selected chat id and is never assigned. Components never `bind:` a chat field
+  directly: bind a getter/setter pair that calls the module, or a synced editing copy. A locked message
+  (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and regenerate controls
+  disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
 - HTML boundaries:
   - `ChatBody`, `BackgroundDom`, suggestions, and plugin panels use `{@html}` only on sanitized parser output.
   - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
@@ -465,7 +465,7 @@ Theme and GUI helpers:
   to the entry captured at mount (getter/setter functions that drop a write once the list no longer holds it), never
   `bind:value={list[i]}` in an unkeyed `#each`: Chrome fires `change` on a focused, edited control while removing it,
   and an index binding resolves `list[i]` at that moment. The lorebook and character asset editors follow this
-  ([characters-modules](characters-modules.md) Invariants).
+  ([characters](characters-modules.md) Invariants).
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores,
   `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values,

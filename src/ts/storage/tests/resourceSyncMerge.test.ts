@@ -1097,7 +1097,7 @@ describe("settings sections edited on two tabs", () => {
     });
 });
 
-// `mergeItemCollection` (persistence.md Save step 5): a conflicting item list merges item by item
+// `mergeItemCollection` (`resource-sync.md` "Record merge"): a conflicting item list merges item by item
 // (an item only one side changed, added, or removed takes that side), with no discard and no notice;
 // a one-sided reorder wins, otherwise the server's order, and the other side's additions are
 // appended. An item both sides changed differently (an add under one id with other values, an edit

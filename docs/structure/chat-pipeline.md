@@ -198,7 +198,7 @@ Bare paths are under `src/ts/process/`.
   removes it and sends in the captured chat.
 - A send that brought no reply puts the removed tail back (`rerollHistory.ts` `restoreRerolledReplies`; its comment has
   the conditions). A refusal first withdraws the matching removal while it still owns the end of the save queue; after
-  an ambiguous response that restoration is provisional ([persistence](persistence.md)).
+  an ambiguous response that restoration is provisional ([store](chat-store.md#chat-writes)).
 - Otherwise the tail is written back only once the send settled (`sendChatMain`'s `settled`, from `sendChat`'s `onEnd`,
   false when it threw): it did not run or its job ended, not after an unanswered create or a lost follow, when the job
   may still write. When that cannot be told, it stays removed, with `rerollRepliesNotRestored`.
@@ -275,7 +275,7 @@ stage.
   HypaV3 work during a send: [memory](memory.md).
 - The tab's barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered
   copy, an unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming
-  metadata before running the hook ([persistence](persistence.md)).
+  metadata before running the hook ([store](chat-store.md#callback-hydration)).
 - A live `sequence` event counts one `messages` statistic and installs the part's alternatives
   (`installReplyAlternatives`); it keeps the job followed and its channel open. A `done.sequence.stopped` shows
   `serverJob.sequenceStopped`.
@@ -301,12 +301,12 @@ and replaces attaches.
   work.
 - The whole read carries the chat's lock list, so a feed lock whose release frame was missed is released once the job
   has ended; only a feed frame or `hello` that arrived while the read was out keeps the feed's locks instead
-  ([persistence](persistence.md) Save step 9).
+  ([locks](resource-sync.md#feed-locks)).
 - A lost job may still be writing, so `readChatAgain(ref)` reads the chat when it is viewed (`watchChatVisibility`) and
   for a completion push (`refreshChatAfterPush(ref)`).
 - One chat's recovery reads run one at a time (`readRecoveringChat`). The idle refresh's own read may overlap them; a
   copy that takes while a later idle read is out leaves the stale mark for that read's copy
-  ([persistence](persistence.md), `noteIdleChatRead`).
+  ([store](chat-store.md#job-hydration), `noteIdleChatRead`).
 
 ### Not in `sendChat`
 
@@ -334,8 +334,8 @@ and replaces attaches.
   suggestions follow the selected chat's own work.
 - `followedJobs` (`serverCommands.ts`): job id → chat key. `jobStages` entries leave with it at the follow's end.
 - The tab never mutates the chat in place: `src/ts/storage/chatStore.svelte.ts` holds the chats (`selectedChat()`,
-  `chatList()`), and every write goes through it (see `persistence.md`), addressed by chat and message id. Autosave does
-  not see chats.
+  `chatList()`), and every write goes through it (`chat-store.md`), addressed by chat and message id. Autosave does not
+  see chats.
 - Chats load on demand. The chat screen renders nothing chat-dependent while the selected chat loads
   (`selectedChatLoad()`: a loading state, or the error with a retry).
 - A server job's target chat is pinned and loaded before the job is created (`runServerJob`; `followJobToEnd` for a
@@ -353,9 +353,9 @@ and replaces attaches.
   controls and renders it without the server transform until the lock ends.
   - `applyServerGeneration` sets its chat's `streamingEntry(ref)` on the generation's first stream update with the
     configured `streamingDisplayOptimizationMode`, and that generation's lock release clears only that entry
-    (`persistence.md`).
+    (`chat-store.md`).
   - `Chats.svelte` keeps the streaming row mounted in every mode while it streams and mounts it again when it ends.
-  - The chat module writes the streamed text into the mirror at most once per frame (`persistence.md`), so a streaming
+  - The chat module writes the streamed text into the mirror at most once per frame (`chat-store.md`), so a streaming
     row parses once per frame, not once per chunk.
 - After a job's own by-id write, `refreshChatAfterWrite` (`server/src/jobs/jobScope.ts`) adopts that write's stored
   change ([generation](server-generation.md) "Own chat changes"), so a streaming checkpoint reads no transcript.

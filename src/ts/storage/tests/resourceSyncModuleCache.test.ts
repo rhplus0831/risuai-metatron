@@ -5,8 +5,8 @@ import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // The save loop's module field-text cache (`moduleProjection` and `moduleTexts` in
-// `resourceSync.svelte.ts`, `moduleItemFieldStamp` in `records.svelte.ts`; `docs/structure/persistence.md`
-// save step 2) under the real boot, the real save loop, the real mutation module, and the real server
+// `resourceSync.svelte.ts`, `moduleItemFieldStamp` in `records.svelte.ts`; `docs/structure/resource-sync.md`
+// "Serialization") under the real boot, the real save loop, the real mutation module, and the real server
 // store with its change feed (`storeBackedServer.ts`). The oracle is twofold: the server's record must
 // equal the mirror's after every save, and the development comparison of the cached text with a whole
 // serialization (`console.error`, reported, never repaired) must not fire once, so `console.error` is

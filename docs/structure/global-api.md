@@ -4,7 +4,7 @@
 
 - Owns: `src/ts/globalApi.svelte.ts`, the client I/O facade:
   - asset I/O,
-  - save entry points (the adapter is owned by persistence),
+  - save entry points (the adapter is owned by resource-sync),
   - `globalFetch`/`fetchNative` routing,
   - this tab's in-memory request log,
   - writers,
@@ -14,6 +14,8 @@
   `auxFetch.ts`, the generation job client and channel, the live-update feed), `src/ts/sourcemap.ts`,
   `src/ts/dragTypes.ts`, `src/ts/licenses.ts`, `src/ts/util/inlayTokens.ts`, `src/ts/util/koreanSearch.ts`, and the Iris
   assistant (`src/ts/iris.ts`, `src/lib/Others/IrisModal.svelte`).
+- Also owns the asset transport: `src/ts/storage/assetClient.ts`, `src/ts/storage/assetQueue.ts`,
+  `shared/assetBatch.ts`.
 - Not here:
   - The save format and backends → `persistence.md` (this guide only covers save entry points).
   - Provider request bodies → `llm-requests.md`.
@@ -36,10 +38,10 @@ The transport below retains this tab's in-memory log.
     skipping every item for its key in that call. A failed check, or one with no answer within 20 s, uploads everything;
     `{ signal }` aborts the check, write, and retries and rejects with its reason (`AbortError` for a nullish reason),
     including when all uploads could be skipped. Bulk imports use `saveAssets` (`storage/assetQueue.ts`, see
-    `persistence.md`), which supplies the already-computed digest only for items without custom ids.
+    [queues](#asset-queues)), which supplies the already-computed digest only for items without custom ids.
   - `loadAsset`, `readImage`; `loadAssets(keys, { signal? })` reads a batch in key order over `readAssets`, preserving
     duplicates and returning `null` per missing or empty record. Exporters reach it through `loadAssetsInBatches`
-    (`storage/assetQueue.ts`, [persistence](persistence.md)).
+    (`storage/assetQueue.ts`, [queues](#asset-queues)).
   - `getFileSrc`: with worker use enabled, a reported `directAssets: true` capability, and
     `navigator.serviceWorker.controller` present at the call, immediately resolves `/api/asset/<hex(utf-8 key)>` (`""`
     for an empty key). It reads no bytes, looks up no Cache Storage entry, registers nothing, and creates no shared file
@@ -174,7 +176,7 @@ Other files:
   - `alertNormal`, `alertError`, `alertConfirm`, `alertSelect`, `alertInput`.
   - `alertRealmTerms`: the RisuRealm terms dialog (type `realmTerms`: RisuAI's Terms of Service and Privacy Policy
     links, Accept and Do not Accept); true only for Accept. Enter does not accept it; Escape declines. Its caller is
-    `realmTerms.ts` `ensureRealmTerms` ([backup-sync-hub](backup-sync-hub.md)).
+    `realmTerms.ts` `ensureRealmTerms` ([backups](backup-sync-hub.md)).
   - `alertCardExport`: character export only (V3 or V2). An empty answer (including Escape) returns
     `{ type: "cancel", type2: "" }`, matching the close button's cancel shape; callers ignore the format on
     cancellation.
@@ -213,8 +215,8 @@ Other files:
   dismisses it. The page behind it stays live; a key event on its OK does not leave the panel (an Enter would otherwise
   reach `hotkey.ts` and answer the alert underneath as yes). The terminal notice's dialog still covers it. While
   recovery drafts exist and the recovery dialog is closed it also shows the drafts message with its own Dismiss and a
-  Review button that opens the recovery dialog (`RecoveryDrafts.svelte`, rendered here outside the notice so Settings
-  can open it after a dismissal; [persistence](persistence.md), [ui-theming](ui-theming.md)).
+  Review button that opens the [recovery dialog](draft-recovery.md#recovery-drafts) (`RecoveryDrafts.svelte`, rendered
+  here outside the notice so Settings can open it after a dismissal; [ui-theming](ui-theming.md)).
 - `shared/localNetwork.ts` (re-exported by `src/ts/network/localNetwork.ts`; the server request layer uses it too):
   `isLocalNetworkHost`, `isLocalNetworkUrl`. Accepts private/loopback/link-local IPs, `.local`, and bare single-label
   hosts.
@@ -266,7 +268,7 @@ Other files:
   [chat bindings](persistence.md)). Boot attaches again to the saved jobs through `serverCommands.ts` `resumeServerJobs`
   (`followJobToEnd`). `createGenerationJob` sends `registeredHooks()` unless the caller passes a list.
 - `src/ts/network/eventFeed.ts`: the client of the live-update socket `/api/events/ws` (`startEventFeed`,
-  `stopEventFeed`); documented with the save loop it feeds in `persistence.md`.
+  `stopEventFeed`); [documented with the save loop it feeds](resource-sync.md#feed-connection).
 - `src/ts/network/socketLiveness.ts`: liveness of the feed and job sockets (the server pings both every 15 s).
   `watchSocket({ onConnectTimeout, onStale })`, made when a connection starts: `onConnectTimeout` when `opened()` has
   not come within `CONNECT_TIMEOUT_MS` (10 s); once open, `onStale` when no `frame()` came for `STALE_AFTER_MS` (45 s),
@@ -380,6 +382,81 @@ Other files:
   `requestChatData(..., 'otherAx')` and persists the dialogue in `irisDialogue` (a `ui` field) (saved on the server;
   older browser copies are imported at boot).
 
+### Asset client
+
+`src/ts/storage/assetClient.ts`: the asset files. The asset reads and writes of `globalApi.svelte.ts` go through it.
+
+- `readAsset(key, { signal? })` (`GET /api/read`; `null` for a missing or empty file) and
+  `writeAsset(key, bytes, { signal? })` (`POST /api/write`), the key hex-encoded in `file-path`.
+- `missingAssets(names, { signal? })` (`POST /api/assets/missing`) answers the names the server does not hold verified
+  (absent, empty, corrupt, non-canonical, or over its verification budget: see `self-host-server.md`), asking at most
+  512 names and 64 KiB of JSON per request. It throws on a failed or malformed answer and on a request that has not
+  answered within `MISSING_CHECK_DEADLINE_MS` (20 s, retries and the answer's body included; the request is aborted, so
+  a late answer is never read), and an abort of the caller's signal throws that signal's reason.
+- `assetContentHash(key)` is the SHA-256 hex a canonical content name (`assets/<sha256>.<ext>`,
+  `assets/inlay_<sha256>.<ext>`) carries, else `null`.
+- These requests retry a 429, a 503, and a network failure (`fetch` throwing after dispatch, or a `TypeError`):
+  `Retry-After` seconds (capped at 60 s) when sent, else 1 s doubling to 30 s, at most 8 attempts, each through
+  `authFetch` again; then the old errors. Other non-2xx answers are not retried. The signal aborts the wait and the
+  request (its reason, else an `AbortError`).
+- `writeAssets(items, { signal? })` (`POST /api/assets/write`) and `readAssets(keys, { signal? })`
+  (`POST /api/assets/read`) move many assets per request in the backup archive's record framing
+  ([batch codec](#batch-codec)), each record named by its key; they retry each request the same way and send one batch
+  at a time. An empty list sends nothing.
+- Writes go in batches of at most `ASSET_BATCH_CLIENT_RECORDS` (500) records and `ASSET_BATCH_CLIENT_BYTES` (64 MiB) of
+  record bytes, headers included (a larger single item goes alone), as one `Uint8Array` body; reads in batches of 500
+  keys, the answer parsed as it streams in.
+- Before writing, `writeAssets` checks the canonical names of the items whose caller-computed `sha256`
+  (`AssetWriteItem.sha256`) matches the name with `missingAssets` and sends only the missing ones, under the rules of
+  `saveAssetBatch` above.
+- `writeAssets` throws `setItem Error` for a non-2xx answer and the answer's `error` for a refused one (earlier batches
+  stay written; the server always overwrites). `readAssets` answers one entry per key in the order asked, `null` for a
+  zero-length record (a missing or empty file, or a key with no storage location), and throws `getItem Error` for a
+  non-2xx answer or an answer that breaks off, is malformed, or is not exactly the asked records.
+- `saveAsset` writes one asset per request; a failed or timed-out `missingAssets` check writes as before.
+
+### Asset queues
+
+`src/ts/storage/assetQueue.ts`: the bounded save queues for bulk imports and the batched reads of exports.
+
+- `saveAssets(items, { concurrency = 10, onProgress, signal })` (the CharX-embedded `readModule`, PNG card chunks,
+  `importCharacterCardSpec`'s embedded assets, the asset pickers, `registerOnnxModel`) takes
+  `{ load, fileName?, customId? }` items (an array, iterable, or async iterable). An item is taken and its `load()`
+  called only when fewer than `concurrency` items are loading and the loaded, unwritten items are under one write
+  request's worth (`ASSET_BATCH_CLIENT_RECORDS` records or `ASSET_BATCH_CLIENT_BYTES` record bytes).
+- Each loaded item is keyed with `globalApi.assetKey` (the key `saveAsset` would give it); an item without a `customId`
+  carries that key's hash as its `sha256` (`assetKey` already hashed its bytes), so `writeAssets` skips it when the
+  server holds it verified, while a custom id is always sent.
+- The loaded items are written by `globalApi.saveAssetBatch`, one request at a time, each a batch that fits those caps
+  (a larger single item alone), while the next batch loads; a hash key (no `customId`) already batched in the call is
+  not sent again. Keys resolve in item order; `onProgress` runs per item when its batch is written or fails, or its
+  `load()` throws.
+- After a failed load or batch no further item starts and nothing more is written; the work in flight settles and it
+  rejects with `AssetSaveError` (`failed`: every item of a failed batch, `errors`, `cause`).
+- `savePickedFiles(files, fileName?)` feeds picked `File`s (`selectMultipleFileHandles`) to it, each read when its slot
+  is free. `AssetSaveQueue` (`add`, `whenReady`, `waiting`, `active`) saves one item per `saveAsset` for a producer
+  whose items arrive over time (the in-tab `CharXImporter`).
+- `loadAssetsInBatches(keys, { batchSize = 200, signal })` is an async generator over `globalApi.loadAssets`, yielding
+  `{ index, key, bytes }` in key order (duplicates kept; `bytes` is `Uint8Array | null`). It holds one batch being
+  consumed and one prefetched batch in flight; `batchSize` above `ASSET_BATCH_CLIENT_RECORDS` is clamped. The generator
+  has no retries of its own.
+- The prefetched promise's rejection is observed as soon as it starts and surfaced when that promise is next awaited,
+  without an unhandled rejection while the consumer writes. Closing the iterator (a consumer `break`/`throw` or
+  `return()`) or aborting through `signal` stops admission, aborts the pending read, and settles it before cleanup
+  returns, swallowing its cleanup rejection.
+
+### Batch codec
+
+`shared/assetBatch.ts`: the batch asset routes' record framing (the backup archive's `u32le nameLength`, UTF-8 name,
+`u32le dataLength`, bytes; `self-host-server.md`). `TextEncoder`/`TextDecoder` and `DataView` only, no `Buffer`.
+
+- `ASSET_BATCH_WRITE_PATH`/`ASSET_BATCH_READ_PATH`, `MAX_ASSET_BATCH_RECORDS` (2000 per request, the server's cap),
+  `MAX_ASSET_BATCH_NAME_BYTES` (4096), `encodeAssetRecordHeader` (also the archive's encoder).
+- The incremental `AssetRecordParser`: `push` returns the records a chunk completes; `events` yields
+  `start`/`data`/`end` with `data` as views into the chunk, so the server streams a record without holding it; `end`
+  refuses a trailing partial record. Every refusal is an `AssetBatchFormatError`: a zero-length name, one over the cap
+  or not strict UTF-8, a record past the cap.
+
 ## Flows
 
 Asset sources:
@@ -390,8 +467,7 @@ Asset sources:
    missing/false flag, the first load before the worker claims the page, or a lost controller.
 3. In direct mode, a missing key or failed signature makes the worker fetch unsigned. A 401 after its one retry or a
    network error fails the element's load; neither switches modes or retries through `readAsset`. Worker details:
-   [build & test platforms](build-test-platforms.md); asset route and HTTP cache behavior:
-   [self-host server](self-host-server.md).
+   [build/test](build-test-platforms.md); asset route and HTTP cache behavior: [server](self-host-server.md).
 
 `globalFetch`:
 
@@ -437,6 +513,14 @@ Alerts:
 - `globalApi.svelte.ts` imports `database.svelte.ts`, `storage/resourceSync.svelte.ts`, `storage/resourceClient.ts`,
   `stores.svelte.ts`, alerts, `characterCards.ts` (`characterURLImport`), and the network helpers.
 - Its importers: nearly every process, storage, UI, and plugin module.
+- Assets go `globalApi` (`readImage`, `saveAsset`, `loadAsset`, `getFileSrc`) or `inlays.ts` → `assetClient.ts` →
+  `/api/read|write`; its batch calls go to `/api/assets/write|read`, and a canonical `saveAsset` asks
+  `/api/assets/missing` first.
+- Bulk import writes go `saveAssets` (`storage/assetQueue.ts`) → `saveAssetBatch` (`globalApi.svelte.ts`) →
+  `writeAssets` (`assetClient.ts`) → `/api/assets/missing` for the digest-attested canonical items, then
+  `/api/assets/write` for the rest.
+- Card and module export reads go `loadAssetsInBatches` (`storage/assetQueue.ts`) → `loadAssets` (`globalApi.svelte.ts`)
+  → `readAssets` (`assetClient.ts`) → `/api/assets/read`.
 
 ## Invariants
 
@@ -468,8 +552,8 @@ Alerts:
   1. Extend `alertData`.
   2. Add a helper in `alert.ts`.
   3. Add a render and resolve branch in `AlertComp.svelte`.
-- Change save behavior: `storage/resourceSync.svelte.ts` and the records (`storage/records.svelte.ts`). See
-  `persistence.md`.
+- Change save behavior: [`storage/resourceSync.svelte.ts`](resource-sync.md#save-cycle) and the records
+  (`storage/records.svelte.ts`). See `persistence.md`.
 
 ## Tests
 
@@ -522,7 +606,7 @@ Alerts:
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
   loses reload recovery of its jobs. Decision: a synchronous claim, because `generationClientId` is read synchronously
-  by several modules; recorded with U1 in the [Job Protocol audit](../audit/job-protocol-2026-10-29.md).
+  by several modules; recorded with U1 in the [audit](../audit/job-protocol-2026-10-29.md).
 
 ### Gotchas
 

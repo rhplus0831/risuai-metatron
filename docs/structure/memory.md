@@ -59,7 +59,8 @@
   task.
 - `memoryWriteFence` applies the fence (`Memory writes`, Invariants): `isLocalSend` and `generatingChatKeys` with the
   `chatGenerating` notice, `memoryTaskFenced` (`src/ts/process/memoryTasks.svelte.ts`) with the `memoryTasks.editFenced`
-  notice. See [ui theming](ui-theming.md) for the fence states and [persistence](persistence.md) for the rule.
+  notice. See [ui theming](ui-theming.md) for the fence states and [chat store](chat-store.md#server-memory-writes) for
+  the rule.
 - A refused conversion reports no success. The saving effect never writes the empty default of a chat without memory
   data; the immediate initialization write is quietly refused while fenced.
 - Under the header the modal shows the chat's task status (queued, running `k/n`, the last notable end with its reason),
@@ -214,8 +215,8 @@ and the feed frame are in [server generation](server-generation.md).
 
 - Right before a job emits `done`, the runner hands the service the job's `MemoryTaskInput` (`shared/jobs.ts`) when a
   lookahead plan says summaries are due or a manual start waits (`pendingManual`).
-- A task writes through the persistence rules ([persistence](persistence.md)), then warms the saved summaries' vectors
-  (a failure is `done` with reason `warmingFailed`).
+- A task writes through the [persistence rules](chat-store.md#server-memory-writes), then warms the saved summaries'
+  vectors (a failure is `done` with reason `warmingFailed`).
 - A failed start check ends the task `skipped` with a reason (`localSummarization` for a local summarization model,
   `staleInput`, and the rest in `createMemoryTasks`'s doc comment); the modal's task status (`UI`, above) shows it as
   the last notable end.
@@ -292,7 +293,7 @@ it matches a removable entry), so a prompt still over the context with them ends
       ([chat pipeline](chat-pipeline.md)).
     - The server seeds a missing or empty list with one token-mode preset (`normalizeHypaV3Presets`); a stored or
       imported preset without `budgetMode` stays in ratio mode. The upstream export writes token-mode presets as ratios
-      ([persistence](persistence.md)).
+      ([upstream export](backup-sync-hub.md#upstream-database-export)).
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's
   `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
 - Per-owner fields (character or group): `supaMemory` (the toggle), `supaMemoryOnCount` (its off→on transitions; read
@@ -476,7 +477,7 @@ it matches a removable entry), so a prompt still over the context with them ends
 - The job's own write keeps a change saved before it. A memory task's writes fence the modal of every connected tab (its
   `memoryTask` frames), but a plugin's whole-chat result that lands after a task's write still replaces its summaries.
 - An edit right after a refused final job hydration can still use a stale modal or lore copy: the job fence drops before
-  the idle refresh catches up, and a whole-field write can replace the job's data (`persistence.md`, chat hydration and
+  the idle refresh catches up, and a whole-field write can replace the job's data (`chat-store.md`, job hydration and
   idle refresh).
 - Experimental's rate limiter is per execution: successive runs of one chat and simultaneous runs of several chats share
   no provider-wide allowance.

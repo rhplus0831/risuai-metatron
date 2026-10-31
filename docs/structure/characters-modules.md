@@ -45,7 +45,8 @@
     legacy data, no longer written or migrated; groups use their own chats. Plugin `withChatsCopy` snapshots fill a
     positive derived time into `lastInteraction`, and same-character `applyPluginCharacter` setters preserve the stored
     field, including absence, so a getter/setter round trip never saves the derived value. New characters and imports
-    retain their input value. Upstream export keeps its separate cold-storage rule ([persistence](persistence.md)).
+    retain their input value. Upstream export keeps its separate cold-storage rule
+    ([backups](backup-sync-hub.md#upstream-database-export)).
   - Create and select: `addCharacter`, `createNewCharacter`, `createBlankChar`, `createNewGroup` (the add dialog no
     longer offers it; its `createGroup` result is still handled, and existing groups keep working), `changeChar` (makes
     sure the character has a chat (`ensureChat`), then selects it; it applies no defaults and writes no activity field).
@@ -76,7 +77,7 @@
   line types. The tab reader scans signatures with fflate; the server reader delimits entries by the central directory,
   but both apply the same entry rules. The server route is `server/src/routes/importCharx.ts` (`POST /api/import/charx`,
   [server resources](server-resources.md)); the tab transport is `storage/charxImportClient.ts` `importCharxOverServer`
-  ([persistence](persistence.md)).
+  ([import transports](#import-transports)).
 - `process/modules.ts`: modules.
   - `RisuModule`.
   - Codecs: `exportModule` (CharX via character conversion), `exportModuleLegacy`/`readModule` (`.risum`: magic byte
@@ -93,10 +94,10 @@
     `#import=`, the launch queue). It reads only the file's header and main record (`file.slice`, decoded with the
     shared reader); before anything is sent, it asks `lowLevelAccessConfirm` when the module has `lowLevelAccess` and
     runs `prepareModuleImport` (a declined question sends nothing). It then uploads the `File`/`Blob` itself in one
-    request (`importModuleOverServer`, `storage/moduleImportClient.ts`, [persistence](persistence.md)), showing the
-    NDJSON progress in the wait alert, and copies only the stored keys (`assets[i][1]`) from the server's module into
-    the prepared one (another asset count is `noData`). It returns that module under a fresh id, or `null` when a
-    question was declined or a failure is alerted: a refusal by the answer's status and `error` text
+    request (`importModuleOverServer`, `storage/moduleImportClient.ts`, [import transports](#import-transports)),
+    showing the NDJSON progress in the wait alert, and copies only the stored keys (`assets[i][1]`) from the server's
+    module into the prepared one (another asset count is `noData`). It returns that module under a fresh id, or `null`
+    when a question was declined or a failure is alerted: a refusal by the answer's status and `error` text
     (`Invalid module file` is `noData`; too large, busy, maintenance, a timeout, or the server's text), a failure line,
     or an interrupted upload (a `fetch` `TypeError`, which may be a refusal the browser did not see). Its callers add
     the module through `addImportedModule`.
@@ -108,13 +109,13 @@
     the dialog's JSON, lore, and regex branches stay silent and clear the wait alert) comes only after that
     acknowledgement, and only while the helper's `moduleImportSaving` wait alert is still showing; an intervening alert
     stays on screen. `modules/main` in the scope's `discarded` (a conflict replaced this tab's modules: a change of the
-    same module, or any change of this tab's other than the add; an add alone is rebased over another tab's list,
-    [persistence](persistence.md) Save step 5) is `moduleImportDiscarded`; a failed flush (a generation other pending
-    changes wait for, a refused or unreachable save) is `moduleImportUnconfirmed`; the module stays in the list unless a
-    conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush later fails. The link and file
-    entry points in `characterCards.ts` open the module settings only when the helper reports the save; `#share_module`
-    consumes its pending share once the module was added, whatever the save's outcome (a second import would add it
-    twice).
+    same module, or any change of this tab's other than the add; an add alone is
+    [rebased](resource-sync.md#record-merge) over another tab's list) is `moduleImportDiscarded`; a failed flush (a
+    generation other pending changes wait for, a refused or unreachable save) is `moduleImportUnconfirmed`; the module
+    stays in the list unless a conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush
+    later fails. The link and file entry points in `characterCards.ts` open the module settings only when the helper
+    reports the save; `#share_module` consumes its pending share once the module was added, whatever the save's outcome
+    (a second import would add it twice).
   - Effective sets: `getModules`, then `getModuleLorebooks`, `getModuleAssets`, `getModuleTriggers`,
     `getModuleRegexScripts`, `getModuleToggles`, `getModuleMcps`.
   - `applyModule`, `moduleUpdate` (the selected chat’s icon/background stores and one GUI reload when its effective
@@ -238,6 +239,28 @@
   `characterFieldPlain(chaId, "additionalAssets")`. Module names are cached by the identity of the shared
   `moduleFieldPlain(module, "assets")` copy. Uncacheable characters and plain create-mode modules rebuild for each
   query.
+
+### Import transports
+
+- `src/ts/storage/serverImportClient.ts`: the transport of the server's file imports, one NDJSON reader and one set of
+  error classes. `importFileOverServer(path, file, readResult, { onProgress })` sends the `File`/`Blob` itself as the
+  body of `POST path` through `authFetch`, as `importBackup` does (never a `ReadableStream`): one request, never
+  retried, since a refusal before the body is read can reach the browser as a network failure, the `TypeError` it leaves
+  to the caller.
+- The NDJSON answer is read as it streams: every line is a JSON object; `{ error }` throws `ServerImportFailedError`,
+  the line `readResult` recognizes resolves, and `{ done, total }` lines call `onProgress` (a file without assets sends
+  none).
+- A non-2xx answer throws `ServerImportRequestError` (`status`, `serverError`: the answer's JSON `error`, else `null`);
+  an answer that is not the route's NDJSON (a line that is not one of its lines, a malformed result line, a line after
+  the result, a body that ends inside a line or without a result line) throws `ServerImportAnswerError`.
+- `src/ts/storage/moduleImportClient.ts`: the `.risum` import's transport (the flow is `importModuleFile`) over
+  `serverImportClient.ts`: `importModuleOverServer(file, { onProgress })` to `POST /api/import/module`, the result line
+  told by its `module` (`shared/moduleImport.ts`). It re-exports the error classes under module-specific names:
+  `ModuleImportRequestError`, `ModuleImportFailedError`, `ModuleImportAnswerError`.
+- `src/ts/storage/charxImportClient.ts`: the CharX import's transport (the flow is `importCharacterProcess`) over
+  `serverImportClient.ts`: `importCharxOverServer(file, { onProgress })` to `POST /api/import/charx`, the result line
+  told by its `assets` and checked for its shape (`card` and `moduleData` a string or null, `assets` an object of
+  strings, `excluded` a list of strings; `shared/charxImport.ts` `CharxImportResult`).
 
 ## Flows
 
@@ -387,6 +410,9 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
   `selection.svelte.ts`, `globalApi` assets and writers, `alert.ts`, `util.ts`, `media/`, the lorebook codecs, scripts,
   triggers.
 - `@risuai/ccardlib` is imported for types only. There is no runtime validation.
+- A `.risum` import goes `importModuleFile` (`process/modules.ts`) → `moduleImportClient.ts` → `serverImportClient.ts` →
+  `authFetch` → `/api/import/module`; a CharX import given as a `File`/`Blob` goes `importCharacterProcess`
+  (`characterCards.ts`) → `charxImportClient.ts` → `serverImportClient.ts` → `authFetch` → `/api/import/charx`.
 
 ## Invariants
 
@@ -465,12 +491,12 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
   character (`importLoreBook`), and the module import paths (`upgradeLorebook`, `shared/modules.ts`); later updates keep
   their content.
 - The chat lorebook writers in `lorebook.svelte.ts` (`addLorebook`/`addLorebookFolder` with a chat target,
-  `importLoreBook("local")`) send the chat's whole `localLore`, so they share the lore draft's fence
-  (`localLoreDraft.svelte.ts`, [persistence](persistence.md)): while this tab's send (`isLocalSend`) or a job this tab
-  knows of (`generatingChatKeys()`) runs in the chat, they refuse with `chatGenerating` and write nothing; the import
-  checks at its write, after the file dialog. `exportLoreBook("local")` while the selected chat loads refuses with
-  `localLoreExportNotLoaded`. Add and folder actions accept character (0) or chat (1) targets; other values write
-  nothing.
+  `importLoreBook("local")`) send the chat's whole `localLore`, so they share the
+  [lore draft's fence](chat-store.md#whole-chat-writers) (`localLoreDraft.svelte.ts`): while this tab's send
+  (`isLocalSend`) or a job this tab knows of (`generatingChatKeys()`) runs in the chat, they refuse with
+  `chatGenerating` and write nothing; the import checks at its write, after the file dialog. `exportLoreBook("local")`
+  while the selected chat loads refuses with `localLoreExportNotLoaded`. Add and folder actions accept character (0) or
+  chat (1) targets; other values write nothing.
 - `chaId` and chat IDs must be unique. The installation (`initializeRecords`) gives a character without a valid or
   unique id a new one, and a character's id never changes afterwards; chat and message ids are assigned by the chat
   module (`createChat`, `appendMessage`) and kept unique by the server.

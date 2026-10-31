@@ -55,7 +55,8 @@ new character's create that loses to another tab's same-id character now keeps i
 local chats as recovery drafts instead of leaving their creates pending. Remaining
 limits (Apply still removes a draft whose ops it skipped; a deleted Apply destination
 is recreated by a retry after reload; the read deadline is per request) are in the
-[persistence guide's Known Hazards](../structure/persistence.md#known-hazards).
+[draft recovery guide's Known Hazards](../structure/draft-recovery.md#known-hazards) and the
+[chat store guide's Limitations](../structure/chat-store.md#limitations).
 
 ## Plan-related findings
 

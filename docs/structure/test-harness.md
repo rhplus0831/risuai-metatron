@@ -235,8 +235,8 @@ runs the gated tests under the reference overload. Its header has the setup, the
 
 - `util/testInventory.mjs` `SLOW_TABLE_DOC` names this file and `readSlowTable` reads the
   [slow-test table](#slow-test-table).
-- `settle` reads `resourceSyncIdle` ([persistence](persistence.md)). `checkJobProtocol.mjs` rewrites `OWNER_ABSENT_MS`
-  by its text ([self-host-server](self-host-server.md)).
+- `settle` reads `resourceSyncIdle` ([resource-sync](resource-sync.md)). `checkJobProtocol.mjs` rewrites
+  `OWNER_ABSENT_MS` by its text ([self-host-server](self-host-server.md)).
 - Domain guides hold their focused test paths and browser gaps: use
   [STRUCTURE's task router](../../STRUCTURE.md#choose-by-task).
 
@@ -263,9 +263,9 @@ runs the gated tests under the reference overload. Its header has the setup, the
   record, whose normalizer drops them without an error. Use `util/playwright/modelProfiles.mjs` (`modelFixtureOps` for
   the batch, `promptFixture` for the prompt half) or, in the page, `modelProfiles.browser.mjs`
   (`applyModelFixtureSettings`).
-- Send from a check: bind its chat ([chat bindings](persistence.md): a chat without a complete binding is not sent):
-  spread `chatBindingFixture(modelPresets, presets, personas)` (`util/playwright/modelProfiles.mjs`, the first record of
-  each list, the model preset `modelFixtureOps` points at the mock) into the seeded chat.
+- Send from a check: bind its chat ([chat bindings](persistence.md#state): a chat without a complete binding is not
+  sent): spread `chatBindingFixture(modelPresets, presets, personas)` (`util/playwright/modelProfiles.mjs`, the first
+  record of each list, the model preset `modelFixtureOps` points at the mock) into the seeded chat.
 
 ## Tests
 

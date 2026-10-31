@@ -3,7 +3,7 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The lore draft's generation fence (`docs/structure/persistence.md` `localLoreDraft.svelte.ts`):
+// The lore draft's generation fence (`docs/structure/chat-store.md` "Whole-chat writers"):
 // over the real chat module, a change of the selected chat's local lorebook draft is saved through
 // `setChatMeta`, but while a send of this tab (a `localSends` entry) or a job this tab follows
 // (`followedJobs`) runs in the chat it is refused with the `chatGenerating` notice and undone in the

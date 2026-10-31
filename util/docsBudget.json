@@ -2,11 +2,10 @@
   "ceilings": {
     "docs/structure/app-shell.md": 41327,
     "docs/structure/cbs-rendering.md": 43828,
-    "docs/structure/characters-modules.md": 55182,
-    "docs/structure/global-api.md": 46850,
+    "docs/structure/characters-modules.md": 57547,
+    "docs/structure/global-api.md": 54009,
     "docs/structure/llm-requests.md": 42338,
     "docs/structure/media-aux.md": 40937,
-    "docs/structure/persistence.md": 308576,
     "docs/structure/plugins-mcp.md": 55849,
     "docs/structure/settings-i18n.md": 41910,
     "docs/structure/ui-theming.md": 53001

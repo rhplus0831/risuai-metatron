@@ -7,7 +7,7 @@ import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
 // The save loop's character field-text cache (`characterProjection`, `characterTexts`, and
-// `canonicalShape` in `resourceSync.svelte.ts`; `docs/structure/persistence.md` save step 2) under the
+// `canonicalShape` in `resourceSync.svelte.ts`; `docs/structure/resource-sync.md` "Serialization") under the
 // real boot, the real save loop, and the fake resource server. The oracle is twofold: the server's
 // record must equal the mirror's after every save, and the development comparison of the cached text
 // with a whole serialization (`console.error`, reported, never repaired) must not fire once, so

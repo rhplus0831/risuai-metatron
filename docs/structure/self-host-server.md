@@ -16,7 +16,7 @@
   Domain-specific runtime semantics stay with their owner guides; request history and diagnostics have a dedicated
   [owner](diagnostics.md).
 - Client counterparts, owned by other guides:
-  - `src/ts/storage/serverAuth.ts` and `src/ts/storage/assetClient.ts` → `persistence.md`.
+  - `src/ts/storage/serverAuth.ts` → `persistence.md`; `src/ts/storage/assetClient.ts` → `global-api.md`.
   - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
   - `characterCards.ts` `hubURL` → `characters-modules.md`.
 
