@@ -224,6 +224,47 @@ test's code, not from a guess about how likely the code is to regress.
   breaks on refactors; do not add it, and prune it when it starts costing time. Add
   tests only for code the task changes.
 
+Past those gates, a test is judged by what its failure would tell a reader, not by how
+many assertions it holds. The suite's size says nothing about what it protects: the
+defects it has missed were two layers each correct and wrong together (a stored
+metadata object whose key order changed so a value-identical edit diffed as a change,
+an acknowledgement that never installs the server's copy so duplicates survive, a
+write that moves a chat revision that keys a cache), and a test over a mocked store
+cannot see any of them. The questions to ask of a test are "does it go red when this
+line is wrong" and "does it stay green when behavior is preserved":
+
+- Shown to fail. Every new test, not only a regression test, runs once with the line it
+  guards broken (STRUCTURE V6); a bug fix's test reproduces the bug before the fix. A
+  test that stays green against the broken line is the one that costs time without
+  protecting anything.
+- Outcome, not mechanism. Assert what another layer or the user sees: the stored
+  string or record, the server's response, the op or event emitted, the rendered text,
+  the returned value, against explicit expected data. `server/src/tests/chats.test.ts`
+  "keeps its key order when normalized again" asserts the stored string, because the
+  string is what the diff compares. Never assert the call list or order of the
+  repository's own functions, an internal state shape, or a mock's return value.
+- Real modules inside, typed fakes at the edge. The repository's own modules stay real;
+  fakes stand only at process and I/O boundaries (STRUCTURE V7). A hub module that a
+  client test must stub because loading it pulls in the DOM, runes, or the server
+  (`globalApi.svelte`, `chatStore.svelte`, `parser.svelte`, `process/modules`,
+  `serverAuth`) is stubbed through a shared typed factory, never an inline partial
+  object: a partial object hides every export it leaves out until a consumer imports
+  one, and then dozens of unrelated tests fail at run time and read as a regression,
+  while a factory whose defaults `satisfies` the export type fails `pnpm check` once.
+- A seam change gets a seam test. A change to a persisted shape, a normalizer, a sync or
+  acknowledgement rule, or a key that another layer derives (a revision, a cache key)
+  gets one round trip rather than one unit test per side: a client write through the
+  server's normalizer and back into the store, a server test over the real app
+  (`app.request`, as most of `server/src/tests/` does), or an `e2e/` spec against the
+  real stack. Two unit tests with the other side mocked each pass while the pair is
+  wrong.
+- Delete rather than repair. When a behavior-preserving change breaks a test, the test
+  was coupled to the implementation: delete it, or rewrite it against the outcome; do
+  not patch its expectations to the new mechanism. An intended behavior change updates
+  the expectation and says so in the commit message.
+- Only for code the task changes. This is the budget, not a quality mark: a test the
+  task did not need is time every later run and every later refactor pays.
+
 A module mocked in more than one test file gets one shared, typed factory in a `tests/`
 directory (STRUCTURE V7): `src/ts/tests/alertMock.ts` `createAlertMock(overrides)` returns
 every export of `src/ts/alert.ts` (`vi.fn()`s whose awaited helpers resolve with a dismissed

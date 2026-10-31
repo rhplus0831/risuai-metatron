@@ -69,7 +69,8 @@ Verification:
   (scripts that read source as text and guides that name it included).
 - V5. A check that could not start, or was not run, is reported as unverified, never
   as passed.
-- V6. A new regression test is shown to fail once with the line it guards broken.
+- V6. A new test is shown to fail once with the line it guards broken; a bug fix's test
+  reproduces the bug before the fix.
 - V7. Mock only process and I/O boundaries (network, file system, clock, workers, the
   server, dialogs). A module mocked in more than one file gets one shared, typed
   factory in a `tests/` directory whose defaults `satisfies` the module's export type,
