@@ -1580,7 +1580,7 @@ describe("credentials and the other consumers", () => {
 });
 
 // A memory task service makes a send select from the stored summaries instead of summarizing
-// (`docs/structure/chat-pipeline.md`, the job's HypaV3 step): the dispatch (previews and server-slot
+// (`docs/structure/memory.md`, "HypaV3 job modes"): the dispatch (previews and server-slot
 // sends select only; a Plugin `memory` slot and a request trigger keep the summaries in the job), the
 // `memoryProgress` runs before any legacy progress of the same work, the gap question and its
 // answers, the approved initial run with its per-summary saves, the retryable error of an edit, the

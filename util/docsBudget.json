@@ -6,7 +6,6 @@
     "docs/structure/global-api.md": 46850,
     "docs/structure/llm-requests.md": 42338,
     "docs/structure/media-aux.md": 40937,
-    "docs/structure/memory.md": 52523,
     "docs/structure/persistence.md": 308576,
     "docs/structure/plugins-mcp.md": 55849,
     "docs/structure/settings-i18n.md": 41910,
@@ -15,11 +14,6 @@
   "allow": [
     {
       "guide": "docs/structure/global-api.md",
-      "rule": "paren-depth",
-      "count": 1
-    },
-    {
-      "guide": "docs/structure/memory.md",
       "rule": "paren-depth",
       "count": 1
     }
