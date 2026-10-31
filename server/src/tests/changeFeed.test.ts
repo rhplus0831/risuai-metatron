@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
@@ -15,6 +19,7 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 
 // The publisher of the live updates: the resource store publishes one change set per committed
 // outer write (`put`, `delete`, `applyChanges`, `transaction`) after the commit, with side effects
@@ -29,9 +34,13 @@ const plugins = kinds.get("plugins")!;
 const ui = kinds.get("ui")!;
 
 const stores: ResourceStore[] = [];
+const dirs: string[] = [];
 afterEach(() => {
     for (const store of stores.splice(0)) {
         store.close();
+    }
+    for (const dir of dirs.splice(0)) {
+        rmSync(dir, { recursive: true, force: true });
     }
     vi.restoreAllMocks();
 });
@@ -521,7 +530,7 @@ describe("the store publishes committed changes", () => {
         expect(events).toHaveLength(1);
     });
 
-    it("publishes `replaceAll`'s new epoch after it is installed, and later changes carry it", () => {
+    it("publishes `replaceAll`'s new epoch after it is installed, and later changes carry it", async () => {
         const { feed, store, events } = setup();
         const before = store.epoch();
         const installed: string[] = [];
@@ -530,7 +539,11 @@ describe("the store publishes committed changes", () => {
                 installed.push(store.epoch());
             }
         });
-        const next = store.replaceAll({ rows: [], chats: [], messages: [], chatOrders: [] } as never);
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-change-feed-"));
+        dirs.push(dir);
+        const backup = path.join(dir, "empty.sqlite");
+        await store.backupTo(backup);
+        const next = await installSnapshot(store, backup, kinds);
         expect(next).not.toBe(before);
         expect(events.filter((event) => event.type === "epoch")).toEqual([{ type: "epoch", epoch: next }]);
         expect(installed).toEqual([next]);
@@ -1609,3 +1622,72 @@ describe("the store publishes generation locks", () => {
         expect(events).toEqual([]);
     });
 });
+
+it.each([false, true])(
+    "publishes exactly one epoch after durable install even when DETACH fails (%s), and can install again",
+    async (failDetach) => {
+        const { store, feed, events } = setup();
+        store.put(characters, "saved", { chaId: "saved", name: "Snapshot" }, null);
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-detach-"));
+        dirs.push(dir);
+        const source = path.join(dir, "source.sqlite");
+        await store.backupTo(source);
+        const first = await stageSnapshot(source, kinds);
+        const second = await stageSnapshot(source, kinds);
+        store.put(characters, "live", { chaId: "live" }, null);
+        events.length = 0;
+        const exec = DatabaseSync.prototype.exec;
+        let installedDb: DatabaseSync | undefined;
+        let committed = false;
+        let detachedInTransaction = false;
+        let injected = false;
+        vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql) {
+            if (sql.includes("INSERT INTO main.resources")) installedDb = this;
+            if (sql === "DETACH DATABASE staged") {
+                detachedInTransaction ||= this.isTransaction;
+                if (failDetach && !injected) {
+                    injected = true;
+                    throw new Error("detach unavailable");
+                }
+            }
+            exec.call(this, sql);
+            if (this === installedDb && sql === "COMMIT") committed = true;
+        });
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const visible: unknown[] = [];
+        feed.subscribe((event) => {
+            if (event.type !== "epoch") return;
+            visible.push({
+                eventEpoch: event.epoch,
+                epoch: store.epoch(),
+                committed,
+                persisted: installedDb!.prepare("SELECT value FROM meta WHERE key = 'epoch'").get()!.value,
+                saved: store.get(characters, "saved")?.data,
+                live: store.get(characters, "live"),
+            });
+        });
+        const epoch = store.replaceAll(first.file, first.report);
+        expect(events).toEqual([{ type: "epoch", epoch }]);
+        expect(visible).toEqual([
+            {
+                eventEpoch: epoch,
+                epoch,
+                committed: true,
+                persisted: epoch,
+                saved: expect.objectContaining({ chaId: "saved", name: "Snapshot" }),
+                live: null,
+            },
+        ]);
+        expect(detachedInTransaction).toBe(false);
+        expect(errors).toHaveBeenCalledTimes(failDetach ? 1 : 0);
+        committed = false;
+        const next = store.replaceAll(second.file, second.report);
+        expect(next).not.toBe(epoch);
+        expect(store.epoch()).toBe(next);
+        expect(events).toEqual([
+            { type: "epoch", epoch },
+            { type: "epoch", epoch: next },
+        ]);
+        expect(visible[1]).toMatchObject({ epoch: next, persisted: next, committed: true });
+    },
+);

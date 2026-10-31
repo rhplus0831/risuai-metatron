@@ -2,6 +2,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ResourceReadKindsResult } from "../../../shared/resources.ts";
@@ -777,6 +778,7 @@ describe("createUpstreamImportStaging", () => {
             selection: { promptPresetId: "p", modelPresetId: "m", personaId: "u" },
             epoch: "e",
             writeCount: 0,
+            databaseReport: { size: 0, mtimeMs: 0, ino: 0, sha256: "" },
         };
     };
 
@@ -891,5 +893,148 @@ describe("spool with a signal", () => {
         const body = new Blob([Buffer.from("whole body")]).stream();
         await expect(spool(body, file, 1000, new AbortController().signal)).resolves.toBe(true);
         expect(readFileSync(file, "utf-8")).toBe("whole body");
+    });
+});
+
+/** Hold the first hash read, after the commit took its token and before it can enter maintenance. */
+function holdStagedHash(file: string) {
+    const entered = deferred();
+    const release = deferred();
+    const open = fs.open;
+    let held = false;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (String(args[0]) === file) {
+            const read = handle.read.bind(handle);
+            handle.read = (async (...readArgs: unknown[]) => {
+                if (!held) {
+                    held = true;
+                    entered.resolve();
+                    await release.promise;
+                }
+                return Reflect.apply(read, handle, readArgs);
+            }) as typeof handle.read;
+        }
+        return handle;
+    });
+    return { entered, release };
+}
+
+describe("upstream commit verification window", () => {
+    it.each(["write", "epoch", "shutdown"] as const)(
+        "rechecks %s after hashing before maintenance and preserves ownership of staging",
+        async (change) => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const s = await server();
+            const prepared = await prepare(s);
+            const owned = s.context.upstreamStaging.get(prepared.token)!;
+            const snapshot = change === "epoch" ? await s.context.snapshots.snapshotNow() : null;
+            const epoch = s.epoch;
+            const before = await (await s.list("characters")).json();
+            const { entered, release } = holdStagedHash(owned.databaseFile);
+            const committing = commitRequest(s, { token: prepared.token });
+            await entered.promise;
+            expect(s.context.upstreamStaging.get(prepared.token)).toBeNull();
+            expect(existsSync(owned.staging)).toBe(true);
+            expect(s.context.snapshots.gate.active).toBe(false);
+            if (change === "write") {
+                await s.create("characters", "during-hash", character("during-hash"));
+            } else if (change === "epoch") {
+                const restored = await s.request(`/api/backups/${snapshot!.id}/restore`, { method: "POST" });
+                expect(restored.status).toBe(200);
+            } else {
+                s.context.beginShutdown();
+            }
+            const backups = s.context.snapshots.list();
+            release.resolve();
+            const result = await committing;
+            expect(result.status).toBe(change === "write" ? 409 : change === "epoch" ? 412 : 503);
+            if (change === "write") {
+                expect(await result.json()).toEqual({ error: "changedSinceReview", writes: 1 });
+                expect(await s.readEpoch()).toBe(epoch);
+                expect((await s.get("characters", "during-hash")).status).toBe(200);
+            } else if (change === "epoch") {
+                expect(await result.json()).toEqual({ error: "EpochMismatch", epoch: await s.readEpoch() });
+                expect(s.epoch).not.toBe(epoch);
+            } else {
+                expect(await result.json()).toEqual({ error: "The server is shutting down" });
+                // Shutdown closes route admission, so inspect the persisted epoch and rows directly.
+                const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+                try {
+                    expect(db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get()!.value).toBe(epoch);
+                    expect(db.prepare("SELECT * FROM resources WHERE kind = 'characters'").all()).toEqual([]);
+                } finally {
+                    db.close();
+                }
+            }
+            expect(s.context.snapshots.list()).toEqual(backups);
+            expect(assetFiles(s)).toEqual([]);
+            if (change !== "shutdown") {
+                expect(s.context.upstreamStaging.get(prepared.token)).toMatchObject({ staging: owned.staging });
+                expect(existsSync(owned.staging)).toBe(true);
+                if (change === "write") {
+                    const retried = await commitRequest(s, { token: prepared.token, acceptWrites: 1 });
+                    expect(retried.status).toBe(200);
+                    await s.readEpoch();
+                    expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
+                    expect((await s.get("characters", "during-hash")).status).toBe(404);
+                } else {
+                    expect(await (await s.list("characters")).json()).toMatchObject({
+                        items: (before as { items: unknown[] }).items,
+                    });
+                    s.context.beginShutdown();
+                    await s.context.upstreamStaging.close();
+                    expect((await commitRequest(s, { token: prepared.token })).status).toBe(503);
+                }
+            }
+            expect(existsSync(owned.staging)).toBe(false);
+            expect(staged(s)).toEqual([]);
+        },
+    );
+
+    it("commits without reading or normalizing stored rows on the serving thread", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let measuring = false;
+        let normalizedRows = 0;
+        const rowReads: string[] = [];
+        const prepareSql = DatabaseSync.prototype.prepare;
+        vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepareSql.call(this, sql);
+            if (
+                /^\s*SELECT\b/i.test(sql) &&
+                /\bFROM\s+(?:(?:main|staged)\.)?(resources|chats|messages|chatOrders|chatCheckpoints|checkpointPages|chatSummaries)\b/i.test(
+                    sql,
+                ) &&
+                !/^\s*SELECT\s+(?:1|COUNT\()/i.test(sql)
+            ) {
+                for (const method of ["all", "get", "iterate"] as const) {
+                    const original = statement[method];
+                    Object.assign(statement, {
+                        [method]: function (...args: unknown[]) {
+                            if (measuring) rowReads.push(sql);
+                            return Reflect.apply(original, statement, args);
+                        },
+                    });
+                }
+            }
+            return statement;
+        });
+        const resourceKinds = DEFAULT_RESOURCE_KINDS.map((kind) => ({
+            ...kind,
+            normalize(input: unknown, context: { id: string }) {
+                if (measuring && input !== undefined) normalizedRows++;
+                return kind.normalize(input, context);
+            },
+        }));
+        const s = await server({ resourceKinds, upstreamImport: { runner: inProcess } });
+        const prepared = await prepare(s);
+        measuring = true;
+        const result = await commitRequest(s, { token: prepared.token });
+        measuring = false;
+        expect(result.status).toBe(200);
+        expect(normalizedRows).toBe(0);
+        expect(rowReads).toEqual([]);
+        await s.readEpoch();
+        expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
     });
 });

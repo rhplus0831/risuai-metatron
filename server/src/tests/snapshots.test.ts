@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,7 +16,8 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
-import { sleep } from "./testSupport.ts";
+import { installSnapshot } from "./stagedRestore.ts";
+import { createResourceTestClient, testRestoreRunner, sleep } from "./testSupport.ts";
 
 const docs: ResourceKind = { name: "docs", schemaVersion: 1, normalize: (input) => input };
 const kinds = createKindRegistry([docs]);
@@ -283,7 +284,7 @@ describe("checkpoint snapshots", () => {
         const later = store.checkpoints.save("c", "k", "After snapshot", "auto")!;
         store.checkpoints.writePolicy("c", "k", { autoEvery: 17, autoKeep: 9, lastAutoTurns: 99 });
         store.checkpoints.writePolicy("d", "k", null);
-        store.replaceAll(validated);
+        await installSnapshot(store, input, defaults);
 
         for (const { characterId, checkpoint, chat, policy } of saved) {
             expect(store.checkpoints.list(characterId, "k")?.map((item) => item.id)).toEqual([checkpoint.id]);
@@ -313,7 +314,7 @@ describe("checkpoint snapshots", () => {
             DROP TABLE chatCheckpointPolicy;
         `,
         );
-        store.replaceAll(store.readSnapshot(legacy));
+        await installSnapshot(store, legacy, defaults);
         for (const { characterId, checkpoint } of saved) {
             expect(store.chatRevision(characterId, "k")).not.toBeNull();
             expect(store.checkpoints.list(characterId, "k")).toEqual([]);
@@ -635,4 +636,48 @@ describe("maintenance gate", () => {
         expect(order).toEqual(["first", "maintenance", "third"]);
         expect(manager.list()).toHaveLength(2);
     });
+});
+
+it("restores its pinned source after retention prunes the original during validation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const held = defer();
+    const release = defer();
+    const runner = testRestoreRunner();
+    let pinned = "";
+    const s = await createResourceTestClient({
+        restore: {
+            runner: async (input, options) => {
+                pinned = input.source;
+                held.resolve();
+                await release.promise;
+                return runner(input, options);
+            },
+        },
+    });
+    try {
+        vi.setSystemTime(new Date("2030-01-01"));
+        await s.create("characters", "saved", { chaId: "saved" });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        const restoring = s.request(`/api/backups/${snapshot.id}/restore`, { method: "POST" });
+        await held.promise;
+        expect(s.context.snapshots.gate.active).toBe(false);
+        expect(pinned).not.toBe(path.join(s.savePath, "backups", `${snapshot.id}.sqlite`));
+        // A small-retention manager shares the backup directory; its snapshot prunes the original.
+        const donor = setup();
+        const pruner = createSnapshotManager({ store: donor.store, dir: path.join(s.savePath, "backups"), keep: 1 });
+        managers.push(pruner);
+        vi.setSystemTime(new Date("2030-01-02"));
+        await pruner.snapshotNow();
+        expect(existsSync(path.join(s.savePath, "backups", `${snapshot.id}.sqlite`))).toBe(false);
+        expect(existsSync(pinned)).toBe(true);
+        release.resolve();
+        expect((await restoring).status).toBe(200);
+        await s.readEpoch();
+        expect((await s.get("characters", "saved")).status).toBe(200);
+        expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
+    } finally {
+        release.resolve();
+        await s.close();
+        vi.useRealTimers();
+    }
 });

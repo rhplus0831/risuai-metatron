@@ -14,7 +14,7 @@ import { createServerContext } from "../app.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import type { MessageSearchRouteOptions } from "../routes/messageSearch.ts";
-import { createSigner, json, TEST_INDEX_HTML } from "./testSupport.ts";
+import { createSigner, json, TEST_INDEX_HTML, testRestoreRunner } from "./testSupport.ts";
 
 /**
  * `POST /api/chats/search`. The server is built with `createServerContext({ messageSearch })`
@@ -105,7 +105,7 @@ async function createSearchServer(messageSearch: MessageSearchRouteOptions = {})
     writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    const context = createServerContext({ rootDir, messageSearch });
+    const context = createServerContext({ rootDir, messageSearch, restore: { runner: testRestoreRunner() } });
     const signer = await createSigner();
     await context.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
     const s = {

@@ -55,6 +55,7 @@ import {
     TEST_INDEX_HTML,
     waitFor,
 } from "./testSupport.ts";
+import { stageSnapshot } from "./stagedRestore.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The detached HypaV3 memory task service (`server/src/prompt/memory/memoryTasks.ts`) over a real
@@ -1072,9 +1073,9 @@ describe("a changed source", () => {
         const { second } = await afterFirstSummary(t);
         const file = path.join(t.dir, "snapshot.sqlite");
         await t.store.backupTo(file);
-        const validated = t.store.readSnapshot(file);
+        const staged = await stageSnapshot(file, t.kinds);
         const before = t.events.length;
-        t.store.replaceAll(validated);
+        t.store.replaceAll(staged.file, staged.report);
         t.service.resetEpoch();
         expect(t.events).toHaveLength(before);
         expect(t.service.status(ref("k1"))).toBeNull();
@@ -1528,7 +1529,7 @@ describe("re-entrant callers", () => {
         const t = harness();
         const file = path.join(t.dir, "snapshot.sqlite");
         await t.store.backupTo(file);
-        const validated = t.store.readSnapshot(file);
+        const staged = await stageSnapshot(file, t.kinds);
         const lease1 = await t.service.acquireSummaryWriter(ref("k1"), "job-1");
         const lease2 = await t.service.acquireSummaryWriter(ref("k2"), "job-2");
         handOff(t, "k1", { entries: 2 });
@@ -1540,7 +1541,7 @@ describe("re-entrant callers", () => {
             seen.push([event.chatRef.chatId, event.status.state, event.epoch === oldEpoch ? "old" : "new"]);
             if (!reset && event.status.state === "cancelled") {
                 reset = true;
-                t.store.replaceAll(validated);
+                t.store.replaceAll(staged.file, staged.report);
                 t.service.resetEpoch();
             }
         });

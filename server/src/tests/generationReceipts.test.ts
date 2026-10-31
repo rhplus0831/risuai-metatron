@@ -22,6 +22,7 @@ import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createAuthStore } from "../routes/auth.ts";
 import { registerGenerationRoutes } from "../routes/generations.ts";
 import type { AppEnv } from "../types.ts";
+import { installSnapshot } from "./stagedRestore.ts";
 import { createResourceTestClient, createTestServer } from "./testSupport.ts";
 
 const HOUR = 60 * 60_000;
@@ -167,7 +168,7 @@ function registryFixture(beforeOpen?: (file: string, epoch: string) => void) {
     const changeEpoch = async () => {
         const snapshot = path.join(dir, "snapshot.sqlite");
         await store.backupTo(snapshot);
-        store.replaceAll(store.readSnapshot(snapshot));
+        await installSnapshot(store, snapshot, kinds);
     };
     return { dir, bound, snapshots, file, store, receipts, events, registry, create, changeEpoch };
 }

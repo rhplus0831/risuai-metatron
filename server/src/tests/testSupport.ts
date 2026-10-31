@@ -6,7 +6,8 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createServerContext, type RouteLimits } from "../app.ts";
-import type { ResourceKind } from "../data/kinds.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
+import { inProcessRestoreRunner, type RestoreRunner } from "../data/restore/validateRunner.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { MemoryTaskService } from "../../../shared/jobs.ts";
 import type { ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
@@ -50,6 +51,8 @@ export type TestServerOptions = {
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
     /** The upstream RisuAI-compatible export's staged expiry. */
     upstreamExport?: { stagedTtlMs?: number };
+    /** What stages a snapshot restore or a version-2 import (default `testRestoreRunner`). */
+    restore?: { runner?: RestoreRunner };
     /** What schedules a staged Realm import's expiry (a test holds the callback and fires it). */
     realmStagingTimer?: RealmStagingTimer;
     /** The default runner's trigger effect-loop clock (a test freezes or steps the 50 ms yield window). */
@@ -73,6 +76,11 @@ export type TestServerOptions = {
     /** The context's own memory task service: `now` and `limits` replace its clock and caps. */
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
 };
+
+/** Stages a restore in process, with `resourceKinds` or the defaults: a gate test starts no worker. */
+export function testRestoreRunner(resourceKinds?: readonly ResourceKind[]): RestoreRunner {
+    return inProcessRestoreRunner(createKindRegistry(resourceKinds ?? DEFAULT_RESOURCE_KINDS));
+}
 
 export function createTestServer(options: TestServerOptions = {}) {
     const rootDir = options.rootDir ?? mkdtempSync(path.join(os.tmpdir(), "risu-server-test-"));
@@ -99,6 +107,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         realm: options.realm,
         upstreamImport: options.upstreamImport,
         upstreamExport: options.upstreamExport,
+        restore: { runner: options.restore?.runner ?? testRestoreRunner(options.resourceKinds) },
         realmStagingTimer: options.realmStagingTimer,
         generationEffectClock: options.generationEffectClock,
         generationAbortGraceMs: options.generationAbortGraceMs,

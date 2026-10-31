@@ -22,20 +22,21 @@ import type {
 import type { Chat, Message } from "../../../shared/database.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { normalizeChatMeta, normalizeMessage } from "./chats.ts";
-import { COUNT_USER_TURNS_SQL } from "./chatStore.ts";
+import { COUNT_USER_TURNS_SQL, STAGED_CHAT_SEQS } from "./chatStore.ts";
 import {
     isValidResourceId,
     nextRevision,
     ResourceConflictError,
     ResourceValidationError,
     serialize,
+    snapshotRows,
 } from "./resourceStore.ts";
 
 /**
  * Checkpoints belong to a chat incarnation; deleting it cascades to checkpoints, refs, and policy.
  * Content pages are shared across chats: `prune` and `delete` remove the pages they freed, and the
  * table-wide sweep at open collects the rest, such as the pages a chat's cascade left unreferenced.
- * Snapshots carry all four tables together; restore replaces them on the restored chat incarnations.
+ * Snapshots carry all four tables together; an install replaces them on the restored chat incarnations.
  */
 const CHECKPOINT_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS chatCheckpoints (
@@ -79,6 +80,13 @@ const RESTORE_FLOORS_SQL = `
         revision INTEGER NOT NULL
     ) STRICT;
 `;
+
+/** Every checkpoint table; `createCheckpointTables` and a staged store's writer create them alike. */
+export const CHECKPOINT_SCHEMA_SQL = `${CHECKPOINT_TABLES_SQL}${RESTORE_FLOORS_SQL}`;
+
+/** The table-wide page sweep: at open, and in a staged store once its checkpoints are written. */
+const SWEEP_PAGES_SQL =
+    "DELETE FROM checkpointPages WHERE NOT EXISTS (SELECT 1 FROM checkpointPageRefs r WHERE r.hash = checkpointPages.hash)";
 
 const CHECKPOINT_TABLE_COLUMNS: Record<string, readonly string[]> = {
     chatCheckpoints: [
@@ -124,6 +132,20 @@ export type CheckpointSnapshotRows = {
     readonly policies: readonly (CheckpointPolicyState & { chatSeq: number })[];
 };
 
+/**
+ * Where `walkCheckpointSnapshot` hands what it checked, as it reads it. Every page comes first, each
+ * with a text that matches its hash, whether a checkpoint names it or not; `pageText` answers from what
+ * the sink took, so a page's text is never read from the source twice. `hashes` of a checkpoint are the
+ * pages it names. `end` closes a walk that found the tables, with the pages the checkpoints name.
+ */
+export type CheckpointSnapshotSink = {
+    page(hash: string, text: string): void;
+    pageText(hash: string): string;
+    checkpoint(row: CheckpointSnapshotRows["checkpoints"][number], hashes: ReadonlySet<string>): void;
+    policy(row: CheckpointSnapshotRows["policies"][number]): void;
+    end(referenced: ReadonlySet<string>): void;
+};
+
 function checkpointName(name: string): string {
     if (typeof name !== "string") {
         throw new ResourceValidationError("Checkpoint name must be a string");
@@ -146,8 +168,7 @@ function assertKind(kind: CheckpointKind) {
  * autocommit.
  */
 export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions) {
-    db.exec(CHECKPOINT_TABLES_SQL);
-    db.exec(RESTORE_FLOORS_SQL);
+    db.exec(CHECKPOINT_SCHEMA_SQL);
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectMessages = db.prepare("SELECT id, data FROM messages WHERE chatSeq = ? ORDER BY position");
     const selectLastMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 2");
@@ -170,11 +191,6 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             "(chatSeq, id, kind, name, createdAt, revision, chatRevision, userTurns, messageCount, preview, pages, fields) " +
             "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
     );
-    const insertRestoredCheckpoint = db.prepare(
-        "INSERT INTO chatCheckpoints " +
-            "(chatSeq, id, kind, name, createdAt, revision, chatRevision, userTurns, messageCount, preview, pages, fields) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    );
     const insertRef = db.prepare("INSERT INTO checkpointPageRefs (checkpointSeq, hash) VALUES (?, ?)");
     const renameCheckpoint = db.prepare("UPDATE chatCheckpoints SET name = ?, revision = ? WHERE seq = ?");
     const deleteCheckpoint = db.prepare("DELETE FROM chatCheckpoints WHERE seq = ?");
@@ -185,11 +201,11 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
         `SELECT DISTINCT hash FROM checkpointPageRefs WHERE checkpointSeq IN (${prunedSeqs})`,
     );
     const selectCheckpointHashes = db.prepare("SELECT hash FROM checkpointPageRefs WHERE checkpointSeq = ?");
-    const unreferencedPage = "NOT EXISTS (SELECT 1 FROM checkpointPageRefs r WHERE r.hash = checkpointPages.hash)";
-    const sweepPages = db.prepare(`DELETE FROM checkpointPages WHERE ${unreferencedPage}`);
+    const sweepPages = db.prepare(SWEEP_PAGES_SQL);
     // One bound JSON array, so the number of hashes never meets the bound-parameter limit.
     const deleteFreedPages = db.prepare(
-        `DELETE FROM checkpointPages WHERE hash IN (SELECT value FROM json_each(?)) AND ${unreferencedPage}`,
+        "DELETE FROM checkpointPages WHERE hash IN (SELECT value FROM json_each(?)) AND " +
+            "NOT EXISTS (SELECT 1 FROM checkpointPageRefs r WHERE r.hash = checkpointPages.hash)",
     );
     const selectPolicy = db.prepare(
         "SELECT autoEvery, autoKeep, lastAutoTurns FROM chatCheckpointPolicy WHERE chatSeq = ?",
@@ -532,41 +548,6 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
             return true;
         },
 
-        /** Replaces pages and restores checkpoints and policies after the chat cascade, in the same transaction. */
-        replaceAll(rows: CheckpointSnapshotRows | undefined, chatSeqs: ReadonlyMap<number, number>) {
-            db.exec("DELETE FROM checkpointPages");
-            if (!rows) {
-                return;
-            }
-            for (const page of rows.pages) {
-                insertPage.run(page.hash, page.text);
-            }
-            for (const row of rows.checkpoints) {
-                const result = insertRestoredCheckpoint.run(
-                    chatSeqs.get(row.chatSeq)!,
-                    row.id,
-                    row.kind,
-                    row.name,
-                    row.createdAt,
-                    row.revision,
-                    row.chatRevision,
-                    row.userTurns,
-                    row.messageCount,
-                    row.preview,
-                    row.pages,
-                    row.fields,
-                );
-                const pages = JSON.parse(row.pages) as string[];
-                const fields = JSON.parse(row.fields) as Record<string, string>;
-                for (const hash of new Set([...pages, ...Object.values(fields)])) {
-                    insertRef.run(Number(result.lastInsertRowid), hash);
-                }
-            }
-            for (const row of rows.policies) {
-                upsertPolicy.run(chatSeqs.get(row.chatSeq)!, row.autoEvery, row.autoKeep, row.lastAutoTurns);
-            }
-        },
-
         sweep,
     };
 }
@@ -587,15 +568,59 @@ function snapshotJson(text: string, where: string): unknown {
     }
 }
 
+/** Runs one content check of a checkpoint; anything it throws is a refusal of that row. */
+function checkedContent<T>(where: string, check: () => T): T {
+    try {
+        return check();
+    } catch (error) {
+        throw new ResourceValidationError(
+            `${where}: ${error instanceof ResourceValidationError ? error.message : "invalid checkpoint content"}`,
+        );
+    }
+}
+
+/** The message ids of a message page, every message checked. */
+function messagePageIds(text: string, hash: string): string[] {
+    const messages = snapshotJson(text, `message page ${hash}`);
+    if (!Array.isArray(messages)) {
+        throw new ResourceValidationError(`message page ${hash} must be an array`);
+    }
+    return messages.map((input) => {
+        // Check the original element before normalization; the page adds no depth to a message.
+        const message = normalizeMessage(serialize(input).stored);
+        return message.chatId as string;
+    });
+}
+
+/** Checks a field page's text as the value of the captured chat field `key`. */
+function checkFieldPage(key: string, text: string, chatId: string) {
+    const value = snapshotJson(text, `field page ${key}`);
+    if (
+        CHECKPOINT_CHAT_FIELDS[key as keyof typeof CHECKPOINT_CHAT_FIELDS] === "split" &&
+        (!isPlainObject(value) || Object.keys(value).some(isToggleKey))
+    ) {
+        throw new ResourceValidationError(`${key} must be an object without toggle entries`);
+    }
+    // Captured metadata checks are per field; the wrapper preserves the stored nesting depth.
+    normalizeChatMeta(serialize({ [key]: value }).stored, chatId);
+}
+
 /**
- * Reads the optional checkpoint table group, checking every row and each distinct use of a content page.
- * Returns stored texts verbatim, checkpoints in seq order, and only referenced pages. An absent
- * group or empty result is undefined; a partial group or inconsistent row is a ResourceValidationError.
+ * Reads the optional checkpoint table group, one row at a time, checking every row and each distinct
+ * use of a content page: the same text can be valid as messages and not as a field, or as one field
+ * and not as another, so a page's message ids and its field checks are remembered apart. An
+ * unreferenced page gets only its hash check. Every checked row goes to `sink` with its stored text
+ * verbatim, pages by hash, then checkpoints by seq and policies by chat. An absent group calls nothing
+ * on `sink`; a partial group or an inconsistent row is a `ResourceValidationError`. `chatIds` holds each
+ * chat's id by its seq (`walkChatSnapshot`). Refs are not handed on: they follow from the manifests,
+ * and a snapshot's own are only checked against them.
  */
-export function readCheckpointSnapshotRows(
+export function walkCheckpointSnapshot(
     source: DatabaseSync,
-    chats: readonly { seq: number; id: string }[],
-): CheckpointSnapshotRows | undefined {
+    chatIds: ReadonlyMap<number, string>,
+    sink: CheckpointSnapshotSink,
+    signal?: AbortSignal,
+): void {
     const tables = Object.entries(CHECKPOINT_TABLE_COLUMNS);
     let present = 0;
     for (const [table, columns] of tables) {
@@ -630,42 +655,42 @@ export function readCheckpointSnapshotRows(
         }
     }
     if (present === 0) {
-        return undefined;
+        return;
     }
     if (present !== tables.length) {
         throw new ResourceValidationError("Incomplete checkpoint tables in resource database");
     }
 
-    function readRows(table: string, order: string): Record<string, unknown>[] {
-        try {
-            return source.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all() as Record<string, unknown>[];
-        } catch {
-            throw new ResourceValidationError(`${table}: cannot read checkpoint rows`);
-        }
-    }
+    const rowsOf = (table: string, order: string) =>
+        snapshotRows(
+            source,
+            `SELECT * FROM ${table} ORDER BY ${order}`,
+            `${table}: cannot read checkpoint rows`,
+            signal,
+        );
 
-    const pageTexts = new Map<string, string>();
-    for (const [index, row] of readRows("checkpointPages", "hash").entries()) {
-        const where = `checkpointPages row ${index + 1}`;
+    const pageHashes = new Set<string>();
+    for (const [row, number] of rowsOf("checkpointPages", "hash")) {
+        const where = `checkpointPages row ${number}`;
         if (typeof row.hash !== "string" || typeof row.text !== "string") {
             throw new ResourceValidationError(`${where}: hash and text must be strings`);
         }
-        if (pageTexts.has(row.hash)) {
+        if (pageHashes.has(row.hash)) {
             throw new ResourceValidationError(`${where}: duplicate hash`);
         }
         if (createHash("sha256").update(row.text, "utf8").digest("hex") !== row.hash) {
             throw new ResourceValidationError(`${where}: hash does not match text`);
         }
-        pageTexts.set(row.hash, row.text);
+        pageHashes.add(row.hash);
+        sink.page(row.hash, row.text);
     }
 
-    const chatIds = new Map(chats.map((chat) => [chat.seq, chat.id]));
     const checkpointKeys = new Set<string>();
     const expectedRefs = new Map<number, Set<string>>();
-    const messagePageIds = new Map<string, string[]>();
+    const pageMessageIds = new Map<string, string[]>();
     const validatedFieldPages = new Set<string>();
-    const checkpoints = readRows("chatCheckpoints", "seq").map((row, index) => {
-        const where = `chatCheckpoints row ${index + 1}`;
+    for (const [row, number] of rowsOf("chatCheckpoints", "seq")) {
+        const where = `chatCheckpoints row ${number}`;
         if (!isPositiveSafeInteger(row.seq) || expectedRefs.has(row.seq) || !isPositiveSafeInteger(row.revision)) {
             throw new ResourceValidationError(`${where}: invalid seq or revision`);
         }
@@ -734,80 +759,63 @@ export function readCheckpointSnapshotRows(
         }
         const hashes = new Set([...pages, ...Object.values(fields)] as string[]);
         for (const hash of hashes) {
-            if (!pageTexts.has(hash)) {
+            if (!pageHashes.has(hash)) {
                 throw new ResourceValidationError(`${where}: no such checkpointPages hash ${hash}`);
             }
         }
         expectedRefs.set(row.seq, hashes);
-        try {
-            const messageIds = new Set<string>();
-            for (const hash of pages) {
-                let ids = messagePageIds.get(hash);
-                if (!ids) {
-                    const messages = snapshotJson(pageTexts.get(hash)!, `message page ${hash}`);
-                    if (!Array.isArray(messages)) {
-                        throw new ResourceValidationError(`message page ${hash} must be an array`);
-                    }
-                    ids = messages.map((input) => {
-                        // Check the original element before normalization; the page adds no depth to a message.
-                        const message = normalizeMessage(serialize(input).stored);
-                        return message.chatId as string;
-                    });
-                    messagePageIds.set(hash, ids);
-                }
-                for (const id of ids) {
-                    if (messageIds.has(id)) {
-                        throw new ResourceValidationError("duplicate message id across checkpoint pages");
-                    }
-                    messageIds.add(id);
-                }
+        const messageIds = new Set<string>();
+        for (const hash of pages as string[]) {
+            let ids = pageMessageIds.get(hash);
+            if (!ids) {
+                const text = sink.pageText(hash);
+                ids = checkedContent(where, () => messagePageIds(text, hash));
+                pageMessageIds.set(hash, ids);
             }
-            for (const [key, hash] of Object.entries(fields)) {
-                const fieldPage = `${key}\u0000${hash}`;
-                if (validatedFieldPages.has(fieldPage)) {
-                    continue;
+            for (const id of ids) {
+                if (messageIds.has(id)) {
+                    throw new ResourceValidationError(`${where}: duplicate message id across checkpoint pages`);
                 }
-                const value = snapshotJson(pageTexts.get(hash as string)!, `field page ${key}`);
-                if (
-                    CHECKPOINT_CHAT_FIELDS[key as keyof typeof CHECKPOINT_CHAT_FIELDS] === "split" &&
-                    (!isPlainObject(value) || Object.keys(value).some(isToggleKey))
-                ) {
-                    throw new ResourceValidationError(`${key} must be an object without toggle entries`);
-                }
-                // Captured metadata checks are per field; the wrapper preserves the stored nesting depth.
-                normalizeChatMeta(serialize({ [key]: value }).stored, chatIds.get(row.chatSeq)!);
-                validatedFieldPages.add(fieldPage);
+                messageIds.add(id);
             }
-        } catch (error) {
-            throw new ResourceValidationError(
-                `${where}: ${error instanceof ResourceValidationError ? error.message : "invalid checkpoint content"}`,
-            );
         }
-        return {
-            seq: row.seq,
-            chatSeq: row.chatSeq,
-            id: row.id,
-            kind: row.kind,
-            name: row.name,
-            createdAt: row.createdAt,
-            revision: row.revision,
-            chatRevision: row.chatRevision,
-            userTurns: row.userTurns,
-            messageCount: row.messageCount,
-            preview: row.preview,
-            pages: row.pages,
-            fields: row.fields,
-        } satisfies CheckpointSnapshotRows["checkpoints"][number];
-    });
+        for (const [key, hash] of Object.entries(fields) as [string, string][]) {
+            const fieldPage = `${key}\u0000${hash}`;
+            if (validatedFieldPages.has(fieldPage)) {
+                continue;
+            }
+            const text = sink.pageText(hash);
+            checkedContent(where, () => checkFieldPage(key, text, chatIds.get(row.chatSeq as number)!));
+            validatedFieldPages.add(fieldPage);
+        }
+        sink.checkpoint(
+            {
+                seq: row.seq,
+                chatSeq: row.chatSeq,
+                id: row.id,
+                kind: row.kind,
+                name: row.name,
+                createdAt: row.createdAt,
+                revision: row.revision,
+                chatRevision: row.chatRevision,
+                userTurns: row.userTurns,
+                messageCount: row.messageCount,
+                preview: row.preview,
+                pages: row.pages,
+                fields: row.fields,
+            },
+            hashes,
+        );
+    }
 
     const actualRefs = new Map<number, Set<string>>();
     const referencedPages = new Set<string>();
-    for (const [index, row] of readRows("checkpointPageRefs", "checkpointSeq, hash").entries()) {
-        const where = `checkpointPageRefs row ${index + 1}`;
+    for (const [row, number] of rowsOf("checkpointPageRefs", "checkpointSeq, hash")) {
+        const where = `checkpointPageRefs row ${number}`;
         if (typeof row.checkpointSeq !== "number" || !expectedRefs.has(row.checkpointSeq)) {
             throw new ResourceValidationError(`${where}: no such checkpoint`);
         }
-        if (typeof row.hash !== "string" || !pageTexts.has(row.hash)) {
+        if (typeof row.hash !== "string" || !pageHashes.has(row.hash)) {
             throw new ResourceValidationError(`${where}: no such checkpoint page`);
         }
         const refs = actualRefs.get(row.checkpointSeq) ?? new Set<string>();
@@ -821,15 +829,17 @@ export function readCheckpointSnapshotRows(
         actualRefs.set(row.checkpointSeq, refs);
         referencedPages.add(row.hash);
     }
-    for (const [index, row] of checkpoints.entries()) {
-        if ((actualRefs.get(row.seq)?.size ?? 0) !== expectedRefs.get(row.seq)!.size) {
-            throw new ResourceValidationError(`chatCheckpoints row ${index + 1}: missing checkpointPageRefs`);
+    let checkpointRow = 0;
+    for (const [seq, expected] of expectedRefs) {
+        checkpointRow += 1;
+        if ((actualRefs.get(seq)?.size ?? 0) !== expected.size) {
+            throw new ResourceValidationError(`chatCheckpoints row ${checkpointRow}: missing checkpointPageRefs`);
         }
     }
 
     const policyChats = new Set<number>();
-    const policies = readRows("chatCheckpointPolicy", "chatSeq").map((row, index) => {
-        const where = `chatCheckpointPolicy row ${index + 1}`;
+    for (const [row, number] of rowsOf("chatCheckpointPolicy", "chatSeq")) {
+        const where = `chatCheckpointPolicy row ${number}`;
         if (typeof row.chatSeq !== "number" || !chatIds.has(row.chatSeq) || policyChats.has(row.chatSeq)) {
             throw new ResourceValidationError(`${where}: no such chat or a duplicate policy`);
         }
@@ -845,16 +855,120 @@ export function readCheckpointSnapshotRows(
         ) {
             throw new ResourceValidationError(`${where}: invalid autoEvery, autoKeep, or lastAutoTurns`);
         }
-        return {
+        sink.policy({
             chatSeq: row.chatSeq,
             autoEvery: row.autoEvery,
             autoKeep: row.autoKeep,
             lastAutoTurns: row.lastAutoTurns,
-        };
-    });
-    if (checkpoints.length === 0 && policies.length === 0) {
-        return undefined;
+        });
     }
-    const pages = [...referencedPages].map((hash) => ({ hash, text: pageTexts.get(hash)! }));
-    return { checkpoints, pages, policies };
+    sink.end(referencedPages);
+}
+
+/**
+ * The checkpoint sink of `readSnapshotFile`: `rows()` after the walk holds the rows in memory, with only
+ * the referenced pages, or undefined for an absent group or one without a checkpoint or a policy.
+ */
+export function collectCheckpointRows(): { sink: CheckpointSnapshotSink; rows(): CheckpointSnapshotRows | undefined } {
+    const pageTexts = new Map<string, string>();
+    const checkpoints: CheckpointSnapshotRows["checkpoints"][number][] = [];
+    const policies: CheckpointSnapshotRows["policies"][number][] = [];
+    let pages: CheckpointSnapshotRows["pages"] = [];
+    return {
+        sink: {
+            page: (hash, text) => void pageTexts.set(hash, text),
+            pageText: (hash) => pageTexts.get(hash)!,
+            checkpoint: (row) => void checkpoints.push(row),
+            policy: (row) => void policies.push(row),
+            end: (referenced) => {
+                pages = [...referenced].map((hash) => ({ hash, text: pageTexts.get(hash)! }));
+            },
+        },
+        rows: () => (checkpoints.length === 0 && policies.length === 0 ? undefined : { checkpoints, pages, policies }),
+    };
+}
+
+/**
+ * The checkpoint half of a staged store's writer (`writeValidatedStore`): every page goes into the
+ * staged table as it is read, so no text stays in memory and `pageText` is an indexed read of the
+ * staged table, whatever indexes the source has; the pages no checkpoint named are deleted at the end.
+ * A checkpoint keeps the source's numeric `seq` and its refs are written from its manifests, with
+ * `chatRevision` verbatim.
+ */
+export function createCheckpointStagingSink(db: DatabaseSync): CheckpointSnapshotSink {
+    const insertPage = db.prepare("INSERT INTO checkpointPages (hash, text) VALUES (?, ?)");
+    const selectPage = db.prepare("SELECT text FROM checkpointPages WHERE hash = ?");
+    const insertCheckpoint = db.prepare(
+        "INSERT INTO chatCheckpoints " +
+            "(seq, chatSeq, id, kind, name, createdAt, revision, chatRevision, userTurns, messageCount, preview, " +
+            "pages, fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const insertRef = db.prepare("INSERT INTO checkpointPageRefs (checkpointSeq, hash) VALUES (?, ?)");
+    const insertPolicy = db.prepare(
+        "INSERT INTO chatCheckpointPolicy (chatSeq, autoEvery, autoKeep, lastAutoTurns) VALUES (?, ?, ?, ?)",
+    );
+    return {
+        page(hash, text) {
+            insertPage.run(hash, text);
+        },
+        pageText(hash) {
+            return (selectPage.get(hash) as { text: string }).text;
+        },
+        checkpoint(row, hashes) {
+            insertCheckpoint.run(
+                row.seq,
+                row.chatSeq,
+                row.id,
+                row.kind,
+                row.name,
+                row.createdAt,
+                row.revision,
+                row.chatRevision,
+                row.userTurns,
+                row.messageCount,
+                row.preview,
+                row.pages,
+                row.fields,
+            );
+            for (const hash of hashes) {
+                insertRef.run(row.seq, hash);
+            }
+        },
+        policy(row) {
+            insertPolicy.run(row.chatSeq, row.autoEvery, row.autoKeep, row.lastAutoTurns);
+        },
+        end() {
+            db.exec(SWEEP_PAGES_SQL);
+        },
+    };
+}
+
+/**
+ * Copies the staged checkpoint tables into the emptied live ones inside the caller's transaction, after
+ * `copyStagedChats`, with the staged store attached as `staged`: the pages byte for byte, the
+ * checkpoints by staged seq with fresh live seqs, onto the live chats through `STAGED_CHAT_SEQS`, then
+ * their refs and the policies. `chatRestoreFloors` stays empty: floors are local to an epoch.
+ */
+export function copyStagedCheckpoints(db: DatabaseSync): void {
+    db.exec(`
+        INSERT INTO main.checkpointPages (hash, text) SELECT hash, text FROM staged.checkpointPages;
+        INSERT INTO main.chatCheckpoints (chatSeq, id, kind, name, createdAt, revision, chatRevision, userTurns,
+                messageCount, preview, pages, fields)
+            SELECT seqs.liveSeq, c.id, c.kind, c.name, c.createdAt, c.revision, c.chatRevision, c.userTurns,
+                    c.messageCount, c.preview, c.pages, c.fields
+                FROM staged.chatCheckpoints c JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = c.chatSeq
+                ORDER BY c.seq;
+        CREATE TABLE temp.stagedCheckpointSeqs (stagedSeq INTEGER PRIMARY KEY, liveSeq INTEGER NOT NULL) STRICT;
+        INSERT INTO temp.stagedCheckpointSeqs (stagedSeq, liveSeq)
+            SELECT s.seq, l.seq FROM staged.chatCheckpoints s
+                JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = s.chatSeq
+                JOIN main.chatCheckpoints l ON l.chatSeq = seqs.liveSeq AND l.id = s.id;
+        INSERT INTO main.checkpointPageRefs (checkpointSeq, hash)
+            SELECT seqs.liveSeq, r.hash
+                FROM staged.checkpointPageRefs r JOIN temp.stagedCheckpointSeqs seqs ON seqs.stagedSeq = r.checkpointSeq;
+        DROP TABLE temp.stagedCheckpointSeqs;
+        INSERT INTO main.chatCheckpointPolicy (chatSeq, autoEvery, autoKeep, lastAutoTurns)
+            SELECT seqs.liveSeq, p.autoEvery, p.autoKeep, p.lastAutoTurns
+                FROM staged.chatCheckpointPolicy p JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = p.chatSeq;
+    `);
 }

@@ -21,6 +21,7 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -51,8 +52,8 @@ function tempDir() {
     dirs.push(dir);
     return dir;
 }
-function fileStore(dir: string, name = "live.sqlite") {
-    const store = createResourceStore({ file: path.join(dir, name), kinds });
+function fileStore(dir: string, name = "live.sqlite", feed?: ReturnType<typeof createChangeFeed>) {
+    const store = createResourceStore({ file: path.join(dir, name), kinds, feed });
     stores.push(store);
     return store;
 }
@@ -1296,7 +1297,7 @@ describe("revision counters", () => {
             `UPDATE chats SET revision = ${limit} WHERE id = 'k'; UPDATE chatOrders SET revision = ${limit}; UPDATE resources SET revision = ${limit};`,
         );
         db.close();
-        store.replaceAll(store.readSnapshot(path.join(dir, "snapshot.sqlite")));
+        await installSnapshot(store, path.join(dir, "snapshot.sqlite"), kinds);
         const state = snapshotState(store);
         const writes = store.writeCount();
         const k = chat(store, "k")!.revision;
@@ -1417,7 +1418,10 @@ describe("snapshots", () => {
 
     it("reads back every chat table, validated and with positions compacted, and restores it under a new epoch with fences intact", async () => {
         const dir = tempDir();
-        const store = fileStore(dir);
+        const feed = createChangeFeed();
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        const store = fileStore(dir, "live.sqlite", feed);
         populate(store);
         const file = await snapshotOf(dir, store);
         const validated = store.readSnapshot(file);
@@ -1488,7 +1492,7 @@ describe("snapshots", () => {
         const oldEpoch = store.epoch();
         const oldToken = chat(store, "n", "d")!.revision;
         const writes = store.writeCount();
-        const epoch = store.replaceAll(validated);
+        const epoch = await installSnapshot(store, file, kinds);
         expect(epoch).not.toBe(oldEpoch);
         expect(store.writeCount()).toBe(writes + 1);
         const read = store.readKinds([characters], { chats: true });
@@ -1540,15 +1544,21 @@ describe("snapshots", () => {
             store.readSnapshot(await snapshotOf(dir, store, "after.sqlite")).messages.map((x) => x.position),
         ).toEqual([0, 1, 2, 3, 4, 0]);
 
-        // A failing restore (a duplicate message id) rolls back every table, the epoch, and the write count.
+        // A failing restore (its late copy fails) rolls back every table, the epoch, and the write
+        // count, and publishes nothing. The snapshot differs from the live state, so a kept copy shows.
+        const failing = await stageSnapshot(file, kinds);
         const state = snapshotState(store);
+        const summaries = store.readKinds([], { chatSummaries: true }).chatSummaries;
         const count = store.writeCount();
-        expect(() =>
-            store.replaceAll({ ...validated, messages: [...validated.messages, validated.messages[0]] }),
-        ).toThrow("UNIQUE constraint failed");
+        events.length = 0;
+        expect(() => withFailingInstallCopy(() => store.replaceAll(failing.file, failing.report))).toThrow(
+            INJECTED_COPY_FAILURE,
+        );
         expect(store.epoch()).toBe(epoch);
         expect(store.writeCount()).toBe(count);
         expect(snapshotState(store)).toBe(state);
+        expect(store.readKinds([], { chatSummaries: true }).chatSummaries).toEqual(summaries);
+        expect(events).toEqual([]);
     });
 
     it("compacts crafted positions so inserts stay correct, and refuses a crafted order seq", async () => {
@@ -1568,7 +1578,7 @@ describe("snapshots", () => {
             ["c", 2],
             ["x", 0],
         ]);
-        store.replaceAll(validated);
+        await installSnapshot(store, crafted, kinds);
         expect(messageIds(store, "k")).toEqual(["a", "b", "c"]);
         const k = chat(store, "k")!.revision;
         store.applyChanges({
@@ -1584,7 +1594,7 @@ describe("snapshots", () => {
         expect(store.readSnapshot(again).messages.map((x) => x.position)).toEqual([0, 1, 2, 3, 4, 0]);
         // A position at the limit is compacted too, so the next append cannot overflow.
         const atLimit = tamper(file, `UPDATE messages SET position = ${Number.MAX_SAFE_INTEGER} WHERE id = 'c'`);
-        store.replaceAll(store.readSnapshot(atLimit));
+        await installSnapshot(store, atLimit, kinds);
         const k2 = chat(store, "k")!.revision;
         store.applyChanges({ chats: [group("k", k2, [{ op: "append", messages: [m("e")], anchor: { end: true } }])] });
         expect(messageIds(store, "k")).toEqual(["a", "b", "c", "e"]);
@@ -2804,7 +2814,7 @@ describe("group idempotency ids", () => {
         await store.backupTo(snapshot);
         expect(rememberedIds(snapshot).map((row) => row.groupId)).toEqual(["g6"]);
         store.applyChanges({ chats: [identified("k", first.revision!, [note("after the backup")], "g7")] });
-        store.replaceAll(store.readSnapshot(snapshot));
+        await installSnapshot(store, snapshot, kinds);
         store.close();
         expect(rememberedIds(file)).toEqual([]);
         store = createResourceStore({ file, kinds });
@@ -2817,7 +2827,7 @@ describe("group idempotency ids", () => {
         olderDb.close();
         const restoredBase = chat(store, "k")!.revision;
         store.applyChanges({ chats: [identified("k", restoredBase, [note("before the older restore")], "g8")] });
-        store.replaceAll(store.readSnapshot(older));
+        await installSnapshot(store, older, kinds);
         expect(chat(store, "k")!.data.note).toBe("");
         // Deleting the chat drops its ids with it (another incarnation under the id remembers none):
         // the old group's base names the old incarnation, so it conflicts instead of applying.

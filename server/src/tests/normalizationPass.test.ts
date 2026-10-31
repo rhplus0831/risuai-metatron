@@ -21,6 +21,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 
 // The normalization pass the store runs when it opens and inside `replaceAll`, materialization,
 // idempotence and stable ids across restarts, and the rollback when the pass fails.
@@ -553,10 +554,10 @@ describe("normalization stamps", () => {
         const file = path.join(dir, "target.sqlite");
         const target = open(file, kinds, CLEAN_B);
         target.put(doc, "b", { n: 2 }, null);
-        const snapshot = target.readSnapshot(backup);
+        const staged = await stageSnapshot(backup, kinds);
         raw(file, "UPDATE meta SET value = ? WHERE key = 'normalizationStamp'", normalizationStamp(COMMIT_A, kinds));
 
-        target.replaceAll(snapshot);
+        target.replaceAll(staged.file, staged.report);
         expect(target.list(doc).map((row) => row.id)).toEqual(["a"]);
         expect(target.get(doc, "a")!.data).toEqual({ n: 1 });
         expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_B, kinds));
@@ -688,7 +689,7 @@ describe("the pass inside replaceAll", () => {
         const before = observe(store);
         const snapshot = store.readSnapshot(snapshotFile);
         expect(snapshot.rows.map((row) => `${row.kind}/${row.id}`)).toEqual(["pluginStorage/main", "characters/c"]);
-        const epoch = store.replaceAll(snapshot);
+        const epoch = await installSnapshot(store, snapshotFile, defaults);
         expect(epoch).not.toBe(before.epoch);
 
         const after = observe(store);
@@ -741,7 +742,7 @@ describe("the pass inside replaceAll", () => {
             expect(row.text, row.kind).toBe(original.data);
             expect(row.revision, row.kind).toBe(original.revision);
         }
-        const epoch = target.replaceAll(snapshot);
+        const epoch = await installSnapshot(target, backupFile, defaults);
         const restored = observe(target);
         // Same data and revision counters (the ids included); the epoch and the incarnations are new.
         const comparable = (state: typeof expected) =>
@@ -792,10 +793,10 @@ describe("the pass inside replaceAll", () => {
         const before = observe(store, all);
         const writes = store.writeCount();
 
-        const snapshot = store.readSnapshot(snapshotFile);
+        const refused = await stageSnapshot(snapshotFile, kinds);
         const oldStamp = normalizationStamp(COMMIT_A, kinds);
         raw(file, "UPDATE meta SET value = ? WHERE key = 'normalizationStamp'", oldStamp);
-        expect(() => store.replaceAll(snapshot)).toThrow("cannot materialize during the restore");
+        expect(() => store.replaceAll(refused.file, refused.report)).toThrow("cannot materialize during the restore");
         expect(store.epoch()).toBe(before.epoch);
         expect(store.writeCount()).toBe(writes);
         expect(observe(store, all)).toEqual(before);
@@ -808,7 +809,8 @@ describe("the pass inside replaceAll", () => {
             WHEN NEW.key = 'normalizationStamp'
             BEGIN SELECT RAISE(FAIL, 'stamp rejected'); END`,
         );
-        expect(() => store.replaceAll(snapshot)).toThrow("stamp rejected");
+        const stampRefused = await stageSnapshot(snapshotFile, kinds);
+        expect(() => store.replaceAll(stampRefused.file, stampRefused.report)).toThrow("stamp rejected");
         expect(store.epoch()).toBe(before.epoch);
         expect(store.writeCount()).toBe(writes);
         expect(rawRows(file)).toEqual(beforeRows);

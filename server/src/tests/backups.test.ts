@@ -19,7 +19,7 @@ import type {
 import { MAX_ARCHIVE_RECORDS } from "../data/archive.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
+import { createResourceStore, ResourceValidationError, type ResourceStore } from "../data/resourceStore.ts";
 import {
     buildArchive,
     createResourceTestClient,
@@ -29,9 +29,11 @@ import {
     type ResourceTestClient,
     sleep,
     TEST_INDEX_HTML,
+    testRestoreRunner,
     type TestServerOptions,
     waitFor,
 } from "./testSupport.ts";
+import { installSnapshot } from "./stagedRestore.ts";
 
 const servers: ResourceTestClient[] = [];
 
@@ -1189,7 +1191,7 @@ describe("chats in snapshots and archives", () => {
             store.applyChanges({
                 chats: [group("k", store.chatRevision("c", "k"), [{ op: "meta", set: { name: "Live edit" } }])],
             });
-            store.replaceAll(validated);
+            await installSnapshot(store, copy, kinds);
             const restored = db
                 .prepare(
                     "SELECT c.seq, c.id, c.revision, s.chatSeq, s.revision AS summaryRevision, s.text FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq ORDER BY c.seq",
@@ -1655,5 +1657,160 @@ describe("shutdown admission", () => {
         expect(before.map((b) => b.id)).toContain(snapshot.id);
         holding.resolve();
         await disposing;
+    });
+});
+
+describe("staged restore admission", () => {
+    it.each(["size", "mtime", "inode", "hash"] as const)(
+        "refuses a changed staged %s before maintenance and removes its staging",
+        async (changed) => {
+            vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+            const runner = testRestoreRunner();
+            const s = await defaultServer({
+                snapshotIntervalMs: 30,
+                restore: {
+                    runner: async (input, options) => {
+                        const report = await runner(input, options);
+                        if (changed === "size") {
+                            await fs.appendFile(input.output, "x");
+                            report.sha256 = createHash("sha256")
+                                .update(await fs.readFile(input.output))
+                                .digest("hex");
+                            report.mtimeMs = (await fs.lstat(input.output)).mtimeMs;
+                        } else if (changed === "mtime") {
+                            await fs.utimes(input.output, new Date(0), new Date(report.mtimeMs + 5000));
+                        } else if (changed === "inode") {
+                            await fs.copyFile(input.output, `${input.output}.replacement`);
+                            await fs.rename(`${input.output}.replacement`, input.output);
+                            report.mtimeMs = (await fs.lstat(input.output)).mtimeMs;
+                        } else {
+                            const bytes = await fs.readFile(input.output);
+                            const offset = bytes.indexOf(Buffer.from("before"));
+                            expect(offset).toBeGreaterThan(-1);
+                            bytes.write("forged", offset);
+                            await fs.writeFile(input.output, bytes);
+                            report.mtimeMs = (await fs.lstat(input.output)).mtimeMs;
+                        }
+                        return report;
+                    },
+                },
+            });
+            try {
+                await s.create("characters", "before", character("before"));
+                const snapshot = await s.context.snapshots.snapshotNow();
+                await s.create("characters", "live", character("live"));
+                // Establish the periodic snapshot's write-count baseline after the live write.
+                await s.context.snapshots.snapshotNow();
+                const before = await (await s.list("characters")).json();
+                const epoch = s.epoch;
+                const backups = await listBackups(s);
+                let maintenance = 0;
+                s.context.snapshots.onMaintenance(async () => {
+                    maintenance++;
+                });
+                const res = await restore(s, snapshot.id);
+                expect(res.status).toBe(400);
+                expect(await res.json()).toEqual({ error: "Not a resource database" });
+                expect(await (await s.list("characters")).json()).toEqual(before);
+                expect(await s.readEpoch()).toBe(epoch);
+                expect(maintenance).toBe(0);
+                vi.advanceTimersByTime(30);
+                await s.context.snapshots.exclusive(async () => {});
+                expect(await listBackups(s)).toEqual(backups);
+                expect(readdirSync(tmpDir(s))).toEqual([]);
+            } finally {
+                vi.useRealTimers();
+            }
+        },
+    );
+
+    it.each([false, true])(
+        "queues a second validation until the first ends (first refuses: %s)",
+        async (refuseFirst) => {
+            const entered = defer();
+            const release = defer();
+            const queued = defer();
+            const runner = testRestoreRunner();
+            let calls = 0;
+            const s = await defaultServer({
+                restore: {
+                    runner: async (input, options) => {
+                        calls++;
+                        if (calls === 1) {
+                            entered.resolve();
+                            await release.promise;
+                            if (refuseFirst) throw new ResourceValidationError("refused first source");
+                        }
+                        return runner(input, options);
+                    },
+                },
+            });
+            await s.create("characters", "saved", character("saved"));
+            const snapshot = await s.context.snapshots.snapshotNow();
+            const first = restore(s, snapshot.id);
+            await entered.promise;
+            expect(s.context.snapshots.gate.active).toBe(false);
+            // Observe admission without changing the queue or its result.
+            const track = s.context.snapshots.track.bind(s.context.snapshots);
+            function observe<T>(start: () => Promise<T>): Promise<T> {
+                const result = track(start);
+                queued.resolve();
+                return result;
+            }
+            const observed = vi.spyOn(s.context.snapshots, "track").mockImplementation(observe);
+            const second = restore(s, snapshot.id);
+            await queued.promise;
+            observed.mockRestore();
+            try {
+                expect(calls).toBe(1);
+                expect(await listBackups(s)).toHaveLength(1);
+            } finally {
+                release.resolve();
+            }
+            expect((await first).status).toBe(refuseFirst ? 400 : 200);
+            const result = await second;
+            expect(result.status).toBe(refuseFirst ? 200 : 412);
+            if (!refuseFirst)
+                expect(await result.json()).toEqual({ error: "EpochMismatch", epoch: await s.readEpoch() });
+            expect(calls).toBe(refuseFirst ? 2 : 1);
+            expect(await listBackups(s)).toHaveLength(2);
+            expect(readdirSync(tmpDir(s))).toEqual([]);
+        },
+    );
+
+    it("runs version-2 validation through the injected runner outside maintenance", async () => {
+        const entered = defer();
+        const release = defer();
+        let calls = 0;
+        const runner = testRestoreRunner();
+        const s = await defaultServer({
+            restore: {
+                runner: async (input, options) => {
+                    calls++;
+                    entered.resolve();
+                    await release.promise;
+                    return runner(input, options);
+                },
+            },
+        });
+        await s.create("characters", "saved", character("saved"));
+        const bytes = buildArchive([
+            ["manifest.json", manifestOf([])],
+            ["resources.sqlite", await databaseBytes(s)],
+        ]);
+        const importing = importArchive(s, bytes);
+        await entered.promise;
+        try {
+            expect(calls).toBe(1);
+            expect(s.context.snapshots.gate.active).toBe(false);
+            await s.create("characters", "during", character("during"));
+        } finally {
+            release.resolve();
+        }
+        expect((await importing).status).toBe(200);
+        await s.readEpoch();
+        expect((await s.get("characters", "saved")).status).toBe(200);
+        expect((await s.get("characters", "during")).status).toBe(404);
+        expect(readdirSync(tmpDir(s))).toEqual([]);
     });
 });

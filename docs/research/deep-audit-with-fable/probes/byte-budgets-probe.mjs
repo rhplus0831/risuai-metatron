@@ -41,10 +41,12 @@
 //   time, `JSON.stringify` time, JSON bytes, heap across both, then the whole route: ms, wire bytes.
 // - `readSummaries` (F07): on `library`, `chatSummaryCollections` of all 300 characters through the store and the
 //   route. The first read of a store fills the `lastMessageAt` memo, so it is reported apart from the later runs.
-// - `restore` (F06): for `library` and `oneLongChat`: `backupTo` a snapshot, then `store.readSnapshot` (validation) and
-//   `store.replaceAll` (install), each timed directly, with a `monitorEventLoopDelay` histogram over the run and a
-//   timer yielded between the two sections so the sampler runs. The maintenance gate and the safety snapshot are not
-//   part of it.
+// - `restore` (F06): for `library` and `oneLongChat`: `backupTo` a snapshot, then `stageValidatedSnapshot` (validation,
+//   in process, so the worker's boot is not in it, and the serving thread never runs this section in production),
+//   `verifyStagedFile` (the serving thread's re-hash) and `store.replaceAll` (the install), each timed directly, with a
+//   `monitorEventLoopDelay` histogram over the run and a timer yielded between the sections so the sampler runs. The
+//   maintenance gate and the safety snapshot are not part of it. Rerunning `validate` and `install` against the earlier
+//   baseline compares the worker's work and the SQL copy with the old serving-thread sections of those names.
 // - `checkpoints` (SD04): on the chat of `oneLongChat`, with a policy: `checkpoints.save` of a chat without pages,
 //   the same save again unchanged (checkpoints deleted between runs), `autoSave` not due, and `autoSave` due (the
 //   baseline reset to null before each run, autoKeep 2, so a run saves, writes the policy and prunes).
@@ -85,6 +87,10 @@ import { createServerContext } from "../../../../server/src/app.ts";
 import { createCheckpointService } from "../../../../server/src/data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../../server/src/data/kinds.ts";
 import { createResourceStore } from "../../../../server/src/data/resourceStore.ts";
+import {
+    stageValidatedSnapshot,
+    verifyStagedFile,
+} from "../../../../server/src/data/restore/stageValidatedSnapshot.ts";
 import { createDiagnosticsJournal } from "../../../../server/src/diagnostics/journal.ts";
 import { MAX_AUTO_EVERY } from "../../../../shared/chatCheckpoints.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../../shared/resources.ts";
@@ -568,6 +574,7 @@ async function measureRestore(fixture) {
         await store.backupTo(snapshot);
         const backupMs = performance.now() - backupStart;
         const validateMs = [];
+        const verifyMs = [];
         const installMs = [];
         const heap = [];
         const eventLoopDelayMs = [];
@@ -576,14 +583,19 @@ async function measureRestore(fixture) {
             histogram.reset();
             histogram.enable();
             await yieldFor(20);
+            const staged = path.join(dir, `staged-${run}.sqlite`);
             let start = performance.now();
-            const validated = store.readSnapshot(snapshot);
+            const report = await stageValidatedSnapshot(snapshot, staged, kinds);
             validateMs.push(performance.now() - start);
-            held = validated;
+            held = report;
             heap.push(heapDelta(base));
             await yieldFor(20);
             start = performance.now();
-            store.replaceAll(validated);
+            await verifyStagedFile(staged, report);
+            verifyMs.push(performance.now() - start);
+            await yieldFor(20);
+            start = performance.now();
+            store.replaceAll(staged, report);
             installMs.push(performance.now() - start);
             await yieldFor(20);
             histogram.disable();
@@ -599,6 +611,7 @@ async function measureRestore(fixture) {
             backupToMs: round(backupMs),
             snapshotBytes: statSync(snapshot).size,
             validate: timing(validateMs),
+            verify: timing(verifyMs),
             install: timing(installMs),
             heapDeltaMiB: round(median(heap)),
             heapDeltaMiBRuns: heap,
@@ -613,9 +626,10 @@ async function measureRestore(fixture) {
 async function restore([library, oneLongChat]) {
     return {
         note:
-            "readSnapshot and replaceAll are called directly: the maintenance gate and the safety snapshot are not in " +
-            "this measurement. eventLoopDelayMs measures scheduling delay, not the longest synchronous interval; " +
-            "validate and install are that interval.",
+            "stageValidatedSnapshot, verifyStagedFile and replaceAll are called directly: the maintenance gate and the " +
+            "safety snapshot are not in this measurement. validate runs in process here and in a worker in production. " +
+            "eventLoopDelayMs measures scheduling delay, not the longest synchronous interval; install is that interval " +
+            "and verify yields between its chunks.",
         threeThousandChatStore: await measureRestore(library),
         fiveThousandMessageStore: await measureRestore(oneLongChat),
     };

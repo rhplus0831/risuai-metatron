@@ -112,6 +112,30 @@ export function createSnapshotManager(options: {
         return lstatSync(file, { throwIfNoEntry: false })?.isFile() ? file : null;
     }
 
+    /**
+     * Pins the listed snapshot `id` at `target` under the lock, so retention cannot take its file from
+     * a restore that works outside the lock: a hard link, or a copy across devices or where links are
+     * refused. False for any id that is not a listed snapshot. Never call it while holding the lock.
+     */
+    function pin(id: string, target: string): Promise<boolean> {
+        return exclusive(async () => {
+            const file = resolve(id);
+            if (file === null) {
+                return false;
+            }
+            try {
+                await fs.link(file, target);
+            } catch (error) {
+                const { code } = error as NodeJS.ErrnoException;
+                if (code !== "EXDEV" && code !== "EPERM") {
+                    throw error;
+                }
+                await fs.copyFile(file, target);
+            }
+            return true;
+        });
+    }
+
     /** Takes one snapshot. Only call it while holding the lock (`exclusive`). */
     async function takeLocked(): Promise<BackupSnapshotInfo> {
         const now = new Date();
@@ -200,6 +224,7 @@ export function createSnapshotManager(options: {
         gate,
         list,
         resolve,
+        pin,
         exclusive,
 
         /**

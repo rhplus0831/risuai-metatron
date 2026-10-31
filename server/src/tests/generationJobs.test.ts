@@ -30,6 +30,7 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { installSnapshot } from "./stagedRestore.ts";
 import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
 
 // The generation job registry (`server/src/jobs/generationJobs.ts`) in process, with a fake runner
@@ -1445,7 +1446,7 @@ describe("the kept outcome of a collected job", () => {
         const snapshot = path.join(dir, "snapshot.sqlite");
         await store.backupTo(snapshot);
         const oldEpoch = store.epoch();
-        store.replaceAll(store.readSnapshot(snapshot));
+        await installSnapshot(store, snapshot, kinds);
         expect(store.epoch()).not.toBe(oldEpoch);
         expect(jobs.status(before, "tab")).toBeNull();
         expect(jobs.status(during, "tab")).toMatchObject({ state: "ended", epoch: oldEpoch });

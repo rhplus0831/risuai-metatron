@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Context, Hono, MiddlewareHandler } from "hono";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     MAX_UPSTREAM_STAGED,
@@ -29,6 +29,7 @@ import {
     type UpstreamImportRunner,
     runUpstreamImportWorker,
 } from "../data/upstream/importRunner.ts";
+import { type StagedFileReport, verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
 import { STAGED_ASSETS_DIR, STAGED_DATABASE_FILE } from "../data/upstream/importStage.ts";
 import { UpstreamFormatError } from "../data/upstream/risuSave.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
@@ -45,8 +46,9 @@ const ARCHIVE_FILE = "archive.bin";
 /** A prepared import waiting for its commit: its staging folder and what the commit installs and checks. */
 type StagedUpstreamImport = {
     staging: string;
-    /** The validated staged store (`importStage.ts`). */
+    /** The trusted staged store (`importStage.ts`), and the report the commit verifies it by. */
     databaseFile: string;
+    databaseReport: StagedFileReport;
     /** Every archive asset: its file under `save/assets` and its extracted copy in the staging folder. */
     assets: { target: string; staged: string }[];
     selection: UpstreamImportSelection;
@@ -60,9 +62,10 @@ type StagedUpstreamImport = {
  * slot for its commit or cancel, at most `ttlMs` (`UPSTREAM_STAGED_TTL_MS`) from its prepare's answer,
  * and at most `MAX_UPSTREAM_STAGED` at once (the Realm staging's pattern, `importRealm.ts`). Expiry,
  * cancel, and `close` remove the staging folder; a commit takes the import out (`take`) and removes it
- * itself. `close` (shutdown) also aborts a running prepare (`signal`), so shutdown does not wait for a
- * conversion, and waits for every removal it or an expiry started. What a crash leaves under
- * `save/.tmp` is emptied at the next start (`routes/storage.ts`).
+ * itself, unless it hands it back (`giveBack`). `close` (shutdown) also aborts a running prepare and a
+ * commit that has not reached its install (`signal`), so shutdown does not wait for a conversion, and
+ * waits for every removal it or an expiry started. What a crash leaves under `save/.tmp` is emptied at
+ * the next start (`routes/storage.ts`).
  */
 export type UpstreamImportStaging = ReturnType<typeof createUpstreamImportStaging>;
 
@@ -92,8 +95,19 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
             await remove(staged);
         }
     };
+    /** Waits `ttlMs` for `staged`'s commit or cancel. */
+    const hold = (token: string, staged: StagedUpstreamImport) => {
+        const timer = setTimeout(() => {
+            const expired = detach(token);
+            if (expired) {
+                void remove(expired);
+            }
+        }, ttlMs);
+        timer.unref?.();
+        waiting.set(token, { ...staged, timer });
+    };
     return {
-        /** Aborted by `close`: a running prepare stops (its worker is terminated). */
+        /** Aborted by `close`: a running prepare stops (its worker is terminated), and a commit before its install. */
         signal: shutdown.signal,
         /** Whether a prepare would be refused: `MAX_UPSTREAM_STAGED` imports wait, or the store is closed. */
         get full() {
@@ -109,14 +123,7 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
                 return null;
             }
             const token = randomUUID();
-            const timer = setTimeout(() => {
-                const expired = detach(token);
-                if (expired) {
-                    void remove(expired);
-                }
-            }, ttlMs);
-            timer.unref?.();
-            waiting.set(token, { ...staged, timer });
+            hold(token, staged);
             return token;
         },
         /** The import `token` names, still waiting (null when gone). */
@@ -126,6 +133,18 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
         /** Takes the import `token` names out for its commit, which removes its folder. */
         take(token: string): StagedUpstreamImport | null {
             return detach(token);
+        },
+        /**
+         * Returns an import its commit took and did not use, under the same token with a fresh TTL: the
+         * folder is this store's again. False once the store is closed: the commit still owns the
+         * folder and removes it.
+         */
+        giveBack(token: string, staged: StagedUpstreamImport): boolean {
+            if (closing !== null) {
+                return false;
+            }
+            hold(token, staged);
+            return true;
         },
         /** Removes the import `token` names, if it still waits. */
         cancel,
@@ -166,12 +185,14 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
  * token that names no waiting import; 409 while another import runs, 503 during maintenance, 412 for
  * another epoch (the import kept); then the changed-since-review check, before maintenance so a
  * refusal ends no job: when resources were written since the prepare and `acceptWrites` is not that
- * count, `409 { error: "changedSinceReview", writes }` (the import kept). Otherwise, under
- * maintenance: the epoch, `readSnapshot` of the staged store (here, inside the window where writes are
- * closed anyway; 400 when it fails, the jobs that maintenance ended stay ended), then
- * `restoreValidated` (the safety snapshot, the extracted assets linked where no file exists, the
- * epoch, `replaceAll`). Answers `{ epoch, assetsWritten, assetsSkipped, selection }`; the folder is
- * removed whatever happened.
+ * count, `409 { error: "changedSinceReview", writes }` (the import kept). Otherwise the commit takes
+ * the import, so it cannot expire, and reads no row of it: `verifyStagedFile` checks the staged store
+ * against its prepare's report (400 when it differs), a pass in yielding chunks with writes still
+ * open, so the epoch and the write count are checked again right before maintenance (412 and 409, the
+ * import handed back). Then, under maintenance: the epoch, then `restoreValidated` (the safety
+ * snapshot, the extracted assets linked where no file exists, the epoch, `replaceAll`). Answers
+ * `{ epoch, assetsWritten, assetsSkipped, selection }`; the folder is removed whatever happened, unless
+ * the import was handed back. Shutdown (`staging.signal`) stops a commit before its install with a 503.
  *
  * `POST /api/backups/import-upstream/cancel` `{ token }`: removes the waiting import; 204 either way.
  */
@@ -213,6 +234,29 @@ export function registerUpstreamImportRoutes(
     const now = arg.now ?? Date.now;
     const assetsPath = path.join(savePath, "assets");
     const deps = { savePath, snapshots, auth, maxImportBytes, slot };
+
+    /** A commit's refusal for what changed since its prepare (the epoch 412, the writes 409), or null. */
+    function staleCommit(
+        c: Context<AppEnv>,
+        staged: StagedUpstreamImport,
+        expectedEpoch: string | undefined,
+        acceptWrites: unknown,
+    ): Response | null {
+        try {
+            store.assertEpoch(expectedEpoch);
+            // A restore since the prepare replaced the data it was compared with (the tab reloads).
+            store.assertEpoch(staged.epoch);
+        } catch (error) {
+            return backupErrorResponse(c, error);
+        }
+        // Before maintenance, so a refusal ends no running job. Not repeated under the lock: the
+        // jobs' own abort checkpoints there count as writes. The window until the gate closes is
+        // accepted; the safety snapshot holds what lands in it.
+        const writes = store.writeCount() - staged.writeCount;
+        return writes > 0 && writes !== acceptWrites
+            ? c.json({ error: UPSTREAM_CHANGED_SINCE_REVIEW, writes }, 409)
+            : null;
+    }
 
     app.post(UPSTREAM_IMPORT_PREPARE_PATH, limiter, (c) =>
         serveFileImport<UpstreamArchivePlan>(c, deps, {
@@ -327,6 +371,7 @@ export function registerUpstreamImportRoutes(
                 : staging.add({
                       staging: folder,
                       databaseFile: path.join(folder, STAGED_DATABASE_FILE),
+                      databaseReport: settled.value.databaseReport,
                       assets: plan.assets.map((asset, index) => ({
                           target: asset.target,
                           staged: path.join(folder, STAGED_ASSETS_DIR, String(index)),
@@ -384,19 +429,9 @@ export function registerUpstreamImportRoutes(
             return backupErrorResponse(c, new MaintenanceError());
         }
         const expectedEpoch = c.req.header(RESOURCE_EPOCH_HEADER);
-        try {
-            store.assertEpoch(expectedEpoch);
-            // A restore since the prepare replaced the data it was compared with (the tab reloads).
-            store.assertEpoch(staged.epoch);
-        } catch (error) {
-            return backupErrorResponse(c, error);
-        }
-        // Before maintenance, so a refusal ends no running job. Not repeated under the lock: the
-        // jobs' own abort checkpoints there count as writes. The window until the gate closes is
-        // accepted; the safety snapshot holds what lands in it.
-        const writes = store.writeCount() - staged.writeCount;
-        if (writes > 0 && writes !== acceptWrites) {
-            return c.json({ error: UPSTREAM_CHANGED_SINCE_REVIEW, writes }, 409);
+        const stale = staleCommit(c, staged, expectedEpoch, acceptWrites);
+        if (stale) {
+            return stale;
         }
         let release!: () => void;
         const lifetime = new Promise<void>((resolve) => (release = resolve));
@@ -407,17 +442,28 @@ export function registerUpstreamImportRoutes(
         }
         slot.busy = true;
         const taken = staging.take(token)!;
+        let handedBack = false;
         try {
+            await verifyStagedFile(taken.databaseFile, taken.databaseReport, staging.signal);
+            // Writes stayed open during that pass. From here to the lock's queue, nothing awaits.
+            staging.signal.throwIfAborted();
+            const changed = staleCommit(c, taken, expectedEpoch, acceptWrites);
+            if (changed) {
+                handedBack = staging.giveBack(token, taken);
+                return changed;
+            }
             const result = await snapshots.withMaintenance(async ({ snapshot }) => {
+                staging.signal.throwIfAborted();
                 store.assertEpoch(expectedEpoch);
-                const validated = store.readSnapshot(taken.databaseFile);
                 return restoreValidated({
                     store,
                     assetsPath,
                     expectedEpoch,
                     snapshot,
-                    validated,
+                    stagedFile: taken.databaseFile,
+                    stagedReport: taken.databaseReport,
                     assets: taken.assets.map((asset) => ({ target: asset.target, stage: async () => asset.staged })),
+                    signal: staging.signal,
                 });
             });
             recordSafely(diagnostics, { kind: "lifecycle", phase: "import" });
@@ -425,7 +471,9 @@ export function registerUpstreamImportRoutes(
         } catch (error) {
             return backupErrorResponse(c, error);
         } finally {
-            await fs.rm(taken.staging, { recursive: true, force: true }).catch(() => {});
+            if (!handedBack) {
+                await fs.rm(taken.staging, { recursive: true, force: true }).catch(() => {});
+            }
             slot.busy = false;
             release();
         }

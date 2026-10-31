@@ -51,7 +51,7 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 /**
  * The metatron store → upstream RisuAI flat `Database` exporter: the inverse of `importDatabase.ts`'s
  * conversion, for a `.bin` upstream's "Load Backup" restores. It reads the rows of a validated store
- * copy (`store.readSnapshot` of a `backupTo` file: every record normalized, the chat tables checked)
+ * copy (`readSnapshotFile` of a `backupTo` file: every record normalized, the chat tables checked)
  * and does no I/O; `encodeUpstreamDatabase` (`risuSave.ts`) turns the result into `database.risudat`.
  * Upstream behavior is read from RisuAI `669b12ce`; "U" below is its `src/ts/`.
  *

@@ -32,7 +32,14 @@ import {
     normalizeMessage,
     normalizeMessageList,
 } from "./chats.ts";
-import { isValidResourceId, nextRevision, ResourceValidationError, serialize } from "./resourceStore.ts";
+import {
+    isValidResourceId,
+    nextRevision,
+    NOT_A_RESOURCE_DATABASE,
+    ResourceValidationError,
+    serialize,
+    snapshotRows,
+} from "./resourceStore.ts";
 
 /**
  * The chat tables of the resource database: chat metadata (`chats`), one row per message (`messages`,
@@ -144,6 +151,12 @@ const MESSAGE_ROLE_SQL = "json_extract(data, '$.role')";
  */
 const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON messages (chatSeq, ${MESSAGE_ROLE_SQL});`;
 
+/**
+ * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
+ * writer too, so a staged file has the live schema.
+ */
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MESSAGE_ROLE_INDEX_SQL}`;
+
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
 
@@ -237,6 +250,16 @@ export type ChatSnapshotRows = {
         generationHistory: string | null;
     }[];
     readonly chatOrders: readonly { characterId: string; revision: number; ids: string }[];
+};
+
+/**
+ * Where `walkChatSnapshot` hands each row it checked, as it reads them. `meta` of a chat is the
+ * row's metadata as its stored text reads back.
+ */
+export type ChatSnapshotSink = {
+    chat(row: ChatSnapshotRows["chats"][number], meta: Record<string, unknown>): void;
+    message(row: ChatSnapshotRows["messages"][number]): void;
+    chatOrder(row: ChatSnapshotRows["chatOrders"][number]): void;
 };
 
 /**
@@ -852,13 +875,12 @@ type ChatSummaryRow = {
 /** A `chatSummaries` row's columns, as `freshSummaryText` compares them. */
 type StoredSummary = { revision: number | null; text: string | null };
 /**
- * One write of `chats.meta` (`writeChatMeta`): a new chat, whose revision starts at 0; new metadata
- * on a stored chat, at its revision before the group's bump; or a restored row, at its own revision.
+ * One write of `chats.meta` (`writeChatMeta`): a new chat, whose revision starts at 0, or new metadata
+ * on a stored chat, at its revision before the group's bump.
  */
 type ChatMetaWrite =
     | { kind: "create"; characterId: string; id: string; meta: string }
-    | { kind: "update"; seq: number; revision: number; meta: string }
-    | { kind: "restore"; chat: ChatSnapshotRows["chats"][number] };
+    | { kind: "update"; seq: number; revision: number; meta: string };
 type MessageRow = {
     position: number;
     data: string;
@@ -924,9 +946,7 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
  */
 export function openChatSchema(db: DatabaseSync): void {
     db.exec("BEGIN IMMEDIATE");
-    db.exec(CHAT_GROUP_TABLE_SQL);
-    db.exec(CHAT_SUMMARY_TABLE_SQL);
-    db.exec(MESSAGE_ROLE_INDEX_SQL);
+    db.exec(CHAT_OPEN_SCHEMA_SQL);
     const version = String(SUMMARY_PROJECTION_VERSION);
     const stored = db.prepare("SELECT value FROM meta WHERE key = 'summaryProjectionVersion'").get() as
         { value: string } | undefined;
@@ -1053,14 +1073,6 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     );
     const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision FROM chats ORDER BY seq");
     const selectOrderRevisions = db.prepare("SELECT seq, characterId, revision FROM chatOrders ORDER BY seq");
-    const insertRestoredChat = db.prepare(
-        "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, ?, ?, ?)",
-    );
-    const insertRestoredMessage = db.prepare(
-        "INSERT INTO messages (chatSeq, id, position, data, generationId, generationSeq, generationFinal, " +
-            "generationHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    const insertRestoredOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, ?, ?)");
     // Message search (`searchBatch`).
     const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ?");
     const searchNextChat = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq < ? ORDER BY seq DESC LIMIT 1");
@@ -1123,23 +1135,20 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     }
 
     /**
-     * The one writer of `chats.meta`: the only caller of the statements that write it. Stores the
-     * metadata and its projection together in the caller's transaction, so no write leaves the
-     * projection behind. `summary` is the metadata's `summaryText`, from the caller; nothing is parsed
-     * here. Returns the chat's seq.
+     * The one writer of `chats.meta` on a live write: the only caller of the statements that write it.
+     * Stores the metadata and its projection together in the caller's transaction, so no write leaves
+     * the projection behind. `summary` is the metadata's `summaryText`, from the caller; nothing is
+     * parsed here. Returns the chat's seq. A restore writes both tables its own way: the staged store's
+     * writer (`createChatStagingSink`) and the install's copy (`copyStagedChats`).
      */
     function writeChatMeta(write: ChatMetaWrite, summary: string): number {
         let seq: number;
         let revision = 0;
         if (write.kind === "create") {
             seq = Number(insertChat.run(write.characterId, write.id, CHAT_SCHEMA_VERSION, write.meta).lastInsertRowid);
-        } else if (write.kind === "update") {
+        } else {
             setChatMeta.run(write.meta, CHAT_SCHEMA_VERSION, write.seq);
             ({ seq, revision } = write);
-        } else {
-            const { characterId, id, schemaVersion, meta } = write.chat;
-            revision = write.chat.revision;
-            seq = Number(insertRestoredChat.run(characterId, id, revision, schemaVersion, meta).lastInsertRowid);
         }
         upsertSummary.run(seq, revision, summary);
         return seq;
@@ -2473,31 +2482,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return order.bytes + (sumCharacterSummaryBytes.get(characterId) as { bytes: number }).bytes;
         },
 
-        /** Restores validated chat rows in the caller's transaction and returns the old-to-new chat seq map. */
-        replaceAll(rows: ChatSnapshotRows) {
+        /** Drops the last-message memo: an install's commit gave every chat a new seq. */
+        forgetLastMessageTimes() {
             lastMessageTimes.clear();
-            db.exec("DELETE FROM messages; DELETE FROM chats; DELETE FROM chatOrders;");
-            for (const order of rows.chatOrders) {
-                insertRestoredOrder.run(order.characterId, order.revision, order.ids);
-            }
-            const seqs = new Map<number, number>();
-            for (const chat of rows.chats) {
-                const summary = summaryText(JSON.parse(chat.meta) as Record<string, unknown>);
-                seqs.set(chat.seq, writeChatMeta({ kind: "restore", chat }, summary));
-            }
-            for (const message of rows.messages) {
-                insertRestoredMessage.run(
-                    seqs.get(message.chatSeq)!,
-                    message.id,
-                    message.position,
-                    message.data,
-                    message.generationId,
-                    message.generationSeq,
-                    message.generationFinal,
-                    message.generationHistory,
-                );
-            }
-            return seqs;
         },
     };
 }
@@ -2572,44 +2559,36 @@ export function messageSearchSnippet(
 }
 
 /**
- * Reads and checks the chat tables of a snapshot file for `readSnapshot`: every chat belongs to a
+ * Reads and checks the chat tables of a snapshot file, one row at a time: every chat belongs to a
  * character of the snapshot, is unique, and has metadata the normalizer accepts; every message
  * belongs to a chat, has a unique id equal to its JSON `chatId`, a distinct integer position, a
  * valid message, and a well-formed fence; every character has exactly one order with a positive
- * unique `seq`, and each order is a duplicate-free permutation of that character's chats. Throws
- * `ResourceValidationError`.
+ * unique `seq`, and each order is a duplicate-free permutation of that character's chats. Each row
+ * goes to `sink` once it passed, chats by seq, messages by chat and position, orders by seq. Throws
+ * `ResourceValidationError`. Returns each chat's id by its seq, for the checkpoint tables.
  *
- * Message positions are returned compacted to `0..n-1` in stored order: positions are internal, and
+ * Message positions are handed on compacted to `0..n-1` in stored order: positions are internal, and
  * the insertion arithmetic assumes they start at or above 0 and leave room to grow (a crafted
- * snapshot could otherwise place one below the `start` anchor or at the safe-integer limit).
+ * snapshot could otherwise place one below the `start` anchor or at the safe-integer limit). Messages
+ * arrive ordered by chat, so the sets that find a duplicate hold one chat's ids at a time.
  */
-export function readChatSnapshotRows(source: DatabaseSync, characterIds: ReadonlySet<string>): ChatSnapshotRows {
-    let rawChats: Record<string, unknown>[];
-    let rawMessages: Record<string, unknown>[];
-    let rawOrders: Record<string, unknown>[];
-    try {
-        rawChats = source
-            .prepare("SELECT seq, characterId, id, revision, schemaVersion, meta FROM chats ORDER BY seq")
-            .all() as Record<string, unknown>[];
-        rawMessages = source
-            .prepare(
-                "SELECT chatSeq, id, position, data, generationId, generationSeq, generationFinal, generationHistory " +
-                    "FROM messages ORDER BY chatSeq, position",
-            )
-            .all() as Record<string, unknown>[];
-        rawOrders = source
-            .prepare("SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq")
-            .all() as Record<string, unknown>[];
-    } catch {
-        throw new ResourceValidationError("Not a resource database");
-    }
-
+export function walkChatSnapshot(
+    source: DatabaseSync,
+    characterIds: ReadonlySet<string>,
+    sink: ChatSnapshotSink,
+    signal?: AbortSignal,
+): ReadonlyMap<number, string> {
     const chatKeys = new Set<string>();
-    const chatSeqs = new Map<number, { characterId: string; id: string }>();
+    const chatIds = new Map<number, string>();
     const chatsByCharacter = new Map<string, Set<string>>();
-    const chats = rawChats.map((row, index) => {
-        const where = `chat row ${index + 1}`;
-        if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision) || chatSeqs.has(row.seq)) {
+    for (const [row, number] of snapshotRows(
+        source,
+        "SELECT seq, characterId, id, revision, schemaVersion, meta FROM chats ORDER BY seq",
+        NOT_A_RESOURCE_DATABASE,
+        signal,
+    )) {
+        const where = `chat row ${number}`;
+        if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision) || chatIds.has(row.seq)) {
             throw new ResourceValidationError(`${where}: invalid seq or revision`);
         }
         if (typeof row.characterId !== "string" || !characterIds.has(row.characterId)) {
@@ -2626,53 +2605,64 @@ export function readChatSnapshotRows(source: DatabaseSync, characterIds: Readonl
         if (row.schemaVersion !== CHAT_SCHEMA_VERSION) {
             throw new ResourceValidationError(`${where}: unsupported schema version`);
         }
-        let meta: string;
+        let meta: { text: string; stored: unknown };
         try {
-            meta = serialize(normalizeChatMeta(JSON.parse(String(row.meta)), row.id)).text;
+            meta = serialize(normalizeChatMeta(JSON.parse(String(row.meta)), row.id));
         } catch (error) {
             throw new ResourceValidationError(
                 `${where}: ${error instanceof ResourceValidationError ? error.message : "meta is not JSON"}`,
             );
         }
-        chatSeqs.set(row.seq, { characterId: row.characterId, id: row.id });
+        chatIds.set(row.seq, row.id);
         let list = chatsByCharacter.get(row.characterId);
         if (!list) {
             list = new Set();
             chatsByCharacter.set(row.characterId, list);
         }
         list.add(row.id);
-        return {
-            seq: row.seq,
-            characterId: row.characterId,
-            id: row.id,
-            revision: row.revision,
-            schemaVersion: CHAT_SCHEMA_VERSION,
-            meta,
-        };
-    });
+        sink.chat(
+            {
+                seq: row.seq,
+                characterId: row.characterId,
+                id: row.id,
+                revision: row.revision,
+                schemaVersion: CHAT_SCHEMA_VERSION,
+                meta: meta.text,
+            },
+            meta.stored as Record<string, unknown>,
+        );
+    }
 
-    const messageKeys = new Set<string>();
-    const positionKeys = new Set<string>();
-    /** Next compacted position per chat (rows arrive ordered by chat and stored position). */
-    const nextPosition = new Map<number, number>();
-    const messages = rawMessages.map((row, index) => {
-        const where = `message row ${index + 1}`;
-        if (typeof row.chatSeq !== "number" || !chatSeqs.has(row.chatSeq)) {
+    let currentChat: number | null = null;
+    const messageIds = new Set<string>();
+    const positions = new Set<unknown>();
+    for (const [row, number] of snapshotRows(
+        source,
+        "SELECT chatSeq, id, position, data, generationId, generationSeq, generationFinal, generationHistory " +
+            "FROM messages ORDER BY chatSeq, position",
+        NOT_A_RESOURCE_DATABASE,
+        signal,
+    )) {
+        const where = `message row ${number}`;
+        if (typeof row.chatSeq !== "number" || !chatIds.has(row.chatSeq)) {
             throw new ResourceValidationError(`${where}: no such chat`);
+        }
+        if (row.chatSeq !== currentChat) {
+            currentChat = row.chatSeq;
+            messageIds.clear();
+            positions.clear();
         }
         if (!isValidResourceId(row.id)) {
             throw new ResourceValidationError(`${where}: invalid id`);
         }
-        const key = `${row.chatSeq}\u0000${row.id}`;
-        const positionKey = `${row.chatSeq}\u0000${String(row.position)}`;
-        if (messageKeys.has(key)) {
+        if (messageIds.has(row.id)) {
             throw new ResourceValidationError(`${where}: duplicate message id`);
         }
-        if (!Number.isSafeInteger(row.position) || positionKeys.has(positionKey)) {
+        if (!Number.isSafeInteger(row.position) || positions.has(row.position)) {
             throw new ResourceValidationError(`${where}: invalid or duplicate position`);
         }
-        messageKeys.add(key);
-        positionKeys.add(positionKey);
+        messageIds.add(row.id);
+        positions.add(row.position);
         let data: string;
         try {
             const message = normalizeMessage(JSON.parse(String(row.data)));
@@ -2711,24 +2701,27 @@ export function readChatSnapshotRows(source: DatabaseSync, characterIds: Readonl
         ) {
             throw new ResourceValidationError(`${where}: invalid generation`);
         }
-        const position = nextPosition.get(row.chatSeq) ?? 0;
-        nextPosition.set(row.chatSeq, position + 1);
-        return {
+        sink.message({
             chatSeq: row.chatSeq,
             id: row.id,
-            position,
+            position: messageIds.size - 1,
             data,
             generationId: (row.generationId as string | null) ?? null,
             generationSeq: (row.generationSeq as number | null) ?? null,
             generationFinal: (row.generationFinal as number | null) ?? null,
             generationHistory: (row.generationHistory as string | null) ?? null,
-        };
-    });
+        });
+    }
 
     const ordered = new Set<string>();
     const orderSeqs = new Set<number>();
-    const chatOrders = rawOrders.map((row, index) => {
-        const where = `chat order row ${index + 1}`;
+    for (const [row, number] of snapshotRows(
+        source,
+        "SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq",
+        NOT_A_RESOURCE_DATABASE,
+        signal,
+    )) {
+        const where = `chat order row ${number}`;
         if (typeof row.characterId !== "string" || !characterIds.has(row.characterId) || ordered.has(row.characterId)) {
             throw new ResourceValidationError(`${where}: no such character or a duplicate order`);
         }
@@ -2752,12 +2745,84 @@ export function readChatSnapshotRows(source: DatabaseSync, characterIds: Readonl
         ) {
             throw new ResourceValidationError(`${where}: ids must list exactly the character's chats`);
         }
-        return { characterId: row.characterId, revision: row.revision, ids: JSON.stringify(ids) };
-    });
+        sink.chatOrder({ characterId: row.characterId, revision: row.revision, ids: JSON.stringify(ids) });
+    }
     for (const characterId of characterIds) {
         if (!ordered.has(characterId)) {
             throw new ResourceValidationError(`character ${characterId} has no chat order`);
         }
     }
-    return { chats, messages, chatOrders };
+    return chatIds;
+}
+
+/**
+ * The chat half of a staged store's writer (`writeValidatedStore`): writes each checked row into the
+ * staged tables. A chat keeps the source's numeric `seq`, so its messages need no mapping, with the
+ * projection of its normalized metadata beside it (a snapshot's own `chatSummaries` are never read);
+ * an order takes a seq of the staged table's in source order.
+ */
+export function createChatStagingSink(db: DatabaseSync): ChatSnapshotSink {
+    const insertChat = db.prepare(
+        "INSERT INTO chats (seq, characterId, id, revision, schemaVersion, meta) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
+    const insertMessage = db.prepare(
+        "INSERT INTO messages (chatSeq, id, position, data, generationId, generationSeq, generationFinal, " +
+            "generationHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const insertOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, ?, ?)");
+    return {
+        chat(row, meta) {
+            insertChat.run(row.seq, row.characterId, row.id, row.revision, row.schemaVersion, row.meta);
+            upsertSummary.run(row.seq, row.revision, summaryText(meta));
+        },
+        message(row) {
+            insertMessage.run(
+                row.chatSeq,
+                row.id,
+                row.position,
+                row.data,
+                row.generationId,
+                row.generationSeq,
+                row.generationFinal,
+                row.generationHistory,
+            );
+        },
+        chatOrder(row) {
+            insertOrder.run(row.characterId, row.revision, row.ids);
+        },
+    };
+}
+
+/** A staged chat's live seq while an install runs: from `copyStagedChats` until the install drops it. */
+export const STAGED_CHAT_SEQS = "temp.stagedChatSeqs";
+
+/**
+ * Copies the staged chat tables into the emptied live ones inside the caller's transaction, with the
+ * staged store attached as `staged` (`replaceAll`): chats by staged seq, so the live `AUTOINCREMENT`
+ * gives each a fresh seq and a later delete and recreate cannot reuse an incarnation; then, through
+ * `STAGED_CHAT_SEQS`, their messages, orders, and projections. With the staged writer, this is the one
+ * place `chats.meta` is written past `writeChatMeta`: every row here was checked by the staging walk,
+ * and nothing is parsed.
+ */
+export function copyStagedChats(db: DatabaseSync): void {
+    db.exec(`
+        INSERT INTO main.chats (characterId, id, revision, schemaVersion, meta)
+            SELECT characterId, id, revision, schemaVersion, meta FROM staged.chats ORDER BY seq;
+        CREATE TABLE ${STAGED_CHAT_SEQS} (stagedSeq INTEGER PRIMARY KEY, liveSeq INTEGER NOT NULL) STRICT;
+        INSERT INTO ${STAGED_CHAT_SEQS} (stagedSeq, liveSeq)
+            SELECT s.seq, l.seq FROM staged.chats s
+                JOIN main.chats l ON l.characterId = s.characterId AND l.id = s.id;
+        INSERT INTO main.messages (chatSeq, id, position, data, generationId, generationSeq, generationFinal,
+                generationHistory)
+            SELECT seqs.liveSeq, m.id, m.position, m.data, m.generationId, m.generationSeq, m.generationFinal,
+                    m.generationHistory
+                FROM staged.messages m JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = m.chatSeq
+                ORDER BY m.chatSeq, m.position;
+        INSERT INTO main.chatOrders (characterId, revision, ids)
+            SELECT characterId, revision, ids FROM staged.chatOrders ORDER BY seq;
+        INSERT INTO main.chatSummaries (chatSeq, revision, text)
+            SELECT seqs.liveSeq, s.revision, s.text
+                FROM staged.chatSummaries s JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = s.chatSeq;
+    `);
 }

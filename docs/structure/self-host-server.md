@@ -27,7 +27,7 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   development-auth settings; `app.ts` assembles `createServerContext`, route
   registration, state, and lifecycle. Test seams include `generationRunner`,
   `scriptWorkerOptions`, `routeLimits`, `cbsTimeLimits`, `realmStagingTimer`,
-  `memoryTaskOptions`, and `thumbnailOptions`.
+  `memoryTaskOptions`, `thumbnailOptions`, and `restore`.
 - Configuration: `listenConfig.ts` reads `PORT` (default 6001), `RISU_HOST`,
   `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS`; unset `RISU_HOST` listens on
   every interface, and the auth bypass accepts `TRUE`/`1` only with a numeric loopback address (`127.0.0.0/8` or `::1`, without brackets). `parsePasswordSeed` trims and validates a 64-character SHA-256 hex string.
@@ -35,7 +35,7 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   `app.ts` and its route factories consume `RISU_PASSWORD_SHA256`,
   `RISU_MAX_IMPORT_BYTES`, `RISU_MAX_UPSTREAM_DB_BYTES`,
   `RISU_UPSTREAM_IMPORT_HEAP_MB`, `RISU_UPSTREAM_EXPORT_HEAP_MB`,
-  `RISU_REQUEST_HISTORY_MAX_BYTES`, `RISU_DIAGNOSTICS_DIR`, and
+  `RISU_RESTORE_HEAP_MB`, `RISU_REQUEST_HISTORY_MAX_BYTES`, `RISU_DIAGNOSTICS_DIR`, and
   `RISU_DIAGNOSTICS_MAX_BYTES`.
 - HTTP routes: `server/src/routes/` contains auth and storage; resource boot and
   writes; backups, upstream backups, chat checkpoints, and card imports; proxy, LLM,
@@ -48,8 +48,9 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   `checkpointService.ts`, and `durableWrite.ts` own the database and its disk
   lifecycle. Persisted shapes, revisions, and chat mutation contracts belong to
   [persistence](persistence.md).
-- Backup and import internals: `data/upstream/` reads and writes RisuAI-compatible
-  `.bin` saves in workers. `http/spool.ts`, `fileImport.ts`, `contentAsset.ts`,
+- Backup and import internals: `data/restore/` validates a restore's database in a
+  worker and writes its staged store (Flows); `data/upstream/` reads and writes
+  RisuAI-compatible `.bin` saves in workers. `http/spool.ts`, `fileImport.ts`, `contentAsset.ts`,
   `recordStream.ts`, and `routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`
   handle archive and card file transfer. A content-named asset (`assets/<sha256 hex>.<ext>`) that
   already exists is kept only when it holds its bytes (`holdsVerifiedAsset` in
@@ -170,7 +171,7 @@ Routing is non-strict (a trailing slash matches).
 | PUT        | `/api/resources/:kind/:id`                                       | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | body `{ baseRevision: string \| null, data }`; `{ epoch, revision, data }` as stored; 409 `{ error, revision }` on a stale revision                                                                                                                                                                                                                                                                                             |
 | DELETE     | `/api/resources/:kind/:id`                                       | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | `?baseRevision=<token>`; `{ success: true, epoch }`; 409 `{ error, revision }` when stale or already gone; 400 for a singleton                                                                                                                                                                                                                                                                                                  |
 | GET        | `/api/backups`                                                   | `checkAuth`                                                                  | 2000/min                                                                                                       | `{ items: [{ id, createdAt, size }] }`, newest first                                                                                                                                                                                                                                                                                                                                                                            |
-| POST       | `/api/backups/:id/restore`                                       | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | replaces every resource with the snapshot (safety snapshot first); `{ epoch }`; 404 unknown id, 400 invalid snapshot                                                                                                                                                                                                                                                                                                            |
+| POST       | `/api/backups/:id/restore`                                       | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | validated in a worker, then replaces every resource (safety snapshot first); `{ epoch }`; 404 unknown id, 400 invalid snapshot, 503                                                                                                                                                                                                                                                                                             |
 | POST       | `/api/backups/export`                                            | `checkAuth`                                                                  | 2000/min                                                                                                       | body `{ partial?: true \| string[] }` (`true`: profile assets selected from the archived snapshot; list: explicit asset keys); streams an archive (see Flows); 400 for invalid input or too many partial assets, 413 when it cannot fit the format                                                                                                                                                                              |
 | POST       | `/api/backups/import`                                            | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | raw archive body (no 100 MiB limit; `RISU_MAX_IMPORT_BYTES`, default 16 GiB); `{ epoch, assetsWritten, assetsSkipped }`; 400/413                                                                                                                                                                                                                                                                                                |
 | POST       | `/api/backups/import-upstream/prepare`                           | `checkAuth` + epoch                                                          | 2000/min                                                                                                       | raw upstream RisuAI `.bin` body (no 100 MiB limit; `RISU_MAX_IMPORT_BYTES`): converted in a worker into a staged store, nothing replaced; NDJSON (`shared/upstreamBackup.ts`): `{ phase, done, total }` lines, then `{ token, report }`, or `{ error }`; 400 (a refused archive, a Risu Account backup's message among them), 409 (busy, or `Another RisuAI backup import is waiting for its answer`), 412, 413, 503            |
@@ -193,7 +194,7 @@ The read budget: `POST /api/resources/read` deduplicates `refs` by kind and id, 
 
 "+ epoch" means the `x-resource-epoch` header must name the current database epoch (412 `{ error: "EpochMismatch", epoch }` otherwise). Mutations answer 503 with `Retry-After` while a restore or an import runs. During shutdown, new resource requests (including reads), backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed store-closed error maps to the same retryable response. Every `/api/resources` and `/api/llm-secrets` response is `Cache-Control: no-store`. Every read route (`/api/resources?kinds=`, `/api/resources/read`, `/api/resources/:kind`, `/api/resources/:kind/:id`) and the PUT response answer a kind with `project` in its projected form: `llmSecrets` is masked. Every whole chat a read returns (`/api/resources/read` `chats` and `chatCollections`, `/api/resources?chats=1`) carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`, `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none). The tab replaces the chat's feed locks with it ([persistence](persistence.md) Save step 9); a client must treat the field as optional.
 
-Chat summaries (`data/chatStore.ts` `chatSummary` over the stored `chatSummaries.text`, shared by the full summary listing, collection summary reads, single-chat binding reads, and a feed chat entry's `summary`; none of them selects or parses `meta`, State) include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an empty chat or an undated final message. `createChatTables` memoizes both values and absence by chat seq; misses read one row through `messages_position` (`ORDER BY position DESC LIMIT 1`), never MAX(time) or an earlier dated message. Message creation/replacement, append/insert, setMessage, setText, patchMessage, removal, and translation writes invalidate it, as do chat and character cascade deletion; `replaceAll` clears the memo. While `db.isTransaction`, reads query directly and neither read nor fill the memo, so a throwing transaction callback cannot leave rolled-back activity cached. Metadata-only writes keep the memo. The resource database stays at version 3.
+Chat summaries (`data/chatStore.ts` `chatSummary` over the stored `chatSummaries.text`, shared by the full summary listing, collection summary reads, single-chat binding reads, and a feed chat entry's `summary`; none of them selects or parses `meta`, State) include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an empty chat or an undated final message. `createChatTables` memoizes both values and absence by chat seq; misses read one row through `messages_position` (`ORDER BY position DESC LIMIT 1`), never MAX(time) or an earlier dated message. Message creation/replacement, append/insert, setMessage, setText, patchMessage, removal, and translation writes invalidate it, as do chat and character cascade deletion; `replaceAll` clears the memo once it committed. While `db.isTransaction`, reads query directly and neither read nor fill the memo, so a throwing transaction callback cannot leave rolled-back activity cached. Metadata-only writes keep the memo. The resource database stays at version 3.
 
 Ordinary send, continue, reroll, and group jobs write chat activity without changing the character or group resource revision; explicit character effects (memory enable, triggers, Lua setters) still write it. Streamed continue refreshes the continued message's time in its existing final write; non-streamed continue sets its time when writing the reply. Preview and previewPrompt change neither activity nor character revision. The stored `lastInteraction` remains a frozen legacy fallback; the client derives last-chatted ordering from chats ([persistence](persistence.md)). Upstream export keeps its independent cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but leave absence as absence (upstream reads it as now).
 
@@ -500,18 +501,68 @@ Generation channels:
 Snapshots and backups:
 
 - The snapshot timer runs every ten minutes and writes only after committed resource
-  changes; it retains the newest 20 snapshots. Restore validates the snapshot and
-  epoch, then under maintenance makes a safety snapshot and replaces the resource
-  store, advancing the epoch.
+  changes; it retains the newest 20 snapshots. A restore checks the epoch and takes a
+  turn of a FIFO queue (`routes/backups.ts`), which spans its validation and install:
+  one validation worker runs at a time, a second restore waits, and a stale waiter
+  answers 412 with no work and no safety snapshot. The turn pins the snapshot into a
+  staging folder (`snapshots.pin`, under the snapshot lock: a hard link, or a copy on
+  `EXDEV` or `EPERM`, so retention cannot take the file; a snapshot not listed is a
+  404), validates it outside maintenance (below), verifies the staged file, then
+  under maintenance checks the epoch, makes a safety snapshot, and installs, advancing
+  the epoch. A client that leaves does not cancel a restore.
 - The version-2 archive export streams a database snapshot and asset records; its
   exported database omits `llmSecrets`. Import authenticates and checks the epoch
-  before reading, spools and validates the full archive, then installs it under
-  maintenance with a safety snapshot and only adds missing asset files.
+  before reading, spools the full archive and validates it, its database in a turn of
+  the same queue that ends before maintenance, then installs it under maintenance
+  with a safety snapshot and only adds missing asset files.
+- Validation (`data/restore/stageValidatedSnapshot.ts`): `walkSnapshotFile` reads the
+  source one row at a time and runs every check, handing each checked row to a sink;
+  `readSnapshotFile` collects them in memory for the upstream export, and the restore's
+  sink, the raw validated-row writer (`writeValidatedStore`), writes them into a new
+  file created exclusively, with the live schema, a rollback journal in memory, and no
+  fsync. Numeric revisions stay as stored, chats and checkpoints keep their source
+  `seq`, positions are compacted to `0..n-1`, fences and checkpoint pages stay byte
+  for byte, refs come from the manifests, projections from the normalized metadata;
+  retired kinds, the source's `meta` rows, its summaries, `chatGroups`, and
+  `chatRestoreFloors` stay out, and no singleton is materialized. What stays in memory
+  is the largest row or page and the id sets of the cross-row checks. Every page goes
+  into the staged table as it is read, and the unreferenced ones are deleted at the
+  end. `validateRunner.ts` runs this in one `worker_threads` thread per restore on the
+  default kinds, under `RISU_RESTORE_HEAP_MB` (default 2048); a context with
+  `resourceKinds` runs it in process, and `restore.runner` replaces both. A refusal
+  keeps its text (400), an out-of-memory end or an exit before the report is a 400
+  saying so, and an unexpected failure is logged and a 500. The closed file is reported
+  by size, mtime, inode, and SHA-256.
+- Install: `verifyStagedFile` re-checks that report on the serving thread (a regular
+  file by `lstat`, then SHA-256 in 1 MiB chunks that yield between them; a mismatch is a
+  400). `replaceAll(stagedFile, report)` then stats the file again and reads its version
+  and layout on a short read-only connection, attaches it (`mode=ro&immutable=1`), and
+  in one `BEGIN IMMEDIATE` deletes the live rows and copies the staged ones with
+  `INSERT ... SELECT` in dependency order: fresh live seqs through temporary maps, so
+  the `AUTOINCREMENT` high-water marks keep moving and `sqlite_sequence` is never
+  copied, with foreign keys on. It creates the missing `materialize` singletons, sets
+  the epoch and the stamp, and commits; no record normalizer runs on an existing row.
+  `DETACH` runs outside the transaction, and a failed one is logged and detached by
+  the next install. The memos, the source generation base, and the `epoch` event change
+  only after the commit, so a rollback leaves them.
+- Shutdown aborts a restore before its install: its worker is terminated, a waiter
+  ends at its turn, and it answers 503 with its staging removed. The signal is checked
+  at the turn, through the hash pass, before maintenance, inside it, and right before
+  `replaceAll`; an install past that check completes. An upstream commit stops the same
+  way (`staging.signal`). A version-2 import admitted before shutdown finishes, its
+  worker included, and `dispose` waits for it.
 - Upstream `.bin` import and export use prepare/commit or prepare/download flows.
   Conversion runs in a worker with a heap cap; staged work expires after ten
-  minutes. Import reports changes for review and checks that the live store has not
-  changed before commit. Export reads the snapshot without checkpoint tables, so
-  upstream saves do not include named checkpoint history.
+  minutes. The prepare's worker keeps its build store (the converter's hand-off needs
+  the store's singletons and orders), closes it, and stages from it with
+  `stageValidatedSnapshot`, on the default kinds: the upstream import, like the export,
+  does not support a store with custom kinds. Import reports changes for review and
+  checks that the live store has not changed before commit. The commit reads no row:
+  it takes the import, verifies the staged file, and checks the epoch and the accepted
+  write count again right before maintenance (the hash pass is a new window); a change
+  answers 412 or `409 changedSinceReview` and hands the import back with a fresh TTL.
+  Export reads the snapshot without checkpoint tables, so upstream saves do not include
+  named checkpoint history.
 - `.risum`, CharX, and Realm imports validate before publishing assets. Module and
   CharX uploads spool to disk; once their NDJSON response starts, failures are
   returned as a final error line. Realm import stages card contents before the tab
@@ -542,8 +593,8 @@ Disk, under `save/`:
 - `server/known_public_key_hashes.json`: an array of strings. A login's new key is one operation (key `auth:keys`): it derives the next list from the current one, writes it durably, and installs it, so two concurrent logins keep both keys; the login answers 200 after the write and 500 when it failed. A missing file means no known keys; malformed JSON or another shape (including an empty file) is renamed beside it to `known_public_key_hashes.json.corrupt-<Date.now()>`, with a warning naming that path. Startup continues with no known keys, so every tab logs in again with the password; other read errors throw. Deleting only `password` lets you set a new one but does not revoke registered clients; delete this file too for that.
 - `server/web_push_vapid.json` (mode 600): the Web Push VAPID pair. Replacing it (or the `RISU_WEB_PUSH_VAPID_*` variables) leaves every browser subscribed with the old key: each subscribes again the next time it opens the app, or an open tab's page is shown again.
 - `server/push_subscriptions.json` (mode 600): `{ version: 1, subscriptions: [{ endpoint, keys: { p256dh, auth }, expirationTime, failureCount, lastError?, updatedAt }] }`; `updatedAt` is the last registration refresh, at most once per 24 h for an unchanged healthy entry. Skipped registrations leave the stamp and list order unchanged; the 50-entry cap drops the least recently refreshed. The list changes only in operations on the ordered writer (key `push:subscriptions`): a registration or removal applies the delivery outcomes settled so far, derives the next list, writes it durably, and installs it after the write, and its route answers 204 after that or 500. Delivery bookkeeping (failure counts, a 404/410 removal) is one such operation per settled delivery batch, one write, awaited by no one; a failed bookkeeping write keeps memory and marks the file uncertain.
-- `.tmp/`: staged writes and the per-operation export/import staging folders, emptied at startup.
-- `data/resources.sqlite` (plus its `-wal` and `-shm` files): the resource store. Table `resources` (`seq` autoincrement, `kind`, `id`, `revision`, `schemaVersion`, `data` JSON text, unique `(kind, id)`), table `meta` holding the random `epoch`, `summaryProjectionVersion`, and `normalizationStamp`, table `chats` (`seq`, `characterId`, `id`, `revision`, `schemaVersion`, `meta` JSON), table `messages` (`chatSeq`, message `id`, integer `position`, `data` JSON, and the generation fence: `generationId`, `generationSeq`, `generationFinal`, `generationHistory` of up to 8 earlier ids; the expression index `messages_role` on `(chatSeq, json_extract(data, '$.role'))` counts a chat's user turns without reading a row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open; it is outside the layout check, and it makes SQLite refuse a `data` that is not JSON), table `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON), and table `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`, `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, so a version-3 file from before it gains it on open without a version change; it is not part of the snapshot layout check, a snapshot's copy of it is not restored, and a restore leaves it empty (deleting the chats cascades). Table `chatSummaries` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `revision`, `text`) is each chat's summary projection (`summaryText`: the listed metadata fields as JSON, without `lastMessageAt` or the revision), created the same way and outside the layout check: `backupTo` copies it into every snapshot, validation ignores it, and a restore writes its own rows. `writeChatMeta` is the only code that writes `chats.meta` and stores the projection in the same transaction; every other chat write moves the row's `revision` with a compare-and-set, so a row an older server left behind never turns fresh. A row is fresh when its `revision` equals the chat's. `openChatSchema` runs in its own transaction after the normalization pass and before any chat statement is prepared: it rebuilds missing and stale rows, and every row when `summaryProjectionVersion` differs from `SUMMARY_PROJECTION_VERSION` (bump it when the projection's shape changes). A metadata value that cannot be projected rolls that transaction back and closes the store, so one unparsable `meta` stops the open. A reader that still finds a stale or missing row computes it from `meta` and rewrites it outside a transaction, best-effort, as neither a store write nor a feed event; inside a transaction it answers the computed text and writes nothing. The checkpoint tables are created the same way and are outside the required layout (a snapshot without them is valid), but a snapshot that has any of them is checked and restored with them (`readCheckpointSnapshotRows`): `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind` (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview` JSON, `pages` JSON (the ordered message page hashes), `fields` JSON (captured field → page hash), unique `(chatSeq, id)`), `checkpointPages` (`hash` primary key, `text`), `checkpointPageRefs` (`checkpointSeq` referencing `chatCheckpoints.seq` with `ON DELETE CASCADE`, `hash`, indexed), and `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`, `autoKeep`, `lastAutoTurns`); a checkpoint delete or prune removes the pages its own checkpoints freed, in the caller's transaction, and scans nothing else; the table-wide sweep runs at open, and a restore keeps only the snapshot's referenced pages, so the pages of a deleted chat or character wait for the next open; `PRAGMA user_version` is the store version (3: settings sections and collections, no `root` record; the tables are those of version 2). Opening the store and every `replaceAll` run the normalization pass in one transaction: each record whose normalized text or schema version differs from the stored one is rewritten with its revision counter advanced (same `seq` and epoch), and each missing `materialize` singleton is created; a stored record its normalizer rejects, or one of a newer schema version than its kind, stops the start. The pass writes `normalizationStamp` in that transaction, and an open that finds its own stamp skips the record scan (Gotchas). A version-1 file or version-2 file (settings in a `root` record) is refused at startup with a message naming it, and a snapshot or archive of another version is refused on restore; there is no migration (formats of metatron's implementation phases, `persistence.md` compatibility rule). The connection runs with `journal_mode=WAL`, explicit `synchronous=FULL`, `busy_timeout=5000`, and `foreign_keys=ON`, so acknowledged resource writes do not depend on the SQLite build default. Request history and the vector cache keep `synchronous=NORMAL`. `data/` is not a storage namespace.
+- `.tmp/`: staged writes and the per-operation export/import/restore staging folders, emptied at startup.
+- `data/resources.sqlite` (plus its `-wal` and `-shm` files): the resource store. Table `resources` (`seq` autoincrement, `kind`, `id`, `revision`, `schemaVersion`, `data` JSON text, unique `(kind, id)`), table `meta` holding the random `epoch`, `summaryProjectionVersion`, and `normalizationStamp`, table `chats` (`seq`, `characterId`, `id`, `revision`, `schemaVersion`, `meta` JSON), table `messages` (`chatSeq`, message `id`, integer `position`, `data` JSON, and the generation fence: `generationId`, `generationSeq`, `generationFinal`, `generationHistory` of up to 8 earlier ids; the expression index `messages_role` on `(chatSeq, json_extract(data, '$.role'))` counts a chat's user turns without reading a row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open; it is outside the layout check, and it makes SQLite refuse a `data` that is not JSON), table `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON), and table `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`, `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, so a version-3 file from before it gains it on open without a version change; it is not part of the snapshot layout check, a snapshot's copy of it is not restored, and a restore leaves it empty (deleting the chats cascades). Table `chatSummaries` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `revision`, `text`) is each chat's summary projection (`summaryText`: the listed metadata fields as JSON, without `lastMessageAt` or the revision), created the same way and outside the layout check: `backupTo` copies it into every snapshot, validation ignores it, and a restore writes its own rows. `writeChatMeta` is the only live code that writes `chats.meta` and stores the projection in the same transaction (a restore's staged writer and the install's copy are the exception, and they write both tables together); every other chat write moves the row's `revision` with a compare-and-set, so a row an older server left behind never turns fresh. A row is fresh when its `revision` equals the chat's. `openChatSchema` runs in its own transaction after the normalization pass and before any chat statement is prepared: it rebuilds missing and stale rows, and every row when `summaryProjectionVersion` differs from `SUMMARY_PROJECTION_VERSION` (bump it when the projection's shape changes). A metadata value that cannot be projected rolls that transaction back and closes the store, so one unparsable `meta` stops the open. A reader that still finds a stale or missing row computes it from `meta` and rewrites it outside a transaction, best-effort, as neither a store write nor a feed event; inside a transaction it answers the computed text and writes nothing. The checkpoint tables are created the same way and are outside the required layout (a snapshot without them is valid), but a snapshot that has any of them is checked and restored with them (`walkCheckpointSnapshot`): `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind` (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview` JSON, `pages` JSON (the ordered message page hashes), `fields` JSON (captured field → page hash), unique `(chatSeq, id)`), `checkpointPages` (`hash` primary key, `text`), `checkpointPageRefs` (`checkpointSeq` referencing `chatCheckpoints.seq` with `ON DELETE CASCADE`, `hash`, indexed), and `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`, `autoKeep`, `lastAutoTurns`); a checkpoint delete or prune removes the pages its own checkpoints freed, in the caller's transaction, and scans nothing else; the table-wide sweep runs at open, and a restore keeps only the snapshot's referenced pages, so the pages of a deleted chat or character wait for the next open; `PRAGMA user_version` is the store version (3: settings sections and collections, no `root` record; the tables are those of version 2). Opening the store runs the normalization pass in one transaction: each record whose normalized text or schema version differs from the stored one is rewritten with its revision counter advanced (same `seq` and epoch), and each missing `materialize` singleton is created; a stored record its normalizer rejects, or one of a newer schema version than its kind, stops the start. The pass writes `normalizationStamp` in that transaction, and an open that finds its own stamp skips the record scan (Gotchas). An install runs no pass: validation normalized its rows, and `replaceAll` creates the missing singletons and writes the stamp in its own transaction. A version-1 file or version-2 file (settings in a `root` record) is refused at startup with a message naming it, and a snapshot or archive of another version is refused on restore; there is no migration (formats of metatron's implementation phases, `persistence.md` compatibility rule). The connection runs with `journal_mode=WAL`, explicit `synchronous=FULL`, `busy_timeout=5000`, and `foreign_keys=ON`, so acknowledged resource writes do not depend on the SQLite build default. Request history and the vector cache keep `synchronous=NORMAL`. `data/` is not a storage namespace.
 - `data/generation-jobs.sqlite` (plus its `-wal` and `-shm` files): the generation job receipts (`data/generationReceipts.ts` `createGenerationReceipts`). Like the request history it is in no snapshot or archive, and `data/` is not a storage namespace.
   - Table `receipts`, one row per job: `job_id` (primary key), `request_id` and `fingerprint` (null for older clients; unique `(epoch, request_id)`), `client_id`, `epoch`, `kind`, `character_id`, `chat_id`, `admitted_at`, `ended_at` (null while the job runs; indexed), `progress` (the sequence's `{ total, sent }` JSON, otherwise null), and `status`, the kept `GenerationStatus` JSON with the same trim as the in-memory kept outcome. `PRAGMA user_version` is 1; a file of another version is left untouched and the store runs degraded. WAL with `synchronous=NORMAL`.
   - A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty character/chat ids, `admitted_at = ended_at` at cancellation, and null fingerprint/status/progress. It is never served by a job-status read and is pruned with compact rows.
@@ -565,7 +616,7 @@ Process memory: the module-level `assetVerification` singleton holds bounded ver
 - Request identity stays in the live index through the ended-job grace, then moves with its fingerprint to the kept entry; kept expiry/count eviction falls back to disk. Cancellation tombstones have their own 72 h / 10,000-entry memory cap. Epoch changes clear all three views, even with degraded receipts.
 - The transform service (`prompt/transform.ts`): its result LRU, pending two-call snapshots and pins, plus `prompt/displayScope.ts`'s `createDisplayScopeLoader` (raw configuration and transcript caches, shared read-only, with a fresh projection per request). Maintenance aborts renders and empties these caches; shutdown aborts renders and clears the loader ([CBS rendering](cbs-rendering.md), [chat pipeline](chat-pipeline.md)).
 - Rate-limit counters.
-- The resource store's epoch and committed-write counter, the snapshot lock, the maintenance gate, the backup import slot (the version-2 import and the upstream prepare and commit), the import slot the module, CharX, and Realm imports share, the staged Realm imports (`realmStaging`), and the prepared upstream imports (`upstreamStaging`).
+- The resource store's epoch and committed-write counter, the snapshot lock, the maintenance gate, the restore queue, the backup import slot (the version-2 import and the upstream prepare and commit), the import slot the module, CharX, and Realm imports share, the staged Realm imports (`realmStaging`), and the prepared upstream imports (`upstreamStaging`).
 - The change feed's listeners and the live-update sockets (nothing is buffered; a restart loses them, and every client reconciles at its reconnect).
 - The chat source generations and the `onChatInvalidated` listeners (one entry per chat deleted or replaced whole since the store opened or the last restore; a restart starts them over).
 - The thumbnail service (`thumbnails`): its single flights, generation slots and wait queue, per-key locks, and the loaded encoder. A restart loses only work in flight; the disk cache stays.
@@ -619,9 +670,18 @@ Process memory: the module-level `assetVerification` singleton holds bounded ver
   store publishes a change only after commit.
 - A job writes only while its admitted epoch and live job token remain valid. Message
   ownership is checked in the same synchronous store transaction as the write.
-- Restore and import run under maintenance. The store replaces its resource state
-  atomically; imports and restore keep an existing content-addressed asset file whose bytes
-  verify and replace a damaged one from the staged copy.
+- Restore and import install under maintenance, after a safety snapshot, with reads
+  open. The store replaces its resource state atomically, in one transaction: a rollback
+  leaves rows, epoch, write count, memos, and the feed as they were, and a commit makes
+  every earlier token stale and publishes one `epoch` event. Imports and restore keep an
+  existing content-addressed asset file whose bytes verify and replace a damaged one
+  from the staged copy.
+- A restore installs only a staged file this process wrote: exclusive, closed before it
+  is reported, owned by its route until the install, and verified against the report.
+  No row is checked on the serving thread for a restore, and `replaceAll` parses none;
+  every check lives in the one walk (`walkSnapshotFile`), whatever its sink. A restore's
+  staged writer and the install's copy are the only writers of `chats.meta` and
+  `chatSummaries` past `writeChatMeta`.
 - `llmSecrets` is write-only: reads return the masked projection, never credential
   values. Credentials for server provider requests are resolved server-side.
 - The server uses one local `save/` directory and one process. Docker persistence
@@ -643,6 +703,7 @@ Process memory: the module-level `assetVerification` singleton holds bounded ver
 - Change generation jobs: `shared/jobs.ts` (the contract), `server/src/jobs/generationJobs.ts` (the retained events an attach replays: the job chat, the sent records, the `preset`, the running job's `stage`, the current reply, the terminal), `server/src/routes/generations.ts`, the client transport `src/ts/network/generationJobs.ts`, and the client primitives (`applyServerGeneration`, `hydrateChat`, `applyHydration`, `persistence.md`).
 - Add a resource kind: add a `ResourceKind` to `DEFAULT_RESOURCE_KINDS` with a pure, idempotent `normalize` (throw `ResourceValidationError` to reject), a `schemaVersion`, `singleton` if it has one record, and `materialize` if the store should create that record (then `normalize(undefined)` must return its default); the routes, snapshots, and archives pick it up. Add the kind name to `RESOURCE_KIND` in `shared/resources.ts` for the client.
 - Change the archive format: `server/src/data/archive.ts`, `planImport` and the export in `routes/backups.ts`, `BackupArchiveManifest`, and the client reader in `src/ts/drive/backuplocal.ts`; bump the manifest version.
+- Add a table a restore carries: its DDL in one of the schema strings a staged store shares with the live store (`STORE_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`, `CHECKPOINT_SCHEMA_SQL`), its checks in the walk (`walkSnapshotFile`), its row in the sinks (`readSnapshotFile`'s and the staged writer's), and its copy in the install (`copyStagedChats`, `copyStagedCheckpoints`, or `replaceAll`), through a seq map when it references a seq.
 - Change packaging: `Dockerfile`, the README Docker steps, and `package.json` `server` together. Any new root folder the server imports at runtime (like `shared/`) needs a `COPY` in the `runtime` stage.
 
 ## Tests
@@ -752,10 +813,32 @@ Runtime limits of other subsystems live with their owners:
 - The SQLite resource store assumes one server process and a local filesystem.
   Network filesystems are unsupported. Decision: one local `save/` directory and
   one process (Invariants).
-- Restore and version-2 import validate and install the database on the serving
-  thread, which can block other requests for a large store. Upstream conversion is
-  in a worker, but its heap cap does not cover Buffers or SQLite memory.
-  Decision: restore and import run under maintenance (Invariants).
+- A restore keeps four things on the serving thread: the install's SQL copy, one
+  synchronous transaction that blocks every request for its length, reads included (and
+  leaves a WAL about the size of the database for the checkpoint after it); the safety
+  snapshot's `backupTo`; the asset links; and the re-hash, whose chunks yield. Measured
+  with `byte-budgets-probe.mjs` (case `restore`, ext4, Node 24.21): the install takes
+  460 ms for 3,000 chats (a 61 MB file) and 218 ms for one chat of 5,000 messages (21 MB),
+  the re-hash 46 ms and 16 ms in all.
+  Decision: restore and import install under maintenance on the store's own connection
+  (Invariants).
+- The restore worker's and the upstream workers' heap limits (`RISU_RESTORE_HEAP_MB`,
+  `RISU_UPSTREAM_IMPORT_HEAP_MB`, `RISU_UPSTREAM_EXPORT_HEAP_MB`) bound the V8 heap only,
+  not Buffers or SQLite memory, and an inherited `--max-old-space-size` overrides them.
+  One row far larger than the limit can abort the whole process instead of ending the
+  worker (a 32 MiB row under a 16 MiB limit, exit 134, on Node 24.21): the store and epoch
+  stay as they were, and the next start empties the staging. At the default 2048 no row
+  the 100 MiB request cap admits reaches it; a much lower limit can.
+  Decision: a ceiling against a runaway file, not process isolation
+  (`server/src/data/restore/validateRunner.ts` header).
+- Validation reads as it checks, so of a refused row and a later row SQLite cannot read,
+  the refused row is the one reported, and a walk stops at the first refusal in reading
+  order. Decision: a walk over the source never holds a whole table
+  (`walkSnapshotFile`).
+- The upstream import stages on the default kinds, as the export reads with them, so a
+  store with custom kinds is supported by neither. Decision: tests use custom kinds,
+  and the workers carry only the default registry (`data/upstream/importStage.ts`,
+  `exportStage.ts` headers).
 - Upstream export holds its records, projected database, and encoded save in memory;
   staged exports are capped at four. An asset of 4 GiB or more cannot fit an archive
   record and is reported as missing. Decision: the staging cap
@@ -835,8 +918,8 @@ Runtime limits of other subsystems live with their owners:
   or dirty, and for a store with no identity, which is what `createServerContext`
   gives an injected kind registry and the upstream import gives its build store; such
   a run removes the stored stamp, because the records it leaves were last written by
-  code no stamp names. `replaceAll` always runs the pass and writes or removes the
-  stamp in its transaction. A record its normalizer would now refuse stops startup,
+  code no stamp names. `replaceAll` runs no pass, since validation normalized its rows,
+  and writes or removes the stamp in its transaction. A record its normalizer would now refuse stops startup,
   with its kind and id, only on a run of the pass. Normalizers are assumed to depend
   on code and the registry only, not on configuration or the environment. Bump
   `NORMALIZATION_VERSION` for a change to what normalization produces that git cannot

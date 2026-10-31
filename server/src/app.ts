@@ -17,6 +17,12 @@ import { createCheckpointService } from "./data/checkpointService.ts";
 import { mkdirDurableSync } from "./data/durableWrite.ts";
 import { createOrderedWriter } from "./data/orderedWriter.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
+import {
+    DEFAULT_RESTORE_HEAP_MB,
+    inProcessRestoreRunner,
+    type RestoreRunner,
+    workerRestoreRunner,
+} from "./data/restore/validateRunner.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
 import { createGenerationReceipts } from "./data/generationReceipts.ts";
@@ -186,6 +192,11 @@ export function createServerContext(options: {
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
     /** The upstream RisuAI-compatible export (`routes/backupsUpstreamExport.ts`): how long a prepared export waits for its download. */
     upstreamExport?: { stagedTtlMs?: number };
+    /**
+     * What checks a snapshot and stages it for a snapshot restore or a version-2 import (tests replace
+     * it; the default is a worker per restore, or in process with `resourceKinds`).
+     */
+    restore?: { runner?: RestoreRunner };
     messageSearch?: MessageSearchRouteOptions;
     /** What schedules a staged Realm import's expiry (tests hold it; default an unref'd `setTimeout`). */
     realmStagingTimer?: RealmStagingTimer;
@@ -297,6 +308,7 @@ export function createServerContext(options: {
     const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs, timer: options.realmStagingTimer });
     // The upstream imports prepared and waiting for their commit (`routes/backupsUpstream.ts`).
     const upstreamStaging = createUpstreamImportStaging({ ttlMs: options.upstreamImport?.stagedTtlMs });
+    const restoreShutdown = new AbortController();
     // The upstream exports prepared and waiting for their download (`routes/backupsUpstreamExport.ts`).
     const upstreamExportStaging = createUpstreamExportStaging({ ttlMs: options.upstreamExport?.stagedTtlMs });
     // Before every other maintenance listener, so its start is the first thing recorded; it never
@@ -562,8 +574,11 @@ export function createServerContext(options: {
         // The staged Realm imports waiting for their commit are removed (a running commit is tracked).
         void realmStaging.close();
         // A running upstream prepare ends now (its worker is terminated), not after the HTTP drain, and
-        // the prepared imports are removed (a running commit is tracked).
+        // the prepared imports are removed (a running commit is tracked, and stops before its install).
         void upstreamStaging.close();
+        // So does a snapshot restore that has not reached its install: its worker is terminated, and
+        // one still waiting ends at its turn.
+        restoreShutdown.abort(new MaintenanceError("The server is shutting down"));
         // A running upstream export prepare ends now (its worker is terminated), and the prepared
         // exports waiting for their download are removed (a running download is tracked).
         void upstreamExportStaging.close();
@@ -887,6 +902,11 @@ export function createServerContext(options: {
     });
     // One archive import at a time: the version-2 import and the upstream prepare and commit share it.
     const backupImportSlot = createImportSlot();
+    const restoreHeapMb = parsePositiveInteger(
+        "RISU_RESTORE_HEAP_MB",
+        process.env.RISU_RESTORE_HEAP_MB,
+        DEFAULT_RESTORE_HEAP_MB,
+    );
     registerBackupRoutes(app, {
         savePath,
         store: resources,
@@ -897,6 +917,10 @@ export function createServerContext(options: {
         diagnostics,
         slot: backupImportSlot,
         maxArchiveRecords: options.routeLimits?.archiveRecords,
+        restoreRunner:
+            options.restore?.runner ??
+            (options.resourceKinds ? inProcessRestoreRunner(resourceKinds) : workerRestoreRunner(restoreHeapMb)),
+        restoreSignal: restoreShutdown.signal,
     });
     const maxUpstreamDatabaseBytes = parsePositiveInteger(
         "RISU_MAX_UPSTREAM_DB_BYTES",

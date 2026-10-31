@@ -1,8 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, type Stats } from "node:fs";
 import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { types } from "node:util";
 import type {
     ChatGroupResult,
@@ -39,15 +40,29 @@ import type { BuildInfo } from "../../../shared/buildInfo.ts";
 import type { ChatStreaming } from "../../../shared/events.ts";
 import type { MessageSearchHit } from "../../../shared/messageSearch.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
-import { type CheckpointSnapshotRows, createCheckpointTables, readCheckpointSnapshotRows } from "./checkpointStore.ts";
-import { diffRecordText } from "./recordPatchText.ts";
 import {
+    CHECKPOINT_SCHEMA_SQL,
+    type CheckpointSnapshotRows,
+    type CheckpointSnapshotSink,
+    collectCheckpointRows,
+    copyStagedCheckpoints,
+    createCheckpointStagingSink,
+    createCheckpointTables,
+    walkCheckpointSnapshot,
+} from "./checkpointStore.ts";
+import { diffRecordText } from "./recordPatchText.ts";
+import type { StagedFileReport } from "./restore/stageValidatedSnapshot.ts";
+import {
+    CHAT_OPEN_SCHEMA_SQL,
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
     type ChatFeedPayloads,
     type ChatSnapshotRows,
+    type ChatSnapshotSink,
     type ChatWriteChange,
+    copyStagedChats,
     countChatOperations,
+    createChatStagingSink,
     createChatTables,
     type MessageSearchChat,
     type MessageSearchPosition,
@@ -58,7 +73,8 @@ import {
     openChatSchema,
     prepareChatGroups,
     prepareChatOrders,
-    readChatSnapshotRows,
+    STAGED_CHAT_SEQS,
+    walkChatSnapshot,
 } from "./chatStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
@@ -69,6 +85,21 @@ import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
  * a `root` record.
  */
 const SCHEMA_VERSION = 3;
+/** The store's own tables; `initialize` and a staged store's writer create them with the chat tables. */
+const STORE_TABLES_SQL = `
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+    CREATE TABLE resources (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        schemaVersion INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (kind, id)
+    ) STRICT;
+`;
+/** The refusal of a file that is not a resource database, or not the staged file that was reported. */
+export const NOT_A_RESOURCE_DATABASE = "Not a resource database";
 /**
  * Kinds an earlier server stored and this one no longer registers: every open and the normalization
  * pass delete their records, and a snapshot's rows of them are skipped, so a database or backup
@@ -240,11 +271,21 @@ export type ResourceBatchOperation = {
     patch?: unknown;
 };
 
-/** Validated snapshot rows ready for restore; absent checkpoint rows restore no checkpoints or policies. */
+/** A snapshot's checked rows held in memory (`readSnapshotFile`); absent checkpoint rows mean no checkpoints or policies. */
 export type ValidatedSnapshot = {
     readonly rows: readonly { kind: string; id: string; revision: number; schemaVersion: number; text: string }[];
     readonly checkpoints?: CheckpointSnapshotRows;
 } & ChatSnapshotRows;
+
+/**
+ * Where `walkSnapshotFile` hands each row it checked, as it reads them: resources, chats, messages,
+ * chat orders, then the checkpoint tables. Without `checkpoints`, those tables are neither read nor
+ * checked.
+ */
+export type SnapshotSink = ChatSnapshotSink & {
+    resource(row: ValidatedSnapshot["rows"][number]): void;
+    checkpoints?: CheckpointSnapshotSink;
+};
 
 /** What `applyChanges` wrote: resource tokens in op order, chat group results, and every changed chat order. */
 export type AppliedChanges = {
@@ -390,57 +431,93 @@ export function isValidResourceId(id: unknown): id is string {
 }
 
 /**
- * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading):
+ * The rows of `sql` over a snapshot file, one at a time with its number from 1, so no table is held in
+ * memory. SQLite failing to prepare the statement or to read a row (a damaged page, an integer past the
+ * safe range) is the refusal `unreadable`; a failure in the caller's loop body stays what it is. A
+ * `signal` that aborts stops the walk at the next row with its reason.
+ */
+export function* snapshotRows(
+    source: DatabaseSync,
+    sql: string,
+    unreadable: string,
+    signal?: AbortSignal,
+): Generator<[row: Record<string, unknown>, number: number], void, undefined> {
+    let rows: Iterator<Record<string, unknown>>;
+    try {
+        rows = source.prepare(sql).iterate() as Iterator<Record<string, unknown>>;
+    } catch {
+        throw new ResourceValidationError(unreadable);
+    }
+    try {
+        for (let number = 1; ; number += 1) {
+            signal?.throwIfAborted();
+            let next: IteratorResult<Record<string, unknown>>;
+            try {
+                next = rows.next();
+            } catch {
+                throw new ResourceValidationError(unreadable);
+            }
+            if (next.done) {
+                return;
+            }
+            yield [next.value, number];
+        }
+    } finally {
+        rows.return?.();
+    }
+}
+
+/**
+ * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading), row by row,
+ * handing each checked row to `sink`, so what the checks hold is ids, never a table:
  * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables
  * with this store's columns, and `meta` holds an epoch), and every row (a registered kind at
  * its current schema version (rows of a `RETIRED_KINDS` kind are skipped), a valid id, singleton rules, unique kind and id, positive
  * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
- * the chat tables (`readChatSnapshotRows`: chats of existing characters, messages of existing
+ * the chat tables (`walkChatSnapshot`: chats of existing characters, messages of existing
  * chats, one exact order per character). The optional checkpoint tables must be all present or all
  * absent; their rows, references, content hashes, messages, fields, and policies are checked without
- * changing stored text. With `checkpoints: false`, checkpoint tables are neither read nor validated
- * and the result omits `checkpoints`. Throws `ResourceValidationError` for anything else.
+ * changing stored text (`walkCheckpointSnapshot`). Throws `ResourceValidationError` for anything else;
+ * a failure of the sink's own stays what it is. Rows are checked as they are read, so of a refused row
+ * and a later row SQLite cannot read, the refused row is the one reported.
  */
-export function readSnapshotFile(
+export function walkSnapshotFile(
     file: string,
     kinds: ResourceKindRegistry,
-    options?: { checkpoints?: boolean },
-): ValidatedSnapshot {
+    sink: SnapshotSink,
+    signal?: AbortSignal,
+): void {
     let source: DatabaseSync;
     try {
         source = new DatabaseSync(file, { readOnly: true });
     } catch {
-        throw new ResourceValidationError("Not a resource database");
+        throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
     }
     try {
-        let rawRows: Record<string, unknown>[];
         try {
             const integrity = source.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[];
             if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
                 throw new ResourceValidationError("The resource database is damaged");
             }
-            const { user_version: version } = source.prepare("PRAGMA user_version").get() as {
-                user_version: number;
-            };
-            if (version !== SCHEMA_VERSION) {
-                throw new ResourceValidationError(`Unsupported resource database version ${version}`);
-            }
-            assertSnapshotLayout(source);
-            rawRows = source
-                .prepare("SELECT seq, kind, id, revision, schemaVersion, data FROM resources ORDER BY seq")
-                .all() as Record<string, unknown>[];
+            assertSnapshotHeader(source);
         } catch (error) {
             if (error instanceof ResourceValidationError) {
                 throw error;
             }
-            throw new ResourceValidationError("Not a resource database");
+            throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
         }
         const seen = new Set<string>();
-        const rows = rawRows.flatMap((row, index) => {
+        const characterIds = new Set<string>();
+        for (const [row, number] of snapshotRows(
+            source,
+            "SELECT seq, kind, id, revision, schemaVersion, data FROM resources ORDER BY seq",
+            NOT_A_RESOURCE_DATABASE,
+            signal,
+        )) {
             if (typeof row.kind === "string" && RETIRED_KINDS.has(row.kind)) {
-                return [];
+                continue;
             }
-            const where = `row ${index + 1}`;
+            const where = `row ${number}`;
             const kind = typeof row.kind === "string" ? kinds.get(row.kind) : undefined;
             if (!kind) {
                 throw new ResourceValidationError(`${where}: unknown kind`);
@@ -477,23 +554,123 @@ export function readSnapshotFile(
                 }
                 throw error;
             }
-            return [
-                {
-                    kind: kind.name,
-                    id: row.id,
-                    revision: row.revision,
-                    schemaVersion: kind.schemaVersion,
-                    text,
-                },
-            ];
-        });
-        const characterIds = new Set(rows.filter((row) => row.kind === RESOURCE_KIND.characters).map((row) => row.id));
-        const chats = readChatSnapshotRows(source, characterIds);
-        const checkpoints =
-            options?.checkpoints === false ? undefined : readCheckpointSnapshotRows(source, chats.chats);
-        return { rows, ...chats, ...(checkpoints ? { checkpoints } : {}) };
+            if (kind.name === RESOURCE_KIND.characters) {
+                characterIds.add(row.id);
+            }
+            sink.resource({
+                kind: kind.name,
+                id: row.id,
+                revision: row.revision,
+                schemaVersion: kind.schemaVersion,
+                text,
+            });
+        }
+        const chatIds = walkChatSnapshot(source, characterIds, sink, signal);
+        if (sink.checkpoints) {
+            walkCheckpointSnapshot(source, chatIds, sink.checkpoints, signal);
+        }
     } finally {
         source.close();
+    }
+}
+
+/**
+ * Reads and checks a snapshot file (`walkSnapshotFile`) into memory. With `checkpoints: false`,
+ * checkpoint tables are neither read nor validated and the result omits `checkpoints`.
+ */
+export function readSnapshotFile(
+    file: string,
+    kinds: ResourceKindRegistry,
+    options?: { checkpoints?: boolean },
+): ValidatedSnapshot {
+    const rows: ValidatedSnapshot["rows"][number][] = [];
+    const chats: ValidatedSnapshot["chats"][number][] = [];
+    const messages: ValidatedSnapshot["messages"][number][] = [];
+    const chatOrders: ValidatedSnapshot["chatOrders"][number][] = [];
+    const collected = options?.checkpoints === false ? undefined : collectCheckpointRows();
+    walkSnapshotFile(file, kinds, {
+        resource: (row) => void rows.push(row),
+        chat: (row) => void chats.push(row),
+        message: (row) => void messages.push(row),
+        chatOrder: (row) => void chatOrders.push(row),
+        checkpoints: collected?.sink,
+    });
+    const checkpoints = collected?.rows();
+    return { rows, chats, messages, chatOrders, ...(checkpoints ? { checkpoints } : {}) };
+}
+
+/**
+ * The raw validated-row writer: checks the snapshot `source` (`walkSnapshotFile`) and writes its
+ * checked rows into a new store at `output`, created exclusively, with the live schema. Numeric
+ * revisions stay as stored, chats and checkpoints keep their source `seq`, the other rows take the
+ * staged tables' seqs in source order, and no singleton is materialized: `replaceAll` does that once.
+ * `chatGroups` and `chatRestoreFloors` stay empty (receipts belong to an incarnation, floors to an
+ * epoch), and the source's `meta` rows and stamp are not copied. One transaction, with a rollback
+ * journal in memory and no fsync: a crash loses only this file, and once closed it is one
+ * self-contained file, without a sidecar.
+ */
+export function writeValidatedStore(
+    source: string,
+    output: string,
+    kinds: ResourceKindRegistry,
+    signal?: AbortSignal,
+): void {
+    closeSync(openSync(output, "wx"));
+    const db = new DatabaseSync(output);
+    try {
+        db.exec("PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF; PRAGMA foreign_keys = ON;");
+        db.exec("BEGIN IMMEDIATE");
+        db.exec(`
+            ${STORE_TABLES_SQL}
+            ${CHAT_TABLES_SQL}
+            ${CHAT_OPEN_SCHEMA_SQL}
+            ${CHECKPOINT_SCHEMA_SQL}
+            PRAGMA user_version = ${SCHEMA_VERSION};
+        `);
+        db.prepare("INSERT INTO meta (key, value) VALUES ('epoch', ?)").run(randomUUID());
+        const insertResource = db.prepare(
+            "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, ?, ?, ?)",
+        );
+        walkSnapshotFile(
+            source,
+            kinds,
+            {
+                resource: (row) => void insertResource.run(row.kind, row.id, row.revision, row.schemaVersion, row.text),
+                ...createChatStagingSink(db),
+                checkpoints: createCheckpointStagingSink(db),
+            },
+            signal,
+        );
+        db.exec("COMMIT");
+    } finally {
+        db.close();
+    }
+}
+
+/** Refuses a `stat` that is not the staged file `report` describes: a regular file, its size, mtime, and inode. */
+export function assertStagedFileStat(stat: Stats | undefined, report: StagedFileReport): void {
+    if (!stat?.isFile() || stat.size !== report.size || stat.mtimeMs !== report.mtimeMs || stat.ino !== report.ino) {
+        throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
+    }
+}
+
+/** Checks a staged file's own header, the schema version and the layout, on a short read-only connection. */
+function assertStagedHeader(file: string) {
+    let staged: DatabaseSync;
+    try {
+        staged = new DatabaseSync(file, { readOnly: true });
+    } catch {
+        throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
+    }
+    try {
+        assertSnapshotHeader(staged);
+    } catch (error) {
+        if (error instanceof ResourceValidationError) {
+            throw error;
+        }
+        throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
+    } finally {
+        staged.close();
     }
 }
 
@@ -583,10 +760,8 @@ export function createResourceStore(options: {
             "WHERE kind = ? AND id = ? AND seq = ? AND revision = ?",
     );
     const remove = db.prepare("DELETE FROM resources WHERE kind = ? AND id = ? AND seq = ? AND revision = ?");
-    const insertRestored = db.prepare(
-        "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, ?, ?, ?)",
-    );
     const setEpoch = db.prepare("UPDATE meta SET value = ? WHERE key = 'epoch'");
+    const selectStagedAttached = db.prepare("SELECT 1 FROM pragma_database_list WHERE name = 'staged'");
     const rewrite = db.prepare("UPDATE resources SET revision = ?, schemaVersion = ?, data = ? WHERE seq = ?");
     const selectKindForPass = db.prepare(
         "SELECT id, seq, revision, schemaVersion, data FROM resources WHERE kind = ? ORDER BY seq",
@@ -2190,43 +2365,70 @@ export function createResourceStore(options: {
         },
 
         /**
-         * Replaces every record with the rows of a validated snapshot, runs the normalization pass
-         * (creating the `materialize` singletons the snapshot lacks and writing the stamp), and gives
-         * the database a new epoch, in one transaction; every token issued before is stale afterwards.
-         * Returns the epoch.
-         * Revision counters are restored as stored (the new epoch already makes every old token
-         * stale; `nextRevision` keeps a counter a crafted snapshot placed at the limit from
-         * overflowing on the next write). Replaces checkpoints, their content pages, and policies
-         * with the snapshot's, attached to the restored chats with their text unchanged; a snapshot
-         * without checkpoint rows clears them.
+         * Replaces every record with the rows of a staged store (`stageValidatedSnapshot`'s output,
+         * re-hashed against `report` by `verifyStagedFile`, so nothing here checks or parses a row),
+         * creates the `materialize` singletons it lacks, gives the database a new epoch, and writes
+         * the stamp, in one transaction; every token issued before is stale afterwards, and a failure
+         * rolls all of it back. Returns the epoch. The staged file is checked once more first (the
+         * same regular file, its version and layout), attached read-only, and copied in SQL, resources
+         * by staged seq: the live `AUTOINCREMENT` keeps moving and `sqlite_sequence` is never copied.
+         * Revision counters are restored as stored (the new epoch already makes every old token stale;
+         * `nextRevision` keeps a counter a crafted snapshot placed at the limit from overflowing on
+         * the next write). Replaces checkpoints, their content pages, and policies with the staged
+         * ones, attached to the restored chats with their text unchanged; a staged store without
+         * checkpoints clears them. The memos change only after the commit, and a `DETACH` that fails
+         * is logged: the data has changed by then, and the next install detaches first.
          */
-        replaceAll(snapshot: ValidatedSnapshot): string {
+        replaceAll(stagedFile: string, report: StagedFileReport): string {
             assertWritable();
             assertNotInTransaction();
+            assertStagedFileStat(lstatSync(stagedFile, { throwIfNoEntry: false }), report);
+            assertStagedHeader(stagedFile);
             const nextEpoch = randomUUID();
-            db.exec("BEGIN IMMEDIATE");
+            if (selectStagedAttached.get() !== undefined) {
+                db.exec("DETACH DATABASE staged");
+            }
+            // Read-only and without locks or a change counter: the file is closed and this process's own.
+            db.prepare("ATTACH DATABASE ? AS staged").run(`${pathToFileURL(stagedFile).href}?mode=ro&immutable=1`);
             let committed = false;
             try {
-                db.exec("DELETE FROM resources");
-                for (const row of snapshot.rows) {
-                    insertRestored.run(row.kind, row.id, row.revision, row.schemaVersion, row.text);
-                }
-                const chatSeqs = chatTables.replaceAll(snapshot);
-                checkpointTables.replaceAll(snapshot.checkpoints, chatSeqs);
-                // The rows are normalized already (`readSnapshot`); this materializes the kinds the
-                // snapshot predates. A failure rolls the whole restore back.
-                normalizeStoredRecords();
+                db.exec("BEGIN IMMEDIATE");
+                // Deleting the chats cascades to messages, receipts, floors, projections, checkpoints,
+                // their refs, and policies. Pages have no foreign key.
+                db.exec(`
+                    DELETE FROM main.resources;
+                    DELETE FROM main.chatOrders;
+                    DELETE FROM main.chats;
+                    DELETE FROM main.checkpointPages;
+                    INSERT INTO main.resources (kind, id, revision, schemaVersion, data)
+                        SELECT kind, id, revision, schemaVersion, data FROM staged.resources ORDER BY seq;
+                `);
+                copyStagedChats(db);
+                copyStagedCheckpoints(db);
+                db.exec(`DROP TABLE ${STAGED_CHAT_SEQS}`);
+                // A failure of either rolls the whole restore back.
+                materializeSingletons();
                 setEpoch.run(nextEpoch);
+                writeNormalizationStamp();
                 db.exec("COMMIT");
                 committed = true;
             } finally {
-                if (!committed && db.isTransaction) {
-                    db.exec("ROLLBACK");
+                try {
+                    if (!committed && db.isTransaction) {
+                        db.exec("ROLLBACK");
+                    }
+                } finally {
+                    try {
+                        db.exec("DETACH DATABASE staged");
+                    } catch (error) {
+                        console.error("[Server] Detaching the staged store failed:", error);
+                    }
                 }
             }
             epoch = nextEpoch;
             writeCount += 1;
             patchBases.clear();
+            chatTables.forgetLastMessageTimes();
             sourceGenerations.clear();
             lastSourceGeneration += 1;
             baseSourceGeneration = lastSourceGeneration;
@@ -2509,27 +2711,32 @@ function snapshotTableColumns(): Record<string, readonly string[]> {
 }
 
 /**
- * Requires the layout `initialize` creates: `resources`, `meta`, and the chat tables are ordinary
- * tables (a view or a virtual table could answer the row query with anything), with exactly these
- * columns, and `meta` holds an epoch string. Anything else is not a resource database.
+ * Requires this store's schema version and the layout `initialize` creates: `resources`, `meta`, and
+ * the chat tables are ordinary tables (a view or a virtual table could answer the row query with
+ * anything), with exactly these columns, and `meta` holds an epoch string. Anything else is not a
+ * resource database.
  */
-function assertSnapshotLayout(source: DatabaseSync) {
+function assertSnapshotHeader(source: DatabaseSync) {
+    const { user_version: version } = source.prepare("PRAGMA user_version").get() as { user_version: number };
+    if (version !== SCHEMA_VERSION) {
+        throw new ResourceValidationError(`Unsupported resource database version ${version}`);
+    }
     for (const [table, columns] of Object.entries(snapshotTableColumns())) {
         const objects = source.prepare("SELECT type, sql FROM sqlite_schema WHERE name = ?").all(table) as {
             type: string;
             sql: string | null;
         }[];
         if (objects.length !== 1 || objects[0].type !== "table" || !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")) {
-            throw new ResourceValidationError("Not a resource database");
+            throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
         }
         const info = source.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
         if (info.length !== columns.length || !info.every((column, index) => column.name === columns[index])) {
-            throw new ResourceValidationError("Not a resource database");
+            throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
         }
     }
     const epoch = source.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: unknown } | undefined;
     if (typeof epoch?.value !== "string") {
-        throw new ResourceValidationError("Not a resource database");
+        throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
     }
 }
 
@@ -2639,16 +2846,7 @@ function initialize(db: DatabaseSync, file: string): string {
         db.exec("BEGIN IMMEDIATE");
         try {
             db.exec(`
-                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
-                CREATE TABLE resources (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    kind TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    schemaVersion INTEGER NOT NULL,
-                    data TEXT NOT NULL,
-                    UNIQUE (kind, id)
-                ) STRICT;
+                ${STORE_TABLES_SQL}
                 ${CHAT_TABLES_SQL}
                 PRAGMA user_version = ${SCHEMA_VERSION};
             `);

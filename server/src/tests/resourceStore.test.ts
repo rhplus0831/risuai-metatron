@@ -1,9 +1,10 @@
 // @vitest-environment node
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, appendFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
 import { createRequestHistory } from "../data/requestHistory.ts";
@@ -15,7 +16,9 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 import { sleep } from "./testSupport.ts";
+import { verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
 
 const root: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
 const presets: ResourceKind = { name: "presets", schemaVersion: 2, normalize: (input) => input };
@@ -310,8 +313,8 @@ describe("snapshots", () => {
         dirs.push(dir);
         return dir;
     }
-    function fileStore(dir: string, name = "live.sqlite") {
-        const store = createResourceStore({ file: path.join(dir, name), kinds });
+    function fileStore(dir: string, name = "live.sqlite", feed?: ReturnType<typeof createChangeFeed>) {
+        const store = createResourceStore({ file: path.join(dir, name), kinds, feed });
         stores.push(store);
         return store;
     }
@@ -534,13 +537,14 @@ describe("snapshots", () => {
         source.put(root, "b", { v: "b" }, null);
         source.put(root, "a", { v: "a" }, null);
         source.put(presets, "p", [], null);
-        await source.backupTo(path.join(dir, "source-copy.sqlite"));
-        const validated = store.readSnapshot(path.join(dir, "source-copy.sqlite"));
+        const copy = path.join(dir, "source-copy.sqlite");
+        await source.backupTo(copy);
+        const validated = store.readSnapshot(copy);
 
         const oldEpoch = store.epoch();
         const oldToken = store.get(root, "old")!.revision;
         const before = store.writeCount();
-        const epoch = store.replaceAll(validated);
+        const epoch = await installSnapshot(store, copy, kinds);
         expect(epoch).not.toBe(oldEpoch);
         expect(store.epoch()).toBe(epoch);
         expect(store.writeCount()).toBe(before + 1);
@@ -558,24 +562,27 @@ describe("snapshots", () => {
 
         // The epoch survives a reopen.
         store.close();
-        const reopened = fileStore(dir);
+        const feed = createChangeFeed();
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        const reopened = fileStore(dir, "live.sqlite", feed);
         expect(reopened.epoch()).toBe(epoch);
         expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
 
-        // A failing insert (the live UNIQUE constraint) rolls the whole replacement back.
-        const failing = {
-            rows: [
-                { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "1" },
-                { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "2" },
-            ],
-            ...noChats,
-        };
+        // A failing copy rolls the whole replacement back; the snapshot's extra row shows a kept copy.
+        source.put(root, "extra", { v: "extra" }, null);
+        const larger = path.join(dir, "larger-copy.sqlite");
+        await source.backupTo(larger);
+        const failing = await stageSnapshot(larger, kinds);
         const count = reopened.writeCount();
-        expect(() => reopened.replaceAll(failing)).toThrow("UNIQUE constraint failed");
+        expect(() => withFailingInstallCopy(() => reopened.replaceAll(failing.file, failing.report))).toThrow(
+            INJECTED_COPY_FAILURE,
+        );
         expect(reopened.epoch()).toBe(epoch);
         expect(reopened.writeCount()).toBe(count);
         expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
-        expect(() => reopened.transaction(() => reopened.replaceAll({ rows: [], ...noChats }))).toThrow(
+        expect(events).toEqual([]);
+        expect(() => reopened.transaction(() => reopened.replaceAll(failing.file, failing.report))).toThrow(
             "Nested resource transactions are not supported",
         );
         expect(reopened.list(root)).toHaveLength(2);
@@ -1298,5 +1305,84 @@ describe("item patches", () => {
         expect(error).toBeInstanceOf(ResourceBatchConflictError);
         expect((error as ResourceBatchConflictError).conflicts).toEqual([{ kind: "list", id: "l", revision: base }]);
         expect(store.get(root, "r")).toBeNull();
+    });
+});
+
+describe("staged install identity", () => {
+    it("keeps the live sequence high-water mark through install and a later chat delete and recreate", async () => {
+        const characters: ResourceKind = { name: "characters", schemaVersion: 1, normalize: (v) => v };
+        const registry = createKindRegistry([characters]);
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-incarnation-"));
+        dirs.push(dir);
+        const file = path.join(dir, "live.sqlite");
+        const store = createResourceStore({ file, kinds: registry });
+        stores.push(store);
+        store.put(characters, "c", { chaId: "c" }, null);
+        const create = (id: string) =>
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: id,
+                        baseRevision: null,
+                        ops: [{ op: "create", chat: { message: [] } }],
+                    },
+                ],
+            });
+        const remove = (id: string) =>
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: id,
+                        baseRevision: store.chatRevision("c", id),
+                        ops: [{ op: "delete" }],
+                    },
+                ],
+            });
+        create("saved");
+        const oldToken = store.chatRevision("c", "saved");
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        for (let n = 0; n < 5; n++) {
+            create("later");
+            remove("later");
+        }
+        const db = new DatabaseSync(file, { readOnly: true });
+        const high = Number(db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq);
+        const staged = await stageSnapshot(snapshot, registry);
+        const source = new DatabaseSync(staged.file, { readOnly: true });
+        expect(source.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq).toBe(1);
+        source.close();
+        store.replaceAll(staged.file, staged.report);
+        expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 1);
+        const installedToken = store.chatRevision("c", "saved");
+        expect(installedToken).not.toBe(oldToken);
+        remove("saved");
+        create("saved");
+        expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 2);
+        expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq).toBe(high + 2);
+        expect(() =>
+            store.applyChanges({
+                chats: [{ characterId: "c", chatId: "saved", baseRevision: installedToken, ops: [{ op: "delete" }] }],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        db.close();
+    });
+
+    it("refuses a staged file changed after verification without changing rows, epoch or write count", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-install-stat-"));
+        dirs.push(dir);
+        const store = memoryStore();
+        store.put(root, "saved", 1, null);
+        const file = path.join(dir, "source.sqlite");
+        await store.backupTo(file);
+        const staged = await stageSnapshot(file, kinds);
+        store.put(root, "live", 2, null);
+        const before = { rows: store.readKinds([root]), epoch: store.epoch(), writes: store.writeCount() };
+        await verifyStagedFile(staged.file, staged.report);
+        appendFileSync(staged.file, "changed");
+        expect(() => store.replaceAll(staged.file, staged.report)).toThrow(ResourceValidationError);
+        expect({ rows: store.readKinds([root]), epoch: store.epoch(), writes: store.writeCount() }).toEqual(before);
     });
 });

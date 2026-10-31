@@ -16,6 +16,7 @@ import {
     ResourceStoreClosedError,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { INJECTED_COPY_FAILURE, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 
 // A chat's source generation: an in-memory value the store changes once in the commit of every
 // write that deletes the chat (a group `delete`), replaces it whole (a group `replace`), or deletes
@@ -440,7 +441,7 @@ describe("`replaceAll` and `readChatSource`", () => {
         const { dir, store, feed, notices, gen, gens, write } = setup();
         const file = path.join(dir, "snapshot.sqlite");
         await store.backupTo(file);
-        const validated = store.readSnapshot(file);
+        const staged = await stageSnapshot(file, kinds);
         write("k", [del]);
         const issued = [...gens()];
         const epochSaw: number[][] = [];
@@ -448,20 +449,27 @@ describe("`replaceAll` and `readChatSource`", () => {
             if (event.type === "epoch") epochSaw.push(gens());
         });
         const oldEpoch = store.epoch();
-        store.replaceAll(validated);
-        expect(store.epoch()).not.toBe(oldEpoch);
+        store.replaceAll(staged.file, staged.report);
+        const epoch = store.epoch();
+        expect(epoch).not.toBe(oldEpoch);
         const reset = gen("k");
         expect(gens()).toEqual([reset, reset, reset, reset]);
         expect(Math.max(...issued)).toBeLessThan(reset);
         expect(epochSaw).toEqual([[reset, reset, reset, reset]]);
         expect(ids(notices)).toEqual(["k"]);
         expect(store.readChatSource("c", "k").revision).not.toBeNull();
-        // A failing restore (a duplicate message id) rolls back and leaves the registry as it is.
-        expect(() =>
-            store.replaceAll({ ...validated, messages: [...validated.messages, validated.messages[0]] }),
-        ).toThrow("UNIQUE constraint failed");
+        // A failing restore (its late copy fails) rolls back and leaves the registry as it is. The note
+        // is not in the snapshot, so a kept copy shows.
+        const failing = await stageSnapshot(file, kinds);
+        write("k", [note("after the restore")]);
+        expect(() => withFailingInstallCopy(() => store.replaceAll(failing.file, failing.report))).toThrow(
+            INJECTED_COPY_FAILURE,
+        );
+        expect(store.epoch()).toBe(epoch);
+        expect(store.readChatSource("c", "k").data!.note).toBe("after the restore");
         expect(gens()).toEqual([reset, reset, reset, reset]);
         expect(ids(notices)).toEqual(["k"]);
+        expect(epochSaw).toHaveLength(1);
         // Values keep moving past the reset.
         write("k2", [del]);
         expect(gen("k2")).toBeGreaterThan(reset);
@@ -472,13 +480,13 @@ describe("`replaceAll` and `readChatSource`", () => {
         const { dir, store, feed, notices, log, gen, gens, rev } = setup();
         const file = path.join(dir, "snapshot.sqlite");
         await store.backupTo(file);
-        const validated = store.readSnapshot(file);
+        const staged = await stageSnapshot(file, kinds);
         const oldEpoch = store.epoch();
         let restored = false;
         feed!.subscribe((event) => {
             if (event.type === "change" && !restored) {
                 restored = true;
-                store.replaceAll(validated);
+                store.replaceAll(staged.file, staged.report);
             }
         });
         store.applyChanges({ chats: [group("k", rev("k"), [del])] });

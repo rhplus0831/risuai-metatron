@@ -16,12 +16,9 @@ import {
     readRecord,
 } from "../data/archive.ts";
 import { mkdirDurable, syncDir, syncFile } from "../data/durableWrite.ts";
-import {
-    ResourceEpochError,
-    type ResourceStore,
-    ResourceValidationError,
-    type ValidatedSnapshot,
-} from "../data/resourceStore.ts";
+import { ResourceEpochError, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
+import { type StagedFileReport, verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
+import type { RestoreRunner } from "../data/restore/validateRunner.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { assetVerification, contentNameHash, hashAssetFile, holdsVerifiedAsset } from "../http/assetVerification.ts";
@@ -39,18 +36,43 @@ export const DEFAULT_MAX_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_PARTIAL_ASSETS = 100_000;
 const ASSET_PREFIX = "assets/";
+/** The trusted staged store of a restore or an import, in its staging folder. */
+const STAGED_STORE_FILE = "staged.sqlite";
+/** What an import runs the validation under: one admitted before shutdown finishes. */
+const NEVER_ABORTED = new AbortController().signal;
+
+/**
+ * Runs its turns one at a time, in call order, so one validation worker runs at a time. A turn settles
+ * whatever happens to it, and the next one then starts, so every waiter settles.
+ */
+function createRestoreQueue() {
+    let tail: Promise<unknown> = Promise.resolve();
+    return {
+        run<T>(turn: () => Promise<T>): Promise<T> {
+            const run = tail.then(turn, turn);
+            tail = run.catch(() => {});
+            return run;
+        },
+    };
+}
 
 /**
  * Server snapshots and local backup archives:
  * - `GET /api/backups`: the retained snapshots, newest first.
- * - `POST /api/backups/:id/restore`: replaces every resource with a snapshot (safety snapshot first,
- *   mutations closed, new epoch).
+ * - `POST /api/backups/:id/restore`: replaces every resource with a snapshot. In a turn of the restore
+ *   queue, which spans the validation and the install: the snapshot is pinned into a staging folder
+ *   (retention cannot take it), checked and staged by the runner outside maintenance, its staged file
+ *   verified, and only then, with mutations closed, the safety snapshot taken and the staged store
+ *   installed (new epoch). A request that leaves does not cancel it; `restoreSignal` (shutdown) does,
+ *   at each of its checks, up to the install.
  * - `POST /api/backups/export` `{ partial?: true | string[] }`: streams an archive of a fresh snapshot
  *   and assets (all files, profiles selected from that snapshot for `true`, or the listed keys).
  * - `POST /api/backups/import`: an archive as the raw body, spooled to disk (exempt from the global
- *   body limit, capped by `maxImportBytes`), validated completely, then its missing assets are added
+ *   body limit, capped by `maxImportBytes`), validated completely (its database staged by the runner
+ *   in a turn of the restore queue that ends before maintenance), then its missing assets are added
  *   (an existing file is kept, unless it has a content name and does not hold those bytes while the
- *   archive's copy does) and the resources restored like a snapshot.
+ *   archive's copy does) and the resources restored like a snapshot. An import admitted before
+ *   shutdown finishes.
  * Restore and import are mutations: they need the current epoch in `x-resource-epoch`. The upstream
  * RisuAI import (`routes/backupsUpstream.ts`) shares the import's slot and its restore steps
  * (`restoreValidated`).
@@ -70,12 +92,18 @@ export function registerBackupRoutes(
         slot?: ImportSlot;
         /** Most records of an imported archive (default `MAX_ARCHIVE_RECORDS`; tests lower it). */
         maxArchiveRecords?: number;
+        /** Checks a snapshot and writes its trusted staged store (`validateRunner.ts`). */
+        restoreRunner: RestoreRunner;
+        /** Aborted at shutdown, with the `MaintenanceError` a stopped restore answers. */
+        restoreSignal: AbortSignal;
     },
 ) {
     const { savePath, store, snapshots, auth, limiter, maxImportBytes, diagnostics, maxArchiveRecords } = arg;
+    const { restoreRunner, restoreSignal } = arg;
     const tmpPath = path.join(savePath, ".tmp");
     const assetsPath = path.join(savePath, "assets");
     const slot = arg.slot ?? createImportSlot();
+    const restoreQueue = createRestoreQueue();
 
     app.get("/api/backups", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -94,21 +122,8 @@ export function registerBackupRoutes(
         const expectedEpoch = c.req.header(RESOURCE_EPOCH_HEADER);
         try {
             store.assertEpoch(expectedEpoch);
-            const epoch = await snapshots.track(() =>
-                snapshots.withMaintenance(async ({ snapshot }) => {
-                    // Again once the lock is held: a restore queued behind another one is stale, and
-                    // nothing of it (safety snapshot, validation) should run.
-                    store.assertEpoch(expectedEpoch);
-                    const file = snapshots.resolve(c.req.param("id"));
-                    if (file === null) {
-                        return null;
-                    }
-                    const validated = store.readSnapshot(file);
-                    await snapshot();
-                    store.assertEpoch(expectedEpoch);
-                    return store.replaceAll(validated);
-                }),
-            );
+            const id = c.req.param("id");
+            const epoch = await snapshots.track(() => restoreQueue.run(() => restoreSnapshot(id, expectedEpoch)));
             if (epoch === null) {
                 return c.json({ error: "Snapshot not found" }, 404);
             }
@@ -118,6 +133,47 @@ export function registerBackupRoutes(
             return backupErrorResponse(c, error);
         }
     });
+
+    /** A snapshot restore's turn of the queue (see `registerBackupRoutes`); null for an unlisted snapshot. */
+    async function restoreSnapshot(id: string, expectedEpoch: string | undefined): Promise<string | null> {
+        restoreSignal.throwIfAborted();
+        // Again at the turn: a restore queued behind another one is stale, and nothing of it (a worker,
+        // a safety snapshot) should run.
+        store.assertEpoch(expectedEpoch);
+        const staging = await makeStaging(tmpPath, "restore");
+        try {
+            const source = path.join(staging, "source.sqlite");
+            if (!(await snapshots.pin(id, source))) {
+                return null;
+            }
+            const stagedFile = path.join(staging, STAGED_STORE_FILE);
+            const stagedReport = await restoreRunner(
+                { source, output: stagedFile },
+                { signal: restoreSignal, onProgress: () => {} },
+            );
+            await verifyStagedFile(stagedFile, stagedReport, restoreSignal);
+            restoreSignal.throwIfAborted();
+            return await snapshots.withMaintenance(async ({ snapshot }) => {
+                // Again once the lock is held, and neither the snapshot nor the install below runs
+                // past shutdown or for a restore that went stale meanwhile.
+                restoreSignal.throwIfAborted();
+                store.assertEpoch(expectedEpoch);
+                const { epoch } = await restoreValidated({
+                    store,
+                    assetsPath,
+                    expectedEpoch,
+                    snapshot,
+                    stagedFile,
+                    stagedReport,
+                    assets: [],
+                    signal: restoreSignal,
+                });
+                return epoch;
+            });
+        } finally {
+            await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+        }
+    }
 
     app.post("/api/backups/export", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -351,7 +407,14 @@ export function registerBackupRoutes(
             const plan = await planImport(handle, savePath, maxArchiveRecords);
             const databaseFile = path.join(staging, "resources.sqlite");
             await copyRecordToFile(handle, plan.database, databaseFile);
-            const validated = store.readSnapshot(databaseFile);
+            const stagedFile = path.join(staging, STAGED_STORE_FILE);
+            const stagedReport = await restoreQueue.run(() =>
+                restoreRunner(
+                    { source: databaseFile, output: stagedFile },
+                    { signal: NEVER_ABORTED, onProgress: () => {} },
+                ),
+            );
+            await verifyStagedFile(stagedFile, stagedReport);
             const importHandle = handle;
             const importStaging = staging;
 
@@ -365,7 +428,8 @@ export function registerBackupRoutes(
                     assetsPath,
                     expectedEpoch,
                     snapshot,
-                    validated,
+                    stagedFile,
+                    stagedReport,
                     assets: plan.assets.map((asset, index) => ({
                         target: asset.target,
                         stage: async () => {
@@ -391,20 +455,24 @@ export function registerBackupRoutes(
 export type RestoreAsset = { target: string; stage(): Promise<string> };
 
 /**
- * The steps every archive import runs inside `withMaintenance` once its snapshot is validated and
- * the epoch checked under the lock: the safety snapshot, each asset whose file does not exist yet
+ * The steps every restore runs inside `withMaintenance` once its staged store is verified and the
+ * epoch checked under the lock: the safety snapshot, each asset whose file does not exist yet
  * flushed and added by hard link (a link fails instead of replacing a file that appeared meanwhile),
  * a content-named file (`assets/<sha256 hex>.<ext>`) that does not hold its bytes replaced by rename
- * when the staged copy does (any other existing path is kept), one assets directory sync, the epoch
- * checked again, then `replaceAll`. Shared by the version-2 import and the upstream commit.
+ * when the staged copy does (any other existing path is kept), one assets directory sync, `signal`
+ * and the epoch checked again, then `replaceAll`, which completes once it started. Shared by the
+ * snapshot restore, the version-2 import, and the upstream commit.
  */
 export async function restoreValidated(arg: {
     store: ResourceStore;
     assetsPath: string;
     expectedEpoch: string | undefined;
     snapshot: () => Promise<unknown>;
-    validated: ValidatedSnapshot;
+    stagedFile: string;
+    stagedReport: StagedFileReport;
     assets: readonly RestoreAsset[];
+    /** Aborted at shutdown: nothing is replaced past it. */
+    signal?: AbortSignal;
 }): Promise<{ epoch: string; assetsWritten: number; assetsSkipped: number }> {
     const { store, expectedEpoch } = arg;
     await arg.snapshot();
@@ -464,8 +532,9 @@ export async function restoreValidated(arg: {
     if (written > 0) {
         await syncDir(arg.assetsPath);
     }
+    arg.signal?.throwIfAborted();
     store.assertEpoch(expectedEpoch);
-    const epoch = store.replaceAll(arg.validated);
+    const epoch = store.replaceAll(arg.stagedFile, arg.stagedReport);
     return { epoch, assetsWritten: written, assetsSkipped: skipped };
 }
 
