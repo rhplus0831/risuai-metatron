@@ -12,6 +12,7 @@
     "build": "vite build --sourcemap && node util/compressDist.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
     "check:tests": "node util/testInventory.mjs",
+    "check:docs": "node util/docsBudget.mjs --report",
     "test": "vitest run --tags-filter=!slow",
     "test:agent": "node util/agentTest.mjs",
     "test:overload": "node util/overloadTest.mjs",
