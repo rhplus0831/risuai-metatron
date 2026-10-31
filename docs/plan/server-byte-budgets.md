@@ -2,7 +2,7 @@
 
 Status: drafted 2026-10-31, revised the same day after an Astra review (see **Review record**);
 landed: 0 (`261f6fb26`), 1 (`d8aac27d0`), 3 (`052df1066`), 2 (`be53ea533`),
-6 (`af42c1fc4`). The user answered Q1–Q3 on 2026-10-31 (see **Answered questions**).
+6 (`af42c1fc4`), 7 (`7d55d0189`). The user answered Q1–Q3 on 2026-10-31 (see **Answered questions**).
 
 Sources: findings F06, F07 and F17 of the
 [server/client stabilization audit](../research/deep-audit/server-client-stabilization.md) (at
