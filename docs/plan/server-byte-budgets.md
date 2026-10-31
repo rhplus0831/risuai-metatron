@@ -1,7 +1,7 @@
 # Server Byte Budgets Plan
 
 Status: drafted 2026-10-31, revised the same day after an Astra review (see **Review record**);
-landed: 0 (`261f6fb26`). The user answered Q1–Q3 on 2026-10-31 (see **Answered questions**).
+landed: 0 (`261f6fb26`), 1 (`d8aac27d0`). The user answered Q1–Q3 on 2026-10-31 (see **Answered questions**).
 
 Sources: findings F06, F07 and F17 of the
 [server/client stabilization audit](../research/deep-audit/server-client-stabilization.md) (at
@@ -248,7 +248,8 @@ authenticated, limitedBody(cap), handler` (checkpoints 16 KiB, tokens 2 MiB, sea
     before `checkAuth`.
   - **The read route's own cap.** `POST /api/resources/read` gets a 32 MiB cap after
     authentication and leaves the global list. The cap is computed from the largest valid request
-    (5,000 entries × two ids × 512 units × 3 UTF-8 bytes, about 15.4 MiB, plus framing), not from
+    (5,000 entries × two ids × 512 units × 3 UTF-8 bytes, about 15.4 million bytes or 14.7 MiB, plus
+    framing), not from
     typical ids, so no valid older-tab request is refused. `batch` and `/api/write` keep 100 MiB.
 - **D2. A read is deduplicated, budgeted by character group, and complete or explicitly unfinished.**
   - **Deduplication.** The route deduplicates `refs` by kind and id, `chats` by character and id,
