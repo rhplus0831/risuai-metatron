@@ -47,6 +47,72 @@ async function expectConflict(res: Response, revision: string | null, label: str
 }
 
 describe("resource routes", () => {
+    it.each([false, true])(
+        "pulls a 48-chunk read body only after JWT admission (authenticated: %s)",
+        async (authenticated) => {
+            const s = await authedServer();
+            const revision = await s.create("docs", "r", { value: "read" });
+            const bytes = Buffer.from(JSON.stringify({ refs: [{ kind: "docs", id: "r" }] }).padEnd(48 * 8, " "));
+            let pulls = 0;
+            let ended = false;
+            const response = await s.app.request("/api/resources/read", {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    ...(authenticated ? await s.headers() : {}),
+                },
+                body: new ReadableStream<Uint8Array>(
+                    {
+                        pull(controller) {
+                            pulls++;
+                            if (pulls <= 48) controller.enqueue(bytes.subarray((pulls - 1) * 8, pulls * 8));
+                            else {
+                                ended = true;
+                                controller.close();
+                            }
+                        },
+                    },
+                    { highWaterMark: 0 },
+                ),
+                duplex: "half",
+            } as RequestInit);
+            expect(response.status).toBe(authenticated ? 200 : 400);
+            if (authenticated) {
+                expect(ended).toBe(true);
+                expect(pulls).toBe(49);
+                expect(await response.json()).toMatchObject({
+                    epoch: s.epoch,
+                    items: [{ kind: "docs", id: "r", revision, data: { value: "read" } }],
+                });
+            } else {
+                expect(await response.json()).toEqual({ error: "No auth header" });
+                expect(pulls).toBeLessThanOrEqual(1);
+                expect(ended).toBe(false);
+            }
+        },
+    );
+
+    it("accepts 5,000 chat entries with two 512-character CJK ids at the production read cap", async () => {
+        const s = await defaultServer();
+        const chats = Array.from({ length: 5000 }, (_, index) => ({
+            characterId: "界".repeat(512),
+            id: "文".repeat(510) + String.fromCharCode(0x4e00 + Math.floor(index / 100), 0x4e00 + (index % 100)),
+        }));
+        const body = JSON.stringify({ chats });
+        // Three UTF-8 bytes per CJK character, plus the JSON framing.
+        expect(Buffer.byteLength(body)).toBeGreaterThan(5000 * 2 * 512 * 3);
+        const response = await s.request("/api/resources/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            epoch: s.epoch,
+            chats: chats.map((chat) => ({ ...chat, revision: null, data: null })),
+        });
+    });
+
     it("round-trips a resource through create, get, update, and list, in the SQLite file under save/data", async () => {
         const s = await authedServer();
         expect(existsSync(path.join(s.savePath, "data", "resources.sqlite"))).toBe(true);

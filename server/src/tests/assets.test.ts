@@ -1,9 +1,13 @@
 // @vitest-environment node
+import { serve } from "@hono/node-server";
+import { once } from "node:events";
+import http from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    allowListenerOrigin,
     buildArchive,
     createResourceTestClient,
     hex,
@@ -195,6 +199,166 @@ describe("batch asset routes", () => {
         expect(readFileSync(file("before.bin"), "utf8")).toBe("kept");
         expect(readdirSync(path.join(s.savePath, "assets"))).toEqual(["before.bin"]);
         expect(stagedFiles()).toEqual([]);
+    });
+
+    it("publishes while counting a chunked batch, removes its staged overflow, and drains the source", async () => {
+        const first = buildArchive([["assets/kept.bin", "kept"]]);
+        const second = buildArchive([["assets/partial.bin", "unfinished"]]);
+        const cut = second.length - 3;
+        const chunks = [first, second.subarray(0, cut), second.subarray(cut), new Uint8Array(4), new Uint8Array(4)];
+        await s.close();
+        s = await createResourceTestClient({ routeLimits: { bodyBytes: first.length + cut } });
+        let pulls = 0;
+        let ended = false;
+        let publishedBeforeOverflow = false;
+        let stagedBeforeOverflow: string[] = [];
+        const response = await writeBatch(
+            new ReadableStream<Uint8Array>(
+                {
+                    pull(controller) {
+                        if (pulls === 2) {
+                            publishedBeforeOverflow = existsSync(file("kept.bin"));
+                            stagedBeforeOverflow = stagedFiles().map((name) =>
+                                readFileSync(path.join(s.savePath, ".tmp", name), "utf8"),
+                            );
+                        }
+                        if (pulls < chunks.length) controller.enqueue(chunks[pulls++]);
+                        else {
+                            ended = true;
+                            controller.close();
+                        }
+                    },
+                },
+                { highWaterMark: 0 },
+            ),
+        );
+        expect(response.status).toBe(413);
+        expect(await response.json()).toEqual({ error: "Request body too large" });
+        expect(publishedBeforeOverflow).toBe(true);
+        expect(stagedBeforeOverflow).toEqual(["unfinis"]);
+        expect(pulls).toBe(chunks.length);
+        expect(ended).toBe(true);
+        expect(readdirSync(path.join(s.savePath, "assets"))).toEqual(["kept.bin"]);
+        expect(readFileSync(file("kept.bin"), "utf8")).toBe("kept");
+        expect(stagedFiles()).toEqual([]);
+    });
+
+    it("drains an overflowing upload before answering 413 and reuses its live connection", async () => {
+        const first = buildArchive([["assets/kept.bin", "kept"]]);
+        const second = buildArchive([["assets/refused.bin", "refused"]]);
+        const cap = first.length + second.length - 1;
+        await s.close();
+        s = await createResourceTestClient({ routeLimits: { bodyBytes: cap } });
+        const published = deferred();
+        const draining = deferred();
+        const releaseTail = deferred();
+        const handled = deferred();
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+            await rename(from, to);
+            if (String(to) === file("kept.bin")) published.resolve();
+        });
+        const node = serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request) {
+                if (new URL(request.url).pathname !== "/api/assets/write") return s.app.fetch(request);
+                // Hold the next adapter read after overflow until the client finishes its tail.
+                // A limiter that answers without draining instead settles the response race below.
+                const reader = request.body!.getReader();
+                let bytes = 0;
+                const body = new ReadableStream<Uint8Array>(
+                    {
+                        async pull(controller) {
+                            if (bytes > cap) {
+                                draining.resolve();
+                                await releaseTail.promise;
+                            }
+                            try {
+                                const next = await reader.read();
+                                if (next.done) controller.close();
+                                else {
+                                    bytes += next.value.byteLength;
+                                    controller.enqueue(next.value);
+                                }
+                            } catch (error) {
+                                controller.error(error);
+                            }
+                        },
+                        cancel(reason) {
+                            return reader.cancel(reason);
+                        },
+                    },
+                    { highWaterMark: 0 },
+                );
+                return Promise.resolve(
+                    s.app.fetch(new Request(request, { body, duplex: "half" } as RequestInit)),
+                ).finally(() => handled.resolve());
+            },
+        }) as http.Server;
+        const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+        let upload: http.ClientRequest | undefined;
+        try {
+            await once(node, "listening");
+            const origin = allowListenerOrigin(node);
+            upload = http.request(`${origin}/api/assets/write`, {
+                method: "POST",
+                agent,
+                headers: {
+                    ...(await s.headers()),
+                    "content-type": "application/octet-stream",
+                    "transfer-encoding": "chunked",
+                },
+            });
+            const received = once(upload, "response").then(([response]) => response as http.IncomingMessage);
+            const finished = once(upload, "finish");
+            let finishedSending = false;
+            let responseAfterFinish = false;
+            upload.once("finish", () => {
+                finishedSending = true;
+            });
+            upload.once("response", () => {
+                responseAfterFinish = finishedSending;
+            });
+            upload.write(first);
+            expect(
+                await Promise.race([published.promise.then(() => "published"), received.then(() => "response")]),
+            ).toBe("published");
+            const socket = upload.socket;
+            upload.write(second);
+            expect(await Promise.race([draining.promise.then(() => "draining"), received.then(() => "response")])).toBe(
+                "draining",
+            );
+            expect(finishedSending).toBe(false);
+            upload.end(buildArchive([["assets/tail.bin", "discarded"]]));
+            await finished;
+            releaseTail.resolve();
+            const response = await received;
+            const chunks: Buffer[] = [];
+            for await (const chunk of response) chunks.push(Buffer.from(chunk));
+            expect(response.statusCode).toBe(413);
+            expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({ error: "Request body too large" });
+            expect(responseAfterFinish).toBe(true);
+            expect(readFileSync(file("kept.bin"), "utf8")).toBe("kept");
+            expect(readdirSync(path.join(s.savePath, "assets"))).toEqual(["kept.bin"]);
+            expect(stagedFiles()).toEqual([]);
+
+            const next = http.get(`${origin}/api/test_auth`, { agent, headers: await s.headers() });
+            const [nextResponse] = (await once(next, "response")) as [http.IncomingMessage];
+            const nextChunks: Buffer[] = [];
+            for await (const chunk of nextResponse) nextChunks.push(Buffer.from(chunk));
+            expect(next.reusedSocket).toBe(true);
+            expect(next.socket).toBe(socket);
+            expect(nextResponse.statusCode).toBe(200);
+            expect(JSON.parse(Buffer.concat(nextChunks).toString())).toEqual({ status: "success" });
+        } finally {
+            releaseTail.resolve();
+            upload?.destroy();
+            agent.destroy();
+            node.closeAllConnections();
+            await new Promise<void>((resolve) => node.close(() => resolve()));
+            if (upload) await handled.promise;
+        }
     });
 
     it("returns 400 for malformed or truncated framing and removes unfinished staged files", async () => {

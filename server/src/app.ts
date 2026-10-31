@@ -46,7 +46,7 @@ import { createMcpRegistry } from "./mcp/registry.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
-import { createAuthStore } from "./routes/auth.ts";
+import { createAuthStore, CRYPTO_PATH, LOGIN_PATH, SET_PASSWORD_PATH } from "./routes/auth.ts";
 import { CHAT_CHECKPOINTS_PATH, registerChatCheckpointRoutes } from "./routes/chatCheckpoints.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { createUpstreamImportStaging, registerUpstreamImportRoutes } from "./routes/backupsUpstream.ts";
@@ -92,7 +92,7 @@ import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
-import { registerResourceRoutes } from "./routes/resources.ts";
+import { registerResourceRoutes, RESOURCE_READ_PATH } from "./routes/resources.ts";
 import { ASSET_MISSING_PATH, registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
 import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID, revisionDigest } from "../../shared/resources.ts";
@@ -117,6 +117,10 @@ export type RouteLimits = {
     archiveRecords?: number;
     /** Most decoded bytes of one CharX import entry, and the declared-size rules made from it (default `MAX_CHARX_ENTRY_BYTES`, 50 MiB). */
     charxEntryBytes?: number;
+    /** The app's body cap, for a route without its own (default `MAX_BODY_BYTES`, 100 MiB). */
+    bodyBytes?: number;
+    /** The body cap of `POST /api/resources/read` (default `MAX_READ_BODY_BYTES`, 32 MiB). */
+    readBodyBytes?: number;
 };
 
 /**
@@ -135,7 +139,7 @@ export type RouteLimits = {
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
  * defaults are the production ones). `generationOwnerAbsentMs` and `generationOwnerSilentMs` replace
  * the owner absence and negotiated socket silence allowances (tests shorten them). `routeLimits`
- * lowers the rate limits and the asset batch, backup
+ * lowers the rate limits, the app's and the resource read's body caps, and the asset batch, backup
  * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
  * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
  * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
@@ -661,13 +665,15 @@ export function createServerContext(options: {
         }
     });
 
-    // The backup (version-2 and upstream), module, and CharX imports stream their bodies to disk with
-    // their own cap; Hono's limiter would buffer them.
-    const limitBody = limitedBody(MAX_BODY_BYTES);
+    // The backup (version-2 and upstream), module, and CharX imports stream their bodies to disk under
+    // their own cap, which must not count against this 100 MiB.
+    const limitBody = limitedBody(options.routeLimits?.bodyBytes ?? MAX_BODY_BYTES);
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
-    // message search's, the memory task start's, the checkpoint POSTs' and policy PUT's, the token routes', and the missing asset check's bodies are capped by those routes
-    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB, 64 KiB).
+    // resource read's, the login, crypto, and set-password routes', the message search's, the memory
+    // task start's, the checkpoint POSTs' and policy PUT's, the token routes', and the missing asset
+    // check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB,
+    // 32 MiB, 16 KiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB, 64 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -687,6 +693,10 @@ export function createServerContext(options: {
                     route === TOKEN_COUNT_PATH ||
                     route === TOKEN_ENCODE_PATH ||
                     route === ASSET_MISSING_PATH ||
+                    route === RESOURCE_READ_PATH ||
+                    route === LOGIN_PATH ||
+                    route === CRYPTO_PATH ||
+                    route === SET_PASSWORD_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
@@ -831,6 +841,7 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
+        readBodyBytes: options.routeLimits?.readBodyBytes,
     });
     registerMessageSearchRoutes(app, {
         store: resources,

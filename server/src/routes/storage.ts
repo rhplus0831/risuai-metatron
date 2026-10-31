@@ -27,7 +27,7 @@ import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import { limitedBody } from "./limitedBody.ts";
+import { limitedBody, RequestBodyError } from "./limitedBody.ts";
 
 export const ASSET_MISSING_PATH = "/api/assets/missing";
 export const MAX_ASSET_MISSING_NAMES = 512;
@@ -736,9 +736,11 @@ export function registerStorageRoutes(
     // across the body read, because maintenance waits for every admitted mutation. At the first
     // failure the writing stops and the staged file is removed, but the rest of the body is still read
     // and dropped before the answer: `@hono/node-server` resets a connection whose body is left unread,
-    // which the client would see as a network failure and resend. Records renamed before the failure
-    // stay in place. A successful batch syncs each target directory once, outside the gate, before
-    // answering; a failed batch skips that sync because none of its writes are acknowledged.
+    // which the client would see as a network failure and resend. A body past the app's cap is such a
+    // failure too, found while reading: it is drained the same way, then `limitedBody` answers 413.
+    // Records renamed before the failure stay in place. A successful batch syncs each target directory
+    // once, outside the gate, before answering; a failed batch skips that sync because none of its
+    // writes are acknowledged.
     app.post(ASSET_BATCH_WRITE_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -846,8 +848,12 @@ export function registerStorageRoutes(
                     }
                 }
             } catch (error) {
-                // The body could not be read to its end: the client is gone.
+                // The body stopped before its end: past the cap, with the client still sending, or
+                // the client is gone, which leaves nothing to drain.
                 await dropStaged();
+                if (error instanceof RequestBodyError) {
+                    await error.drain();
+                }
                 throw error;
             }
         }

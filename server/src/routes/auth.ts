@@ -5,6 +5,13 @@ import type { Context, Hono, MiddlewareHandler } from "hono";
 import { mkdirDurableSync, writeFileDurableSync } from "../data/durableWrite.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
+import { limitedBody } from "./limitedBody.ts";
+
+export const LOGIN_PATH = "/api/login";
+export const CRYPTO_PATH = "/api/crypto";
+export const SET_PASSWORD_PATH = "/api/set_password";
+/** These routes read their bodies before any authentication; a body is a password, or a digest and a JWK. */
+export const MAX_AUTH_BODY_BYTES = 16 * 1024;
 
 type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature";
 
@@ -171,6 +178,8 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
         app: Hono<AppEnv>,
         limiters: { auth: MiddlewareHandler<AppEnv>; login: MiddlewareHandler<AppEnv> },
     ) {
+        const limitBody = limitedBody(MAX_AUTH_BODY_BYTES);
+
         app.get("/api/test_auth", limiters.auth, async (c) => {
             if (bypass) {
                 return c.json({ status: "success" });
@@ -184,7 +193,7 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
             return c.json({ status: "success" });
         });
 
-        app.post("/api/login", limiters.login, async (c) => {
+        app.post(LOGIN_PATH, limiters.login, limitBody, async (c) => {
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {
                 return parsed.response;
@@ -205,7 +214,7 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
             return c.json({ error: "Password incorrect" }, 400);
         });
 
-        app.post("/api/crypto", limiters.auth, async (c) => {
+        app.post(CRYPTO_PATH, limiters.auth, limitBody, async (c) => {
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {
                 return parsed.response;
@@ -217,7 +226,7 @@ export function createAuthStore(savePath: string, options: { bypass?: boolean; p
             }
         });
 
-        app.post("/api/set_password", limiters.login, async (c) => {
+        app.post(SET_PASSWORD_PATH, limiters.login, limitBody, async (c) => {
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {
                 return parsed.response;

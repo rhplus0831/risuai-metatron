@@ -426,37 +426,142 @@ describe("GET / and /index.html", () => {
     });
 });
 
-describe("global body limit", () => {
-    it("answers 400 for a failed upload without Content-Length", async () => {
-        const s = await createResourceTestClient();
-        try {
-            let sent = false;
-            const failed = await s.request("/api/resources/batch", {
+describe("request body limits", () => {
+    it.each(["/api/resources/batch", "/api/write"])(
+        "keeps the 100 MiB global cap for %s without reading a declared overflow",
+        async (route) => {
+            const s = await createResourceTestClient({
+                resourceKinds: [{ name: "docs", schemaVersion: 1, normalize: (input) => input }],
+                epochKind: "docs",
+            });
+            servers.push(s);
+            const cap = 100 * 1024 * 1024;
+            const bytes = Buffer.from(
+                route === "/api/write"
+                    ? "stored"
+                    : JSON.stringify({
+                          ops: [{ kind: "docs", id: "r", baseRevision: null, data: "stored" }],
+                      }),
+            );
+            let pulls = 0;
+            const headers = { "content-type": "application/json", "file-path": hex("assets/cap.bin") };
+            const refused = await s.request(route, {
                 method: "POST",
-                headers: { "content-type": "application/json" },
+                headers: { ...headers, "content-length": String(cap + 1) },
                 body: new ReadableStream<Uint8Array>(
                     {
                         pull(controller) {
-                            if (!sent) {
-                                sent = true;
-                                controller.enqueue(new TextEncoder().encode('{"ops":'));
-                            } else {
-                                controller.error(new DOMException("The client went away", "AbortError"));
-                            }
+                            pulls++;
+                            controller.enqueue(bytes);
+                            controller.close();
                         },
                     },
                     { highWaterMark: 0 },
                 ),
                 duplex: "half",
             } as RequestInit);
-            expect(failed.status).toBe(400);
-        } finally {
-            await s.close();
-        }
-    });
+            expect(refused.status).toBe(413);
+            expect(await refused.json()).toEqual({ error: "Request body too large" });
+            expect(pulls).toBe(0);
+
+            // The declaration exercises the production cap without allocating a 100 MiB body.
+            const accepted = await s.request(route, {
+                method: "POST",
+                headers: { ...headers, "content-length": String(cap) },
+                body: bytes,
+            });
+            expect(accepted.status).toBe(200);
+        },
+    );
+
+    const routes = [
+        { route: "/api/resources/read", limits: { readBodyBytes: 8 } },
+        { route: "/api/resources/batch", limits: { bodyBytes: 8 } },
+        { route: "/api/write", limits: { bodyBytes: 8 } },
+        { route: "/proxy2", limits: { bodyBytes: 8 } },
+    ];
+    it.each(
+        routes.flatMap((route) => [
+            { ...route, failure: "overflow", status: 413, error: "Request body too large" },
+            { ...route, failure: "source failure", status: 400, error: "Invalid JSON body" },
+        ]),
+    )(
+        "$route answers $status on $failure even when the handler answers or rethrows",
+        async ({ route, limits, failure, status, error }) => {
+            const s = await createResourceTestClient({ routeLimits: limits });
+            servers.push(s);
+            let pulls = 0;
+            let bytes = 0;
+            const chunk = Buffer.from("    ");
+            const response = await s.request(route, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    "file-path": hex("assets/refused.bin"),
+                    "risu-url": encodeURIComponent("http://127.0.0.1:1/never-reached"),
+                    "risu-header": encodeURIComponent("{}"),
+                },
+                body: new ReadableStream<Uint8Array>(
+                    {
+                        pull(controller) {
+                            pulls++;
+                            if (failure === "source failure" && pulls === 2) {
+                                controller.error(new Error("upload interrupted"));
+                            } else if (pulls <= 6) {
+                                bytes += chunk.length;
+                                controller.enqueue(chunk);
+                            } else controller.close();
+                        },
+                    },
+                    { highWaterMark: 0 },
+                ),
+                duplex: "half",
+            } as RequestInit);
+            expect(response.status).toBe(status);
+            expect(await response.json()).toEqual({ error });
+            expect(pulls).toBe(failure === "overflow" ? 3 : 2);
+            expect(bytes).toBeLessThanOrEqual(8 + chunk.length);
+            expect(existsSync(path.join(s.savePath, "assets", "refused.bin"))).toBe(false);
+        },
+    );
 });
 
 describe("auth routes", () => {
+    it.each([
+        { route: "/api/login", payload: { password: "pw", publicKey: {} }, password: "pw" },
+        { route: "/api/crypto", payload: { data: "pw" }, password: undefined },
+        { route: "/api/set_password", payload: { password: "pw" }, password: undefined },
+    ])(
+        "$route reads first, refuses 16 KiB plus one, and accepts exactly 16 KiB",
+        async ({ route, payload, password }) => {
+            const { app, savePath } = freshServer({ password });
+            const cap = 16 * 1024;
+            const body = JSON.stringify(payload).padEnd(cap, " ");
+            const refused = await app.request(route, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: body + " ",
+            });
+            expect(refused.status).toBe(413);
+            expect(await refused.json()).toEqual({ error: "Request body too large" });
+            expect(existsSync(path.join(savePath, "server", "known_public_key_hashes.json"))).toBe(false);
+            if (route === "/api/set_password")
+                expect(existsSync(path.join(savePath, "server", "password"))).toBe(false);
+
+            const accepted = await app.request(route, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body,
+            });
+            expect(accepted.status).toBe(200);
+            if (route === "/api/crypto") {
+                expect(await accepted.text()).toBe(createHash("sha256").update("pw").digest("hex"));
+            } else {
+                expect(await accepted.json()).toEqual({ status: "success" });
+            }
+        },
+    );
+
     it("runs the first-run flow: unset -> crypto -> set_password -> login -> JWT", async () => {
         const { app, savePath } = freshServer();
         expect(await (await app.request("/api/test_auth")).json()).toEqual({ status: "unset" });

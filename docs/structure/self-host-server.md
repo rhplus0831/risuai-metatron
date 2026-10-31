@@ -76,7 +76,7 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under
   `diagnostics/` owns request history, diagnostic journals, reports, and support
   shares ([diagnostics](diagnostics.md)).
 - HTTP helpers: `http/{body,rateLimit,clientIp,compressedJson,staticCache,assetVerification,assetThumbnails}.ts`
-  cover request limits, client IPs, caching, and asset delivery. `routes/limitedBody.ts` owns global and route-specific streaming body caps. Thumbnail cache
+  cover request limits, client IPs, caching, and asset delivery. `routes/limitedBody.ts` owns global and route-specific counting body caps. Thumbnail cache
   publication, removal, and stale-entry sweeps synchronize per key directory. See
   [global API](global-api.md)
   for the tab's transport and fetch policy.
@@ -94,7 +94,7 @@ The route matrix below is the server's current HTTP and WebSocket surface. Check
 Registration order in `createServerContext`:
 
 1. `onError` (`HTTPException` responses pass through; maintenance and a closed resource store answer 503 with `Retry-After`; other errors are a 500 `Internal Server Error`). Shutdown admission middleware runs before body parsing, tracks resource handlers (`/api/resources`, `/api/llm-secrets`, `/api/chats/search`, `/api/memory/tasks`, and `/api/chat-checkpoints`), refuses new resource, message search, credential, backup, module import, CharX import, Realm import, token, and request history requests with 503, and adds `Connection: close` to every response during shutdown; every `/api/request-history` answer gets `Cache-Control: no-store` there, so a 429 or 413 carries it too.
-2. `bodyLimit` (100 MiB, 413 `{error:"Request body too large"}`), skipped for `POST /api/backups/import`, `POST /api/backups/import-upstream/prepare`, `POST /api/import/module`, and `POST /api/import/charx`, which stream their bodies to disk under their own cap, and for `POST /api/import/realm` and its `/commit` and `/cancel`, which cap their `{ id }` or `{ token }` body at 4 KiB, and for `POST /api/chat-checkpoints/*` and `PUT /api/chat-checkpoints/policy`, which cap their bodies at 16 KiB after authentication, and for `POST /api/chats/search`, which caps its body at 4 KiB of received bytes, and for `POST /api/tokens/count` and `/api/tokens/encode`, which cap theirs at 2 MiB after authentication. `POST /api/assets/missing` also bypasses the global cap and limits its body to 64 KiB after authentication. The global cap and routes that cap their own bodies with `bodyLimit` use the shared helper in `server/src/routes/limitedBody.ts`: a body over the cap answers 413, and a request stream that fails while the limiter reads it answers 400, never the app's 500.
+2. `limitedBody` (100 MiB, 413 `{error:"Request body too large"}`), skipped for `POST /api/backups/import`, `POST /api/backups/import-upstream/prepare`, `POST /api/import/module`, and `POST /api/import/charx`, which stream their bodies to disk under their own cap, and for `POST /api/import/realm` and its `/commit` and `/cancel`, which cap their `{ id }` or `{ token }` body at 4 KiB, and for `POST /api/chat-checkpoints/*` and `PUT /api/chat-checkpoints/policy`, which cap their bodies at 16 KiB after authentication, and for `POST /api/chats/search`, which caps its body at 4 KiB of received bytes, and for `POST /api/tokens/count` and `/api/tokens/encode`, which cap theirs at 2 MiB after authentication, and for `POST /api/resources/read`, which caps its body at 32 MiB after authentication (the largest valid request is about 15.4 million bytes), and for `POST /api/login`, `/api/crypto`, and `/api/set_password`, which read their bodies before any authentication by design and cap them at 16 KiB. `POST /api/assets/missing` also bypasses the global cap and limits its body to 64 KiB after authentication. The global cap and the routes that cap their own bodies use the shared helper in `server/src/routes/limitedBody.ts` (the chat checkpoint routes keep their own copy over `hono/body-limit`, after authentication): a body over the cap answers 413, and a request stream that fails under it answers 400, never the app's 500, even from a route that rethrows the failed read (see Flows).
 3. `GET /` and `GET /index.html` (one shared handler, with `no-cache`, a weak size/mtime ETag, `Last-Modified`, and conditional 304 responses), then the same handler for the client's screen routes: a `GET *` handler serves it when `isClientRoutePath` (`shared/routes.ts`: first segment `chat`, `playground`, `realm`, `characters`, or `settings`) matches and passes every other path on ([URL routes](app-shell.md)).
 4. `createStaticCache` (`server/src/http/staticCache.ts`) checks regular files before `serveStatic` handles every other GET/HEAD: `/assets/*` gets `public, max-age=31536000, immutable`; all other files (including `sw.js` and `manifest.json`) get `no-cache`. For `.js`, `.mjs`, `.css`, `.json`, `.svg`, and `.wasm`, it negotiates fresh regular `.br` and `.gz` siblings using `Accept-Encoding` qualities (case-insensitive tokens, explicit exclusions, and wildcard; ties prefer Brotli, gzip, then identity). A missing header uses identity; missing, stale, or unacceptable siblings fall back to another acceptable representation or identity. Compressed responses stream the sibling with its own length, `Content-Encoding`, the original file's MIME type, and a weak size/mtime ETag that includes the encoding. Each representation has its own ETag and `Last-Modified`; all compressible-file responses, including identity and 304, carry `Vary: Accept-Encoding`. Matching `If-None-Match` for the selected representation (weak comparison; `*` only as the whole field) answers a bodyless 304; only when that header is absent, a parseable `If-Modified-Since` at or after mtime floored to whole seconds also answers 304. Requests carrying `Range` or `If-Range` always use identity through `serveStatic`. `If-Range` permits Range only with a matching strong ETag or the exact `Last-Modified` date; weak tags, stale validators, and invalid values discard Range and serve the full 200. HTML, including the injected index path, is never negotiated. Missing or rejected paths pass on without cache headers.
 5. The routes below.
@@ -233,10 +233,31 @@ Auth:
    to 401. Token acceptance rules are shared with WebSocket authentication.
 
 Request bodies use `routes/limitedBody.ts` for both the global cap and route-specific
-caps: oversized bodies answer 413, and stream failures while prereading answer 400
-`{ error: "Invalid JSON body" }` (or the route's configured read error). A JSON body
-read failure in `http/body.ts`, including one after a declared Content-Length skips
-the limiter's preread, uses the same 400 answer as invalid JSON.
+caps. The limiter counts and does not buffer: a declared `Content-Length` over the cap
+is an immediate 413 with nothing read, and any other body reaches the route at once as
+a demand-driven stream that reads its source only when the route reads. A route that
+answers before reading (a failed auth check) therefore costs no body. After the route
+has run the limiter assigns `c.res` from what it recorded: 413 past the cap (overflow
+wins), otherwise 400 `{ error: "Invalid JSON body" }` (or the route's configured read
+error) when the stream failed under the cap, whatever the route answered or threw
+meanwhile, `Cache-Control` and `RateLimit-*` kept and the route's other headers dropped.
+With neither fact the route's own answer stands, an error included. A route's read
+fails with `RequestBodyError`, an `HTTPException`, so `app.onError` logs nothing for it.
+
+Three consequences follow. A route that never reads its body (the snapshot restore)
+refuses an over-cap one only by its declared length; the body is discarded with the
+connection. A route must finish reading before it exposes a streamed response, because
+an overflow found later cannot become a 413; every route under a cap does. And the
+source is not read past the overflow: a client still sending gets the 413 and the
+connection closes 500 ms later (`@hono/node-server`'s cleanup stalls behind the abandoned
+reader), except on `POST /api/assets/write`, which drains first.
+
+The asset batch publishes each completed record by rename while the upload is still
+being read, so its failures are partial by design: at the first failure the staged file
+is removed, the rest of the body is read and dropped, and records renamed before it stay.
+An over-cap chunked batch is such a failure: its earlier records may be published when
+it answers 413 (a declared length over the cap publishes nothing), and that is the same
+outcome as an upload that fails midway.
 
 Local model refusals preserve the status from `prompt/transformers.ts`
 `localModelRefusal`: a full queue answers 429, an expired queue wait answers 503.

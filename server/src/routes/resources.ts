@@ -23,6 +23,12 @@ import { parseBootRequest, readBoot } from "./resourceBoot.ts";
 
 /** Most operations one batch or one read may name. */
 export const MAX_BATCH_OPERATIONS = 5000;
+export const RESOURCE_READ_PATH = "/api/resources/read";
+/**
+ * A read's body cap. The largest valid request, 5,000 entries of two ids of 512 units at up to 3 UTF-8
+ * bytes each, is about 15.4 million bytes before framing, and an older tab may send it.
+ */
+export const MAX_READ_BODY_BYTES = 32 * 1024 * 1024;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -50,9 +56,11 @@ export function registerResourceRoutes(
         maintenance: MaintenanceGate;
         /** The same synchronous generation-lock snapshot used by the live-update `hello`. */
         streaming?: () => ChatStreamingSnapshot[];
+        /** A read's body cap (default `MAX_READ_BODY_BYTES`; tests lower it). */
+        readBodyBytes?: number;
     },
 ) {
-    const { store, kinds, auth, limiter, maintenance, streaming } = arg;
+    const { store, kinds, auth, limiter, maintenance, streaming, readBodyBytes = MAX_READ_BODY_BYTES } = arg;
 
     const noStore: MiddlewareHandler<AppEnv> = async (c, next) => {
         await next();
@@ -135,11 +143,17 @@ export function registerResourceRoutes(
         return compressedJson(c, read);
     });
 
-    app.post("/api/resources/read", limiter, async (c) => {
+    // The read and the boot read authenticate before their own body caps, so the app's 100 MiB limit is
+    // not applied to them (`app.ts`).
+    const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
             return denied;
         }
+        await next();
+    };
+
+    app.post(RESOURCE_READ_PATH, limiter, authenticated, limitedBody(readBodyBytes), async (c) => {
         const parsed = await readJsonBody(c);
         if (!parsed.ok) {
             return parsed.response;
@@ -193,27 +207,9 @@ export function registerResourceRoutes(
         }
     });
 
-    // The boot read that skips what the client holds (`resourceBoot.ts`). Its body has its own cap,
-    // so the app's 100 MiB limit is not applied to it (`app.ts`).
-    const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
-        const denied = await auth.checkAuth(c);
-        if (denied) {
-            return denied;
-        }
-        await next();
-    };
+    // The boot read that skips what the client holds (`resourceBoot.ts`).
     const limitBootBody = limitedBody(MAX_BOOT_BODY_BYTES);
     app.post(RESOURCE_BOOT_PATH, limiter, authenticated, limitBootBody, async (c) => {
-        let text: string;
-        try {
-            text = await c.req.text();
-        } catch {
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-        // The limiter trusts a declared length; measure the cached text before parsing it.
-        if (Buffer.byteLength(text, "utf8") > MAX_BOOT_BODY_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
-        }
         const parsed = await readJsonBody(c);
         if (!parsed.ok) {
             return parsed.response;

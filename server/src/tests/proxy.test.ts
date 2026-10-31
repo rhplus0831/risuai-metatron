@@ -114,6 +114,22 @@ describe("/proxy2", () => {
         expect(upstream.requests).toHaveLength(1);
     });
 
+    it("keeps an unrelated handler error as 500 with an intact POST body", async () => {
+        server = createTestServer({ password: "pw", routeLimits: { bodyBytes: 8 } });
+        const response = await server.app.request("/proxy2", {
+            method: "POST",
+            headers: {
+                "risu-auth": "pw",
+                "risu-url": target("/echo"),
+                "risu-header": rh([["invalid", "header object"]]),
+            },
+            body: "{}",
+        });
+        expect(response.status).toBe(500);
+        expect(await response.text()).toBe("Internal Server Error");
+        expect(upstream.requests).toHaveLength(0);
+    });
+
     it("streams SSE through, and a timeout before upstream headers is a 504", async () => {
         server = createTestServer({ password: "pw" });
         const sse = await server.app.request("/proxy2", {
