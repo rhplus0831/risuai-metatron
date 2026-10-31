@@ -280,6 +280,7 @@ export function createServerContext(options: {
         kinds: resourceKinds,
         guard: generationLock,
         feed: changeFeed,
+        synchronous: parseSqliteSynchronous(process.env.RISU_SQLITE_SYNCHRONOUS),
         // An injected registry's normalizers are not the commit's, so no identity vouches for them.
         ...(options.resourceKinds
             ? {}
@@ -1142,4 +1143,14 @@ function parseRequestHistoryMaxBytes(raw: string | undefined): number {
         throw new Error(`Invalid RISU_REQUEST_HISTORY_MAX_BYTES: ${raw}`);
     }
     return value;
+}
+
+function parseSqliteSynchronous(raw: string | undefined): "full" | "normal" {
+    if (raw === undefined || raw === "") {
+        return "full";
+    }
+    if (raw !== "full" && raw !== "normal") {
+        throw new Error(`Invalid RISU_SQLITE_SYNCHRONOUS: ${raw}`);
+    }
+    return raw;
 }

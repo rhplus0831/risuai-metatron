@@ -415,6 +415,15 @@ were removed.
 55.5 ms unchanged, `autoSave` 17.5 ms when not due and 79.5 ms when due
 ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `checkpoints`).
 
+**After at `228b23f6d`** ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `checkpoints`, under
+`after`, the Baseline's fixture and machine): `autoSave` not due took 0.2 ms (Baseline 17.5 ms), since it now counts
+turns through the `messages_role` index and reads no message row; `autoSave` due 46.9 ms (79.5 ms); `save` unchanged
+46.2 ms (55.5 ms). The first `save` took 100.7 ms against 91.5 ms, worse than its Before: it is the one save that
+inserts every page, and the rise sits there (first minus unchanged is 54.5 ms against 36.0 ms) although it parses two
+message rows instead of 5,000; the cause was not isolated. A prune now deletes the pages it freed instead of sweeping
+the table. Page hashes are still computed per row; reusing them across saves would need a per-chat set of touched
+rows, which no write path keeps.
+
 ### TJ05 — Snapshot accounting ignores the retained scope
 
 **Measured and confirmed. P2.** `retainedBytes` counts output text and changed variables
@@ -451,6 +460,14 @@ and 0.6 ms with `fsyncSync` stubbed out; it makes 2 fsync calls, so a 100 ms fsy
 The journal calls `fsyncSync` directly and cannot wait on an asynchronous one, so that figure is computed, not
 measured ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `statePublication`).
 
+**After at `228b23f6d`** ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `statePublication`, under
+`after`): with an asynchronous 100 ms fsync the longest gap between two turns of the serving thread during a
+publication was 0.8 ms (Baseline: a derived 200.6 ms), the call itself under 0.1 ms, and the publication completed in
+200.5 ms, carrying the two fsyncs off the thread. On ext4 with the real fsync the gap was 0.2 ms (3.1 ms blocked) and
+completion 3.4 ms. The five-second error state reached the file in 5,103.8 ms at the 100 ms fsync. The Baseline's
+figure is computed and this one measured, since the journal only now takes an injected `fs`.
+Reports and shares still write synchronously by decision ([diagnostics guide](../../structure/diagnostics.md)).
+
 ### SD05 — Startup renormalizes every record
 
 **Measured. P3.** `normalizeStoredRecords` parses, normalizes and serializes every resource of every kind before
@@ -461,6 +478,10 @@ compatible records skip the pass.
 **Baseline at `ac823f673`:** reopening the sync-traffic fixture (300 characters of about 128 KiB, half the size above,
 with 3,000 chats) took 381.5 ms and changed no row
 ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `open`).
+
+**After at `228b23f6d`** ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `open`, under `after`): reopening
+the same fixture with the store's own `normalizationStamp` took 2.9 ms against 381.5 ms and changed no row. A new
+commit, a dirty tree, an unknown identity or a changed kind runs the pass once more, at the Baseline's cost.
 
 ## Traffic between client and server
 

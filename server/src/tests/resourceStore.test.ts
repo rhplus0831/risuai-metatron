@@ -53,12 +53,18 @@ const conflictWith = (fn: () => unknown, current: string | null, label: string) 
 };
 
 describe("connection durability", () => {
-    it("explicitly selects FULL durability for resources while history and vectors use NORMAL", () => {
+    it("selects FULL durability for resources by default and NORMAL by option, while history and vectors use NORMAL", () => {
         const dir = mkdtempSync(path.join(os.tmpdir(), "risu-durability-"));
         dirs.push(dir);
         const exec = DatabaseSync.prototype.exec;
         for (const [name, initial, expected, create] of [
             ["resources", "NORMAL", 2, (file: string) => createResourceStore({ file, kinds })],
+            [
+                "resources-normal",
+                "FULL",
+                1,
+                (file: string) => createResourceStore({ file, kinds, synchronous: "normal" }),
+            ],
             ["history", "FULL", 1, (file: string) => createRequestHistory({ file })],
             ["vectors", "FULL", 1, (file: string) => createVectorCache({ file })],
         ] as const) {

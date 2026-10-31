@@ -718,6 +718,8 @@ export function createResourceStore(options: {
      * store has no stamp: every open runs the normalization pass, and the pass removes a stored stamp.
      */
     normalizationIdentity?: Pick<BuildInfo, "commit" | "dirty">;
+    /** This connection's `PRAGMA synchronous` (default `full`; with `normal` a power failure can lose the last commits). */
+    synchronous?: "full" | "normal";
     /**
      * Tests: called once with a reader of a record's stored JSON text, as the database holds it (an
      * in-memory store has no file another connection could read).
@@ -734,7 +736,7 @@ export function createResourceStore(options: {
     const db = new DatabaseSync(options.file);
     let epoch: string;
     try {
-        epoch = initialize(db, options.file);
+        epoch = initialize(db, options.file, options.synchronous ?? "full");
     } catch (error) {
         db.close();
         throw error;
@@ -2837,9 +2839,10 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * record) are refused: no migration is owed (formats the server read during development, the
  * compatibility rule in `docs/structure/persistence.md`).
  */
-function initialize(db: DatabaseSync, file: string): string {
+function initialize(db: DatabaseSync, file: string, synchronous: "full" | "normal"): string {
+    const synchronousPragma = synchronous === "normal" ? "NORMAL" : "FULL";
     db.exec(
-        `PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`,
+        `PRAGMA journal_mode = WAL; PRAGMA synchronous = ${synchronousPragma}; PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}; PRAGMA foreign_keys = ON;`,
     );
     const { user_version: version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     if (version === 0) {

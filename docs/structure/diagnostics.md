@@ -212,7 +212,7 @@ redaction to [llm-requests](llm-requests.md); startup/auth/disposal to
   settings/stats, journal bytes/failures/dropped, worker counters, live jobs, and last 20
   non-abort failures. Writes occur at creation, every 10 minutes, on fatal fault, and last
   at disposal, after admitted work drains and the queues settle. An error queues one within
-  5 s, and the promise is that delay plus the publication's completion: 5.11 s from the event
+  5 s, and the promise is that delay plus the publication's completion: 5.10 s from the event
   to the file at a 100 ms fsync (`byte-budgets-probe.mjs`, `statePublication`).
 - `reports/<UTC stamp>-<8 hex>.txt`: newest 50 matching regular files retained;
   the new save survives a prune failure. `shared/<UTC stamp>-job-<id>.json` or
