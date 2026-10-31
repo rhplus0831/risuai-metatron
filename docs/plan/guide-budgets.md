@@ -1,7 +1,7 @@
 # Guide Budgets Plan
 
 Status: drafted 2026-11-01; the user answered Q1–Q4 the same day, accepting each
-recommendation (see **Answered questions**). Slices landed: 0 (326caa04d), 1 (e0624f671, 0465e2931), 3 (5f170aa05), 4 (9c9ae1068), 5a (6248d9897, c9c8b4a3f).
+recommendation (see **Answered questions**). Slices landed: 0 (326caa04d), 1 (e0624f671, 0465e2931), 2 (00f2bfdb8), 3 (5f170aa05), 4 (9c9ae1068), 5a (6248d9897, c9c8b4a3f).
 Measurements and the persistence.md inventory were taken at `be5b60b9c`; re-measure with the
 Slice 0 report before each slice.
 
