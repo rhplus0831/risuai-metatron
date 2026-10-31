@@ -46,7 +46,7 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/parser/transformClient", () => ({ captureTransform: vi.fn(), serverProcessScript: vi.fn() }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/translator/translator", () => ({ translateHTML: vi.fn(async (text: string) => text) }));
 vi.mock("src/ts/plugins/apiV3/pluginContext", () => ({ capturePluginContext: vi.fn(() => null) }));
 vi.mock("src/ts/process/memory/hypav3", () => ({

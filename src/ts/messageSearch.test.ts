@@ -24,11 +24,11 @@ vi.mock("./storage/chatStore.svelte", async () => {
     const store = writable<ChatRef | null>(null);
     mocks.ref = store;
     const current = fromStore(store);
-    return {
+    return (await import("./storage/tests/chatStoreMock")).createChatStoreMock({
         currentChatRef: () => current.current,
         // Bumped by every selection, the same chat included (as `selectChat` does): the jump must not read it.
         chatSelectionVersion: (chaId: string) => mocks.versions.get(chaId) ?? 0,
-    };
+    });
 });
 vi.mock("./storage/selection.svelte", async () => {
     const { writable, fromStore } = await import("svelte/store");

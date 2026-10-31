@@ -28,11 +28,9 @@ const { captured, reads } = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("src/ts/storage/resourceClient", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("src/ts/storage/resourceClient")>();
-    return {
-        ...actual,
-        readRefs: async (_refs: unknown, options: { chats?: { characterId: string; id: string }[] } = {}) => {
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        readRefs: async (_refs: unknown, options: { chats?: readonly { characterId: string; id: string }[] } = {}) => {
             reads.count += 1;
             if (reads.gate) {
                 await reads.gate;
@@ -47,8 +45,8 @@ vi.mock("src/ts/storage/resourceClient", async (importOriginal) => {
                 ),
             };
         },
-    };
-});
+    }),
+);
 
 vi.mock("./factory", () => ({
     SandboxHost: class {
@@ -63,16 +61,7 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({

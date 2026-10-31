@@ -20,9 +20,11 @@ vi.mock("src/ts/diagnostics/report", () => ({
 vi.mock("src/lib/Others/RequestLogs/requestLogView", () => ({
     copyText: (text: string) => deps.copyText(text),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    downloadFile: (name: string, data: string) => deps.downloadFile(name, data),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        downloadFile: (name: string, data: string) => deps.downloadFile(name, data),
+    }),
+);
 
 import { language } from "src/lang";
 import DiagnosticsPanel from "./DiagnosticsPanel.svelte";

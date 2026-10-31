@@ -10,11 +10,7 @@ vi.mock("../../stores.svelte", async () => {
     });
 });
 vi.mock("../../storage/database.svelte", () => ({ appVer: "test", defaultSdDataFunc: () => [] }));
-vi.mock("../../globalApi.svelte", () => ({
-    aiWatermarkingLawApplies: () => false,
-    getDirectAssetSrc: vi.fn(),
-    getFileSrc: vi.fn(async (path: string) => path),
-}));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../transformClient", () => ({ captureTransform: () => null, serverProcessScript: vi.fn() }));
 vi.mock("../../process/files/inlays", () => ({ getInlayMedia: vi.fn(), getInlayObjectUrl: vi.fn() }));
 

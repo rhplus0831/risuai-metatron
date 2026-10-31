@@ -1,4 +1,5 @@
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
+import { ResourceEpochMismatchError } from "../storage/resourceClient";
 import { FakeSocket } from "./tests/eventSocket";
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 
@@ -13,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
 // `src/ts/storage/tests/resourceSyncLive.test.ts`.
 
 const mocks = vi.hoisted(() => {
-    class EpochMismatch extends Error {}
     return {
         epoch: { current: "E1" },
         tokens: { next: 0 },
@@ -24,7 +24,6 @@ const mocks = vi.hoisted(() => {
         /** The chat module's side of a frame's generation locks. */
         noteRemoteStreaming: vi.fn(),
         replaceFeedLocks: vi.fn(),
-        EpochMismatch,
         /** `recordClientEvent`: the feed's diagnostics. */
         record: vi.fn<(input: unknown) => void>(),
         /** The chat module's view of chat `c`/`k` for the memory task module's fence predicate. */
@@ -32,12 +31,13 @@ const mocks = vi.hoisted(() => {
     };
 });
 
-vi.mock("../storage/resourceClient", () => ({
-    epochMismatch: mocks.epochMismatch,
-    getResourceEpoch: () => mocks.epoch.current,
-    listRevisions: mocks.listRevisions,
-    ResourceEpochMismatchError: mocks.EpochMismatch,
-}));
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        epochMismatch: mocks.epochMismatch,
+        getResourceEpoch: () => mocks.epoch.current,
+        listRevisions: mocks.listRevisions,
+    }),
+);
 vi.mock("../storage/serverAuth", () => ({
     getNodeServerProxyAuth: vi.fn(async () => `jwt-${++mocks.tokens.next}-${Date.now()}`),
 }));
@@ -45,13 +45,15 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     noteRemoteChanges: mocks.noteRemoteChanges,
     reconcileRemote: mocks.reconcileRemote,
 }));
-vi.mock("../storage/chatStore.svelte", () => ({
-    noteRemoteStreaming: mocks.noteRemoteStreaming,
-    replaceFeedLocks: mocks.replaceFeedLocks,
-    chatEntry: () => ({ id: "k" }),
-    findChat: () => (mocks.held.loaded ? { id: "k" } : undefined),
-    heldChatRevision: () => mocks.held.revision,
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        noteRemoteStreaming: mocks.noteRemoteStreaming,
+        replaceFeedLocks: mocks.replaceFeedLocks,
+        chatEntry: () => ({ id: "k" }),
+        findChat: () => (mocks.held.loaded ? { id: "k" } : undefined),
+        heldChatRevision: () => mocks.held.revision,
+    }),
+);
 vi.mock("../diagnostics/collector", async () =>
     (await import("../diagnostics/tests/collectorMock")).createCollectorMock({ recordClientEvent: mocks.record }),
 );
@@ -269,7 +271,7 @@ describe("the live-update socket client", () => {
     });
 
     it("does not close the socket for an epoch mismatch during the reconcile, and stops reconnecting once stopped", async () => {
-        mocks.listRevisions.mockRejectedValueOnce(new mocks.EpochMismatch("restored"));
+        mocks.listRevisions.mockRejectedValueOnce(new ResourceEpochMismatchError("restored"));
         const ws = await started();
         ws.frame({ type: "hello", epoch: "E1" });
         await vi.advanceTimersByTimeAsync(0);
@@ -506,7 +508,7 @@ describe("the memory task frames", () => {
         window.dispatchEvent(new Event("online"));
         await vi.advanceTimersByTimeAsync(250);
         expect(ws.closed).toBe(true);
-        fail(new mocks.EpochMismatch("restored"));
+        fail(new ResourceEpochMismatchError("restored"));
         await vi.advanceTimersByTimeAsync(0);
         expect(tasks.memoryTaskStatus(ref)).toBeNull();
         // Any other failure of a replaced listing is dropped: the current socket stays, nothing is logged.
@@ -910,7 +912,7 @@ describe("advertised revision reconciliation", () => {
             });
             expect(tasks.memoryTaskFenced({ chaId: "c", chatId: "k" })).toBe(true);
             if (via === "listing error") {
-                mocks.listRevisions.mockRejectedValueOnce(new mocks.EpochMismatch());
+                mocks.listRevisions.mockRejectedValueOnce(new ResourceEpochMismatchError("restored"));
                 ws.frame({ type: "hello", epoch: "E1" });
             } else {
                 ws.frame({ type: via, epoch: "E2", digest: revisionDigest(initial) });

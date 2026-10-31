@@ -278,6 +278,17 @@ partial mock over `importOriginal` needs no factory. Every other client test tha
 all handwritten stores mocks use it. `src/ts/tests/bootMocks.ts` `createBootMock(module, overrides)`
 supplies typed boot service defaults to both bootstrap suites; keep the `vi.mock` registrations
 in each test file and load the factory inside them so Vitest hoisting remains local.
+`src/ts/storage/tests/resourceClientMock.ts` `createResourceClientMock(overrides)`,
+`src/ts/storage/tests/chatStoreMock.ts` `createChatStoreMock(overrides)`, and
+`src/ts/tests/globalApiMock.ts` `createGlobalApiMock(overrides)` do the same for the three most
+mocked modules, and every mock of them that does not spread the real module uses them. The
+resource client's factory is async because it loads the real module for its error classes, so a
+test imports those classes from the mocked module. That load reaches `serverAuth`: a test whose
+narrow mocks cannot carry the real graph behind it also mocks `serverAuth`. The chat store's defaults
+are plain, so a test that needs a reactive read passes its own, and the global API's classes are
+stand-ins. Their overrides are `ModuleMockOverrides<Module>` (`src/ts/tests/mockOverrides.ts`):
+names must be exports and a function stays a function, but a stub may answer with a partial fixture;
+an export only the test drives goes beside the factory's result, not into its overrides.
 `src/ts/network/tests/generationJobsMock.ts` `createGenerationJobsMock(overrides)` covers the
 job transport (with `createFollowStub(jobId)` for a controllable follow, and the error classes in
 the real shape); new tests that mock `network/generationJobs` use it.

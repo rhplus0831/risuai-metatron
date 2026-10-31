@@ -8,12 +8,12 @@ import { afterEach, expect, it, vi } from "vitest";
 // one, even when both hold the same text. Mounted over the real records, selection, and popup
 // editor; unrelated panels and file loading are doubled.
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    holdFileSrc: () => ({ src: Promise.resolve(""), release: () => {} }),
-    getFileSrc: vi.fn(async () => ""),
-    saveAsset: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        holdFileSrc: () => ({ src: Promise.resolve(""), release: () => {} }),
+        getFileSrc: vi.fn(async () => ""),
+    }),
+);
 vi.mock("src/ts/characters", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/characters")>()),
     getCharImage: vi.fn(async () => ""),

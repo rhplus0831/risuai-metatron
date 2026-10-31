@@ -66,9 +66,11 @@ vi.mock("src/ts/process/transformers", () => ({
     runEmbedding: (texts: string[], model: string) => current.embed(texts, model),
     runSummarizer: (text: string) => current.summarizer(text),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: (url: string, arg: { body: unknown }) => current.http(url, arg.body),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: (url: string, arg: { body: unknown }) => current.http(url, arg.body),
+    }),
+);
 vi.mock("src/ts/network/auxFetch", () => ({
     auxFetchJson: (_op: string, url: string, init: { body: unknown }) =>
         url.includes("/v1/completions") ? current.completions(init.body) : current.http(url, init.body),

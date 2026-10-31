@@ -41,13 +41,14 @@ vi.mock("./serverCommands", async () =>
         runServerJob: stubs.run as unknown as typeof import("./serverCommands").runServerJob,
     }),
 );
-vi.mock("../storage/chatStore.svelte", () => ({
-    findChat: stubs.findChat,
-    currentChatRef: stubs.currentChatRef,
-    chatEntry: (ref: { chaId: string; chatId: string }) =>
-        stubs.members.has(`${ref.chaId}/${ref.chatId}`) ? { id: ref.chatId, name: "", fmIndex: -1 } : undefined,
-    pinChat: () => () => {},
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        findChat: stubs.findChat,
+        currentChatRef: stubs.currentChatRef,
+        chatEntry: (ref: { chaId: string; chatId: string }) =>
+            stubs.members.has(`${ref.chaId}/${ref.chatId}`) ? { id: ref.chatId, name: "", fmIndex: -1 } : undefined,
+    }),
+);
 vi.mock("../storage/collectionStore.svelte", () => ({ incrementStatic: stubs.incrementStatic }));
 // The character list as the real module serves it (the records' list, here the stub list). No
 // write of the module is stubbed: the send is not expected to call one.

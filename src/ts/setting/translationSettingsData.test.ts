@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 // minimal context stands in for the real one.
 
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 // `./utils` (the wrapper's write) reaches the settings views and the stores, whose module effect is
 // not under test.
 vi.mock("../process/modules", () => ({

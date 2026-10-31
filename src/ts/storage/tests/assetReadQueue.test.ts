@@ -12,10 +12,11 @@ const { read } = vi.hoisted(() => ({
         }
     >(),
 }));
-vi.mock("../../globalApi.svelte", () => ({
-    loadAssets: (keys: readonly string[], options?: { signal?: AbortSignal }) => read(keys, options).promise,
-    saveAsset: vi.fn(),
-}));
+vi.mock("../../globalApi.svelte", async () =>
+    (await import("../../tests/globalApiMock")).createGlobalApiMock({
+        loadAssets: (keys: readonly string[], options?: { signal?: AbortSignal }) => read(keys, options).promise,
+    }),
+);
 import { loadAssetsInBatches } from "../assetQueue";
 
 function deferred<T>() {

@@ -39,7 +39,9 @@ vi.mock("src/ts/alert", async () =>
     }),
 );
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));
-vi.mock("src/ts/storage/chatStore.svelte", () => ({ chatEntry: () => undefined, currentChatRef: () => null }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";

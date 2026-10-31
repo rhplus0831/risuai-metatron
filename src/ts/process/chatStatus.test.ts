@@ -57,11 +57,11 @@ vi.mock("../network/generationJobs", async () => {
         readGenerationJob: stubs.read,
     });
 });
-vi.mock("../storage/resourceClient", () => ({
-    getResourceEpoch: () => EPOCH,
-    readRefs: vi.fn(),
-    ResourceRequestError: class extends Error {},
-}));
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        getResourceEpoch: () => EPOCH,
+    }),
+);
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: vi.fn(),
     /** The chat read after a lost follow takes at once: no retry listener outlives a test. */

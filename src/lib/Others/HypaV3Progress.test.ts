@@ -38,7 +38,7 @@ vi.mock("src/ts/characterCards", async () => ({
     importCharacterProcess: vi.fn(),
 }));
 vi.mock("src/ts/storage/presets.svelte", () => ({ importPreset: vi.fn() }));
-vi.mock("src/ts/globalApi.svelte", () => ({ checkCharOrder: vi.fn(), downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/etc/send.mp3", () => ({ default: "" }));
 // `App`'s other children render nothing here.
 for (const child of [

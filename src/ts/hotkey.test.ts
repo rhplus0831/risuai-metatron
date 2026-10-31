@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `TextAreaInput`'s popup writes its draft back to the field it was opened on when it closes, and
 // with a forwarded preset field that is the selected preset.
 
-vi.mock("./globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("./globalApi.svelte", async () => (await import("./tests/globalApiMock")).createGlobalApiMock());
 vi.mock("./alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         // No terminal notice is shown unless a test sets one (a writable here; read-only in `alert.ts`).

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../globalApi.svelte", () => ({ saveAsset: vi.fn(), assetKey: vi.fn(), saveAssetBatch: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 import { assetKey, saveAsset, saveAssetBatch } from "../../globalApi.svelte";
 import { AssetSaveError, AssetSaveQueue, saveAssets, type AssetSaveItem } from "../assetQueue";

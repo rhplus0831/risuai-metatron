@@ -50,24 +50,28 @@ vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: () => mocks.f
 // The refused-change labels' readers: the rune stores do not load in the node environment, and
 // these backups have no refused changes to name.
 vi.mock("../storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));
-vi.mock("../storage/chatStore.svelte", () => ({ chatEntry: () => undefined }));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("../storage/snapshots.svelte", () => ({ buildBackupInventory: () => mocks.inventory.current }));
 vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init: RequestInit) => mocks.authFetch(path, init),
     getNodeServerProxyAuth: async () => null,
 }));
-vi.mock("../globalApi.svelte", () => ({
-    LocalWriter: class {
-        writer = { abort: async () => undefined };
-        async init() {
-            return true;
-        }
-        async write(data: Uint8Array) {
-            mocks.writer.chunks.push(new Uint8Array(data));
-        }
-        async close() {}
-    },
-}));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        LocalWriter: class {
+            writer = { abort: async () => undefined };
+            async init() {
+                return true;
+            }
+            async write(data: Uint8Array) {
+                mocks.writer.chunks.push(new Uint8Array(data));
+            }
+            async close() {}
+        },
+    }),
+);
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(mocks.alerts));
 vi.mock("src/lang", () => ({
     language: { partialBackupFirstConfirm: "first?", partialBackupSecondConfirm: "second?" },

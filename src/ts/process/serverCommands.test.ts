@@ -2,6 +2,7 @@ import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GenerationEvent, GenerationStatus, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { createFollowStub } from "../network/tests/generationJobsMock";
+import { ResourceEpochMismatchError, ResourceRequestError } from "../storage/resourceClient";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // The tab's side of a server Lua button (`serverCommands.ts`) over a stubbed transport: one
@@ -90,22 +91,6 @@ class BlockedError extends Error {
         this.name = "GenerationBlockedError";
     }
 }
-/** The resource client's error: `status` 0 is a request without an answer. */
-class RequestError extends Error {
-    constructor(
-        readonly status: number,
-        message: string,
-    ) {
-        super(message);
-    }
-}
-/** The resource client's 412: the server data was replaced by a restore. */
-class EpochMismatchError extends Error {
-    constructor(readonly epoch: string) {
-        super("The server data was replaced by a restore");
-        this.name = "ResourceEpochMismatchError";
-    }
-}
 
 vi.mock("src/lang", () => ({
     language: {
@@ -169,24 +154,25 @@ vi.mock("../network/generationJobs", async () => {
         savedGenerationJobIds: stubs.saved,
     });
 });
-vi.mock("../storage/chatStore.svelte", () => ({
-    endServerJob: vi.fn(),
-    chatEntry: stubs.entry,
-    /** By default no chat is open: replies land away from the open chat. */
-    currentChatRef: stubs.current,
-    findChat: stubs.chat,
-    ensureChatLoaded: stubs.load,
-    heldChatRevision: stubs.held,
-    isChatStale: stubs.stale,
-    loadChat: stubs.loadChat,
-    markChatStale: stubs.markStale,
-    pinChat: stubs.pin,
-}));
-vi.mock("../storage/resourceClient", () => ({
-    getResourceEpoch: () => EPOCH,
-    ResourceEpochMismatchError: EpochMismatchError,
-    ResourceRequestError: RequestError,
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        chatEntry: stubs.entry,
+        /** By default no chat is open: replies land away from the open chat. */
+        currentChatRef: stubs.current,
+        findChat: stubs.chat,
+        ensureChatLoaded: stubs.load,
+        heldChatRevision: stubs.held,
+        isChatStale: stubs.stale,
+        loadChat: stubs.loadChat,
+        markChatStale: stubs.markStale,
+        pinChat: stubs.pin,
+    }),
+);
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        getResourceEpoch: () => EPOCH,
+    }),
+);
 vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: stubs.flush,
     refusedItems: stubs.refused,
@@ -841,7 +827,7 @@ describe("runServerJob", () => {
                       ? new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }])
                       : refusal === "orphaned override"
                         ? new LoreOverrideOrphanedError([{ id: "lost", name: "Lost entry" }])
-                        : new RequestError(503, message);
+                        : new ResourceRequestError(503, message);
             stubs.create.mockRejectedValueOnce(new GenerationCreateError(cause, true));
             // Even if the busy job is this tab's, this request must stay an ambiguous refusal.
             stubs.read.mockResolvedValue({ ...status, jobId: "busy-job" });
@@ -955,7 +941,7 @@ describe("runServerJob", () => {
             ] satisfies ReturnType<typeof stubs.refused>;
             // An unexpected create answers immediately, so a missing guard fails without waiting
             // for a job terminal that a refused caller should never need.
-            stubs.create.mockRejectedValue(new RequestError(400, "unexpected job creation"));
+            stubs.create.mockRejectedValue(new ResourceRequestError(400, "unexpected job creation"));
             for (const item of refusals) {
                 const key = item.kind === "chat" ? "chats/c/k" : "chats/c";
                 for (const source of ["inventory", "flush"] as const) {
@@ -1143,22 +1129,26 @@ describe("runServerJob", () => {
         const uncertain = { outcome: "unknown", terminal: null, requestUncertain: true };
         const definite = { outcome: "refused", terminal: null, requestUncertain: false };
         // The transport's retries ended with no answer (or an answer the registry did not give).
-        stubs.create.mockRejectedValueOnce(new GenerationCreateError(new RequestError(0, "fetch failed"), true));
+        stubs.create.mockRejectedValueOnce(
+            new GenerationCreateError(new ResourceRequestError(0, "fetch failed"), true),
+        );
         expect(await send({ input: "hi" })).toEqual(uncertain);
-        stubs.create.mockRejectedValueOnce(new GenerationCreateError(new RequestError(429, "Too many requests"), true));
+        stubs.create.mockRejectedValueOnce(
+            new GenerationCreateError(new ResourceRequestError(429, "Too many requests"), true),
+        );
         expect(await send({ input: "hi" })).toEqual(uncertain);
         stubs.create.mockRejectedValueOnce(new TypeError("fetch failed"));
         expect(await send({ input: "hi" })).toEqual(uncertain);
-        stubs.create.mockRejectedValueOnce(new RequestError(0, "The network is unreachable"));
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(0, "The network is unreachable"));
         expect(await send({ input: "hi" })).toEqual(uncertain);
-        stubs.create.mockRejectedValueOnce(new RequestError(400, "context.userMessageId must be an id"));
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(400, "context.userMessageId must be an id"));
         expect(await send({ input: "hi" })).toEqual(definite);
-        stubs.create.mockRejectedValueOnce(new RequestError(409, "stale"));
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(409, "stale"));
         expect(await send({ input: "hi" })).toEqual(definite);
         // The registry's stale refusal and the restore's 412 are answers too: nothing ran.
         stubs.create.mockRejectedValueOnce(new GenerationStaleError());
         expect(await send({ input: "hi" })).toEqual(definite);
-        stubs.create.mockRejectedValueOnce(new EpochMismatchError("other"));
+        stubs.create.mockRejectedValueOnce(new ResourceEpochMismatchError("other"));
         expect(await send({ input: "hi" })).toEqual(definite);
         expect(follows()).toHaveLength(0);
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
@@ -1597,7 +1587,7 @@ describe("the end read from the job's status, and the chat read after the follow
     });
 
     it("does not count a close while the page is hidden or the browser is offline (`closedAway`): the follow keeps attaching on the schedule, and the budget applies once the page is back", async () => {
-        stubs.read.mockRejectedValue(new RequestError(0, "offline"));
+        stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
         const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
         const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
         try {
@@ -1634,7 +1624,7 @@ describe("the end read from the job's status, and the chat read after the follow
     });
 
     it("a lost follow leaves `followedJobs` before its recovery read, so a completion push meanwhile reads the chat again: one chat's recovery reads run one at a time, the newer after the older's copy settled and marking the chat stale again first", async () => {
-        stubs.read.mockRejectedValue(new RequestError(0, "offline"));
+        stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
         let answerFirst!: (current: boolean) => void;
         stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerFirst = resolve)));
         const end = commands.followJobToEnd("j", ref);
@@ -1737,7 +1727,7 @@ describe("the end read from the job's status, and the chat read after the follow
     });
 
     it("reports an unreachable server as lost and reads the chat once more at the next `online` or visible, once, unless the stale mark is gone by then", async () => {
-        stubs.read.mockRejectedValue(new RequestError(0, "offline"));
+        stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
         stubs.refresh.mockResolvedValueOnce(false);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
@@ -1859,7 +1849,7 @@ describe("the end read from the job's status, and the chat read after the follow
             stubs.refresh.mockReset();
             let late!: (current: boolean) => void;
             stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (late = resolve)));
-            stubs.read.mockReset().mockRejectedValue(new RequestError(0, "offline"));
+            stubs.read.mockReset().mockRejectedValue(new ResourceRequestError(0, "offline"));
             const lost = commands.followJobToEnd("j2", ref);
             for (let attach = 0; attach < 5; attach++) {
                 await tick();

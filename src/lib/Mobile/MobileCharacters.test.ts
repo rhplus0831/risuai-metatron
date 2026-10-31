@@ -23,10 +23,11 @@ vi.mock("src/ts/characters", () => ({
 }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ characterList: () => characters }));
 const activity = new Map<string, number>();
-vi.mock("src/ts/storage/chatStore.svelte", () => ({
-    chatCount: () => 0,
-    characterLastChattedAt: (chaId: string, fallback: number) => activity.get(chaId) ?? fallback,
-}));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+        characterLastChattedAt: (chaId: string, fallback: number) => activity.get(chaId) ?? fallback,
+    }),
+);
 
 import MobileCharacters from "./MobileCharacters.svelte";
 

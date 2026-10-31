@@ -21,11 +21,12 @@ const stubs = vi.hoisted(() => ({
 }));
 
 vi.mock("src/ts/storage/serverAuth", () => ({ authFetch: vi.fn(), getNodeServerProxyAuth: async () => "" }));
-vi.mock("src/ts/storage/resourceClient", () => ({
-    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
-    getResourceEpoch: () => "epoch-1",
-    epochMismatch: (epoch: string) => new Error(`replaced ${epoch}`),
-}));
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        readRefs: (...args: unknown[]) => stubs.readRefs(...args),
+        getResourceEpoch: () => "epoch-1",
+    }),
+);
 vi.mock("src/ts/process/request/transport", () => ({ requestServer: stubs.requestServer }));
 vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: (...args: unknown[]) => stubs.getTools(...args) }));
 vi.mock("src/ts/plugins/pluginHooks", () => ({ pluginHooks: stubs.hooks }));

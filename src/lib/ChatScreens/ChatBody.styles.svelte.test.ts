@@ -10,10 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `.svelte.test.ts` so the props can be `$state` and change on the mounted rows.
 
 vi.mock("src/ts/storage/database.svelte", () => ({ appVer: "1234.5.67" }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: async (path: string) => path,
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 // `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
 vi.mock("src/ts/stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 vi.mock("src/ts/translator/translator", () => ({

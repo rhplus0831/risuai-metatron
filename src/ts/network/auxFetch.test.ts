@@ -27,9 +27,11 @@ vi.mock("../storage/resourceSync.svelte", () => ({
     flushResources: () => deps.flushResources(),
     assertSaveAdmission: () => deps.assertSaveAdmission(),
 }));
-vi.mock("../globalApi.svelte", () => ({
-    addFetchLog: (entry: unknown) => deps.addFetchLog(entry),
-}));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        addFetchLog: (entry: unknown) => deps.addFetchLog(entry),
+    }),
+);
 vi.mock("../stores.svelte", async () =>
     (await import("src/ts/tests/storesMock")).createStoresMock({
         bodyIntercepterStore: deps.interceptors,

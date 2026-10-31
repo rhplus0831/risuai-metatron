@@ -40,15 +40,9 @@ vi.mock("src/ts/parser/transformClient", () => ({
     rerenderMessage: vi.fn(),
     resetTransformEffects: vi.fn(),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    aiLawApplies: vi.fn(() => false),
-    changeChatTo: vi.fn(),
-    foldChatToMessage: vi.fn(),
-    getFileSrc: vi.fn(async (path: string) => path),
-    createChatCopyName: vi.fn(() => "copy"),
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ createChatCopyName: vi.fn(() => "copy") }),
+);
 vi.mock("src/ts/model/modellist", () => ({ getModelInfo: vi.fn(() => ({ shortName: "model" })) }));
 vi.mock("src/ts/process/serverCommands", async () =>
     (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock(),

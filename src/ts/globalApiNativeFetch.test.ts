@@ -12,9 +12,13 @@ vi.mock("./plugins/plugins.svelte", () => ({}));
 vi.mock("./alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("./parser/parser.svelte", () => ({}));
 vi.mock("./characterCards", () => ({}));
-vi.mock("./storage/chatStore.svelte", () => ({}));
+vi.mock("./storage/chatStore.svelte", async () =>
+    (await import("./storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("./storage/selection.svelte", () => ({}));
-vi.mock("./storage/resourceClient", () => ({}));
+vi.mock("./storage/resourceClient", async () =>
+    (await import("./storage/tests/resourceClientMock")).createResourceClientMock(),
+);
 vi.mock("./storage/resourceSync.svelte", () => ({ saving: false }));
 vi.mock("./storage/characterOrder", () => ({}));
 vi.mock("./storage/assetClient", async () => (await import("./storage/tests/assetClientMock")).createAssetClientMock());

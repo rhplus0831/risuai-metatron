@@ -79,7 +79,7 @@ vi.mock("src/ts/stores.svelte", async () =>
         reloadChatKey: (id: string | undefined, idx: number) => (id !== undefined ? `m:${id}` : `i:${idx}`),
     }),
 );
-vi.mock("src/ts/storage/chatStore.svelte", () => {
+vi.mock("src/ts/storage/chatStore.svelte", async () => {
     const selection = $state({ chaId: "c", chatId: "chat" });
     // Chat key → the entry that chat shows as streaming.
     const streaming: Record<string, { messageId: string; mode: string }> = $state({});
@@ -87,21 +87,26 @@ vi.mock("src/ts/storage/chatStore.svelte", () => {
     const locks: Record<string, string[]> = $state({});
     const streamed: Record<string, string[]> = $state({});
     return {
-        currentChatRef: () => selection,
-        selectedChatId: () => selection.chatId,
-        streamingEntry: (ref: { chaId: string; chatId: string } | null) =>
-            (ref === null ? undefined : streaming[`${ref.chaId}/${ref.chatId}`]) ?? null,
-        setStreamingState: (
-            ref: { chaId: string; chatId: string },
-            entry: { messageId: string; mode: string } | null,
-        ) => {
-            if (entry === null) delete streaming[`${ref.chaId}/${ref.chatId}`];
-            else streaming[`${ref.chaId}/${ref.chatId}`] = entry;
-        },
-        isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
-            ref !== null && messageId !== undefined && !!locks[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
-        isMessageStreamed: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
-            ref !== null && messageId !== undefined && !!streamed[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+        ...(await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+            currentChatRef: () => selection,
+            selectedChatId: () => selection.chatId,
+            streamingEntry: (ref: { chaId: string; chatId: string } | null) =>
+                (ref === null ? undefined : streaming[`${ref.chaId}/${ref.chatId}`]) ?? null,
+            setStreamingState: (
+                ref: { chaId: string; chatId: string },
+                entry: { messageId: string; mode: string } | null,
+            ) => {
+                if (entry === null) delete streaming[`${ref.chaId}/${ref.chatId}`];
+                else streaming[`${ref.chaId}/${ref.chatId}`] = entry;
+            },
+            isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
+                ref !== null && messageId !== undefined && !!locks[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+            isMessageStreamed: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
+                ref !== null &&
+                messageId !== undefined &&
+                !!streamed[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+        }),
+        // The test's own driver of the locks above; no such export exists.
         setLockedMessages: (
             ref: { chaId: string; chatId: string },
             messageIds: string[],
@@ -112,9 +117,9 @@ vi.mock("src/ts/storage/chatStore.svelte", () => {
         },
     };
 });
-vi.mock("src/ts/globalApi.svelte", () => {
+vi.mock("src/ts/globalApi.svelte", async () => {
     const chatFoldedStateMessageIndex = $state({ index: -1 });
-    return { chatFoldedStateMessageIndex };
+    return (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ chatFoldedStateMessageIndex });
 });
 
 import { chatFoldedStateMessageIndex as folded } from "src/ts/globalApi.svelte";

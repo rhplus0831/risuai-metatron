@@ -10,10 +10,12 @@ const stubs = vi.hoisted(() => ({
     chatEntry: vi.fn(),
 }));
 vi.mock("./serverGeneration", () => ({ sendChatOnServer: stubs.serverSend }));
-vi.mock("../storage/chatStore.svelte", () => ({
-    currentChatRef: stubs.currentChatRef,
-    chatEntry: stubs.chatEntry,
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        currentChatRef: stubs.currentChatRef,
+        chatEntry: stubs.chatEntry,
+    }),
+);
 
 const chatA: ChatRef = { chaId: "character-a", chatId: "chat-a" };
 const chatB: ChatRef = { chaId: "character-b", chatId: "chat-b" };

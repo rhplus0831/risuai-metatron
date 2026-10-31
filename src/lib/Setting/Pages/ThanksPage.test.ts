@@ -3,7 +3,7 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("src/ts/globalApi.svelte", () => ({ openURL: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { language } from "src/lang";
 import ThanksPage from "./ThanksPage.svelte";

@@ -19,7 +19,7 @@ vi.mock("src/ts/translator/translator", () => ({
 }));
 vi.mock("src/ts/parser/transformClient", () => ({ captureTransform: () => null }));
 vi.mock("src/ts/process/modules", () => ({ getModuleAssets: vi.fn(() => []), getModules: () => [] }));
-vi.mock("src/ts/globalApi.svelte", () => ({ getFileSrc: async (path: string) => path }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ sleep: async () => undefined }));
 

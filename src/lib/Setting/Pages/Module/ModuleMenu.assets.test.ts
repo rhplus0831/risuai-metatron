@@ -14,18 +14,20 @@ vi.mock("src/ts/process/lorebook.svelte", () => ({ convertExternalLorebook: vi.f
 vi.mock("src/ts/process/regexFiles", () => ({ exportRegex: vi.fn(), importRegex: vi.fn() }));
 vi.mock("src/ts/characters", () => ({ createBlankChar: vi.fn(), getCharImage: vi.fn() }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ characterList: vi.fn(), selectedCharacter: vi.fn() }));
-vi.mock("src/ts/storage/chatStore.svelte", () => ({ chatEntry: vi.fn(), currentChatRef: vi.fn() }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("src/ts/storage/settingsViews.svelte", () => ({
     settings: { ui: { useAdditionalAssetsPreview: false } },
     activePreset: {},
     tabPersonaRecord: vi.fn(),
 }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("src/ts/globalApi.svelte", () => ({
-    saveAsset: vi.fn(),
-    downloadFile: vi.fn(),
-    holdFileSrc: (path: string) => ({ src: Promise.resolve(path), release: () => {} }),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        holdFileSrc: (path: string) => ({ src: Promise.resolve(path), release: () => {} }),
+    }),
+);
 
 import ModuleMenu from "./ModuleMenu.svelte";
 import AssetInput from "src/lib/ChatScreens/AssetInput.svelte";

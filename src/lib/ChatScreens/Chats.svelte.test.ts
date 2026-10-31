@@ -34,17 +34,19 @@ vi.mock("src/ts/stores.svelte", async () =>
             messageId !== undefined ? `m:${messageId}` : `i:${idx}`,
     }),
 );
-vi.mock("src/ts/storage/chatStore.svelte", () => ({
-    currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
-    selectedChatId: () => "chat",
-    streamingEntry: (ref: { chaId: string; chatId: string } | null) => {
-        const messageId = ref === null ? undefined : hoisted.streaming.get(`${ref.chaId}/${ref.chatId}`);
-        return messageId === undefined ? null : { messageId, mode: undefined };
-    },
-    isMessageLocked: () => false,
-    isMessageStreamed: () => false,
-}));
-vi.mock("src/ts/globalApi.svelte", () => ({ chatFoldedStateMessageIndex: { index: -1 } }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+        currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
+        selectedChatId: () => "chat",
+        streamingEntry: (ref: { chaId: string; chatId: string } | null) => {
+            const messageId = ref === null ? undefined : hoisted.streaming.get(`${ref.chaId}/${ref.chatId}`);
+            return messageId === undefined ? null : { messageId, mode: undefined };
+        },
+    }),
+);
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ chatFoldedStateMessageIndex: { index: -1 } }),
+);
 
 import Chats from "./Chats.svelte";
 

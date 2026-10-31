@@ -9,9 +9,11 @@ import { reactiveProps } from "../tests/reactiveProps.svelte";
 // result for an old path is dropped. The hold's release and revocation: `LazyFileSrcHold.test.ts`.
 
 const readFileSrc = vi.fn<(path: string) => Promise<string>>();
-vi.mock("src/ts/globalApi.svelte", () => ({
-    holdFileSrc: (path: string) => ({ src: readFileSrc(path), release: () => {} }),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        holdFileSrc: (path: string) => ({ src: readFileSrc(path), release: () => {} }),
+    }),
+);
 
 import LazyFileSrc from "./LazyFileSrc.svelte";
 

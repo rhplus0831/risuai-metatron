@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [] }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: (text: string) => text }));
 vi.mock("../parser/transformClient", () => ({ resetTransformEffects: vi.fn() }));
-vi.mock("../globalApi.svelte", () => ({ saveAsset: vi.fn(), downloadFile: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../process/index.svelte", () => ({}));
 
 import { get } from "svelte/store";

@@ -9,12 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Unrelated panels, dialogs and file loading are doubled.
 
 const holdFileSrc = vi.fn((path: string) => ({ src: Promise.resolve(`/file/${path}`), release: () => {} }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    holdFileSrc: (path: string) => holdFileSrc(path),
-    getFileSrc: vi.fn(async () => ""),
-    saveAsset: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        holdFileSrc: (path: string) => holdFileSrc(path),
+        getFileSrc: vi.fn(async () => ""),
+    }),
+);
 vi.mock("src/ts/characters", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/characters")>()),
     getCharImage: vi.fn(async () => ""),

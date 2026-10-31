@@ -48,7 +48,7 @@ const deps = vi.hoisted(() => ({
     writeInlayImage: vi.fn<typeof import("../process/files/inlays").writeInlayImage>(),
     /** The server behind `authFetch` (the memory-stop route here). */
     authFetch: vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(),
-    epochMismatch: vi.fn<(epoch: string) => unknown>(),
+    epochMismatch: vi.fn<typeof import("../storage/resourceClient").epochMismatch>(),
     getModelInfo: vi.fn((id: string) => ({
         id,
         name: id,
@@ -71,13 +71,13 @@ vi.mock("../storage/resourceSync.svelte", () => ({
 // character, the selected chat at `chatPage`); the characters themselves are in the real records
 // (`characterList()`, installed in `beforeEach`). The selected character is the real selection's
 // (`deps.selection`, set in `beforeEach`).
-vi.mock("../storage/chatStore.svelte", () => {
+vi.mock("../storage/chatStore.svelte", async () => {
     const owner = (chaId: string) => deps.chats[chaId];
     const selectedChatId = (chaId: string) => {
         const found = owner(chaId);
         return found?.chats?.[found.chatPage ?? 0]?.id ?? null;
     };
-    return {
+    return (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
         heldChatRevision: (ref: { chaId: string; chatId: string }) => deps.heldChat(ref),
         selectedChatId,
         currentChatRef: () => {
@@ -87,10 +87,6 @@ vi.mock("../storage/chatStore.svelte", () => {
         },
         findChat: (ref: { chaId: string; chatId: string }) =>
             owner(ref.chaId)?.chats?.find((chat) => chat.id === ref.chatId),
-        // The speaker's pin and load before each output listener: the fixture's chats are all held
-        // here, so a load answers them at once.
-        pinChats: () => () => {},
-        refusedChatItems: () => [],
         loadChats: async (chaId: string) => owner(chaId)?.chats ?? [],
         chatList: (chaId: string) =>
             (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
@@ -99,7 +95,7 @@ vi.mock("../storage/chatStore.svelte", () => {
             chats: JSON.parse(JSON.stringify(owner(copy.chaId)?.chats ?? [])),
             chatPage: owner(copy.chaId)?.chatPage ?? 0,
         }),
-    };
+    });
 });
 vi.mock("../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
@@ -120,11 +116,12 @@ vi.mock("../storage/serverAuth", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../storage/serverAuth")>()),
     authFetch: (input: string, init?: RequestInit) => deps.authFetch(input, init),
 }));
-vi.mock("../storage/resourceClient", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("../storage/resourceClient")>()),
-    epochMismatch: (epoch: string) => deps.epochMismatch(epoch),
-    getResourceEpoch: () => "epoch-1",
-}));
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        epochMismatch: (epoch: string) => deps.epochMismatch(epoch),
+        getResourceEpoch: () => "epoch-1",
+    }),
+);
 vi.mock("../plugins/apiV3/pluginContext", () => ({
     invokeHook: (hook: (...args: unknown[]) => unknown, context: unknown, ...args: unknown[]) => {
         deps.contexts.push(context);

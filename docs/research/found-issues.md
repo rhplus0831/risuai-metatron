@@ -14,7 +14,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat screen and input](#chat-screen-and-input) (1)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
 - [Test timing](#test-timing) (1)
-- [Test mocks](#test-mocks) (3)
 
 ## Chat store, sync, and change feeds
 
@@ -91,26 +90,3 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 **Why it matters:** each is a load-sensitive failure waiting for a slow CI runner; the timing plans' policy (`docs/structure/build-test-platforms.md` `Tests`) asks for controlled clocks or the `slow` tag.
 **Suggested handling:** when one of these files is next touched, control its clock (inject the deadline or fake the timers) or tag the case `slow`; `pnpm --silent test:agent --slow-tests` lists the ones over 1 s.
-
-## Test mocks
-
-### globalApi mock has no shared factory
-
-`src/ts/globalApi.svelte` is mocked inline with partial objects in 75 test files (2026-10-26; `rg -l 'vi.mock\("src/ts/globalApi.svelte"' src`), for example `src/lib/ChatScreens/Chats.svelte.test.ts`, `Chats.context.svelte.test.ts`, `Chats.rows.svelte.test.ts` returning only `chatFoldedStateMessageIndex`. STRUCTURE.md V7 asks for one shared typed factory.
-
-**Why it matters:** a new export that a mocked consumer imports breaks those tests at run time instead of at `pnpm check`; Deep Audit Fixes slice 7 designed around it by keeping `chatFoldedStateMessageIndex.index` as the only fold read.
-**Suggested handling:** when a change adds a globalApi import to a widely tested component, add a `createGlobalApiMock(overrides)` factory like `src/ts/diagnostics/tests/collectorMock.ts`; globalApi is large, so it may cover only the exports tests actually mock.
-
-### chatStore mock has no shared factory
-
-About 25 test files under `src/` mock `src/ts/storage/chatStore.svelte.ts` inline with partial objects (2026-10-28; `rg -l 'vi\.mock\(\s*"[^"]*chatStore\.svelte' src`), for example `src/ts/parser/tests/transformClient.test.ts` near its `heldChatRevision` stub. `src/ts/process/serverCommands.test.ts` adds `markChatStale`, `isChatStale`, and `currentChatRef` by hand to its partial mock. STRUCTURE.md V7 asks for one shared typed factory. Found by Display Evaluation Slice 2: adding `chatInstallVersion` and `chatHasUnackedWork` failed 34 transformClient tests with "No chatInstallVersion export defined on mock". Boot Bytes Slice 5 hit it again on 2026-10-29: the new `characterLastChattedAt` export failed four `src/lib/Mobile/MobileCharacters.test.ts` tests at run time.
-
-**Why it matters:** each new chatStore export a mocked module imports breaks unrelated suites, which then look like regressions and cost a stale-test round.
-**Suggested handling:** a typed `chatStoreMock()` factory under the test helpers, adopted file by file.
-
-### resourceClient mock has no shared factory
-
-`src/ts/storage/resourceClient` is mocked inline in about 16 test files (2026-10-29; `rg -l 'vi.mock\(.*resourceClient' src`), for example `src/ts/process/serverCommands.test.ts` near :172, `chatStatus.test.ts`, `network/eventFeed.test.ts`, `network/jobChannel.test.ts`, `plugins/apiV3/hostApiChats.test.ts`. There is no `resourceClientMock.ts`; STRUCTURE.md V7 asks for one shared typed factory. Found 2026-10-28 by Job Protocol Slice 2: product code began importing `ResourceEpochMismatchError`, and the inline mock in `serverCommands.test.ts` failed 17 tests at run time; a local class was added to that one mock as a stopgap.
-
-**Why it matters:** a new resourceClient export breaks unrelated suites at run time, which `pnpm check` cannot catch.
-**Suggested handling:** add `src/ts/storage/tests/resourceClientMock.ts` with defaults that `satisfies` the module's export type, and move the inline mocks onto it file by file.

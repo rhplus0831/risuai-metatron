@@ -21,15 +21,7 @@ vi.mock("./factory", () => ({
         run() {}
     },
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-    fetchNative: vi.fn(),
-    globalFetch: vi.fn(),
-    readImage: vi.fn(),
-    getFetchLogs: vi.fn(),
-    checkCharOrder: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: vi.fn(() => new Promise<boolean>((resolve) => captured.confirm.push(resolve))),

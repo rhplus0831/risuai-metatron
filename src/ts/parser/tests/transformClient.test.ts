@@ -73,7 +73,7 @@ vi.mock("../../plugins/apiV3/pluginContext", () => ({
 vi.mock("../../plugins/pluginHooks", () => ({ pluginHooks: state.hooks }));
 vi.mock("../../storage/chatStore.svelte", async () => {
     const { lockSource } = await import("./transformReactive.svelte");
-    return {
+    return (await import("../../storage/tests/chatStoreMock")).createChatStoreMock({
         currentChatRef: () => state.current,
         // The list entry: the binding fields the display rule reads.
         chatEntry: (ref: { chaId: string; chatId: string }) =>
@@ -82,13 +82,11 @@ vi.mock("../../storage/chatStore.svelte", async () => {
                 : undefined,
         findChat: (ref: { chaId: string; chatId: string }) => state.chats.get(key(ref)),
         heldChatRevision: (ref: { chaId: string; chatId: string }) => (state.held.has(key(ref)) ? "rev-1" : null),
-        chatInstallVersion: () => 0,
-        chatHasUnackedWork: () => false,
         isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) => {
             void lockSource.version;
             return ref !== null && messageId !== undefined && state.locked.has(`${key(ref)}/${messageId}`);
         },
-    };
+    });
 });
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");

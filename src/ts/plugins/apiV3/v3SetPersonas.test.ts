@@ -31,16 +31,11 @@ vi.mock("./factory", () => ({
         run() {}
     },
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(() => new Promise<string>((resolve) => (captured.asset = resolve))),
-    fetchNative: vi.fn(),
-    globalFetch: vi.fn(),
-    readImage: vi.fn(),
-    getFetchLogs: vi.fn(),
-    checkCharOrder: vi.fn(),
-    AppendableBuffer: class {},
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        saveAsset: vi.fn(() => new Promise<string>((resolve) => (captured.asset = resolve))),
+    }),
+);
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: vi.fn(async () => true),

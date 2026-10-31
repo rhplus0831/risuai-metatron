@@ -102,10 +102,7 @@ vi.mock("../assetClient", async () =>
     }),
 );
 
-vi.mock("../../globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("../../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({

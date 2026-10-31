@@ -13,11 +13,11 @@ vi.mock("src/ts/characters", () => ({
     createBlankChar: vi.fn(),
     getCharImage: vi.fn(async () => ""),
 }));
-vi.mock("src/ts/globalApi.svelte", async () => ({
-    checkCharOrder: (await import("src/ts/storage/characterOrder")).checkCharOrder,
-    openPinnedChat: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        checkCharOrder: (await import("src/ts/storage/characterOrder")).checkCharOrder,
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn() }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));

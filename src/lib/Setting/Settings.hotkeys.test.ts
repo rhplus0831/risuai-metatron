@@ -24,7 +24,7 @@ vi.mock("./Pages/Module/ModuleSettings.svelte", () => ({ default: () => {} }));
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [] }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: (text: string) => text }));
 vi.mock("src/ts/parser/transformClient", () => ({ resetTransformEffects: vi.fn() }));
-vi.mock("src/ts/globalApi.svelte", () => ({ saveAsset: vi.fn(), downloadFile: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/process/index.svelte", () => ({}));
 
 import { language } from "src/lang";

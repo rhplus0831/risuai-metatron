@@ -24,7 +24,12 @@ const { client, stores } = vi.hoisted(() => {
     return { client: { readRefs: vi.fn() }, stores: Object.assign(stores, { settings }) };
 });
 
-vi.mock("../resourceClient", () => ({ readRefs: (...args: unknown[]) => client.readRefs(...args) }));
+vi.mock("../resourceClient", async () =>
+    (await import("../tests/resourceClientMock")).createResourceClientMock({
+        readRefs: (...args: unknown[]) => client.readRefs(...args),
+    }),
+);
+vi.mock("../serverAuth", async () => (await import("./serverAuthMock")).createServerAuthMock());
 vi.mock("../characterStore.svelte", () => ({ characterList: () => stores.characters }));
 vi.mock("../settingsViews.svelte", () => ({ settings: stores.settings }));
 

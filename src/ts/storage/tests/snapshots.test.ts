@@ -18,12 +18,11 @@ const held = vi.hoisted(() => ({
     asset: null as null | ((path: string) => void),
 }));
 
-vi.mock("../../globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    readImage: vi.fn(),
-    saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
-    AppendableBuffer: class {},
-}));
+vi.mock("../../globalApi.svelte", async () =>
+    (await import("../../tests/globalApiMock")).createGlobalApiMock({
+        saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
+    }),
+);
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),

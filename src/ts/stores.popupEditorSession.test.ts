@@ -6,13 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // module graph beyond the records is mocked as in `stores.simpleCharacter.test.ts`.
 
 vi.mock("./storage/characterStore.svelte", () => ({ selectedCharacter: () => null }));
-vi.mock("./storage/chatStore.svelte", () => ({
-    selectedChat: () => null,
-    currentChatRef: () => null,
-    findChat: () => undefined,
-    heldChatRevision: () => null,
-    isMessageLocked: () => false,
-}));
+vi.mock("./storage/chatStore.svelte", async () =>
+    (await import("./storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("./storage/settingsViews.svelte", () => ({
     settings: { modules: [], enabledModules: [] },
     activePreset: { id: "preset", moduleIntergration: "" },
@@ -26,7 +22,9 @@ vi.mock("./network/generationJobs", () => ({ generationClientId: () => "client" 
 vi.mock("./plugins/apiV3/pluginContext", () => ({ capturePluginContext: () => undefined, invokeHook: vi.fn() }));
 vi.mock("./plugins/pluginHooks", () => ({ pluginHooks: {} }));
 vi.mock("./storage/serverAuth", () => ({ authFetch: vi.fn() }));
-vi.mock("./storage/resourceClient", () => ({ epochMismatch: () => false, getResourceEpoch: () => "" }));
+vi.mock("./storage/resourceClient", async () =>
+    (await import("./storage/tests/resourceClientMock")).createResourceClientMock(),
+);
 vi.mock("./util", () => ({ checkPersonaBinded: () => undefined }));
 
 import {

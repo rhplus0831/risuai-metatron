@@ -12,7 +12,7 @@ vi.mock("../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 
 import { SAFE_LOCAL_PLUGIN_STORAGE_KEY, setSafeLocalPluginValue } from "../storage/pluginStorageStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";

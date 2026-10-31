@@ -14,15 +14,15 @@ import { selectCharacter } from "src/ts/storage/selection.svelte";
 const requests = vi.hoisted(() => [] as { input_type: string; input: string[] | string }[]);
 const sends = vi.hoisted(() => [] as boolean[]);
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: async (_url: string, arg: { body: { input: string[] | string; input_type: string } }) => {
-        requests.push(arg.body);
-        const inputs = Array.isArray(arg.body.input) ? arg.body.input : [arg.body.input];
-        return { ok: true, data: { data: inputs.map((text) => ({ embedding: [1, text.length] })) } };
-    },
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: async (_url: string, arg: { body: { input: string[] | string; input_type: string } }) => {
+            requests.push(arg.body);
+            const inputs = Array.isArray(arg.body.input) ? arg.body.input : [arg.body.input];
+            return { ok: true, data: { data: inputs.map((text) => ({ embedding: [1, text.length] })) } };
+        },
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("localforage", () => ({
     default: { createInstance: () => ({ getItem: async () => null, setItem: async () => {} }) },

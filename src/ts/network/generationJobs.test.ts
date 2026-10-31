@@ -48,13 +48,15 @@ vi.mock("../storage/serverAuth", async () =>
             }),
     }),
 );
-vi.mock("../storage/chatStore.svelte", () => ({
-    applyServerGeneration: stubs.applyServerGeneration,
-    applyServerGenerationChunk: stubs.applyServerGenerationChunk,
-    endServerJob: stubs.endServerJob,
-    isChatStale: stubs.isChatStale,
-    chatHydrationHold: stubs.chatHydrationHold,
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        applyServerGeneration: stubs.applyServerGeneration,
+        applyServerGenerationChunk: stubs.applyServerGenerationChunk,
+        endServerJob: stubs.endServerJob,
+        isChatStale: stubs.isChatStale,
+        chatHydrationHold: stubs.chatHydrationHold,
+    }),
+);
 vi.mock("../storage/resourceSync.svelte", () => ({
     applyHydration: stubs.applyHydration,
     applyPatchHydration: stubs.applyPatchHydration,

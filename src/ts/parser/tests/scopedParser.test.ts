@@ -22,10 +22,9 @@ vi.mock(import("../../storage/database.svelte"), () => {
     } as unknown as typeof import("../../storage/database.svelte");
 });
 
-vi.mock(import("../../globalApi.svelte"), () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: vi.fn(() => Promise.resolve("")),
-}));
+vi.mock(import("../../globalApi.svelte"), async () =>
+    (await import("../../tests/globalApiMock")).createGlobalApiMock({ getFileSrc: vi.fn(() => Promise.resolve("")) }),
+);
 
 import { ParseMarkdown, risuChatParser, risuChatParserScoped } from "../parser.svelte";
 import { getChatVarOf, setChatVarOf } from "../chatVar.svelte";

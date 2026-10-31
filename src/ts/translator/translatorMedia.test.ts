@@ -14,11 +14,9 @@ const deps = vi.hoisted(() => ({
 vi.mock("localforage", () => ({
     default: { createInstance: () => ({ getItem: async () => null, setItem: async () => undefined }) },
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: deps.globalFetch,
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ globalFetch: deps.globalFetch }),
+);
 vi.mock("src/ts/process/request/request", () => ({ requestChatData: deps.request }));
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({

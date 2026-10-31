@@ -28,14 +28,14 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleRegexScripts: vi.fn(() => []),
 }));
 vi.mock("src/ts/model/modellist", () => ({ getModelInfoForMode: vi.fn(() => ({ id: "gpt-test" })) }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: vi.fn(async (_url: string, init: { body: { text: string[] } }) => ({
-        ok: true,
-        data: { translations: [{ text: `T:${init.body.text[0]}` }] },
-    })),
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: vi.fn(async (_url: string, init: { body: { text: string[] } }) => ({
+            ok: true,
+            data: { translations: [{ text: `T:${init.body.text[0]}` }] },
+        })),
+    }),
+);
 vi.mock("src/ts/util", () => ({
     getNodetextToSentence: vi.fn(),
     sleep: vi.fn(async () => undefined),

@@ -55,7 +55,7 @@ vi.mock("./modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 // The followed-job registry is the factory's real writable: a test registers a job in another chat.
 vi.mock("./serverCommands", async () =>
     (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({

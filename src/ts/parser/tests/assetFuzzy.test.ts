@@ -10,10 +10,7 @@ vi.mock("../../stores.svelte", async () => {
     });
 });
 vi.mock("../../storage/database.svelte", () => ({ appVer: "test", defaultSdDataFunc: () => [] }));
-vi.mock("../../globalApi.svelte", () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: vi.fn(async (path: string) => path),
-}));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 import { getDistance, ParseMarkdown, resetAssetsCache, type simpleCharacterArgument } from "../parser.svelte";
 import { boundedDistance, findAssetPrefix } from "../assetSearch";

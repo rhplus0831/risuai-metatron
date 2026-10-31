@@ -22,11 +22,9 @@ vi.mock("src/ts/alert", async () =>
         alertNormal: mocks.alertNormal,
     }),
 );
-vi.mock("src/ts/globalApi.svelte", () => ({
-    downloadFile: mocks.downloadFile,
-    saveAsset: vi.fn(),
-    globalFetch: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ downloadFile: mocks.downloadFile }),
+);
 vi.mock("src/ts/util", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/util")>()),
     selectSingleFile: mocks.selectSingleFile,

@@ -29,13 +29,12 @@ vi.mock("../storage/serverAuth", () => ({
             stubs.auth.push({ resolve, reject });
         }),
 }));
-vi.mock("../storage/chatStore.svelte", () => ({
-    applyServerGeneration: vi.fn(() => true),
-    applyServerGenerationChunk: vi.fn(() => true),
-    endServerJob: vi.fn(),
-    isChatStale: vi.fn(() => false),
-    chatHydrationHold: vi.fn(() => "none"),
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        applyServerGeneration: vi.fn(() => true),
+        applyServerGenerationChunk: vi.fn(() => true),
+    }),
+);
 vi.mock("../storage/resourceSync.svelte", () => ({
     applyHydration: vi.fn(() => true),
     applyPatchHydration: vi.fn(() => "applied"),

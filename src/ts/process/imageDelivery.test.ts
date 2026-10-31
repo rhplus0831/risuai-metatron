@@ -16,12 +16,12 @@ const deps = vi.hoisted(() => ({
     alert: vi.fn(),
     clickResult: vi.fn(),
 }));
-vi.mock("../globalApi.svelte", () => ({
-    globalFetch: deps.globalFetch,
-    fetchNative: deps.fetchNative,
-    readImage: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: deps.globalFetch,
+        fetchNative: deps.fetchNative,
+    }),
+);
 vi.mock("../network/auxFetch", () => ({ auxFetchJson: deps.auxFetchJson }));
 vi.mock("./request/request", () => ({ requestChatData: deps.request }));
 vi.mock("./processzip", () => ({ processZip: deps.zip }));

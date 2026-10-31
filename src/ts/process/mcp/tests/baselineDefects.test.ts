@@ -14,26 +14,28 @@ const { fetchCalls, fetchAnswers, chats } = vi.hoisted(() => ({
     chats: new Map<string, { toolCalls?: Record<string, unknown> }>(),
 }));
 
-vi.mock("src/ts/storage/chatStore.svelte", () => ({
-    findChat: (ref: { chaId: string; chatId: string }) => chats.get(`${ref.chaId}/${ref.chatId}`),
-    mergeChatMeta: (ref: { chaId: string; chatId: string }, field: "toolCalls", value: Record<string, unknown>) => {
-        const chat = chats.get(`${ref.chaId}/${ref.chatId}`)!;
-        chat[field] = { ...chat[field], ...value };
-    },
-}));
-
-vi.mock("src/ts/globalApi.svelte", () => ({
-    fetchNative: vi.fn(async (url: string, init?: RequestInit) => {
-        fetchCalls.push({ url, init });
-        const next = fetchAnswers.shift();
-        if (!next) {
-            throw new Error(`unexpected fetchNative(${url})`);
-        }
-        return typeof next === "function" ? next() : next;
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+        findChat: (ref: { chaId: string; chatId: string }) => chats.get(`${ref.chaId}/${ref.chatId}`),
+        mergeChatMeta: (ref: { chaId: string; chatId: string }, field: "toolCalls", value: Record<string, unknown>) => {
+            const chat = chats.get(`${ref.chaId}/${ref.chatId}`)!;
+            chat[field] = { ...chat[field], ...value };
+        },
     }),
-    openURL: vi.fn(),
-    globalFetch: vi.fn(),
-}));
+);
+
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        fetchNative: vi.fn(async (url: string, init?: RequestInit) => {
+            fetchCalls.push({ url, init });
+            const next = fetchAnswers.shift();
+            if (!next) {
+                throw new Error(`unexpected fetchNative(${url})`);
+            }
+            return typeof next === "function" ? next() : next;
+        }),
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/storage/collectionStore.svelte", () => ({ addAuthRefresh: vi.fn(), addModule: vi.fn() }));
 vi.mock("src/ts/stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));

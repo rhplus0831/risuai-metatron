@@ -23,7 +23,12 @@ vi.mock("../alert", async () =>
     }),
 );
 vi.mock("../translator/translator", () => ({ runTranslator: vi.fn(), translateVox: deps.translateVox }));
-vi.mock("../globalApi.svelte", () => ({ globalFetch: deps.globalFetch, loadAsset: async () => new Uint8Array([1]) }));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: deps.globalFetch,
+        loadAsset: async () => new Uint8Array([1]),
+    }),
+);
 vi.mock("../util", () => ({ sleep: vi.fn() }));
 vi.mock("./transformers", () => ({ runVITS: vi.fn() }));
 vi.mock("src/lang", () => ({ language: { errors: { httpError: "HTTP error: " } } }));

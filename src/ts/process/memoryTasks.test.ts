@@ -53,7 +53,7 @@ vi.mock("./modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 
 type Tasks = typeof import("./memoryTasks.svelte");
 type ChatModule = typeof import("../storage/chatStore.svelte");

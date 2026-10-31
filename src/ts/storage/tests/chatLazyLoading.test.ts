@@ -50,7 +50,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../../plugins/plugins.svelte", () => ({ loadPlugins: vi.fn() }));
 vi.mock("../../characterCards", () => ({ characterURLImport: vi.fn() }));
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());

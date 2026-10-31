@@ -115,27 +115,29 @@ vi.mock("src/lang", () => ({
         },
     },
 }));
-vi.mock("../globalApi.svelte", () => ({
-    LocalWriter: class {
-        writer = { abort: writer.abort };
-        async init(name = "Binary") {
-            writer.names.push(name);
-            if (writer.initResult instanceof Error) {
-                throw writer.initResult;
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        LocalWriter: class {
+            writer = { abort: writer.abort };
+            async init(name = "Binary") {
+                writer.names.push(name);
+                if (writer.initResult instanceof Error) {
+                    throw writer.initResult;
+                }
+                return writer.initResult;
             }
-            return writer.initResult;
-        }
-        async write(data: Uint8Array) {
-            if (writer.chunks.length === writer.failWriteAt) {
-                throw new Error("disk full");
+            async write(data: Uint8Array) {
+                if (writer.chunks.length === writer.failWriteAt) {
+                    throw new Error("disk full");
+                }
+                writer.chunks.push(new Uint8Array(data));
             }
-            writer.chunks.push(new Uint8Array(data));
-        }
-        async close() {
-            await writer.close();
-        }
-    },
-}));
+            async close() {
+                await writer.close();
+            }
+        },
+    }),
+);
 vi.mock("../storage/serverAuth", () => ({
     authFetch: async (path: string, init: RequestInit = {}) => {
         requests.push({ path, init });

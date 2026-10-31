@@ -28,7 +28,7 @@ const stubs = vi.hoisted(() => ({
     /** `readRefs`: answers each requested chat with an empty chat of that id (a load of an unloaded chat). */
     readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     epochMismatch: vi.fn((epoch: string) =>
-        Object.assign(new Error(`replaced ${epoch}`), { name: "ResourceEpochMismatchError" }),
+        Object.assign(new Error(`replaced ${epoch}`), { name: "ResourceEpochMismatchError", epoch }),
     ),
     dynamicIds: new Set<string>(),
     /** Each `getModelInfoForMode` call's arguments: the mode and the request's preset scope. */
@@ -50,7 +50,9 @@ vi.mock("src/ts/alert", async () =>
         alertError: stubs.alertError,
     }),
 );
-vi.mock("src/ts/globalApi.svelte", () => ({ appendFetchLog: stubs.appendFetchLog }));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ appendFetchLog: stubs.appendFetchLog }),
+);
 vi.mock("src/ts/model/modellist", async () => {
     // The mode's model id is resolved through the real slot routing (`resolveModelSlot`), so the
     // metadata follows the main profile of the model preset the scope names.
@@ -92,12 +94,14 @@ vi.mock("src/ts/plugins/pluginHooks", () => ({
 vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
 }));
-vi.mock("src/ts/storage/resourceClient", () => ({
-    epochMismatch: stubs.epochMismatch,
-    getResourceEpoch: () => "epoch-1",
-    // The chat module's own reads (a load of a chat the transport needs).
-    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
-}));
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        epochMismatch: stubs.epochMismatch,
+        getResourceEpoch: () => "epoch-1",
+        // The chat module's own reads (a load of a chat the transport needs).
+        readRefs: (...args: unknown[]) => stubs.readRefs(...args),
+    }),
+);
 vi.mock("src/ts/storage/resourceSync.svelte", () => ({ flushResources: () => stubs.flush() }));
 vi.mock("src/ts/util", () => ({ checkPersonaBinded: () => stubs.selected.bound }));
 vi.mock("../../files/inlays", () => ({

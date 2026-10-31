@@ -9,7 +9,7 @@ await vi.hoisted(async () => {
     (globalThis as any).Buffer = BufferPolyfill;
 });
 
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../alert", () => ({
     alertNormal: vi.fn(),
     alertError: vi.fn(),

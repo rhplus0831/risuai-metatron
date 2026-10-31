@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./Realm/RealmMain.svelte", () => ({ default: () => {} }));
 vi.mock("./Title.svelte", () => ({ default: () => {} }));
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "/avatar.png"), changeChar: vi.fn() }));
-vi.mock("src/ts/globalApi.svelte", () => ({ getVersionString: () => "test", openPinnedChat: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ getVersionString: () => "test" }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ sleep: vi.fn() }));
 vi.mock("src/ts/stores.svelte", async () => {

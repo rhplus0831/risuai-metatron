@@ -27,27 +27,28 @@ const { calls, server } = vi.hoisted(() => ({
     server: { handle: null as null | ((call: Call) => Promise<unknown> | unknown) },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    fetchNative: vi.fn(
-        async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
-            let body: any = init?.body ?? null;
-            if (typeof body === "string") {
-                try {
-                    body = JSON.parse(body);
-                } catch {
-                    body = Object.fromEntries(new URLSearchParams(body));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        fetchNative: vi.fn(
+            async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
+                let body: any = init?.body ?? null;
+                if (typeof body === "string") {
+                    try {
+                        body = JSON.parse(body);
+                    } catch {
+                        body = Object.fromEntries(new URLSearchParams(body));
+                    }
                 }
-            }
-            const call = { url, method: init?.method ?? "GET", headers: { ...(init?.headers ?? {}) }, body };
-            calls.push(call);
-            if (!server.handle) {
-                throw new Error(`unexpected fetchNative(${url})`);
-            }
-            return await server.handle(call);
-        },
-    ),
-    openURL: vi.fn(),
-}));
+                const call = { url, method: init?.method ?? "GET", headers: { ...(init?.headers ?? {}) }, body };
+                calls.push(call);
+                if (!server.handle) {
+                    throw new Error(`unexpected fetchNative(${url})`);
+                }
+                return await server.handle(call);
+            },
+        ),
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 const enc = new TextEncoder();

@@ -17,10 +17,11 @@ const { deps } = vi.hoisted(() => ({
 }));
 
 vi.mock("../network/auxFetch", () => ({ auxFetch: (...args: unknown[]) => deps.auxFetch(...args) }));
-vi.mock("../globalApi.svelte", () => ({
-    globalFetch: (...args: unknown[]) => deps.globalFetch(...args),
-    loadAsset: vi.fn(),
-}));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: (...args: unknown[]) => deps.globalFetch(...args),
+    }),
+);
 vi.mock("../storage/llmSecrets.svelte", () => ({ isSecretSet: (path: unknown) => deps.isSecretSet(path) }));
 vi.mock("../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
