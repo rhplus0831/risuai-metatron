@@ -254,12 +254,17 @@ authenticated, limitedBody(cap), handler` (checkpoints 16 KiB, tokens 2 MiB, sea
   - **Deduplication.** The route deduplicates `refs` by kind and id, `chats` by character and id,
     and the two collection lists by character before `readRefs`; the answer lists each entry once.
     No caller depends on positional pairing (each answer entry carries its identity).
-  - **Groups.** The unit the budget may leave out is a **character group**: a character record
-    ref, the `chats` naming that character, its `chatCollections` and `chatSummaryCollections`
-    entry. Every other ref (presets, modules, settings, …) is a group of one. The refresh queue
-    asks for a character together with its collection and installs them together; keeping the two
-    in one round keeps that pairing coherent without a transaction across rounds (Astra F4). A
-    deletion and recreation of a character between two rounds still cannot split a group.
+  - **Groups.** The unit the budget may leave out is a **group**. A **character group** is a
+    character record ref together with its `chatCollections` and `chatSummaryCollections`
+    entries; every `chats` entry is a group of one, as is every other ref (presets, modules,
+    settings, …). The refresh queue asks for a character together with its collection and
+    installs them together; keeping the two in one round keeps that pairing coherent without a
+    transaction across rounds (Astra F4). A chat needs no such pairing: the chat loader asks for
+    500 chats of one character in one call and already retries or leaves pending a chat missing
+    from an answer, so the budget may split a load into rounds (Slice 0 measured 7 rounds at
+    16 MiB for a 500-chat load of 200 KiB chats, against one round of 106 MB if the chats were in
+    the character group). A deletion and recreation of a character between two rounds still
+    cannot split a group.
   - **Budget.** `MAX_READ_RESPONSE_BYTES` (Q2: 16 MiB, `shared/resources.ts`) bounds the
     **charged stored bytes** of one answer. Groups are served in request order (refs, chats,
     collections, summary collections, each group placed at its first mention); the first group
@@ -869,3 +874,9 @@ continuation would be rare: the chat loader reads 500 whole chats per call and t
 whole collections of 500 characters per call, so both continue routinely at 16 MiB. D2, Q2's
 rationale, Slice 0 (round count and total time) and Slice 2's tests (many rounds under one
 deadline) were changed accordingly.
+
+Slice 0 (2026-10-31) found that the first wording of D2's **Groups** item, which put a character's
+`chats` entries in its group, contradicted that note: a 500-chat `loadChats` call names one
+character, so the whole load would have been one always-served first group. The user chose to make
+every `chats` entry a group of one (the probe's `chatUnits` reading); the character group keeps
+the record and its two collection entries.
