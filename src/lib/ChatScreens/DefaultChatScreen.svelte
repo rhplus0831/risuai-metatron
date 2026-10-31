@@ -181,7 +181,8 @@
     );
     // While the selected chat loads (null when it is loaded or nothing is selected).
     let selectedLoad = $derived(selectedChatLoad());
-    // The selected chat cannot be sent until its binding is complete: the send button sets it up.
+    // The selected chat cannot be sent until its binding is complete: the send button sets it up, and
+    // the composers are read-only. They stay focusable so Enter still opens the setup.
     let bindingIncomplete = $derived.by(() => {
         const ref = currentChatRef();
         return ref !== null && chatBinding(ref)?.ok === false;
@@ -1109,8 +1110,9 @@
                     {/if}
 
                     <textarea
-                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm placeholder:whitespace-pre placeholder:overflow-hidden placeholder:text-ellipsis"
+                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm placeholder:whitespace-pre placeholder:overflow-hidden placeholder:text-ellipsis read-only:cursor-not-allowed"
                         placeholder={inputPlaceholder}
+                        readonly={bindingIncomplete}
                         bind:value={composer.input}
                         bind:this={inputEle}
                         oncompositionstart={() => inputTranslation.compositionStart("main")}
@@ -1119,7 +1121,7 @@
                             handleMainComposerKeydown(e, { sendWithEnter: settings.ui.sendWithEnter, send, reroll })}
                         onpaste={(e) => {
                             const ref = currentChatRef();
-                            if (!ref) return;
+                            if (!ref || bindingIncomplete) return;
                             const items = e.clipboardData?.items;
                             if (!items) {
                                 return;
@@ -1453,7 +1455,8 @@
                     </label>
                     <textarea
                         id="messageInputTranslate"
-                        class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow ml-4 mr-2 border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full"
+                        class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow ml-4 mr-2 border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full read-only:cursor-not-allowed"
+                        readonly={bindingIncomplete}
                         bind:value={composer.translate}
                         bind:this={inputTranslateEle}
                         oncompositionstart={() => inputTranslation.compositionStart("translation")}

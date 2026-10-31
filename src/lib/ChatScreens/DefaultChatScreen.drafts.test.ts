@@ -214,6 +214,48 @@ it("names the shown persona and character in the placeholder and asks for the se
     expect(input().placeholder).toBe("User → C");
 });
 
+it("locks both composers of an incomplete chat, keeps their text, and still opens the setup with Enter", async () => {
+    const { input, target, type } = await mountComposer();
+    const { chatBindingPatch } = await import("src/ts/storage/chatBinding.svelte");
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { chatBindingDialog } = await import("src/ts/stores.svelte");
+    const { get } = await import("svelte/store");
+    const ref = { chaId: "c", chatId: "a" };
+    type("kept draft");
+    settings.ui.sendWithEnter = true;
+    settings.memoryTranslateMedia.useAutoTranslateInput = true;
+    flushSync();
+    const translation = () => target.querySelector<HTMLTextAreaElement>("#messageInputTranslate")!;
+    expect(input().readOnly).toBe(false);
+    expect(translation().readOnly).toBe(false);
+
+    chatBindingPatch(ref, { personaId: null });
+    flushSync();
+    expect(input().readOnly).toBe(true);
+    expect(translation().readOnly).toBe(true);
+    expect(input().disabled).toBe(false);
+    expect(input().value).toBe("kept draft");
+
+    const getAsFile = vi.fn(() => null);
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", {
+        value: { items: [{ kind: "file", type: "image/png", getAsFile }] },
+    });
+    input().dispatchEvent(paste);
+    expect(getAsFile).not.toHaveBeenCalled();
+
+    input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await until(() => get(chatBindingDialog) !== null);
+    expect(get(chatBindingDialog)).toEqual(ref);
+    expect(input().value).toBe("kept draft");
+    expect(io.createJob).not.toHaveBeenCalled();
+
+    chatBindingPatch(ref, { personaId: "persona" });
+    flushSync();
+    expect(input().readOnly).toBe(false);
+    expect(translation().readOnly).toBe(false);
+});
+
 it("offers Stop beside Send for an unfollowed lock, busy refusal, or replay, and confirms the looked-up job", async () => {
     const { target, click } = await mountComposer();
     const chat = await import("src/ts/storage/chatStore.svelte");

@@ -374,6 +374,12 @@ async function openChatRow(page: Page, name: string) {
 
 const sendButton = (page: Page) => page.locator(".button-icon-send");
 const composer = (page: Page) => page.locator("textarea.text-input-area");
+/** The text of a draft from before the chat became incomplete: the composer cannot be typed into now. */
+const keptDraft = (page: Page, text: string) =>
+    composer(page).evaluate((input: HTMLTextAreaElement, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, text);
 const dialog = (page: Page) => page.getByRole("dialog");
 const row = (scope: Locator, field: "modelPresetId" | "promptPresetId" | "personaId") =>
     scope.locator(`[data-chat-binding-field="${field}"]`);
@@ -429,12 +435,15 @@ test("an unbound chat refuses to send and opens the binding dialog; its rows bin
     await expect(chatRow(page, "Unbound").locator("[data-chat-binding-incomplete]")).toHaveCount(1);
     await expect(chatRow(page, "Bound A").locator("[data-chat-binding-incomplete]")).toHaveCount(0);
 
-    // The send button reads "Set up this chat"; Enter opens the dialog and consumes nothing.
+    // The send button reads "Set up this chat", the composer is locked with the placeholder saying so;
+    // Enter opens the dialog and consumes nothing.
     await openChatRow(page, "Unbound");
     const ref = { chaId, chatId: chats.unbound };
     await expect(sendButton(page)).toHaveText("Set up this chat");
+    await expect(composer(page)).toHaveAttribute("placeholder", "Setup required");
+    await expect(composer(page)).not.toBeEditable();
     const bodiesBefore = providerBodies.length;
-    await composer(page).fill("Hello there");
+    await keptDraft(page, "Hello there");
     await composer(page).press("Enter");
     await expect(dialog(page)).toBeVisible();
     await expect(dialog(page)).toContainText("Unbound");
@@ -467,6 +476,7 @@ test("an unbound chat refuses to send and opens the binding dialog; its rows bin
     await dialog(page).getByRole("button", { name: "Close" }).click();
     await expect(dialog(page)).toHaveCount(0);
     await expect(sendButton(page)).not.toHaveText("Set up this chat");
+    await expect(composer(page)).toBeEditable();
     const sidePanel = page.locator("[data-chat-binding-panel]");
     await expect(row(sidePanel, "modelPresetId")).toContainText(NAMES.modelA);
     await expect(row(sidePanel, "personaId")).toContainText(NAMES.personaA);
@@ -624,7 +634,7 @@ test("an imported chat keeps the ids that exist here, drops the others, and need
     // the dialog, the text stays, and no job is created.
     await expect(sendButton(page)).toHaveText("Set up this chat");
     const bodiesBefore = providerBodies.length;
-    await composer(page).fill("Imported send");
+    await keptDraft(page, "Imported send");
     await composer(page).press("Enter");
     await expect(dialog(page)).toBeVisible();
     await expect(composer(page)).toHaveValue("Imported send");
