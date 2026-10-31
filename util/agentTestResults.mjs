@@ -8,7 +8,7 @@
 // FAIL line does). When a full run fails only in a few files, the wrapper runs each of those files
 // again alone, one at a time, and a file that passes alone counts as passed: its tests failed under
 // the full run's load (parallel workers, other processes), not in the code. See
-// `docs/structure/build-test-platforms.md`.
+// `docs/structure/test-harness.md`.
 
 /** How the wrapper tells the reporter where to write the results file. */
 export const RESULTS_FILE_ENV = "RISU_REPORT_RESULTS_FILE";

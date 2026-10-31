@@ -9,7 +9,7 @@
 // - the file is one every spec runs on (EVERY_SPEC_FILES).
 // Guides, notes, and unit tests are never matched (`reachesBrowser`). A changed file no spec names
 // is reported, so the agent can name the specs that cover the behavior instead. See
-// `docs/structure/build-test-platforms.md`.
+// `docs/structure/test-harness.md`.
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { posix } from "node:path";

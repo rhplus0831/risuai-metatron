@@ -1,19 +1,18 @@
-# Build, Test Harness, Service Worker, Release
+# Build, Service Worker, Release
 
 ## Scope
 
 - Owns:
   - package scripts,
-  - Vite, Vitest, and TypeScript config,
-  - the test inventory,
+  - Vite and TypeScript config,
+  - the `dev:agent` / `dev:human` full-stack runner,
+  - the documentation check,
   - the PWA service worker and manifest,
   - the userscript bridge,
   - the compatibility version and the build id,
   - repo dotfiles.
 - Paths:
-  - Root config: `package.json`, `vite.config.ts`, `vitest.config.ts`, `vitest.setup.ts`, `vitest.setup.test.ts`,
-    `vitest.lucideImports.ts`, `vitest.lucideImports.test.ts`, `vitest.testNetwork.ts`, `vitest.testNetwork.test.ts`,
-    `vitest.testNetwork.node.test.ts`, `playwright.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
+  - Root config: `package.json`, `vite.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
   - Build id: `shared/buildInfo.ts` (`BuildInfo`, `formatBuildId`), `server/src/buildInfo.ts` (`resolveBuildInfo`,
     `readServerBuildInfo`), `src/ts/buildInfo.ts` (`buildInfo`, `buildId`)
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.prettierrc.json`, `.prettierignore`, `.vscode/`
@@ -21,23 +20,20 @@
   - `util/risuUserscript.user.js`
   - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack
     runner)
-  - `util/agentTest.mjs`, `util/agentTestReporter.ts`, `util/agentTestResults.mjs` (the `test:agent` wrapper, its
-    reporter, and their shared summary line and rerun of failed files), `util/agentE2e.mjs` (which specs
-    `test:agent --e2e` selects), `util/requireHuman.mjs` (the human gate)
-  - `util/overloadTest.mjs` (the `test:overload` runner)
-  - `util/testInventory.mjs` (the `check:tests` test inventory check)
   - `util/docsBudget.mjs` and `util/docsBudget.json` (the `check:docs` documentation check and its ratchet)
   - `util/ci/check.sh` and `.github/workflows/ci.yml` (the CI gate and its GitHub Actions workflow)
-  - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
   - `util/heap/` (V8 heap snapshot analysis)
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
 - Not here:
+  - The test wrapper, Vitest and Playwright config, test rules, and browser checks → `test-harness.md`.
   - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
   - The self-host server → `self-host-server.md`.
 
 ## Files
 
-Relevant `package.json` scripts:
+### Relevant `package.json` scripts
+
+The test commands (`test*`, `check:tests`) are documented in [test-harness](test-harness.md).
 
 | Script          | Command                                                                  | Use                                                                                                                                         |
 | --------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -58,20 +54,27 @@ Relevant `package.json` scripts:
 | `format`        | `prettier --write .`                                                     | formats the repository; use a targeted Prettier call for changed files                                                                      |
 | `format:check`  | `prettier --check .`                                                     | repository formatting gate                                                                                                                  |
 
+### Build compression
+
 - `util/compressDist.mjs` runs after Vite with async `node:zlib` compression and at most four files in flight, starting
   with the largest files. It shares `STATIC_COMPRESSIBLE_EXTENSIONS` with `server/src/http/staticCache.ts`: `.js`,
-  `.mjs`, `.css`, `.json`, `.svg`, and `.wasm`. Files below 1 KiB, HTML, source maps, and already compressed
-  image/font/archive types receive no siblings. Brotli uses quality 11 through 16 MiB and quality 9 above that, text
-  mode for text types, and a size hint; gzip uses level 9. Only smaller outputs remain, published through temporary
-  files and rename. It prints file and byte totals plus elapsed time; any failure fails the build.
+  `.mjs`, `.css`, `.json`, `.svg`, and `.wasm`.
+- Files below 1 KiB, HTML, source maps, and already compressed image/font/archive types receive no siblings.
+- Brotli uses quality 11 through 16 MiB and quality 9 above that, text mode for text types, and a size hint; gzip uses
+  level 9. Only smaller outputs remain, published through temporary files and rename.
+- It prints file and byte totals plus elapsed time; any failure fails the build.
   `node util/compressDist.mjs [dist-directory]` accepts an explicit directory and otherwise uses the repository's
   `dist/`.
 
-- Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for
-  JSON/YAML/Markdown, `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`).
-  `.prettierignore` includes `.ignore`'s payloads and additionally excludes all of `public/`, lockfiles, snapshots,
+### Prettier config
+
+- `.prettierrc.json`: 4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown,
+  `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`.
+- `.prettierignore` includes `.ignore`'s payloads and additionally excludes all of `public/`, lockfiles, snapshots,
   `dist/`, `.claude/worktrees/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so
   Prettier cannot parse it).
+
+### Documentation check
 
 - `pnpm check:docs` (`util/docsBudget.mjs`, plain Node over the Markdown, with a line-based parse) checks `STRUCTURE.md`
   and every guide, printing one `path:line rule message` per finding. It reads `ceilings` and `allow` from
@@ -89,418 +92,128 @@ Relevant `package.json` scripts:
   findings, fewer fail as `stale-allow`. The 8,000-byte leaf and 600-character item budgets are measured and reported
   but do not fail yet. `--report` prints the sizes and every finding and exits 0.
 
-Config files:
+### Config files
 
 - `vite.config.ts`:
   - Plugins: Svelte, Tailwind (`@tailwindcss/vite`), `vite-plugin-wasm`, conditional `@rollup/plugin-strip`.
   - Dev server defaults to port 5174 with `strictPort`, listening on `0.0.0.0` (`util/agentDev.mjs` passes
     `--host`/`--port`). `cacheDir` is `RISU_VITE_CACHE_DIR` when set, else Vite's `node_modules/.vite`. The watcher
-    ignores the server storage (`save/`, `save-agent/`, its lock, and its staging and previous copies). It injects
-    `globalThis.__NODE__ = true` (plugin `risu-node-flag`, `apply: "serve"`, so `dist/index.html` never carries it) and
-    proxies the server routes (`/api`, `/proxy`, `/proxy2`, `/hub-proxy`, with WS) to `RISU_DEV_SERVER` (default
-    `http://localhost:6001`). See `self-host-server.md` for the dev caveats.
+    ignores the server storage (`save/`, `save-agent/`, its lock, and its staging and previous copies).
+  - It injects `globalThis.__NODE__ = true` (plugin `risu-node-flag`, `apply: "serve"`, so `dist/index.html` never
+    carries it) and proxies the server routes (`/api`, `/proxy`, `/proxy2`, `/hub-proxy`, with WS) to `RISU_DEV_SERVER`
+    (default `http://localhost:6001`). See `self-host-server.md` for the dev caveats.
   - `envPrefix` is Vite's default (`VITE_`). `build.minify` is `oxc`.
   - Alias `src` → `/src`. Workers are built as `es`.
   - `define` sets only `__RISU_BUILD__` (the `BuildInfo` of `resolveBuildInfo`, read through `src/ts/buildInfo.ts`;
     Vitest leaves it undefined, so tests see an unknown build). The build-only plugin `risu-build-info` writes the same
     object to `dist/build-info.json`. `manualChunks` is not set.
-- `util/requireHuman.mjs`: the human gate. `requireHuman(command)` prints a notice (what to run as an agent, how to set
-  `HUMAN` as a person) and exits with 1 unless `CI`, `HUMAN`, or `AGENT_TEST` is set; it exits instead of throwing so
-  the caller shows no stack trace. `vitest.config.ts` calls it at load, which covers `pnpm test`, `pnpm test:slow`,
-  `pnpm test:all`, and a direct `vitest` (every run loads the config once in the main process; the Vitest VS Code
-  extension loads it too, so that editor needs `HUMAN` in its environment). `pnpm test:e2e` runs the file's command-line
-  form (`node util/requireHuman.mjs "<command>"`) before Playwright; agents run the specs with
-  `pnpm --silent test:agent --e2e` instead. `util/agentTest.mjs` sets `AGENT_TEST=1` for the run it supervises. Agents
-  must use the wrapper and must not set `HUMAN` or `AGENT_TEST` themselves to bypass this convention.
-- `vitest.config.ts`: `requireHuman("vitest")` at load (see above), Svelte plugin (`configFile: false`: there is no
-  `svelte.config.js`, and the lookup would log a line on every run), the test-only `lucideImports` plugin, `src` alias,
-  browser resolve conditions, `happy-dom` with `enableIframePageLoading` (happy-dom 21 turns it off by default; the
-  network guard below refuses non-loopback loads, and the plugin sandbox appends its iframe before setting `srcdoc`),
-  setup file `vitest.setup.ts`, default include pattern, `e2e/**` excluded (Vitest's default include also matches the
-  Playwright `*.spec.ts` files), and `.claude/**` excluded (Claude Code worktrees under `.claude/worktrees/` are
-  checkouts of other branches, so a run in the main checkout would collect their tests too).
-- `util/agentTest.mjs`
-  (`pnpm --silent test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [--no-lock] [vitest args]`):
-  `pnpm test` for agents, and the only entry point that runs tests without `CI` or `HUMAN` (the child gets
-  `AGENT_TEST=1`; `test:overload` goes through it). It runs `vitest run --tags-filter=!slow` (`--all` drops the tag
-  filter, like `pnpm test:all`; `--tags-filter=slow` is `pnpm test:slow`; an explicit `--tags-filter` replaces the
-  default; other arguments, such as a file filter, pass through) with `util/agentTestReporter.ts` and caches the result
-  in `node_modules/.cache/agent-test/<args hash>.json`. The key is the working tree's `git write-tree` id, taken from a
-  copy of the real index with every change staged (untracked files included, `.gitignore` honored, so unchanged files
-  keep their stat cache), plus the Node and Vitest versions and the arguments. On a hit it prints a
-  `[agent-test] cached result ...` line, the stored stdout, and exits with the stored code; failures are cached too,
-  since the same tree gives the same result, and `--force` runs anyway and replaces the entry. Stderr of the run (Node
-  warnings, worker-thread traces from passing tests) is held back: a passing run only reports its line count, a failing
-  run prints the last 60 lines after the report, `--verbose` prints all of it. Outside git it runs without the cache. An
-  interrupted run caches nothing. `pnpm --silent test:agent` also drops pnpm's own banner lines. `--slow-tests` (or
-  `--slow-tests=<ms>`; default 1000 ms) makes the reporter also list the passed tests that took longer than that, as a
-  warning that never changes the exit code; the wrapper consumes the flag (Vitest never sees it) and hands the threshold
-  to the reporter in `RISU_REPORT_SLOW_TESTS_MS`. The flag is part of the cache key like any argument; a cached replay
-  shows the stored run's durations, and `--force` measures again. `test:overload` passes it through. When a run fails,
-  the wrapper runs each failed file again alone, one at a time and with the same arguments minus the file filters
-  (`parseCLI` from `vitest/node` finds them), after the full run; the reporter's output is held until then (it prints
-  nothing while tests run anyway). A file whose run alone passes counts as passed: its full-run failures are listed in a
-  `FLAKY <n> tests failed in the full run and passed when their files ran again alone (load-sensitive: a warning, not a failure; ...)`
-  block with each test's first error line, appended to `node_modules/.cache/agent-test/flaky.jsonl` (one JSON line per
-  test: time, tree, arguments, name, message), and its counts come from the run alone. A file that fails again shows the
-  failures of its run alone after a `RERUN <file> failed again when run alone` line, instead of its full-run failures.
-  The summary line then counts the merged result and ends with `<n> failed files rerun alone in <s>s`, and the exit code
-  is 0 only when every rerun passed. Nothing is rerun when more than 5 files failed (`MAX_RERUN_FILES`: taken as a real
-  break, and a `[agent-test] not rerun: ...` line says so), when the run had unhandled errors (they belong to no file),
-  or when the run was interrupted or wrote no results. `--no-rerun` turns the rerun off (`test:overload` passes it,
-  since a failure under its overload is what it looks for); whether the rerun is on is part of the cache key. The
-  reporter hands the wrapper its per-file results in a temporary JSON file named by `RISU_REPORT_RESULTS_FILE`. A
-  whole-suite run (no file filter among the Vitest arguments, found with `parseCLI`: the gate, `--tags-filter=slow`,
-  `--all`) first takes a machine-wide lock, port 6198, held the way the e2e lock is, so whole-suite runs from every
-  checkout and worktree queue instead of sharing the CPUs: the suite is compute-bound (measured 2026-10-30 on 24 cores:
-  70 s alone, 123 s each for two at once, 183 s each for three, the same with `--maxWorkers=8`), so queued runs finish
-  one after another in the single run's time. It prints a `[agent-test] whole-suite: ...` line while it waits, waits up
-  to 15 min, then runs anyway. A filtered run never waits, and a cache hit replays before the lock. `--no-lock` skips it
-  (`test:overload` passes it: its runs are pinned to one CPU and meant to run under load).
-- `pnpm --silent test:agent --e2e [<spec>...] [--all] [--e2e-since=<rev>] [--force] [--verbose] [playwright args]`: the
-  Playwright specs in `e2e/` for agents (`pnpm test:e2e` is for people), through
-  `node_modules/@playwright/test/cli.js test --reporter=dot` with the same held stderr and the same cache (keyed by the
-  Playwright version and the selected specs). Run the specs the change reaches, not the whole set: named specs
-  (`e2e/openChat.spec.ts` or `openChat.spec.ts`) run as named, `--all` runs every spec, and with neither the wrapper
-  selects them from the changed files (`util/agentE2e.mjs`): the files changed since HEAD (staged, unstaged, deleted,
-  both names of a rename, untracked), or since `--e2e-since=<rev>` to count committed work too. A spec is selected for a
-  changed file when it is that file, imports it through its harness (relative static imports followed through `e2e/` and
-  `util/playwright/`), names it in its text (the repository path, `/src/...` dynamic imports included; the file name
-  when no other tracked file has it; or a parent directory, such as a fixture directory it reads), or when the file is
-  one every spec runs on (`playwright.config.ts`, `util/playwright/globalSetup.mjs`, `util/playwright/stack.mjs`,
-  `vite.config.ts`, `index.html`, `pnpm-lock.yaml`). Guides (`docs/`, `handover/`, `*.md`) and unit tests (`*.test.*`)
-  never select a spec. The wrapper prints each selected spec with the changed files that selected it and lists the
-  changed files no spec names; when nothing is selected it lists the specs with their first comment sentence and exits
-  with 2, so the agent names the specs that cover the behavior it changed. Selection is by name, not coverage: a
-  component no spec names (a chat screen file, say) selects nothing even when a spec drives it. One e2e run at a time
-  per machine: the stack's ports are fixed (server 6101, Vite 5201, `util/playwright/globalSetup.mjs`), so a run first
-  listens on port 6199 as a lock every checkout and worktree sees (waiting up to 30 min while another run holds it),
-  then waits up to 2 min for the stack's ports (a stack an interrupted run left behind) and exits 1 naming the busy
-  port. Failed specs are not rerun alone (the specs share one stack's store in file order), and `--slow-tests` and
-  `--no-rerun` are refused. Other arguments (`-g <grep>`, `--repeat-each=<n>`) pass through to Playwright. It still
-  shares Vite's `node_modules/.vite` with any other dev stack of the checkout (`pnpm dev:agent`, a `util/playwright/`
-  check), so do not run it beside one.
-- `util/overloadTest.mjs`
-  (`pnpm --silent test:overload [--runs N] [--cpu N] [--testTimeout MS] [files or vitest args]`): the gated tests under
-  the reference overload. It runs `util/agentTest.mjs --force --no-rerun --no-lock <args> --maxWorkers=3` `--runs` times
-  (default 3) with eight busy-loop burners (`node -e`), the run and the burners pinned to one CPU (the last one
-  `taskset -pc` lists, or `--cpu`), so the run gets about 1/9 of a CPU with deschedules of seconds. `--testTimeout` is
-  forwarded only when given (the gate's own timeout is the one to check against: a 60 s hang guard, so slowness alone
-  does not fail a run, and the load exposes tests that depend on real time or the scheduler; investigate each failure);
-  `--maxWorkers` is fixed and refused; a bare `--` is dropped. With no files the whole gated suite runs. It exits 1
-  naming each failed run, and 2 on a usage error or when the overload broke (a burner that could not start or exited
-  during a run; that run's result does not count). Each run is a supervisor (the same file with `--supervise`) in its
-  own session and process group, holding the burners and the run, so they share one scheduler autogroup; it reports the
-  run's result over IPC and stays until the runner kills that whole group (a Vitest left by a dead wrapper included).
-  The runner also kills the group on exit and error, and on SIGINT or SIGTERM sends it SIGTERM, then SIGKILL once the
-  supervisor ends or after 3 s at the latest. A supervisor whose runner is gone kills its group, and a burner whose
-  supervisor is gone exits. A supervisor that ends without a result counts as a broken overload. Linux only (`taskset`
-  from util-linux); elsewhere it exits 2 with a message.
-- `util/agentTestReporter.ts`: a Vitest reporter that prints nothing while tests run and then, per failure,
-  `FAIL <file> > <suite> > <test>`, the error message, the diff (or `expected:`/`actual:`), the in-repo stack frames (no
-  `node_modules`, Node internals, or anonymous frames; none when no frame is in the repository), the cause chain, and
-  that test's console output (`--silent=passed-only` is not needed: logs are buffered per task and printed only under a
-  failure), then, only with `test:agent --slow-tests` and when any passed test took longer than its threshold, a
-  `SLOW <n> passed tests took over <t>s in this run (a warning, not a failure; ...)` line with the ten slowest
-  (`<s>s <file> > <suite> > <test>`) and a count of the rest, then one summary line (`util/agentTestResults.mjs`
-  `summaryLine`, which the wrapper also uses after a rerun): `OK <n> passed, <n> skipped (<files>, <s>s)` or
-  `FAIL <n> failed, <n> passed, ... (<k> of <files> failed, <s>s)`. Module and suite errors (import failures,
-  `beforeAll` throws) and unhandled errors are listed the same way. With `RISU_REPORT_RESULTS_FILE` set it also writes
-  the run's per-file counts and failure names there (see `util/agentTest.mjs` above). Diffs, values, logs, and frames
-  are capped.
-- `vitest.lucideImports.ts` `lucideImports`: rewrites `import { Icon, A as B } from "@lucide/svelte"` into one
-  `@lucide/svelte/icons/<file>` default import per icon, from a map read off the package's own re-export lines, keeping
-  the statement's line count. Without it, each test that reaches an icon imports the package main entry and repeats its
-  icon exports; pre-bundling the package (`deps.optimizer`) instead gives the icons their own Svelte runtime and breaks
-  mounting them. A statement with a name the map lacks is left on the main entry. Tests only: the build tree-shakes and
-  the dev server pre-bundles.
-- `util/agentDev.mjs` (`pnpm dev:agent` / `pnpm dev:human`): runs the server (`node --watch server/src/main.ts`, so a
-  server edit restarts it) and Vite (`--host <host> --port <port> --strictPort`, `RISU_DEV_SERVER` pointed at that
-  server, `https` when `server/ssl/certificate/server.key` and `server.crt` exist) as children, each leading its own
-  process group (kept after its leader exits); Ctrl+C or SIGTERM sends SIGTERM to each leader (the `node --watch`
-  supervisor passes it to the server), waits until each group is empty, and sends SIGKILL to a group still alive after
-  10 s; when one child ends the rest is stopped, and nothing is started once stopping began. Before anything starts it
-  applies the server's `readListenConfig` to the environment it will pass (a bypass off loopback or a bad flag ends it
-  there) and checks both ports (taken: it exits with a message). Vite starts only once the server accepts connections
-  (120 s at most): `node --watch` keeps waiting for an edit after a failed start, so only that first start is checked,
-  and a later restart may fail while code is being edited.
-  - Both modes bind to `127.0.0.1` (`util/agentDevHost.mjs` `resolveAgentDevHost`): `localhost` is a secure context,
-    which the login (`crypto.subtle`) and the service worker need. `RISU_AGENT_DEV_HOST` binds elsewhere (an IPv6
-    address without brackets); `tailscale` looks up this machine's Tailscale IPv4 (`tailscale ip -4`, `100.64.0.0/10`)
-    and binds only to it (an error without one), and over plain HTTP that origin is no secure context.
-  - `agent`: server 6419, Vite 6418, `RISU_AGENT_DEV_AUTH_BYPASS=TRUE` (the server refuses it off loopback,
-    `server/src/listenConfig.ts`), Vite cache `node_modules/.vite-agent` (two Vite processes sharing one cache collide
-    while optimizing dependencies), storage `save-agent/` unless `RISU_SAVE_DIR` is set (then used as it is). The runner
-    prepares it before starting the server, so a `--watch` restart keeps it, and holds `save-agent.lock` (its pid,
-    written with `wx`) for its lifetime: a second `dev:agent` in the same checkout, also on other ports, refuses to
-    start while the owner runs. A lock left by a killed runner is not taken over (two runners could both see the dead
-    pid); the message says to delete it.
-  - `human`: server 6001, Vite 5174, the normal login, storage `save/` (or `RISU_SAVE_DIR`), Vite's default cache. It
-    can run beside an agent stack.
-  - `util/agentDataSandbox.mjs` `prepareAgentDataSandbox` (`RISU_AGENT_DATA_MODE`): `clone` (default) rebuilds
-    `save-agent/` from `save/` on every start: `data/resources.sqlite` and `data/vectors.sqlite` through SQLite's online
-    backup (read-only source, so a running human server is fine) and `assets/` as hard links (copies across filesystems;
-    safe because asset writes are staged and renamed, never rewritten). `server/` (password, known keys, Web Push keys
-    and subscriptions), `backups/`, `diagnostics/`, `data/request-history.sqlite`, `data/generation-jobs.sqlite`,
-    `models/`, and top-level files are left behind. `keep` reuses an existing sandbox (clones when there is none),
-    `fresh` starts empty. The copy is built in `.save-agent.staging-*` and swapped in (`save-agent.previous-*` during
-    the swap); a symbolic-link sandbox, a non-directory, or a sandbox inside the source (or the reverse) is refused.
-- `playwright.config.ts`: specs in `e2e/**/*.spec.ts`, one worker, the system Chrome (`/usr/bin/google-chrome`, override
-  with `RISU_CHROME`; no browser download), `baseURL` `http://localhost:5201`. `globalSetup` is
-  `util/playwright/globalSetup.mjs`, which starts one isolated stack per run.
-- `e2e/fixtures.ts`: the specs' `test`, `expect`, and `settle` (and the Playwright types they use). `settle(page)` waits
-  until the page's resource sync is idle (`resourceSyncIdle` in `src/ts/storage/resourceSync.svelte.ts`: nothing dirty,
-  queued, scheduled, or in flight), seen on two polls 100 ms apart, within 30 s; it replaced the specs' fixed 2.5 to 3 s
-  sleeps past the 500 ms save debounce, which were about 40% of a full e2e run. Its `context` fixture clears safe boot's
-  counter of unsettled boots before every page load (`clearSafeBootAttempts`), so a spec that opens the app several
-  times, or runs right after another check's loads in the same stack, is not met by the Safe boot notice intercepting
-  its clicks; the fixture wraps only Playwright's injected `context`, so a context a spec makes itself
-  (`browser.newContext()`) calls `clearSafeBootAttempts` before its first page load.
-- `util/playwright/stack.mjs`: `startStack({ serverPort, vitePort, serverEnv })` runs `server/src/main.ts` in a fresh
-  temporary working directory (with `RISU_SAVE_DIR` pinned to its `save/` and the shell's `RISU_HOST` and
-  `RISU_AGENT_DEV_AUTH_BYPASS` dropped, so the store starts empty, the repository `save/` is never touched, and auth is
-  real) and the Vite dev server with `RISU_DEV_SERVER` pointing at it (`serverEnv` adds to the server's environment
-  only, e.g. `NODE_OPTIONS` with a check's `--import` preload; without one the server gets a `fetch` egress tripwire,
-  `deniedEgress()`); `isolateContext(context)` keeps a browser context's HTTP requests on local hosts and
-  `unexpectedEgress` filters the expected blocks (CDN stylesheets, the hub listing).
-  `util/playwright/offline.sh <command>` runs a check in a user and network namespace with loopback only
-  (`unshare -rn`): the boundary that keeps the stack, the browser, and the mocks off public services, whatever the
-  transport; `stop()` ends both and deletes the directory. `openApp(page, baseURL)` answers the node-password prompts
-  and waits for `loadedStore`. `restartServer({ signal })` stops the server (SIGTERM, a graceful shutdown, unless
-  `signal` says otherwise: `SIGKILL` checks crash recovery) and starts it again over the same `save/`, leaving Vite
-  running. `clearSafeBootAttempts(contextOrPage)` clears safe boot's `risu.safeBoot.attempts` counter before every page
-  load, for a check that loads the app three times within its 10 s settle window (a reload followed by `openApp` loads
-  it twice; the tabs of one context share the counter), which would otherwise boot safe behind its notice dialog. Page
-  code reaches app modules with `await import("/src/...")`, which is the same module instance the app uses; a two-client
-  check opens a second browser context (tabs of one context share `localStorage`).
-- `util/heap/snapshot.mjs`: reads a `.heapsnapshot` (Chrome DevTools or CDP `HeapProfiler.takeHeapSnapshot`) larger than
-  V8's maximum string (the `nodes`/`edges` digits straight from the Buffer, the strings one by one) and analyses it:
-  `summarize`, `diffSnapshots` (by node id, two snapshots of one page), `retainers` (shortest retainer paths over strong
-  edges), `dominators` (retained sizes), `heapReport` (the heap object counts: proxies, asset-tuple proxies, large
-  proxies, likely duplicated large strings: same size and first 1,024 characters, all a snapshot keeps;
-  `FontFace`/`CSSStyleSheet`). Retained sizes charge a WeakMap value to its key, as DevTools does.
-  `util/heap/analyze.mjs` is its command line (`summary`, `diff`, `strings`, `paths`, `top`, `report`; usage in its
-  header; a 500 MB snapshot needs `node --max-old-space-size=16000`). It prints no string content unless asked
-  (`--prefix N`) and no property key unless asked (`--keys`), so user snapshots stay local data.
-- `util/upstream/checkBinCompat.mjs` (not in `pnpm test`; usage in its header): runs upstream RisuAI's own `.bin`
-  database decoder and boot defaults on this server's output, against one of two upstream targets per run
-  (`UPSTREAM_TARGETS` in `util/upstream/upstreamHarness.mjs`; one target per process, because the loader hooks stay
-  registered): `--target legacy` (the default, `669b12ce`, whose `decodeRisuSave` returns the database) or
-  `--target current` (`f50b5942`, whose `decodeRisuSave` returns `{ database, kv }`; the check fails on another shape,
-  or on a non-empty `kv` for a legacy-format file). Metatron's export is the legacy format, which both targets read.
-  `RISU_UPSTREAM_DIR` names an upstream checkout that holds the target's commit; every upstream source is read from that
-  commit with `git show`, so the checkout's HEAD and working tree do not matter. `RISU_UPSTREAM_MSGPACKR` and
-  `RISU_UPSTREAM_FFLATE` name package directories of the target's exact library versions (`packages`, from upstream's
-  lockfile at that commit: msgpackr 1.10.1 and fflate 0.8.2 for both targets); another version, an unknown target, or a
-  checkout without the commit ends the run with `ERROR` (exit 2). It never installs, builds or starts the upstream app.
-  Run each target in turn:
+- `tsconfig.json`: includes `src/**/*`, `shared/**/*.ts`, and `public/sw.js`. `noEmit: true` and
+  `allowImportingTsExtensions: true`: Vite builds the client and Node runs the server, so `tsc` only type-checks, and
+  imports of `shared/` use explicit `.ts` extensions.
+- `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
+  `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types.
+- `tsconfig.node.json` (Vite config only) has a pre-existing `module: ESNext` / `moduleResolution: nodenext` mismatch
+  (TS5110 under `tsc -p`); `pnpm check` does not build it.
+
+### Dev runner
+
+`util/agentDev.mjs` (`pnpm dev:agent` / `pnpm dev:human`) runs the server (`node --watch server/src/main.ts`, so a
+server edit restarts it) and Vite (`--host <host> --port <port> --strictPort`, `RISU_DEV_SERVER` pointed at that server,
+`https` when `server/ssl/certificate/server.key` and `server.crt` exist) as children.
+
+- Processes: each child leads its own process group (kept after its leader exits). Ctrl+C or SIGTERM sends SIGTERM to
+  each leader (the `node --watch` supervisor passes it to the server), waits until each group is empty, and sends
+  SIGKILL to a group still alive after 10 s. When one child ends the rest is stopped, and nothing is started once
+  stopping began.
+- Before anything starts it applies the server's `readListenConfig` to the environment it will pass (a bypass off
+  loopback or a bad flag ends it there) and checks both ports (taken: it exits with a message).
+- Vite starts only once the server accepts connections (120 s at most): `node --watch` keeps waiting for an edit after a
+  failed start, so only that first start is checked, and a later restart may fail while code is being edited.
+- Host: both modes bind to `127.0.0.1` (`util/agentDevHost.mjs` `resolveAgentDevHost`): `localhost` is a secure context,
+  which the login (`crypto.subtle`) and the service worker need.
+  - `RISU_AGENT_DEV_HOST` binds elsewhere (an IPv6 address without brackets).
+  - `tailscale` looks up this machine's Tailscale IPv4 (`tailscale ip -4`, `100.64.0.0/10`) and binds only to it (an
+    error without one), and over plain HTTP that origin is no secure context.
+- `agent`: server 6419, Vite 6418, `RISU_AGENT_DEV_AUTH_BYPASS=TRUE` (the server refuses it off loopback,
+  `server/src/listenConfig.ts`), Vite cache `node_modules/.vite-agent` (two Vite processes sharing one cache collide
+  while optimizing dependencies), storage `save-agent/` unless `RISU_SAVE_DIR` is set (then used as it is).
+  - The runner prepares the storage before starting the server, so a `--watch` restart keeps it.
+  - It holds `save-agent.lock` (its pid, written with `wx`) for its lifetime: a second `dev:agent` in the same checkout,
+    also on other ports, refuses to start while the owner runs. A lock left by a killed runner is not taken over (two
+    runners could both see the dead pid); the message says to delete it.
+- `human`: server 6001, Vite 5174, the normal login, storage `save/` (or `RISU_SAVE_DIR`), Vite's default cache. It can
+  run beside an agent stack.
+- `util/agentDataSandbox.mjs` `prepareAgentDataSandbox` (`RISU_AGENT_DATA_MODE`):
+  - `clone` (default) rebuilds `save-agent/` from `save/` on every start: `data/resources.sqlite` and
+    `data/vectors.sqlite` through SQLite's online backup (read-only source, so a running human server is fine) and
+    `assets/` as hard links (copies across filesystems; safe because asset writes are staged and renamed, never
+    rewritten).
+  - Left behind: `server/` (password, known keys, Web Push keys and subscriptions), `backups/`, `diagnostics/`,
+    `data/request-history.sqlite`, `data/generation-jobs.sqlite`, `models/`, and top-level files.
+  - `keep` reuses an existing sandbox (clones when there is none), `fresh` starts empty.
+  - The copy is built in `.save-agent.staging-*` and swapped in (`save-agent.previous-*` during the swap); a
+    symbolic-link sandbox, a non-directory, or a sandbox inside the source (or the reverse) is refused.
+
+### Heap analysis
+
+- `util/heap/snapshot.mjs` reads a `.heapsnapshot` larger than V8's maximum string and analyses it: `summarize`,
+  `diffSnapshots`, `retainers` (over strong edges), `dominators`, and `heapReport`, the heap object counts. Retained
+  sizes charge a WeakMap value to its key, as DevTools does.
+- `util/heap/analyze.mjs` is its command line (usage in its header). It prints no string content and no property key
+  unless asked, so user snapshots stay local data.
+
+### Upstream `.bin` check
+
+`util/upstream/checkBinCompat.mjs` (not in `pnpm test`; usage in its header) runs upstream RisuAI's own `.bin` database
+decoder and boot defaults on this server's output. Its checks are listed in the header, and `upstreamHarness.mjs` has
+the loader's `REAL`, `EXTRACT`, and `OVERRIDES` tiers in its own.
+
+- Targets: one of two per run (`UPSTREAM_TARGETS` in `util/upstream/upstreamHarness.mjs`; one target per process,
+  because the loader hooks stay registered).
+  - `--target legacy` (the default, `669b12ce`): `decodeRisuSave` returns the database.
+  - `--target current` (`f50b5942`): `decodeRisuSave` returns `{ database, kv }`; the check fails on another shape, or
+    on a non-empty `kv` for a legacy-format file.
+  - Metatron's export is the legacy format, which both targets read.
+- Environment: `RISU_UPSTREAM_DIR` names an upstream checkout that holds the target's commit. `RISU_UPSTREAM_MSGPACKR`
+  and `RISU_UPSTREAM_FFLATE` name package directories of the target's exact library versions (`packages`, from
+  upstream's lockfile at that commit: msgpackr 1.10.1 and fflate 0.8.2 for both targets).
+- Another version, an unknown target, or a checkout without the commit ends the run with `ERROR` (exit 2). It never
+  installs, builds or starts the upstream app.
+- Run each target in turn:
   ```bash
   P=<a node_modules/.pnpm holding msgpackr@1.10.1 and fflate@0.8.2>
   RISU_UPSTREAM_DIR=<upstream checkout> RISU_UPSTREAM_MSGPACKR=$P/msgpackr@1.10.1/node_modules/msgpackr RISU_UPSTREAM_FFLATE=$P/fflate@0.8.2/node_modules/fflate node util/upstream/checkBinCompat.mjs --target legacy
   ```
   then the same with `--target current`; each ends `OK` (exit 0) or `<n> check(s) failed` (exit 1).
-  - `upstreamHarness.mjs` `loadUpstream` loads upstream's client code into plain Node with `module.registerHooks`: the
-    `REAL` modules (`storage/risuSave.ts`, `storage/database.svelte.ts`, `bootstrap.ts`, and what `setDatabase` and
-    `checkNewFormat` call) are transpiled with `typescript` (no Svelte compiler: a rune evaluated at load fails loudly);
-    `EXTRACT` cuts `checkCharOrder` out of `globalApi.svelte.ts` and `safeStructuredClone` out of `polyfill.ts` (and,
-    for the current target, `migratePluginStorage` and the `pluginStorage` singleton out of
-    `process/coldstorage.svelte.ts`, over the real `process/pluginStorageStore.ts`, with in-memory cold storage reads,
-    writes and removals in its prelude); `OVERRIDES` fix the web build's platform flags, the `DBState` object and
-    `uuid`'s `v4`; every other import is a recording stub whose property reads, writes, calls, constructions, key
-    enumeration and descriptor reads are recorded (except the inert `then` probe), and a recorded use the check has not
-    approved fails it. Each target lists its approved uses one by one, by exact label, per phase (both: store and
-    storage-instance construction at load, `changeLanguage` in the boot pass; current also `changeLanguage` and
-    `requiresFullEncoderReload.state=` in the migration pass). The export names each loaded module reads are collected
-    from the emitted code before anything links.
-  - Without arguments: (1) `encodeUpstreamDatabase` on the codec fixture and an edge-case object, decoded by upstream's
-    `decodeRisuSave` with no console output (no fallback path) and compared structurally (bytes for binary values, own
-    `undefined` kept apart from a missing key, `int64` reported as such); (2) a synthetic upstream library (the codec
-    fixture plus lore, chat toggles, a folder, expired trash, a module, a second preset and persona, an installed plugin
-    with two inline `pluginCustomStorage` values, a sentinel key) imported through this server's upstream import routes
-    in process and exported through the RisuAI-compatible export routes without and with keys: the archive read with
-    `indexArchive`, upstream's decoder and this server's must agree, and the result is compared with the input library
-    for group controls, ordered chats/messages (including times and existing message ids), global/local/module lore
-    fields, folder identity and order, retained prompt fields in every preset, persona icons, module
-    membership/regex/triggers, and the plugin with its inline values, with explicit allowances for refreshed trash,
-    local toggles, generated message ids and selection roots; (3) current target only: upstream's plugin storage
-    migration, in its boot order (`setDatabase`, `migratePluginStorage` before plugin loading, then `makeColdData`'s
-    `pluginStorage.load()` and a flush), on each decoded export with a fresh singleton: no throw, console warning or
-    error, the inline keys moved into a valid index record that `_coldpluginIndex` names, their inline copies gone, and
-    each value read back by a fresh store from the persisted index equal to the export's; (4) upstream's boot after a
-    restore (`setDatabase`, `checkNewFormat` with `checkCharOrder`, `assignIds`) on each decoded export: no throw,
-    console warning or error, and every character, chat and message kept, `characterOrder` complete, existing chat ids
-    unchanged and every resulting chat id non-empty and unique. The exporter's id-less empty-chat branch is covered by
-    `upstreamExport.test.ts` and accepted by this boot rule; the synthetic route scenario retains stored chats.
-    `--bin <file>` runs the decoder comparison, the migration pass (current target) and the boot pass on an existing
-    `.bin` and identifies inputs by ordinal and prints array counts and fixed failure categories only, without names or
-    property paths (safe to report for private files; an upstream backup's counts include its cold-storage stubs). Use
-    trusted local files: upstream's decoder runs in this process. This scenario uses one flat `openAIKey`; named-key
-    placement, auxiliary-secret clearing and native-field stripping are covered by `upstreamExport.test.ts` /
-    `upstreamExportRoute.test.ts`, not this script. Neither target runs upstream's backup reader (`LoadLocalBackup`) or
-    its asset writes, `makeColdData`'s character and chat cold storage, `cleanChunks`, plugin loading, or the UI; the
-    migration's cold storage is in memory and starts empty, so an upstream backup's own plugin cold records are not read
-    (a `_coldpluginIndex` pointer fails the migration pass under `--bin`), and no block save (`RISUSAVE`) is written or
-    read.
-- `util/playwright/captureBootFixtures.mjs`: captures the first-boot snapshot and preset fixtures in
-  `src/ts/storage/tests/fixtures/boot/` (see its README).
-- Frozen browser references: the per-family token ids in `server/src/tests/fixtures/tokens/browser-ids.json` and the
-  browser-path fixtures in `server/src/tests/fixtures/baseline/` (preview prompts, `ParseMarkdown` HTML, former `encode`
-  routing, lore regex, the `igp` send). Their capture harnesses have been retired: the tab no longer exports `encode`,
-  and `encodeWithTokenizer` now gets ids from the server, so neither can capture independent browser expectations. The
-  fixture READMEs retain the capture conditions and provenance; historical capture code is in repository history.
-- The check and measurement scripts in `util/playwright/` (each script's header has its usage). Against the dev stack:
-  `checkLiveUpdates.mjs` (two contexts and a third writer through the routes, a restart, an archive restore),
-  `checkCredentialTraffic.mjs` and `checkLlmTransport.mjs` (no provider key in the browser's traffic),
-  `checkStreamingModes.mjs`, `checkServerTransform.mjs`, `checkMcpFixes.mjs`, `checkJobProtocol.mjs` (generation jobs
-  with a real v3 plugin provider installed in the persisted plugin list and selected by the model profile, its replies
-  and stream chunks held and released from the sandbox frame: a create whose answer is cut after the server admitted it
-  gets one reply through the same-id retry and clears the draft; a page reload between a trigger's server `/multisend`
-  parts keeps the sequence running and shows every part; a second context stops the first context's job through the
-  confirm and the owner shows the stopped-elsewhere notice; a SIGKILL after a visible chunk and before the next
-  checkpoint leaves the checkpointed text and a kept `shutdown` error; last, a closed owner page frees its chat within
-  the shortened absence wait plus the abort grace. Its `--import` preload keeps the egress guard; only before that last
-  case does the check rewrite it to add a module loader hook that sets `OWNER_ABSENT_MS` to 4 s (failing when the
-  constant's text changes) and restart the server, so the earlier cases, the reload included, run with the production
-  allowance; run it under `offline.sh`; ports 6281/5381, `SERVER_PORT`/`VITE_PORT`), `checkSidebarChatStatus.mjs`
-  (generating badges on pins, characters, and folders; unseen badges on pins, folders, and home cards; keyboard
-  reopening and clearing; also supports `--base`), `checkBootCache.mjs` (the snapshot a tab hands to `seedResources`
-  through the boot cache equals a plain read after the `cold`, `warm`, chat edit, module edit, module reorder, character
-  edit, character delete, character create, and `fallback` boots; `FIXTURE=check` (default), `reported`, or `audit` from
-  `measureBoot.mjs`'s shared builder, each with a TTS-key character that is never cached and a duplicated module; ports
-  6141/5241, `PORT`/`VITE_PORT`; it wraps `loadBootSnapshot` as Vite serves `src/ts/storage/bootCache.ts`, waits for
-  `loadedStore` and captures the snapshot in the same document without another navigation, fails if loading times out,
-  checks every boot request for credential claims, checks that from `warm` on the compared document claims every module,
-  preset, inlay, and chat collection, and that the chat edit re-sends only that character's collection). Against a
-  running production server, normally the Docker image on a fresh volume (`--base`, `--password`; a mock provider named
-  by `--provider-host`): `checkRecordsSmoke.mjs`, `checkLazyChatsSmoke.mjs`, `checkTwoClientSmoke.mjs` (two browsers, a
-  send with a sentinel key absent from both browsers' traffic, `--restart-cmd`, an archive import, and a snapshot
-  restore), `checkServerSend.mjs`, `checkServerButton.mjs`, `checkServerTrigger.mjs`, `checkServerJobMatrix.mjs`.
-  Measurements: `measureRecords.mjs`, `measureCharacters.mjs`, and `measureChats.mjs` (a production build in headless
-  Chrome; `RISU_DIST` measures another build as the baseline), `measureBoot.mjs` (the boot read and the boot cache on a
-  production build, per scenario and per resource kind. It exports the synthetic fixture builder
-  `buildBootFixture`/`seedBootFixture`: `FIXTURE=reported` (default; asset-heavy modules and ~250 KB characters) or
-  `audit` (300 characters, 3,000 chats with memory metadata, plugins, plugin storage, inlays). `SCENARIOS` is a comma
-  list, default all: `plain` (the boot route blocked, the plain read forced to identity), `cold` (no IndexedDB), `warm`,
-  `module` and `character` (route edits), `send` (a composer send, then a reload), `otherDevice` (another client's send
-  while the measured page is closed), `selfEdit` (a description saved in the sidebar), `resume` (over 30 s hidden, no
-  reload; it requires no revision listing and reports the `hello` payload), and `scripts` (HTTP cache cleared, boot
-  cache kept; same-origin static bytes). `RUNS=3`, `THROTTLE_MBPS=10` (0 disables), `LATENCY_MS=40`, `PORT=6264`,
-  `RISU_DIST` (another build; a relative path is resolved against the working directory), `DEBUG=1`. Per boot it reports
-  resource timing, the content coding, per-kind decoded bytes and compressed omission deltas (which do not add up), the
-  unthrottled server TTFB, and the direct `readSummaries` time after shutdown, and checks each cached boot's request,
-  expanded answer, and written cache against a plain read. It blocks the page's four known public hosts through CDP
-  instead of `isolateContext`, because Playwright's request routing turns the HTTP cache off, and fails on a page
-  request to any other host; the server's egress is not guarded; startup probes the port before spawning and requires
-  the child's listening URL on stdout before accepting an HTTP answer) and `measureTransformLua.mjs` (the display
-  transform's Lua cost, the server in process). `measureHeap.mjs` (a production build) takes CDP heap snapshots along a
-  large-data scenario (12 modules × 11,000 assets, two ~2 MB characters, chats with `@font-face` styles) and prints
-  `util/heap/analyze.mjs report` per step (`HEAP_OUT` keeps the snapshots; `HEAP_STEPS` captures only the named steps
-  and `boot`). `measureFileSources.mjs` (a production build) counts the page's live object URLs and the browser's Blobs
-  (`chrome://blob-internals`) with the service worker and without it (`FILESRC_MODES`). Its `sw` mode measures direct
-  mode and checks it: the gallery's images and audio inlays use `/api/asset/` sources, with no object URLs or
-  `/api/read`; `no-sw` expects `blob:` images and audio. Its `thumb` step (`FILESRC_STEPS=files,thumb`, default both)
-  then adds 100 characters with 1024×1536 gradient PNG avatars and, in a fresh browser per run, opens the catalog and
-  scrolls every row into view: `sw-original` (direct mode with an init script that strips `?w=` from `/api/asset/` URLs
-  at the DOM boundary, the baseline), `sw` (the shipped `?w=256` thumbnails), and `no-sw` (originals through
-  `/api/read`). Per run it reports the decoded pixel bytes (`naturalWidth × naturalHeight × 4` over the distinct `<img>`
-  and CSS background URLs on the page, sidebar included, with their short sides), the server-reaching response body
-  bytes and request counts for `/api/read`, original `/api/asset/*`, and `?w=` variants (in `sw` the worker's own
-  requests, not the page requests it answered), and the redirects by `x-risu-thumbnail`. It checks that the baseline
-  made no `?w=` request, that `sw` decoded every catalog avatar at short side 256 from `?w=256`, and that `no-sw`
-  decoded full-size `blob:` originals. `isolateContext` routing turns the HTTP cache off, so these are cold transfers,
-  and the request counts can exceed the distinct images. `probeDirectAssets.mjs` is a standalone browser probe of the
-  direct asset mechanics, not the app: its own localhost server and test worker check, in Chromium and Firefox
-  (`PROBE_BROWSERS`), that a worker signs with a non-extractable IndexedDB key, that an immutable worker fetch is served
-  from the HTTP cache on the next load, that a ranged `<video>` plays and seeks through the worker, that a cached SVG
-  opened as a page under the CSP sandbox runs no script, and that an opaque srcdoc iframe is neither intercepted nor
-  served past `Cross-Origin-Resource-Policy`. It exits non-zero on any failed check (including Playwright Firefox losing
-  worker control after an unanswered navigation) and is not in the gate.
-- `vitest.setup.ts`: mocks KaTeX, sets `globalThis.safeStructuredClone` to a JSON clone, and patches happy-dom's
-  `Node.prototype.nodeName` getter so it dispatches by node type. DOMPurify
-  > = 3.4.6 reads tag names through that prototype getter, which happy-dom leaves returning `""`
-  > (capricorn86/happy-dom#2182); without the patch the sanitizer strips every element under happy-dom. The patch is
-  > guarded, runs only under the happy-dom environment, and its contract is pinned by `vitest.setup.test.ts`. Remove
-  > both once happy-dom fixes the getter.
-- `tsconfig.json`: includes `src/**/*`, `shared/**/*.ts`, and `public/sw.js`. `noEmit: true` and
-  `allowImportingTsExtensions: true`: Vite builds the client and Node runs the server, so `tsc` only type-checks, and
-  imports of `shared/` use explicit `.ts` extensions.
-- `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
-  `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types. `tsconfig.node.json` (Vite config only)
-  has a pre-existing `module: ESNext` / `moduleResolution: nodenext` mismatch (TS5110 under `tsc -p`); `pnpm check` does
-  not build it.
+- Approved uses: every import outside the loader's tiers is a recording stub, and a recorded use the check has not
+  approved fails it. Each target lists its approved uses one by one, by exact label, per phase: both approve store and
+  storage-instance construction at load and `changeLanguage` in the boot pass; current also approves `changeLanguage`
+  and `requiresFullEncoderReload.state=` in the migration pass.
+- `--bin <file>` identifies inputs by ordinal and prints array counts and fixed failure categories only, without names
+  or property paths (safe to report for private files; an upstream backup's counts include its cold-storage stubs). Use
+  trusted local files: upstream's decoder runs in this process.
+- Not run: neither target runs upstream's backup reader (`LoadLocalBackup`) or its asset writes, `makeColdData`'s
+  character and chat cold storage, `cleanChunks`, plugin loading, or the UI. No block save (`RISUSAVE`) is written or
+  read.
+- The migration's cold storage is in memory and starts empty, so an upstream backup's own plugin cold records are not
+  read (a `_coldpluginIndex` pointer fails the migration pass under `--bin`).
 
-Environment variables:
+### Environment variables
 
 - `RISU_BUILD_COMMIT`, `RISU_BUILD_DATE` (`YYYY-MM-DD`), `RISU_BUILD_DIRTY` (`true`): the build id without git, as in
   the Docker build (`Dockerfile` build arguments); otherwise `resolveBuildInfo` asks git.
 - `util/agentDev.mjs`: `RISU_AGENT_DEV_HOST` (default `127.0.0.1`; `tailscale`), `RISU_AGENT_DEV_PORT` (Vite; 6418
   agent, 5174 human), `RISU_AGENT_API_PORT` (server; 6419 agent, 6001 human), `RISU_AGENT_DEV_AUTH_BYPASS` (`TRUE`
-  agent, `FALSE` human), `RISU_AGENT_DATA_MODE` (`clone`, `keep`, `fresh`), `RISU_SAVE_DIR`, `RISU_VITE_CACHE_DIR`. It
-  sets the server's `PORT`, `RISU_HOST`, `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS` and Vite's `RISU_DEV_SERVER`
-  and `RISU_VITE_CACHE_DIR`.
+  agent, `FALSE` human), `RISU_AGENT_DATA_MODE` (`clone`, `keep`, `fresh`), `RISU_SAVE_DIR`, `RISU_VITE_CACHE_DIR`.
+- It sets the server's `PORT`, `RISU_HOST`, `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS` and Vite's
+  `RISU_DEV_SERVER` and `RISU_VITE_CACHE_DIR`.
 - `CI`, `HUMAN`, `AGENT_TEST`: any one of them opens the human gate on the plain test commands
-  (`util/requireHuman.mjs`). `CI` comes from the CI service, `HUMAN` from a person's shell, `AGENT_TEST` from
-  `util/agentTest.mjs`.
+  ([human gate](test-harness.md#human-gate)). `CI` comes from the CI service, `HUMAN` from a person's shell,
+  `AGENT_TEST` from `util/agentTest.mjs`.
 
-Web:
+### Web
 
 - There is no mobile (Capacitor) build. Installation is only through the PWA manifest.
-- `public/sw.js`: Cache Storage `risuCache`. Routes `/sw/check`, `/sw/img/<hex>`, `/sw/register`, `/sw/init`, and
-  `/sw/share`. `globalApi.getFileSrc` gives a page this worker controls `/api/asset/<hex>` URLs when its reported
-  direct-asset capability is enabled; the worker signs those loads (below). With the capability off, the fallback checks
-  `risuCache` from the page, registers misses through `/sw/register/<hex>`, and serves assets through `/sw/img/<hex>`;
-  `/sw/check` stays served when page-side Cache Storage lookup is unavailable or fails. A share POST reads multipart
-  form data, caches the first file in character → preset → module order at the absolute `/sw/share/<kind>` URL without a
-  content type, and redirects with 303 to `/#share_<kind>`; a POST without a file and every non-POST (GET included)
-  under `/sw/share` redirect with 303 to `/`. `registerCache` resolves relative strings against the worker origin and
-  still accepts URL objects. Registered by `bootstrap.ts:registerSw`; `characterCards.characterURLImport` uses
-  `importPendingShare` to read the pending file directly from Cache Storage even on an uncontrolled page, deleting it
-  only after a truthy import result. A thrown, falsy, or cancelled import retains it; missing Cache Storage or a missing
-  entry does nothing. A new worker takes over at once (`skipWaiting`, `clients.claim`). Web Push
-  ([Web Push](global-api.md)): `push` shows every completion (also with a window in front: Safari requires it) with the
-  logo, the payload's chat tag (`risuai-chat-completion:<hash>`, one per chat, so a chat's later notice replaces only
-  its own; a missing or foreign tag falls back to the bare `risuai-chat-completion`), the title and body from the
-  payload, and a click URL that must be a same-origin `/chat/<chaId>/<chatId>` route, else `/`. While a same-origin
-  window is in front (`windowState`'s `inFront`: one window both focused and `visibilityState` `visible`, since a hidden
-  Android PWA keeps the focus; `clients.matchAll` with uncontrolled windows; a failed lookup counts as none), the
-  notification is `silent` (so it does not sound after the page's message sound, `playMessage`) and, if a window is
-  still in front once it is shown, closed (best effort: only the notification this push showed, found by its tag and a
-  per-worker number in `data.push`, with `windowState` checked again after the lookup; pushes are shown one at a time,
-  since Chromium closes a notification by its tag); otherwise `silent` is left out and the platform's default applies.
-  Before the display, the same-origin windows of that lookup are posted `risu-push-completion` with the checked chat
-  route (none for `/`; a window whose post throws is skipped; `pushNotifications.ts` has the chat read again).
-  `notificationclick` focuses a window of the app and posts `risu-open-route` (answered through a `MessageChannel`
-  within 2 s, else the window is navigated; a navigation the browser refuses, such as of a window the worker does not
-  control, opens a window instead), or opens a window. Each push and click also leaves content-free records (`push`
-  phases `received`, stamped on arrival, then `shown`/`shownSilent`, `closedInFront`, or `showFailed`, with `inFront`
-  and `focusedHidden` from `windowState`; `clicked`, stamped on the click and written whatever the window work's
-  outcome): fixed phases and booleans only, never the payload, title, body, route, endpoint, or error text. They are
-  appended to IndexedDB `risu-sw-diagnostics` (store `records`, newest 100, append and prune in one transaction) after
-  the display settles and outside the display queue, so a write never delays `showNotification` or the next push; no
-  IndexedDB, a failed or blocked open, a failed transaction, or one not done in 2 s is skipped (a late connection is
-  closed, an abandoned transaction aborted), and the display's own rejection stays the event's. The diagnostic report
-  reads them ([diagnostics](diagnostics.md)). `pushsubscriptionchange` is not handled: the page registers the new
-  subscription when it opens.
-  - Direct assets: intercepts same-origin paths starting with `/api/asset/` only for `GET`/`HEAD`, a non-empty string
-    `event.clientId`, and destinations `image`, `audio`, `video`, `track`, `style`, or `font`. All other asset requests
-    pass through without `respondWith`: cross-origin URLs, missing client ids, other methods, and destinations including
-    `""` (fetch/XHR and the plugin bridge), `document`, `iframe`, `worker`, and `object`.
-  - The worker builds a fresh request with `risu-auth`, copies only incoming `Range` and `If-Range`, and uses
-    `mode: "same-origin"`, `credentials: "omit"`, `cache: "default"`, and the incoming signal. The browser HTTP cache
-    holds the bytes. It reuses the token until 60 seconds before expiry, with one signing promise shared by concurrent
-    requests. A 401 discards that token, rereads the key, and retries once; a newer token another request already
-    obtained is reused instead. Missing keys and key-read/signing failures fall back to `fetch(request)` without added
-    auth and are never cached; signed-fetch network errors and aborts stay rejected.
-  - `/sw/init` answers status 200 with `content-type: application/json` and `{"version":"v3","directAssets":true}`.
-    `bootstrap.ts:probeSw` parses the JSON and calls `setDirectAssets(true)` only for `directAssets === true`; non-JSON
-    responses, a missing/false flag, or an older worker leave it false. A `controllerchange` clears the capability and
-    probes the new controller; only the newest probe can set it.
-  - Stored-asset copies: activation deletes every `risuCache` entry under `/sw/img/` (best effort; a cache failure does
-    not stop `clients.claim()`) and keeps every other entry, including the pending `/sw/share/<kind>` files.
-    `/sw/register` and `/sw/check` stay for a tab still running a client that registers bytes. A `/sw/img/<hex>` miss
-    that passes the direct-asset gate above (same origin, `GET`/`HEAD`, a client id, an allowed destination) is answered
-    from the signed `/api/asset/<hex>` route (same hex, `Range`/`If-Range` copied), so a URL the fallback handed out
-    before the cleanup still loads; any other miss answers no response, unsigned, as before.
 - `public/manifest.json`: PWA manifest. `file_handlers` for `.charx`, `.risup`, `.risum` go through `launchQueue` to
   `characterURLImport`. `share_target` posts multipart form data to the worker's `/sw/share` receiver with the
   `character` (`.charx`), `preset` (`.risup`), and `module` (`.risum`) file entries. An already installed app keeps the
@@ -508,28 +221,111 @@ Web:
 - `util/risuUserscript.user.js`: exposes `GM_fetch` as `unsafeWindow.userScriptFetch`, which `globalFetch` uses when
   present.
 
+### Service worker
+
+`public/sw.js`: Cache Storage `risuCache`. Routes `/sw/check`, `/sw/img/<hex>`, `/sw/register`, `/sw/init`, and
+`/sw/share`. Registered by `bootstrap.ts:registerSw`. A new worker takes over at once (`skipWaiting`, `clients.claim`).
+
+- `globalApi.getFileSrc` gives a page this worker controls `/api/asset/<hex>` URLs when its reported direct-asset
+  capability is enabled; the worker signs those loads ([Direct assets](#direct-assets)).
+- With the capability off, the fallback checks `risuCache` from the page, registers misses through `/sw/register/<hex>`,
+  and serves assets through `/sw/img/<hex>`; `/sw/check` stays served when page-side Cache Storage lookup is unavailable
+  or fails.
+- `registerCache` resolves relative strings against the worker origin and still accepts URL objects.
+- A share POST reads multipart form data, caches the first file in character → preset → module order at the absolute
+  `/sw/share/<kind>` URL without a content type, and redirects with 303 to `/#share_<kind>`; a POST without a file and
+  every non-POST (GET included) under `/sw/share` redirect with 303 to `/`.
+- `characterCards.characterURLImport` uses `importPendingShare` to read the pending file directly from Cache Storage
+  even on an uncontrolled page, deleting it only after a truthy import result. A thrown, falsy, or cancelled import
+  retains it; missing Cache Storage or a missing entry does nothing.
+
+### Direct assets
+
+- Interception: same-origin paths starting with `/api/asset/` only for `GET`/`HEAD`, a non-empty string
+  `event.clientId`, and destinations `image`, `audio`, `video`, `track`, `style`, or `font`. All other asset requests
+  pass through without `respondWith`: cross-origin URLs, missing client ids, other methods, and destinations including
+  `""` (fetch/XHR and the plugin bridge), `document`, `iframe`, `worker`, and `object`.
+- The worker builds a fresh request with `risu-auth`, copies only incoming `Range` and `If-Range`, and uses
+  `mode: "same-origin"`, `credentials: "omit"`, `cache: "default"`, and the incoming signal. The browser HTTP cache
+  holds the bytes.
+- It reuses the token until 60 seconds before expiry, with one signing promise shared by concurrent requests. A 401
+  discards that token, rereads the key, and retries once; a newer token another request already obtained is reused
+  instead.
+- Missing keys and key-read/signing failures fall back to `fetch(request)` without added auth and are never cached;
+  signed-fetch network errors and aborts stay rejected.
+- `/sw/init` answers status 200 with `content-type: application/json` and `{"version":"v3","directAssets":true}`.
+  `bootstrap.ts:probeSw` parses the JSON and calls `setDirectAssets(true)` only for `directAssets === true`; non-JSON
+  responses, a missing/false flag, or an older worker leave it false. A `controllerchange` clears the capability and
+  probes the new controller; only the newest probe can set it.
+- Stored-asset copies: activation deletes every `risuCache` entry under `/sw/img/` (best effort; a cache failure does
+  not stop `clients.claim()`) and keeps every other entry, including the pending `/sw/share/<kind>` files.
+  `/sw/register` and `/sw/check` stay for a tab still running a client that registers bytes.
+- A `/sw/img/<hex>` miss that passes the direct-asset gate above (same origin, `GET`/`HEAD`, a client id, an allowed
+  destination) is answered from the signed `/api/asset/<hex>` route (same hex, `Range`/`If-Range` copied), so a URL the
+  fallback handed out before the cleanup still loads; any other miss answers no response, unsigned.
+
+### Worker Web Push
+
+[Web Push](global-api.md) in the worker:
+
+- `push` shows every completion (also with a window in front: Safari requires it) with the logo, the payload's chat tag
+  (`risuai-chat-completion:<hash>`, one per chat, so a chat's later notice replaces only its own; a missing or foreign
+  tag falls back to the bare `risuai-chat-completion`), the title and body from the payload, and a click URL that must
+  be a same-origin `/chat/<chaId>/<chatId>` route, else `/`.
+- In-front test: while a same-origin window is in front (`windowState`'s `inFront`: one window both focused and
+  `visibilityState` `visible`, since a hidden Android PWA keeps the focus; `clients.matchAll` with uncontrolled windows;
+  a failed lookup counts as none), the notification is `silent`, so it does not sound after the page's message sound
+  (`playMessage`). Otherwise `silent` is left out and the platform's default applies.
+- If a window is still in front once it is shown, the notification is closed. This is best effort: only the notification
+  this push showed, found by its tag and a per-worker number in `data.push`, with `windowState` checked again after the
+  lookup. Pushes are shown one at a time, since Chromium closes a notification by its tag.
+- Before the display, the same-origin windows of that lookup are posted `risu-push-completion` with the checked chat
+  route (none for `/`; a window whose post throws is skipped; `pushNotifications.ts` has the chat read again).
+- `notificationclick` focuses a window of the app and posts `risu-open-route` (answered through a `MessageChannel`
+  within 2 s, else the window is navigated; a navigation the browser refuses, such as of a window the worker does not
+  control, opens a window instead), or opens a window.
+- Each push and click also leaves content-free records: `push` phases `received`, stamped on arrival, then
+  `shown`/`shownSilent`, `closedInFront`, or `showFailed`, with `inFront` and `focusedHidden` from `windowState`;
+  `clicked`, stamped on the click and written whatever the window work's outcome. Fixed phases and booleans only, never
+  the payload, title, body, route, endpoint, or error text.
+- The records are appended to IndexedDB `risu-sw-diagnostics` (store `records`, newest 100, append and prune in one
+  transaction) after the display settles and outside the display queue, so a write never delays `showNotification` or
+  the next push.
+- No IndexedDB, a failed or blocked open, a failed transaction, or one not done in 2 s is skipped (a late connection is
+  closed, an abandoned transaction aborted), and the display's own rejection stays the event's. The diagnostic report
+  reads them ([diagnostics](diagnostics.md)).
+- `pushsubscriptionchange` is not handled: the page registers the new subscription when it opens.
+
 ## Flows
 
-- Production: `pnpm build` runs Vite, then `util/compressDist.mjs` writes smaller `.br` and `.gz` siblings into `dist/`.
-  The Hono self-host server (`pnpm run server`, `server/src/`) negotiates those siblings for app files while keeping
-  HTML and Range requests as identity ([static routes](self-host-server.md#routes)). Docker runs the same build and
-  copies `dist/` with its siblings into the runtime image. Served any other way (static hosting), the client shows the
-  `NodeServerRequired` notice.
-- Development: `pnpm run server` plus `pnpm dev`. Vite proxies `/api`, `/proxy`, `/proxy2`, and `/hub-proxy` to the
-  server (`RISU_DEV_SERVER`, default `http://localhost:6001`).
-- CI: GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`, for pushes to `metatron` and `main` and for pull
-  requests that target them (`on: push` / `pull_request` branch filters; nothing else starts a run, and a newer run for
-  the same ref cancels the older one). The job runs on `ubuntu-latest` with Node 24 (`actions/setup-node`) and
-  `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA provider download in the postinstall), runs `corepack enable` (so `pnpm`
-  is the `packageManager` version), and then `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`,
-  `pnpm format:check`, `pnpm check:tests`, `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`,
-  stopping at the first failure with its exit code and printing each step's duration. `pnpm test:slow` and
-  `pnpm test:e2e` are not in CI. The pnpm store is kept outside the checkout at `$RUNNER_TEMP/pnpm-store`
-  (`PNPM_STORE_DIR`, which the script passes to `pnpm install`) and cached with `actions/cache`, keyed on
-  `pnpm-lock.yaml`. The job uses no secrets and no `save/` data. A person can run the same script locally (it checks the
-  Node and pnpm versions first); agents keep using `pnpm --silent test:agent` (V1).
-- There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python
-  llama.cpp sidecar were removed.
+### Production
+
+`pnpm build` runs Vite, then `util/compressDist.mjs` writes smaller `.br` and `.gz` siblings into `dist/`. The Hono
+self-host server (`pnpm run server`, `server/src/`) negotiates those siblings for app files while keeping HTML and Range
+requests as identity ([static routes](self-host-server.md#routes)). Docker runs the same build and copies `dist/` with
+its siblings into the runtime image. Served any other way (static hosting), the client shows the `NodeServerRequired`
+notice. There is no desktop build.
+
+### Development
+
+`pnpm run server` plus `pnpm dev`. Vite proxies `/api`, `/proxy`, `/proxy2`, and `/hub-proxy` to the server
+(`RISU_DEV_SERVER`, default `http://localhost:6001`).
+
+### CI
+
+GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`.
+
+- Trigger: pushes to `metatron` and `main` and pull requests that target them (`on: push` / `pull_request` branch
+  filters; nothing else starts a run, and a newer run for the same ref cancels the older one).
+- Environment: `ubuntu-latest` with Node 24 (`actions/setup-node`) and `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA
+  provider download in the postinstall). It runs `corepack enable`, so `pnpm` is the `packageManager` version.
+- Steps, in `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm format:check`, `pnpm check:tests`,
+  `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first failure with its exit
+  code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI.
+- The pnpm store is kept outside the checkout at `$RUNNER_TEMP/pnpm-store` (`PNPM_STORE_DIR`, which the script passes to
+  `pnpm install`) and cached with `actions/cache`, keyed on `pnpm-lock.yaml`.
+- The job uses no secrets and no `save/` data. A person can run the same script locally (it checks the Node and pnpm
+  versions first); agents keep using `pnpm --silent test:agent` (V1).
 
 ## State
 
@@ -588,279 +384,36 @@ Web:
   - A screenshot and copy-to-HTML inline the images without a 401.
 - Release: nothing to bump; the build id comes from the commit. After an upstream intake, set `version.json` and
   `appVer` to the triaged upstream release.
-- Add a slow test: first try to make it fast (a test-only option for the limit, as `createScriptWorkerPool`'s
-  `syncHostTimeoutMs` and `sleepCaps`). Tag it `slow` only when the cost is the subject: a real wall-clock limit, a real
-  production limit, cold loads of every tokenizer, or a fresh Node process. Tag a test with `{ tags: ["slow"] }` (the
-  timeout goes in the same object) and a whole file with a `/** @module-tag slow */` comment, then update the slow-test
-  selection table in `Tests`. The tag is defined in `vitest.config.ts`; an undefined tag fails the run. Run
-  `pnpm check:tests`: it fails while the table and the tags disagree.
 
 ## Tests
 
-Agents run `pnpm --silent test:agent` for the default fast suite. Use `pnpm --silent test:agent --tags-filter=slow` for
-affected slow coverage or `pnpm --silent test:agent --all` for both. `--force` bypasses the tree cache; file filters and
-other Vitest arguments pass through. Passing output is a current run result, not a permanent property of this guide. A
-`FLAKY` block in a passing run names tests that failed in the full run and passed when their file ran alone: a warning,
-not a failure, and not something to fix in an unrelated change. A test that keeps showing up in
-`node_modules/.cache/agent-test/flaky.jsonl` is a candidate for its own V3 fix, checked with
-`pnpm --silent test:overload <file>`.
+Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 
-Slow tests cover real wall-clock/production limits, cold tokenizers, or fresh Node processes. Select them when touching
-the last column below. Discover current tags with `rg -n 'module-tag slow|tags:.*slow' server/src shared src` rather
-than relying on a count or timing estimate.
-
-Unit tests run behind a network guard. `vitest.setup.ts` routes the global `fetch`, `WebSocket`, Node's undici global
-dispatcher (every hop of a Node `fetch`, redirects included), and, under happy-dom, the start of every happy-dom
-`Fetch`/`SyncFetch` (its fetch, XHR, and script, link, and iframe loads, each redirect hop) and the `WebSocket` of every
-window it builds later (an iframe's) through `vitest.testNetwork.ts`. happy-dom's `settings.fetch.interceptor` is not
-used: 21.0.4 leaves an async task pending when `beforeAsyncRequest` throws. The policy allows `data:` and `blob:` URLs
-and the exact loopback origins (`http(s)://127.0.0.1|[::1]|localhost:<port>`) a test registered; `ws:`/`wss:` follow
-their HTTP origin. Everything else is refused, relative URLs included: the call throws or rejects as a failed request
-would (an XHR fires `error`), and the setup's `afterEach` fails the test even when its code caught the error. The
-globals are assigned directly, so `vi.stubGlobal("fetch", ...)` replaces the guard and `vi.unstubAllGlobals()` restores
-it. A test that needs the network stubs `fetch` (or the module that fetches) or starts a loopback server and registers
-it: `allowTestLoopbackOrigin(origin)` returns the unregister function; server tests call
-`server/src/tests/testSupport.ts` `allowListenerOrigin(server)` once the server listens (a `node:http`/`node:net` server
-or a `ws` `WebSocketServer`), which unregisters on `close()`, and `startUpstream` does it itself. A registration
-outlives `afterEach`, so a `beforeAll` upstream serves the whole file; the setup's `afterAll` fails the file when an
-origin is still registered or a refusal came after the last `afterEach`. A test that wants a refused connection
-registers the dead port (`onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"))`). Not guarded:
-`node:http`/`https`/`net`/`tls` sockets opened directly (the Lua egress transport `server/src/lua/egress.ts`, `ws`
-package clients), and worker threads and child processes, which have their own globals. `vitest.testNetwork.test.ts`
-(happy-dom) and `vitest.testNetwork.node.test.ts` (node) cover the policy and the installed guards.
-
-### Test rules
-
-Two gates decide whether a test belongs in the default suite. Both are checked from the test's code, not from a guess
-about how likely the code is to regress.
-
-- Determinism (mechanical). A gated test must not depend on real wall-clock time, CPU time, or the scheduler. That rules
-  out elapsed-time and throughput assertions (`toBeLessThan` on a duration, "N items in under M ms"), a sleep used to
-  let other work finish before an assertion, a poll with a real-time cap over real socket or file I/O, a real production
-  deadline that test work must beat (a staging TTL, an echo delay, a regex or Lua budget, a worker's boot cap), and a
-  cold worker, child process, tokenizer, or module graph booted under such a deadline. The gate's Vitest timeout is not
-  such a deadline (see below). Fix by controlling the clock: `vi.useFakeTimers` (add `"Date"` to `toFake` when the code
-  reads `Date.now`), an injected `now`, a deferred or latch that holds the provider or the slot, a call-through
-  `setTimeout` spy, or a test-only limit option. Boot the module graph once in a `beforeAll` (as
-  `characterCardsPngImport.test.ts` does) so each case does not pay for it, and warm worker pools before a region a real
-  deadline covers. A test whose subject is the real limit itself goes to the `slow` tier instead (see Recipes).
-- Contract over implementation (judgment). A test earns its place when a plausible wrong implementation would fail it. A
-  test that only pins call order, private state, a mock's return value, or fixed data the task did not touch protects
-  nothing and breaks on refactors; do not add it, and prune it when it starts costing time. Add tests only for code the
-  task changes.
-
-Past those gates, a test is judged by what its failure would tell a reader, not by how many assertions it holds. The
-suite's size says nothing about what it protects: the defects it has missed were two layers each correct and wrong
-together (a stored metadata object whose key order changed so a value-identical edit diffed as a change, an
-acknowledgement that never installs the server's copy so duplicates survive, a write that moves a chat revision that
-keys a cache), and a test over a mocked store cannot see any of them. The questions to ask of a test are "does it go red
-when this line is wrong" and "does it stay green when behavior is preserved":
-
-- Shown to fail. Every new test, not only a regression test, runs once with the line it guards broken (STRUCTURE V6); a
-  bug fix's test reproduces the bug before the fix. A test that stays green against the broken line is the one that
-  costs time without protecting anything.
-- Outcome, not mechanism. Assert what another layer or the user sees: the stored string or record, the server's
-  response, the op or event emitted, the rendered text, the returned value, against explicit expected data.
-  `server/src/tests/chats.test.ts` "keeps its key order when normalized again" asserts the stored string, because the
-  string is what the diff compares. Never assert the call list or order of the repository's own functions, an internal
-  state shape, or a mock's return value.
-- Real modules inside, typed fakes at the edge. The repository's own modules stay real; fakes stand only at process and
-  I/O boundaries (STRUCTURE V7). A hub module that a client test must stub because loading it pulls in the DOM, runes,
-  or the server (`globalApi.svelte`, `chatStore.svelte`, `parser.svelte`, `process/modules`, `serverAuth`) is stubbed
-  through a shared typed factory, never an inline partial object: a partial object hides every export it leaves out
-  until a consumer imports one, and then dozens of unrelated tests fail at run time and read as a regression, while a
-  factory whose defaults `satisfies` the export type fails `pnpm check` once.
-- A seam change gets a seam test. A change to a persisted shape, a normalizer, a sync or acknowledgement rule, or a key
-  that another layer derives (a revision, a cache key) gets one round trip rather than one unit test per side: a client
-  write through the server's normalizer and back into the store, a server test over the real app (`app.request`, as most
-  of `server/src/tests/` does), or an `e2e/` spec against the real stack. Two unit tests with the other side mocked each
-  pass while the pair is wrong.
-- Delete rather than repair. When a behavior-preserving change breaks a test, the test was coupled to the
-  implementation: delete it, or rewrite it against the outcome; do not patch its expectations to the new mechanism. An
-  intended behavior change updates the expectation and says so in the commit message.
-- Only for code the task changes. This is the budget, not a quality mark: a test the task did not need is time every
-  later run and every later refactor pays.
-
-A module mocked in more than one test file gets one shared, typed factory in a `tests/` directory (STRUCTURE V7):
-`src/ts/tests/alertMock.ts` `createAlertMock(overrides)` returns every export of `src/ts/alert.ts` (`vi.fn()`s whose
-awaited helpers resolve with a dismissed dialog's answer, empty stores), and its defaults
-`satisfies typeof import("src/ts/alert")`, so a new or reshaped export fails `pnpm check`. Load it inside the hoisted
-factory and pass the file's own handles:
-`vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock({ alertError: mocks.alertError }))`.
-A partial mock over `importOriginal` needs no factory. Every other client test that mocks `alert` uses it.
-`src/ts/tests/storesMock.ts` `createStoresMock(overrides)` supplies every `stores.svelte.ts` export with fresh plain
-state, without DOM subscriptions or module effects; all handwritten stores mocks use it. `src/ts/tests/bootMocks.ts`
-`createBootMock(module, overrides)` supplies typed boot service defaults to both bootstrap suites; keep the `vi.mock`
-registrations in each test file and load the factory inside them so Vitest hoisting remains local.
-`src/ts/storage/tests/resourceClientMock.ts` `createResourceClientMock(overrides)`,
-`src/ts/storage/tests/chatStoreMock.ts` `createChatStoreMock(overrides)`, and `src/ts/tests/globalApiMock.ts`
-`createGlobalApiMock(overrides)` do the same for the three most mocked modules, and every mock of them that does not
-spread the real module uses them. The resource client's factory is async because it loads the real module for its error
-classes, so a test imports those classes from the mocked module. That load reaches `serverAuth`: a test whose narrow
-mocks cannot carry the real graph behind it also mocks `serverAuth`. The chat store's defaults are plain, so a test that
-needs a reactive read passes its own, and the global API's classes are stand-ins. Their overrides are
-`ModuleMockOverrides<Module>` (`src/ts/tests/mockOverrides.ts`): names must be exports and a function stays a function,
-but a stub may answer with a partial fixture; an export only the test drives goes beside the factory's result, not into
-its overrides. `src/ts/network/tests/generationJobsMock.ts` `createGenerationJobsMock(overrides)` covers the job
-transport (with `createFollowStub(jobId)` for a controllable follow, and the error classes in the real shape); new tests
-that mock `network/generationJobs` use it. `src/ts/diagnostics/tests/collectorMock.ts` `createCollectorMock(overrides)`
-covers the diagnostics collector.
-
-`pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate) reads `vitest.config.ts` and
-`playwright.config.ts` as source and applies their patterns with each runner's own code (Vitest's tinyglobby file glob,
-Playwright's `createFileMatcher` on the absolute path). It fails when a test file under `src`, `server`, `shared`,
-`util`, `e2e`, or the root is collected by neither runner, by both, or only by the other one (Playwright owns
-`e2e/**/*.spec.ts`, Vitest every other test file); when a `slow` tag and the table below disagree (a row names its file,
-then "(the whole file)" for a `@module-tag slow` or each tagged test's title in double quotes, `...` standing for any
-text), or a test's `tags` is not a literal string or an array of literal strings in the options object; or when a
-non-test file under `src`, `server/src`, or `shared` imports a `tests/` path or a `*.test`/`*.spec` module (a `.svelte`
-file through Svelte's parser, template expressions included). A config shape it cannot read (a non-literal pattern, an
-object spread, an unsupported pattern-list spread, or a duplicate key, `projects`, `typecheck`, `respectGitIgnore`, no
-`testDir`) is an error; teach the script before using one.
-
-The gate's Vitest timeout is a hang guard, not a performance budget: a test whose result does not depend on real time
-may take as long as the machine's load makes it take, and only a test that never settles should fail on the timeout. So
-`vitest.config.ts` sets `testTimeout` and `hookTimeout` to 60 s instead of Vitest's 5 s and 10 s, and a gated test or
-hook gets no explicit shorter budget (a `slow` test keeps its own). Slow tests are reported on request instead of
-failing: `pnpm --silent test:agent --slow-tests` lists the ones over 1 s. Real-time dependencies (sleeps, real
-deadlines, bounded polls, elapsed-time assertions) are still V3 violations at any timeout. Verify a timing fix under CPU
-load with `pnpm --silent test:overload <files>` (see `util/overloadTest.mjs` above); the slow tier is not run under it.
-`server/src/tests/testSupport.ts` `waitFor` has no polling deadline by default: the test's Vitest timeout reports a
-condition that never holds as a failure. An explicit `timeoutMs` cap is for slow-tier tests only; prefer awaiting the
-event where one exists.
-
-| Test (file in `server/src/tests/`)                                                                                                                                                                                                                            | Covers                                                                                                                                                                                                                                                                             | Run after changing                                                                          |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `generationReceipts.test.ts` "measures receipt admission, terminal writes, and event-loop delay"                                                                                                                                                              | Real SQLite admission and kept-terminal write costs for 300 jobs, with `monitorEventLoopDelay`; `RISU_RECEIPTS_MEASURE_DIR` selects another volume                                                                                                                                 | `server/src/data/generationReceipts.ts`                                                     |
-| `tokenPlainNode.test.ts` (the whole file)                                                                                                                                                                                                                     | Every tokenizer family loaded cold and concurrently in a plain `node` process from an image-layout root, with the browser's ids; the `loadAll` entry's report and exit codes                                                                                                       | `server/src/prompt/tokenizers/`, `server/assets/token/` (the image's payload layout)        |
-| `tokenParity.test.ts` "counts the smoke strings for every family as the browser does"                                                                                                                                                                         | `loadAll` in process: a cold load of every family                                                                                                                                                                                                                                  | `server/src/prompt/tokenizers/`, `server/assets/token/`                                     |
-| `importPngCaps.test.ts` (the whole file)                                                                                                                                                                                                                      | The server PNG reader's asset-chunk cap (`planPngFile`) at `MAX_CHARX_ENTRIES` asset chunks and one more: 200,000 `tEXt` chunks, each key read with its own file read                                                                                                              | `server/src/routes/importPng.ts`, `shared/charxImport.ts` (`MAX_CHARX_ENTRIES`)             |
-| `restoreWorker.test.ts` (the whole file)                                                                                                                                                                                                                      | Real restore worker boot, heap exhaustion, abort/shutdown latch, and the empirical 5,000-message SQL install interval                                                                                                                                                              | `server/src/data/restore/`, `server/src/routes/backups.ts`                                  |
-| `upstreamImportWorker.test.ts` (the whole file)                                                                                                                                                                                                               | The upstream `.bin` import's real worker (converter and `node:sqlite`) booted cold per prepare, its heap limit ending a decode with the `{ error }` line, the latch, and shutdown                                                                                                  | `server/src/data/upstream/import*.ts`, `server/src/routes/backupsUpstream.ts`               |
-| `upstreamExportWorker.test.ts` (the whole file)                                                                                                                                                                                                               | The upstream `.bin` export's real worker booted cold per prepare: a decoded download with the keys only when chosen, its heap limit refusing with 413, a resource read while held, disconnect, and shutdown                                                                        | `server/src/data/upstream/export*.ts`, `server/src/routes/backupsUpstreamExport.ts`         |
-| `diagnosticsCrash.test.ts` (the whole file)                                                                                                                                                                                                                   | The `uncaughtExceptionMonitor` of `main.ts` in a plain `node` process: an uncaught exception and an unhandled rejection each recorded with `state.json` written, exit 1                                                                                                            | `server/src/diagnostics/journal.ts`, `server/src/main.ts`                                   |
-| `scriptWorker.test.ts` "caps sleep at 2 s per call and 6 s per run"                                                                                                                                                                                           | Lua `sleep` at the production caps (`MAX_SLEEP_MS`, `MAX_TOTAL_SLEEP_MS`); a fast version runs at `sleepCaps` of 200/600 ms                                                                                                                                                        | `server/src/lua/runtime.ts`, `server/src/scripts/`                                          |
-| `scriptWorker.test.ts` "charges a C-level runaway that follows the worker's own 10 s give-up"                                                                                                                                                                 | The watchdog after a synchronous host call times out at the production `SYNC_HOST_TIMEOUT_MS`; the default suite checks the give-up cap on a controlled busy time                                                                                                                  | `server/src/scripts/`                                                                       |
-| `scriptWorker.test.ts` "charges a C-level runaway that follows a shortened give-up (syncHostTimeoutMs)"                                                                                                                                                       | The same with a real C-level runaway at `syncHostTimeoutMs: 1000`                                                                                                                                                                                                                  | `server/src/scripts/`                                                                       |
-| `luaRuntime.test.ts` "pins the address, verifies the URL's host, ... and answers 408 on the deadline"                                                                                                                                                         | The pinned TLS transport in a fresh process against a local HTTPS server, including the real 10 s request deadline                                                                                                                                                                 | `server/src/lua/egress.ts`                                                                  |
-| `manualTriggers.test.ts` "ends the job with an error past the effect limit (the tab would loop forever)"                                                                                                                                                      | A manual trigger job that loops to the real 100,000-effect limit (`MAX_TRIGGER_EFFECTS`)                                                                                                                                                                                           | `server/src/prompt/triggers.ts`, `server/src/jobs/`                                         |
-| `triggerRuntime.test.ts` "ends a privileged self-recursion with the job's effect limit, not a stack overflow"                                                                                                                                                 | `v2RunTrigger` self-recursion to the real effect limit, without a stack overflow                                                                                                                                                                                                   | `server/src/prompt/triggers.ts`                                                             |
-| `triggerRuntime.test.ts` "ends `/trigger` recursion through the real command executor with the same shared limit"                                                                                                                                             | `/trigger` recursion through the real command executor sharing that limit                                                                                                                                                                                                          | `server/src/prompt/triggers.ts`, `server/src/prompt/commands.ts`                            |
-| `promptRunner.test.ts` "writes the checkpoint 3 s after a chunk while the provider stalls, before any other chunk"                                                                                                                                            | The stream checkpoint on its real 3 s timer while the provider stalls                                                                                                                                                                                                              | `server/src/prompt/runner.ts` (`CHECKPOINT_INTERVAL_MS`)                                    |
-| `cbsLimits.test.ts` "the stuck range, an endless roll, ... all end with the limit error", "a non-advancing range answers [] under the server's limits ..." and "an ordinary large text passes under the server's limits"                                      | The production CBS limits (`serverCbsLimits`) in a fresh Node process: runaway templates end with the work limit inside the real 5 s wall limit, a non-advancing range answers `[]` (the registry range test covers it in process), a large legal text passes under both           | `shared/cbs/`, `server/src/jobs/cbsHost.ts`                                                 |
-| `shutdown.test.ts` (the whole file)                                                                                                                                                                                                                           | `main.ts` in a fresh Node process: an import and a resource write admitted before SIGTERM finish within the real 8 s drain grace and exit 0, and SIGINT with an idle keep-alive connection exits promptly                                                                          | `server/src/main.ts`, `server/src/app.ts` (`beginShutdown`)                                 |
-| `sharedImports.test.ts` "imports every shared/...ts with plain node"                                                                                                                                                                                          | Every non-test `shared/` module imported by a plain `node` process (type stripping, no Vite resolution of missing `.ts` extensions)                                                                                                                                                | `shared/`                                                                                   |
-| `hypaV3Limits.test.ts` "the %s loop ends with an error instead of spinning"                                                                                                                                                                                   | HypaV3 with a zero batch size in a fresh Node process the test can kill: both loops end with the no-progress error                                                                                                                                                                 | `server/src/prompt/memory/hypav3.ts`                                                        |
-| `hypaV3Limits.test.ts` "ends a catastrophic pattern on a real worker while the event loop stays free"                                                                                                                                                         | A HypaV3 separator on a real worker past a real 100 ms deadline while a main-thread timer fires; the timeout's handling is covered in the default suite with a fake host                                                                                                           | `server/src/prompt/memory/hypav3.ts`, `server/src/scripts/`                                 |
-| `lore.test.ts` "a worker timeout during activation is no match for that entry; the others still activate and the pool recovers"                                                                                                                               | Lore activation on a real worker past a real 200 ms deadline, then the replacement worker; a rejected test as no match is covered in the default suite with a fake host                                                                                                            | `server/src/scripts/`, `shared/lore/`                                                       |
-| `scriptWorker.test.ts` "terminates a ReDoS regex at its deadline while HTTP stays responsive, and recovers"                                                                                                                                                   | Main-thread responsiveness on the real clock while a worker regex runs to its 1 s deadline; the timeout and the replacement are covered in the default suite                                                                                                                       | `server/src/scripts/`                                                                       |
-| `scriptWorker.test.ts` "lets a plain Node process that never disposes the pool exit on its own"                                                                                                                                                               | A fresh Node process that uses the pool and never disposes it exits by itself (idle workers do not hold the event loop)                                                                                                                                                            | `server/src/scripts/workerPool.ts`                                                          |
-| `scriptWorker.test.ts` "does not charge an asynchronous wait, even one longer than the budget"                                                                                                                                                                | An asynchronous host wait of 1000 ms left out of a 100 ms real allowance; the default suite checks that the charge adds up across host calls                                                                                                                                       | `server/src/lua/runtime.ts`, `server/src/scripts/`                                          |
-| `scriptWorker.test.ts` "charges a coroutine resumed after a long wait only its own compute, in a handler and at the top level"                                                                                                                                | A coroutine resumed after a 350 ms wait, in a handler and at the top level, under a 100 ms real allowance (the hook and the charge both leave out the wait)                                                                                                                        | `server/src/lua/runtime.ts`                                                                 |
-| `scriptWorker.test.ts` "does not charge a synchronous wait, even one longer than the budget"                                                                                                                                                                  | A 1500 ms synchronous answer left out by both the worker's hook and the main thread's watchdog at a 100 ms allowance and the production 1 s grace; the default suite checks the worker's charge as a relation at a large allowance                                                 | `server/src/lua/runtime.ts`, `server/src/scripts/workerPool.ts`                             |
-| `scriptWorker.test.ts` "runs every task the full queue held once the slot frees"                                                                                                                                                                              | The 1,000 queued regexes of a full queue all run once the held slot frees (real round trips); the default suite checks the cap and disposes the full queue                                                                                                                         | `server/src/scripts/workerPool.ts`                                                          |
-| `llmCharsetRetries.test.ts` "ends with the request's failure once the retries are spent, yielding between attempts" and "observes a stop scheduled from a timer while the rejections continue"                                                                | A group send over the real server with the Echo model and a banned script, in a fresh Node process the test can kill: the retry budget ends it, and a timer's stop is observed; the outer loop's yield and budget are covered in process                                           | `server/src/llm/outer.ts`, `server/src/jobs/`                                               |
-| `luaRuntime.test.ts` "keeps the wasm function table flat across runs with awaits, ..."                                                                                                                                                                        | The Lua runtime in a fresh Node process: no wasm function table growth over 30 runs with awaits, the budget raised inside a resumed coroutine, one task at a time                                                                                                                  | `server/src/lua/runtime.ts`                                                                 |
-| `transformers.test.ts` "forks transformersWorker.ts, answers over IPC, ..."                                                                                                                                                                                   | A real fork of `transformersWorker.ts`: an IPC answer, the idle kill, a new fork for the next task, and the kill at dispose                                                                                                                                                        | `server/src/prompt/transformers.ts`, `server/src/prompt/transformersWorker.ts`              |
-| `upstreamImportCharacters.test.ts` "reports every repair of a chat with very many invalid messages instead of overflowing"                                                                                                                                    | The upstream converter's repair report at 150,000 invalid messages in one chat (no argument spread); the per-message count is covered in the default suite                                                                                                                         | `server/src/data/upstream/importCharacters.ts`, `server/src/data/upstream/importRecords.ts` |
-| `src/ts/storage/tests/projectionBindings.test.ts` "1,000 sequential nested writes into the 300-entry character: tracked modes against direct $state writes" and "bulk: the lorebook drag rebuild and the preset reorder, tracked modes against direct $state" | The tracked-record cost against direct `$state`: 1,000 nested writes (median ratio under 10), and the 300-entry lorebook drag and 50-preset reorder (reported, not asserted); the serialization count per flush and the stored shape after a drag are covered in the default suite | `src/ts/storage/tests/projectionHarness.svelte.ts`                                          |
-| `assets.test.ts` "rejects record 2001 with 400 after keeping the first 2000 writes"                                                                                                                                                                           | The batch write route at the production `MAX_ASSET_BATCH_RECORDS`: 2000 staged writes kept, record 2001 refused; the default suite checks the cap at three records (`routeLimits.assetBatchRecords`)                                                                               | `server/src/routes/storage.ts`, `shared/assetBatch.ts`                                      |
-| `backups.test.ts` "refuses an archive with more records than the index allows"                                                                                                                                                                                | The version-2 import at the production `MAX_ARCHIVE_RECORDS` (200,000 records indexed); the default suite checks both sides of the cap at eight records (`routeLimits.archiveRecords`)                                                                                             | `server/src/data/archive.ts`, `server/src/routes/backups.ts`                                |
-| `importCharx.test.ts` "excludes declared and decoded oversized entries in file order with the exact readable asset total"                                                                                                                                     | The CharX entry rules at the production `MAX_CHARX_ENTRY_BYTES`: a 50 MiB inflate past the cap; the default suite checks the same rules at 1 KiB (`routeLimits.charxEntryBytes`)                                                                                                   | `server/src/routes/importCharx.ts`, `shared/charxImport.ts`                                 |
-| `resourcePatchParts.test.ts` "charges four units per cut text: evicts older large bases and never caches one over a quarter of the budget"                                                                                                                    | The patch-base cache at the production 64 Mi-unit budget with 6 and 17 MiB texts; the default suite checks the same eviction at a small `patchBaseMaxUnits`                                                                                                                        | `server/src/data/resourceStore.ts`                                                          |
-| `src/ts/storage/tests/resourceSyncHydration.test.ts` "applies the same patches to a chat longer than a call's argument list can hold (150,000 messages)"                                                                                                      | A job's chat patch on a 150,000-message chat, past the engine's argument-spread limit: no whole-list spread; the default suite checks the same patches on 3,000 messages                                                                                                           | `src/ts/storage/chatStore.svelte.ts`                                                        |
-
-`triggerRuntime.test.ts` "ends an endless loop with the limit" still covers the effect limit in the default agent suite.
-
-Focused tests belong to the guide for the code under test. Use
-[STRUCTURE's task router](../../STRUCTURE.md#choose-by-task) instead of copying those inventories here. Discover current
-files with:
-
-```sh
-rg --files src server/src shared | rg '\.test\.ts$'
-rg --files e2e | rg '\.spec\.ts$'
-rg --files util/playwright
-```
-
-The browser inventory includes API-key, lazy-chat, and per-chat send specs as well as preset, persona/binding,
-transform, storage, settings, character, and navigation flows. `e2e/0-idleReload.spec.ts` must run first because it
-asserts the shared stack's first boot; `e2e/welcomeAndChatSettings.spec.ts` runs last because it changes the shared
-stack's settings. Domain guides retain their specific assertions and browser gaps.
-
-- `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
-  (loopback default, brackets refused, the `tailscale` lookup and its failure, the Tailscale range) and the sandbox (a
-  clone from a source whose database is open in WAL mode: the databases readable, assets hard-linked, `server/`,
-  `backups/`, `diagnostics/`, request history, models, and loose files left behind, no staging left over; `keep`,
-  `fresh`, a missing source; the containment, symbolic-link, and non-directory refusals). The runner's process handling
-  (process groups, the lock, the readiness wait) has no automated test; verify it manually when changing that code.
 - `src/ts/sw.share.test.ts` (node) runs `public/sw.js` under `node:vm` with a fake `self`, an in-memory `caches`, and
-  Node's `Request`/`Response`/`FormData`: the manifest's `share_target` (read from `public/manifest.json`) posts to the
-  worker's `/sw/share`, a multipart POST stores the first file (character, then preset, then module) under the absolute
-  `/sw/share/<kind>` URL and answers a 303 to `/#share_<kind>`, a POST without one and a GET answer a 303 to `/` without
-  reading the form, and `/sw/register` with a URL object still stores the bytes. It also runs `notificationclick` with a
-  fake `clients`: a window that does not answer is navigated, and one whose navigation is refused falls back to
-  `openWindow` with the chat route. It also runs `push` with a fake `registration`: the same-origin windows posted
-  `risu-push-completion` with the chat route before the display (none for a push without one, a window whose post throws
-  skipped, a failed lookup telling no one), each chat's payload tag shown as given (so another chat's notice stays),
-  also on the text-only retry after a refused option, a missing, foreign, or oversized tag shown under the bare prefix,
-  and a focused, visible same-origin window making the push silent and closing only that push's notification (also on
-  the retry; not a later one of its tag, nor its own when the focus or the visibility left during the lookup; a second
-  push shown only after the first one's close, each under its own number; an unfocused, foreign, or focused but hidden
-  window (also focus and visibility on different windows), or a failed window lookup, leaves `silent` unset and the
-  notification open). With a `fake-indexeddb` factory, `IDBKeyRange`, its own `Date`, and timers under test control, it
-  covers the push records: each push's `received` (stamped on arrival, before the display queue) and
-  `shown`/`shownSilent`/`closedInFront`/`showFailed` with the window state, `clicked` stamped at the click and written
-  also when no window could be opened (that failure stays the event's), fixed phases and booleans only, the newest 100
-  kept by a prune in the same write, a store that cannot be opened or whose open fails or never answers delaying neither
-  the notification nor the next push (given up after 2 s, a late connection closed unused), and a failed display's
-  rejection preserved. It also runs `activate`: the `/sw/img/*` entries are deleted, a `/sw/share/*` entry and other
-  entries survive, and the clients are claimed, also when the cache cannot be opened. The `/sw/check` route, the `fetch`
-  handler's default `/sw/*` and `/tf` responses, the rest of the `push` display (icon, title and body fallbacks), and
-  the userscript have no automated tests; verify those manually.
+  Node's `Request`/`Response`/`FormData`; the manifest's `share_target` is read from `public/manifest.json`. A fake
+  `clients` drives `notificationclick` and a fake `registration` drives `push`. For the push records it adds a
+  `fake-indexeddb` factory, `IDBKeyRange`, its own `Date`, and timers under test control.
 - `src/ts/sw.asset.test.ts` (node) runs `public/sw.js` the same way with a `fake-indexeddb` factory holding a real
-  WebCrypto key, a recording `fetch`, and its own `Date`: each allowed destination (GET and HEAD) gets a fresh
-  `same-origin`, `credentials: "omit"`, `cache: "default"` fetch with a verifiable `risu-auth` JWT and the copied
-  `Range`/`If-Range`; `""`, `document`, `iframe`, and `worker` destinations, a POST, a missing client id, another path,
-  and a cross-origin URL are not answered; a token is reused until 60 s before its expiry and signed anew after; a 401
-  re-reads a replaced key and retries once (a second 401 is returned); without a key the original request is fetched
-  unsigned and an absent `DPoPDB` or `node` store is not created; `/sw/init` answers the JSON capability. With a fake
-  `caches`, a `/sw/img/<hex>` miss from an allowed destination (GET and HEAD) is fetched from `/api/asset/<hex>` with a
-  verifiable token and the copied `Range`/`If-Range`; a miss with the `""`, `document`, or `iframe` destination, a POST,
-  or no client id fetches nothing; a hit answers the cached bytes. `server/src/tests/swAuth.test.ts` signs with the
-  worker's code and checks the token against the real auth store through `GET /api/asset/<hex>` (200 with the bytes; 401
-  unsigned and after expiry).
-- Browser checks use Playwright against the stack above: plain `playwright-core` scripts in `util/playwright/` for
-  captures and one-off observations, `@playwright/test` specs in `e2e/` for repeatable checks (`pnpm test:e2e`).
-  `playwright.config.ts`, `e2e/`, and `util/playwright/` are outside `tsconfig.json`'s include, so `pnpm check` does not
-  type-check them.
-- A check that points the stack at a mock provider writes a model profile and the model preset's slots
-  ([model profiles and slots](llm-requests.md)), never `aiModel`, `forceReplaceUrl`, or `maxContext` on a `presets`
-  record, whose normalizer drops them without an error. Use `util/playwright/modelProfiles.mjs` (`modelFixtureOps` for
-  the batch, `promptFixture` for the prompt half) or, in the page, `modelProfiles.browser.mjs`
-  (`applyModelFixtureSettings`).
-- A check that sends binds its chat ([chat bindings](persistence.md): a chat without a complete binding is not sent):
-  spread `chatBindingFixture(modelPresets, presets, personas)` (`util/playwright/modelProfiles.mjs`, the first record of
-  each list, the model preset `modelFixtureOps` points at the mock) into the seeded chat.
+  WebCrypto key, a recording `fetch`, its own `Date`, and a fake `caches` for the `/sw/img/` route.
+- `server/src/tests/swAuth.test.ts` is the signer parity check: it signs with the worker's code and checks the token
+  against the real auth store through `GET /api/asset/<hex>`.
+- `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
+  and the sandbox.
+- Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
+  display (icon, title and body fallbacks), and the userscript; verify those manually.
+- Not tested: the dev runner's process handling (process groups, the lock, the readiness wait); verify it manually when
+  changing that code.
 
 ## Known Hazards
 
 ### Gotchas
 
-- Import lucide icons as plain names (`import { X, Check as Ok } from "@lucide/svelte"`). Another form (a type, `icons`,
-  a default or namespace import) keeps that statement on the package's main entry, and every test that reaches it
-  repeats the package main entry and its icon exports; `vitest.lucideImports.test.ts` fails on it.
-- A Vitest file that reaches the settings views or the records needs the client environment (happy-dom): the records use
-  Svelte's client `$state`, so `@vitest-environment node` fits only pure schema tests. Install a flat fixture with
-  `src/ts/storage/tests/installFlatDatabase.ts`.
 - Playwright's bundled Firefox drops service worker control after a navigation the worker does not answer
   (`public/sw.js` lets every non-`/sw/` request fall through): the next document has
   `navigator.serviceWorker.controller === null`, so the app runs in the blob fallback instead of direct asset mode.
-  Chrome keeps control, and so does a real Firefox build (checked by hand on 2026-10-24). A Firefox browser check of
-  direct asset mode under Playwright therefore reads as broken; check it in Chromium or a real Firefox.
-  `probeDirectAssets.mjs` reports the Playwright case as a failed check.
-- The compression step in `pnpm build` costs build time and image size (measured 2026-10-29 at `4a95f84bf` plus the
-  step, WSL2 host). It adds about 12 s to the build (Vite 17–18 s; `[compress-dist]` 12.0–12.4 s with the largest files
-  first; quality 11 on the 21.6 MB ONNX Runtime `.wasm` alone took 47 s, which is why files over 16 MiB use quality 9).
-  In Docker the `pnpm build` step went from 18.6 s to 32.4 s. The siblings add 21.8 MB to `dist/` (135 files: identity
-  49.05 MB, br 9.17 MB, gz 12.66 MB), so the runtime image grows by that much (`/app/dist` 141.1 MB → 162.9 MB). The
-  boot-critical `lib-*.js` goes from 6.02 MB to 1.43 MB (br) or 2.13 MB (gzip).
+  Chrome keeps control, and so does a real Firefox build
+  ([observation](../audit/direct-assets-browser-control-2026-10-24.md)).
+- A Firefox browser check of direct asset mode under Playwright therefore reads as broken; check it in Chromium or a
+  real Firefox. `probeDirectAssets.mjs` reports the Playwright case as a failed check.
+- The compression step in `pnpm build` costs build time and image size. Quality 9 above 16 MiB exists because quality 11
+  on the ONNX Runtime `.wasm` took too long ([numbers](../audit/build-compression-2026-10-29.md)).

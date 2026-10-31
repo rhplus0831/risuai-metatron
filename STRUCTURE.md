@@ -44,17 +44,16 @@ Verification:
   only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A change also runs the slow
   tests and `e2e/` specs it affects, and a build change `pnpm build`. Agents use the wrapper, never `HUMAN` to bypass
   the human/CI command gate. The wrapper's flags, lock, and warnings belong to
-  [build-test-platforms](docs/structure/build-test-platforms.md).
+  [test-harness](docs/structure/test-harness.md).
 - V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories. Vitest defaults to happy-dom; server
   tests select Node. Setup mocks, clone/DOM differences, and the deny-by-default network guard are documented in
-  [build-test-platforms](docs/structure/build-test-platforms.md). Domain guides own focused test paths and coverage
-  gaps.
+  [test-harness](docs/structure/test-harness.md). Domain guides own focused test paths and coverage gaps.
 - V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real wall-clock time, CPU time, or the
   scheduler: no elapsed-time or throughput assertion, no sleep as synchronization, no real production deadline raced by
   test work. Control the clock (fake timers, an injected `now`, a deferred or latch, a test-only limit option) or tag
   the test `slow`. A gate timeout is a hang guard, not a performance budget. Add tests only for code the task changes,
   and keep a test only when a plausible wrong implementation would fail it. Timing policy and overload checks:
-  [build-test-platforms](docs/structure/build-test-platforms.md) `Tests`.
+  [test-harness](docs/structure/test-harness.md) `Tests`.
 - V4. Before committing, `rg` each changed product export and file name across `src`, `server`, `shared`, `public`,
   `util`, `e2e`, and `docs`, and update the consumers it finds (scripts that read source as text and guides that name it
   included).
@@ -159,7 +158,8 @@ completed plans and retrieval commands.
 | TTS, images, translation, media, playground tools                                        | [media-aux](docs/structure/media-aux.md)                       |
 | Backups/upstream compatibility, Realm hub/creator blocking, settings report              | [backup-sync-hub](docs/structure/backup-sync-hub.md)           |
 | Hono routes/auth/storage, generation/runtime services, Docker                            | [self-host-server](docs/structure/self-host-server.md)         |
-| Scripts/config, test harness, browser tooling, worker/PWA, releases                      | [build-test-platforms](docs/structure/build-test-platforms.md) |
+| Scripts/config, build, dev runner, worker/PWA, upstream check, releases                  | [build-test-platforms](docs/structure/build-test-platforms.md) |
+| Test wrapper, test rules, slow tests, network guard, Playwright stack, browser checks    | [test-harness](docs/structure/test-harness.md)                 |
 
 ## Path Ownership
 
@@ -221,9 +221,12 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
 - **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`.
 - **self-host-server**: remaining `server/`, `Dockerfile`, `server.sh`, `server.bat`.
-- **build-test-platforms**: `package.json`, `vite.config.ts`, `vitest.*`, `tsconfig*.json`, `playwright.config.ts`,
-  `e2e/`, `util/`, `public/sw.js`, `public/manifest.json`, `version.json`, root dotfiles.
-- Tests follow the code they exercise; browser harness ownership stays with build-test-platforms.
+- **test-harness**: `vitest.*`, `playwright.config.ts`, `e2e/`, `util/playwright/`, `util/agentTest.mjs`,
+  `util/agentTestReporter.ts`, `util/agentTestResults.mjs`, `util/agentE2e.mjs`, `util/requireHuman.mjs`,
+  `util/overloadTest.mjs`, `util/testInventory.mjs`.
+- **build-test-platforms**: `package.json`, `vite.config.ts`, `tsconfig*.json`, remaining `util/`, `public/sw.js`,
+  `public/manifest.json`, `version.json`, root dotfiles.
+- Tests follow the code they exercise; browser harness ownership stays with test-harness.
 
 Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`, `src/etc/docs/`,
 `src/ts/rpack/`. Use a targeted path for those payloads; follow [AGENTS.md](AGENTS.md) for search flags.

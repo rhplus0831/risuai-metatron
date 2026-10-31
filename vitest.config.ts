@@ -33,7 +33,7 @@ export default defineConfig({
         testTimeout: 60_000,
         hookTimeout: 60_000,
         // `pnpm test` leaves out the `slow` tests (`--tags-filter=!slow`); `pnpm test:slow` runs only
-        // them and `pnpm test:all` everything. See `docs/structure/build-test-platforms.md`.
+        // them and `pnpm test:all` everything. See `docs/structure/test-harness.md`.
         tags: [
             {
                 name: "slow",

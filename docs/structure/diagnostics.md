@@ -195,7 +195,7 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
 - [Self-host server](self-host-server.md): journal lifetime, fatal-fault recording, graceful shutdown, auth, limiter,
   and stores.
 - [App shell](app-shell.md): collector startup; [global-api](global-api.md): tab logs and job/feed hooks;
-  [build-test](build-test-platforms.md): crash-process tests.
+  [test-harness](test-harness.md): crash-process tests.
 
 ## Invariants
 
@@ -251,7 +251,7 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
   changes nothing). `src/ts/sw.share.test.ts` covers the worker's records ([build-test](build-test-platforms.md)).
   `server/src/tests/orderedWriter.test.ts` covers the writer's order, cap, and fairness.
   `server/src/tests/diagnosticsCrash.test.ts` covers fatal faults in fresh Node processes and is slow; select it through
-  [build-test](build-test-platforms.md).
+  [test-harness](test-harness.md).
 - `src/ts/diagnostics/{collector,report,workerRecords}.test.ts`: ring/mirror/fetch-wrapper behavior, checked stacks,
   `browserState` (at the start and on each `visible`, unknown values left out, the subscription lookup bounded),
   `freeze`/`resume`, server-unavailable reports, the worker records merged by time before the cut with a failed read

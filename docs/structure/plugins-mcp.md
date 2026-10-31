@@ -482,8 +482,7 @@ MCP:
   `mcpInternal.test.ts` covers server-side internal tools and mutation failures; `mcpSse.test.ts` covers SSE framing.
 - Plugin providers in server jobs: `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate) installs a
   v3 plugin that registers a provider and answers its job-channel callbacks from the real sandbox, including a reload
-  between sequence parts and an owner page closed while its callback is unanswered
-  ([build-test-platforms](build-test-platforms.md)).
+  between sequence parts and an owner page closed while its callback is unanswered ([test-harness](test-harness.md)).
 - Provider adapter tool loops are covered by `llm-requests.md`. The request transport's `mcpTool` case is in
   `src/ts/process/request/tests/transport.test.ts`.
 - Gaps: filesystem MCP tools and PDF rendering, hot reload, and the remaining sandbox RPC surface are not directly

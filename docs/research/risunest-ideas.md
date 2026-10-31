@@ -250,7 +250,7 @@ Path prefixes: **RN** = RisuNest, **MT** = metatron. "Verified" means I or a res
   - `tests/suiteOwnership.mjs:367-435` with `tests/testInventory.mjs:24-84`: every test file has exactly one runner, checked against `vitest list --json` and `playwright test --list` (`pnpm check:test-inventory`).
 - **MT:**
   - V3 already covers determinism, and "keep a test only when a plausible wrong implementation would fail it".
-  - It has no consumer-grep rule, no unverified-check rule, no shared typed mock factory rule, and no inventory check. The slow-test table in `docs/structure/build-test-platforms.md` is kept by hand.
+  - It has no consumer-grep rule, no unverified-check rule, no shared typed mock factory rule, and no inventory check. The slow-test table in `docs/structure/test-harness.md` is kept by hand.
   - `util/playwright/*.mjs` measurement scripts are not type-checked (according to the research pass).
 - **Why:** the memory file shows recurring stale-mock incidents ("Storage test alert mock gap", alert mocks without `alertTerminal`) that a `satisfies typeof import` factory would turn into `pnpm check` errors. An inventory check would also keep the slow-tag table honest.
 - **Adaptation:** add rules to STRUCTURE.md V-section. Add a small inventory script that compares discovered `*.test.ts` and `e2e/*.spec.ts` files against the runners, and cross-checks `slow` tags against the doc table.

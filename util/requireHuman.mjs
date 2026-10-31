@@ -5,7 +5,7 @@
 //   HUMAN       set by a person (`export HUMAN=1` in the shell profile, or `HUMAN=1 pnpm test`),
 //   AGENT_TEST  set by `util/agentTest.mjs` for the run it supervises.
 // Agents are expected to use `pnpm --silent test:agent` instead. This is a convention, not a
-// barrier. See `docs/structure/build-test-platforms.md`.
+// barrier. See `docs/structure/test-harness.md`.
 import { pathToFileURL } from "node:url";
 
 export function humanAllowed(env = process.env) {

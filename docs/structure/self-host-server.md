@@ -894,7 +894,7 @@ keyed by absolute paths so separate save directories do not collide. The remaini
 
 Server tests live in `server/src/tests/` and select Vitest's Node environment. `testSupport.ts` provides temporary save
 directories and in-process `createTestServer` contexts. Use these files as change anchors; runner, slow-test, and timing
-rules belong to [build-test-platforms](build-test-platforms.md).
+rules belong to [test-harness](test-harness.md).
 
 - Boot, auth, HTTP limits, and shutdown: `app.test.ts`, `listenConfig.test.ts`, `shutdown.test.ts`,
   `shutdownAdmission.test.ts`, `sqliteSynchronous.test.ts`.
@@ -921,7 +921,7 @@ rules belong to [build-test-platforms](build-test-platforms.md).
   socket: no chat frame while unchanged (`hydration=patch`), one patch or a whole copy after a change, whole copies for
   a socket without the flag, and a queued own write carried before the receipt. The browser check
   `util/playwright/checkJobProtocol.mjs` drives request-id replay, a command sequence across a reload, the chat-slot
-  stop, owner absence, and a SIGKILL restart against the real server ([build-test-platforms](build-test-platforms.md)).
+  stop, owner absence, and a SIGKILL restart against the real server ([test-harness](test-harness.md)).
 - LLM requests and tokenization: `llmRoutes.test.ts`, `llmRequests.test.ts`, `llmProviderAdapters.test.ts`,
   `llmResponsesApi.test.ts`, `tokens.test.ts`.
 - Memory and local models: `memoryTasks.test.ts`, `memoryTaskHost.test.ts`, `hypaV3Parts.test.ts`,

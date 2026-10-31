@@ -638,7 +638,7 @@ Not in `sendChat`:
   exercise send/recovery, reroll/group, and sidebar status. `checkJobProtocol.mjs` drives the job client with a real
   plugin provider: the same-id retry of a create whose answer was lost, a reload during a command sequence, Stop from
   another browser context, a closed owner page, and a server killed between checkpoints
-  ([build-test-platforms](build-test-platforms.md)).
+  ([test-harness](test-harness.md)).
 - Not covered: in-tab Jinja rendering; mounted screen wiring for per-chat reroll, the paste write, input translation
   invalidation, and auto mode closing the chat; IME behavior on real devices (Android Korean, desktop Japanese); Stop on
   a resumed job beside another chat's send. `src/lib/SideBars/DevTool.test.ts` covers the instruct preview and the

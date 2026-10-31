@@ -4,7 +4,7 @@
 // that never changes the exit code (the wrapper passes the threshold in RISU_REPORT_SLOW_TESTS_MS).
 // When the wrapper sets RESULTS_FILE_ENV it also writes the run's per-file results there, for the
 // wrapper's rerun of failed files alone (`util/agentTestResults.mjs`).
-// Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/build-test-platforms.md`.
+// Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/test-harness.md`.
 import { writeFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";

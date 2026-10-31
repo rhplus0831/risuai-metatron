@@ -4,7 +4,7 @@
 //     runner (`vitest.config.ts` include/exclude, `playwright.config.ts` testDir/testMatch/testIgnore),
 //     by both, or only by the other one (Playwright owns `e2e/**/*.spec.ts`, Vitest the rest);
 //   - a `slow` tag (`/** @module-tag slow */`, or `tags: ["slow"]` on a test or suite) is missing from
-//     the slow-test table in `docs/structure/build-test-platforms.md` `Tests`, a table row names a
+//     the slow-test table in `docs/structure/test-harness.md` `Tests`, a table row names a
 //     test that carries no `slow` tag, or a test's `tags` is not a literal string or an array of literal strings;
 //   - a non-test file under `src`, `server/src`, or `shared` imports test code (a `tests/` path or a
 //     `*.test`/`*.spec` module). A test file is a `*.test.*`/`*.spec.*` file or any file under a
@@ -33,7 +33,7 @@ const SOURCE_NAME = /\.([cm]?[jt]sx?|svelte)$/;
 export const TEST_ROOTS = ["src", "server", "shared", "util", "e2e"];
 /** Where product files are checked for test imports. */
 export const PRODUCT_ROOTS = ["src", "server/src", "shared"];
-export const SLOW_TABLE_DOC = "docs/structure/build-test-platforms.md";
+export const SLOW_TABLE_DOC = "docs/structure/test-harness.md";
 /** The first header cell of the slow-test table; a row's bare file name is relative to this directory. */
 const SLOW_TABLE_HEADER = /^Test \(file in `([^`]+)`\)$/;
 const PLAYWRIGHT_DEFAULT_MATCH = "**/*.@(spec|test).?(c|m)[jt]s?(x)";

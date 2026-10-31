@@ -34,7 +34,7 @@
 // name the ones that cover the behavior it changed. One e2e run at a time per machine: the stack's
 // ports are fixed, so a run waits for E2E_LOCK_PORT and then for the stack's ports to be free. There
 // is no rerun of failed specs alone: the specs share one stack's store in file order.
-// See `docs/structure/build-test-platforms.md`.
+// See `docs/structure/test-harness.md`.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {

@@ -18,7 +18,7 @@
 // autogroup, and reports the run's result over IPC. This process then kills that whole group, which
 // also takes a Vitest left behind by a wrapper that died. It does the same on exit, error, SIGINT and
 // SIGTERM. A supervisor whose parent is gone kills its group, and a burner whose supervisor is gone
-// exits. See `docs/structure/build-test-platforms.md` `Tests`.
+// exits. See `docs/structure/test-harness.md` `Tests`.
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
