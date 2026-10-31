@@ -411,6 +411,10 @@ after a job ends ([generationJobs.ts:847](../../../server/src/jobs/generationJob
 cheap user-turn count, reuse page hashes keyed to committed message changes, and sweep only pages whose references
 were removed.
 
+**Baseline at `ac823f673`:** on a file-backed store of the one 5,000-message chat, `save` took 91.5 ms first and
+55.5 ms unchanged, `autoSave` 17.5 ms when not due and 79.5 ms when due
+([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `checkpoints`).
+
 ### TJ05 — Snapshot accounting ignores the retained scope
 
 **Measured and confirmed. P2.** `retainedBytes` counts output text and changed variables
@@ -442,12 +446,21 @@ does not write per chunk. On slow storage (Docker volumes, SD cards, network sha
 of event-loop time per state write. Recommendation: a bounded ordered writer for journal, state, and history, with
 explicit durable acknowledgment kept for auth and subscription changes.
 
+**Baseline at `ac823f673`:** a `state.json` publication blocked the serving thread 3.1 ms with the real fsync on ext4
+and 0.6 ms with `fsyncSync` stubbed out; it makes 2 fsync calls, so a 100 ms fsync blocks it for a derived 200.6 ms.
+The journal calls `fsyncSync` directly and cannot wait on an asynchronous one, so that figure is computed, not
+measured ([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `statePublication`).
+
 ### SD05 — Startup renormalizes every record
 
 **Measured. P3.** `normalizeStoredRecords` parses, normalizes and serializes every resource of every kind before
 listening ([resourceStore.ts:522](../../../server/src/data/resourceStore.ts#L522)); reopening 300 characters of
 256 KiB with 3,000 chats took 760 ms and wrote nothing. Recommendation: version the normalization so unchanged
 compatible records skip the pass.
+
+**Baseline at `ac823f673`:** reopening the sync-traffic fixture (300 characters of about 128 KiB, half the size above,
+with 3,000 chats) took 381.5 ms and changed no row
+([`byte-budgets-probe`](probes/byte-budgets-probe.results.json), case `open`).
 
 ## Traffic between client and server
 

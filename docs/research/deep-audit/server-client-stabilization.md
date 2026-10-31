@@ -141,6 +141,8 @@ The local archive route invokes this validation [before entering maintenance](..
 
 With one synthetic chat containing 5,000 messages of 2,048 ASCII characters each, validation took **197.2 ms** and replacement **130.3 ms** in this workspace. Each is a synchronous interval; larger histories and checkpoints can increase both CPU and live allocations. These are single illustrative observations, not production latency estimates.
 
+**Baseline at `ac823f673`:** a store of one 5,000-message chat validated in 70.0 ms and installed in 107.7 ms (47.6 MiB of heap); the 300-character, 3,000-chat store validated in 381.9 ms and installed in 630.7 ms (126.9 MiB), with a longest event-loop delay of 621.8–662.2 ms. Direct `readSnapshot` and `replaceAll` calls, without maintenance or the safety snapshot ([`byte-budgets-probe`](../deep-audit-with-fable/probes/byte-budgets-probe.results.json), case `restore`).
+
 **Existing protection:** staged uploads, safety snapshots, maintenance admission, transactional replacement, and epoch fencing protect consistency. Moving work must retain those guarantees.
 
 **Recommendation:** validate staged databases in a worker and avoid returning the entire validated database as a large object graph. Consider a dedicated database worker for both normal queries and replacement, or a carefully fenced staged database installation protocol. Expose restore progress and admission state. Merely adding `await` around a synchronous loop will not isolate it from the serving thread.
@@ -159,6 +161,8 @@ The same synthetic chat produced:
 | ----------------------- | ---------- | -------------- | ----------------- | ----------------------------------- |
 | 1                       | 33.5 ms    | 36.2 ms        | 10,454,174 bytes  | 31.6 MiB                            |
 | 5                       | 289.8 ms   | 167.3 ms       | 52,270,510 bytes  | 113.7 MiB                           |
+
+**Baseline at `ac823f673`:** one reference to the 5,000-message chat read in 17.4 ms and stringified in 11.9 ms (10,610,528 bytes, 32.1 MiB of heap, 45.7 ms through the route); five **distinct** chats of that size took 97.1 ms and 98.9 ms (53,052,280 bytes, 127.2 MiB, 284.5 ms through the route); a summary read of 3,000 chats took 26.6 ms first and 14.1 ms after (1,226,803 bytes, 4.9 MiB). A 500-chat load of 106,314,480 JSON bytes is one call of 575.7 ms today; a played budget splits it into 7 rounds (479.6 ms) at 16 MiB or 4 (532.2 ms) at 32 MiB when each chat may be left out, and keeps it one round when the whole load is one character group. A 500-character detached export of 172,330,375 bytes is one call of 1,071.9 ms, or 11 rounds (792.1 ms) at 16 MiB and 6 (836.2 ms) at 32 MiB. Round times are in-process, with no network ([`byte-budgets-probe`](../deep-audit-with-fable/probes/byte-budgets-probe.results.json), cases `readOneReference`, `readFiveChats`, `readSummaries`, `continuation`).
 
 This exercised the store directly with inputs the route accepts; it was not an HTTP load test. Duplicate references are an API amplification case, not a claim that the normal UI routinely sends duplicates. Distinct large chats and collections still have the underlying byte-budget problem.
 
@@ -283,6 +287,8 @@ After a command job's terminal event, [the client launches follow-ups](../../../
 The [global 100 MiB body limiter](../../../server/src/app.ts#L637) runs before the general resource route's authentication and route limiter. [limitedBody](../../../server/src/routes/limitedBody.ts#L6) delegates to Hono's body-limit middleware. In the installed Hono 4.13.9 implementation, a body without a trusted Content-Length is read into a chunk array before the downstream handler runs. Consequently, an unauthenticated streamed request to a general resource endpoint can incur the buffering work before it is rejected.
 
 An in-process `createServerContext` probe sent 48 chunks of 64 KiB, with no auth or Content-Length, to `POST /api/resources/read`. It consumed all **3,145,728 bytes** before returning HTTP 400 with `No auth header`. Controls using `/api/resources/boot` and `/api/resources/boot/` each pulled only one prefetched 64 KiB chunk before the same rejection: those routes use their own post-auth cap. The trailing-slash form did not bypass that control in the actual runtime.
+
+**Baseline at `ac823f673`:** the read route pulled all 3,145,728 bytes (48 chunks) before its 400 `No auth header`; both boot paths pulled 65,536 bytes ([`byte-budgets-probe`](../deep-audit-with-fable/probes/byte-budgets-probe.results.json), case `preAuthBody`).
 
 **Impact:** unnecessary memory/work before admission, potentially multiplied by concurrent slow or large requests. The 100 MiB cap still applies; this is neither an authentication bypass nor proof of an observed production outage. The probe did not attempt a maximum-size or concurrent load.
 

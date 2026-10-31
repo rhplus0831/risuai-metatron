@@ -1,0 +1,714 @@
+{
+  "probe": "byte-budgets-probe",
+  "commit": "ac823f673b419bbb7ea1f68ecd6b5fec48f7f4d4",
+  "node": "v24.21.0",
+  "sqlite": "3.53.4",
+  "gcExposed": true,
+  "scratchFilesystem": {
+    "path": "/home/codex/.cache/byte-budgets-probe",
+    "type": "ext4"
+  },
+  "loadAverage": {
+    "before": [0.45, 0.62, 0.5],
+    "after": [0.75, 0.68, 0.53]
+  },
+  "runs": 7,
+  "slowRuns": {
+    "runs": 3,
+    "cases": ["restore", "continuation"]
+  },
+  "fixtures": {
+    "longChats": {
+      "characters": 1,
+      "chats": 5,
+      "messages": 25000,
+      "resources": 23,
+      "fileBytes": 104370176
+    },
+    "library": {
+      "characters": 300,
+      "chats": 3000,
+      "messages": 2000,
+      "resources": 325,
+      "fileBytes": 60559360
+    },
+    "oneLongChat": {
+      "characters": 1,
+      "chats": 1,
+      "messages": 5000,
+      "resources": 23,
+      "fileBytes": 20959232
+    },
+    "continuation": {
+      "characters": 501,
+      "chats": 5500,
+      "messages": 130000,
+      "resources": 523,
+      "fileBytes": 546451456
+    }
+  },
+  "cases": {
+    "preAuthBody": {
+      "chunks": 48,
+      "chunkBytes": 65536,
+      "bytesOffered": 3145728,
+      "read": {
+        "route": "/api/resources/read",
+        "bytesPulled": 3145728,
+        "chunksPulled": 48,
+        "status": 400,
+        "error": "No auth header"
+      },
+      "controls": [
+        {
+          "route": "/api/resources/boot",
+          "bytesPulled": 65536,
+          "chunksPulled": 1,
+          "status": 400,
+          "error": "No auth header"
+        },
+        {
+          "route": "/api/resources/boot/",
+          "bytesPulled": 65536,
+          "chunksPulled": 1,
+          "status": 400,
+          "error": "No auth header"
+        }
+      ],
+      "note": "The stream's default high water mark prefetches one chunk, so a route that reads nothing still pulls 65,536 bytes."
+    },
+    "readOneReference": {
+      "store": {
+        "readRefs": {
+          "medianMs": 17.4,
+          "runs": [18.2, 19.4, 17.4, 17.4, 17.4, 17.4, 17.6]
+        },
+        "stringify": {
+          "medianMs": 11.9,
+          "runs": [16.1, 12, 11.8, 11.9, 11.8, 11.8, 11.9]
+        },
+        "jsonBytes": 10610528,
+        "heapDeltaMiB": 32.1,
+        "heapDeltaMiBRuns": [32.1, 32.1, 32.1, 32.1, 32.1, 32.1, 32.1]
+      },
+      "route": {
+        "medianMs": 45.7,
+        "runs": [53.6, 50.5, 47.3, 44.6, 43.4, 44.1, 45.7],
+        "jsonBytes": 10610543,
+        "wireBytes": 210620
+      }
+    },
+    "readFiveChats": {
+      "store": {
+        "readRefs": {
+          "medianMs": 97.1,
+          "runs": [97.2, 104.4, 96.4, 96.5, 96.3, 97.1, 97.6]
+        },
+        "stringify": {
+          "medianMs": 98.9,
+          "runs": [98.2, 98.7, 98.9, 98, 99.2, 99.1, 99]
+        },
+        "jsonBytes": 53052280,
+        "heapDeltaMiB": 127.2,
+        "heapDeltaMiBRuns": [127.2, 127.2, 127.2, 127.1, 127.2, 127.2, 127.2]
+      },
+      "route": {
+        "medianMs": 284.5,
+        "runs": [291, 281.2, 285.2, 281.7, 284.5, 285.6, 282.1],
+        "jsonBytes": 53052355,
+        "wireBytes": 1049605
+      }
+    },
+    "readSummaries": {
+      "characters": 300,
+      "store": {
+        "firstMs": 26.6,
+        "laterMedianMs": 14.1,
+        "runs": [26.6, 14.9, 13.9, 14.3, 13.4, 12.9, 14.2],
+        "jsonBytes": 1226803,
+        "heapDeltaMiB": 4.9,
+        "heapDeltaMiBRuns": [6.1, 5.1, 4.8, 4.9, 4.9, 4.8, 4.9]
+      },
+      "route": {
+        "firstMs": 37.3,
+        "laterMedianMs": 21.5,
+        "runs": [37.3, 21.3, 21.2, 21.6, 21.3, 21.8, 21.6],
+        "jsonBytes": 1226803,
+        "wireBytes": 113398
+      }
+    },
+    "restore": {
+      "note": "readSnapshot and replaceAll are called directly: the maintenance gate and the safety snapshot are not in this measurement. eventLoopDelayMs measures scheduling delay, not the longest synchronous interval; validate and install are that interval.",
+      "threeThousandChatStore": {
+        "backupToMs": 112.2,
+        "snapshotBytes": 60559360,
+        "validate": {
+          "medianMs": 381.9,
+          "runs": [397.7, 381.9, 379.1]
+        },
+        "install": {
+          "medianMs": 630.7,
+          "runs": [660.8, 630.7, 621.3]
+        },
+        "heapDeltaMiB": 126.9,
+        "heapDeltaMiBRuns": [126.6, 127.1, 126.9],
+        "eventLoopDelayMs": [
+          {
+            "min": 1.1,
+            "p50": 1.1,
+            "p99": 399.2,
+            "max": 662.2
+          },
+          {
+            "min": 0.9,
+            "p50": 1.1,
+            "p99": 383.5,
+            "max": 632.3
+          },
+          {
+            "min": 0.7,
+            "p50": 1.1,
+            "p99": 380.6,
+            "max": 621.8
+          }
+        ]
+      },
+      "fiveThousandMessageStore": {
+        "backupToMs": 69.8,
+        "snapshotBytes": 20959232,
+        "validate": {
+          "medianMs": 70,
+          "runs": [72.7, 69.3, 70]
+        },
+        "install": {
+          "medianMs": 107.7,
+          "runs": [123.1, 107.3, 107.7]
+        },
+        "heapDeltaMiB": 47.6,
+        "heapDeltaMiBRuns": [47.6, 47.8, 47.6],
+        "eventLoopDelayMs": [
+          {
+            "min": 1,
+            "p50": 1.1,
+            "p99": 74,
+            "max": 124.4
+          },
+          {
+            "min": 1.1,
+            "p50": 1.1,
+            "p99": 70.6,
+            "max": 108.6
+          },
+          {
+            "min": 1.1,
+            "p50": 1.1,
+            "p99": 71.3,
+            "max": 109
+          }
+        ]
+      }
+    },
+    "checkpoints": {
+      "conditions": "File-backed store (WAL, synchronous FULL), one 5,000-message chat. The audit's results record journal_mode wal, which an in-memory database cannot report, but not which store the two saves ran on, so file-backed is the closest reading.",
+      "messages": 5000,
+      "userTurns": 2500,
+      "saveFirst": {
+        "medianMs": 91.5,
+        "runs": [103.6, 92.2, 91.5, 90.9, 95.6, 90.8, 90.9]
+      },
+      "saveUnchanged": {
+        "medianMs": 55.5,
+        "runs": [58.1, 55.2, 54.9, 55.5, 61.7, 56.5, 55.5]
+      },
+      "autoSaveNotDue": {
+        "medianMs": 17.5,
+        "runs": [17.3, 17.8, 17.4, 17.5, 17.8, 17.5, 17.1]
+      },
+      "autoSaveDue": {
+        "medianMs": 79.5,
+        "runs": [79.8, 79.5, 79.3, 78.9, 78.6, 81.2, 81.9],
+        "note": "Pages already stored, autoKeep 2, so a run saves, writes the policy, prunes and sweeps."
+      }
+    },
+    "open": {
+      "open": {
+        "medianMs": 381.5,
+        "runs": [382.9, 379.5, 384.2, 378.5, 384.2, 378.2, 381.5]
+      },
+      "close": {
+        "medianMs": 0.3,
+        "runs": [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+      },
+      "revisionsUnchanged": true,
+      "statementsAgainstResources": {
+        "prepared": 42,
+        "INSERT": 0,
+        "UPDATE": 0,
+        "DELETE": 7,
+        "changes": 0,
+        "note": "Across all runs. The DELETE runs are the retired kinds' pass; `changes` sums the rows every counted run touched."
+      }
+    },
+    "statePublication": {
+      "note": "The journal has no injectable fs and calls fsyncSync synchronously, so no caller can wait for a promise. asyncFsyncStub returns at once and starts an unref'd timer, so its blocked time excludes fsync; blockedAt100MsFsyncMs adds it back.",
+      "writeFailures": 0,
+      "realFsync": {
+        "medianMs": 3.1,
+        "runs": [3.1, 3.2, 3, 3.1, 2.9, 3.2, 2.8]
+      },
+      "asyncFsyncStub": {
+        "medianMs": 0.6,
+        "runs": [0.6, 0.6, 0.5, 0.6, 0.6, 0.6, 0.6],
+        "fsyncCalls": 2,
+        "fsyncCallsRuns": [2, 2, 2, 2, 2, 2, 2],
+        "timersFiredAfterReturn": 14,
+        "timersFiredBeforeReturn": 0
+      },
+      "blockedAt100MsFsyncMs": {
+        "derived": true,
+        "value": 200.6,
+        "note": "A synchronous fsync blocks the thread for its whole duration."
+      }
+    },
+    "continuation": {
+      "note": "At this commit the server has no budget, no continue and no unanswered field: this probe plays the budget over SQL charges and re-sends the rest. totalMs sums the rounds' routes; chargeMs is the SQL charging apart from it. oneCall.heapDeltaMiB is readRefs plus JSON.stringify on a store handle, with both held.",
+      "chatLoad": {
+        "note": "The two unit models disagree. chatUnits makes each chat a unit, so the load continues in rounds. characterGroups puts every chat naming one character in its one group, so the whole load is the always-served first group, in one round.",
+        "oneCall": {
+          "medianMs": 575.7,
+          "runs": [610.9, 575.7, 569.7],
+          "jsonBytes": 106314480,
+          "wireBytes": 2261397,
+          "heapDeltaMiB": 222.9
+        },
+        "budgets": {
+          "16MiB": {
+            "chatUnits": {
+              "rounds": 7,
+              "perRound": [
+                {
+                  "chargedBytes": 16776904,
+                  "jsonBytes": 16797692,
+                  "wireBytes": 357173,
+                  "ms": 70.9
+                },
+                {
+                  "chargedBytes": 16776972,
+                  "jsonBytes": 16797760,
+                  "wireBytes": 357465,
+                  "ms": 78.3
+                },
+                {
+                  "chargedBytes": 16776993,
+                  "jsonBytes": 16797781,
+                  "wireBytes": 357440,
+                  "ms": 78.7
+                },
+                {
+                  "chargedBytes": 16776993,
+                  "jsonBytes": 16797781,
+                  "wireBytes": 357237,
+                  "ms": 71.4
+                },
+                {
+                  "chargedBytes": 16776993,
+                  "jsonBytes": 16797781,
+                  "wireBytes": 357676,
+                  "ms": 79
+                },
+                {
+                  "chargedBytes": 16776993,
+                  "jsonBytes": 16797781,
+                  "wireBytes": 357649,
+                  "ms": 78.6
+                },
+                {
+                  "chargedBytes": 5521542,
+                  "jsonBytes": 5528444,
+                  "wireBytes": 117555,
+                  "ms": 23.6
+                }
+              ],
+              "totalMs": {
+                "medianMs": 479.6,
+                "runs": [478.5, 489.5, 479.6]
+              },
+              "chargeMs": {
+                "medianMs": 64.3,
+                "runs": [68.9, 64.3, 64.3]
+              }
+            },
+            "characterGroups": {
+              "rounds": 1,
+              "perRound": [
+                {
+                  "chargedBytes": 106183390,
+                  "jsonBytes": 106314480,
+                  "wireBytes": 2261397,
+                  "ms": 571.5
+                }
+              ],
+              "totalMs": {
+                "medianMs": 571.5,
+                "runs": [572.5, 571.5, 570.1]
+              },
+              "chargeMs": {
+                "medianMs": 57.9,
+                "runs": [57.9, 58.3, 57.1]
+              }
+            }
+          },
+          "32MiB": {
+            "chatUnits": {
+              "rounds": 4,
+              "perRound": [
+                {
+                  "chargedBytes": 33553876,
+                  "jsonBytes": 33595362,
+                  "wireBytes": 714468,
+                  "ms": 161.4
+                },
+                {
+                  "chargedBytes": 33553986,
+                  "jsonBytes": 33595472,
+                  "wireBytes": 714503,
+                  "ms": 187.1
+                },
+                {
+                  "chargedBytes": 33553986,
+                  "jsonBytes": 33595472,
+                  "wireBytes": 715141,
+                  "ms": 159.5
+                },
+                {
+                  "chargedBytes": 5521542,
+                  "jsonBytes": 5528444,
+                  "wireBytes": 117555,
+                  "ms": 23.8
+                }
+              ],
+              "totalMs": {
+                "medianMs": 532.2,
+                "runs": [529.4, 532.2, 532.7]
+              },
+              "chargeMs": {
+                "medianMs": 59.9,
+                "runs": [59.1, 59.9, 60]
+              }
+            },
+            "characterGroups": {
+              "rounds": 1,
+              "perRound": [
+                {
+                  "chargedBytes": 106183390,
+                  "jsonBytes": 106314480,
+                  "wireBytes": 2261397,
+                  "ms": 572.4
+                }
+              ],
+              "totalMs": {
+                "medianMs": 572.4,
+                "runs": [572.7, 570.9, 572.4]
+              },
+              "chargeMs": {
+                "medianMs": 57.5,
+                "runs": [57.5, 56.9, 58.4]
+              }
+            }
+          }
+        }
+      },
+      "detachedExport": {
+        "oneCall": {
+          "medianMs": 1071.9,
+          "runs": [1092.3, 1071.9, 1060.7],
+          "jsonBytes": 172330375,
+          "wireBytes": 5027971,
+          "heapDeltaMiB": 355.3
+        },
+        "budgets": {
+          "16MiB": {
+            "collections": {
+              "rounds": 11,
+              "perRound": [
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543269,
+                  "wireBytes": 482256,
+                  "ms": 76.1
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543386,
+                  "wireBytes": 482753,
+                  "ms": 75.5
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543872,
+                  "wireBytes": 483705,
+                  "ms": 75.3
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 483123,
+                  "ms": 76.3
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 482118,
+                  "ms": 76.1
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 482477,
+                  "ms": 75.7
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 483099,
+                  "ms": 76.3
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 482433,
+                  "ms": 76.4
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 482187,
+                  "ms": 76
+                },
+                {
+                  "chargedBytes": 16435248,
+                  "jsonBytes": 16543914,
+                  "wireBytes": 482777,
+                  "ms": 75.7
+                },
+                {
+                  "chargedBytes": 6848020,
+                  "jsonBytes": 6893350,
+                  "wireBytes": 201941,
+                  "ms": 32.2
+                }
+              ],
+              "totalMs": {
+                "medianMs": 792.1,
+                "runs": [787.2, 794.5, 792.1]
+              },
+              "chargeMs": {
+                "medianMs": 103,
+                "runs": [109.6, 103, 102.9]
+              }
+            }
+          },
+          "32MiB": {
+            "collections": {
+              "rounds": 6,
+              "perRound": [
+                {
+                  "chargedBytes": 33212897,
+                  "jsonBytes": 33431217,
+                  "wireBytes": 975080,
+                  "ms": 155.3
+                },
+                {
+                  "chargedBytes": 33212897,
+                  "jsonBytes": 33432370,
+                  "wireBytes": 976707,
+                  "ms": 172.2
+                },
+                {
+                  "chargedBytes": 33212897,
+                  "jsonBytes": 33432401,
+                  "wireBytes": 974635,
+                  "ms": 153.8
+                },
+                {
+                  "chargedBytes": 33212897,
+                  "jsonBytes": 33432401,
+                  "wireBytes": 975669,
+                  "ms": 157.6
+                },
+                {
+                  "chargedBytes": 33212897,
+                  "jsonBytes": 33432401,
+                  "wireBytes": 975076,
+                  "ms": 158.6
+                },
+                {
+                  "chargedBytes": 5136015,
+                  "jsonBytes": 5170035,
+                  "wireBytes": 151423,
+                  "ms": 29.8
+                }
+              ],
+              "totalMs": {
+                "medianMs": 836.2,
+                "runs": [835.9, 836.2, 862.2]
+              },
+              "chargeMs": {
+                "medianMs": 100.5,
+                "runs": [100.1, 100.5, 100.9]
+              }
+            }
+          }
+        }
+      },
+      "syncTrafficFixture": {
+        "note": "The library as it stands: its largest character's 10 chats, and its 300 characters.",
+        "chatLoad": {
+          "note": "The two unit models disagree. chatUnits makes each chat a unit, so the load continues in rounds. characterGroups puts every chat naming one character in its one group, so the whole load is the always-served first group, in one round.",
+          "oneCall": {
+            "medianMs": 19.3,
+            "runs": [21.9, 18.9, 19.3],
+            "jsonBytes": 4248630,
+            "wireBytes": 80279,
+            "heapDeltaMiB": 12.9
+          },
+          "budgets": {
+            "16MiB": {
+              "chatUnits": {
+                "rounds": 1,
+                "perRound": [
+                  {
+                    "chargedBytes": 4244650,
+                    "jsonBytes": 4248630,
+                    "wireBytes": 80279,
+                    "ms": 18.4
+                  }
+                ],
+                "totalMs": {
+                  "medianMs": 18.4,
+                  "runs": [17.9, 18.4, 18.5]
+                },
+                "chargeMs": {
+                  "medianMs": 2.6,
+                  "runs": [2.9, 2.5, 2.6]
+                }
+              },
+              "characterGroups": {
+                "rounds": 1,
+                "perRound": [
+                  {
+                    "chargedBytes": 4244650,
+                    "jsonBytes": 4248630,
+                    "wireBytes": 80279,
+                    "ms": 18.2
+                  }
+                ],
+                "totalMs": {
+                  "medianMs": 18.2,
+                  "runs": [18.3, 18, 18.2]
+                },
+                "chargeMs": {
+                  "medianMs": 2.6,
+                  "runs": [2.7, 2.6, 2.6]
+                }
+              }
+            },
+            "32MiB": {
+              "chatUnits": {
+                "rounds": 1,
+                "perRound": [
+                  {
+                    "chargedBytes": 4244650,
+                    "jsonBytes": 4248630,
+                    "wireBytes": 80279,
+                    "ms": 18.6
+                  }
+                ],
+                "totalMs": {
+                  "medianMs": 18.6,
+                  "runs": [18.6, 18.3, 19.2]
+                },
+                "chargeMs": {
+                  "medianMs": 2.6,
+                  "runs": [2.6, 2.7, 2.6]
+                }
+              },
+              "characterGroups": {
+                "rounds": 1,
+                "perRound": [
+                  {
+                    "chargedBytes": 4244650,
+                    "jsonBytes": 4248630,
+                    "wireBytes": 80279,
+                    "ms": 18.6
+                  }
+                ],
+                "totalMs": {
+                  "medianMs": 18.6,
+                  "runs": [19.2, 18.6, 18.2]
+                },
+                "chargeMs": {
+                  "medianMs": 2.7,
+                  "runs": [2.7, 2.7, 2.5]
+                }
+              }
+            }
+          }
+        },
+        "detachedExport": {
+          "oneCall": {
+            "medianMs": 49.9,
+            "runs": [49.9, 50.3, 49.2],
+            "jsonBytes": 5788774,
+            "wireBytes": 204850,
+            "heapDeltaMiB": 19.1
+          },
+          "budgets": {
+            "16MiB": {
+              "collections": {
+                "rounds": 1,
+                "perRound": [
+                  {
+                    "chargedBytes": 5154300,
+                    "jsonBytes": 5788774,
+                    "wireBytes": 204850,
+                    "ms": 49.9
+                  }
+                ],
+                "totalMs": {
+                  "medianMs": 49.9,
+                  "runs": [49.9, 49.9, 49.2]
+                },
+                "chargeMs": {
+                  "medianMs": 8.2,
+                  "runs": [8.2, 8.1, 8.2]
+                }
+              }
+            },
+            "32MiB": {
+              "collections": {
+                "rounds": 1,
+                "perRound": [
+                  {
+                    "chargedBytes": 5154300,
+                    "jsonBytes": 5788774,
+                    "wireBytes": 204850,
+                    "ms": 48.5
+                  }
+                ],
+                "totalMs": {
+                  "medianMs": 48.5,
+                  "runs": [48.4, 48.5, 49.6]
+                },
+                "chargeMs": {
+                  "medianMs": 8.2,
+                  "runs": [8, 8.3, 8.2]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
