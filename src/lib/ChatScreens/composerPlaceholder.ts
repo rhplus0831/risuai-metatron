@@ -3,7 +3,7 @@ import { language } from "src/lang";
 // The placeholder stays on one line and Chromium clips its end without an ellipsis, so a long
 // persona name would otherwise hide the character's on a phone. The character's name comes last and
 // keeps the width it can get.
-const PERSONA_LIMIT = 10;
+const PERSONA_LIMIT = 8;
 
 function shortenedPersona(name: string) {
     const characters = Array.from(name);

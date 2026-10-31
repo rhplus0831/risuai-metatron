@@ -15,9 +15,9 @@ describe("composerPlaceholder", () => {
     });
 
     it("shortens a long persona, counting an emoji as one character, and keeps the character whole", () => {
-        expect(composerPlaceholder({ ...names, persona: "가".repeat(10) })).toBe(`${"가".repeat(10)} → 아리아`);
-        expect(composerPlaceholder({ ...names, persona: "😀".repeat(11), character: "나".repeat(40) })).toBe(
-            `${"😀".repeat(10)}… → ${"나".repeat(40)}`,
+        expect(composerPlaceholder({ ...names, persona: "가".repeat(8) })).toBe(`${"가".repeat(8)} → 아리아`);
+        expect(composerPlaceholder({ ...names, persona: "😀".repeat(9), character: "나".repeat(40) })).toBe(
+            `${"😀".repeat(8)}… → ${"나".repeat(40)}`,
         );
     });
 

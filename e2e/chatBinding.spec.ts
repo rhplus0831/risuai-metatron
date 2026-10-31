@@ -441,6 +441,15 @@ test("an unbound chat refuses to send and opens the binding dialog; its rows bin
     const ref = { chaId, chatId: chats.unbound };
     await expect(sendButton(page)).toHaveText("Set up this chat");
     await expect(composer(page)).toHaveAttribute("placeholder", "Setup required");
+    // A custom CSS size on the composer reaches its placeholder too.
+    expect(
+        await composer(page).evaluate((input) => {
+            input.style.fontSize = "33px";
+            const size = getComputedStyle(input, "::placeholder").fontSize;
+            input.style.fontSize = "";
+            return size;
+        }),
+    ).toBe("33px");
     await expect(composer(page)).not.toBeEditable();
     const bodiesBefore = providerBodies.length;
     await keptDraft(page, "Hello there");

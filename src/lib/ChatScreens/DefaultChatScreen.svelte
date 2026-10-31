@@ -1110,7 +1110,7 @@
                     {/if}
 
                     <textarea
-                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm placeholder:whitespace-pre placeholder:overflow-hidden placeholder:text-ellipsis read-only:cursor-not-allowed"
+                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:whitespace-pre placeholder:overflow-hidden placeholder:text-ellipsis read-only:cursor-not-allowed"
                         placeholder={inputPlaceholder}
                         readonly={bindingIncomplete}
                         bind:value={composer.input}
