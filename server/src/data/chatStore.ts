@@ -36,9 +36,10 @@ import { isValidResourceId, nextRevision, ResourceValidationError, serialize } f
 
 /**
  * The chat tables of the resource database: chat metadata (`chats`), one row per message (`messages`,
- * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), and each
- * character's chat order (`chatOrders`). The resource store owns the connection, the epoch, and the
- * transactions; this module prepares, applies, reads, and validates chat changes inside them.
+ * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), each
+ * character's chat order (`chatOrders`), and each chat's stored summary projection (`chatSummaries`).
+ * The resource store owns the connection, the epoch, and the transactions; this module prepares,
+ * applies, reads, and validates chat changes inside them.
  *
  * Positions: an insert shifts the rows after its anchor by the number of inserted messages; a
  * removal leaves a gap. Positions are distinct within a chat but not unique-constrained, because
@@ -113,6 +114,29 @@ export const CHAT_GROUP_TABLE_SQL = `
 `;
 
 /**
+ * Each chat's summary projection, so a summary read costs its stored text and not a parse of the
+ * whole metadata. `text` is `summaryText` of the chat's stored metadata: without the last message's
+ * time (memoized apart) and without the revision. `revision` is the chat's revision at the last write
+ * by a server that maintains this table, and a row is fresh when it equals `chats.revision`: an older
+ * server ignores the table and bumps revisions as it writes, so its edits leave rows behind, and a
+ * stale or missing row is rebuilt at open (`openChatSchema`) or by the next reader
+ * (`freshSummaryText`). Keyed by the chat's incarnation, so deleting the chat drops its row by
+ * cascade. Created when missing; not part of the snapshot layout (`CHAT_TABLE_COLUMNS`): a snapshot's
+ * copy is ignored and a restore writes its own rows.
+ */
+export const CHAT_SUMMARY_TABLE_SQL = `
+    CREATE TABLE IF NOT EXISTS chatSummaries (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        text TEXT NOT NULL
+    ) STRICT;
+`;
+
+const UPSERT_CHAT_SUMMARY_SQL =
+    "INSERT INTO chatSummaries (chatSeq, revision, text) VALUES (?, ?, ?) " +
+    "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision, text = excluded.text";
+
+/**
  * How many group ids a chat remembers (the newest ones; the oldest is dropped). A lost answer is
  * resent on the client's next save cycle, so the ids need to outlive only the other writers' groups
  * on that chat until then. Past it, a resend whose base is not newer than the oldest remembered
@@ -136,9 +160,16 @@ type RememberedResult = {
 type Generation = { id: string; seq: number; final: boolean };
 
 type PreparedOp =
-    | { op: "create"; meta: string; messages: PreparedMessage[]; renamed: boolean; index: number | null }
+    | {
+          op: "create";
+          meta: string;
+          summary: string;
+          messages: PreparedMessage[];
+          renamed: boolean;
+          index: number | null;
+      }
     | { op: "delete" }
-    | { op: "replace"; meta: string; messages: PreparedMessage[]; renamed: boolean }
+    | { op: "replace"; meta: string; summary: string; messages: PreparedMessage[]; renamed: boolean }
     | {
           op: "meta";
           set: Record<string, unknown>;
@@ -320,19 +351,24 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 type SummaryFields = Omit<ChatSummary, "characterId" | "id" | "revision">;
+type SummaryProjection = Omit<SummaryFields, "lastMessageAt">;
 
 /**
- * A chat summary's listed fields: the projection of its stored metadata and the time of its last
- * message by position, everything but its identity and revision, in the summary's key order.
+ * The shape of the stored projection (`summaryText`). Bump it whenever the projection's shape changes:
+ * an open that finds another value in the `meta` table's `summaryProjectionVersion` rebuilds every row.
  */
-function summaryFields(meta: Record<string, unknown>, lastMessageAt: number | undefined): SummaryFields {
-    const fields: SummaryFields = {
+export const SUMMARY_PROJECTION_VERSION = 1;
+
+/**
+ * A chat summary's listed fields: the projection of its stored metadata (the JSON copy, never a
+ * normalizer's raw output), everything but its identity, its revision, and the time of its last
+ * message, in the summary's key order.
+ */
+function summaryFields(meta: Record<string, unknown>): SummaryProjection {
+    const fields: SummaryProjection = {
         name: typeof meta.name === "string" ? meta.name : "",
         fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
     };
-    if (lastMessageAt !== undefined) {
-        fields.lastMessageAt = lastMessageAt;
-    }
     if (typeof meta.folderId === "string") {
         fields.folderId = meta.folderId;
     }
@@ -356,15 +392,18 @@ function summaryFields(meta: Record<string, unknown>, lastMessageAt: number | un
     return fields;
 }
 
-/** Whether two `summaryFields` results are equal (every value is a string, number, or boolean). */
-function sameSummaryFields(a: SummaryFields, b: SummaryFields): boolean {
-    const left = a as Record<string, unknown>;
-    const right = b as Record<string, unknown>;
-    const keys = Object.keys(left);
-    return (
-        keys.length === Object.keys(right).length &&
-        keys.every((key) => Object.hasOwn(right, key) && left[key] === right[key])
-    );
+/**
+ * The stored form of a chat's projection (`chatSummaries.text`). Its key order is fixed and every value
+ * is a string, number, or boolean, so two projections are equal exactly when their texts are.
+ */
+function summaryText(meta: Record<string, unknown>): string {
+    return JSON.stringify(summaryFields(meta));
+}
+
+/** A stored projection's fields with the time of the chat's last message, in the summary's key order. */
+function summaryWithTime(text: string, lastMessageAt: number | undefined): SummaryFields {
+    const { name, fmIndex, ...rest } = JSON.parse(text) as SummaryProjection;
+    return { name, fmIndex, ...(lastMessageAt === undefined ? {} : { lastMessageAt }), ...rest };
 }
 
 /**
@@ -432,11 +471,12 @@ function prepareMessage(input: unknown): PreparedMessage {
 function prepareWholeChat(
     chat: unknown,
     chatId: string,
-): { meta: string; messages: PreparedMessage[]; renamed: boolean } {
+): { meta: string; summary: string; messages: PreparedMessage[]; renamed: boolean } {
     if (!isPlainObject(chat)) {
         throw new ResourceValidationError("chat must be an object");
     }
-    const meta = serialize(normalizeChatMeta(chat, chatId)).text;
+    const { text: meta, stored } = serialize(normalizeChatMeta(chat, chatId));
+    const summary = summaryText(stored as Record<string, unknown>);
     // Keep whole-array JSON semantics, but measure depth per message as `prepareMessage` does.
     const sent = chat.message === undefined ? undefined : serialize(chat.message, { arrayElementDepth: true }).stored;
     const messages = normalizeMessageList(sent).map((message) => ({
@@ -448,7 +488,7 @@ function prepareWholeChat(
     const renamed = messages.some(
         (message, index) => (sent as { chatId?: unknown }[] | undefined)?.[index]?.chatId !== message.id,
     );
-    return { meta, messages, renamed };
+    return { meta, summary, messages, renamed };
 }
 
 function prepareGeneration(value: unknown): Generation | null {
@@ -785,6 +825,25 @@ export function countChatOperations(
 }
 
 type ChatRow = { seq: number; revision: number; meta: string };
+/** A chat as a summary read selects it: no metadata, with its joined `chatSummaries` columns (null: no row). */
+type ChatSummaryRow = {
+    seq: number;
+    characterId: string;
+    id: string;
+    revision: number;
+    summaryRevision: number | null;
+    summaryText: string | null;
+};
+/** A `chatSummaries` row's columns, as `freshSummaryText` compares them. */
+type StoredSummary = { revision: number | null; text: string | null };
+/**
+ * One write of `chats.meta` (`writeChatMeta`): a new chat, whose revision starts at 0; new metadata
+ * on a stored chat, at its revision before the group's bump; or a restored row, at its own revision.
+ */
+type ChatMetaWrite =
+    | { kind: "create"; characterId: string; id: string; meta: string }
+    | { kind: "update"; seq: number; revision: number; meta: string }
+    | { kind: "restore"; chat: ChatSnapshotRows["chats"][number] };
 type MessageRow = {
     position: number;
     data: string;
@@ -836,8 +895,59 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
     return { chat, messages };
 }
 
-export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
+/**
+ * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
+ * of `createChatTables` is prepared: creates `chatGroups` and `chatSummaries` when missing and rebuilds
+ * the stored projections. Every chat's when the `meta` table's `summaryProjectionVersion` is missing
+ * or differs from `SUMMARY_PROJECTION_VERSION`, otherwise only the chats with no row or a row at
+ * another revision, so an open with nothing to rebuild writes nothing. The seqs come first and each
+ * chat's metadata is read alone, so a store with a large chat never holds them all. The only pass that
+ * parses metadata for summaries at open; its rows are derived data, not store writes. A metadata
+ * value that cannot be projected throws, naming the chat, with the transaction left for the caller
+ * to roll back.
+ */
+export function openChatSchema(db: DatabaseSync): void {
+    db.exec("BEGIN IMMEDIATE");
     db.exec(CHAT_GROUP_TABLE_SQL);
+    db.exec(CHAT_SUMMARY_TABLE_SQL);
+    const version = String(SUMMARY_PROJECTION_VERSION);
+    const stored = db.prepare("SELECT value FROM meta WHERE key = 'summaryProjectionVersion'").get() as
+        { value: string } | undefined;
+    const sameVersion = stored?.value === version;
+    const rebuilt = db
+        .prepare(
+            sameVersion
+                ? "SELECT c.seq FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq " +
+                      "WHERE s.revision IS NOT c.revision ORDER BY c.seq"
+                : "SELECT seq FROM chats ORDER BY seq",
+        )
+        .all() as { seq: number }[];
+    const selectChat = db.prepare("SELECT characterId, id, revision, meta FROM chats WHERE seq = ?");
+    const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
+    for (const { seq } of rebuilt) {
+        const chat = selectChat.get(seq) as { characterId: string; id: string; revision: number; meta: string };
+        let text: string;
+        try {
+            text = summaryText(JSON.parse(chat.meta) as Record<string, unknown>);
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new Error(`Stored chat ${chat.characterId}/${chat.id} fails its summary projection: ${reason}`, {
+                cause: error,
+            });
+        }
+        upsertSummary.run(seq, chat.revision, text);
+    }
+    if (!sameVersion) {
+        db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('summaryProjectionVersion', ?)").run(version);
+    }
+    db.exec("COMMIT");
+}
+
+/**
+ * Prepares the chat statements and returns the methods over them. The tables must exist:
+ * `openChatSchema` and `createCheckpointTables` (`chatRestoreFloors`) run first.
+ */
+export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
     const selectGroup = db.prepare("SELECT revision, result FROM chatGroups WHERE chatSeq = ? AND groupId = ?");
     const insertGroup = db.prepare("INSERT INTO chatGroups (chatSeq, groupId, revision, result) VALUES (?, ?, ?, ?)");
     const trimGroups = db.prepare(
@@ -857,6 +967,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     );
     const setChatMeta = db.prepare("UPDATE chats SET meta = ?, schemaVersion = ? WHERE seq = ?");
     const bumpChat = db.prepare("UPDATE chats SET revision = revision + ? WHERE seq = ?");
+    // Compare-and-set: a row an older writer left behind stays stale and never turns fresh with old text.
+    const advanceSummary = db.prepare("UPDATE chatSummaries SET revision = ? WHERE chatSeq = ? AND revision = ?");
+    const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
+    const selectSummary = db.prepare("SELECT revision, text FROM chatSummaries WHERE chatSeq = ?");
+    const selectChatMeta = db.prepare("SELECT meta FROM chats WHERE seq = ?");
     const deleteChat = db.prepare("DELETE FROM chats WHERE seq = ?");
     const deleteCharacterChats = db.prepare("DELETE FROM chats WHERE characterId = ?");
     const selectMessage = db.prepare(
@@ -892,10 +1007,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const updateOrder = db.prepare("UPDATE chatOrders SET revision = revision + 1, ids = ? WHERE seq = ?");
     const deleteOrder = db.prepare("DELETE FROM chatOrders WHERE characterId = ?");
     const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta FROM chats ORDER BY seq");
-    // Filter in SQL so a cached character's potentially large meta never leaves SQLite.
-    const selectUncachedChats = db.prepare(
-        "SELECT seq, characterId, id, revision, meta FROM chats WHERE characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY seq",
+    // Summary reads take the stored projection and never select the potentially large metadata.
+    const summaryRead =
+        "SELECT c.seq, c.characterId, c.id, c.revision, s.revision AS summaryRevision, s.text AS summaryText " +
+        "FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq";
+    const selectChatSummary = db.prepare(`${summaryRead} WHERE c.characterId = ? AND c.id = ?`);
+    const selectAllSummaries = db.prepare(`${summaryRead} ORDER BY c.seq`);
+    // Filter in SQL so a cached character's rows never leave SQLite.
+    const selectUncachedSummaries = db.prepare(
+        `${summaryRead} WHERE c.characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY c.seq`,
     );
+    const selectCharacterSummaries = db.prepare(`${summaryRead} WHERE c.characterId = ? ORDER BY c.seq`);
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
@@ -963,16 +1085,68 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return value;
     }
 
-    /** A chat's listed metadata and the memoized time of its last message by position. */
-    function chatSummary(
-        characterId: string,
-        row: { seq: number; id: string; revision: number; meta: string },
-    ): ChatSummary {
+    /**
+     * The one writer of `chats.meta`: the only caller of the statements that write it. Stores the
+     * metadata and its projection together in the caller's transaction, so no write leaves the
+     * projection behind. `summary` is the metadata's `summaryText`, from the caller; nothing is parsed
+     * here. Returns the chat's seq.
+     */
+    function writeChatMeta(write: ChatMetaWrite, summary: string): number {
+        let seq: number;
+        let revision = 0;
+        if (write.kind === "create") {
+            seq = Number(insertChat.run(write.characterId, write.id, CHAT_SCHEMA_VERSION, write.meta).lastInsertRowid);
+        } else if (write.kind === "update") {
+            setChatMeta.run(write.meta, CHAT_SCHEMA_VERSION, write.seq);
+            ({ seq, revision } = write);
+        } else {
+            const { characterId, id, schemaVersion, meta } = write.chat;
+            revision = write.chat.revision;
+            seq = Number(insertRestoredChat.run(characterId, id, revision, schemaVersion, meta).lastInsertRowid);
+        }
+        upsertSummary.run(seq, revision, summary);
+        return seq;
+    }
+
+    /**
+     * A chat's projection at `revision`, the revision its row must match: the stored text when the row
+     * is there, otherwise computed from the stored metadata (one parse) with the row rewritten.
+     * `known` is the row's columns when the caller's read joined them (its metadata is then read here
+     * by seq, on a miss only), or the metadata the caller holds (the row is then read here). Call it
+     * after the caller's read statement ended.
+     *
+     * The rewrite is derived data: it counts as no store write and publishes nothing. It never runs
+     * inside a transaction: a failure there (a full disk) can make SQLite roll the whole transaction
+     * back, and going on past it would let the rest of the batch autocommit. Outside one it is
+     * best-effort, since a read must not fail because a derived row could not be written.
+     */
+    function freshSummaryText(seq: number, revision: number, known: StoredSummary | { meta: string }): string {
+        const stored = "meta" in known ? (selectSummary.get(seq) as StoredSummary | undefined) : known;
+        if (stored && stored.revision === revision && stored.text !== null) {
+            return stored.text;
+        }
+        const meta = "meta" in known ? known.meta : (selectChatMeta.get(seq) as { meta: string }).meta;
+        const text = summaryText(JSON.parse(meta) as Record<string, unknown>);
+        if (!db.isTransaction) {
+            try {
+                upsertSummary.run(seq, revision, text);
+            } catch {
+                // The row stays stale and the next read computes it again.
+            }
+        }
+        return text;
+    }
+
+    /** A chat's summary: its stored projection and the memoized time of its last message by position. */
+    function chatSummary(row: ChatSummaryRow): ChatSummary {
         return {
-            characterId,
+            characterId: row.characterId,
             id: row.id,
             revision: tokens.token(row.seq, row.revision),
-            ...summaryFields(JSON.parse(row.meta) as Record<string, unknown>, lastMessageAt(row.seq)),
+            ...summaryWithTime(
+                freshSummaryText(row.seq, row.revision, { revision: row.summaryRevision, text: row.summaryText }),
+                lastMessageAt(row.seq),
+            ),
         };
     }
 
@@ -1368,8 +1542,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             row && group.ops.every((op) => op.op !== "create" && op.op !== "replace" && op.op !== "delete")
                 ? tokens.token(row.seq, row.revision)
                 : null;
-        // The stored metadata and last message time before the group, for its summary (by-id groups).
+        // The stored metadata before the group, for the field form of its change (by-id groups).
         const metaBefore = patchBase ? row!.meta : undefined;
+        /** The projection right before the group's first `meta` op (by-id groups). */
+        let summaryBefore: string | undefined;
+        /** The projection the group's last `meta` op wrote. */
+        let summaryAfter: string | undefined;
         /** Taken right before the group's first op that can change its messages, even when absent. */
         let timeBefore: { time: number | undefined } | undefined;
         const touched = new Set<string>();
@@ -1397,8 +1575,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
             switch (op.op) {
                 case "create": {
-                    const created = insertChat.run(characterId, chatId, CHAT_SCHEMA_VERSION, op.meta);
-                    const seq = Number(created.lastInsertRowid);
+                    const seq = writeChatMeta({ kind: "create", characterId, id: chatId, meta: op.meta }, op.summary);
                     insertAt(seq, -1, op.messages);
                     const order = ensureOrder(characterId);
                     const ids = order.ids.filter((id) => id !== chatId);
@@ -1436,7 +1613,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         generationSeq: number;
                         generationHistory: string | null;
                     }[];
-                    setChatMeta.run(op.meta, CHAT_SCHEMA_VERSION, chatSeq);
+                    writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta: op.meta }, op.summary);
                     deleteMessages.run(chatSeq);
                     insertAt(chatSeq, -1, op.messages);
                     const kept = new Set(op.messages.map((message) => message.id));
@@ -1459,6 +1636,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
                 case "meta": {
+                    if (patchBase && summaryBefore === undefined) {
+                        summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
+                    }
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
                     for (const key of op.unset) {
                         delete current[key];
@@ -1487,8 +1667,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         current[key] = { ...map };
                     }
-                    const meta = serialize(normalizeChatMeta(current, chatId)).text;
-                    setChatMeta.run(meta, CHAT_SCHEMA_VERSION, chatSeq);
+                    const { text: meta, stored: copy } = serialize(normalizeChatMeta(current, chatId));
+                    summaryAfter = summaryText(copy as Record<string, unknown>);
+                    writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta }, summaryAfter);
                     row = { ...row!, meta };
                     metaChanged = true;
                     applied += 1;
@@ -1678,6 +1859,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             next = nextRevision(row.revision, applied);
             if (applied > 0) {
                 bumpChat.run(applied, row.seq);
+                // Also carries a row this group's own metadata write left at `row.revision`.
+                advanceSummary.run(next, row.seq, row.revision);
             }
             revision = tokens.token(row.seq, next);
         }
@@ -1707,7 +1890,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let change: ChatWriteChange | undefined;
         let feed: ChatFeedPayloads | undefined;
         if (patchBase && applied > 0) {
-            // Both stored metadata values, parsed at most once for the field form and the summary.
+            // Both stored metadata values, parsed at most once and only for the field form.
             let metaValues: { before: Record<string, unknown>; after: Record<string, unknown> } | undefined;
             const storedMeta = () =>
                 (metaValues ??= {
@@ -1749,23 +1932,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     );
                 }
             }
-            // The summary without its revision: the listed metadata fields (equal stored strings are
-            // equal projections) and the last message's time, which a message op can change without a
+            // The summary without its revision: the stored projection (equal texts are equal
+            // projections) and the last message's time, which a message op can change without a
             // metadata change (a removal of the last row) or make absent.
             const time = timeBefore ? lastMessageAt(row!.seq) : undefined;
-            let summaryChanged = timeBefore !== undefined && time !== timeBefore.time;
-            if (!summaryChanged && metaChanged && metaBefore !== row!.meta) {
-                const { before, after } = storedMeta();
-                summaryChanged = !sameSummaryFields(summaryFields(before, undefined), summaryFields(after, undefined));
-            }
+            const summaryChanged =
+                (timeBefore !== undefined && time !== timeBefore.time) ||
+                (metaChanged && summaryBefore !== summaryAfter);
             if (summaryChanged) {
                 feed.summary = {
                     characterId,
                     id: chatId,
                     // The group's revision: `row` still holds the one before it (`bumpChat` writes only the table).
                     revision: revision!,
-                    ...summaryFields(
-                        metaValues?.after ?? (JSON.parse(row!.meta) as Record<string, unknown>),
+                    ...summaryWithTime(
+                        // Checked against the group's revision: a row left stale must not publish old text at it.
+                        summaryAfter ?? freshSummaryText(row!.seq, next, { meta: row!.meta }),
                         timeBefore ? time : lastMessageAt(row!.seq),
                     ),
                 };
@@ -1803,8 +1985,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
         /** A chat's summary (listed fields and memoized last-message time), or null when it does not exist. */
         readChatSummary(characterId: string, id: string): ChatSummary | null {
-            const row = selectChat.get(characterId, id) as ChatRow | undefined;
-            return row ? chatSummary(characterId, { ...row, id }) : null;
+            const row = selectChatSummary.get(characterId, id) as ChatSummaryRow | undefined;
+            return row ? chatSummary(row) : null;
         },
 
         /** A chat's metadata with an empty `message` list (its messages are not read), or null when it does not exist. */
@@ -2143,18 +2325,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return { chats, chatOrders };
         },
 
-        /** Summaries and orders in seq order, without reading any skipped character's meta or order ids. */
+        /** Summaries and orders in seq order, without reading any skipped character's rows or order ids. */
         readSummaries(skip?: ReadonlySet<string>): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
             const skipped = skip?.size ? JSON.stringify([...skip]) : null;
             const chatSummaries = (
-                (skipped === null ? selectAllChats.all() : selectUncachedChats.all(skipped)) as {
-                    seq: number;
-                    characterId: string;
-                    id: string;
-                    revision: number;
-                    meta: string;
-                }[]
-            ).map((row) => chatSummary(row.characterId, row));
+                (skipped === null ? selectAllSummaries.all() : selectUncachedSummaries.all(skipped)) as ChatSummaryRow[]
+            ).map((row) => chatSummary(row));
             const chatOrders = (
                 (skipped === null ? selectAllOrders.all() : selectUncachedOrders.all(skipped)) as {
                     seq: number;
@@ -2176,9 +2352,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             if (!order) {
                 return null;
             }
-            const chats = (
-                selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
-            ).map((row) => chatSummary(characterId, row));
+            const chats = (selectCharacterSummaries.all(characterId) as ChatSummaryRow[]).map((row) =>
+                chatSummary(row),
+            );
             return {
                 order: { characterId, revision: tokens.token(order.seq, order.revision), ids: order.ids },
                 chats,
@@ -2226,14 +2402,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
             const seqs = new Map<number, number>();
             for (const chat of rows.chats) {
-                const result = insertRestoredChat.run(
-                    chat.characterId,
-                    chat.id,
-                    chat.revision,
-                    chat.schemaVersion,
-                    chat.meta,
-                );
-                seqs.set(chat.seq, Number(result.lastInsertRowid));
+                const summary = summaryText(JSON.parse(chat.meta) as Record<string, unknown>);
+                seqs.set(chat.seq, writeChatMeta({ kind: "restore", chat }, summary));
             }
             for (const message of rows.messages) {
                 insertRestoredMessage.run(

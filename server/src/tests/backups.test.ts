@@ -1147,6 +1147,89 @@ describe("chats in snapshots and archives", () => {
         };
     }
 
+    it("validates snapshots with projections and restores fresh rows at new chat seqs without trusting snapshot text", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-summary-snapshot-"));
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const file = path.join(dir, "live.sqlite");
+        const copy = path.join(dir, "snapshot.sqlite");
+        const store = createResourceStore({ file, kinds });
+        const db = new DatabaseSync(file);
+        try {
+            store.put(kinds.get("characters")!, "c", character("c"), null);
+            store.applyChanges({
+                chats: ["k", "j"].map((id) =>
+                    group(id, null, [
+                        {
+                            op: "create",
+                            chat: { id, name: `Saved ${id}`, fmIndex: 4, pinned: true, message: [m(`${id}-message`)] },
+                        },
+                    ]),
+                ),
+            });
+            store.applyChanges({
+                chats: [group("k", store.chatRevision("c", "k"), [{ op: "meta", set: { note: "saved note" } }])],
+            });
+            const originals = db.prepare("SELECT seq, id, revision FROM chats ORDER BY seq").all() as {
+                seq: number;
+                id: string;
+                revision: number;
+            }[];
+            await store.backupTo(copy);
+            const snapshotDb = new DatabaseSync(copy);
+            try {
+                expect(snapshotDb.prepare("SELECT COUNT(*) AS count FROM chatSummaries").get()).toEqual({ count: 2 });
+                snapshotDb
+                    .prepare("UPDATE chatSummaries SET text = ?")
+                    .run(JSON.stringify({ name: "Untrusted snapshot projection", fmIndex: -1 }));
+            } finally {
+                snapshotDb.close();
+            }
+            const validated = store.readSnapshot(copy);
+            expect(validated.chats).toHaveLength(2);
+            store.applyChanges({
+                chats: [group("k", store.chatRevision("c", "k"), [{ op: "meta", set: { name: "Live edit" } }])],
+            });
+            store.replaceAll(validated);
+            const restored = db
+                .prepare(
+                    "SELECT c.seq, c.id, c.revision, s.chatSeq, s.revision AS summaryRevision, s.text FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq ORDER BY c.seq",
+                )
+                .all() as {
+                seq: number;
+                id: string;
+                revision: number;
+                chatSeq: number;
+                summaryRevision: number;
+                text: string;
+            }[];
+            expect(restored).toHaveLength(2);
+            for (const [index, row] of restored.entries()) {
+                expect(originals.map((chat) => chat.seq)).not.toContain(row.seq);
+                expect(row).toEqual({
+                    seq: row.seq,
+                    id: originals[index].id,
+                    revision: originals[index].revision,
+                    chatSeq: row.seq,
+                    summaryRevision: originals[index].revision,
+                    text: JSON.stringify({ name: `Saved ${row.id}`, fmIndex: 4, pinned: true }),
+                });
+                expect(store.chatSummary("c", row.id)).toEqual({
+                    characterId: "c",
+                    id: row.id,
+                    revision: store.chatRevision("c", row.id),
+                    name: `Saved ${row.id}`,
+                    fmIndex: 4,
+                    pinned: true,
+                });
+            }
+            expect(db.prepare("SELECT COUNT(*) AS count FROM chatSummaries").get()).toEqual({ count: 2 });
+        } finally {
+            db.close();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it("restores chats, messages, order, and fences from a snapshot under a new epoch, and refuses old-epoch and old-token writes", async () => {
         const s = await defaultServer();
         const tokens = await seedChats(s);

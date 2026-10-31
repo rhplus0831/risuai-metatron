@@ -2981,3 +2981,61 @@ describe("last-message activity", () => {
         expect(store.readKinds([], { chatSummaries: true }).chatSummaries![0].lastMessageAt).toBe(100);
     });
 });
+
+describe("summary reads in transactions", () => {
+    it("answers stale metadata without repairing it or disturbing the enclosing rollback", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { id: "k", name: "Before", note: "", localLore: [], message: [m("a")] } },
+                ]),
+            ],
+        });
+        const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+        try {
+            const old = db.prepare("SELECT * FROM chatSummaries").all();
+            db.exec("UPDATE chats SET revision = revision + 1, meta = json_set(meta, '$.name', 'Current')");
+            // A failed derived write may roll SQLite's whole transaction back. A summary read
+            // must not attempt it, or subsequent batch writes could escape into autocommit.
+            db.exec(`CREATE TRIGGER refuse_summary_repair BEFORE INSERT ON chatSummaries
+                BEGIN SELECT RAISE(ROLLBACK, 'summary repair aborted the transaction'); END`);
+            const revision = store.chatRevision("c", "k")!;
+            expect(() =>
+                store.applyChanges(
+                    {
+                        chats: [group("k", revision, [{ op: "append", anchor: { end: true }, messages: [m("b")] }])],
+                    },
+                    {
+                        inTransaction: {
+                            before(tx) {
+                                expect(store.chatSummary("c", "k")).toMatchObject({ name: "Current", revision });
+                                tx.writePolicy("c", "k", { autoEvery: 2, autoKeep: 3, lastAutoTurns: null });
+                            },
+                            after() {
+                                throw new Error("roll back the batch");
+                            },
+                        },
+                    },
+                ),
+            ).toThrow("roll back the batch");
+            expect(store.chatRevision("c", "k")).toBe(revision);
+            expect(messageIds(store, "k")).toEqual(["a"]);
+            expect(store.checkpoints.readPolicy("c", "k")).toBeNull();
+            expect(db.prepare("SELECT * FROM chatSummaries").all()).toEqual(old);
+            db.exec("DROP TRIGGER refuse_summary_repair");
+            expect(store.chatSummary("c", "k")).toMatchObject({ name: "Current", revision });
+            expect(
+                db
+                    .prepare(
+                        "SELECT s.revision = c.revision AS fresh FROM chatSummaries s JOIN chats c ON c.seq = s.chatSeq",
+                    )
+                    .get(),
+            ).toEqual({ fresh: 1 });
+        } finally {
+            db.close();
+        }
+    });
+});

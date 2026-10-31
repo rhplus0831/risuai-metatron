@@ -53,6 +53,7 @@ import {
     type MessageSearchRow,
     type MessageSearchScope,
     messageSearchSnippet,
+    openChatSchema,
     prepareChatGroups,
     prepareChatOrders,
     readChatSnapshotRows,
@@ -610,6 +611,7 @@ export function createResourceStore(options: {
         db.exec("BEGIN IMMEDIATE");
         writeCount = normalizeStoredRecords();
         db.exec("COMMIT");
+        openChatSchema(db);
     } catch (error) {
         if (db.isTransaction) {
             db.exec("ROLLBACK");

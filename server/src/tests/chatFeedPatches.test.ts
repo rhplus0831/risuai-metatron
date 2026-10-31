@@ -58,6 +58,34 @@ function setup() {
 }
 
 describe("by-id chat feed patches", () => {
+    it("keeps summaryBase for equal listed fields without reparsing large metadata for the summary", () => {
+        const b = setup();
+        const memory = "m".repeat(56 * 1024);
+        b.write([{ op: "meta", set: { supaMemoryData: memory } }]);
+        const baseRevision = b.store.chatRevision("c", "k")!;
+        const parse = JSON.parse;
+        const largeParses: number[] = [];
+        const spy = vi.spyOn(JSON, "parse").mockImplementation((text, reviver) => {
+            if (typeof text === "string" && text.length > 50 * 1024) largeParses.push(text.length);
+            return parse(text, reviver);
+        });
+        try {
+            b.write([{ op: "meta", set: { name: "K", note: "changed unlisted field" } }]);
+            const notice = b.notice();
+            expect(notice).toMatchObject({
+                summaryBase: baseRevision,
+                patch: { baseRevision, meta: { name: "K", note: "changed unlisted field", supaMemoryData: memory } },
+            });
+            expect(notice).not.toHaveProperty("summary");
+            expect(Buffer.byteLength(JSON.stringify(notice.patch))).toBeLessThan(MAX_FEED_PATCH_BYTES);
+            // The write may parse for its metadata merge, stored-value validation, and full feed
+            // payload. The summary comparison has no allowance to parse either metadata again.
+            expect(largeParses.length).toBeLessThanOrEqual(3);
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
     it("uses the stored summary base for text checkpoints and unlisted metadata, keeping small metadata whole", () => {
         const b = setup();
         const requestedBase = b.read().revision;
