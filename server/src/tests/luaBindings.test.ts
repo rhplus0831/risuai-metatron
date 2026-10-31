@@ -1169,7 +1169,7 @@ describe("notices before the owner's first attach", () => {
             expect(question, JSON.stringify(types)).toBeGreaterThanOrEqual(0);
             expect(kept, JSON.stringify(types)).toBeGreaterThanOrEqual(0);
             // Their relative order is not fixed: the question travels as an async host call and the
-            // notice as a synchronous one, on two message ports (recorded in `self-host-server.md`).
+            // notice as a synchronous one, on two message ports.
             expect(Math.max(question, kept)).toBeLessThan(types.indexOf("done:"));
             expect(notice(events, "alertNormal")).toBe("beside the question");
             expect(texts(await readChat(chaId)).at(-1)).toBe("char:a=yes");

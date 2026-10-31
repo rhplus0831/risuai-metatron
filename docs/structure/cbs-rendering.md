@@ -108,7 +108,7 @@
   length/band/row-minimum pruning) and `findAssetPrefix` (`ChatBody.svelte`'s strict first-best prefix scan).
 - `parser/sentenceBreaks.ts`: `insertSentenceParagraphBreaks`, used by bilingual interleaving to split prose before
   matching translated paragraphs; see `media-aux.md` for the translation flow.
-- `parser/transformClient.ts`: the client of the server script transform (`POST /api/transform`, `self-host-server.md`);
+- `parser/transformClient.ts`: client of the server script transform (`POST /api/transform`, `server-generation.md`);
   the only script stage of a render (there is no browser Lua or trigger runtime, and no browser regex stage of a render;
   the translator's `edittrans` regex is the one regex the tab still runs, `media-aux.md`).
   `captureTransform(chatID, { chatRef?, pluginContext? })` reads the call's context before its first await (the chat,

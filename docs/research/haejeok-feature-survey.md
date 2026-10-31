@@ -487,7 +487,7 @@ along). Effort: S / M / L.
   (`StorageExplorer/utils.ts`, `b46e74865`, `1e4342cc6`, `e46c9f293`).
 - **In M:** nothing. `app-shell.md` says orphaned `assets/*` files are never
   purged, and failed imports leave content-addressed orphans
-  (`self-host-server.md`). `shared/backups.ts` and `backuplocal.ts` already
+  (`server-resources.md`). `shared/backups.ts` and `backuplocal.ts` already
   compute the referenced keys.
 - **Fit:** port concept, on the server. Count every kept snapshot as a
   reference so that restoring a snapshot never loses assets. Show a dry-run

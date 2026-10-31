@@ -230,7 +230,7 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
   removals and, when a selection was made, its metrics mapped by identity (`remapHypaV3MetricsByIdentity`); every stored
   summary, including one appended meanwhile, stays as stored, and none is added or recreated after a reset.
 - The background memory task (`server/src/prompt/memory/memoryTasks.ts` `createMemoryTasks`, on the detached host
-  `memoryTaskHost.ts`; wiring, routes, and the feed frame in [self-host server](self-host-server.md)): right before a
+  `memoryTaskHost.ts`; wiring, routes, and the feed frame in [server generation](server-generation.md)): right before a
   job emits `done`, the runner hands it the job's `MemoryTaskInput` (a deep copy of the processed history with its
   sources, the token policy, the settings fingerprint, the epoch, the admitted revision, and the source generation read
   with the history's snapshot) when a lookahead plan says summaries are due or a manual start waits (`pendingManual`); a
@@ -282,8 +282,8 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
   answer before any vector of it is stored), and every error text is redacted of the three keys (a value of whitespace
   only is not a key). `HypaProcesser.testText` is not ported (nothing calls it). `HypaProcessorV2`'s local batch size is
   the server's core count (at most 10).
-- `server/src/data/vectorCache.ts`: the vectors, in `save/data/vectors.sqlite` (see `self-host-server.md`). One cache
-  for all clients; browser vectors are not migrated.
+- `server/src/data/vectorCache.ts`: the vectors, in `save/data/vectors.sqlite`. One cache for all clients; browser
+  vectors are not migrated.
 - `server/src/prompt/transformers.ts` and `transformersWorker.ts`: the local models in one child process (embeddings,
   the `distilbart` summarizer, the captioner, text generation), one task at a time. Model files come from
   `huggingface.co` into `save/models/transformers` (the browser's mirror is not used). The `GPU` embedding variants run
@@ -472,11 +472,11 @@ A send's memory step runs in the job (`server/src/prompt/assemble.ts`, the gate 
   the server's documented algorithm differences.
 - HypaV3 planning and writes: `server/src/tests/{hypaV3Parts,hypaV3MemoryWrite,memoryJobs}.test.ts` cover planning,
   checkpoints, source validation, selection, concurrent edits, and job integration. The job's memory-step contract is
-  summarized above; detailed server runner coverage is indexed in [self-host server](self-host-server.md).
+  summarized above; detailed server runner coverage is indexed in [server generation](server-generation.md).
 - Background tasks: `server/src/tests/{memoryTasks,memoryTaskHost}.test.ts` cover queueing, admission, writes,
   invalidation, terminal status, and embeddings; `src/ts/process/memoryTasks.test.ts` covers client status,
   synchronization fences, start (a still-refused draft of the chat or its order refuses it without a request), and
-  cancel. Service wiring and routes are in [self-host server](self-host-server.md).
+  cancel. Service wiring and routes are in [server generation](server-generation.md).
 - Modal and progress UI: `src/lib/Others/HypaV3Modal.fence.test.ts`, `HypaV3Progress.test.ts`, and
   `src/lib/Setting/Pages/MemorySettings.hypaV3Export.test.ts` cover editor fences, progress, and preset import/export.
 - Embeddings and local models: `server/src/tests/{embeddings,vectorCache,transformers}.test.ts` and the client oracle

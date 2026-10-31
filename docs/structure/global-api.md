@@ -238,10 +238,10 @@ Other files:
   context names (`PluginCallContext.channelCall`) while it runs in this tab and the server has not cancelled it, else
   null (`jobChannel.ts` registers its `liveChannelCallTargets` when it loads; before that none runs). `request.ts`'s
   send guard reads it; it never picks a callback for a request.
-- `src/ts/network/generationJobs.ts`: the client transport of server generation jobs (`shared/jobs.ts`; server side in
-  `self-host-server.md`). `generationClientId` (one per tab, `sessionStorage`; a page claims it before reading the id or
-  its saved jobs, marking `risu-generation-client-claim` held, and releases it on `pagehide`; a page that finds it held
-  by a live page (a window opened with an opener, a duplicated tab) mints a new id and drops the copied saved jobs,
+- `src/ts/network/generationJobs.ts`: the client transport of server generation jobs (`shared/jobs.ts`; server in
+  `server-generation.md`). `generationClientId` (one per tab, `sessionStorage`; a page claims it before reading the id
+  or its saved jobs, marking `risu-generation-client-claim` held, and releases it on `pagehide`; a page that finds it
+  held by a live page (a window opened with an opener, a duplicated tab) mints a new id and drops the copied saved jobs,
   while a reload, a same-tab navigation or a `document.wasDiscarded` page keeps it), the saved jobs per chat
   (`savedGenerationJobs`, `rememberGenerationJob`, `forgetGenerationJob`), `createGenerationJob` (`GenerationBusyError`,
   `GenerationStaleError`, `ChatBindingRefusedError` for 409 `chatBindingIncomplete`/`chatBindingMismatch`, the epoch

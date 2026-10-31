@@ -28,7 +28,7 @@
     `src/lib/UI/GUI/CredentialSelect.svelte`
 - Not here:
   - The `credentials` collection, `llmSecrets.credentials`, and their save path → `persistence.md` (the write-only
-    record: `self-host-server.md`).
+    record: `server-resources.md`).
   - Transport (`globalFetch`/`fetchNative`) → `global-api.md`.
   - MCP tool definitions → `plugins-mcp.md`.
   - Prompt assembly → `chat-pipeline.md`.

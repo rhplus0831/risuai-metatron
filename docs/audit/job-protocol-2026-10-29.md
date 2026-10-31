@@ -50,7 +50,7 @@ driver, rerun instead): JP1 in `9bfd29b73`, JP2 in `035a76416`, U1 in `0afb40afe
 the delayed original can pass as well. JP3 was fixed rather than scoped: a queued root now
 expires at its own job's absence deadline. The inbox's second absence-bound path (a provider
 disconnect ended through `endWith`, not bounded by the abort grace) remains unreproduced and is
-an `Unconfirmed` issue in the [self-host server guide](../structure/self-host-server.md#issues).
+an `Unconfirmed` issue in the [server generation guide](../structure/server-generation.md#issues).
 U1 uses a synchronous live-page claim in `sessionStorage`, not a coordinated lease, because
 `generationClientId` is read synchronously; its accepted gaps are in the
 [global API guide](../structure/global-api.md#limitations).
@@ -160,7 +160,7 @@ timeout. Keep cancellation addressed to the confirmed job ID; a retry must retai
 `holdDraining` and `dispatch`.
 
 This is a revalidation of **Owner absence bound is not universal** in the
-findings inbox (since moved to the [self-host server guide](../structure/self-host-server.md#issues)), also noted
+findings inbox (since moved to the [server generation guide](../structure/server-generation.md#issues)), also noted
 in the plan's archive. It is not a newly discovered regression.
 
 **Reproduction.** An injected-clock probe used the real channel hub with two jobs of the same

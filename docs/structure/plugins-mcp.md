@@ -309,7 +309,7 @@ MCP:
 1. `getTools` collects the schemas.
 2. Provider adapters (OpenAI Chat/Responses, Google, Anthropic) run model tool calls.
 3. `callTool` dispatches by tool name, first match wins, and the result is appended. A server job does not use this
-   registry (`server/src/mcp/`, `self-host-server.md`): remote servers and `internal:dice` run on the server;
+   registry (`server/src/mcp/`, `server-generation.md`): remote servers and `internal:dice` run on the server;
    `internal:fs`, `internal:googlesearch`, and a `plugin:` MCP registered when the job was created run in the job's tab
    through the `mcpList` and `mcpTool` callbacks (`src/ts/network/jobChannel.ts`); `internal:aiaccess`,
    `internal:risuai`, and `internal:graphmem` run on the server over the job's data, with the same tools and logic as
@@ -335,8 +335,8 @@ MCP:
   replay once, while a reloaded page refuses an unknown replay. Absence expiry settles `disconnected`, also settling
   that client's eligible ownerless queued roots. A provider failure follows the existing partial-save and job-end path;
   tail hooks that skip on `disconnected` can continue. Delivered callbacks retain their drain holds until reported
-  drained or their bound expires. See [generation channels and older-tab compatibility](self-host-server.md#flows) for
-  the registry contract.
+  drained or their bound expires. See [generation channels](server-generation.md#generation-channels) for the registry
+  contract.
 
 ## State
 

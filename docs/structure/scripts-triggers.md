@@ -16,7 +16,7 @@
   - `src/etc/docs/regex.cbs` (example script documentation)
 - Not here:
   - The runtime itself: `server/src/prompt/{scripts,triggers,commands}.ts`, `server/src/lua/*`, `server/src/scripts/*` →
-    `self-host-server.md`.
+    `server-generation.md`.
   - `edittrans` regex application → `media-aux.md` (`translator.ts:applyEdittransRegex`, the one regex the tab still
     runs: plain `RegExp` replacement on translation text, no Lua or trigger).
   - Module-provided scripts are collected by `process/modules.ts` → `characters-modules.md`.
@@ -90,15 +90,15 @@ v2 layout:
   - Module: `regex`, `trigger`, `lowLevelAccess`.
 - Runtime variables are strings. They persist as `chat.scriptstate['$'+key]`. Display-mode triggers use temp variables
   only.
-- Command jobs (`self-host-server.md`): `runServerButton` handles `risu-btn`, `runServerManualTrigger` handles
+- Command jobs (`server-generation.md`): `runServerButton` handles `risu-btn`, `runServerManualTrigger` handles
   `risu-trigger` and `/trigger`, and the chat row routes `risu-form` submits through `runServerJob`. The client captures
   the chat before awaiting its save flush. Chat-row forms always prevent navigation, send string values (repeated names
   become arrays), and are capped at 64 KiB of JSON by the server. Job lifecycle and Lua host behavior belong to
-  `self-host-server.md`.
-- Runtime boundary (`self-host-server.md`): `server/src/prompt/triggers.ts:createTriggerRuntime` runs v2 effects and
+  `server-generation.md`.
+- Runtime boundary (`server-generation.md`): `server/src/prompt/triggers.ts:createTriggerRuntime` runs v2 effects and
   `triggerlua` with the job's chat and abort signal. `shared/triggers.ts` owns the serialized effect types and
   display/request allowlists; the runtime copies the character for each run and shares its asset lists read-only.
-- Send scripts (`self-host-server.md`): `server/src/prompt/scripts.ts:createScriptProcessor` handles `editinput`,
+- Send scripts (`server-generation.md`): `server/src/prompt/scripts.ts:createScriptProcessor` handles `editinput`,
   `editprocess`, and `editoutput`. It runs Lua edit hooks where defined, the plugin hook, CBS, then regex scripts.
   `runScriptTail` filters preset, character, and module regex scripts by `script.type === mode` before worker dispatch;
   with none left it starts no regex worker task but still applies dynamic assets and caches the final output. Dynamic
@@ -108,7 +108,7 @@ v2 layout:
   `editdisplay`; a missing chat, server record, preset, or persona skips the request. The transform does not persist
   chat variables; `@@emo` effects are applied by the tab.
 - The request trigger runs before each provider attempt of a server job. Tab-only LLM requests do not run it. Request
-  construction and job boundaries are covered by `llm-requests.md` and `self-host-server.md`.
+  construction and job boundaries are covered by `llm-requests.md` and `server-generation.md`.
 
 ## Coupling
 

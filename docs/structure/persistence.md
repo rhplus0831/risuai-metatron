@@ -13,7 +13,7 @@
   persisted shapes; the meaning of a shape stays with the guide that owns its original module, e.g. `shared/triggers.ts`
   → `scripts-triggers.md`, `shared/llm.ts` → `llm-requests.md`), plus their tests.
 - Not here:
-  - The server side of the resources (store, routes, snapshots, archives) → `self-host-server.md`.
+  - The server side of the resources (store, routes, snapshots, archives) → `server-resources.md`.
   - Backup and export UI → `backup-sync-hub.md`.
   - The asset reads and writes of `src/ts/globalApi.svelte.ts` (`readImage`, `saveAsset`, `loadAsset`, `getFileSrc`; see
     `global-api.md`) go through `assetClient.ts` here.
@@ -32,8 +32,8 @@
   `CHAT_META_FORBIDDEN_KEYS`; a conflict's `reason: "generating"` for a generation lock or `reason: "expired"` for a
   possibly forgotten group id), `chatCheckpoints.ts` (`CHECKPOINT_CHAT_FIELDS`: every `ChatMeta` key classified as
   `capture`, `keep`, or `split`; `isToggleKey`, the `CheckpointSummary`/`CheckpointPolicy` wire types and limits; server
-  meaning in [self-host server](self-host-server.md)), `jobs.ts` (the generation job contract: create body, context,
-  events, status; `self-host-server.md`), `readonly.ts` (`DeepReadonly`), `triggers.ts`, `prompt.ts`, `memory.ts`,
+  meaning in [server resources](server-resources.md)), `jobs.ts` (the generation job contract: create body, context,
+  events, status; `server-generation.md`), `readonly.ts` (`DeepReadonly`), `triggers.ts`, `prompt.ts`, `memory.ts`,
   `modules.ts`, `plugins.ts`, `settings.ts`, `openai.ts`, and `llm.ts` (the
   `LLMFlags`/`LLMFormat`/`LLMTokenizer`/`LLMProvider` constants and the `LLMModel` and `LLMParameter` types). Each old
   module re-exports its types, so importers keep their paths.
@@ -487,7 +487,7 @@
   request order or throws, never a partial merge: a round that asks for nothing less is a `ResourceRequestError`, a 412
   or a round of another epoch goes through `epochMismatch` and discards every round, and an aborted signal stops the
   loop before the next request. The rounds share an epoch, not a moment: only a character's record and its two
-  collection entries are one round's read (see `self-host-server.md`). Errors: `ResourceConflictError` (409,
+  collection entries are one round's read (see `server-resources.md`). Errors: `ResourceConflictError` (409,
   `conflicts`), `ResourceEpochMismatchError` (412, or a read from another epoch; the one listener set by
   `setEpochMismatchListener` runs first), `ResourceRequestError` (`status`, 0 = no response).
 - `src/ts/storage/resourceSync.svelte.ts`: the save adapter. `seedResources`, `startResourceSync`, `stopResourceSync`
@@ -699,7 +699,7 @@ Resources (server kinds; `shared/resources.ts`):
   holds its `SECTION_FIELDS` under their `Database` names; `llmSecrets` also holds the entry map (`SECRET_ENTRY_MAPS`)
   `credentials`, the `key` of each named API key by id ([credential binding](llm-requests.md); the former `modelPresets`
   and `customModels` maps are dropped on normalize, [credential binding](llm-requests.md)); it is write-only and read
-  masked, `self-host-server.md`) and the collections of `COLLECTION_FIELDS` (the field's value; `translatorPresets` and
+  masked, `server-resources.md`) and the collections of `COLLECTION_FIELDS` (the field's value; `translatorPresets` and
   `hypaV3Presets` hold `{ items, selectedId }`; `togglePresets` is a plain list, default `[]`, with no selection field).
   The client holds them in its records and serves them under the same flat field names (`readSettingsRoot`);
   `translatorPresetId` and `hypaV3PresetId` are the ids of the selected entries. `ui.blockedRealmCreators` is a
@@ -709,7 +709,7 @@ Resources (server kinds; `shared/resources.ts`):
   writable as `settings.togglePresets`, with a per-chat link (`Chat.togglePresetId`).
 - Per record: `characters` (id = `chaId`, the character without `chats`, `chatPage`, and `reloadKeys`), `inlays` (id =
   inlay id; see `chat-pipeline.md`).
-- Chats (their own tables, not a kind; see `self-host-server.md`): one chat per (`chaId`, chat id) with its metadata,
+- Chats (their own tables, not a kind; see `server-resources.md`): one chat per (`chaId`, chat id) with its metadata,
   its messages as rows keyed by message id, one revision per chat, and one chat order per character. They travel in the
   batch as `chats` groups of ops and `chatOrders`, and are read with `?chats=1` or `refs`/`chats`/`chatCollections`.
 - Upstream `.bin` conversion, a writer of resources (`server/src/data/upstream/importDatabase.ts`,
@@ -1072,7 +1072,7 @@ Save (the adapter, `resourceSync.svelte.ts`):
    (`Pending.resend`: its ops, base, sequence, and id) and resent alone, exactly as sent and with `retry`, before
    anything else of that chat; the chat's newer work waits behind it (a newer recreation, an empty entry with a newer
    sequence included) and goes out in its own group with a new id once the resend is answered, so the server's answer
-   for a group it already applied (its earlier result, every checkpoint `duplicate`; `self-host-server.md`) never
+   for a group it already applied (its earlier result, every checkpoint `duplicate`; `server-resources.md`) never
    carries the newer work down with it. A definitely unapplied ordinary group merged back in front of newer work takes
    the requeued group's id, including conflict recovery merges. A resend rolled back unanswered (by another group's 409,
    or a request that was never sent) stays a resend with its doubt; a group the 409 names did not land (the server
@@ -1630,7 +1630,7 @@ Chats (`chatStore.svelte.ts`):
   (`ResourceEpochError` ends it), the admitted revision (the job's `context.chatRevision`, sent as the write's
   `baseRevision`: a `meta` op applies on a stale revision of the same chat, while a chat deleted and recreated under the
   same ids conflicts), and the chat's source generation. The source generation is the store's per-chat in-memory value
-  (`chatSourceGeneration`, `readChatSource`; [self-host server](self-host-server.md)) that changes once inside the
+  (`chatSourceGeneration`, `readChatSource`; [server resources](server-resources.md)) that changes once inside the
   commit of a chat delete, a whole-chat `replace` (any writer), or a character cascade delete, and never for `meta`,
   `append`, `setText`, `create`, or `remove`; `onChatInvalidated` notices follow the commit (never a rollback) and
   cancel the chat's task and drop its retained input; a restore clears them all. A job reads it with the chat's snapshot
@@ -1663,7 +1663,7 @@ Chats (`chatStore.svelte.ts`):
   creates, deletes, replacements, and reorders use normal cycles only. Keepalive is best effort.
 
 Chat checkpoints (`src/ts/checkpoints/chatCheckpoints.svelte.ts`; server side in
-[self-host server](self-host-server.md)):
+[server resources](server-resources.md)):
 
 - Requests use `authFetch`; mutations send `RESOURCE_EPOCH_HEADER` from `getResourceEpoch()` and check
   `assertSaveAdmission` in `beforeDispatch`. Authentication may still run before the guard; no checkpoint mutation is
@@ -1693,7 +1693,7 @@ Chat checkpoints (`src/ts/checkpoints/chatCheckpoints.svelte.ts`; server side in
   outcome intact. These are `CheckpointLoadResult` outcomes. Never resend a lost load answer: another load could apply
   the replacement twice.
 - A load's `replace` sets the chat's restore floor to its replacement revision; a group with a non-null base below it
-  conflicts without a `reason` (the floor and its check ordering are in `self-host-server.md`). The client handles it as
+  conflicts without a `reason` (the floor and its check ordering are in `server-resources.md`). The client handles it as
   an ordinary chat conflict: `recoverChatConflicts` reads back, `acceptRemoteChat` replaces the mirror and discards
   queued edits with the reload notice, and `flushResources` reports `chats/<chaId>/<chatId>`; a chat this tab's job
   streams into defers that replacement as for any conflict. One by-id case takes two rounds: an `append` whose `after`
@@ -1738,13 +1738,13 @@ Backend:
   longer used; the `save/database` and `save/remotes` folders of older versions are left on disk and no longer read.
   That data is in an upstream format, so it falls under the compatibility rule (Invariants): it comes back through a
   `.bin` backup, converted by `server/src/data/upstream/importDatabase.ts` (Flows) and installed by the upstream import
-  (`self-host-server.md` Flows, Backup archives).
+  (`server-resources.md` Upstream backups).
 - Device caches and device state: the browser-local stores that remain. They are rebuildable caches of browser-side
   features or this device's own state, not user data; nothing cleans them up, and a backup does not carry them.
   - `hypaVector` (LocalForage): embeddings of the browser's `HypaProcesser`, keyed by text and model. Users: the file
     attachments (`process/files/multisend.ts`), the graph memory (`process/mcp/graphmem.ts`), the embedding playground
     (`PlaygroundEmbedding.svelte`), and the HypaV3 modal's `HypaProcesserEx` (`process/memory/hypav3.ts`). The server's
-    memory has its own vector store (`save/data/vectors.sqlite`, `self-host-server.md`).
+    memory has its own vector store (`save/data/vectors.sqlite`, `memory.md`).
   - `tfCache` (Cache API): Transformers.js model files for the browser-side models: `runTransformers`, `runEmbedding`,
     `runVITS` (`tts.ts`), and the character editor's ONNX model registration (`CharConfig.svelte`).
   - `LLMTranslateCache` (LocalForage): translated text keyed by `llm:<hash>:<source>`, the hash of the translator
@@ -1980,12 +1980,12 @@ Cold storage (removed):
   an upstream `.bin` backup (`database.risudat`, its cold-storage records and assets) and an older metatron backup
   containing `database.risudat`, which has the same format. `database.risudat` is either upstream's legacy MessagePack
   save or the block save current upstream backups write; both are imported, and a live block save whose data lies
-  outside the file (remote blocks) is refused (`self-host-server.md` `risuSave.ts`). Formats that metatron created
+  outside the file (remote blocks) is refused (`server-resources.md` `risuSave.ts`). Formats that metatron created
   during its own implementation phases are not owed one: the version-1 and version-2 resource stores, the fields and
   records marked "alpha, no migration" in the guides, and the removed browser stores. Those are refused or ignored, with
   a message where the user sees one, and changing them needs no converter. The upstream `.bin` converter covers the
   whole database, cold storage included (`server/src/data/upstream/importDatabase.ts`, Flows); the upstream import
-  (`self-host-server.md` Flows, Backup archives) runs it in a worker and installs the result as a full replace.
+  (`server-resources.md` Upstream backups) runs it in a worker and installs the result as a full replace.
 - The server's `customModels` normalizer drops a legacy `customModels[].key` and `credentialId` and keeps the model
   entry: a custom model is a definition, and the profile that uses it binds the key. The `credentials` normalizer
   likewise drops a `key` (and keeps `clientEmail`/`projectId` only on a `vertex` entry); a named key's value exists only
@@ -2030,7 +2030,7 @@ Cold storage (removed):
   admission or after commit and a lost-answer switch; policy reads and writes also call the real service, preserving
   stored policy state and its missing-chat 404 responses. Server store/route coverage
   (`server/src/tests/chatCheckpoints.test.ts`, `server/src/tests/chatCheckpointRoutes.test.ts`) is in
-  [self-host server](self-host-server.md).
+  [server resources](server-resources.md).
 - `src/lib/Others/ChatCheckpointsDialog.test.ts` (happy-dom, checkpoint client module mocked): manual/automatic/safety
   grouping and newest-first rows, literal preview text, confirmed single load with every control disabled through its
   pending answer, rename/delete carrying the selected row revision and re-reading after a stale-row conflict, and a
@@ -2337,7 +2337,7 @@ Cold storage (removed):
   and `beforeDispatch` run after the authentication and the signing and right before the request (a throw stops it).
   `src/ts/storage/tests/assetClient.test.ts`: `writeAsset`/`readAsset` (the hex `file-path` header, the octet-stream
   body, an empty answer as `null`, the errors for a non-2xx and a refused answer).
-- Server side of the resources: `server/src/tests/*` (see `self-host-server.md`).
+- Server side of the resources: `server/src/tests/*` (see `server-resources.md`).
 - `src/ts/storage/tests/presetViews.test.ts` (with `reactiveProbe.svelte.ts`): `activePreset` and the preset root names
   over the real module graph: `rootSnapshot`, the selection resolved at install, the aliases and nested writes, tracked
   reads and untracked writes, resolution after a collection replacement, the read fallback after a removal (inside a
@@ -2453,7 +2453,7 @@ Cold storage (removed):
   (`pickBinding`), `chatBindingNewChat.test.ts` (`initialChatBinding`, `importedChatBinding`, copies),
   `src/ts/charactersImportChat.test.ts` (every import format),
   `src/lib/SideBars/{ChatBindingPanel,SideChatList}.test.ts`, `src/lib/Setting/{botpreset,listedPersona}.test.ts`; the
-  server's in `self-host-server.md`.
+  server's in `server-generation.md`.
 - The chat translation settings (list fields, [translation](media-aux.md)): `src/ts/translator/chatTranslation.test.ts`
   (the readers over the list entry, `setChatTranslationSettings` on an unloaded chat and a load while its op is pending,
   `initialChatTranslation`, `importedChatTranslation`; `media-aux.md`); the summary projection in
@@ -2734,7 +2734,7 @@ Cold storage (removed):
 - A loaded chat noticed by a feed entry without a by-id change is read whole when it is idle: a reply over
   `MAX_FEED_PATCH_BYTES` (64 KiB) streaming into a chat another tab has open costs that tab up to one whole read per
   checkpoint, and a group over the cap in the field form too, or a patch the publication budget left out, costs one the
-  same way ([self-host server](self-host-server.md)). Notices of a chat collapse before a read (the chat's latest is
+  same way ([server generation](server-generation.md)). Notices of a chat collapse before a read (the chat's latest is
   kept, `refreshMarks` lists the chat once), and a hydration can settle a notice with none. Decision: no by-id read for
   an over-cap change: the field form (`delta`) removed the measured large-metadata case, and no measurement shows how
   often an observer meets the rest (ST04 in the
@@ -2846,7 +2846,7 @@ Cold storage (removed):
   - **The server's summary read.** `readSummaries` (`readKinds([], { chatSummaries: true })` on the run's reopened
     store, last-message memo filled on first use) took 120 ms first and 73 ms median for 3,000 chats (80 ms before the
     memo) and under 1 ms for 18 while it parsed each chat's whole metadata; since it reads the stored projection
-    (`chatSummaries`, [self-host server](self-host-server.md) State), a one-off run on a busy machine with 18 KiB of
+    (`chatSummaries`, [server resources](server-resources.md) State), a one-off run on a busy machine with 18 KiB of
     metadata per chat took about 28 ms first and 9 ms median against 86–123 ms and 67 ms before. The HTTP incremental
     cost of `chatSummaries=1` is 86 ms and 0.2 ms (92 and 2 ms before). A warm boot skips it for every claimed
     collection: the unthrottled server TTFB of `audit` `warm` was 114 ms just before chat collections were cached and is

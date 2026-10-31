@@ -22,12 +22,12 @@
   - The send handlers in `src/lib/ChatScreens/DefaultChatScreen.svelte`
 - Not here:
   - Prompt assembly, token trimming, the request, streaming, and the post-processing tail run in the server job →
-    `self-host-server.md` (`runPromptJob`, `assemblePrompt`).
+    `server-generation.md` (`runPromptJob`, `assemblePrompt`).
   - Memory algorithms → `memory.md`.
   - `requestChatData` internals → `llm-requests.md`.
   - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`, `src/ts/tokenizer.ts`,
     `src/ts/tokenCountField.ts`) → `llm-requests.md`.
-  - Message-search panel presentation → `ui-theming.md`; endpoint implementation details → `self-host-server.md`.
+  - Message-search panel presentation → `ui-theming.md`; endpoint implementation details → `server-resources.md`.
   - PDF conversion used by MCP filesystem tools → `plugins-mcp.md`.
   - Regex and trigger internals → `scripts-triggers.md`.
   - Rendering → `cbs-rendering.md`.
@@ -158,7 +158,7 @@
 - `shared/messageSearch.ts` defines `POST /api/chats/search` query, hit, and page shapes (`all`, character, or chat
   scope; cursor paging). `messageSearch.svelte.ts` builds requests and owns the pending message-jump coordinator.
   `server/src/routes/messageSearch.ts` registers the endpoint; scan and limit details are in
-  [self-host server](self-host-server.md). The panel and jump presentation are in [UI theming](ui-theming.md).
+  [server resources](server-resources.md). The panel and jump presentation are in [UI theming](ui-theming.md).
 - `stringlize.ts`: serializers for non-chat-completion backends and stop strings.
   - `stringlizeChat`, `stringlizeAINChat`, `unstringlizeChat`, `getStopStrings`.
   - `stringlizeChatOba` is unreferenced. `multiChatReplacer` is empty.
@@ -227,7 +227,7 @@
   stops at a part refused so or whose send returns false (refused, failed, lost, or stopped). These local busy/admission
   checks are per chat; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply.
   DevTool autopilot, the PO file run, and plugin `sendChat` check their chat the same way. A command job runs its queued
-  `/multisend` parts on the server under one job id and chat slot ([self-host server](self-host-server.md)).
+  `/multisend` parts on the server under one job id and chat slot ([generation](server-generation.md)).
   - Pipes are `|`.
   - Unknown commands return `false` and fall through as ordinary text.
 - `infunctions.ts` `calcString`: calculator for the CBS calc function.
@@ -308,7 +308,7 @@ Send, in `DefaultChatScreen.svelte`:
 the entry is released when the send ends. Each chat admits one send from this tab, so sends in different chats can run
 concurrently. `serverGeneration.ts` builds the job request and `serverCommands.ts` flushes pending resource writes,
 creates the server job, follows it through its terminal, and maps its outcome to the caller. The job guard checks the
-chat binding; server-side admission and job lifecycle are documented in [self-host server](self-host-server.md).
+chat binding; server-side admission and job lifecycle are documented in [generation](server-generation.md).
 
 The tab follows jobs by id in `followedJobs` and records each job's latest `stage` event in `jobStages`. Creation and
 `accepted` seed `preparing` only when that job has no stage yet, so the spinner shows it before the first stage event; a
@@ -348,7 +348,7 @@ body (`stale`, `chatBindingMismatch`, 404 `Chat not found`). Refusals the origin
 `chatBusy`, `chatBindingIncomplete`, `chatLoreOverrideOrphaned`) show their usual message but keep the request
 uncertain; an uncertain `chatBusy` is not followed, since a job of this request id would have been replayed. Failures
 before lookup (auth, rate limit, body limit, epoch mismatch) and generic/undecodable errors also leave it uncertain; the
-epoch notice still runs. See [self-host server](self-host-server.md) for admission ordering and receipt retention.
+epoch notice still runs. See [generation](server-generation.md) for admission ordering and receipt retention.
 
 The ordinary composer's draft keeps its request id only for an unanswered create, a lost follow, an unsuccessful replay
 reconciliation, an unfenced refusal of an uncertain create (above), or a local preflight refusal of an already uncertain
@@ -364,8 +364,8 @@ for detached translation ([media and auxiliary work](media-aux.md)); plugin prov
 callbacks. The server's barrier sends the job chat only when it changed since the owner socket's last copy; the tab's
 barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered copy, an
 unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming metadata
-before running the hook ([persistence](persistence.md)). See [self-host server](self-host-server.md) for the job event
-and callback contract. HypaV3 selection, blocking summaries, gap questions, progress, stop control, and background task
+before running the hook ([persistence](persistence.md)). See [generation](server-generation.md) for the job event and
+callback contract. HypaV3 selection, blocking summaries, gap questions, progress, stop control, and background task
 hand-off are documented in [memory](memory.md).
 
 A command sequence's live `sequence` event counts one `messages` statistic and installs the part's alternatives through
@@ -395,10 +395,10 @@ terminal the follow reads the job's status:
 - a running job, or an ended one the server still holds, is attached again (its attach sends the final records and the
   terminal);
 - the server's kept outcome of a collected job (`GenerationStatus.kept`, kept up to 24 h, across a server restart too
-  through the job receipts; see `server/src/jobs/generationJobs.ts` and [self-host server](self-host-server.md) State)
-  is the end: it is applied as the socket's terminal would be (`applyGenerationEvent`, which releases the job), a `done`
-  marks the unseen reply, an error shows `alertJobError` as when watched live (a job that was running when the server
-  stopped reads as a kept `shutdown` error), sequence progress is retained, and a stopped sequence shows
+  through the job receipts; see `server/src/jobs/generationJobs.ts` and [generation](server-generation.md) State) is the
+  end: it is applied as the socket's terminal would be (`applyGenerationEvent`, which releases the job), a `done` marks
+  the unseen reply, an error shows `alertJobError` as when watched live (a job that was running when the server stopped
+  reads as a kept `shutdown` error), sequence progress is retained, and a stopped sequence shows
   `serverJob.sequenceStopped` as when watched live;
 - a job the server does not know (404 or another epoch: expired, pruned, a restore or import, or a restart while the
   server's receipt store was degraded) is gone: no `serverJob.lost` alert; the chat is read again and then the neutral
@@ -601,7 +601,7 @@ Not in `sendChat`:
 ## Tests
 
 - Send-job and prompt contracts: `server/src/tests/promptRunner.test.ts`, `assemble.test.ts`, and `promptTail.test.ts`;
-  server implementation details are in [self-host server](self-host-server.md). Memory job and task contracts are in
+  server implementation details are in [generation](server-generation.md). Memory job and task contracts are in
   [memory](memory.md).
 - Send admission and tab state: `src/ts/process/{localSends,serverGeneration,jobStages,chatStatus}.test.ts`,
   `index.test.ts`, and `sendAborts.svelte.test.ts` cover per-chat admission, stage tracking, terminal/lost status, and
@@ -633,7 +633,7 @@ Not in `sendChat`:
   `inlays.test.ts` covers metadata, media caching, ordered writes, conflict recovery, and cancellation. The chat
   module's save paths are in [persistence](persistence.md).
 - Message search: `src/ts/messageSearch.test.ts` covers request scopes, paging, errors, and jump state; panel behavior
-  is covered in [UI theming](ui-theming.md). The server scan is covered in [self-host server](self-host-server.md).
+  is covered in [UI theming](ui-theming.md). The server scan is covered in [server resources](server-resources.md).
 - Browser checks: `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`, and `checkSidebarChatStatus.mjs`
   exercise send/recovery, reroll/group, and sidebar status. `checkJobProtocol.mjs` drives the job client with a real
   plugin provider: the same-id retry of a create whose answer was lost, a reload during a command sequence, Stop from
@@ -672,7 +672,7 @@ Not in `sendChat`:
 - Sequence events are live-only, with no replay on attach. Parts completed without an attached socket do not install
   alternatives or count statistics in that tab; a received part counts the statistic, but its alternatives are not
   installed if the tab's chat copy lacks its reply. Decision: these are best-effort tab effects; server chat writes and
-  receipt counts are authoritative ([self-host server](self-host-server.md)).
+  receipt counts are authoritative ([generation](server-generation.md)).
 
 - Accepted limits of sends in different chats at once (kept, not fixed: D1 and D6 of Per-Chat Send in the
   [archive](../archived-plan/README.md); each chat has one local send and one server job, and different chats of a tab
@@ -687,7 +687,7 @@ Not in `sendChat`:
     `stopTTS()` (`tts.ts`) stops every chat's speech; `alertWait`'s single status slot and the legacy `progress` overlay
     (`jobChannel.ts` `progressJobId`) show the newest job.
   - Plugin hooks and providers of one tab stay serialized by the server's per-client channel lane
-    (`self-host-server.md`): a slow provider in one chat delays the other chat's hooks. A queued callback's deadline
+    (`server-generation.md`): a slow provider in one chat delays the other chat's hooks. A queued callback's deadline
     starts at its dispatch, so the wait does not time it out.
 - The server's `refreshChat` (`server/src/jobs/jobScope.ts`) reloads the stored chat after job writes and callbacks that
   may write. An unrelated edit made to that chat while the job runs can therefore enter a later prompt stage, as in the
@@ -695,14 +695,14 @@ Not in `sendChat`:
   (`server/src/jobs/jobScope.ts` header).
   - After the job's own by-id write of its chat, `refreshChatAfterWrite` adopts that write's stored change instead
     (`RunningJob.write` returns it as `written`, from `applyChanges` with `changes: true`;
-    [self-host server](self-host-server.md) "Own chat changes"): the touched rows are parsed from their stored strings
-    and placed after their anchors, the other message objects are kept, the metadata comes from the change when it
-    moved, and the pending metadata is laid over it, so a streaming checkpoint reads no transcript. It does so only
-    while the scope held exactly the change's base revision, the group was not stale, and the stored revision is still
-    the change's when the write returns (a feed listener may write the chat inside the publishing write). Any other case
-    (a whole write, a remove and reappend, a stale group, a moved revision, a change that does not fit the copy) reads
-    the chat whole as above. The chat object is always new, and so is its message list unless the change moved no
-    message, so scripts holding the previous copy see it unchanged.
+    [generation](server-generation.md) "Own chat changes"): the touched rows are parsed from their stored strings and
+    placed after their anchors, the other message objects are kept, the metadata comes from the change when it moved,
+    and the pending metadata is laid over it, so a streaming checkpoint reads no transcript. It does so only while the
+    scope held exactly the change's base revision, the group was not stale, and the stored revision is still the
+    change's when the write returns (a feed listener may write the chat inside the publishing write). Any other case (a
+    whole write, a remove and reappend, a stale group, a moved revision, a change that does not fit the copy) reads the
+    chat whole as above. The chat object is always new, and so is its message list unless the change moved no message,
+    so scripts holding the previous copy see it unchanged.
 
 ### Gotchas
 

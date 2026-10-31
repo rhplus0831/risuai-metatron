@@ -272,7 +272,7 @@ Others:
   from the catalog. It supports this chat, this character, and all-character scopes; debounces queries, cancels stale
   requests, displays snippets as text, and opens a hit through `openPinnedChat` before requesting the guarded message
   jump. Search state and shared request types belong to [chat-pipeline](chat-pipeline.md); the route is in
-  [self-host-server](self-host-server.md).
+  [server-resources](server-resources.md).
 - `PopupEditor.svelte`: popup backed by `popUpEditorStore`, editing in Monaco or a plain textarea. A header checkbox
   switches them; `src/ts/gui/popupEditorMode.ts` keeps the choice in this browser's `localStorage` (per device, not
   synced), starts a device without a stored choice on the textarea when its pointer is coarse, and Monaco is imported

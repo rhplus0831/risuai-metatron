@@ -155,8 +155,8 @@ Translation:
   id). Decoding checks every level and refuses another shape (a Fastify file), an invalid output key, or one used twice;
   a profile step keeps its profile id (it runs where that profile exists and shows as missing elsewhere). A blank name
   imports as "Imported Preset").
-- Server translation: `POST /api/translate/message` (`server/src/translation/runner.ts`, `self-host-server.md`; the path
-  and the body/answer types in `shared/translation/route.ts`) translates a stored message's source text with the same
+- Server translation: `POST /api/translate/message` (`server/src/translation/runner.ts`, `server-generation.md`; the
+  path and body/answer types in `shared/translation/route.ts`) translates a stored message's source text with the same
   pipeline and stores it on the message (`Message.translation`, the `setTranslation` op). A preset on Send Text As-Is
   sends the whole source through one pipeline run and stores the reply as is; otherwise (the default)
   `translateProtectingLines` cuts the source at empty and asset lines and runs the pipeline on each other part in turn,

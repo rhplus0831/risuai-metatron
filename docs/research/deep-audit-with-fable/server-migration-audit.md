@@ -345,7 +345,7 @@ frames of 523,877,082 bytes), the same 2 `chatPatch` frames of 466 bytes, 275,50
 of 523,601,000 bytes, 1,003 frames of 523,877,082 bytes, 3,218 ms, as in the Baseline. The hook here changes nothing,
 so the patch and read fallbacks are not in these numbers; they are tested, not probed
 (`server/src/tests/generationBarrier.test.ts`, `src/ts/network/jobChannelBarrier.test.ts`). Open: an older tab keeps
-whole barriers ([self-host server](../../structure/self-host-server.md) Known Hazards, Limitations), and the H
+whole barriers ([server generation](../../structure/server-generation.md) Known Hazards, Limitations), and the H
 sequential round trips stay, the batched history-transform callback not being built.
 
 ### SD03 — The feed caps each patch, not the frame or the next send
@@ -378,7 +378,7 @@ recorded sizes (input 6,013,785 bytes against 6,014,093, largest patch 60,146 by
 entries also carry `summaryBase`. From a test, not the probe: admission by the frame's own UTF-8 bytes
 (`server/src/tests/events.test.ts` "admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing
 rejected frames"). Open: a frame's refs and lock lists stay unbounded and frames are not split, so there is no
-per-frame bound on them ([self-host server](../../structure/self-host-server.md) Known Hazards, Limitations).
+per-frame bound on them ([server generation](../../structure/server-generation.md) Known Hazards, Limitations).
 
 ### SD02 — Vector eviction is a synchronous run of autocommits
 

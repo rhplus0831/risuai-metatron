@@ -16,14 +16,14 @@
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
 - Not here:
   - The save adapter and resources → `persistence.md`.
-  - The archive format, snapshots, and the backup routes → `self-host-server.md`.
+  - The archive format, snapshots, and the backup routes → `server-resources.md`.
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
   - Node `/hub-proxy` → `self-host-server.md`.
   - `localNetwork.ts` → `global-api.md`.
 
 ## Files
 
-- `drive/backuplocal.ts` (the server builds and reads the archive; see `self-host-server.md`):
+- `drive/backuplocal.ts` (the server builds and reads the archive; see `server-resources.md`):
   - `SaveLocalBackup`: `flushResources`, then `POST /api/backups/export` (every asset on the server, inlays included,
     plus a snapshot of the resources), streamed to a file through `LocalWriter.write`. The manifest (first record) is
     read from the stream head; assets the database references but the archive lacks are reported. When the pre-backup
@@ -46,7 +46,7 @@
     and reloads. Anything else goes to the upstream import (`upstreamBackupClient.ts`, loaded on demand): upstream
     RisuAI backups and metatron's older upstream-format backups (`database.risudat`), which the compatibility rule
     (`persistence.md` Invariants) owes a one-way migration.
-- `drive/upstreamBackupClient.ts` (routes in `self-host-server.md`): `prepareUpstreamImport(file, onProgress)` (the file
+- `drive/upstreamBackupClient.ts` (routes in `server-resources.md`): `prepareUpstreamImport(file, onProgress)` (the file
   as the body with the tab's epoch, through `serverImportClient.ts` `importOverServer`; its `readResult` reads each
   `{ phase, done, total }` line's phase), `commitUpstreamImport(token, acceptWrites?)` (`{ committed }`, or
   `{ changedWrites }` for the server's `409 changedSinceReview`; a 412 goes through `epochMismatch`),
@@ -131,7 +131,7 @@
   with `replaceState` and do not open a blocked card. The server route is unchanged and stages nothing for a
   client-refused card.
 - Realm download: `downloadRisuHub(id)` asks the server to download and stage the card (`prepareRealmImport`,
-  `POST /api/import/realm`, `storage/realmImportClient.ts`, `self-host-server.md`); the tab never fetches
+  `POST /api/import/realm`, `storage/realmImportClient.ts`, `server-resources.md`); the tab never fetches
   realm.risuai.net or holds the file. The server validates a CharX or PNG card, writes nothing, and answers its card
   text (a CharX file's embedded `module.risum` too) and a token. The tab then reads the card and asks its questions
   (`commitRealmCard` in `characterCards.ts`): an `rcc` card's password (decrypted in the tab, `readPngCard`) and the
@@ -204,7 +204,7 @@
 - Add a partial-backup asset category: `selectPartialBackupAssets` in `shared/backups.ts`, its labels and inventory
   mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/routes/backups.ts` if
   another kind is needed (a full backup already takes every asset).
-- Change the archive format: the server side (see `self-host-server.md`) and `tryReadManifest` here. Add a round-trip
+- Change the archive format: the server side (see `server-resources.md`) and `tryReadManifest` here. Add a round-trip
   test.
 - Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts`
   (`persistence.md`; metatron-only chat fields such as `loreOverrides` are in its `METATRON_CHAT_FIELDS` strip list); a

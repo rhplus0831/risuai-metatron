@@ -75,7 +75,7 @@
   directory, local header, data descriptor); entry-name decoding; `CHARX_IMPORT_PATH`, `INVALID_CHARX_FILE`, and NDJSON
   line types. The tab reader scans signatures with fflate; the server reader delimits entries by the central directory,
   but both apply the same entry rules. The server route is `server/src/routes/importCharx.ts` (`POST /api/import/charx`,
-  [self-host server](self-host-server.md)); the tab transport is `storage/charxImportClient.ts` `importCharxOverServer`
+  [server resources](server-resources.md)); the tab transport is `storage/charxImportClient.ts` `importCharxOverServer`
   ([persistence](persistence.md)).
 - `process/modules.ts`: modules.
   - `RisuModule`.
@@ -85,7 +85,7 @@
     `exportModuleLegacy`, `readModule`, and the server's `decodeModuleMain`. The module dialog uses
     `selectSingleFileHandle` for JSON, lorebook JSON, regex JSON, `.risum`, and `.charx` as the picked `File`. The
     server route is `server/src/routes/importModule.ts` (`POST /api/import/module`,
-    [self-host server](self-host-server.md)). `exportModuleLegacy` streams its default file output through
+    [server resources](server-resources.md)). `exportModuleLegacy` streams its default file output through
     `LocalWriter`; with `saveData: false`, it writes into a `VirtualWriter` and returns buffered bytes for the CharX
     embed and tests. It snapshots asset tuples before awaiting reads, preserving metadata and payload order.
     `readModule(buf)` remains for embedded `.risum` and tests.

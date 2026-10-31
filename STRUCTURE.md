@@ -157,7 +157,9 @@ completed plans and retrieval commands.
 | Settings registry/pages, preset editing/pickers, prompt editor, i18n                     | [settings-i18n](docs/structure/settings-i18n.md)               |
 | TTS, images, translation, media, playground tools                                        | [media-aux](docs/structure/media-aux.md)                       |
 | Backups/upstream compatibility, Realm hub/creator blocking, settings report              | [backup-sync-hub](docs/structure/backup-sync-hub.md)           |
-| Hono routes/auth/storage, generation/runtime services, Docker                            | [self-host-server](docs/structure/self-host-server.md)         |
+| Hono process, routes/auth, static serving, asset storage, proxies, push, Docker          | [self-host-server](docs/structure/self-host-server.md)         |
+| Server resource store, chat tables, checkpoints, snapshots, backups, file imports        | [server-resources](docs/structure/server-resources.md)         |
+| Generation jobs, live-update feed, job channel, transforms, LLM and token routes         | [server-generation](docs/structure/server-generation.md)       |
 | Scripts/config, build, dev runner, worker/PWA, upstream check, releases                  | [build-test-platforms](docs/structure/build-test-platforms.md) |
 | Test wrapper, test rules, slow tests, network guard, Playwright stack, browser checks    | [test-harness](docs/structure/test-harness.md)                 |
 
@@ -220,6 +222,14 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`,
   `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
 - **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`.
+- **server-resources**:
+  `server/src/data/{resourceStore,chatStore,chats,kinds,snapshots,archive,checkpointStore,checkpointService}.ts`,
+  `server/src/data/{databaseProjection,recordPatchText}.ts`, `server/src/data/{normalize,restore,upstream}/`,
+  `server/src/http/{spool,fileImport,contentAsset,recordStream}.ts`,
+  `server/src/routes/{resources,resourceBoot,llmSecrets,messageSearch,chatCheckpoints}.ts`,
+  `server/src/routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`.
+- **server-generation**: `server/src/jobs/`, `server/src/data/{changeFeed,generationReceipts}.ts`,
+  `server/src/routes/{events,generations,transform,translate,memoryTasks,tokens}.ts`, remaining `server/src/prompt/`.
 - **self-host-server**: remaining `server/`, `Dockerfile`, `server.sh`, `server.bat`.
 - **test-harness**: `vitest.*`, `playwright.config.ts`, `e2e/`, `util/playwright/`, `util/agentTest.mjs`,
   `util/agentTestReporter.ts`, `util/agentTestResults.mjs`, `util/agentE2e.mjs`, `util/requireHuman.mjs`,
