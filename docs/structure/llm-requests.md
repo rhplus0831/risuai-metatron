@@ -11,8 +11,8 @@
   - tool-call loops (dispatch side),
   - tokenizers,
   - auxiliary-model routing,
-  - the named API keys ([credential binding](llm-requests.md)): which key a model sends (the slot table, the shared
-    binding decision, the server resolver) and their UI (the Model menu's API Keys tab, the per-model key select),
+  - the named API keys (credential binding): which key a model sends (the slot table, the shared binding decision, the
+    server resolver) and their UI (the Model menu's API Keys tab, the per-model key select),
   - the model-picker UI.
 - Paths:
   - `src/ts/process/request/*` (including `tests/`)
@@ -61,18 +61,18 @@
 - `shared/llm/credentialSlots.ts` `credentialSlotOf(modelId, modelInfo)`: a model's credential slot,
   `{ slot, accepts, defaultDescription }` or `null` (no named key). The binding itself is always the profile's
   `credentialId`. In precedence order: `xcustom:::` → `customModel` and `reverse_proxy` → `reverseProxy` (every type but
-  `vertex`; no flat default: with no named key they send none, [credential binding](llm-requests.md)), a `keyIdentifier`
-  model (DeepSeek, DeepInfra) → `keyIdentifier` (`custom` only; default `OaiCompAPIKeys.<id>`), then by id `openrouter`,
-  `nanogpt` (every NanoGPT format), `ollama-cloud`, then by provider `OpenAI`, `Anthropic`, `AWS` (`bedrock` only, the
-  composite `accessKeyId:secretAccessKey:region`), `GoogleCloud`, `VertexAI` (`vertex` only), `Mistral`, `Cohere`,
-  `NovelAI`, and an as-is or keyless DeepSeek/DeepInfra OpenAI-format model (`openai`); a provider slot accepts its own
-  type and `custom`. Mancer, NovelList, Horde, Ooba/Kobold, local Ollama, plugin, WebLLM, and Echo have none.
+  `vertex`; no flat default: with no named key they send none), a `keyIdentifier` model (DeepSeek, DeepInfra) →
+  `keyIdentifier` (`custom` only; default `OaiCompAPIKeys.<id>`), then by id `openrouter`, `nanogpt` (every NanoGPT
+  format), `ollama-cloud`, then by provider `OpenAI`, `Anthropic`, `AWS` (`bedrock` only, the composite
+  `accessKeyId:secretAccessKey:region`), `GoogleCloud`, `VertexAI` (`vertex` only), `Mistral`, `Cohere`, `NovelAI`, and
+  an as-is or keyless DeepSeek/DeepInfra OpenAI-format model (`openai`); a provider slot accepts its own type and
+  `custom`. Mancer, NovelList, Horde, Ooba/Kobold, local Ollama, plugin, WebLLM, and Echo have none.
 - `shared/llm/credentialBinding.ts` `resolveCredentialBinding(modelId, modelInfo, profile, credentials, hasKey)`: the
   one binding decision the tab and the server share. It reads the profile's own `credentialId` (none, or no profile, is
   `default`) and answers `default`, `bound`, or `refused` with the first failing reason: `unsupportedModel` (a binding
   on a model with no slot), `missing`, `empty` (`hasKey` false: the plaintext on the server, the masked status in the
   tab), `typeMismatch`, `vertexEmailMissing`.
-- `shared/llm/modelSlots.ts`: the slot routing both runtimes share ([model profiles and slots](llm-requests.md)).
+- `shared/llm/modelSlots.ts`: the slot routing both runtimes share.
   `resolveSlotProfile(modelPreset, profiles, mode, staticModel?, profileId?)` answers
   `{ kind: "profile", profile, modelId }`, `{ kind: "none", modelId }` (no profile: the profile fields at their schema
   defaults and the flat default key), or

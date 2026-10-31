@@ -1,21 +1,34 @@
 {
   "ceilings": {
-    "docs/structure/app-shell.md": 40599,
-    "docs/structure/backup-sync-hub.md": 25350,
-    "docs/structure/build-test-platforms.md": 105297,
-    "docs/structure/cbs-rendering.md": 42871,
-    "docs/structure/characters-modules.md": 53901,
-    "docs/structure/chat-pipeline.md": 66141,
-    "docs/structure/diagnostics.md": 26074,
-    "docs/structure/global-api.md": 46053,
-    "docs/structure/llm-requests.md": 41692,
-    "docs/structure/media-aux.md": 40191,
-    "docs/structure/memory.md": 51667,
-    "docs/structure/persistence.md": 302340,
-    "docs/structure/plugins-mcp.md": 54801,
-    "docs/structure/scripts-triggers.md": 17203,
-    "docs/structure/self-host-server.md": 148836,
-    "docs/structure/settings-i18n.md": 41173,
-    "docs/structure/ui-theming.md": 52155
-  }
+    "STRUCTURE.md": 23597,
+    "docs/structure/app-shell.md": 41327,
+    "docs/structure/backup-sync-hub.md": 25766,
+    "docs/structure/build-test-platforms.md": 108148,
+    "docs/structure/cbs-rendering.md": 43828,
+    "docs/structure/characters-modules.md": 55182,
+    "docs/structure/chat-pipeline.md": 67116,
+    "docs/structure/diagnostics.md": 25974,
+    "docs/structure/global-api.md": 46850,
+    "docs/structure/llm-requests.md": 42338,
+    "docs/structure/media-aux.md": 40937,
+    "docs/structure/memory.md": 52523,
+    "docs/structure/persistence.md": 308576,
+    "docs/structure/plugins-mcp.md": 55849,
+    "docs/structure/scripts-triggers.md": 17403,
+    "docs/structure/self-host-server.md": 149019,
+    "docs/structure/settings-i18n.md": 41910,
+    "docs/structure/ui-theming.md": 53001
+  },
+  "allow": [
+    {
+      "guide": "docs/structure/global-api.md",
+      "rule": "paren-depth",
+      "count": 1
+    },
+    {
+      "guide": "docs/structure/memory.md",
+      "rule": "paren-depth",
+      "count": 1
+    }
+  ]
 }

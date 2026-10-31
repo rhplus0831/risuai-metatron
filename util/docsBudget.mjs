@@ -1,13 +1,26 @@
-// `pnpm check:docs`: the documentation size report. Plain Node over the Markdown files (no Vitest or
+// `pnpm check:docs`: the documentation check. Plain Node over the Markdown files (no Vitest or
 // Playwright run, no parser dependency). It measures every `*.md` under `docs/structure/` and
-// `STRUCTURE.md` against the budgets below and prints
+// `STRUCTURE.md` and fails, printing one `path:line rule message` line per finding, on
+//   - `ceiling`: a file over its ceiling in `util/docsBudget.json`, or over the uniform guide budget without one;
+//   - `stale-ceiling`: a ceiling naming a file that does not exist;
+//   - `paren-depth`: a heading, item, row, or paragraph with parentheses nested too deep outside code spans;
+//   - `sections` and `hazards`: a guide's `##` headings, or its `Known Hazards` `###` headings, off the fixed outline;
+//   - `unresolved-link`: a relative `.md` or `#anchor` link that does not resolve;
+//   - `self-link`: a link to the file it is in, with no anchor;
+//   - `label`: a work-tracking label, matched on joined segment text so a line wrap cannot split one. In a guide
+//     the whole text counts; in `STRUCTURE.md` only prose, because its rules quote the labels and link the plans.
+// The `allow` list in that file accepts `count` findings of one `rule` in one `guide`: more reports them all, fewer
+// reports `stale-allow`. The leaf and item budgets are measured and printed but do not fail.
+//
+// `--report` exits 0 whatever it finds and prints
 //   - a table of the guides: bytes, `###` headings, largest leaf, items over the length budget, parenthesis
 //     depth, unresolved links;
 //   - the `##` and `###` sections of each file with their bytes and own bytes;
-//   - each finding as `path:line`: long items, deep parentheses, unresolved relative `.md` and `#anchor` links;
+//   - each finding as `path:line`: long items, deep parentheses, unresolved links, section order, hazard
+//     headings, self-links, labels;
 //   - the totals of the guides, last, so they are the tail of the output.
-// `STRUCTURE.md` has its own row and is in no total. Findings never fail the run: `--report` exits 0
-// whatever it finds. The parse is line based: enough for the Markdown these files use, not CommonMark.
+// `STRUCTURE.md` has its own row and is in no total. The parse is line based: enough for the Markdown these
+// files use, not CommonMark.
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,14 +32,34 @@ export const PAREN_DEPTH_BUDGET = 2;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";
+export const BUDGET_FILE = "util/docsBudget.json";
+
+/** Every guide's `##` headings, in order. */
+export const GUIDE_SECTIONS = [
+    "Scope",
+    "Files",
+    "Flows",
+    "State",
+    "Coupling",
+    "Invariants",
+    "Recipes",
+    "Tests",
+    "Known Hazards",
+];
+/** The `###` headings `Known Hazards` may hold, in order. */
+export const HAZARD_HEADINGS = ["Issues", "Limitations", "Gotchas"];
 
 const FENCE = /^(`{3,}|~{3,})(.*)$/;
 const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/;
 const LIST_MARKER = /^([-*+]|\d{1,9}[.)])(?:[ \t]+(.*))?$/;
 const TABLE_SEPARATOR = /^\|[\s:|-]*-[\s:|-]*$/;
-/** `[text](dest "title")`, or an image: the text may nest brackets once, a bare destination may hold balanced (). */
+const LABEL = /\b(?:Slice|Phase|Stop) [0-9A-Z]|docs\/plan\//g;
+/**
+ * `[text](dest "title")`, or an image: the text may nest brackets once, a bare destination may hold balanced ().
+ * An escaped `\[` opens no link.
+ */
 const INLINE_LINK =
-    /(!?)\[((?:[^[\]]|\[[^[\]]*\])*)\]\([ \t]*(<[^>]*>|(?:[^()\s]|\([^()\s]*\))*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*\)/g;
+    /(?<!\\)(!?)\[((?:[^[\]]|\[[^[\]]*\])*)\]\([ \t]*(<[^>]*>|(?:[^()\s]|\([^()\s]*\))*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*\)/g;
 
 /**
  * `text` with each code span replaced by `replace(content)`. A run of N backticks closes at the next
@@ -48,6 +81,14 @@ function replaceCodeSpans(text, replace) {
 }
 
 const stripCodeSpans = (text) => replaceCodeSpans(text, () => "");
+/** `text` as prose: code spans and link destinations are not prose. */
+const proseText = (text) => stripCodeSpans(text).replace(INLINE_LINK, "$2");
+
+/** The fence `text` opens, or null. A backtick fence's info string holds no backtick. */
+function fenceOpened(text) {
+    const opener = FENCE.exec(text);
+    return opener && !(opener[1][0] === "`" && opener[2].includes("`")) ? opener[1] : null;
+}
 
 /**
  * One Markdown file as `{ bytes, segments, sections }`. A segment is `{ kind, line, text }`, with
@@ -55,6 +96,7 @@ const stripCodeSpans = (text) => replaceCodeSpans(text, () => "");
  * whitespace collapsed to one space, so column padding is not measured. A section is one heading of level
  * 2 or deeper: `{ level, heading, line, bytes, ownBytes }`, where `bytes` runs to the next heading of
  * the same or a higher level and `ownBytes` to the next heading of any level. Fenced code is opaque.
+ * A line starting with `|` is a row only in a table, so a wrapped item can continue on one.
  */
 export function parseGuide(text) {
     const segments = [];
@@ -64,6 +106,8 @@ export function parseGuide(text) {
     let paragraph = null;
     /** Whether the previous line was item text, so a plain line continues it whatever its indentation. */
     let lazy = false;
+    /** Whether the previous line was a table row or separator. */
+    let inTable = false;
     let fence = null;
     let offset = 0;
     const closeItems = (indent) => {
@@ -81,14 +125,16 @@ export function parseGuide(text) {
         }
         const wasLazy = lazy;
         lazy = false;
+        const wasTable = inTable;
+        inTable = false;
         if (line === "") {
             paragraph = null;
             continue;
         }
         const indent = raw.search(/\S/);
-        const opener = FENCE.exec(line);
-        if (opener && !(opener[1][0] === "`" && opener[2].includes("`"))) {
-            fence = opener[1];
+        const opened = fenceOpened(line);
+        if (opened) {
+            fence = opened;
             paragraph = null;
             closeItems(indent);
             continue;
@@ -105,16 +151,19 @@ export function parseGuide(text) {
         const marker = LIST_MARKER.exec(line);
         if (marker) {
             closeItems(indent);
-            const segment = { kind: "item", line: index + 1, text: (marker[2] ?? "").trim() };
+            // An item opening with a fence has no text of its own: the fence is the rest of the marker line.
+            fence = fenceOpened(marker[2] ?? "");
+            const segment = { kind: "item", line: index + 1, text: fence ? "" : (marker[2] ?? "").trim() };
             segments.push(segment);
             openItems.push({ indent, segment });
             paragraph = null;
-            lazy = true;
+            lazy = fence === null;
             continue;
         }
-        if (line.startsWith("|")) {
+        if (line.startsWith("|") && (wasTable || TABLE_SEPARATOR.test(lines[index + 1]?.trim() ?? ""))) {
             closeItems(indent);
             paragraph = null;
+            inTable = true;
             if (!TABLE_SEPARATOR.test(line)) {
                 segments.push({ kind: "row", line: index + 1, text: line.replace(/\s+/g, " ") });
             }
@@ -188,10 +237,9 @@ export function headingAnchors(text) {
 
 /** The deepest parenthesis nesting of prose: code spans and link destinations are not prose. */
 export function parenDepth(text) {
-    const prose = stripCodeSpans(text).replace(INLINE_LINK, "$2");
     let depth = 0;
     let deepest = 0;
-    for (const char of prose) {
+    for (const char of proseText(text)) {
         if (char === "(") deepest = Math.max(deepest, ++depth);
         else if (char === ")") depth = Math.max(depth - 1, 0);
     }
@@ -240,13 +288,15 @@ function anchorReader(root) {
     };
 }
 
+/** The repository path a `linkTarget` from `rel` names. */
+const linkFile = (rel, target) =>
+    path.posix.normalize(path.posix.join(path.posix.dirname(rel), target.file || path.posix.basename(rel)));
+
 /** Why a link from `rel` to `destination` does not resolve, or null when it does (or is not checked). */
 function linkProblem(rel, destination, readAnchors) {
     const target = linkTarget(destination);
     if (!target) return null;
-    const file = path.posix.normalize(
-        path.posix.join(path.posix.dirname(rel), target.file || path.posix.basename(rel)),
-    );
+    const file = linkFile(rel, target);
     // A path leaving the repository names nothing this checkout holds.
     if (file === ".." || file.startsWith("../")) return "no such file";
     const anchors = readAnchors(file);
@@ -254,19 +304,65 @@ function linkProblem(rel, destination, readAnchors) {
     return target.anchor && !anchors.has(target.anchor) ? "no such anchor" : null;
 }
 
+/** Whether a link from `rel` to `destination` names `rel` itself with no anchor. */
+function isSelfLink(rel, destination) {
+    const target = linkTarget(destination);
+    return target !== null && !target.anchor && linkFile(rel, target) === rel;
+}
+
+/** How a guide's `##` headings leave `GUIDE_SECTIONS`, as at most one `{ line, message }`, at the first difference. */
+function sectionProblems(sections) {
+    const found = sections.filter((section) => section.level === 2);
+    const size = Math.max(found.length, GUIDE_SECTIONS.length);
+    const at = Array.from({ length: size }).findIndex((_, i) => found[i]?.heading !== GUIDE_SECTIONS[i]);
+    if (at < 0) return [];
+    const expected = GUIDE_SECTIONS[at] ?? "no further section";
+    return [
+        {
+            line: found[at]?.line ?? found.at(-1)?.line ?? 1,
+            message: `\`##\` heading ${at + 1} is ${found[at]?.heading ?? "missing"}, expected ${expected}`,
+        },
+    ];
+}
+
+/** The `###` headings under `Known Hazards` outside `HAZARD_HEADINGS`, out of order, or repeated. */
+function hazardProblems(sections) {
+    const problems = [];
+    let inHazards = false;
+    let last = -1;
+    for (const { level, heading, line } of sections) {
+        if (level === 2) {
+            inHazards = heading === "Known Hazards";
+            last = -1;
+        }
+        if (!inHazards || level !== 3) continue;
+        const rank = HAZARD_HEADINGS.indexOf(heading);
+        if (rank < 0) problems.push({ line, message: `${heading} is not one of ${HAZARD_HEADINGS.join(", ")}` });
+        else if (rank <= last) problems.push({ line, message: `${heading} is out of order or repeated` });
+        else last = rank;
+    }
+    return problems;
+}
+
 function measureFile(root, rel, readAnchors) {
     const { bytes, segments, sections } = parseGuide(readFileSync(path.join(root, rel), "utf8"));
+    const isGuide = rel !== INDEX_DOC;
     const longItems = [];
     const deepSegments = [];
     const unresolvedLinks = [];
+    const selfLinks = [];
+    const labels = [];
     let maxParenDepth = 0;
     for (const { kind, line, text } of segments) {
         for (const destination of inlineLinks(text)) {
             const reason = linkProblem(rel, destination, readAnchors);
             if (reason) unresolvedLinks.push({ line, target: destination, reason });
+            if (isSelfLink(rel, destination)) selfLinks.push({ line, target: destination });
         }
-        if (kind === "heading") continue;
-        if (kind !== "paragraph") {
+        for (const [label] of (isGuide ? text : proseText(text)).matchAll(LABEL)) {
+            labels.push({ line, kind, label });
+        }
+        if (kind !== "heading" && kind !== "paragraph") {
             const length = [...text].length;
             if (length > ITEM_CHARS_BUDGET) longItems.push({ line, kind, length });
         }
@@ -290,6 +386,10 @@ function measureFile(root, rel, readAnchors) {
         maxParenDepth,
         deepSegments,
         unresolvedLinks,
+        sectionProblems: isGuide ? sectionProblems(sections) : [],
+        hazardProblems: isGuide ? hazardProblems(sections) : [],
+        selfLinks,
+        labels,
     };
 }
 
@@ -327,8 +427,68 @@ export function measureDocs(root) {
             tableRowsOver: countKind(longItems, "row"),
             deepSegments: guides.reduce((sum, guide) => sum + guide.deepSegments.length, 0),
             unresolvedLinks: guides.reduce((sum, guide) => sum + guide.unresolvedLinks.length, 0),
+            sectionProblems: guides.reduce((sum, guide) => sum + guide.sectionProblems.length, 0),
+            hazardProblems: guides.reduce((sum, guide) => sum + guide.hazardProblems.length, 0),
+            selfLinks: guides.reduce((sum, guide) => sum + guide.selfLinks.length, 0),
+            labels: guides.reduce((sum, guide) => sum + guide.labels.length, 0),
         },
     };
+}
+
+/**
+ * What fails for a `measureDocs` result under `ceilings` (path to bytes) and `allow` (`{ guide, rule, count }`
+ * entries), as `{ path, line, rule, message }` findings, each file's in rule order. An entry drops the findings
+ * of its rule and guide when there are at most `count`, and adds a `stale-allow` when there are fewer.
+ */
+export function checkDocs(measure, { ceilings = {}, allow = [] } = {}) {
+    const files = [...measure.guides, measure.index];
+    const findings = [];
+    const add = (file, line, rule, message) => findings.push({ path: file, line, rule, message });
+    for (const file of files) {
+        const ceiling = ceilings[file.path] ?? GUIDE_BYTES_BUDGET;
+        if (file.bytes > ceiling) add(file.path, 1, "ceiling", `${file.bytes} bytes, ceiling ${ceiling}`);
+        for (const { line, kind, depth } of file.deepSegments) {
+            add(file.path, line, "paren-depth", `${kind} depth ${depth}, budget ${PAREN_DEPTH_BUDGET}`);
+        }
+        for (const { line, message } of file.sectionProblems) add(file.path, line, "sections", message);
+        for (const { line, message } of file.hazardProblems) add(file.path, line, "hazards", message);
+        for (const { line, target, reason } of file.unresolvedLinks) {
+            add(file.path, line, "unresolved-link", `${target} (${reason})`);
+        }
+        for (const { line, target } of file.selfLinks) add(file.path, line, "self-link", target);
+        for (const { line, kind, label } of file.labels) add(file.path, line, "label", `${kind} ${label}`);
+    }
+    const known = new Set(files.map((file) => file.path));
+    for (const file of Object.keys(ceilings)) {
+        if (!known.has(file)) add(file, 1, "stale-ceiling", `no such file, but ${BUDGET_FILE} has a ceiling for it`);
+    }
+    const allowed = new Set();
+    const stale = [];
+    for (const { guide, rule, count } of allow) {
+        const matched = findings.filter((finding) => finding.path === guide && finding.rule === rule);
+        if (matched.length > count) continue;
+        matched.forEach((finding) => allowed.add(finding));
+        if (matched.length < count) {
+            const message = `${BUDGET_FILE} allows ${count} ${rule}, found ${matched.length}`;
+            stale.push({ path: guide, line: 1, rule: "stale-allow", message });
+        }
+    }
+    return [...findings.filter((finding) => !allowed.has(finding)), ...stale];
+}
+
+/** What the check prints for `findings` of a `measureDocs` result. */
+export function formatCheck(measure, findings) {
+    if (findings.length > 0) {
+        const lines = findings.map(({ path: file, line, rule, message }) => `${file}:${line} ${rule} ${message}`);
+        return `${lines.join("\n")}\n[check:docs] FAIL: ${findings.length} finding(s)\n`;
+    }
+    const files = [...measure.guides, measure.index];
+    const leaves = files.flatMap((file) => file.sections).filter((section) => section.ownBytes > LEAF_BYTES_BUDGET);
+    const items = files.flatMap((file) => file.longItems);
+    return (
+        `[check:docs] OK (reported, not failing: ${leaves.length} leaves over ${LEAF_BYTES_BUDGET} bytes, ` +
+        `${items.length} items over ${ITEM_CHARS_BUDGET} characters)\n`
+    );
 }
 
 /** Fixed-width lines for `rows` of cells: the first column left-aligned, the others right-aligned. */
@@ -419,6 +579,26 @@ export function formatReport(measure) {
         (file) => file.unresolvedLinks,
         ({ line, target, reason }) => `${line} ${target} (${reason})`,
     );
+    findings(
+        "Section order",
+        (file) => file.sectionProblems,
+        ({ line, message }) => `${line} ${message}`,
+    );
+    findings(
+        "Hazard headings",
+        (file) => file.hazardProblems,
+        ({ line, message }) => `${line} ${message}`,
+    );
+    findings(
+        "Self-links",
+        (file) => file.selfLinks,
+        ({ line, target }) => `${line} ${target}`,
+    );
+    findings(
+        "Labels",
+        (file) => file.labels,
+        ({ line, kind, label }) => `${line} ${kind} ${label}`,
+    );
 
     const leaf = totals.largestLeaf;
     lines.push(
@@ -433,16 +613,27 @@ export function formatReport(measure) {
         `[check:docs] items over ${ITEM_CHARS_BUDGET}, both kinds: ${totals.listItemsOver + totals.tableRowsOver}`,
         `[check:docs] segments above depth ${PAREN_DEPTH_BUDGET}: ${totals.deepSegments}`,
         `[check:docs] unresolved links: ${totals.unresolvedLinks}`,
+        `[check:docs] section order problems: ${totals.sectionProblems}`,
+        `[check:docs] hazard heading problems: ${totals.hazardProblems}`,
+        `[check:docs] self-links: ${totals.selfLinks}`,
+        `[check:docs] labels: ${totals.labels}`,
     );
     return `${lines.join("\n")}\n`;
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
     const args = process.argv.slice(2);
-    if (args.length === 0 || args.some((arg) => arg !== "--report")) {
-        process.stderr.write("usage: node util/docsBudget.mjs --report\n");
+    if (args.some((arg) => arg !== "--report")) {
+        process.stderr.write("usage: node util/docsBudget.mjs [--report]\n");
         process.exit(2);
     }
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    process.stdout.write(formatReport(measureDocs(root)));
+    const measure = measureDocs(root);
+    if (args.length > 0) {
+        process.stdout.write(formatReport(measure));
+    } else {
+        const findings = checkDocs(measure, JSON.parse(readFileSync(path.join(root, BUDGET_FILE), "utf8")));
+        (findings.length > 0 ? process.stderr : process.stdout).write(formatCheck(measure, findings));
+        if (findings.length > 0) process.exitCode = 1;
+    }
 }

@@ -4,14 +4,15 @@ Agent map for the RisuAI metatron fork: a Svelte 5 + TypeScript client served by
 installable as a PWA. The client requires that server; standalone static hosting, Tauri, and Capacitor are not
 supported.
 
-Documentation audit: 2026-10-24. Paths and identifiers are lookup anchors; verify current code before changing it. Test
-results belong to the current run, not this map.
+Paths and identifiers are lookup anchors; verify current code before changing it. Test results belong to the current
+run, not this map.
 
 ## Agent Read Protocol
 
 1. Read **Repository-Wide Invariants** below.
 2. Choose one owner in **Choose By Task**, or use **Path Ownership** for a supplied path.
-3. Read that guide's `Scope` and `Invariants`, then the relevant `Files`, `Flows`, or `Recipes`.
+3. List that guide's headings (`rg -n '^##' <guide>`), read `Scope` and `Invariants`, then only the subsection the task
+   names.
 4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
 5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
 6. Run V1's gates and the affected guide's focused checks.
@@ -40,12 +41,10 @@ Tooling:
 Verification:
 
 - V1. Run `pnpm check` and `pnpm --silent test:agent` once per change, after the last source edit; while iterating, run
-  only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A whole-suite run queues
-  behind another one on the machine (the wrapper's lock), so it is not a loop step. Run affected slow tests with
-  `pnpm --silent test:agent --tags-filter=slow`, or `--all` for both sets. Changes covered by `e2e/` also need
-  `pnpm --silent test:agent --e2e`; supply spec names if selection misses them. Build changes also need `pnpm build`.
-  Agents use the wrapper, never `HUMAN` to bypass the human/CI command gate. Wrapper caching, `--force`, `FLAKY`
-  warnings, browser selection, and commands belong to [build-test-platforms](docs/structure/build-test-platforms.md).
+  only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A change also runs the slow
+  tests and `e2e/` specs it affects, and a build change `pnpm build`. Agents use the wrapper, never `HUMAN` to bypass
+  the human/CI command gate. The wrapper's flags, lock, and warnings belong to
+  [build-test-platforms](docs/structure/build-test-platforms.md).
 - V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories. Vitest defaults to happy-dom; server
   tests select Node. Setup mocks, clone/DOM differences, and the deny-by-default network guard are documented in
   [build-test-platforms](docs/structure/build-test-platforms.md). Domain guides own focused test paths and coverage
@@ -248,7 +247,20 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
 ## Doc Maintenance
 
 - Focused guides use `Scope`, `Files`, `Flows`, `State`, `Coupling`, `Invariants`, `Recipes`, `Tests`, `Known Hazards`,
-  in that order. Use subordinate headings for detail.
+  in that order. `###` headings are free within that order: a `##` section over 8,000 bytes is divided by them, each a
+  topic an agent would look up, and a topic label is a heading, not a paragraph ending in a colon.
+- Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
+  (continuation lines and code spans included), and parentheses at most two deep outside code spans. `pnpm check:docs`
+  measures them, and [build-test-platforms](docs/structure/build-test-platforms.md) `Files` says what fails. A guide
+  still over budget has its own ceiling in `util/docsBudget.json`, which only goes down.
+- A guide's `Tests` section names the harnesses, fakes, and fixtures (what they stand in for, what they control), the
+  focused commands for the area, the `slow` and `e2e` memberships, and the gaps (`Not tested`), one bullet per harness.
+  It does not list a test file's cases: the file is the inventory, and V4 finds it after a rename.
+- A measurement (anything with a date, a browser or Node version, a median, or a byte or millisecond count tied to a
+  run) lives in `docs/audit/<topic>-<date>.md`. The guide keeps one sentence with the conclusion that changes how to
+  edit the code, and a link.
+- A plan's docs slice deletes as much as it adds: when a change makes a `Files` or `Flows` bullet describe what the code
+  now says plainly, the bullet goes.
 - Keep only cross-cutting rules in this file. Put subsystem contracts and focused test anchors in their owner; link
   across domains instead of copying inventories.
 - `Known Hazards` records what can still catch someone working in the subsystem, under up to three subordinate headings,
@@ -258,7 +270,9 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
     keep the behavior is recorded; mark an unreproduced claim `Unconfirmed:`. Delete an entry in the commit that fixes
     it.
   - `Limitations`: behavior the owner chose to keep, or a direct consequence of a recorded design choice. Each entry
-    names where that decision is recorded; when the decision is reversed, the entry moves to `Issues`.
+    names where that decision is recorded, in one clause at the end of the bullet
+    (`Decision: Durable Drafts D7, archive`), not an indented paragraph; when the decision is reversed, the entry moves
+    to `Issues`.
   - `Gotchas`: facts that are not defects but cause mistakes: ordering and test-environment rules, unused files that
     look live, measured costs.
 - [Found issues](docs/research/found-issues.md) is the inbox for out-of-scope findings that a session could not verify

@@ -665,8 +665,7 @@ Not in `sendChat`:
   send whose job ended `done` (`ok`) after a script removed its user message.
 - Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/`
   becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a
-  malformed later entry ends that key search instead of being skipped. Kept for parity at Phase 5 Stop B (2026-10-02) as
-  a candidate for a later fix.
+  malformed later entry ends that key search instead of being skipped. Kept for parity as a candidate for a later fix.
 
 ### Limitations
 

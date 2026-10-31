@@ -320,22 +320,22 @@ Other files:
   `liveChannelCallTargets(call)` answers a running, uncancelled callback's targets (registered with
   `channelCallSource.ts`); `registeredHooks()` builds the hook list from the active registries (`createGenerationJob`
   sends it).
-- `src/ts/network/pushNotifications.ts` ([Web Push](global-api.md)): this browser's Web Push. `startPushNotifications`
-  (after `startRouter` in `bootstrap.ts`) reads the availability (`insecure` off HTTPS, `ios-home-screen` for iOS
-  outside a Home Screen app, `unsupported`, `server-off` when `/api/push/key` answers null), answers the service
-  worker's `risu-open-route` messages with `openRoute` (`router.svelte.ts`), hands the chat of its
-  `risu-push-completion` messages (the payload's checked chat route, `shared/notifications.ts` `parseChatRoutePath`;
-  other paths are dropped) to `onCompletionPush` (`bootstrap.ts` passes `serverCommands.ts` `refreshChatAfterPush`,
-  [chat pipeline](chat-pipeline.md)), closes the completion notifications of every chat whenever the page is shown (each
-  chat has its own tag, `shared/notifications.ts` `completionNotificationTag`, so a later notice of a chat replaces only
-  that chat's; they are picked by the tag's prefix; the server also sends the tag's hash as the push `topic`, so a push
-  service replaces only that chat's undelivered completion; when it closed any, a `push` `dismissedByPage` diagnostic
-  event records the count), and runs `reconcilePush`: with `settings.ui.notification` on, the permission granted, and
-  this browser not opted out, it registers the subscription (a new one when the browser has none or one for an older
-  server key). Each sync reads `/api/push/key` again (the boot's read serves its first sync), so an open tab follows a
-  server key change, and a `server-off` tab sees push turned on when the page is shown again; when the read fails, the
-  sync goes on with the last key read but replaces no subscription made for another key, and fails with the read's
-  error. The `risu-push-registered` localStorage stamp (`{ endpoint, p256dh, auth, serverKey, at }`) skips an identical
+- `src/ts/network/pushNotifications.ts`: this browser's Web Push. `startPushNotifications` (after `startRouter` in
+  `bootstrap.ts`) reads the availability (`insecure` off HTTPS, `ios-home-screen` for iOS outside a Home Screen app,
+  `unsupported`, `server-off` when `/api/push/key` answers null), answers the service worker's `risu-open-route`
+  messages with `openRoute` (`router.svelte.ts`), hands the chat of its `risu-push-completion` messages (the payload's
+  checked chat route, `shared/notifications.ts` `parseChatRoutePath`; other paths are dropped) to `onCompletionPush`
+  (`bootstrap.ts` passes `serverCommands.ts` `refreshChatAfterPush`, [chat pipeline](chat-pipeline.md)), closes the
+  completion notifications of every chat whenever the page is shown (each chat has its own tag,
+  `shared/notifications.ts` `completionNotificationTag`, so a later notice of a chat replaces only that chat's; they are
+  picked by the tag's prefix; the server also sends the tag's hash as the push `topic`, so a push service replaces only
+  that chat's undelivered completion; when it closed any, a `push` `dismissedByPage` diagnostic event records the
+  count), and runs `reconcilePush`: with `settings.ui.notification` on, the permission granted, and this browser not
+  opted out, it registers the subscription (a new one when the browser has none or one for an older server key). Each
+  sync reads `/api/push/key` again (the boot's read serves its first sync), so an open tab follows a server key change,
+  and a `server-off` tab sees push turned on when the page is shown again; when the read fails, the sync goes on with
+  the last key read but replaces no subscription made for another key, and fails with the read's error. The
+  `risu-push-registered` localStorage stamp (`{ endpoint, p256dh, auth, serverKey, at }`) skips an identical
   registration for 24 h (`PUSH_REGISTRATION_REFRESH_MS`); a new endpoint, changed keys, or a new server key always
   registers. The stamp is read and written only inside the push lock with guarded storage calls, without the per-tab
   flag overrides; invalid or unreadable evidence causes a PUT. A successful PUT stamps it; a failed PUT, disable, or

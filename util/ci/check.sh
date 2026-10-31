@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The CI gate (docs/structure/build-test-platforms.md, "CI"): installs from the lockfile, then
-# runs the type check, the formatting check, the test inventory, the tests without the `slow` tag,
-# and the build. It stops at the first failing step with that step's exit code and prints every
-# step's duration.
+# runs the type check, the formatting check, the test inventory, the documentation budgets, the
+# tests without the `slow` tag, and the build. It stops at the first failing step with that step's
+# exit code and prints every step's duration.
 #
 # Needs Bash 5 or later (for EPOCHREALTIME), Node 24 or later, and the pnpm version that
 # `packageManager` in package.json names (in CI the job runs `corepack enable` first). When
@@ -73,6 +73,7 @@ step install "${install[@]}"
 step check pnpm check
 step format:check pnpm format:check
 step check:tests pnpm check:tests
+step check:docs pnpm check:docs
 step test env CI=1 pnpm test
 step build pnpm build
 

@@ -26,6 +26,7 @@
     `test:agent --e2e` selects), `util/requireHuman.mjs` (the human gate)
   - `util/overloadTest.mjs` (the `test:overload` runner)
   - `util/testInventory.mjs` (the `check:tests` test inventory check)
+  - `util/docsBudget.mjs` and `util/docsBudget.json` (the `check:docs` documentation check and its ratchet)
   - `util/ci/check.sh` and `.github/workflows/ci.yml` (the CI gate and its GitHub Actions workflow)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
   - `util/heap/` (V8 heap snapshot analysis)
@@ -44,6 +45,7 @@ Relevant `package.json` scripts:
 | `build`         | `vite build --sourcemap && node util/compressDist.mjs`                   | production build with Brotli/gzip siblings (served by `server`)                                                                             |
 | `check`         | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)                                                                                                                |
 | `check:tests`   | `node util/testInventory.mjs`                                            | test inventory: runners, slow table, product imports (no test run)                                                                          |
+| `check:docs`    | `node util/docsBudget.mjs`                                               | documentation budgets and structure of `STRUCTURE.md` and the guides (no test run); `--report` prints the measurements                      |
 | `test`          | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate; people and CI)                                                                                      |
 | `test:agent`    | `node util/agentTest.mjs`                                                | `test` for agents: failures only, failed files rerun alone, cached (`--all` for every test; `--e2e` for the browser specs a change reaches) |
 | `test:overload` | `node util/overloadTest.mjs`                                             | `test:agent` under the reference overload, three runs (Linux)                                                                               |
@@ -66,9 +68,26 @@ Relevant `package.json` scripts:
   `dist/`.
 
 - Prettier config lives in `.prettierrc.json` (4-space indent, double quotes, semicolons, width 120, 2-space for
-  JSON/YAML/Markdown, `prettier-plugin-svelte`). `.prettierignore` includes `.ignore`'s payloads and additionally
-  excludes all of `public/`, lockfiles, snapshots, `dist/`, `.claude/worktrees/`, and `src/ts/plugins/apiV3/risuai.d.ts`
-  (a doc comment there contains a literal `*/`, so Prettier cannot parse it).
+  JSON/YAML/Markdown, `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`).
+  `.prettierignore` includes `.ignore`'s payloads and additionally excludes all of `public/`, lockfiles, snapshots,
+  `dist/`, `.claude/worktrees/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so
+  Prettier cannot parse it).
+
+- `pnpm check:docs` (`util/docsBudget.mjs`, plain Node over the Markdown, with a line-based parse) checks `STRUCTURE.md`
+  and every guide, printing one `path:line rule message` per finding. It reads `ceilings` and `allow` from
+  `util/docsBudget.json`. These fail:
+  - `ceiling`: a file over its entry in `ceilings`, or over 40,000 bytes without one. `stale-ceiling`: an entry for a
+    file that does not exist.
+  - `paren-depth`: parentheses three deep outside code spans.
+  - `sections`: a guide's `##` headings are not the nine of **Doc Maintenance** in order. `hazards`: a `Known Hazards`
+    `###` other than `Issues`, `Limitations`, `Gotchas`, in that order.
+  - `unresolved-link`: a relative `.md` link or `#anchor` that does not resolve, with anchors computed as GitHub does.
+    `self-link`: a link to its own file without an anchor.
+  - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
+    the labels).
+- An `allow` entry `{ guide, rule, count }` accepts exactly that many findings of the rule in that guide: more are new
+  findings, fewer fail as `stale-allow`. The 8,000-byte leaf and 600-character item budgets are measured and reported
+  but do not fail yet. `--report` prints the sizes and every finding and exits 0.
 
 Config files:
 
@@ -503,12 +522,12 @@ Web:
   the same ref cancels the older one). The job runs on `ubuntu-latest` with Node 24 (`actions/setup-node`) and
   `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA provider download in the postinstall), runs `corepack enable` (so `pnpm`
   is the `packageManager` version), and then `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`,
-  `pnpm format:check`, `pnpm check:tests`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first
-  failure with its exit code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI. The
-  pnpm store is kept outside the checkout at `$RUNNER_TEMP/pnpm-store` (`PNPM_STORE_DIR`, which the script passes to
-  `pnpm install`) and cached with `actions/cache`, keyed on `pnpm-lock.yaml`. The job uses no secrets and no `save/`
-  data. A person can run the same script locally (it checks the Node and pnpm versions first); agents keep using
-  `pnpm --silent test:agent` (V1).
+  `pnpm format:check`, `pnpm check:tests`, `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`,
+  stopping at the first failure with its exit code and printing each step's duration. `pnpm test:slow` and
+  `pnpm test:e2e` are not in CI. The pnpm store is kept outside the checkout at `$RUNNER_TEMP/pnpm-store`
+  (`PNPM_STORE_DIR`, which the script passes to `pnpm install`) and cached with `actions/cache`, keyed on
+  `pnpm-lock.yaml`. The job uses no secrets and no `save/` data. A person can run the same script locally (it checks the
+  Node and pnpm versions first); agents keep using `pnpm --silent test:agent` (V1).
 - There is no desktop build. The Tauri shell (`src-tauri/`), its `@tauri-apps/*` packages, the updater, and the Python
   llama.cpp sidecar were removed.
 

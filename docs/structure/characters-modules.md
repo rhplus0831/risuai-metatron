@@ -568,7 +568,7 @@ The consumers are lorebook, scripts, triggers, parser assets, CBS, MCP, and `Cha
 - A bound persona's embedded module joins the effective modules only when a module with its id exists in
   `settings.modules`: the tab's `getModules` and the server's `jobModules` add the persona's `embeddedModule.id`, then
   resolve ids against the stored list only (`getModuleByIds`, `modulesByIds`), so an embedded module never stored
-  contributes nothing. Kept for parity at Phase 5 Stop B (2026-10-02) as a candidate for a later fix.
+  contributes nothing. Kept for parity as a candidate for a later fix.
 - `addModule` does not refuse a duplicate module id, so two modules can share one; `removeModule` removes the module but
   leaves its id in `enabledModules` until that list changes.
 - The keyed lore editor rows (`LoreBookList`) key record entries by their wrapper, which follows an element through

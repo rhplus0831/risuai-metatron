@@ -39,17 +39,16 @@
   module re-exports its types, so importers keep their paths.
   - The settings schema: `personas.ts` (`PERSONA_DEFAULTS`, `defaultPersona`, `normalizePersonas`: never empty, the four
     persona fields strings, unique ids; the server `personas` normalizer runs it), `presets.ts` (the canonical preset
-    schema of both preset records ([preset records](persistence.md)): `PRESET_DEFAULTS`/`PRESET_FIELDS` with the
-    fresh-boot defaults of every field, `PRESET_FIELD_KINDS` (the JSON kind a field's value must have), the partition
-    `MODEL_PRESET_FIELDS` (the slots and the toggle) / `MODEL_PROFILE_FIELDS` / `PROMPT_PRESET_FIELDS` /
-    `PRESET_RECORD_FIELDS` (`name`, `image`) / `PROMPT_PRESET_LOCAL_FIELDS` (`archived`, the prompt preset's list
-    metadata: kept by `normalizePreset`, served by no root view or `activePreset`, not exported) with `presetFieldOwner`
-    ([model profiles and slots](llm-requests.md)), `PRESET_ROOT_ALIASES`, `PERSONA_ROOT_ALIASES`,
-    `PRESET_NULLABLE_FIELDS` (the fields whose `null` is kept), `presetTemplate` (the `importPreset` base),
-    `defaultAIN`, `defaultOoba`, `normalizePreset`/`normalizePresets` (prompt presets: their fields only),
-    `normalizeModelPreset`/`normalizeModelPresets` (model presets: tagged slots, main and sub always a profile),
-    `normalizeModelProfile`/`normalizeModelProfiles` (profiles; never empty: one default profile,
-    `DEFAULT_MODEL_PROFILE_ID`), `normalizePromptTemplate`, `plainClone`, `newPresetId`, `newPersonaId`,
+    schema of both preset records: `PRESET_DEFAULTS`/`PRESET_FIELDS` with the fresh-boot defaults of every field,
+    `PRESET_FIELD_KINDS` (the JSON kind a field's value must have), the partition `MODEL_PRESET_FIELDS` (the slots and
+    the toggle) / `MODEL_PROFILE_FIELDS` / `PROMPT_PRESET_FIELDS` / `PRESET_RECORD_FIELDS` (`name`, `image`) /
+    `PROMPT_PRESET_LOCAL_FIELDS` (`archived`, the prompt preset's list metadata: kept by `normalizePreset`, served by no
+    root view or `activePreset`, not exported) with `presetFieldOwner` ([model profiles and slots](llm-requests.md)),
+    `PRESET_ROOT_ALIASES`, `PERSONA_ROOT_ALIASES`, `PRESET_NULLABLE_FIELDS` (the fields whose `null` is kept),
+    `presetTemplate` (the `importPreset` base), `defaultAIN`, `defaultOoba`, `normalizePreset`/`normalizePresets`
+    (prompt presets: their fields only), `normalizeModelPreset`/`normalizeModelPresets` (model presets: tagged slots,
+    main and sub always a profile), `normalizeModelProfile`/`normalizeModelProfiles` (profiles; never empty: one default
+    profile, `DEFAULT_MODEL_PROFILE_ID`), `normalizePromptTemplate`, `plainClone`, `newPresetId`, `newPersonaId`,
     `presetFieldValue` (a preset field as the settings views serve it, shared with the server)), `sections.ts` (the
     field-to-resource map: `SECTION_FIELDS`, `COLLECTION_FIELDS`, `COLLECTION_SELECTION_FIELDS`, `FORWARDED_PRESET_KEYS`
     (prompt), `FORWARDED_MODEL_PRESET_KEYS` (the derived model ids `aiModel`/`subModel`/`seperateModels`, the toggle,
@@ -143,7 +142,7 @@
   that is gone throws `PresetTargetGoneError`), `missingScopeTarget` (which preset of a captured pair is gone),
   `forwardedPresetField`, and `readSettingsRoot`/`writeSettingsRoot` (a field by its flat root name). No preset or
   profile holds a key; see [credential binding](llm-requests.md). The open chat's binding comes first
-  ([chat bindings](persistence.md)): `resolvePreset`, `resolveModelPreset`, and `resolvePersona` take the open chat's
+  ([chat bindings](#state)): `resolvePreset`, `resolveModelPreset`, and `resolvePersona` take the open chat's
   (`currentChatRef()`) bound id when it names a record that exists, then the tab's selection; the chat module registers
   that reader (`setOpenChatBindingSource`), since it imports the views. The fallback writes only the tab's ids to
   `selection`, never the chat. The `…RecordForWrite` functions follow the same order, so a settings page edits what the
@@ -1797,10 +1796,10 @@ Cold storage (removed):
     value and keeps the chat; `normalizeChatMeta` also keeps only the first override per `entry.id` (the one the merge
     applies), so every create, patch, checkpoint load, and import stores at most one per id. Checkpoints capture it with
     the story state; the transform cache key includes it; the upstream export strips it,
-  - the binding ([chat bindings](persistence.md); list fields): `bindedPersona`, `promptPresetId`, `modelPresetId`,
-    `bindingReview`, resolved by `shared/chatBinding.ts` (`resolveChatBinding`, strict, no fallback) and on the client
-    by `src/ts/storage/chatBinding.svelte.ts` (`chatBinding` for a send, `chatDisplayIds` for a render (the display
-    rule: per field the bound id when its record exists, else the tab's), `chatBindingIds`, `chatBindingPatch` (through
+  - the binding (list fields): `bindedPersona`, `promptPresetId`, `modelPresetId`, `bindingReview`, resolved by
+    `shared/chatBinding.ts` (`resolveChatBinding`, strict, no fallback) and on the client by
+    `src/ts/storage/chatBinding.svelte.ts` (`chatBinding` for a send, `chatDisplayIds` for a render (the display rule:
+    per field the bound id when its record exists, else the tab's), `chatBindingIds`, `chatBindingPatch` (through
     `setChatMeta`), `pickedId` and `chatsBoundTo` for the pickers, `initialChatBinding` and `importedChatBinding`); a
     pick goes through `pickBinding(field, id, target?)` (`src/ts/storage/chatBindingPick.ts`: a `ChatRef` binds that
     chat, `null` selects for the tab, `undefined` binds the open chat, else selects for the tab at home). How a new chat
@@ -2731,8 +2730,7 @@ Cold storage (removed):
   eligibility and ownership are D1 and D6; conflict capture and its actions are D8 in the archived Durable Drafts plan.
 - Page-close keepalive sends only whole eligible chat batches of at most 5,000 ops within the remaining byte budget. A
   batch containing a replacement, delete, multi-id remove, or an oversized payload waits for normal saving and the
-  journal; there is no prefix send. Decision: D7 in the archived Durable Drafts plan (the user's decision after Slice 6,
-  2026-10-28).
+  journal; there is no prefix send. Decision: D7 in the archived Durable Drafts plan (the user's decision, 2026-10-28).
 - A loaded chat noticed by a feed entry without a by-id change is read whole when it is idle: a reply over
   `MAX_FEED_PATCH_BYTES` (64 KiB) streaming into a chat another tab has open costs that tab up to one whole read per
   checkpoint, and a group over the cap in the field form too, or a patch the publication budget left out, costs one the
