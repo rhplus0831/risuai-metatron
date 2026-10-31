@@ -1,6 +1,11 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { ChatStreamingSnapshot } from "../../../shared/events.ts";
-import { MAX_BOOT_BODY_BYTES, RESOURCE_BOOT_PATH, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import {
+    MAX_BOOT_BODY_BYTES,
+    MAX_READ_RESPONSE_BYTES,
+    RESOURCE_BOOT_PATH,
+    RESOURCE_EPOCH_HEADER,
+} from "../../../shared/resources.ts";
 import type { ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import {
@@ -43,6 +48,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `baseRevision`; see `ResourceBatchOperation`). The batch also carries chat groups and reorders, and the reads chats and chat
  * collections (`shared/chats.ts`). With a streaming source, whole chats carry authoritative lock
  * lists sampled in the same synchronous step as the read; summaries and missing chats do not.
+ * `POST /api/resources/read` lists each named entry once, and with `continue: true` stops at
+ * `MAX_READ_RESPONSE_BYTES` and names what it left out (`ResourceReadRefsAnswer`).
  * An edit of a message a generation job owns is a 409 whose entry
  * (or, on the single routes, whose body) carries `reason: "generating"`. Responses are never cached.
  */
@@ -58,9 +65,20 @@ export function registerResourceRoutes(
         streaming?: () => ChatStreamingSnapshot[];
         /** A read's body cap (default `MAX_READ_BODY_BYTES`; tests lower it). */
         readBodyBytes?: number;
+        /** A `continue: true` read's budget in charged bytes (default `MAX_READ_RESPONSE_BYTES`; tests lower it). */
+        readResponseBytes?: number;
     },
 ) {
-    const { store, kinds, auth, limiter, maintenance, streaming, readBodyBytes = MAX_READ_BODY_BYTES } = arg;
+    const {
+        store,
+        kinds,
+        auth,
+        limiter,
+        maintenance,
+        streaming,
+        readBodyBytes = MAX_READ_BODY_BYTES,
+        readResponseBytes = MAX_READ_RESPONSE_BYTES,
+    } = arg;
 
     const noStore: MiddlewareHandler<AppEnv> = async (c, next) => {
         await next();
@@ -163,6 +181,7 @@ export function registerResourceRoutes(
             chats = [],
             chatCollections = [],
             chatSummaryCollections = [],
+            continue: canContinue,
         } = parsed.body as Record<string, unknown>;
         if (!Array.isArray(refs) || !Array.isArray(chats) || !Array.isArray(chatCollections)) {
             return c.json({ error: "Body must be { refs?, chats?, chatCollections? } of arrays" }, 400);
@@ -170,24 +189,28 @@ export function registerResourceRoutes(
         if (!Array.isArray(chatSummaryCollections)) {
             return c.json({ error: "chatSummaryCollections must be an array of character ids" }, 400);
         }
+        if (canContinue !== undefined && typeof canContinue !== "boolean") {
+            return c.json({ error: "continue must be a boolean" }, 400);
+        }
         const total = refs.length + chats.length + chatCollections.length + chatSummaryCollections.length;
         if (total === 0 || total > MAX_BATCH_OPERATIONS) {
             return c.json({ error: `Body must name 1 to ${MAX_BATCH_OPERATIONS} entries` }, 400);
         }
-        const resolved: { kind: ResourceKind; id: string }[] = [];
+        // Keyed so a repeated entry is read once; a valid id holds no NUL, so the keys cannot collide.
+        const resolved = new Map<string, { kind: ResourceKind; id: string }>();
         for (const [index, ref] of refs.entries()) {
             const kind = isPlainObject(ref) && typeof ref.kind === "string" ? kinds.get(ref.kind) : undefined;
             if (!kind || !isValidResourceId(ref.id)) {
                 return c.json({ error: `refs[${index}] must name a known kind and a valid id` }, 400);
             }
-            resolved.push({ kind, id: ref.id });
+            resolved.set(`${kind.name}\u0000${ref.id}`, { kind, id: ref.id });
         }
-        const chatRefs: { characterId: string; id: string }[] = [];
+        const chatRefs = new Map<string, { characterId: string; id: string }>();
         for (const [index, ref] of chats.entries()) {
             if (!isPlainObject(ref) || !isValidResourceId(ref.characterId) || !isValidResourceId(ref.id)) {
                 return c.json({ error: `chats[${index}] must name a valid characterId and id` }, 400);
             }
-            chatRefs.push({ characterId: ref.characterId, id: ref.id });
+            chatRefs.set(`${ref.characterId}\u0000${ref.id}`, { characterId: ref.characterId, id: ref.id });
         }
         if (!chatCollections.every(isValidResourceId)) {
             return c.json({ error: "chatCollections must be character ids" }, 400);
@@ -195,8 +218,17 @@ export function registerResourceRoutes(
         if (!chatSummaryCollections.every(isValidResourceId)) {
             return c.json({ error: "chatSummaryCollections must be character ids" }, 400);
         }
+        const named = [...resolved.values()];
+        const options = {
+            chats: [...chatRefs.values()],
+            chatCollections: [...new Set(chatCollections)],
+            chatSummaryCollections: [...new Set(chatSummaryCollections)],
+        };
         try {
-            const read = store.readRefs(resolved, { chats: chatRefs, chatCollections, chatSummaryCollections });
+            const read =
+                canContinue === true
+                    ? store.readRefsWithinBudget(named, options, readResponseBytes)
+                    : store.readRefs(named, options);
             addStreaming(read);
             return compressedJson(c, {
                 ...read,

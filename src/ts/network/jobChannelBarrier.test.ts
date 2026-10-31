@@ -290,7 +290,7 @@ async function prepareChatRecovery(source: RecoverySource = "floor", duringFlush
         expect(b.chat.chatHydrationHold(refK)).toBe("none");
         if (source !== "replacement socket") expect(b.chat.isChatStale(refK)).toBe(true);
         expect(b.chat.isMessageLocked(refK, "c")).toBe(true);
-        expect(reads).toEqual([{ refs: [], chats: [{ characterId: "c", id: "k" }] }]);
+        expect(reads).toEqual([{ refs: [], chats: [{ characterId: "c", id: "k" }], continue: true }]);
         expect(b.answers).toEqual([]);
         return acknowledged;
     };

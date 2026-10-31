@@ -1058,6 +1058,25 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             "CASE WHEN json_extract(data, '$.data') LIKE ? ESCAPE '\\' THEN data END AS hit " +
             "FROM messages WHERE chatSeq = ? AND position < ? ORDER BY position DESC LIMIT ?",
     );
+    // A budgeted read's charges: stored sizes only, so no row text leaves SQLite for an entry left out.
+    const selectChatBytes = db.prepare(
+        "SELECT seq, octet_length(meta) AS bytes FROM chats WHERE characterId = ? AND id = ?",
+    );
+    const sumMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages WHERE chatSeq = ?",
+    );
+    const selectOrderBytes = db.prepare("SELECT octet_length(ids) AS bytes FROM chatOrders WHERE characterId = ?");
+    const sumCharacterMetaBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(meta)), 0) AS bytes FROM chats WHERE characterId = ?",
+    );
+    const sumCharacterMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(m.data)), 0) AS bytes FROM messages m " +
+            "JOIN chats c ON c.seq = m.chatSeq WHERE c.characterId = ?",
+    );
+    const sumCharacterSummaryBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(s.text)), 0) AS bytes FROM chatSummaries s " +
+            "JOIN chats c ON c.seq = s.chatSeq WHERE c.characterId = ?",
+    );
 
     function chatRecord(
         characterId: string,
@@ -2391,6 +2410,43 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 order: { characterId, revision: tokens.token(order.seq, order.revision), ids: order.ids },
                 chats,
             };
+        },
+
+        /** A chat's stored bytes, its metadata and message rows, or 0 when it does not exist. */
+        chatBytes(characterId: string, id: string): number {
+            const chat = selectChatBytes.get(characterId, id) as { seq: number; bytes: number } | undefined;
+            if (!chat) {
+                return 0;
+            }
+            return chat.bytes + (sumMessageBytes.get(chat.seq) as { bytes: number }).bytes;
+        },
+
+        /**
+         * What `readCollection` reads, in stored bytes: the order and every chat of the character, also one
+         * the order does not list, since it reads them all. 0 without an order, when it reads no chat.
+         */
+        collectionBytes(characterId: string): number {
+            const order = selectOrderBytes.get(characterId) as { bytes: number } | undefined;
+            if (!order) {
+                return 0;
+            }
+            return (
+                order.bytes +
+                (sumCharacterMetaBytes.get(characterId) as { bytes: number }).bytes +
+                (sumCharacterMessageBytes.get(characterId) as { bytes: number }).bytes
+            );
+        },
+
+        /**
+         * What `readCollectionSummaries` reads, in stored bytes: the order and the stored projections as
+         * they stand, since charging rebuilds no row and reads no last-message time. 0 without an order.
+         */
+        collectionSummaryBytes(characterId: string): number {
+            const order = selectOrderBytes.get(characterId) as { bytes: number } | undefined;
+            if (!order) {
+                return 0;
+            }
+            return order.bytes + (sumCharacterSummaryBytes.get(characterId) as { bytes: number }).bytes;
         },
 
         /** Restores validated chat rows in the caller's transaction and returns the old-to-new chat seq map. */

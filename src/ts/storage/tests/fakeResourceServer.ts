@@ -33,6 +33,8 @@ export class FakeResourceServer {
     records = new Map<string, { revision: string; data: unknown }>();
     requests: { method: string; path: string; body: unknown }[] = [];
     maxBodyBytes = Infinity;
+    /** Opt-in stored-byte budget for continued plain-ref reads. */
+    readResponseBytes?: number;
     /** Resolves a held batch; set while `holdNextBatch` is pending. */
     releaseBatch: (() => void) | null = null;
     holdNextBatch = false;
@@ -216,16 +218,47 @@ export class FakeResourceServer {
             return Response.json({ epoch: epochOf(), kinds: result });
         }
         if (url.pathname === "/api/resources/read" && method === "POST") {
-            const items = (body.refs as { kind: string; id: string }[]).map((ref) => {
+            const refs = [
+                ...new Map(
+                    ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => [
+                        `${ref.kind}\u0000${ref.id}`,
+                        { kind: ref.kind, id: ref.id },
+                    ]),
+                ).values(),
+            ];
+            let count = refs.length;
+            if (body.continue === true && this.readResponseBytes !== undefined) {
+                let charged = 0;
+                for (const [index, ref] of refs.entries()) {
+                    const record = this.get(ref.kind, ref.id);
+                    const bytes = record ? new TextEncoder().encode(JSON.stringify(record.data)).byteLength : 0;
+                    if (index > 0 && charged + bytes > this.readResponseBytes) {
+                        count = index;
+                        break;
+                    }
+                    charged += bytes;
+                }
+            }
+            const items = refs.slice(0, count).map((ref) => {
                 const record = this.get(ref.kind, ref.id);
                 return {
-                    kind: ref.kind,
-                    id: ref.id,
+                    ...ref,
                     revision: record?.revision ?? null,
                     data: record ? this.project(ref.kind, record.data) : null,
                 };
             });
-            return Response.json({ epoch: epochOf(), items });
+            return Response.json({
+                epoch: epochOf(),
+                items,
+                ...(count < refs.length && {
+                    unanswered: {
+                        refs: refs.slice(count),
+                        chats: [],
+                        chatCollections: [],
+                        chatSummaryCollections: [],
+                    },
+                }),
+            });
         }
         if (url.pathname === "/api/resources/batch" && method === "POST") {
             const mismatch = assertEpoch();

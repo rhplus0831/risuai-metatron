@@ -416,7 +416,7 @@ describe("multi-kind and ref reads", () => {
         expect((await s.request("/api/resources")).status).toBe(400);
     });
 
-    it("reads named records in one call, with null revision and data for a missing one", async () => {
+    it("reads named records in one call, each once, with null revision and data for a missing one", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a"));
         const storage = await s.create("pluginStorage", "main", { note: "u" });
@@ -433,7 +433,6 @@ describe("multi-kind and ref reads", () => {
                 { kind: "characters", id: "a", revision: a, data: stored("a") },
                 { kind: "characters", id: "gone", revision: null, data: null },
                 { kind: "pluginStorage", id: "main", revision: storage, data: { note: "u" } },
-                { kind: "characters", id: "a", revision: a, data: stored("a") },
             ],
             chats: [],
             chatCollections: [],

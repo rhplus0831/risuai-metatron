@@ -76,6 +76,7 @@ describe("requests", () => {
             chats: [{ characterId: "c", id: "k" }],
             chatCollections: ["c"],
             chatSummaryCollections: ["d"],
+            continue: true,
         });
         expect(calls.filter(({ init }) => init.body !== undefined)).toHaveLength(1);
     });
@@ -188,5 +189,184 @@ describe("epoch replacement", () => {
             path === "/api/backups/snap/restore" ? Response.json({ epoch: "epoch-2" }) : original(path, init);
         expect(await client.restoreBackup("snap")).toBe("epoch-2");
         expect(listener).not.toHaveBeenCalled();
+    });
+});
+
+describe("continued reads", () => {
+    const a = { kind: "characters", id: "a" };
+    const b = { kind: "characters", id: "b" };
+    const pending = (refs = [b]) => ({ refs, chats: [], chatCollections: [], chatSummaryCollections: [] });
+    const item = (ref: { kind: string; id: string }) => ({ ...ref, revision: "r1", data: { name: ref.id } });
+    const collection = (characterId: string) => ({ characterId, order: null, chats: [] });
+
+    it("merges two rounds once in request order when a character pulls a later collection forward", async () => {
+        const { signal } = new AbortController();
+        const unanswered = {
+            refs: [b],
+            chats: [{ characterId: "b", id: "k" }],
+            chatCollections: ["b", "c"],
+            chatSummaryCollections: ["c", "b"],
+        };
+        const chat = { characterId: "b", id: "k", revision: null, data: null };
+        let release!: (response: Response) => void;
+        let reached!: () => void;
+        const secondRequest = new Promise<void>((resolve) => {
+            reached = resolve;
+        });
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(
+                    Response.json({
+                        epoch: "epoch-1",
+                        items: [item(a)],
+                        chats: [],
+                        chatCollections: [collection("a")],
+                        chatSummaryCollections: [collection("a")],
+                        unanswered,
+                    }),
+                )
+                .mockImplementationOnce(() => {
+                    reached();
+                    return new Promise<Response>((resolve) => {
+                        release = resolve;
+                    });
+                }),
+        };
+        const returned = vi.fn();
+        const reading = client
+            .readRefs([a, b], {
+                chats: [{ characterId: "b", id: "k" }],
+                chatCollections: ["b", "a", "c"],
+                chatSummaryCollections: ["c", "a", "b"],
+                signal,
+            })
+            .then((result) => {
+                returned(result);
+                return result;
+            });
+        await secondRequest;
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(2);
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal]);
+        expect(JSON.parse(calls[0].init.body as string)).toMatchObject({ continue: true });
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...unanswered, continue: true });
+        release(
+            Response.json({
+                epoch: "epoch-1",
+                items: [item(b)],
+                chats: [chat],
+                chatCollections: [collection("b"), collection("c")],
+                chatSummaryCollections: [collection("c"), collection("b")],
+            }),
+        );
+        expect(await reading).toEqual({
+            epoch: "epoch-1",
+            items: [item(a), item(b)],
+            chats: [chat],
+            chatCollections: [collection("b"), collection("a"), collection("c")],
+            chatSummaryCollections: [collection("c"), collection("a"), collection("b")],
+        });
+        expect(returned).toHaveBeenCalledTimes(1);
+        expect(returned.mock.calls[0][0]).not.toHaveProperty("unanswered");
+    });
+
+    it("continues the fake server's deduplicated plain-ref answers", async () => {
+        fake.readResponseBytes = 1;
+        fake.set(a.kind, a.id, { name: "a" });
+        fake.set(b.kind, b.id, { name: "b" });
+        const result = await client.readRefs([a, a, b, b]);
+        expect(result.items.map(({ id, data }) => ({ id, data }))).toEqual([
+            { id: "a", data: { name: "a" } },
+            { id: "b", data: { name: "b" } },
+        ]);
+        expect(calls).toHaveLength(2);
+        expect(result).not.toHaveProperty("unanswered");
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...pending(), continue: true });
+    });
+
+    it.each([false, true])("rejects a round with no progress even with duplicate input (%s)", async (duplicates) => {
+        const requested = duplicates ? [a, a] : [a];
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ epoch: "epoch-1", items: [], unanswered: pending([a]) }))
+                // A finite fallback makes a missing progress guard fail without hanging the test.
+                .mockResolvedValue(Response.json({ epoch: "epoch-1", items: [item(a)] })),
+        };
+        const returned = vi.fn();
+        await expect(client.readRefs(requested).then(returned)).rejects.toBeInstanceOf(client.ResourceRequestError);
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(1);
+    });
+
+    it.each(["no progress", "HTTP failure"])("discards an earlier round after %s", async (failure) => {
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ epoch: "epoch-1", items: [item(a)], unanswered: pending() }))
+                .mockResolvedValueOnce(
+                    failure === "no progress"
+                        ? Response.json({ epoch: "epoch-1", items: [], unanswered: pending() })
+                        : Response.json({ error: "failed" }, { status: 500 }),
+                )
+                .mockResolvedValue(Response.json({ epoch: "epoch-1", items: [item(b)] })),
+        };
+        const returned = vi.fn();
+        await expect(client.readRefs([a, b]).then(returned)).rejects.toBeInstanceOf(client.ResourceRequestError);
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(2);
+    });
+
+    it.each([
+        ["epoch-1", 412],
+        ["", 412],
+        ["epoch-1", 200],
+        ["", 200],
+    ] as const)(
+        "discards rounds and calls the epoch listener with loaded epoch '%s' and status %s",
+        async (loaded, status) => {
+            client.setResourceEpoch(loaded);
+            const listener = vi.fn();
+            client.setEpochMismatchListener(listener);
+            server.current = {
+                fetch: vi
+                    .fn()
+                    .mockResolvedValueOnce(Response.json({ epoch: "epoch-1", items: [item(a)], unanswered: pending() }))
+                    .mockResolvedValueOnce(
+                        Response.json(
+                            status === 412
+                                ? { error: "EpochMismatch", epoch: "epoch-2" }
+                                : { epoch: "epoch-2", items: [item(b)] },
+                            { status },
+                        ),
+                    ),
+            };
+            const returned = vi.fn();
+            await expect(client.readRefs([a, b]).then(returned)).rejects.toBeInstanceOf(
+                client.ResourceEpochMismatchError,
+            );
+            expect(returned).not.toHaveBeenCalled();
+            expect(listener).toHaveBeenCalledExactlyOnceWith("epoch-2");
+            expect(calls).toHaveLength(2);
+        },
+    );
+
+    it("stops before the next round when the caller aborts", async () => {
+        const controller = new AbortController();
+        const reason = new Error("caller stopped the read");
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockImplementationOnce(async () => {
+                    controller.abort(reason);
+                    return Response.json({ epoch: "epoch-1", items: [item(a)], unanswered: pending() });
+                })
+                .mockResolvedValue(Response.json({ epoch: "epoch-1", items: [item(b)] })),
+        };
+        const returned = vi.fn();
+        await expect(client.readRefs([a, b], { signal: controller.signal }).then(returned)).rejects.toBe(reason);
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(1);
     });
 });

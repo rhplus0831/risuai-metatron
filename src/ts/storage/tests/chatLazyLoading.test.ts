@@ -87,7 +87,7 @@ const settleMicrotasks = async () => {
  * `m` and `constructor` (an id named like an `Object.prototype` member), and `e` with its only chat
  * `only`. Nothing is selected.
  */
-async function boot(initialMeta: Record<string, unknown> = {}) {
+async function boot(initialMeta: Record<string, unknown> = {}, chatCount = C_CHATS) {
     vi.resetModules();
     const server = await StoreBackedServer.create();
     serverHolder.current = server;
@@ -99,7 +99,7 @@ async function boot(initialMeta: Record<string, unknown> = {}) {
             { kind: characters, id: "e", baseRevision: null, data: { chaId: "e", name: "E" } },
         ],
         chats: [
-            ...Array.from({ length: C_CHATS }, (_, i) =>
+            ...Array.from({ length: chatCount }, (_, i) =>
                 create("c", `k${i}`, {
                     name: `K${i}`,
                     message:
@@ -1201,5 +1201,76 @@ describe("server copies never load a chat", () => {
         expect(chat.idleChatRefreshes()).toEqual([]);
         expect(chat.idleSummaryRefreshes()).toEqual([]);
         expect(server.batchCount()).toBe(0);
+    });
+});
+
+describe("continued bulk chat loads", () => {
+    async function timedLoad(roundDelay: number) {
+        const b = await boot({}, 500);
+        b.server.readResponseBytes = 8 * 1024;
+        const signals: (AbortSignal | null | undefined)[] = [];
+        const served: string[] = [];
+        const fetch = b.server.fetch;
+        vi.spyOn(b.server, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/read") {
+                signals.push(init?.signal);
+                const body = await response.clone().json();
+                served.push(...(body.chats ?? []).map((chat: { id: string }) => chat.id));
+                await new Promise<void>((resolve) => setTimeout(resolve, roundDelay));
+            }
+            return response;
+        });
+        return { ...b, signals, served };
+    }
+
+    it("loads 500 small chats across rounds under one deadline and installs each once", async () => {
+        const b = await timedLoad(1000);
+        const ids = Array.from({ length: 500 }, (_, i) => `k${i}`);
+        const release = b.chat.pinChats("c");
+        const versions = ids.map((id) => b.chat.chatInstallVersion(ref("c", id)));
+        const loading = b.chat.loadChats("c");
+        let failure: unknown;
+        const complete = loading.catch((error: unknown) => {
+            failure = error;
+            return null;
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(failure).toBeUndefined();
+        const loaded = (await complete)!;
+        expect(loaded.map(({ id }) => id)).toEqual(ids);
+        expect(b.loadedIds("c")).toEqual(ids);
+        expect(b.served).toEqual(ids);
+        expect(b.signals.length).toBeGreaterThan(2);
+        expect(new Set(b.signals).size).toBe(1);
+        expect(b.signals[0]?.aborted).toBe(false);
+        expect(ids.map((id, index) => b.chat.chatInstallVersion(ref("c", id)) - versions[index])).toEqual(
+            ids.map(() => 1),
+        );
+        expect(texts(loaded[0])).toEqual(["A", "B", "C"]);
+        expect(texts(loaded[499])).toEqual(["K499 text"]);
+        const requests = b.reads().length;
+        await b.chat.loadChats("c");
+        expect(b.reads()).toHaveLength(requests);
+        release();
+    });
+
+    it("times out a 500-chat continuation at the original deadline and installs nothing", async () => {
+        const b = await timedLoad(25_000);
+        const { language } = await import("src/lang");
+        const loading = b.chat.loadChats("c");
+        const failed = expect(loading).rejects.toThrow(language.chatLoadTimedOut);
+        await vi.advanceTimersByTimeAsync(50_000);
+        expect(b.signals).toHaveLength(3);
+        expect(b.loadedIds("c")).toEqual([]);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await failed;
+        expect(b.signals.every((signal) => signal?.aborted)).toBe(true);
+        expect(b.loadedIds("c")).toEqual([]);
+        expect(b.chat.chatList("c")).toHaveLength(500);
+        // A late third answer cannot resume the loop or install the first two rounds.
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(b.signals).toHaveLength(3);
+        expect(b.loadedIds("c")).toEqual([]);
     });
 });

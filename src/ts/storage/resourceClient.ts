@@ -6,8 +6,11 @@ import {
     type ResourceBatchResult,
     type ResourceBootRequest,
     type ResourceBootResult,
+    type ResourceReadEntries,
     type ResourceReadKindsResult,
+    type ResourceReadRefsAnswer,
     type ResourceReadRefsResult,
+    type ResourceReadRequest,
     type ResourceRevisionListing,
 } from "../../../shared/resources.ts";
 import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
@@ -201,9 +204,72 @@ export async function readBoot(
     );
 }
 
+/** Names one read entry: a key per list, since a chat list and a summary list can name one character. */
+function readKey(list: keyof ResourceReadEntries, ...ids: string[]): string {
+    return JSON.stringify([list, ...ids]);
+}
+
+/** The distinct entries of a read, in order of first mention. */
+function readKeys(entries: Partial<ResourceReadEntries>): Set<string> {
+    return new Set([
+        ...(entries.refs ?? []).map(({ kind, id }) => readKey("refs", kind, id)),
+        ...(entries.chats ?? []).map(({ characterId, id }) => readKey("chats", characterId, id)),
+        ...(entries.chatCollections ?? []).map((id) => readKey("chatCollections", id)),
+        ...(entries.chatSummaryCollections ?? []).map((id) => readKey("chatSummaryCollections", id)),
+    ]);
+}
+
+/**
+ * A read's rounds as one answer. Each list follows `requested`, with an entry it does not name at the
+ * end: the server keeps a character's entries together, which can answer an entry of a list before
+ * earlier ones. A list no round returned stays absent.
+ */
+function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<string>): ResourceReadRefsResult {
+    const order = new Map([...requested].map((key, index) => [key, index]));
+    const merged = <T>(lists: (T[] | undefined)[], keyOf: (entry: T) => string): T[] | undefined => {
+        if (lists.every((list) => list === undefined)) {
+            return undefined;
+        }
+        return lists
+            .flatMap((list) => list ?? [])
+            .map((entry) => ({ entry, index: order.get(keyOf(entry)) ?? order.size }))
+            .sort((a, b) => a.index - b.index)
+            .map(({ entry }) => entry);
+    };
+    const items = merged(
+        rounds.map((round) => round.items),
+        ({ kind, id }) => readKey("refs", kind, id),
+    );
+    const chats = merged(
+        rounds.map((round) => round.chats),
+        ({ characterId, id }) => readKey("chats", characterId, id),
+    );
+    const chatCollections = merged(
+        rounds.map((round) => round.chatCollections),
+        ({ characterId }) => readKey("chatCollections", characterId),
+    );
+    const chatSummaryCollections = merged(
+        rounds.map((round) => round.chatSummaryCollections),
+        ({ characterId }) => readKey("chatSummaryCollections", characterId),
+    );
+    return {
+        ...rounds[0],
+        ...(items && { items }),
+        ...(chats && { chats }),
+        ...(chatCollections && { chatCollections }),
+        ...(chatSummaryCollections && { chatSummaryCollections }),
+    };
+}
+
 /**
  * Named records, chats (`chats`), characters' whole chat lists with their order (`chatCollections`),
  * and characters' chat summaries with their order (`chatSummaryCollections`).
+ *
+ * The answer is complete and in request order, or the call throws: the server may stop at its byte
+ * budget, and this re-sends what it left `unanswered` until nothing is left. Every round carries
+ * `signal`, so a deadline on the call bounds the whole read. The rounds share an epoch, not a moment
+ * (a character's record and its collections come from one round; separate entries may not), and a
+ * round of another epoch halts through `epochMismatch` like any other read.
  */
 export async function readRefs(
     refs: readonly { kind: string; id: string }[],
@@ -215,14 +281,39 @@ export async function readRefs(
     } = {},
 ): Promise<ResourceReadRefsResult> {
     const { signal, ...bodyOptions } = options;
-    return checkedEpoch(
-        await sendJson<ResourceReadRefsResult>("/api/resources/read", {
-            method: "POST",
-            headers: jsonHeaders,
-            body: JSON.stringify({ refs, ...bodyOptions }),
-            signal,
-        }),
-    );
+    const read = async (body: ResourceReadRequest) =>
+        checkedEpoch(
+            await sendJson<ResourceReadRefsAnswer>("/api/resources/read", {
+                method: "POST",
+                headers: jsonHeaders,
+                body: JSON.stringify(body),
+                signal,
+            }),
+        );
+    const request = { refs, ...bodyOptions };
+    const { unanswered, ...first } = await read({ ...request, continue: true });
+    const rounds: ResourceReadRefsResult[] = [first];
+    const requested = readKeys(request);
+    let asked = requested;
+    let rest: Partial<ResourceReadEntries> = unanswered ?? {};
+    let left = readKeys(rest);
+    while (left.size > 0) {
+        // Asking for a strict subset each round is what ends this loop, whatever the server answers.
+        if (left.size >= asked.size || [...left].some((key) => !asked.has(key))) {
+            throw new ResourceRequestError(502, "The server's read made no progress");
+        }
+        signal?.throwIfAborted();
+        const { unanswered: next, ...round } = await read({ ...rest, continue: true });
+        // `checkedEpoch` compares with the loaded epoch, and none is loaded during boot.
+        if (round.epoch !== first.epoch) {
+            throw epochMismatch(round.epoch);
+        }
+        rounds.push(round);
+        asked = left;
+        rest = next ?? {};
+        left = readKeys(rest);
+    }
+    return rounds.length === 1 ? first : mergeRounds(rounds, requested);
 }
 
 /** Every record's, chat's, and chat order's revision on the server (no data): the live-update reconcile. */

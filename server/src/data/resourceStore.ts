@@ -31,6 +31,7 @@ import {
     MAX_FEED_PUBLICATION_PATCH_BYTES,
     RESOURCE_KIND,
     type RecordPatch,
+    type ResourceReadEntries,
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
@@ -290,6 +291,16 @@ export type ChatInvalidation = { epoch: string; characterId: string; id: string;
 /** A `readRefs` chat entry; a missing chat has revision and data null. */
 type ChatRead = ChatRecord | { characterId: string; id: string; revision: null; data: null };
 
+/** What `readRefs` names besides records. */
+type ReadRefsOptions = {
+    chats?: readonly { characterId: string; id: string }[];
+    chatCollections?: readonly string[];
+    chatSummaryCollections?: readonly string[];
+};
+
+/** The entries a budgeted read serves or leaves out whole; `charges` are theirs, run only at the group's turn. */
+type ReadGroup = { charges: (() => number)[]; served: boolean };
+
 /** A patch op, checked before the transaction (`preparePatch`). */
 type PreparedPatch = ({ type: "fields" } & CheckedFields) | ({ type: "items" } & CheckedItemPatch);
 
@@ -531,6 +542,7 @@ export function createResourceStore(options: {
         "SELECT json_extract(data, '$.name') AS name, json_extract(data, '$.trashTime') AS trashTime, " +
             "octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?",
     );
+    const selectRecordBytes = db.prepare("SELECT octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?");
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -1086,6 +1098,29 @@ export function createResourceStore(options: {
         return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
     }
 
+    /** What `readRefs` reads, for `readRefsWithinBudget` too. */
+    function readNamed(refs: readonly { kind: ResourceKind; id: string }[], options: ReadRefsOptions) {
+        const items = refs.map(({ kind, id }) => {
+            assertKind(kind);
+            assertId(kind, id);
+            const row = readOne(kind, id);
+            return { kind: kind.name, id, revision: row?.revision ?? null, data: row?.data ?? null };
+        });
+        const chats = (options.chats ?? []).map(({ characterId, id }) => readChatOrMissing(characterId, id));
+        const chatCollections = (options.chatCollections ?? []).map((characterId) => {
+            const collection = chatTables.readCollection(characterId);
+            return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
+        });
+        if (!options.chatSummaryCollections || options.chatSummaryCollections.length === 0) {
+            return { epoch, items, chats, chatCollections };
+        }
+        const chatSummaryCollections = options.chatSummaryCollections.map((characterId) => {
+            const collection = chatTables.readCollectionSummaries(characterId);
+            return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
+        });
+        return { epoch, items, chats, chatCollections, chatSummaryCollections };
+    }
+
     /**
      * `applyChanges` inside the publishing scope (see there). With `written` (this call's own), the
      * chat groups' changes are built too and stored in it once the batch has committed.
@@ -1547,34 +1582,100 @@ export function createResourceStore(options: {
          * characters whose order and every chat are read (no order: null); `chatSummaryCollections`
          * names characters whose order and every chat's summary are read (with memoized last-message times).
          */
-        readRefs(
-            refs: readonly { kind: ResourceKind; id: string }[],
-            options: {
-                chats?: readonly { characterId: string; id: string }[];
-                chatCollections?: readonly string[];
-                chatSummaryCollections?: readonly string[];
-            } = {},
-        ) {
+        readRefs(refs: readonly { kind: ResourceKind; id: string }[], options: ReadRefsOptions = {}) {
             assertOpen();
-            const items = refs.map(({ kind, id }) => {
+            return readNamed(refs, options);
+        },
+
+        /**
+         * `readRefs` of what `budget` stored bytes cover, in one synchronous call, with the rest named in
+         * `unanswered` (`ResourceReadRefsAnswer`; present only when something was left out). The entries
+         * go in groups, each placed at its first mention in `refs`, `chats`, `chatCollections`,
+         * `chatSummaryCollections` order: a character's record and its two collection entries are one
+         * group, since a client installs them together, and every other entry, a chat included, is alone.
+         * Groups are charged from SQL in that order and served until the first that would pass the
+         * budget, which with every group after it is left out, uncharged and unread. The first group is
+         * served whatever its size. Each list, served or left out, keeps its request order, so
+         * re-sending `unanswered` finds the remaining groups in the same order. Every ref is checked
+         * first: one left out still refuses the request.
+         */
+        readRefsWithinBudget(
+            refs: readonly { kind: ResourceKind; id: string }[],
+            options: ReadRefsOptions,
+            budget: number,
+        ): ReturnType<typeof readNamed> & { unanswered?: ResourceReadEntries } {
+            assertOpen();
+            for (const { kind, id } of refs) {
                 assertKind(kind);
                 assertId(kind, id);
-                const row = readOne(kind, id);
-                return { kind: kind.name, id, revision: row?.revision ?? null, data: row?.data ?? null };
-            });
-            const chats = (options.chats ?? []).map(({ characterId, id }) => readChatOrMissing(characterId, id));
-            const chatCollections = (options.chatCollections ?? []).map((characterId) => {
-                const collection = chatTables.readCollection(characterId);
-                return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
-            });
-            if (!options.chatSummaryCollections || options.chatSummaryCollections.length === 0) {
-                return { epoch, items, chats, chatCollections };
             }
-            const chatSummaryCollections = options.chatSummaryCollections.map((characterId) => {
-                const collection = chatTables.readCollectionSummaries(characterId);
-                return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
+            const { chats = [], chatCollections = [], chatSummaryCollections = [] } = options;
+            const groups: ReadGroup[] = [];
+            const characterGroups = new Map<string, ReadGroup>();
+            /** The group of the entry that costs `charge`: its character's when it has one, else a new one. */
+            const groupOf = (characterId: string | null, charge: () => number) => {
+                let group = characterId === null ? undefined : characterGroups.get(characterId);
+                if (!group) {
+                    group = { charges: [], served: false };
+                    groups.push(group);
+                    if (characterId !== null) {
+                        characterGroups.set(characterId, group);
+                    }
+                }
+                group.charges.push(charge);
+                return group;
+            };
+            const refGroups = refs.map(({ kind, id }) =>
+                groupOf(isCharacterKind(kind) ? id : null, () => {
+                    const row = selectRecordBytes.get(kind.name, id) as { bytes: number } | undefined;
+                    return row?.bytes ?? 0;
+                }),
+            );
+            const chatGroups = chats.map(({ characterId, id }) =>
+                groupOf(null, () => chatTables.chatBytes(characterId, id)),
+            );
+            const collectionGroups = chatCollections.map((characterId) =>
+                groupOf(characterId, () => chatTables.collectionBytes(characterId)),
+            );
+            const summaryGroups = chatSummaryCollections.map((characterId) =>
+                groupOf(characterId, () => chatTables.collectionSummaryBytes(characterId)),
+            );
+
+            let charged = 0;
+            for (const group of groups) {
+                const charge = group.charges.reduce((bytes, chargeOf) => bytes + chargeOf(), 0);
+                if (group !== groups[0] && charged + charge > budget) {
+                    break;
+                }
+                charged += charge;
+                group.served = true;
+            }
+
+            const fates = <T>(list: readonly T[], listGroups: readonly ReadGroup[]) => [
+                list.filter((_, index) => listGroups[index].served),
+                list.filter((_, index) => !listGroups[index].served),
+            ];
+            const [servedRefs, leftRefs] = fates(refs, refGroups);
+            const [servedChats, leftChats] = fates(chats, chatGroups);
+            const [servedCollections, leftCollections] = fates(chatCollections, collectionGroups);
+            const [servedSummaries, leftSummaries] = fates(chatSummaryCollections, summaryGroups);
+            const read = readNamed(servedRefs, {
+                chats: servedChats,
+                chatCollections: servedCollections,
+                chatSummaryCollections: servedSummaries,
             });
-            return { epoch, items, chats, chatCollections, chatSummaryCollections };
+            if (groups.every((group) => group.served)) {
+                return read;
+            }
+            return {
+                ...read,
+                unanswered: {
+                    refs: leftRefs.map(({ kind, id }) => ({ kind: kind.name, id })),
+                    chats: leftChats,
+                    chatCollections: leftCollections,
+                    chatSummaryCollections: leftSummaries,
+                },
+            };
         },
 
         /**

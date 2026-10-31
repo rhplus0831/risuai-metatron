@@ -196,6 +196,37 @@ export type ResourceReadRefsResult = {
 };
 
 /**
+ * What one answer of `POST /api/resources/read` is charged at most, for a client that sent
+ * `continue: true`: stored bytes (a record's text, a chat's metadata and message rows, a collection's
+ * order and chats, a summary collection's order and stored projections), not the bytes on the wire. A
+ * soft budget: an answer's first group is served whatever its size, so nothing grows past being readable.
+ */
+export const MAX_READ_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+/** The entries a read names. `kind` is the resource kind name. */
+export type ResourceReadEntries = {
+    refs: readonly { kind: string; id: string }[];
+    chats: readonly { characterId: string; id: string }[];
+    chatCollections: readonly string[];
+    chatSummaryCollections: readonly string[];
+};
+
+/**
+ * The body of `POST /api/resources/read`. `continue: true` says the client re-sends what an answer
+ * leaves `unanswered`. Without it the answer is whole: an older open tab takes an entry absent from
+ * an answer for an entry absent from the server.
+ */
+export type ResourceReadRequest = Partial<ResourceReadEntries> & { continue?: boolean };
+
+/**
+ * The answer as the route sends it: `ResourceReadRefsResult`, each entry listed once, plus `unanswered`
+ * when `continue: true` met the budget. `unanswered` names what was left out, in the request's
+ * shapes and with every list present. A character's record and its two collection entries are served
+ * or left out together; every other entry stands alone. A client re-sends the lists as they are.
+ */
+export type ResourceReadRefsAnswer = ResourceReadRefsResult & { unanswered?: ResourceReadEntries };
+
+/**
  * The boot read that skips what the client already holds: `POST RESOURCE_BOOT_PATH` with a
  * `ResourceBootRequest`, answered with a `ResourceBootResult`.
  */

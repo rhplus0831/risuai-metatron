@@ -23,7 +23,12 @@ import {
 } from "../../../../shared/moduleImport.ts";
 import type { RisuModule } from "../../../../shared/modules.ts";
 import { decodeRPack } from "../../../../shared/rpack.ts";
-import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../../shared/resources.ts";
+import {
+    type ChangeSet,
+    RESOURCE_EPOCH_HEADER,
+    type ResourceReadEntries,
+    type ResourceRevisionListing,
+} from "../../../../shared/resources.ts";
 
 /**
  * An `authFetch` stand-in over the real server resource store (`createResourceStore`, SQLite in
@@ -75,6 +80,11 @@ export type ServerStore = {
         chatCollections: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
         chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
     };
+    readRefsWithinBudget(
+        refs: Parameters<ServerStore["readRefs"]>[0],
+        options: NonNullable<Parameters<ServerStore["readRefs"]>[1]>,
+        budget: number,
+    ): ReturnType<ServerStore["readRefs"]> & { unanswered?: ResourceReadEntries };
     applyChanges(
         batch: { ops?: readonly unknown[]; chats?: unknown; chatOrders?: unknown },
         options?: {
@@ -191,6 +201,8 @@ export class StoreBackedServer {
         StoreModule,
         "ResourceConflictError" | "ResourceBatchConflictError" | "ResourceValidationError"
     >;
+    /** Opt-in stored-byte budget for HTTP reads that request continuation. */
+    readResponseBytes?: number;
     requests: { method: string; path: string; body: any }[] = [];
     /** Resolves a held batch; set while `holdNextBatch` is pending. */
     releaseBatch: (() => void) | null = null;
@@ -536,15 +548,30 @@ export class StoreBackedServer {
             return Response.json(this.store.listRevisions());
         }
         if (url.pathname === "/api/resources/read" && method === "POST") {
-            const refs = ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => ({
-                kind: this.kind(ref.kind),
-                id: ref.id,
-            }));
-            const read = this.store.readRefs(refs, {
-                chats: body.chats ?? [],
-                chatCollections: body.chatCollections ?? [],
-                chatSummaryCollections: body.chatSummaryCollections ?? [],
-            });
+            const refs = [
+                ...new Map(
+                    ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => [
+                        `${ref.kind}\u0000${ref.id}`,
+                        { kind: this.kind(ref.kind), id: ref.id },
+                    ]),
+                ).values(),
+            ];
+            const options = {
+                chats: [
+                    ...new Map(
+                        ((body.chats ?? []) as { characterId: string; id: string }[]).map((ref) => [
+                            `${ref.characterId}\u0000${ref.id}`,
+                            { characterId: ref.characterId, id: ref.id },
+                        ]),
+                    ).values(),
+                ],
+                chatCollections: [...new Set<string>(body.chatCollections ?? [])],
+                chatSummaryCollections: [...new Set<string>(body.chatSummaryCollections ?? [])],
+            };
+            const read =
+                body.continue === true && this.readResponseBytes !== undefined
+                    ? this.store.readRefsWithinBudget(refs, options, this.readResponseBytes)
+                    : this.store.readRefs(refs, options);
             return Response.json({
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: this.project(this.kind(item.kind), item.data) })),

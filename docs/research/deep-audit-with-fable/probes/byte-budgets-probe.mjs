@@ -56,14 +56,17 @@
 //   `fs.fsyncSync` through `syncBuiltinESMExports` (which reaches the named imports of `journal.ts` and
 //   `durableWrite.ts`) with a stub that counts the call, starts an unref'd 100 ms timer and returns at once; never a
 //   blocking stand-in. `blockedAt100MsFsyncMs` is derived from those: the stub's blocked ms + `fsyncCalls` x 100.
-// - `continuation` (F07): the client's loop against the read route. The server has no budget and no `unanswered`
-//   field, so `playBudget` plays it: stored bytes charged with SQL on a read-only connection (a chat is `meta` plus
-//   the sum of its message rows, a collection is the order text plus the sum of its chats), units served in request
-//   order until the first that would pass the budget, the first of a round always served. Each round is a real
-//   `POST /api/resources/read` of what was served, re-sent with the rest until nothing is left; `oneCall` is today's
-//   single request of the same body, its heap figure taken from `readRefs` plus `JSON.stringify` on a store handle.
-//   `chatLoad` reads 500 chats of `largest` and `detachedExport` 500 collections, each at 16 and 32 MiB, on the
-//   `continuation` fixture; `syncTrafficFixture` runs both on the library as it stands (10 chats, 300 characters).
+// - `continuation` (F07): the client's loop against the read route. `routeBudget` is the real contract: a loop over
+//   `POST /api/resources/read` with `continue: true`, re-sending the answer's `unanswered` until it has none, at the
+//   route's default budget (`MAX_READ_RESPONSE_BYTES`): rounds, bytes per round, total ms. `budgets` plays a budget the
+//   route is not configured with, or units it does not use, through `playBudget`: stored bytes charged with SQL on a
+//   read-only connection (a chat is `meta` plus the sum of its message rows, a collection is the order text plus the
+//   sum of its chats), units served in request order until the first that would pass the budget, the first of a round
+//   always served. Each of its rounds is a real read of what was served, without `continue`, re-sent with the rest until
+//   nothing is left. `oneCall` is the single request of the same body without `continue`, which the route answers
+//   whole, its heap figure taken from `readRefs` plus `JSON.stringify` on a store handle. `chatLoad` reads 500 chats of
+//   `largest` and `detachedExport` 500 collections, `budgets` at 16 and 32 MiB, on the `continuation` fixture;
+//   `syncTrafficFixture` runs both on the library as it stands (10 chats, 300 characters).
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs, { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -79,6 +82,7 @@ import { createCheckpointService } from "../../../../server/src/data/checkpointS
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../../server/src/data/kinds.ts";
 import { createResourceStore } from "../../../../server/src/data/resourceStore.ts";
 import { MAX_AUTO_EVERY } from "../../../../shared/chatCheckpoints.ts";
+import { MAX_READ_RESPONSE_BYTES } from "../../../../shared/resources.ts";
 
 const RUNS = positiveInteger(process.env.PROBE_RUNS, 7);
 const SLOW_RUNS = Math.min(3, RUNS);
@@ -919,8 +923,52 @@ async function budgetRuns(app, charges, request, budgetMiB, unitModel) {
     };
 }
 
+/** One client call over the real contract: `continue: true`, re-sending what the answer left `unanswered`. */
+async function continuedLoop(app, request) {
+    const rounds = [];
+    let remaining = request;
+    let answered = 0;
+    let collections = 0;
+    while (remaining) {
+        globalThis.gc?.();
+        const { ms, wireBytes, jsonBytes, json } = await postRead(app, { ...remaining, continue: true });
+        const answer = JSON.parse(json.toString("utf8"));
+        const roundChats = (answer.chats ?? []).filter((chat) => chat.data !== null).length;
+        const roundCollections = (answer.chatCollections ?? []).filter((entry) => entry.order !== null).length;
+        if (roundChats + roundCollections === 0) throw new Error(`round ${rounds.length + 1} answered nothing`);
+        answered += roundChats;
+        collections += roundCollections;
+        rounds.push({ jsonBytes, wireBytes, ms });
+        remaining = answer.unanswered;
+    }
+    if (answered !== (request.chats?.length ?? 0) || collections !== (request.chatCollections?.length ?? 0)) {
+        throw new Error(`the rounds answered ${answered} chats and ${collections} collections`);
+    }
+    return rounds;
+}
+
+async function routeBudgetRuns(app, request) {
+    const runs = [];
+    for (let run = 0; run < SLOW_RUNS; run++) {
+        runs.push(await continuedLoop(app, request));
+    }
+    const [rounds] = runs;
+    return {
+        budgetBytes: MAX_READ_RESPONSE_BYTES,
+        rounds: rounds.length,
+        perRound: rounds.map((first, i) => ({
+            jsonBytes: first.jsonBytes,
+            wireBytes: first.wireBytes,
+            ms: round(median(runs.map((played) => played[i].ms))),
+        })),
+        totalMs: timing(runs.map((played) => played.reduce((sum, { ms }) => sum + ms, 0))),
+    };
+}
+
 async function scenario(app, charges, request, heapDeltaMiB, unitModels, note) {
     const oneCall = await routeRuns(app, request, SLOW_RUNS);
+    progress("continuation: the route's own budget");
+    const routeBudget = await routeBudgetRuns(app, request);
     const budgets = {};
     for (const budgetMiB of BUDGETS) {
         const models = {};
@@ -938,6 +986,7 @@ async function scenario(app, charges, request, heapDeltaMiB, unitModels, note) {
             wireBytes: oneCall[0].wireBytes,
             heapDeltaMiB,
         },
+        routeBudget,
         budgets,
     };
 }
@@ -993,10 +1042,10 @@ async function continuation([fixture, library]) {
     };
     return {
         note:
-            "At this commit the server has no budget, no continue and no unanswered field: this probe plays the " +
-            "budget over SQL charges and re-sends the rest. totalMs sums the rounds' routes; chargeMs is the SQL " +
-            "charging apart from it. oneCall.heapDeltaMiB is readRefs plus JSON.stringify on a store handle, with " +
-            "both held.",
+            "routeBudget is the route's own budget, with continue: true and the real unanswered field; its charging " +
+            "is inside totalMs. budgets plays a budget over SQL charges and re-sends the rest without continue; " +
+            "chargeMs is that charging apart from its totalMs. totalMs sums the rounds' routes. " +
+            "oneCall.heapDeltaMiB is readRefs plus JSON.stringify on a store handle, with both held.",
         ...(await continuationOn(fixture, chatLoad, { chatCollections: fixture.ids })),
         syncTrafficFixture: {
             note: "The library as it stands: its largest character's 10 chats, and its 300 characters.",

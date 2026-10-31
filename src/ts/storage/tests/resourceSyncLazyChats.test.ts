@@ -638,3 +638,96 @@ describe("editChat on an unloaded chat", () => {
         ).toBe(false);
     });
 });
+
+describe("continued reads over the store", () => {
+    it("exports whole collections in character and chat order across rounds without loading them", async () => {
+        const b = await boot();
+        b.fake.readResponseBytes = 1;
+        const detached = await b.chatEdits.readChatsDetached(["d", "c", "d"]);
+        expect([...detached.keys()]).toEqual(["d", "c"]);
+        expect(detached.get("d")!.map(({ id }) => id)).toEqual(["m"]);
+        expect(detached.get("d")![0].message).toEqual([m("x", "X")]);
+        expect(detached.get("c")!.map(({ id }) => id)).toEqual(C_IDS);
+        expect(detached.get("c")!.map(({ message }) => message.map(({ data }) => data))).toEqual([
+            ["A", "B", "C"],
+            [],
+            ...Array.from({ length: EXTRA }, (_, i) => [`N${i}`]),
+        ]);
+        expect(b.reads().map(({ collections }) => collections)).toEqual([["d", "c"], ["c"]]);
+        expect(b.loadedIds("c")).toEqual([]);
+        expect(b.loadedIds("d")).toEqual([]);
+        await b.dataset.exportAsDataset();
+        expect(b.downloads).toHaveLength(1);
+        const dataset = JSON.parse(b.downloads[0].data) as { name: string; chats: { data: string }[] }[];
+        expect(dataset.map(({ name }) => name)).toEqual([...C_IDS.map(() => "C"), "D"]);
+        expect(dataset.map(({ chats }) => chats.map(({ data }) => data))).toEqual([
+            ["A", "B", "C"],
+            [],
+            ...Array.from({ length: EXTRA }, (_, i) => [`N${i}`]),
+            ["X"],
+        ]);
+        expect(b.reads().map(({ collections }) => collections)).toEqual([["d", "c"], ["c"], ["c", "d"], ["d"]]);
+        expect(b.loadedIds("c")).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+    });
+
+    it("refreshes every stale summary collection when one queue read needs continuation", async () => {
+        const b = await boot();
+        b.fake.readResponseBytes = 1;
+        const fetch = b.fake.fetch;
+        let round = 0;
+        let release!: () => void;
+        let reached!: () => void;
+        const secondRequest = new Promise<void>((resolve) => {
+            reached = resolve;
+        });
+        vi.spyOn(b.fake, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/read" && ++round === 2) {
+                reached();
+                await new Promise<void>((resolve) => {
+                    release = resolve;
+                });
+            }
+            return response;
+        });
+        b.live.paused = true;
+        b.remoteMeta("c", "k", { name: "C remote" });
+        b.remoteMeta("d", "m", { name: "D remote" });
+        // Revision-only notices force the queue to fetch both collections together.
+        b.sync.noteRemoteChanges({
+            resources: [],
+            chats: [
+                { characterId: "c", id: "k", revision: b.fake.chat("c", "k")!.revision },
+                { characterId: "d", id: "m", revision: b.fake.chat("d", "m")!.revision },
+            ],
+            chatOrders: [],
+        });
+        await vi.advanceTimersByTimeAsync(6500);
+        await secondRequest;
+        try {
+            // Neither character is refreshed while the transport is collecting its remaining answer.
+            expect(b.chat.chatEntry({ chaId: "c", chatId: "k" })?.name).toBe("K");
+            expect(b.chat.chatEntry({ chaId: "d", chatId: "m" })?.name).toBe("M");
+        } finally {
+            release();
+        }
+        await settle(b.fake);
+        expect(b.reads()).toEqual([
+            { chats: [], summaries: ["c", "d"], collections: [] },
+            { chats: [], summaries: ["d"], collections: [] },
+        ]);
+        for (const [chaId, chatId, name] of [
+            ["c", "k", "C remote"],
+            ["d", "m", "D remote"],
+        ]) {
+            expect(b.chat.chatEntry({ chaId, chatId })?.name).toBe(name);
+            expect(b.chat.heldChatRevision({ chaId, chatId })).toBe(b.fake.chat(chaId, chatId)!.revision);
+            expect(b.chat.isChatBehind({ chaId, chatId })).toBe(false);
+            expect(b.loadedIds(chaId)).toEqual([]);
+        }
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual(C_IDS);
+        expect(b.fake.batchCount()).toBe(0);
+        noNotice();
+    });
+});

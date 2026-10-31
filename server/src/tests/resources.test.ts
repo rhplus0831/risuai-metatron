@@ -1,9 +1,12 @@
 // @vitest-environment node
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { ResourceKind } from "../data/kinds.ts";
-import { ResourceValidationError } from "../data/resourceStore.ts";
+import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
+import { createResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
+import { registerResourceRoutes } from "../routes/resources.ts";
+import type { AppEnv } from "../types.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
 const servers: ResourceTestClient[] = [];
@@ -531,5 +534,131 @@ describe("default kinds over the routes", () => {
             ((await (await s.list("characters")).json()) as { items: { id: string }[] }).items.map((i) => i.id),
         ).toEqual(["§playground"]);
         expect((await s.get("inlays", "assets/abc.png")).status).toBe(200);
+    });
+});
+
+/** Route-only app: the read budget is injected without starting the server context. */
+function budgetedReadServer(readResponseBytes: number) {
+    const kinds = createKindRegistry(testKinds);
+    const store = createResourceStore({ file: ":memory:", kinds });
+    readStores.push(store);
+    const app = new Hono<AppEnv>();
+    registerResourceRoutes(app, {
+        store,
+        kinds,
+        readResponseBytes,
+        auth: { checkAuth: async () => null } as unknown as Parameters<typeof registerResourceRoutes>[1]["auth"],
+        limiter: async (_c, next) => {
+            await next();
+        },
+        maintenance: { active: false, assertOpen() {}, enter: () => () => {} },
+    });
+    return {
+        put: (kind: ResourceKind, id: string, data: unknown) => store.put(kind, id, data, null),
+        read: (body: unknown) =>
+            app.request("/api/resources/read", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+            }),
+    };
+}
+
+const readStores: ReturnType<typeof createResourceStore>[] = [];
+afterEach(() => {
+    for (const store of readStores.splice(0)) store.close();
+});
+
+describe("named record read budgets", () => {
+    it.each([undefined, true])("deduplicates refs by kind and id with continuation %s", async (continuation) => {
+        const s = budgetedReadServer(1024);
+        s.put(docs, "a", 1);
+        s.put(notes, "a", 2);
+        const refs = [
+            { kind: "docs", id: "a" },
+            { kind: "notes", id: "a" },
+        ];
+        const response = await s.read({ refs: [refs[0], refs[1], refs[0], refs[1]], continue: continuation });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            items: [
+                { ...refs[0], data: 1 },
+                { ...refs[1], data: 2 },
+            ],
+        });
+    });
+
+    it.each([undefined, false])("answers an over-budget request whole with continuation %s", async (continuation) => {
+        const s = budgetedReadServer(1);
+        s.put(docs, "a", "a".repeat(1024));
+        s.put(docs, "b", "b".repeat(1024));
+        const response = await s.read({ refs: ["a", "b"].map((id) => ({ kind: "docs", id })), continue: continuation });
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { data: unknown }[] };
+        expect(body.items.map((item) => item.data)).toEqual(["a".repeat(1024), "b".repeat(1024)]);
+        expect(body).not.toHaveProperty("unanswered");
+    });
+
+    it("leaves the first ref that cannot fit and all later refs unanswered, even a missing one", async () => {
+        const s = budgetedReadServer(1024);
+        s.put(docs, "a", 0);
+        s.put(docs, "b", "b".repeat(1024));
+        const refs = ["a", "b", "missing"].map((id) => ({ kind: "docs", id }));
+        const response = await s.read({ refs, continue: true });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            items: [{ ...refs[0], data: 0 }],
+            unanswered: { refs: refs.slice(1), chats: [], chatCollections: [], chatSummaryCollections: [] },
+        });
+    });
+
+    it("serves an oversized first ref whole", async () => {
+        const s = budgetedReadServer(1024);
+        const data = "a".repeat(2048);
+        s.put(docs, "a", data);
+        s.put(docs, "b", 1);
+        const refs = ["a", "b"].map((id) => ({ kind: "docs", id }));
+        const response = await s.read({ refs, continue: true });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            items: [{ ...refs[0], data }],
+            unanswered: { refs: [refs[1]], chats: [], chatCollections: [], chatSummaryCollections: [] },
+        });
+    });
+
+    it("charges UTF-8 stored bytes rather than character counts", async () => {
+        // 0 is one stored byte; the JSON string "界" is five, so the total exceeds five.
+        const s = budgetedReadServer(5);
+        s.put(docs, "a", 0);
+        s.put(docs, "b", "界");
+        const refs = ["a", "b"].map((id) => ({ kind: "docs", id }));
+        const response = await s.read({ refs, continue: true });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            items: [{ ...refs[0], data: 0 }],
+            unanswered: { refs: [refs[1]], chats: [], chatCollections: [], chatSummaryCollections: [] },
+        });
+    });
+
+    it("refuses a non-boolean continuation flag", async () => {
+        const s = budgetedReadServer(1);
+        for (const continuation of ["true", 1, null]) {
+            const response = await s.read({ refs: [{ kind: "docs", id: "a" }], continue: continuation });
+            expect(response.status, String(continuation)).toBe(400);
+        }
+    });
+
+    it("validates a singleton id even when its group would be left unanswered", async () => {
+        const s = budgetedReadServer(1);
+        s.put(docs, "a", "oversized");
+        const response = await s.read({
+            refs: [
+                { kind: "docs", id: "a" },
+                { kind: "single", id: "wrong" },
+            ],
+            continue: true,
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toHaveProperty("error");
     });
 });
