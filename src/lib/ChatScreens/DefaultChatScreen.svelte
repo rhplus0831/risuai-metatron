@@ -109,6 +109,7 @@
     import { processMultiCommand } from "src/ts/process/command";
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset, getInlayMetadata } from "src/ts/process/files/inlays";
+    import { composerPlaceholder } from "./composerPlaceholder";
     import Chats from "./Chats.svelte";
     import ContextMeter from "./ContextMeter.svelte";
     import Button from "../UI/GUI/Button.svelte";
@@ -840,6 +841,14 @@
             userIcon: persona?.icon,
         };
     });
+    let inputPlaceholder = $derived(
+        composerPlaceholder({
+            setupNeeded: bindingIncomplete,
+            playground: currentCharacter?.chaId === "§playground",
+            persona: currentUsername,
+            character: currentCharacter?.name ?? "",
+        }),
+    );
 
     let inputHeight = $state("44px");
     let inputEle: HTMLTextAreaElement = $state();
@@ -1100,7 +1109,8 @@
                     {/if}
 
                     <textarea
-                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm"
+                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm placeholder:whitespace-pre placeholder:overflow-hidden placeholder:text-ellipsis"
+                        placeholder={inputPlaceholder}
                         bind:value={composer.input}
                         bind:this={inputEle}
                         oncompositionstart={() => inputTranslation.compositionStart("main")}

@@ -199,6 +199,21 @@ async function mountComposer({ reload = false } = {}) {
     return { target, input, type, click, menuItem, menu, hide, journal };
 }
 
+it("names the shown persona and character in the placeholder and asks for the setup of an incomplete chat", async () => {
+    const { input } = await mountComposer();
+    const { chatBindingPatch } = await import("src/ts/storage/chatBinding.svelte");
+    expect(input().placeholder).toBe("User → C");
+
+    chatBindingPatch({ chaId: "c", chatId: "b" }, { personaId: null });
+    selectChat("c", "b");
+    flushSync();
+    expect(input().placeholder).toBe(language.chatBinding.setupNeeded);
+
+    selectChat("c", "a");
+    flushSync();
+    expect(input().placeholder).toBe("User → C");
+});
+
 it("offers Stop beside Send for an unfollowed lock, busy refusal, or replay, and confirms the looked-up job", async () => {
     const { target, click } = await mountComposer();
     const chat = await import("src/ts/storage/chatStore.svelte");

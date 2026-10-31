@@ -1923,6 +1923,7 @@ export const languageEnglish = {
         chatSettings: "Chat Settings",
         close: "Close",
         setUp: "Set up this chat",
+        setupNeeded: "Setup required",
         confirmReview: "Confirm",
         thisChat: "This chat",
         notSetForChat: "Not set for this chat",

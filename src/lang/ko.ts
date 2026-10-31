@@ -1322,6 +1322,7 @@ export const languageKorean = {
         chatSettings: "채팅 설정",
         close: "닫기",
         setUp: "이 채팅 설정하기",
+        setupNeeded: "설정 필요",
         confirmReview: "확인",
         thisChat: "이 채팅",
         notSetForChat: "이 채팅에 설정 안 됨",
