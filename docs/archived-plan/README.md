@@ -52,6 +52,7 @@ git show bbc747f24:docs/plan/durable-drafts.md
 git show 73c12d29c:docs/plan/job-protocol.md
 git show 2a8f7b93a:docs/plan/boot-bytes.md
 git show aff71b423:docs/plan/per-event-server-work.md
+git show 0009c22f3:docs/plan/server-byte-budgets.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -105,6 +106,7 @@ it is not a current architecture guide.
 | Job Protocol                             | `73c12d29c`: `docs/plan/job-protocol.md`                                  | [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [plugins/MCP](../structure/plugins-mcp.md), [diagnostics](../structure/diagnostics.md), [persistence](../structure/persistence.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                 |
 | Boot Bytes                               | `2a8f7b93a`: `docs/plan/boot-bytes.md`                                    | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [app shell](../structure/app-shell.md), [plugins/MCP](../structure/plugins-mcp.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
 | Per-Event Server Work                    | `aff71b423`: `docs/plan/per-event-server-work.md`                         | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md)                                                                                                                                                                                                                                                                                                                                                       |
+| Server Byte Budgets                      | `0009c22f3`: `docs/plan/server-byte-budgets.md`                           | [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [diagnostics](../structure/diagnostics.md), [backup sync hub](../structure/backup-sync-hub.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                         |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -975,6 +977,28 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     still diff (cause unconfirmed), duplicate `loreOverrides` kept after an acknowledged
     write, the test-only `isBarrierFailure`, and the `perChatSends` `localStorage` failure
     with its `serverTransform` knock-on.
+- Server Byte Budgets:
+  - Measured on one machine (ext4, Node 24.21) at `228b23f6d` against the `ac823f673`
+    baseline; three cases ended worse and the audits record them as such: the summary read
+    (14.1 → 14.9 ms, a fixture with little chat metadata), the 5,000-message install
+    interval (107.7 → 164.8 ms; the interval now holds the SQL copy and index maintenance,
+    and the serving thread's synchronous work fell from 177.7 to 164.8 ms), and the first
+    checkpoint `save` (91.5 → 100.7 ms, cause not isolated).
+  - Not planned (the plan's Later list): a bytes-in-flight gate for reads, page-hash reuse
+    across checkpoint saves, per-round deadlines for continued reads, a paged
+    `GET /api/resources` for the boot-cache miss, restore and import progress as NDJSON with
+    a prepare/commit split for the version-2 import, and a streaming validator that keeps no
+    id sets.
+  - Limitations recorded in the server guide: a row far over the restore worker's heap limit
+    aborts the whole process (reproduced at a 16 MiB limit with a 32 MiB row; not reached
+    under the default 2048 MiB by what the 100 MiB request cap admits), the version-2 import
+    finishes through a shutdown instead of stopping, and `eventsFor`, reports and shares still
+    write synchronously.
+  - Found by the run (in `docs/research/found-issues.md`): routes that still re-measure a
+    counted body, the `chatCheckpoints` copy of the body limiter, the test-only
+    `checkpoints.sweep`, the login that appends a known key hash again, the "every start"
+    normalizer comments, `discardRefusedChat` without a deadline, and the unseeded
+    `terminalNotice` e2e case.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
