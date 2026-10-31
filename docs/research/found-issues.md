@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) on 2026-11-01; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,11 +8,12 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
+- [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (1)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (3)
 - [Test timing](#test-timing) (1)
 
 ## Chat store, sync, and change feeds
@@ -32,6 +33,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
 
+### discardRefusedChat reads without a deadline
+
+`discardRefusedChat` in `src/ts/storage/chatStore.svelte.ts` (the two reads near lines 4206 and 4215 on 2026-11-01) calls `readRefs` directly, with no `deadlineRead`, `deadlineChatRead` or `readWithDeadline` and no signal, while every other client read has a timer. Each read names one group, so it is one round and no regression from read continuation; it predates that work. Noticed by Server Byte Budgets slice 2 (2026-10-31).
+
+**Why it matters:** a stalled link leaves that discard waiting without a bound.
+**Suggested handling:** wrap both reads in the chat module's deadline helper.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -40,6 +48,43 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
+
+## Server routes and resource store
+
+### Routes still measure a body the limiter already counted
+
+Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `d8aac27d0`, 2026-10-31), the second size check after the read and its comment "The limiter trusts a declared length" are redundant and false in `server/src/routes/messageSearch.ts:213`, `tokens.ts:24`, `diagnostics.ts:56`, `requestHistory.ts:152` and `chatCheckpoints.ts:73`; the comments in `server/src/tests/resourcesBoot.test.ts` (~806, "the limiter trusts it, so the route measures what it read") and `diagnostics.test.ts` (~1679, "the body read is measured again") are stale the same way. The boot route's copy was removed in that slice; these files were outside it. Still present 2026-11-01.
+
+**Why it matters:** harmless at runtime (the same 413), but the comments state behavior that is gone and the `arrayBuffer()` then `text()` pair is dead logic.
+**Suggested handling:** when one of these routes is next touched, drop the check and the comment and let the limiter's 413 stand.
+
+### chatCheckpoints.ts keeps its own copy of the old body limiter
+
+`server/src/routes/chatCheckpoints.ts:2` imports `hono/body-limit` and builds its own `limitBody`/`limitedBody` (~37) instead of `routes/limitedBody.ts`; it is the only such import left after slice 1. It runs after authentication and caps at 16 KiB, so it is no pre-auth exposure, but a chunked body is still buffered first and a read failure past the preread takes the route's own path, not the shared post-`next()` rule. The server guide's registration-order item notes the exception.
+
+**Why it matters:** D1 of the plan says route caps go through the shared helper; two copies drift.
+**Suggested handling:** replace the copy with `limitedBody(MAX_CHECKPOINT_BODY_BYTES)` and remove the guide's note.
+
+### checkpoints.sweep has no product caller
+
+`store.checkpoints.sweep` (`server/src/data/resourceStore.ts` ~1756 on 2026-11-01) is called only by tests; the open-time sweep (~1181) calls the table function directly. Since `prune` and `delete` stopped sweeping the whole `checkpointPages` table (slice 7, `7d55d0189`), the pages a chat or character cascade orphans wait for the next open, so a long-running server keeps them until a restart. The plan accepted the wait; the unused wrapper was noticed in passing.
+
+**Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
+**Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
+
+### Every login appends its key hash again
+
+`server/src/routes/auth.ts` login (the `KNOWN_KEYS_KEY` operation, ~224) appends `hashJSON(body.publicKey)` to the known-key list without checking that it is already there, so a tab that logs in again with the same key adds a duplicate, the file grows without a bound, and `verifyJwt`'s `includes` (~132) scans it for every request. Noticed 2026-10-31 while slice 6 serialized logins; the serialized operation kept the behavior.
+
+**Why it matters:** a durable write per repeat login, and a linear check on the serving path, that a set or a dedupe would avoid.
+**Suggested handling:** skip the write when the hash is known; a small fix.
+
+### Normalizer comments still say the startup pass runs on every start
+
+`server/src/data/kinds.ts:37-39` (the `ResourceKind` doc comment) says a normalizer runs "in the store's startup pass" and that a non-idempotent one "rewrites the record on every start"; `shared/characters.ts:6`, `server/src/data/normalize/characters.ts:8` and `docs/structure/persistence.md:237` use the same wording. Since the normalization stamp (slice 4, `e743a93e3`) an open with its own stamp skips the record scan, so this holds only for a run of the pass (a new commit, a dirty or identity-less run, a `replaceAll`). Noticed by slice 4; the files were outside its list.
+
+**Why it matters:** a non-idempotent normalizer no longer shows up as a rewrite on each restart, only on a new commit, so the comment's warning misleads.
+**Suggested handling:** reword the four places to "in a run of the normalization pass" when one is next touched.
 
 ## Display transform
 
@@ -81,6 +126,13 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** with auto suggestions on, the first return to a chat after new suggestions downloads and re-runs what the tab already holds.
 **Suggested handling:** decide whether a non-render chat field such as `suggestMessages` should move the transform key at all; the chat revision is also the key's fence against mixed-revision results, so this needs its own design.
+
+### terminalNotice.spec.ts's composer case fails on an unseeded chat
+
+`e2e/terminalNotice.spec.ts:279` ("Enter in the composer once the notice opened goes to its OK") fails since `81e5eda9e` locked the composers while a chat needs its setup: `input.fill` at `:312` times out on a readonly textarea with placeholder "Setup required", because the spec's `seed` sets no `promptPresetId`, `modelPresetId` or `bindedPersona` (`e2e/chatBinding.spec.ts` was updated for the lock, this spec was not). Reproduced 2026-10-31 at `e338911fc` on a clean worktree, and red in every Server Byte Budgets slice run.
+
+**Why it matters:** a red spec unrelated to the change under test reads like a regression of that change, and the terminal notice's Enter handling is no longer guarded.
+**Suggested handling:** seed the chat with its three bindings the way `chatBinding.spec.ts` does and check the spec passes.
 
 ## Test timing
 
