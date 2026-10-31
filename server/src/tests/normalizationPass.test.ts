@@ -1,11 +1,12 @@
 // @vitest-environment node
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import { PRESET_DEFAULTS } from "../../../shared/presets.ts";
+import { createServerContext } from "../app.ts";
 import {
     createKindRegistry,
     DEFAULT_RESOURCE_KINDS,
@@ -14,6 +15,8 @@ import {
 } from "../data/kinds.ts";
 import {
     createResourceStore,
+    NORMALIZATION_VERSION,
+    normalizationStamp,
     ResourceConflictError,
     type ResourceStore,
     ResourceValidationError,
@@ -26,6 +29,11 @@ const defaults = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const allDefaults = [...defaults.values()];
 const materialized = DEFAULT_RESOURCE_KINDS.filter((kind) => kind.materialize);
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const COMMIT_A = "a".repeat(40);
+const COMMIT_B = "b".repeat(40);
+const CLEAN_A = { commit: COMMIT_A, dirty: false };
+const CLEAN_B = { commit: COMMIT_B, dirty: false };
+type NormalizationIdentity = Parameters<typeof createResourceStore>[0]["normalizationIdentity"];
 
 const stores: ResourceStore[] = [];
 const dirs: string[] = [];
@@ -42,8 +50,8 @@ function tempDir() {
     dirs.push(dir);
     return dir;
 }
-function open(file: string, kinds: ResourceKindRegistry = defaults) {
-    const store = createResourceStore({ file, kinds });
+function open(file: string, kinds: ResourceKindRegistry = defaults, normalizationIdentity?: NormalizationIdentity) {
+    const store = createResourceStore({ file, kinds, ...(normalizationIdentity ? { normalizationIdentity } : {}) });
     stores.push(store);
     return store;
 }
@@ -63,6 +71,16 @@ function rawRows(file: string): Row[] {
         return db
             .prepare("SELECT kind, id, seq, revision, schemaVersion, data FROM resources ORDER BY seq")
             .all() as Row[];
+    } finally {
+        db.close();
+    }
+}
+function storedStamp(file: string): string | undefined {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+        return (
+            db.prepare("SELECT value FROM meta WHERE key = 'normalizationStamp'").get() as { value: string } | undefined
+        )?.value;
     } finally {
         db.close();
     }
@@ -297,6 +315,308 @@ describe("the pass at startup", () => {
     });
 });
 
+describe("normalization stamps", () => {
+    it("skips record normalizers for an equal stamp while deleting retired rows, materializing singletons, and rebuilding chat summaries", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        let recordCalls = 0;
+        let materializations = 0;
+        const characters: ResourceKind = {
+            name: "characters",
+            schemaVersion: 1,
+            normalize: (input) => {
+                recordCalls++;
+                return input;
+            },
+        };
+        const singleton: ResourceKind = {
+            name: "preferences",
+            schemaVersion: 1,
+            singleton: true,
+            materialize: true,
+            normalize: (input) => {
+                if (input === undefined) materializations++;
+                else recordCalls++;
+                return input ?? { enabled: true };
+            },
+        };
+        const kinds = createKindRegistry([characters, singleton]);
+        const first = open(file, kinds, CLEAN_A);
+        const character = first.put(characters, "c", { chaId: "c", name: "C" }, null);
+        first.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: "k", name: "K", message: [] } as never }],
+                },
+            ],
+        });
+        stores.pop()!.close();
+        expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_A, kinds));
+        raw(
+            file,
+            "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, ?, ?, ?)",
+            "customSidebarItems",
+            "main",
+            1,
+            1,
+            "[]",
+        );
+        raw(file, "DELETE FROM resources WHERE kind = 'preferences'");
+        raw(file, "DELETE FROM chatSummaries");
+        recordCalls = 0;
+        materializations = 0;
+
+        const second = open(file, kinds, CLEAN_A);
+        expect(recordCalls).toBe(0);
+        expect(materializations).toBe(1);
+        expect(second.get(characters, "c")).toEqual(character);
+        expect(second.get(singleton, "main")!.data).toEqual({ enabled: true });
+        expect(
+            rawRows(file)
+                .map((row) => row.kind)
+                .sort(),
+        ).toEqual(["characters", "preferences"]);
+        // Read the persisted projection before a summary reader could repair it on demand.
+        const db = new DatabaseSync(file, { readOnly: true });
+        try {
+            const summaries = db.prepare("SELECT text FROM chatSummaries").all() as { text: string }[];
+            expect(summaries).toHaveLength(1);
+            expect(JSON.parse(summaries[0].text)).toMatchObject({ name: "K" });
+        } finally {
+            db.close();
+        }
+    });
+
+    it.each([
+        "a different commit",
+        "a changed kind schemaVersion",
+        "a changed kind name",
+        "a changed normalization version",
+        "an unknown identity",
+        "a dirty identity",
+        "no explicit identity",
+    ])("runs the record pass on the second open with %s", (change) => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        let calls = 0;
+        const doc: ResourceKind = {
+            name: "docs",
+            schemaVersion: 1,
+            normalize: (input) => {
+                calls++;
+                return input;
+            },
+        };
+        const empty: ResourceKind = { name: "empty", schemaVersion: 1, normalize: (input) => input };
+        const kinds = createKindRegistry([doc, empty]);
+        open(file, kinds, CLEAN_A).put(doc, "a", { n: 1 }, null);
+        stores.pop()!.close();
+        expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_A, kinds));
+        if (change === "a changed normalization version") {
+            raw(
+                file,
+                "UPDATE meta SET value = ? WHERE key = 'normalizationStamp'",
+                normalizationStamp(COMMIT_A, kinds, NORMALIZATION_VERSION - 1),
+            );
+        }
+        const nextKinds = createKindRegistry([
+            change === "a changed kind schemaVersion" ? { ...doc, schemaVersion: 2 } : doc,
+            change === "a changed kind name" ? { ...empty, name: "renamed" } : empty,
+        ]);
+        const identity =
+            change === "a different commit"
+                ? CLEAN_B
+                : change === "an unknown identity"
+                  ? { commit: null, dirty: false }
+                  : change === "a dirty identity"
+                    ? { ...CLEAN_A, dirty: true }
+                    : change === "no explicit identity"
+                      ? undefined
+                      : CLEAN_A;
+        calls = 0;
+
+        const second = open(file, nextKinds, identity);
+        expect(calls).toBe(1);
+        expect(second.get(nextKinds.get("docs")!, "a")!.data).toEqual({ n: 1 });
+        expect(storedStamp(file)).toBe(
+            identity?.commit && !identity.dirty ? normalizationStamp(identity.commit, nextKinds) : undefined,
+        );
+    });
+
+    it.each(["dirty", "identity-less"])(
+        "invalidates the old stamp during %s opens so returning to the clean commit runs the pass",
+        (run) => {
+            const file = path.join(tempDir(), "resources.sqlite");
+            let calls = 0;
+            const doc: ResourceKind = {
+                name: "docs",
+                schemaVersion: 1,
+                normalize: (input) => {
+                    calls++;
+                    return input;
+                },
+            };
+            const kinds = createKindRegistry([doc]);
+            open(file, kinds, CLEAN_A).put(doc, "a", { n: 1 }, null);
+            stores.pop()!.close();
+            expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_A, kinds));
+
+            open(file, kinds, run === "dirty" ? { ...CLEAN_A, dirty: true } : undefined);
+            stores.pop()!.close();
+            expect(storedStamp(file)).toBeUndefined();
+            calls = 0;
+            open(file, kinds, CLEAN_A);
+            expect(calls).toBe(1);
+            expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_A, kinds));
+        },
+    );
+
+    it("commits a rewritten record and the new stamp together", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        const doc: ResourceKind = { name: "docs", schemaVersion: 1, normalize: (input) => input };
+        const oldKinds = createKindRegistry([doc]);
+        const original = open(file, oldKinds, CLEAN_A).put(doc, "a", { n: 1 }, null);
+        stores.pop()!.close();
+        const filling: ResourceKind = {
+            ...doc,
+            normalize: (input) => ({ ...(input as object), filled: true }),
+        };
+        const kinds = createKindRegistry([filling]);
+
+        const store = open(file, kinds, CLEAN_B);
+        expect(store.get(filling, "a")).toEqual({
+            revision: original.revision.replace(/:1$/, ":2"),
+            data: { n: 1, filled: true },
+        });
+        expect(rawRows(file)).toMatchObject([{ revision: 2, data: '{"n":1,"filled":true}' }]);
+        expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_B, kinds));
+    });
+
+    it("rolls back earlier kind rewrites and preserves the stamp when a later normalizer or the stamp write fails", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        const earlier: ResourceKind = { name: "earlier", schemaVersion: 1, normalize: (input) => input };
+        const later: ResourceKind = { name: "later", schemaVersion: 1, normalize: (input) => input };
+        const oldKinds = createKindRegistry([earlier, later]);
+        const source = open(file, oldKinds, CLEAN_A);
+        source.put(earlier, "a", { n: 1 }, null);
+        source.put(later, "b", { n: 2 }, null);
+        stores.pop()!.close();
+        const before = rawRows(file);
+        const oldStamp = normalizationStamp(COMMIT_A, oldKinds);
+        expect(storedStamp(file)).toBe(oldStamp);
+        let rewrites = 0;
+        let reject = true;
+        const kinds = createKindRegistry([
+            {
+                ...earlier,
+                normalize: (input) => {
+                    rewrites++;
+                    return { ...(input as object), filled: true };
+                },
+            },
+            {
+                ...later,
+                normalize: (input) => {
+                    if (reject) throw new Error("later record rejected");
+                    return input;
+                },
+            },
+        ]);
+
+        expect(() => open(file, kinds, CLEAN_B)).toThrow("later record rejected");
+        expect(rewrites).toBe(1);
+        expect(rawRows(file)).toEqual(before);
+        expect(storedStamp(file)).toBe(oldStamp);
+
+        // Failure of the final metadata write must also roll back the record rewrites.
+        reject = false;
+        raw(
+            file,
+            `CREATE TRIGGER refuse_stamp BEFORE INSERT ON meta
+            WHEN NEW.key = 'normalizationStamp'
+            BEGIN SELECT RAISE(FAIL, 'stamp rejected'); END`,
+        );
+        expect(() => open(file, kinds, CLEAN_B)).toThrow("stamp rejected");
+        expect(rawRows(file)).toEqual(before);
+        expect(storedStamp(file)).toBe(oldStamp);
+    });
+
+    it("replaceAll replaces an older stamp with its own while restoring a backup", async () => {
+        const dir = tempDir();
+        const doc: ResourceKind = { name: "docs", schemaVersion: 1, normalize: (input) => input };
+        const kinds = createKindRegistry([doc]);
+        const source = open(path.join(dir, "source.sqlite"), kinds, CLEAN_A);
+        source.put(doc, "a", { n: 1 }, null);
+        const backup = path.join(dir, "backup.sqlite");
+        await source.backupTo(backup);
+        const file = path.join(dir, "target.sqlite");
+        const target = open(file, kinds, CLEAN_B);
+        target.put(doc, "b", { n: 2 }, null);
+        const snapshot = target.readSnapshot(backup);
+        raw(file, "UPDATE meta SET value = ? WHERE key = 'normalizationStamp'", normalizationStamp(COMMIT_A, kinds));
+
+        target.replaceAll(snapshot);
+        expect(target.list(doc).map((row) => row.id)).toEqual(["a"]);
+        expect(target.get(doc, "a")!.data).toEqual({ n: 1 });
+        expect(storedStamp(file)).toBe(normalizationStamp(COMMIT_B, kinds));
+    });
+});
+
+describe("server normalization identities", () => {
+    function builtRoot() {
+        const rootDir = tempDir();
+        mkdirSync(path.join(rootDir, "dist"));
+        writeFileSync(path.join(rootDir, "dist", "build-info.json"), JSON.stringify({ ...CLEAN_A, date: null }));
+        return rootDir;
+    }
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("writes the default registry's stamp from the build file outside a checkout", async () => {
+        vi.stubEnv("RISU_BUILD_COMMIT", "");
+        const rootDir = builtRoot();
+        const context = createServerContext({ rootDir });
+        try {
+            expect(storedStamp(path.join(rootDir, "save", "data", "resources.sqlite"))).toBe(
+                normalizationStamp(COMMIT_A, defaults),
+            );
+        } finally {
+            await context.dispose();
+        }
+    });
+
+    it("leaves an injected registry unstamped and normalizes its records again on restart", async () => {
+        vi.stubEnv("RISU_BUILD_COMMIT", "");
+        const rootDir = builtRoot();
+        let calls = 0;
+        const doc: ResourceKind = {
+            name: "docs",
+            schemaVersion: 1,
+            singleton: true,
+            materialize: true,
+            normalize: (input) => {
+                calls++;
+                return input ?? { n: 1 };
+            },
+        };
+        const file = path.join(rootDir, "save", "data", "resources.sqlite");
+        const first = createServerContext({ rootDir, resourceKinds: [doc] });
+        try {
+            expect(storedStamp(file)).toBeUndefined();
+        } finally {
+            await first.dispose();
+        }
+        calls = 0;
+        const second = createServerContext({ rootDir, resourceKinds: [doc] });
+        try {
+            expect(calls).toBe(1);
+            expect(storedStamp(file)).toBeUndefined();
+        } finally {
+            await second.dispose();
+        }
+    });
+});
+
 describe("the pass strips preset credentials", () => {
     // `proxyKey` and `openAIKey` left the preset schema: `normalizePreset` keeps only the prompt
     // fields, so a preset stored with either (from before, or by hand) is rewritten without them
@@ -442,7 +762,7 @@ describe("the pass inside replaceAll", () => {
         expect(restored.kinds.ui[0]).toMatchObject({ revision: expect.stringMatching(/:2$/), data: { zoomsize: 120 } });
     });
 
-    it("rolls the whole restore back when the pass fails: data, epoch, and write count stay, and the store keeps working", async () => {
+    it("rolls the whole restore back when the pass or its stamp fails: data, stamp, epoch, and write count stay, and the store keeps working", async () => {
         const dir = tempDir();
         const old = open(path.join(dir, "old.sqlite"), oldKinds);
         old.put(pluginStorage, "main", { zoomsize: 150 }, null);
@@ -464,7 +784,8 @@ describe("the pass inside replaceAll", () => {
             },
         };
         const kinds = createKindRegistry([...DEFAULT_RESOURCE_KINDS, armed]);
-        const store = open(path.join(dir, "resources.sqlite"), kinds);
+        const file = path.join(dir, "resources.sqlite");
+        const store = open(file, kinds, CLEAN_B);
         opened = true;
         const all = [...kinds.values()];
         store.put(pluginStorage, "main", { zoomsize: 90 }, null);
@@ -472,10 +793,27 @@ describe("the pass inside replaceAll", () => {
         const writes = store.writeCount();
 
         const snapshot = store.readSnapshot(snapshotFile);
+        const oldStamp = normalizationStamp(COMMIT_A, kinds);
+        raw(file, "UPDATE meta SET value = ? WHERE key = 'normalizationStamp'", oldStamp);
         expect(() => store.replaceAll(snapshot)).toThrow("cannot materialize during the restore");
         expect(store.epoch()).toBe(before.epoch);
         expect(store.writeCount()).toBe(writes);
         expect(observe(store, all)).toEqual(before);
+        expect(storedStamp(file)).toBe(oldStamp);
+        const beforeRows = rawRows(file);
+        opened = false;
+        raw(
+            file,
+            `CREATE TRIGGER refuse_stamp BEFORE INSERT ON meta
+            WHEN NEW.key = 'normalizationStamp'
+            BEGIN SELECT RAISE(FAIL, 'stamp rejected'); END`,
+        );
+        expect(() => store.replaceAll(snapshot)).toThrow("stamp rejected");
+        expect(store.epoch()).toBe(before.epoch);
+        expect(store.writeCount()).toBe(writes);
+        expect(rawRows(file)).toEqual(beforeRows);
+        expect(storedStamp(file)).toBe(oldStamp);
+        raw(file, "DROP TRIGGER refuse_stamp");
         // No transaction is left open: an ordinary write commits, and the file agrees.
         const written = store.put(pluginStorage, "main", { zoomsize: 95 }, before.kinds.pluginStorage[0].revision);
         expect(written.revision).toBe(before.kinds.pluginStorage[0].revision.replace(/:1$/, ":2"));

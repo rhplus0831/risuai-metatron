@@ -35,6 +35,7 @@ import {
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
+import type { BuildInfo } from "../../../shared/buildInfo.ts";
 import type { ChatStreaming } from "../../../shared/events.ts";
 import type { MessageSearchHit } from "../../../shared/messageSearch.ts";
 import type { ChangeFeed } from "./changeFeed.ts";
@@ -69,11 +70,16 @@ import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
  */
 const SCHEMA_VERSION = 3;
 /**
- * Kinds an earlier server stored and this one no longer registers: the normalization pass deletes
- * their records, and a snapshot's rows of them are skipped, so a database or backup written before
- * a kind was removed still opens and restores.
+ * Kinds an earlier server stored and this one no longer registers: every open and the normalization
+ * pass delete their records, and a snapshot's rows of them are skipped, so a database or backup
+ * written before a kind was removed still opens and restores.
  */
 const RETIRED_KINDS: ReadonlySet<string> = new Set(["customSidebarItems"]);
+/**
+ * Part of the normalization stamp. Bump it for a change to what normalization produces that git
+ * cannot see; every commit already changes the stamp.
+ */
+export const NORMALIZATION_VERSION = 1;
 const BUSY_TIMEOUT_MS = 5000;
 /** Deepest array/object nesting a stored value may have. */
 const MAX_JSON_DEPTH = 256;
@@ -492,13 +498,31 @@ export function readSnapshotFile(
 }
 
 /**
+ * What `meta.normalizationStamp` holds for code at `commit` with these kinds: the commit, the version,
+ * and each kind's name and schema version, by name. JSON keeps every part unambiguous, whatever a
+ * kind's name contains.
+ */
+export function normalizationStamp(
+    commit: string,
+    kinds: ResourceKindRegistry,
+    version: number = NORMALIZATION_VERSION,
+): string {
+    const pairs = [...kinds.values()]
+        .map((kind): [string, number] => [kind.name, kind.schemaVersion])
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return JSON.stringify([commit, version, pairs]);
+}
+
+/**
  * Typed resource documents in one `node:sqlite` database. Every record carries an opaque revision
  * token `<epoch>:<seq>:<revision>`: the epoch is random per database (a restore replaces it), `seq`
  * is the record's incarnation (a deleted and recreated record gets a new one), and `revision` counts
  * writes. A write must name the current token and fails with `ResourceConflictError` otherwise.
  *
  * Opening the store runs the normalization pass (`normalizeStoredRecords`), so every stored record is
- * its kind's normalized form and every `materialize` singleton exists before the first read.
+ * its kind's normalized form and every `materialize` singleton exists before the first read. An open
+ * that finds its own `normalizationStamp` skips the record scan, because the same code and kinds last
+ * normalized every record: it only deletes the retired kinds and materializes missing singletons.
  *
  * All methods except `backupTo` are synchronous; one server process owns the file. Every method takes
  * a kind object from `kinds` and rejects any other, so a write always runs that kind's normalizer.
@@ -513,13 +537,20 @@ export function createResourceStore(options: {
     /** The `patchBases` cache's budget in estimated units (default `PATCH_BASES_MAX_UNITS`; tests lower it). */
     patchBaseMaxUnits?: number;
     /**
+     * The build of the code behind `kinds`' normalizers. Without one, with no commit, or dirty, this
+     * store has no stamp: every open runs the normalization pass, and the pass removes a stored stamp.
+     */
+    normalizationIdentity?: Pick<BuildInfo, "commit" | "dirty">;
+    /**
      * Tests: called once with a reader of a record's stored JSON text, as the database holds it (an
      * in-memory store has no file another connection could read).
      */
     inspectStoredText?: (read: (kind: ResourceKind, id: string) => string | undefined) => void;
 }) {
-    const { kinds, guard, feed } = options;
+    const { kinds, guard, feed, normalizationIdentity: identity } = options;
     const patchBaseMaxUnits = options.patchBaseMaxUnits ?? PATCH_BASES_MAX_UNITS;
+    /** This store's normalization stamp, or null when no identity vouches for its code. */
+    const ownStamp = identity?.commit && !identity.dirty ? normalizationStamp(identity.commit, kinds) : null;
     if (options.file !== ":memory:") {
         mkdirSync(path.dirname(options.file), { recursive: true });
     }
@@ -561,25 +592,62 @@ export function createResourceStore(options: {
         "SELECT id, seq, revision, schemaVersion, data FROM resources WHERE kind = ? ORDER BY seq",
     );
     const deleteKind = db.prepare("DELETE FROM resources WHERE kind = ?");
+    const selectKindExists = db.prepare("SELECT 1 FROM resources WHERE kind = ? LIMIT 1");
+    const selectStamp = db.prepare("SELECT value FROM meta WHERE key = 'normalizationStamp'");
+    const upsertStamp = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('normalizationStamp', ?)");
+    const deleteStamp = db.prepare("DELETE FROM meta WHERE key = 'normalizationStamp'");
     options.inspectStoredText?.((kind, id) => {
         assertKind(kind);
         return (selectOne.get(kind.name, id) as { data: string } | undefined)?.data;
     });
 
-    /**
-     * The normalization pass, inside the caller's transaction: every stored record of every
-     * registered kind is normalized again and rewritten, with its revision counter advanced, when
-     * the normalized text or the stored schema version differs (a record stored before its kind
-     * gained a default, a migration, or a new version); every missing `materialize` singleton is
-     * created. A record of a newer schema version than its kind stops the pass. Reads never normalize, so this
-     * is how a new default reaches stored data, once, before any client reads it. Returns the
-     * number of records written. A stored record its normalizer rejects stops the pass.
-     */
-    function normalizeStoredRecords(): number {
+    /** Deletes the retired kinds' records, inside the caller's transaction. Returns how many. */
+    function deleteRetiredKinds(): number {
         let written = 0;
         for (const name of RETIRED_KINDS) {
             written += Number(deleteKind.run(name).changes);
         }
+        return written;
+    }
+
+    /**
+     * Creates every `materialize` singleton whose kind has no record, inside the caller's transaction.
+     * Returns how many.
+     */
+    function materializeSingletons(): number {
+        let written = 0;
+        for (const kind of kinds.values()) {
+            if (kind.materialize && selectKindExists.get(kind.name) === undefined) {
+                const { text } = serialize(normalizeInput(kind, undefined, SINGLETON_RESOURCE_ID));
+                insert.run(kind.name, SINGLETON_RESOURCE_ID, kind.schemaVersion, text);
+                written += 1;
+            }
+        }
+        return written;
+    }
+
+    /**
+     * Records this store's stamp, inside the caller's transaction, so a rollback leaves the old one. A
+     * store without a stamp removes the stored one: the records were last written by code no identity
+     * names, and a later clean run of the commit in that stamp must not skip them.
+     */
+    function writeNormalizationStamp(): void {
+        if (ownStamp === null) {
+            deleteStamp.run();
+        } else {
+            upsertStamp.run(ownStamp);
+        }
+    }
+
+    /**
+     * Normalizes every stored record of every registered kind again, inside the caller's
+     * transaction, and rewrites it, with its revision counter advanced, when the normalized text or
+     * the stored schema version differs (a record stored before its kind gained a default, a
+     * migration, or a new version). A record of a newer schema version than its kind, or one its
+     * normalizer rejects, stops the scan. Returns the number of records written.
+     */
+    function normalizeRecords(): number {
+        let written = 0;
         for (const kind of kinds.values()) {
             const rows = selectKindForPass.all(kind.name) as {
                 id: string;
@@ -607,12 +675,20 @@ export function createResourceStore(options: {
                     written += 1;
                 }
             }
-            if (kind.materialize && rows.length === 0) {
-                const { text } = serialize(normalizeInput(kind, undefined, SINGLETON_RESOURCE_ID));
-                insert.run(kind.name, SINGLETON_RESOURCE_ID, kind.schemaVersion, text);
-                written += 1;
-            }
         }
+        return written;
+    }
+
+    /**
+     * The normalization pass, inside the caller's transaction: the retired kinds are deleted, every
+     * stored record is normalized again (`normalizeRecords`), every missing `materialize` singleton
+     * is created, and the stamp is written. Reads never normalize, so this is how a new default
+     * reaches stored data, once, before any client reads it. Returns the number of records written;
+     * the stamp is not one.
+     */
+    function normalizeStoredRecords(): number {
+        const written = deleteRetiredKinds() + normalizeRecords() + materializeSingletons();
+        writeNormalizationStamp();
         return written;
     }
 
@@ -621,7 +697,11 @@ export function createResourceStore(options: {
     let writeCount = 0;
     try {
         db.exec("BEGIN IMMEDIATE");
-        writeCount = normalizeStoredRecords();
+        const stored = selectStamp.get() as { value: string } | undefined;
+        writeCount =
+            ownStamp !== null && stored?.value === ownStamp
+                ? deleteRetiredKinds() + materializeSingletons()
+                : normalizeStoredRecords();
         db.exec("COMMIT");
         openChatSchema(db);
     } catch (error) {
@@ -2111,8 +2191,9 @@ export function createResourceStore(options: {
 
         /**
          * Replaces every record with the rows of a validated snapshot, runs the normalization pass
-         * (creating the `materialize` singletons the snapshot lacks), and gives the database a new
-         * epoch, in one transaction; every token issued before is stale afterwards. Returns the epoch.
+         * (creating the `materialize` singletons the snapshot lacks and writing the stamp), and gives
+         * the database a new epoch, in one transaction; every token issued before is stale afterwards.
+         * Returns the epoch.
          * Revision counters are restored as stored (the new epoch already makes every old token
          * stale; `nextRevision` keeps a counter a crafted snapshot placed at the limit from
          * overflowing on the next write). Replaces checkpoints, their content pages, and policies

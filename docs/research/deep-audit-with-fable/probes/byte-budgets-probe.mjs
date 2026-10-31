@@ -49,7 +49,9 @@
 //   the same save again unchanged (checkpoints deleted between runs), `autoSave` not due, and `autoSave` due (the
 //   baseline reset to null before each run, autoKeep 2, so a run saves, writes the policy and prunes).
 // - `open` (SD05): on `library`, `createResourceStore` then `close`, nothing changed between runs, with a
-//   `listRevisions` comparison and a count of the statements that ran against `resources` during the opens.
+//   `listRevisions` comparison and a count of the statements that ran against `resources` during the opens. Every open
+//   passes one fixed clean `normalizationIdentity`, so the first one writes the stamp and the timed runs measure the
+//   skip of the record scan.
 // - `statePublication` (SD06): `writeState()` of a journal on its own (`createDiagnosticsJournal({ dir, fs })`), `RUNS`
 //   publications. `delayedFsync` injects an `fs` over `node:fs/promises` whose handle `sync()`, the directory sync
 //   included, resolves after an asynchronous 100 ms (a timer, never a blocking stand-in); `realFsync` is the same with
@@ -688,7 +690,9 @@ async function checkpoints([fixture]) {
 }
 
 async function open([fixture]) {
-    const first = openStore(fixture.file);
+    const normalizationIdentity = { commit: "0123456789abcdef0123456789abcdef01234567", dirty: false };
+    const openStamped = (file) => createResourceStore({ file, kinds, normalizationIdentity });
+    const first = openStamped(fixture.file);
     const before = JSON.stringify(first.listRevisions());
     first.close();
 
@@ -715,7 +719,7 @@ async function open([fixture]) {
         for (let run = 0; run < RUNS; run++) {
             globalThis.gc?.();
             let start = performance.now();
-            const store = openStore(fixture.file);
+            const store = openStamped(fixture.file);
             openMs.push(performance.now() - start);
             start = performance.now();
             store.close();
@@ -724,7 +728,7 @@ async function open([fixture]) {
     } finally {
         DatabaseSync.prototype.prepare = prepare;
     }
-    const last = openStore(fixture.file);
+    const last = openStamped(fixture.file);
     const after = JSON.stringify(last.listRevisions());
     last.close();
     return {
@@ -733,7 +737,7 @@ async function open([fixture]) {
         revisionsUnchanged: before === after,
         statementsAgainstResources: {
             ...counts,
-            note: "Across all runs. The DELETE runs are the retired kinds' pass; `changes` sums the rows every counted run touched.",
+            note: "Across all runs. The DELETE runs are the retired kinds' deletion, which a skip keeps; `changes` sums the rows every counted run touched.",
         },
     };
 }

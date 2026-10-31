@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { UNKNOWN_BUILD } from "../../../shared/buildInfo.ts";
-import { type GitRunner, readServerBuildInfo, resolveBuildInfo } from "../buildInfo.ts";
+import { type GitRunner, readServerBuildInfo, resolveBuildInfo, resolveNormalizationIdentity } from "../buildInfo.ts";
 
 const COMMIT = "a9fa6f8c5d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a";
 
@@ -98,6 +98,46 @@ describe("resolveBuildInfo", () => {
         expect(resolveBuildInfo(dir, {}, git)).toEqual({ commit: head, date: "2026-10-26", dirty: false });
         writeFileSync(path.join(dir, "a.txt"), "b");
         expect(resolveBuildInfo(dir, {}, git).dirty).toBe(true);
+    });
+});
+
+describe("resolveNormalizationIdentity", () => {
+    it.each([false, true])(
+        "uses the checkout commit and dirty=%s even when the served client names another clean commit",
+        (dirty) => {
+            const rootDir = tempDir();
+            mkdirSync(path.join(rootDir, "dist"));
+            writeFileSync(
+                path.join(rootDir, "dist", "build-info.json"),
+                JSON.stringify({
+                    commit: "b".repeat(40),
+                    date: "2026-10-27",
+                    dirty: false,
+                }),
+            );
+            expect(resolveNormalizationIdentity(rootDir, () => ({ commit: COMMIT, date: null, dirty }))).toMatchObject({
+                commit: COMMIT,
+                dirty,
+            });
+        },
+    );
+
+    it.each([false, true])("uses the build file's commit and dirty=%s when the checkout has no commit", (dirty) => {
+        const rootDir = tempDir();
+        mkdirSync(path.join(rootDir, "dist"));
+        writeFileSync(
+            path.join(rootDir, "dist", "build-info.json"),
+            JSON.stringify({
+                commit: COMMIT,
+                date: null,
+                dirty,
+            }),
+        );
+        expect(resolveNormalizationIdentity(rootDir, () => UNKNOWN_BUILD)).toMatchObject({ commit: COMMIT, dirty });
+    });
+
+    it("is unknown when neither the checkout nor a build file supplies a commit", () => {
+        expect(resolveNormalizationIdentity(tempDir(), () => UNKNOWN_BUILD)).toEqual(UNKNOWN_BUILD);
     });
 });
 

@@ -66,3 +66,19 @@ export function readServerBuildInfo(
         return UNKNOWN_BUILD;
     }
 }
+
+/**
+ * The build of the server code running, which the resource store's normalization stamp names: the
+ * checkout's build when it has a commit, with its `dirty`, and `dist/build-info.json` never consulted.
+ * `readServerBuildInfo` alone would be wrong, because it names the served client's build, and a
+ * checkout runs its server from TypeScript without a build, so that file can name a commit whose
+ * server code is not the code running. Without a commit (no `.git`) it is the file's commit, which in
+ * a built image is the server's commit too, and unknown when that fails as well.
+ */
+export function resolveNormalizationIdentity(
+    rootDir: string,
+    checkout: () => BuildInfo = () => resolveBuildInfo(rootDir),
+): BuildInfo {
+    const build = checkout();
+    return build.commit ? build : readServerBuildInfo(rootDir, () => UNKNOWN_BUILD);
+}
