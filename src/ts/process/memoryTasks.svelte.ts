@@ -13,8 +13,8 @@ import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 
 /**
- * The tab's view of the server's HypaV3 memory tasks (`server/src/prompt/memory/memoryTasks.ts`):
- * each chat's task status from the live-update socket (`memoryTask` frames and the `hello`
+ * The tab's view of the server's memory tasks (`server/src/prompt/memory/memoryTasks.ts`), of either
+ * kind: each chat's task status from the live-update socket (`memoryTask` frames and the `hello`
  * snapshot, routed here by `eventFeed.ts`), and each chat's hydration-pending fence, which keeps the
  * HypaV3 modal from writing its whole memory copy while a task can commit or before this tab holds
  * what a task committed.
@@ -97,12 +97,14 @@ function parseEntry(value: unknown): MemoryTaskEntry | null {
     if (typeof fields.taskId !== "string" || !isCount(fields.done) || !isCount(fields.total)) {
         return null;
     }
+    const kind = fields.kind === "structuredMemory" ? { kind: "structuredMemory" as const } : {};
     if (LIVE_STATES.has(state)) {
         return {
             characterId,
             chatId,
             status: {
                 taskId: fields.taskId,
+                ...kind,
                 state: state as "queued" | "running",
                 done: fields.done,
                 total: fields.total,
@@ -121,6 +123,7 @@ function parseEntry(value: unknown): MemoryTaskEntry | null {
         chatId,
         status: {
             taskId: fields.taskId,
+            ...kind,
             state: state as "done" | "failed" | "cancelled" | "skipped",
             done: fields.done,
             total: fields.total,

@@ -22,10 +22,12 @@ import type { HypaV3Budget, HypaV3BudgetReduction } from "../../../shared/hypaV3
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type {
+    AnyMemoryTaskInput,
     GenerationStage,
     MemoryBlockingReason,
     MemoryGapChoice,
     MemoryTaskInput,
+    StructuredMemoryTaskInput,
     SummaryWriterLease,
 } from "../../../shared/jobs.ts";
 import { mergeHypaV2Write, mergeHypaV3SelectionWrite, type SerializableHypaV3Data } from "../../../shared/memory.ts";
@@ -39,6 +41,7 @@ import {
     toggleStorageKey,
     valueToggles,
 } from "../../../shared/prompt/toggles.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import type { MemoryControl } from "../jobs/generationJobs.ts";
 import { HypaProcesser } from "./embeddings.ts";
 import { hanuraiMemory } from "./memory/hanurai.ts";
@@ -66,6 +69,7 @@ import {
     prepareHypaV3,
     selectHypaV3,
 } from "./memory/hypav3.ts";
+import { confirmedWindows, writerCadence, writerCeiling } from "./memory/structured/window.ts";
 import { supaMemory } from "./memory/supaMemory.ts";
 import type { ScriptProcessor } from "./scripts.ts";
 import { stripThoughtsBlock } from "./thoughts.ts";
@@ -160,13 +164,14 @@ export type AssemblyHost = {
     /** Raises after an abort or a latched failure (after every await). */
     fence(): void;
     /**
-     * The job's side of the HypaV3 step (`hypaV3Step`). Absent: the step summarizes inside the job
-     * without progress, source validation, or a task input.
+     * The job's side of the memory steps (`hypaV3Step`, `structuredMemoryStep`). Absent: HypaV3
+     * summarizes inside the job without progress, source validation, or a task input, and Structured
+     * Memory hands nothing off.
      */
     memoryJob?: AssemblyMemoryJob;
 };
 
-/** What the HypaV3 step asks of its job. */
+/** What the memory steps ask of their job. */
 export type AssemblyMemoryJob = {
     /** A `preview` or `previewPrompt` job. */
     preview: boolean;
@@ -198,6 +203,13 @@ export type AssemblyMemoryJob = {
     taskInput(
         part: Pick<MemoryTaskInput, "history" | "sources" | "historyStart" | "currentTokens" | "sourceGeneration">,
     ): MemoryTaskInput | null;
+    /** The Structured Memory step's side of the job; absent, that step hands nothing off. */
+    structuredMemory?: {
+        /** The message ids the chat's stored events cite (`readRecordedMessages`). Synchronous. */
+        recorded(): ReadonlySet<string>;
+        /** The job's writer input for the chat snapshot of `sourceGeneration`, or null without a service. */
+        taskInput(sourceGeneration: number, confirmedBefore: string): StructuredMemoryTaskInput | null;
+    };
 };
 
 /** One memory run's progress and stop control. */
@@ -228,10 +240,11 @@ export type AssembledPrompt =
           promptInfo: MessagePresetInfo;
           maxContextTokens: number;
           /**
-           * The HypaV3 step's task input (captured before the step) and whether its lookahead plan
-           * says summaries are due; only for an input job with a memory task service.
+           * The memory step's task input (captured before the step) and whether work is due: the
+           * summaries of HypaV3's lookahead plan, a window of the Structured Memory cadence; only for
+           * an input job with a memory task service.
            */
-          memoryTask?: { input: MemoryTaskInput; due: boolean };
+          memoryTask?: { input: AnyMemoryTaskInput; due: boolean };
       }
     /** The `start` trigger's `stopSending`: the send ends quietly. */
     | { type: "stopped" }
@@ -438,6 +451,47 @@ function rethrowHypaV3(memory: MemoryHost, error: unknown): never {
         errorMessage = String(error);
     }
     throw new Error(`[HypaV3] ${errorMessage}`);
+}
+
+/**
+ * The Structured Memory step of a job: it keeps the raw history, so what does not fit falls to the
+ * final token recheck, and it adds nothing to the prompt. An input job with a memory task service gets
+ * the writer's hand-off, whether or not a window is due, since a waiting manual start takes one that is
+ * not. Nothing here refuses a tab-bound `memory` slot or a `request` trigger as `hypaV3Step` does: the
+ * task ends `skipped` with the reason, and that status is how the reason reaches the tab.
+ *
+ * `messages` and `sourceGeneration` are the snapshot the job's history was built from.
+ */
+async function structuredMemoryStep(
+    host: AssemblyHost,
+    arg: {
+        messages: readonly Message[];
+        /** Undefined when the snapshot was not read with one: no hand-off. */
+        sourceGeneration: number | undefined;
+        continueMessageId: string | undefined;
+        tokenizer: MemoryTokenizer;
+    },
+): Promise<{ input: StructuredMemoryTaskInput; due: boolean } | undefined> {
+    const job = host.memoryJob;
+    if (!job?.tasks || !job.input || !job.structuredMemory || arg.sourceGeneration === undefined) {
+        return undefined;
+    }
+    const confirmedBefore = writerCeiling(arg.messages, arg.continueMessageId);
+    const input =
+        confirmedBefore === null ? null : job.structuredMemory.taskInput(arg.sourceGeneration, confirmedBefore);
+    if (!input) {
+        return undefined;
+    }
+    const windows = await confirmedWindows({
+        messages: arg.messages,
+        confirmedBefore: input.confirmedBefore,
+        recorded: job.structuredMemory.recorded(),
+        cadence: writerCadence(host.db),
+        maxContext: input.maxContext,
+        tokenizer: arg.tokenizer,
+        limit: 1,
+    });
+    return { input, due: (windows?.length ?? 0) > 0 };
 }
 
 /**
@@ -882,7 +936,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     const chatAdditonalTokens = input.chatAdditonalTokens;
     host.runCurrentChatFunction();
     let currentChat = host.chat();
-    // The source generation of the snapshot the history is built from (HypaV3's task input).
+    // The source generation of the snapshot the history is built from (a memory task's input).
     let currentChatGeneration = host.memoryJob?.sourceGeneration();
     const maxContextTokens = db.maxContext;
 
@@ -1629,7 +1683,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         addSection("lorebook", tokens);
     }
 
-    const memoryConfigured = db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3;
+    const structuredMemory = db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+    const memoryConfigured =
+        structuredMemory || db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3;
     let useMemory = memoryConfigured && (!!nowChatroom.supaMemory || host.memoryTrim.enabled());
     if (memoryConfigured && !useMemory && currentTokens > maxContextTokens) {
         // The entries the trim below would drop, counted as it counts them: the question is asked only
@@ -1651,7 +1707,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
      * by identity; a system message `pushPrompts` merges one into joins them.
      */
     const protectedEntries = new Set<OpenAIChat>();
-    let memoryTask: { input: MemoryTaskInput; due: boolean } | undefined;
+    let memoryTask: { input: AnyMemoryTaskInput; due: boolean } | undefined;
     /** The memory branch that ran, for the report. */
     let memoryRun: MemoryRun | null = null;
     /** The no-memory trim ledger after the trim loop: its headroom and the entries it would drop next. */
@@ -1668,7 +1724,15 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         const detachedChat = () => structuredClone(currentChat);
         const memory = host.memory;
         try {
-            if (db.hanuraiEnable) {
+            if (structuredMemory) {
+                memoryTask = await structuredMemoryStep(host, {
+                    messages: currentChat.message,
+                    sourceGeneration: currentChatGeneration,
+                    continueMessageId: input.continueMessageId,
+                    tokenizer: memoryTokenizer,
+                });
+                host.fence();
+            } else if (db.hanuraiEnable) {
                 const hn = await hanuraiMemory(memory, chats, {
                     currentTokens,
                     maxContextTokens,

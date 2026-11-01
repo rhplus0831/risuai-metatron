@@ -5,13 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, character, Message } from "../../../shared/database.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import type {
     GenerationContext,
+    StructuredMemoryTaskInput,
     MemoryChatRef,
     MemoryEntrySource,
     MemoryTaskInput,
@@ -24,6 +25,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
+import { messageSourceHash, type MemoryEventWrite } from "../data/memoryStore.ts";
 import { createVectorCache } from "../data/vectorCache.ts";
 import {
     type JobScope,
@@ -41,6 +43,7 @@ import {
     MEMORY_TASK_LIMITS,
     type MemoryTaskEvent,
     type MemoryTaskLimits,
+    type StructuredMemoryWriter,
 } from "../prompt/memory/memoryTasks.ts";
 import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { createTokenCounter } from "../prompt/tokens.ts";
@@ -506,6 +509,7 @@ afterEach(async () => {
 });
 
 type HarnessOptions = StoreOptions & {
+    structuredWriter?: StructuredMemoryWriter;
     limits?: Partial<MemoryTaskLimits>;
     /** Whether the store's invalidation notices reach the service (default yes, as the server wires them). */
     invalidations?: boolean;
@@ -568,6 +572,7 @@ function harness(options: HarnessOptions = {}) {
         gate,
         hostDeps,
         now: () => clock.now,
+        structuredWriter: options.structuredWriter,
         limits: { drainWaitMs: 1000, ...options.limits },
     });
     const events: MemoryTaskEvent[] = [];
@@ -2394,5 +2399,439 @@ describe("the server wiring", () => {
         const refused = await bare.json("/api/memory/tasks", { characterId: "c", chatId: "k" });
         expect(refused.status).toBe(503);
         expect(await refused.json()).toEqual({ error: "Memory tasks are not enabled", reason: "notEnabled" });
+    });
+});
+
+describe("structured memory tasks", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+    afterEach(() => vi.useRealTimers());
+
+    type WriterCall = Parameters<StructuredMemoryWriter>[0];
+    const structuredHarness = (options: HarnessOptions = {}) => {
+        const t = harness({
+            ...options,
+            memorySection: { hypaV3: false, ...options.memorySection },
+            hypaSettings: { structured: { cadence: "everyTurn" }, ...options.hypaSettings },
+        });
+        t.replace("ui", (data) => ({ ...data, memoryAlgorithmType: "structuredMemory" }));
+        return t;
+    };
+    const writerInput = (t: Harness, confirmedBefore = "m7"): StructuredMemoryTaskInput => {
+        const { history, sources, historyStart, currentTokens, kind, ...base } = t.input("k1");
+        return { ...base, kind: "structuredMemory", confirmedBefore };
+    };
+    const event = (
+        id: string,
+        sources: MemoryEventWrite["sources"],
+        status: MemoryEventWrite["status"] = "active",
+    ): MemoryEventWrite => ({
+        id,
+        title: id,
+        summary: `Recorded ${id}`,
+        status,
+        sources,
+        participants: [],
+        storyTime: { text: "" },
+        keyLines: [],
+        stateChanges: [],
+        knowledge: [],
+        relationshipShifts: [],
+        openThreads: { add: [], close: [], transitions: [] },
+        writerRun: id,
+    });
+    const contents = (t: Harness) => t.store.memory.readContents("c", "k1")!;
+    const record = (t: Harness, call: WriterCall) => {
+        const id = call.window.sources.at(-1)!.messageId;
+        const committed = call.commit(contents(t).revision, { events: [event(id, call.window.sources)] });
+        expect(committed.outcome).toBe("committed");
+        return { outcome: "recorded" as const };
+    };
+    const ids = (call: WriterCall) => call.window.messages.map((message) => message.chatId);
+    const arriveOrEnd = (arrival: ReturnType<typeof deferred<WriterCall>>, terminal: Promise<MemoryTaskEvent>) =>
+        Promise.race([
+            arrival.promise,
+            terminal.then(({ status }) => {
+                throw new Error(`Writer did not run: ${JSON.stringify(status)}`);
+            }),
+        ]);
+
+    it("records uncovered windows in order, resumes after a service restart, and keeps chat revisions in statuses", async () => {
+        const seen: (string | undefined)[][] = [];
+        const writer: StructuredMemoryWriter = async (call) => {
+            seen.push(ids(call));
+            return record(t, call);
+        };
+        const t = structuredHarness({ structuredWriter: writer, limits: { maxWriterWindows: 1 } });
+        const chatRevision = t.revision("k1");
+        // Every status covers its cited message, including a retracted user and a stale assistant.
+        t.store.memory.write(
+            "c",
+            "k1",
+            { epoch: t.store.epoch(), baseRevision: contents(t).revision },
+            {
+                events: [
+                    event("active", [{ messageId: "m1", index: 0, hash: messageSourceHash(t.chat("k1")!.message[0]) }]),
+                    event(
+                        "retracted",
+                        [{ messageId: "m3", index: 2, hash: messageSourceHash(t.chat("k1")!.message[2]) }],
+                        "retracted",
+                    ),
+                    event(
+                        "stale",
+                        [{ messageId: "m2", index: 1, hash: messageSourceHash(t.chat("k1")!.message[1]) }],
+                        "stale",
+                    ),
+                ],
+            },
+        );
+        const input = writerInput(t);
+        const first = t.nextTerminal("k1");
+        t.service.handOff(input);
+        expect((await first).status).toMatchObject({
+            kind: "structuredMemory",
+            state: "done",
+            done: 1,
+            total: 1,
+            reason: "windowsLeft",
+            terminalRevision: chatRevision,
+        });
+        expect(seen).toEqual([["m4"]]);
+        expect(t.service.status(ref("k1"))).toEqual((await first).status);
+        expect(t.states("k1")).toContain("queued");
+        expect(t.states("k1")).toContain("running");
+        expect(t.events.every(({ status }) => status.kind === "structuredMemory")).toBe(true);
+        expect((await first).status).not.toHaveProperty("lastCommittedRevision");
+        expect(t.store.memory.readRecord("c", "k1", "events", "m4")?.data).toMatchObject({
+            summary: "Recorded m4",
+            sources: [{ messageId: "m4" }],
+        });
+        expect(t.revision("k1")).toBe(chatRevision);
+        expect(contents(t).revision).not.toBe(chatRevision);
+        t.service.beginShutdown();
+        await t.service.drain();
+
+        const restarted = createMemoryTasks({
+            store: t.store,
+            kinds: t.kinds,
+            gate: t.gate,
+            hostDeps: t.hostDeps,
+            now: () => t.clock.now,
+            structuredWriter: writer,
+        });
+        cleanups.push(async () => {
+            restarted.beginShutdown();
+            await restarted.drain();
+        });
+        const terminal = () =>
+            new Promise<MemoryTaskEvent>((resolve) => {
+                const off = restarted.onStatus((entry) => {
+                    if (TERMINAL.has(entry.status.state)) {
+                        off();
+                        resolve(entry);
+                    }
+                });
+            });
+        const second = terminal();
+        restarted.handOff(input);
+        expect((await second).status).toMatchObject({
+            state: "done",
+            done: 1,
+            total: 1,
+            terminalRevision: chatRevision,
+        });
+        expect((await second).status).not.toHaveProperty("reason");
+        expect(seen).toEqual([["m4"], ["m5", "m6"]]);
+        const empty = terminal();
+        restarted.handOff(input);
+        expect((await empty).status).toMatchObject({ state: "done", done: 0, total: 0 });
+        expect(seen).toHaveLength(2);
+    });
+
+    it("stops at the first skipped or failed window and retries it without letting a later user extend the automatic ceiling", async () => {
+        for (const outcome of ["skipped", "failed"] as const) {
+            const seen: (string | undefined)[][] = [];
+            let fail = true;
+            const t = structuredHarness({
+                structuredWriter: async (call) => {
+                    seen.push(ids(call));
+                    if (fail && call.window.sources.at(-1)!.messageId === "m4") {
+                        return outcome === "skipped"
+                            ? { outcome, reason: "writerDeclined" }
+                            : { outcome, error: `Writer rejected ${PROXY_KEY}` };
+                    }
+                    return record(t, call);
+                },
+            });
+            const input = writerInput(t);
+            // An output trigger's user message arrives after the reply and after input capture.
+            t.write("k1", [
+                {
+                    op: "append",
+                    anchor: { end: true },
+                    messages: [m("m8", "Unconfirmed reply", "char"), m("m9", "Trigger user", "user")],
+                },
+            ]);
+            const stopped = t.nextTerminal("k1");
+            t.service.handOff(input);
+            const status = (await stopped).status;
+            expect(status).toMatchObject({ state: outcome, done: 1, total: 3 });
+            if (outcome === "skipped") expect(status).toHaveProperty("reason", "writerDeclined");
+            else {
+                expect(status).toHaveProperty("error", expect.stringContaining("Writer rejected"));
+                expect(JSON.stringify(status)).not.toContain(PROXY_KEY);
+            }
+            expect(seen).toEqual([
+                ["m1", "m2"],
+                ["m3", "m4"],
+            ]);
+            expect(contents(t).events.map(({ id }) => id)).toEqual(["m2"]);
+            fail = false;
+            const retried = t.nextTerminal("k1");
+            t.service.handOff(input);
+            expect((await retried).status).toMatchObject({ state: "done", done: 2, total: 2 });
+            expect(seen.slice(2)).toEqual([
+                ["m3", "m4"],
+                ["m5", "m6"],
+            ]);
+            expect(contents(t).events.map(({ id }) => id)).toEqual(["m2", "m4", "m6"]);
+        }
+    });
+
+    it("manual starts close partial windows and use the newly confirmed stored chat on each start", async () => {
+        for (const row of [
+            {
+                cadence: "everyK",
+                ceiling: "m5",
+                remove: ["m6", "m7"],
+                nextReply: "m6",
+                nextUser: "m7",
+                expected: [
+                    ["m1", "m2", "m3", "m4"],
+                    ["m5", "m6"],
+                ],
+            },
+            {
+                cadence: "manual",
+                ceiling: "m3",
+                remove: ["m4", "m5", "m6", "m7"],
+                nextReply: "m4",
+                nextUser: "m5",
+                expected: [
+                    ["m1", "m2"],
+                    ["m3", "m4"],
+                ],
+            },
+        ]) {
+            const seen: (string | undefined)[][] = [];
+            const t = structuredHarness({
+                hypaSettings: { structured: { cadence: row.cadence, cadenceTurns: 3 } },
+                structuredWriter: async (call) => {
+                    seen.push(ids(call));
+                    return record(t, call);
+                },
+            });
+            t.write("k1", [{ op: "remove", ids: row.remove }]);
+            const input = writerInput(t, row.ceiling);
+            const automatic = t.nextTerminal("k1");
+            t.service.handOff(input);
+            expect((await automatic).status).toMatchObject({ state: "done", done: 0, total: 0 });
+            const first = t.nextTerminal("k1");
+            expect(t.service.start(ref("k1")).outcome).toBe("queued");
+            expect((await first).status).toMatchObject({ state: "done", done: 1, total: 1 });
+            t.write("k1", [
+                {
+                    op: "append",
+                    anchor: { end: true },
+                    messages: [m(row.nextReply, "Next reply", "char"), m(row.nextUser, "Next real user", "user")],
+                },
+            ]);
+            const second = t.nextTerminal("k1");
+            expect(t.service.start(ref("k1")).outcome).toBe("queued");
+            expect((await second).status).toMatchObject({ state: "done", done: 1, total: 1 });
+            expect(seen, row.cadence).toEqual(row.expected);
+        }
+    });
+
+    it("reports structured skip reasons and keeps HypaV3 statuses without a kind key", async () => {
+        const rows: { reason: string; options?: HarnessOptions; hypa?: boolean; deselect?: boolean }[] = [
+            { reason: "writerUnavailable" },
+            { reason: "pluginModel", options: { memoryModelId: "pluginmodel:::prov" } },
+            { reason: "requestTrigger", options: { owner: { triggerscript: [REQUEST_TRIGGER] } } },
+            { reason: "localSummarization", options: { hypaSettings: { summarizationModel: "localModel" } } },
+            { reason: "notStructuredMemory", deselect: true },
+            { reason: "notHypaV3", hypa: true, options: { memorySection: { hypaV3: true } } },
+        ];
+        for (const row of rows) {
+            const t = structuredHarness(row.options);
+            const input = row.hypa ? t.input("k1") : writerInput(t);
+            if (row.deselect) t.replace("ui", (data) => ({ ...data, memoryAlgorithmType: "hypaV3" }));
+            const ended = t.nextTerminal("k1");
+            t.service.handOff(input);
+            const terminal = await Promise.race([
+                ended,
+                t.provider.request(0).then(() => {
+                    throw new Error("Skipped tasks must not request summaries");
+                }),
+            ]);
+            expect(terminal.status, row.reason).toMatchObject({
+                state: "skipped",
+                reason: row.reason,
+                done: 0,
+                total: 0,
+            });
+            for (const { status } of t.events) {
+                if (row.hypa) expect(status).not.toHaveProperty("kind");
+                else expect(status).toHaveProperty("kind", "structuredMemory");
+            }
+            expect(t.service.status(ref("k1"))).toEqual((await ended).status);
+            expect(contents(t).events).toEqual([]);
+        }
+    });
+
+    it("refuses a commit when evidence loses confirmation, changes, disappears, or its revisions conflict", async () => {
+        const rows: { name: string; reason: string; change(t: Harness): void }[] = [
+            {
+                name: "edited text",
+                reason: "windowChanged",
+                change: (t) => {
+                    t.write("k1", [{ op: "setText", id: "m2", text: "Edited" }]);
+                },
+            },
+            {
+                name: "removed message",
+                reason: "windowChanged",
+                change: (t) => {
+                    t.write("k1", [{ op: "remove", ids: ["m2"] }]);
+                },
+            },
+            {
+                name: "disabled evidence",
+                reason: "windowChanged",
+                change: (t) => {
+                    t.write("k1", [{ op: "patchMessage", id: "m2", set: { disabled: true } }]);
+                },
+            },
+            {
+                name: "reset history",
+                reason: "windowChanged",
+                change: (t) => {
+                    t.write("k1", [{ op: "patchMessage", id: "m3", set: { disabled: "allBefore" } }]);
+                },
+            },
+            {
+                name: "moved beyond the ceiling",
+                reason: "windowChanged",
+                change: (t) => {
+                    const message = t.chat("k1")!.message[1];
+                    t.write("k1", [
+                        { op: "remove", ids: ["m2"] },
+                        { op: "append", anchor: { end: true }, messages: [message] },
+                    ]);
+                },
+            },
+            {
+                name: "removed ceiling",
+                reason: "windowChanged",
+                change: (t) => {
+                    t.write("k1", [{ op: "remove", ids: ["m7"] }]);
+                },
+            },
+            {
+                name: "new memory revision",
+                reason: "revisionConflict",
+                change: (t) => {
+                    t.store.memory.write(
+                        "c",
+                        "k1",
+                        { epoch: t.store.epoch(), baseRevision: contents(t).revision },
+                        { events: [event("other", [])] },
+                    );
+                },
+            },
+            {
+                name: "new source generation",
+                reason: "staleInput",
+                change: (t) => {
+                    t.write("k1", [{ op: "replace", chat: t.chat("k1")! }]);
+                },
+            },
+            {
+                name: "disabled confirming users",
+                reason: "windowChanged",
+                change: (t) => {
+                    t.write(
+                        "k1",
+                        ["m3", "m5", "m7"].map((id) => ({ op: "patchMessage" as const, id, set: { disabled: true } })),
+                    );
+                },
+            },
+        ];
+        for (const row of rows) {
+            const arrival = deferred<WriterCall>();
+            const release = deferred<{ outcome: "skipped"; reason: string }>();
+            const t = structuredHarness({
+                invalidations: false,
+                structuredWriter: async (call) => {
+                    arrival.resolve(call);
+                    return await release.promise;
+                },
+            });
+            const ended = t.nextTerminal("k1");
+            t.service.handOff(writerInput(t));
+            try {
+                const call = await arriveOrEnd(arrival, ended);
+                const revision = contents(t).revision;
+                row.change(t);
+                const before = contents(t);
+                expect(call.commit(revision, { events: [event("late", call.window.sources)] }), row.name).toEqual({
+                    outcome: "refused",
+                    reason: row.reason,
+                });
+                expect(contents(t), row.name).toEqual(before);
+            } finally {
+                release.resolve({ outcome: "skipped", reason: "finished" });
+            }
+            await ended;
+        }
+    });
+
+    it("a writer lease or cancel closes the commit fence before a late writer returns", async () => {
+        for (const stop of ["lease", "cancel"] as const) {
+            const arrival = deferred<WriterCall>();
+            const release = deferred();
+            const settled = deferred();
+            const attempts: unknown[] = [];
+            const t = structuredHarness({
+                structuredWriter: async (call) => {
+                    arrival.resolve(call);
+                    await release.promise;
+                    try {
+                        attempts.push(
+                            call.commit(contents(t).revision, { events: [event("late", call.window.sources)] }),
+                        );
+                    } catch (error) {
+                        attempts.push(error);
+                    } finally {
+                        settled.resolve();
+                    }
+                    return { outcome: "recorded" };
+                },
+            });
+            const ended = t.nextTerminal("k1");
+            t.service.handOff(writerInput(t));
+            await arriveOrEnd(arrival, ended);
+            const lease = stop === "lease" ? t.service.acquireSummaryWriter(ref("k1"), "new-send") : null;
+            if (stop === "cancel") expect(t.service.cancel(ref("k1"))).toBe(true);
+            const status = (await ended).status;
+            expect(status).toMatchObject({ kind: "structuredMemory", state: "cancelled", done: 0 });
+            const before = contents(t);
+            release.resolve();
+            await settled.promise;
+            (await lease)?.release();
+            expect(attempts).toHaveLength(1);
+            expect(attempts[0]).toBeInstanceOf(Error);
+            expect(contents(t)).toEqual(before);
+            expect(t.service.status(ref("k1"))).toEqual(status);
+        }
     });
 });

@@ -844,6 +844,51 @@ describe("the context report", () => {
         historyDigest: historyDigest(chat.message),
     });
 
+    describe("structured memory selection", () => {
+        it("keeps raw history ahead of every legacy flag and is configured with all of them off", async () => {
+            const messages = [
+                { chatId: "u1", data: "User one", role: "user" as const },
+                { chatId: "a1", data: "Reply one", role: "char" as const },
+                { chatId: "u2", data: "User two", role: "user" as const },
+                { chatId: "a2", data: "Reply two", role: "char" as const },
+            ];
+            for (const legacy of [true, false]) {
+                const { run, chat } = contextAssembly({
+                    messages,
+                    hypaV3: true,
+                    maxContext: 2000,
+                    db: {
+                        memoryAlgorithmType: "structuredMemory",
+                        hanuraiEnable: legacy,
+                        hypav2: legacy,
+                        hypaV3: legacy,
+                        hypaMemory: legacy,
+                        supaModelType: legacy ? "subModel" : "none",
+                    },
+                });
+                chat.hypaV3Data = {
+                    summaries: [{ text: "Stored memory card", chatMemos: ["u1", "a1"], isImportant: false }],
+                };
+                chat.supaMemoryData = "Stored Supa card";
+                const { texts } = await run();
+                for (const message of messages) expect(texts, String(legacy)).toContain(message.data);
+                expect(texts.join("\n")).not.toContain("Stored memory card");
+                expect(texts.join("\n")).not.toContain("Stored Supa card");
+                expect(texts.join("\n")).not.toContain("<Past Events Summary>");
+            }
+            // With memory off on this character, configured memory offers the trim decision.
+            const { run, host } = contextAssembly({
+                messages: messages.map((message) => ({ ...message, data: message.data.repeat(8) })),
+                maxContext: 180,
+                db: { memoryAlgorithmType: "structuredMemory" },
+            });
+            const confirm = vi.fn(async () => "trim" as const);
+            host.memoryTrim.confirm = confirm;
+            await run();
+            expect(confirm).toHaveBeenCalledTimes(1);
+        });
+    });
+
     it("attributes a template prompt with full history by section and records the trim ledger", async () => {
         const { run, chat, counts } = contextAssembly({
             template: [plain("main", "MAIN"), plain("globalNote", "NOTE!"), plain("normal", "P"), CHAT_CARD],

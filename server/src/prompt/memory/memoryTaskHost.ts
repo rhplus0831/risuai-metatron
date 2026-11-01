@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createCbsEvaluator } from "../../../../shared/cbs/evaluator.ts";
 import { CbsLimitError } from "../../../../shared/cbs/limits.ts";
-import type { MemoryTaskInput } from "../../../../shared/jobs.ts";
+import type { MemoryTaskBase } from "../../../../shared/jobs.ts";
 import type { RequestArgs } from "../../../../shared/llm/request.ts";
 import { ChatTokenCounter } from "../../../../shared/prompt/chatTokens.ts";
 import { createJobCbsHost, serverCbsLimits, type ServerCbsTimeLimits } from "../../jobs/cbsHost.ts";
@@ -57,8 +57,8 @@ export type MemoryTaskHostDeps = {
 };
 
 /**
- * The `MemoryHost` a detached HypaV3 memory task runs on, and the `MemoryTokenizer` of the job that
- * handed the input off.
+ * The `MemoryHost` a detached memory task of either kind runs on, and the `MemoryTokenizer` of the job
+ * that handed the input off.
  *
  * - `scope`: the task's fresh `loadJobScope` at its start. The caller loads it with the input's
  *   effective preset and model preset ids, the admitted persona, `presetChain` semantics only when
@@ -89,7 +89,7 @@ export type MemoryTaskHostDeps = {
  */
 export function createMemoryTaskHost(arg: {
     scope: JobScope;
-    input: MemoryTaskInput;
+    input: MemoryTaskBase;
     deps: MemoryTaskHostDeps;
     signal: AbortSignal;
     fence: () => void;

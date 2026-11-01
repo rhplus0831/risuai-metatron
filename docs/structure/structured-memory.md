@@ -3,12 +3,13 @@
 ## Scope
 
 - Owns the `structuredMemory` algorithm: its record shapes, record limits, its tables and store, read routes, the tab's
-  client and Markdown package, writer settings, and the HypaV3 compatibility projection.
+  client and Markdown package, writer settings, the writer's windows and task kind, and the HypaV3 compatibility
+  projection.
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
-  `src/ts/process/structuredMemory.svelte.ts`.
-- The algorithm is not reachable yet: the settings cannot select it, no server code writes the store, no screen calls
-  the tab's client, and otherwise production code reads only the writer settings (filled by `createHypaV3Preset`,
-  digested by `memorySettingsFingerprint`). Its design and remaining work are in [Active Plans](../plan/README.md).
+  `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts`.
+- The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
+  tests; production injects no writer, so a task would end `skipped`; and no screen calls the tab's client. Its design
+  and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
@@ -39,6 +40,13 @@
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
   `buildStructuredMemoryPackage`, which answer a `StructuredMemoryResult`; the pure `renderMemoryPage`,
   `renderMemoryTimeline`, and `memoryPagePath`.
+- `server/src/prompt/memory/structured/window.ts`: the writer's windows: `confirmedWindows`, `WriterWindow`,
+  `writerCeiling`, `writerCadence`, `readRecordedMessages`, `windowStillConfirmed`.
+- `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: the injected
+  `StructuredMemoryWriter` (`structuredWriter`), `StructuredMemoryWriterResult`, `StructuredMemoryCommit`,
+  `MemoryTaskLimits.maxWriterWindows`.
+- `server/src/prompt/assemble.ts`: `structuredMemoryStep`, `AssemblyMemoryJob.structuredMemory` (the runner fills it).
+- `shared/jobs.ts`: `StructuredMemoryTaskInput`, `MemoryTaskBase`, `AnyMemoryTaskInput`, `MemoryTaskStatus.kind`.
 
 ## Flows
 
@@ -108,6 +116,63 @@ like a checkpoint write.
   `lastImportantSummaries` and `lastRandomSummaries` stay empty: no lane selects by importance or at random, and a pin
   set after the send must not rewrite that send's reasons. `lastDeferredSummaries` is absent.
 
+### The writer's windows
+
+`confirmedWindows` works out what the writer records next from the stored messages and the stored events alone, so a
+restart that loses the task queue loses nothing: the next send finds the same windows, and no startup scan exists.
+
+1. Ceiling (`writerCeiling`): a reply is evidence once the user sends the next message, so the job names the message the
+   windows stop before. It is the last eligible user message or, on a continue, the continued message when that comes
+   first (a job may continue an older one). With no eligible user message there is no ceiling and no task input. A
+   manual task takes `writerCeiling` of the chat as stored instead, else the input's: a person's start is the
+   confirmation the captured ceiling stands in for, and that one is only as new as the last hand-off.
+2. Confirmed messages: `eligibleHistory` of the stored list, before the ceiling, with a `chatId`. This keeps out the
+   newest reply and one being generated or continued; swipe candidates are not stored messages at all. The ceiling must
+   itself be eligible: one that is gone, disabled, or cut off by an `allBefore` counts as no longer in the chat, so the
+   task ends `skipped` (`staleInput`) and `commit` refuses (`windowChanged`).
+3. Turns: one per assistant message, closed there, because an event names one speaker. `[u1, aA, aB, u2, ...]` gives
+   `[u1, aA]` and `[aB]`, and user messages with no assistant message after them before the ceiling belong to no turn.
+4. Recorded messages (`readRecordedMessages`): a turn drops out when its assistant message is recorded; any other lists
+   its unrecorded messages. A failed run writes no event, so its window stays open and is retried.
+5. Closing, in order over the turns left; a trailing partial window stays open:
+   - `everyTurn`: one turn each.
+   - `everyK`: `cadenceTurns` turns each.
+   - `tokens`: turns accumulate until their messages reach the threshold, then the window closes. The threshold is
+     `cadenceTokens` under budget mode `tokens`, else `cadenceRatio` of the input's `maxContext`, at least 1. Only this
+     cadence counts, over each stored message's role and `data`, in the step and in the task alike.
+   - `manual`: closes none.
+6. A manual start also closes the trailing partial window; under the `manual` cadence it makes one window of each turn.
+
+A window is `{ sources, messages }`: `sources[i]` anchors `messages[i]`, with `index` the place in the stored list, not
+the eligible one, and `hash` from `messageSourceHash`.
+
+### The writer task
+
+1. Selection: `db.memoryAlgorithmType === "structuredMemory"` runs `structuredMemoryStep` ahead of the flag chain. The
+   step leaves the history raw, so what does not fit falls to the final token recheck, adds no protected entries and no
+   memory run, and returns the hand-off with `due` from `confirmedWindows` at `limit: 1`.
+2. Hand-off: for an input job with a service and a chat snapshot read with its source generation, due or not, since
+   `handOffMemory` hands off a not-due input when a manual start waits. It asks no blocking reason, unlike HypaV3.
+3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
+   `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
+   or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`: that
+   status is how the reason reaches the tab. Without `structuredWriter` it ends `skipped` (`writerUnavailable`) before
+   reading anything.
+4. Work: the fresh scope's chat and the stored events give the windows, up to `maxWriterWindows`. The hand-off gives an
+   automatic task only its ceiling. `total` counts the windows the task runs and `done` those the writer returned
+   recorded. Nothing open is `done` with 0 of 0.
+5. Each window goes to the writer in order. The first that ends `skipped` or `failed` ends the task with that reason or
+   redacted error, because a later window recorded ahead of it would put events out of message order; a throw goes
+   through `endFromError`.
+6. A task stopped by the cap with windows left ends `done` with reason `windowsLeft`. The next hand-off continues it,
+   which under the `manual` cadence takes another manual start.
+
+`commit(baseRevision, changes)` is the writer's only write, synchronous, checked in this order: the task is live (it
+throws once ended), the gate is open, the service is open with the input's epoch and source generation (else refused
+`staleInput`), the window still reads from the chat as stored under the ceiling it was computed with
+(`windowStillConfirmed`, else `windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal
+writes nothing.
+
 ## State
 
 - A chat's records are events, pages, and threads, with the chat's own messages as the evidence. Each writer run leaves
@@ -144,8 +209,12 @@ group is refused, and a full one is checked and restored.
 
 - The projection's return type and metric names come from `shared/memory.ts`. `HypaV3Modal.svelte` and
   `remapHypaV3Metrics` read each metric array independently, so an index may sit in two arrays.
-- The persisted value `memoryAlgorithmType` is a plain string in `shared/database.ts`; [memory](memory.md) owns the
-  selection chain that reads the flags today.
+- The persisted value `memoryAlgorithmType` is a plain string in `shared/database.ts`; `structuredMemory` selects ahead
+  of the [selection chain](memory.md#selection-in-assembleprompt) that reads the flags, which [memory](memory.md) owns.
+- The writer is a task kind of the [memory task service](memory.md#background-memory-task): queue, retention, leases,
+  and ends are shared, and the service's doc comment holds both kinds' rules. A cadence change moves
+  `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
+- The tab's fence (`src/ts/process/memoryTasks.svelte.ts`) applies to both kinds; `parseEntry` keeps a status's `kind`.
 - The overrides are `keep` in `CHECKPOINT_CHAT_FIELDS`: a settings choice stays with the current chat when a checkpoint
   loads. Upstream has none of this: `METATRON_CHAT_FIELDS` and `METATRON_CHARACTER_FIELDS` strip the overrides, and
   `upstreamHypaV3Presets` leaves `structured` out.
@@ -205,6 +274,20 @@ group is refused, and a full one is checked and restored.
 - `memorySettingsFingerprint` digests `structured`, the overrides, and `db.language` only while `memoryAlgorithmType` is
   `structuredMemory`, so a change to them never marks another algorithm's queued task stale.
 
+- A message is recorded when any stored event cites it, in any status, retracted and stale included: that only stops the
+  writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage: dropping
+  raw history asks whether an active event covers it, and never reads this set.
+- `confirmedBefore` is captured in the job's step. An automatic task never derives its ceiling from the chat as it
+  stands later: an output trigger's `v2Impersonate` can append a user message after the reply, and that must not confirm
+  the reply. A manual task does derive it, because the person's start is the confirmation; the writer's `input` keeps
+  the captured value either way, and `commit` checks under the ceiling the windows used.
+- `commit` checks the window against the chat as stored, because `chatSourceGeneration` moves only on a whole-chat
+  replace or a delete, not on an edit, a removal, a disabled flag, or a continue. A source's `index` may move and fails
+  nothing.
+- `terminalRevision` and `lastCommittedRevision` stay chat revisions on both task kinds, because the tab's fence
+  compares chat revisions. A memory revision never goes into a status.
+- A HypaV3 input and status carry no `kind` key, so its frames stay byte-identical. `MemoryTaskInput` is HypaV3's shape.
+
 ## Recipes
 
 - A new persisted record field: add it to the shape in `shared/structuredMemory.ts`, optional unless every stored record
@@ -232,8 +315,13 @@ group is refused, and a full one is checked and restored.
 - `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
   metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
+- `server/src/prompt/memory/structured/window.test.ts` drives the window rules as a table over plain messages with a
+  fake tokenizer.
+- `server/src/tests/memoryTasks.test.ts` drives the task kind on `createMemoryTasks` over a real store with an injected
+  `structuredWriter`; `memoryJobs.test.ts` the hand-off with `createFakeMemoryTasks`; `assemble.test.ts` the selection;
+  `src/ts/process/memoryTasks.test.ts` the status's `kind`.
 - Focused command:
-  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts restoreStage backups normalizeCollections memoryTaskHost upstreamExport`.
+  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts server/src/prompt/memory/structured restoreStage backups normalizeCollections memoryTaskHost upstreamExport memoryTasks memoryJobs assemble`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
@@ -256,3 +344,5 @@ group is refused, and a full one is checked and restored.
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
   owner decisions.
 - A character's language override does not travel in a card: the card exporters use explicit field lists.
+- `readRecordedMessages` reads every stored event of the chat once per send and once per task, because the store has no
+  bulk read, so its cost grows with the chat's events.

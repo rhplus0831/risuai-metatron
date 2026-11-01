@@ -194,6 +194,7 @@ const batch = (body: unknown) => api("/api/resources/batch", { method: "POST", b
 
 /** The section homes of the settings used here. */
 const SECTION_OF: Record<string, string> = {
+    memoryAlgorithmType: "ui",
     hypaV3: "memoryTranslateMedia",
     hypav2: "memoryTranslateMedia",
     hanuraiEnable: "memoryTranslateMedia",
@@ -2612,4 +2613,182 @@ describe("HypaV3 with the server's memory task service", () => {
         },
         SLOW,
     );
+});
+
+describe("structured memory job hand-offs", () => {
+    const fake = createFakeMemoryTasks();
+    let stack: Stack;
+    const messages = [
+        { chatId: "u1", role: "user", data: "First user" },
+        { chatId: "a1", role: "char", data: "First reply" },
+        { chatId: "u2", role: "user", data: "Second user" },
+        { chatId: "a2", role: "char", data: "Second reply" },
+    ];
+    beforeAll(async () => {
+        stack = await startStack({ memoryTasks: fake.service });
+        await patchPreset("modelProfiles", { maxContext: 5000 });
+    });
+    beforeEach(async () => {
+        use(stack);
+        fake.reset();
+        await patchSettings({ ...defaultMemorySettings, memoryAlgorithmType: "structuredMemory" });
+        await patchHypaV3({ structured: { cadence: "everyTurn" } });
+    });
+    afterAll(async () => {
+        use(blockingStack);
+        await closeStack(stack);
+    });
+
+    it("hands off due input jobs and pending manual starts, but no idle, preview or service-free job", async () => {
+        for (const row of [
+            { kind: "send", cadence: "everyTurn", manual: false, count: 1 },
+            { kind: "send", cadence: "everyK", manual: false, count: 0 },
+            { kind: "send", cadence: "everyK", manual: true, count: 1 },
+            { kind: "preview", cadence: "everyTurn", manual: true, count: 0 },
+            { kind: "previewPrompt", cadence: "everyTurn", manual: true, count: 0 },
+        ]) {
+            fake.reset();
+            fake.setPendingManual(row.manual);
+            await patchHypaV3({ structured: { cadence: row.cadence, cadenceTurns: 3 } });
+            const chaId = await seedCharacter({ messages });
+            const result = await job(
+                row.kind,
+                chaId,
+                row.kind === "send" ? { input: "Confirm both", userMessageId: "u3" } : {},
+            );
+            expect(result.terminal?.type, JSON.stringify({ row, ...result })).toBe("done");
+            expect(fake.handOffs, JSON.stringify(row)).toHaveLength(row.count);
+            if (row.count)
+                expect(fake.handOffs[0]).toMatchObject({
+                    kind: "structuredMemory",
+                    confirmedBefore: "u3",
+                    chatRef: { chaId, chatId: "k" },
+                });
+            expect(questions(result.events)).toEqual([]);
+            expect(summaries()).toEqual([]);
+        }
+        // The same selection must work even when no task service was installed.
+        use(blockingStack);
+        try {
+            await patchSettings({ ...defaultMemorySettings, memoryAlgorithmType: "structuredMemory" });
+            const chaId = await seedCharacter({ messages });
+            const result = await job("send", chaId, { input: "Confirm both", userMessageId: "u3" });
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(fake.handOffs).toEqual([]);
+            expect(summaries()).toEqual([]);
+        } finally {
+            await patchSettings({ memoryAlgorithmType: "none" });
+            use(stack);
+        }
+    });
+
+    it("hands off despite a Plugin memory slot or an applicable request trigger", async () => {
+        const profiles = await single("modelProfiles");
+        const added = await batch({
+            ops: [
+                {
+                    kind: "modelProfiles",
+                    id: "main",
+                    baseRevision: profiles.revision,
+                    data: [
+                        ...profiles.data,
+                        {
+                            ...profiles.data[0],
+                            id: "structured-plugin",
+                            name: "Plugin memory",
+                            customAPIFormat: LLMFormat.Plugin,
+                            currentPluginProvider: "prov",
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(added.status).toBe(200);
+        try {
+            for (const plugin of [true, false]) {
+                fake.reset();
+                await patchPreset("modelPresets", {
+                    seperateModelsForAxModels: plugin,
+                    auxSlots: plugin ? { memory: { profileId: "structured-plugin" } } : {},
+                });
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: plugin
+                        ? {}
+                        : {
+                              lowLevelAccess: true,
+                              triggerscript: [
+                                  {
+                                      comment: "request",
+                                      type: "request",
+                                      conditions: [],
+                                      lowLevelAccess: true,
+                                      effect: [
+                                          {
+                                              type: "v2SetVar",
+                                              indent: 0,
+                                              var: "seen",
+                                              operator: "=",
+                                              value: "1",
+                                              valueType: "value",
+                                          },
+                                      ],
+                                  },
+                              ],
+                          },
+                });
+                const result = await job("send", chaId, { input: "Confirm both", userMessageId: "u3" });
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(fake.handOffs).toHaveLength(1);
+                expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u3" });
+                expect(summaries()).toEqual([]);
+                expect(result.events.filter((entry) => entry.type === "callback")).toEqual([]);
+            }
+        } finally {
+            await patchPreset("modelPresets", { seperateModelsForAxModels: false, auxSlots: {} });
+        }
+    });
+
+    it("captures confirmation before output triggers and before an older reply being continued", async () => {
+        const chaId = await seedCharacter({
+            messages,
+            extra: {
+                lowLevelAccess: true,
+                triggerscript: [
+                    {
+                        comment: "Append user after reply",
+                        type: "output",
+                        conditions: [],
+                        lowLevelAccess: true,
+                        effect: [
+                            {
+                                type: "v2Impersonate",
+                                indent: 0,
+                                role: "user",
+                                value: "Trigger user",
+                                valueType: "value",
+                            },
+                        ],
+                    },
+                ],
+            },
+        });
+        const sent = await job("send", chaId, { input: "Real user", userMessageId: "u3" });
+        expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+        expect((await readChat(chaId)).data.message.at(-1)).toMatchObject({ role: "user", data: "Trigger user" });
+        expect(fake.handOffs).toHaveLength(1);
+        expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u3" });
+        fake.reset();
+        const older = await seedCharacter({
+            messages: [
+                ...messages,
+                { chatId: "u3", role: "user", data: "Third user" },
+                { chatId: "a3", role: "char", data: "Third reply" },
+            ],
+        });
+        const continued = await job("continue", older, { continueMessageId: "a2" });
+        expect(continued.terminal?.type, JSON.stringify(continued.terminal)).toBe("done");
+        expect(fake.handOffs).toHaveLength(1);
+        expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "a2" });
+    });
 });

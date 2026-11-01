@@ -3,20 +3,26 @@ import type { Chat, character, groupChat } from "../../../../shared/database.ts"
 import { greetingText } from "../../../../shared/greetings.ts";
 import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type {
+    AnyMemoryTaskInput,
     GenerationContext,
     MemoryChatRef,
+    MemoryTaskBase,
     MemoryTaskInput,
     MemoryTaskService,
     MemoryTaskStatus,
+    StructuredMemoryTaskInput,
     SummaryWriterLease,
 } from "../../../../shared/jobs.ts";
 import { LLMFormat } from "../../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../../shared/memory.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../../shared/structuredMemory.ts";
 import type { ResourceKindRegistry } from "../../data/kinds.ts";
+import type { MemoryChanges } from "../../data/memoryStore.ts";
 import {
     type ChatInvalidation,
     ResourceBatchConflictError,
+    ResourceConflictError,
     ResourceEpochError,
     type ResourceStore,
 } from "../../data/resourceStore.ts";
@@ -34,7 +40,7 @@ import { moduleTriggers } from "../../jobs/runSetup.ts";
 import { resolveJobRequestModel } from "../../llm/request.ts";
 import { RequestTargetGoneError } from "../../llm/settings.ts";
 import { hasRequestTriggers } from "../triggers.ts";
-import type { MemoryHost } from "./host.ts";
+import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 import {
     createHypaV3SourceValidator,
     executeHypaV3Plan,
@@ -45,6 +51,14 @@ import {
     warmHypaV3Vectors,
 } from "./hypav3.ts";
 import { createMemoryTaskHost, MemoryHostFailure, type MemoryTaskHostDeps } from "./memoryTaskHost.ts";
+import {
+    confirmedWindows,
+    readRecordedMessages,
+    windowStillConfirmed,
+    writerCadence,
+    writerCeiling,
+    type WriterWindow,
+} from "./structured/window.ts";
 
 /** The service's caps and times (D9). Tests shrink them. */
 export type MemoryTaskLimits = {
@@ -60,6 +74,11 @@ export type MemoryTaskLimits = {
     terminalRetentionMs: number;
     /** How long `drain` waits for unsettled work. */
     drainWaitMs: number;
+    /**
+     * The writer windows one Structured Memory task runs. A long older chat must not spend one call per
+     * turn in one task without a cost preview; the next hand-off continues it.
+     */
+    maxWriterWindows: number;
 };
 
 export const MEMORY_TASK_LIMITS: Readonly<MemoryTaskLimits> = {
@@ -69,6 +88,7 @@ export const MEMORY_TASK_LIMITS: Readonly<MemoryTaskLimits> = {
     taskDeadlineMs: 30 * 60_000,
     terminalRetentionMs: 10 * 60_000,
     drainWaitMs: 5000,
+    maxWriterWindows: 8,
 };
 
 /** A published status change of a chat's memory task (the event feed maps it to the `memoryTask` frame). */
@@ -84,6 +104,28 @@ export type MemoryTaskStartResult =
     | { outcome: "pendingManual" };
 
 export type MemoryTasks = ReturnType<typeof createMemoryTasks>;
+
+/** What a writer's `commit` came to: the memory revision it moved to, or why it wrote nothing. */
+export type StructuredMemoryCommit =
+    | { outcome: "committed"; revision: string }
+    | { outcome: "refused"; reason: "staleInput" | "windowChanged" | "revisionConflict" };
+
+/** How a writer ended one window. The task redacts a failure's `error` before publishing it. */
+export type StructuredMemoryWriterResult =
+    { outcome: "recorded" } | { outcome: "skipped"; reason: string } | { outcome: "failed"; error: string };
+
+/**
+ * Records one window. `commit` is its only write path: synchronous, into the memory tables at
+ * `baseRevision`, and it throws once the task ended. A throw ends the task as any failed work does.
+ */
+export type StructuredMemoryWriter = (arg: {
+    scope: JobScope;
+    input: StructuredMemoryTaskInput;
+    host: MemoryHost;
+    tokenizer: MemoryTokenizer;
+    window: WriterWindow;
+    commit(baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit;
+}) => Promise<StructuredMemoryWriterResult>;
 
 type TerminalState = "done" | "failed" | "cancelled" | "skipped";
 type TerminalDetails = { reason?: string; error?: string };
@@ -102,7 +144,10 @@ class MemoryTaskEnd extends Error {
 type Skip = { skip: string };
 
 /** One captured input and who keeps it: `"pending"`, `"latest"`, or a task whose work has not settled. */
-type Retained = { input: MemoryTaskInput; size: number; holders: Set<unknown> };
+type Retained = { input: AnyMemoryTaskInput; size: number; holders: Set<unknown> };
+
+/** A chat's queued input, with whether a manual start asked for it. */
+type Pending = { taskId: string; retained: Retained; manual: boolean };
 
 type Task = {
     taskId: string;
@@ -111,6 +156,8 @@ type Task = {
     /** The registry epoch the task started in (its input's). */
     epoch: string;
     retained: Retained;
+    /** A manual start asked for it. HypaV3 ignores this. */
+    manual: boolean;
     controller: AbortController;
     deadlineAt: number;
     deadline: ReturnType<typeof setTimeout> | undefined;
@@ -129,7 +176,7 @@ type ChatEntry = {
     key: string;
     chatRef: MemoryChatRef;
     running: Task | null;
-    pending: { taskId: string; retained: Retained } | null;
+    pending: Pending | null;
     /** The newest accepted input: idle when only `"latest"` holds it. */
     latest: Retained | null;
     /** A manual start waiting for the next input, with the chat's source generation then. */
@@ -142,37 +189,60 @@ const keyOf = (chatRef: MemoryChatRef) => `${chatRef.chaId}\u0000${chatRef.chatI
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** The status field of `input`'s kind: none for a HypaV3 task, whose frames stay as they were. */
+const statusKind = (input: AnyMemoryTaskInput) =>
+    input.kind === "structuredMemory" ? { kind: "structuredMemory" as const } : {};
+
 /**
- * The detached HypaV3 memory task service: a job hands it its chat's memory input after `done`, and
- * a task writes the summaries the input's lookahead plan needs, one per commit.
+ * The detached memory task service: a job hands it its chat's memory input after `done`, and a task
+ * works from the input's kind. A HypaV3 task writes the summaries the input's lookahead plan needs,
+ * one per commit. A Structured Memory task runs the injected writer over the windows that the chat as
+ * stored and its stored coverage leave open, so a restart that loses the queue loses nothing: the next
+ * send finds them again.
  *
  * - Queue: per chat one running task and one queued input (a newer hand-off replaces it, keeping its
- *   task id); a queued input starts after the current turn (so after the handing-off job's terminal),
- *   when the chat has no running task and no summary writer lease, and fewer than `maxRunning` tasks
- *   have unsettled work (an ended task counts until its work, and the host calls it stopped waiting
- *   for, settle). At most `maxPendingChats` chats queue; a hand-off past it is dropped with a log line.
+ *   task id and manual mark); a queued input starts after the current turn (so after the handing-off
+ *   job's terminal), when the chat has no running task and no summary writer lease, and fewer than
+ *   `maxRunning` tasks have unsettled work (an ended task counts until its work, and the host calls it
+ *   stopped waiting for, settle). At most `maxPendingChats` chats queue; a hand-off past it is dropped
+ *   with a log line.
  * - Retention: the inputs a running task, a queue, or a chat's latest hand-off keep are capped at
  *   `maxRetainedBytes` (their JSON size); a hand-off evicts idle latest inputs least recently used
  *   first and is dropped when that is not enough. Running and queued inputs are never evicted.
+ * - Manual mark: `start` sets it on the chat's queued input, new or already queued, and so does a
+ *   hand-off that satisfies `pendingManual`; the task keeps it. A Structured Memory task then takes
+ *   its ceiling from the chat as stored and closes its trailing partial window too. HypaV3 ignores it.
  * - Start checks (synchronous, before anything is awaited; a failure ends the task `skipped` with the
  *   reason): the chat exists (`chatGone`); the epoch and source generation are the input's
  *   (`staleInput`); the admitted binding is still the chat's (`bindingInvalid`); a fresh `loadJobScope`
  *   with the input's effective presets, the admitted persona, and the speaker (`chain` binding when a
  *   `presetChain` picked the prompt preset) loads (`bindingInvalid`); the owner's memory is on
- *   (`memoryOff`); HypaV3 is the active method (`notHypaV3`); the `memory` slot is not a Plugin model
- *   (`pluginModel`) and the owner has no applicable `request` trigger (`requestTrigger`); the preset's
- *   summarization model is `subModel` (`localSummarization`); the settings fingerprint is the input's
- *   (`staleInput`).
- * - Work: prepare without the orphan cleanup (stored coverage past the input's history: `skipped
- *   staleInput`), a lookahead plan, an execution whose every summary is validated against the chat as
- *   stored (D15) and saved at once: a `meta` write merged onto the stored value, on the admitted
+ *   (`memoryOff`); the input's method is the active one: HypaV3 (`notHypaV3`, also while
+ *   `memoryAlgorithmType` selects Structured Memory ahead of the flags) or Structured Memory
+ *   (`notStructuredMemory`); the `memory` slot is not a Plugin model (`pluginModel`) and the owner has
+ *   no applicable `request` trigger (`requestTrigger`); the preset's summarization model is `subModel`
+ *   (`localSummarization`); the settings fingerprint is the input's (`staleInput`).
+ * - HypaV3 work: prepare without the orphan cleanup (stored coverage past the input's history:
+ *   `skipped staleInput`), a lookahead plan, an execution whose every summary is validated against the
+ *   chat as stored (D15) and saved at once: a `meta` write merged onto the stored value, on the admitted
  *   revision (a recreated chat conflicts) and the input's epoch, refused (`writeSkipped`) when the
  *   source generation moved, the merge refuses, or the write conflicts. Then the new summaries'
  *   vectors are warmed (also the saved prefix of a provider failure); a warming failure keeps them.
- * - Ends: `done`; `failed` (a provider failure, a host failure, the deadline: errors redacted);
- *   `skipped` (a start check, `writeSkipped`, `sourceInvalid`); `cancelled` (`cancel`, a writer
- *   lease, an invalidation notice, maintenance, shutdown). A terminal closes the task's write fence,
- *   reads the chat's revision (`terminalRevision`, null when the chat is gone), and publishes, in one
+ * - Structured Memory work: without an injected writer `skipped writerUnavailable`, before anything
+ *   is read. Else the fresh scope's chat and the stored events give the windows below the ceiling: an
+ *   automatic task's is the input's, the only thing it takes from the hand-off; a manual task's is
+ *   `writerCeiling` of that chat, else the input's, since a person's start is the confirmation the
+ *   captured one stands in for (a ceiling no longer eligible: `skipped staleInput`). `total` counts
+ *   the windows the task runs, at most `maxWriterWindows`, and `done` those the writer returned
+ *   recorded. The first window that ends otherwise ends the task. `commit` is the writer's only write
+ *   path: refused when the service closed, the epoch or source generation moved, the window no longer
+ *   reads from the chat as stored under that same ceiling (`windowStillConfirmed`), or the memory
+ *   revision conflicts.
+ * - Ends: `done` (`windowsLeft`: the cap stopped a task with windows left); `failed` (a provider
+ *   failure, a writer's failure, a host failure, the deadline: errors redacted); `skipped` (a start
+ *   check, `writeSkipped`, `sourceInvalid`, a writer's reason); `cancelled` (`cancel`, a writer lease,
+ *   an invalidation notice, maintenance, shutdown). A terminal closes the task's write fence, reads
+ *   the chat's revision (`terminalRevision`, null when the chat is gone), and publishes, in one
  *   synchronous step; what the task's work does afterwards changes nothing. An epoch change clears the
  *   registry without publishing (the `epoch` event is the signal).
  */
@@ -181,10 +251,12 @@ export function createMemoryTasks(deps: {
     kinds: ResourceKindRegistry;
     gate: MaintenanceGate;
     hostDeps: MemoryTaskHostDeps;
+    /** Records a Structured Memory task's windows; without one such a task ends `skipped`. */
+    structuredWriter?: StructuredMemoryWriter;
     now?: () => number;
     limits?: Partial<MemoryTaskLimits>;
 }) {
-    const { store, kinds, gate, hostDeps } = deps;
+    const { store, kinds, gate, hostDeps, structuredWriter } = deps;
     const now = deps.now ?? Date.now;
     const limits: MemoryTaskLimits = { ...MEMORY_TASK_LIMITS, ...deps.limits };
     const charactersKind = kinds.get(RESOURCE_KIND.characters);
@@ -304,12 +376,14 @@ export function createMemoryTasks(deps: {
 
     const runningStatus = (task: Task): MemoryTaskStatus => ({
         taskId: task.taskId,
+        ...statusKind(task.retained.input),
         state: "running",
         done: task.done,
         total: task.total,
     });
-    const queuedStatus = (pending: { taskId: string }): MemoryTaskStatus => ({
+    const queuedStatus = (pending: Pending): MemoryTaskStatus => ({
         taskId: pending.taskId,
+        ...statusKind(pending.retained.input),
         state: "queued",
         done: 0,
         total: 0,
@@ -370,11 +444,13 @@ export function createMemoryTasks(deps: {
     const terminalStatus = (
         taskId: string,
         chatRef: MemoryChatRef,
+        input: AnyMemoryTaskInput,
         state: TerminalState,
         counts: { done: number; total: number; lastCommittedRevision?: string },
         details: TerminalDetails,
     ): MemoryTaskStatus => ({
         taskId,
+        ...statusKind(input),
         state,
         done: counts.done,
         total: counts.total,
@@ -412,7 +488,7 @@ export function createMemoryTasks(deps: {
         if (entry?.running === task) {
             entry.running = null;
             if (task.epoch === registryEpoch) {
-                status = terminalStatus(task.taskId, task.chatRef, state, task, details);
+                status = terminalStatus(task.taskId, task.chatRef, task.retained.input, state, task, details);
                 entry.last = { status, at: now() };
             }
         }
@@ -446,7 +522,14 @@ export function createMemoryTasks(deps: {
         entry.pending = null;
         queue.delete(entry.key);
         drop(pending.retained, "pending");
-        const status = terminalStatus(pending.taskId, entry.chatRef, state, { done: 0, total: 0 }, details);
+        const status = terminalStatus(
+            pending.taskId,
+            entry.chatRef,
+            pending.retained.input,
+            state,
+            { done: 0, total: 0 },
+            details,
+        );
         if (!entry.running) {
             entry.last = { status, at: now() };
         }
@@ -477,7 +560,7 @@ export function createMemoryTasks(deps: {
      * The task's fresh scope (the host's contract): the admitted binding checked against the chat now, then
      * `loadJobScope` with the input's effective presets, the admitted persona, and the speaker.
      */
-    const loadTaskScope = (input: MemoryTaskInput): { scope: JobScope } | Skip => {
+    const loadTaskScope = (input: MemoryTaskBase): { scope: JobScope } | Skip => {
         const { chaId, chatId } = input.chatRef;
         const binding = readChatBindingState(store, kinds, { characterId: chaId, chatId });
         if (!binding.chat) {
@@ -514,13 +597,13 @@ export function createMemoryTasks(deps: {
     };
 
     /** Whether the input's epoch and source generation are still the chat's. */
-    const inputCurrent = (input: MemoryTaskInput) =>
+    const inputCurrent = (input: MemoryTaskBase) =>
         input.epoch === registryEpoch &&
         store.epoch() === input.epoch &&
         store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) === input.sourceGeneration;
 
     /** D10's checks on a fresh scope, synchronously. */
-    const startChecks = (input: MemoryTaskInput): { scope: JobScope } | Skip => {
+    const startChecks = (input: AnyMemoryTaskInput): { scope: JobScope } | Skip => {
         if (store.chatRevision(input.chatRef.chaId, input.chatRef.chatId) === null) {
             return { skip: "chatGone" };
         }
@@ -537,7 +620,12 @@ export function createMemoryTasks(deps: {
         if (!owner?.supaMemory) {
             return { skip: "memoryOff" };
         }
-        if (db.hanuraiEnable || db.hypav2 || !db.hypaV3) {
+        const structured = db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+        if (input.kind === "structuredMemory") {
+            if (!structured) {
+                return { skip: "notStructuredMemory" };
+            }
+        } else if (structured || db.hanuraiEnable || db.hypav2 || !db.hypaV3) {
             return { skip: "notHypaV3" };
         }
         const memoryModel = resolveJobRequestModel(scope.request.db, "memory");
@@ -692,6 +780,197 @@ export function createMemoryTasks(deps: {
         }
     };
 
+    /** A HypaV3 task's work on its checked scope: the summaries a lookahead plan needs, one per commit. */
+    async function hypaV3Work(
+        task: Task,
+        input: MemoryTaskInput,
+        scope: JobScope,
+        host: MemoryHost,
+        tokenizer: MemoryTokenizer,
+    ) {
+        const room = structuredClone(scopeChat(scope)) as Chat;
+        const outcome = await prepareHypaV3(
+            host,
+            input.history,
+            input.currentTokens,
+            input.maxContext,
+            room,
+            tokenizer,
+            { cleanup: false, responseCorrection: false },
+        );
+        live(task);
+        if (!outcome.ok) {
+            endRunning(task, "failed", {
+                error: host.redact(outcome.result.error ?? "[HypaV3] Preparation failed"),
+            });
+            return;
+        }
+        const prepared = outcome.prepared;
+        if (prepared.coverageAhead) {
+            endRunning(task, "skipped", { reason: "staleInput" });
+            return;
+        }
+        const plan = await planHypaV3Summaries(prepared, { lookahead: true });
+        live(task);
+        // The experimental implementation reports a planning error before summarizing anything.
+        if (plan.error !== undefined && prepared.implementation === "experimental") {
+            endRunning(task, "failed", { error: host.redact(plan.error) });
+            return;
+        }
+        task.total = plan.llmCalls;
+        publishRunning(task);
+
+        const ownerIsGroup =
+            scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId)?.type === "group";
+        const execution = await executeHypaV3Plan(host, prepared, plan, {
+            progress: (done, total) => {
+                task.total = total;
+                publishRunning(task);
+            },
+            checkpoint: checkpointOf(task, input),
+            validate: createHypaV3SourceValidator(input.sources, () => readCurrent(input, ownerIsGroup)),
+        });
+        live(task);
+
+        let warming: string | undefined;
+        if (execution.endReason === "complete" || execution.endReason === "providerFailed") {
+            // The saved summaries' document vectors, so the next send embeds none of them.
+            const saved = execution.data.summaries.slice(prepared.data.summaries.length);
+            if (saved.length > 0) {
+                try {
+                    await warmHypaV3Vectors(host, saved);
+                    live(task);
+                } catch (error) {
+                    if (task.ended || error instanceof MemoryHostFailure || error instanceof MemoryTaskEnd) {
+                        throw error;
+                    }
+                    warming = host.redact(messageOf(error));
+                    console.warn("[memory] warming the new summaries failed");
+                }
+            }
+        }
+
+        switch (execution.endReason) {
+            case "providerFailed":
+                endRunning(task, "failed", { error: host.redact(execution.error) });
+                return;
+            case "writeSkipped":
+            case "sourceInvalid":
+                // Nothing more is written: after `sourceInvalid` the state is rewound past saved windows.
+                endRunning(task, "skipped", { reason: execution.endReason });
+                return;
+            case "stopped":
+                endRunning(task, "cancelled");
+                return;
+        }
+        // The standard implementation reports it after summarizing the windows before it.
+        if (plan.error !== undefined) {
+            endRunning(task, "failed", { error: host.redact(plan.error) });
+            return;
+        }
+        endRunning(task, "done", warming !== undefined ? { reason: "warmingFailed", error: warming } : {});
+    }
+
+    /**
+     * A writer's one write, for `window`, read under `confirmedBefore` (synchronous). The source
+     * generation moves only on a whole-chat replace or a delete, so an edit, a removal, a disabled flag,
+     * or a continue since the window was read shows only in the chat as stored now, which is checked
+     * here under the ceiling the window was computed with. The answer is a memory revision: it stays
+     * out of `lastCommittedRevision` and `terminalRevision`, the chat revisions the tab's fence compares.
+     */
+    const commitOf =
+        (task: Task, input: StructuredMemoryTaskInput, window: WriterWindow, confirmedBefore: string) =>
+        (baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit => {
+            live(task);
+            gate.assertOpen();
+            if (closed || !inputCurrent(input)) {
+                return { outcome: "refused", reason: "staleInput" };
+            }
+            const { chaId, chatId } = input.chatRef;
+            const stored = store.readChatSource(chaId, chatId).data as Chat | null;
+            if (!stored || !windowStillConfirmed(window, stored.message, confirmedBefore)) {
+                return { outcome: "refused", reason: "windowChanged" };
+            }
+            try {
+                const revision = store.memory.write(chaId, chatId, { epoch: input.epoch, baseRevision }, changes);
+                return { outcome: "committed", revision };
+            } catch (error) {
+                if (error instanceof ResourceConflictError) {
+                    return { outcome: "refused", reason: "revisionConflict" };
+                }
+                throw error;
+            }
+        };
+
+    /**
+     * A Structured Memory task's work on its checked scope: the windows open in the chat as stored, each
+     * through the injected writer, in order. The first window that does not end `recorded` ends the task:
+     * a later one recorded ahead of it would put its events out of message order, and the windows stay
+     * open for the next hand-off.
+     */
+    async function structuredWork(
+        task: Task,
+        input: StructuredMemoryTaskInput,
+        scope: JobScope,
+        host: MemoryHost,
+        tokenizer: MemoryTokenizer,
+    ) {
+        if (!structuredWriter) {
+            endRunning(task, "skipped", { reason: "writerUnavailable" });
+            return;
+        }
+        const { chaId, chatId } = input.chatRef;
+        const messages = scopeChat(scope)?.message ?? [];
+        // A person's start is the confirmation the captured ceiling stands in for, and that one is as
+        // old as the last hand-off, which a cadence with nothing due may not have made for many turns.
+        // An automatic task keeps it: a message appended after the reply must not confirm the reply.
+        const confirmedBefore = (task.manual ? writerCeiling(messages) : null) ?? input.confirmedBefore;
+        const windows = await confirmedWindows({
+            messages,
+            confirmedBefore,
+            recorded: readRecordedMessages(store, chaId, chatId),
+            cadence: writerCadence(scope.db),
+            maxContext: input.maxContext,
+            tokenizer,
+            // One past the cap tells a task that stopped at it from one that finished.
+            limit: limits.maxWriterWindows + 1,
+            manual: task.manual,
+        });
+        live(task);
+        if (!windows) {
+            endRunning(task, "skipped", { reason: "staleInput" });
+            return;
+        }
+        const allowed = windows.slice(0, limits.maxWriterWindows);
+        task.total = allowed.length;
+        publishRunning(task);
+        for (const window of allowed) {
+            live(task);
+            const result = await structuredWriter({
+                scope,
+                input,
+                host,
+                tokenizer,
+                window,
+                commit: commitOf(task, input, window, confirmedBefore),
+            });
+            if (result.outcome === "recorded") {
+                task.done++;
+            }
+            live(task);
+            if (result.outcome === "skipped") {
+                endRunning(task, "skipped", { reason: result.reason });
+                return;
+            }
+            if (result.outcome === "failed") {
+                endRunning(task, "failed", { error: host.redact(result.error) });
+                return;
+            }
+            publishRunning(task);
+        }
+        endRunning(task, "done", windows.length > allowed.length ? { reason: "windowsLeft" } : {});
+    }
+
     async function work(task: Task): Promise<void> {
         const input = task.retained.input;
         let host: MemoryHost | null = null;
@@ -710,87 +989,11 @@ export function createMemoryTasks(deps: {
                 fence: () => live(task),
             });
             host = built.host;
-            const room = structuredClone(scopeChat(scope)) as Chat;
-            const outcome = await prepareHypaV3(
-                host,
-                input.history,
-                input.currentTokens,
-                input.maxContext,
-                room,
-                built.tokenizer,
-                { cleanup: false, responseCorrection: false },
-            );
-            live(task);
-            if (!outcome.ok) {
-                endRunning(task, "failed", {
-                    error: host.redact(outcome.result.error ?? "[HypaV3] Preparation failed"),
-                });
-                return;
+            if (input.kind === "structuredMemory") {
+                await structuredWork(task, input, scope, host, built.tokenizer);
+            } else {
+                await hypaV3Work(task, input, scope, host, built.tokenizer);
             }
-            const prepared = outcome.prepared;
-            if (prepared.coverageAhead) {
-                endRunning(task, "skipped", { reason: "staleInput" });
-                return;
-            }
-            const plan = await planHypaV3Summaries(prepared, { lookahead: true });
-            live(task);
-            // The experimental implementation reports a planning error before summarizing anything.
-            if (plan.error !== undefined && prepared.implementation === "experimental") {
-                endRunning(task, "failed", { error: host.redact(plan.error) });
-                return;
-            }
-            task.total = plan.llmCalls;
-            publishRunning(task);
-
-            const ownerIsGroup =
-                scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId)?.type === "group";
-            const execution = await executeHypaV3Plan(host, prepared, plan, {
-                progress: (done, total) => {
-                    task.total = total;
-                    publishRunning(task);
-                },
-                checkpoint: checkpointOf(task, input),
-                validate: createHypaV3SourceValidator(input.sources, () => readCurrent(input, ownerIsGroup)),
-            });
-            live(task);
-
-            let warming: string | undefined;
-            if (execution.endReason === "complete" || execution.endReason === "providerFailed") {
-                // The saved summaries' document vectors, so the next send embeds none of them.
-                const saved = execution.data.summaries.slice(prepared.data.summaries.length);
-                if (saved.length > 0) {
-                    try {
-                        await warmHypaV3Vectors(host, saved);
-                        live(task);
-                    } catch (error) {
-                        if (task.ended || error instanceof MemoryHostFailure || error instanceof MemoryTaskEnd) {
-                            throw error;
-                        }
-                        warming = host.redact(messageOf(error));
-                        console.warn("[memory] warming the new summaries failed");
-                    }
-                }
-            }
-
-            switch (execution.endReason) {
-                case "providerFailed":
-                    endRunning(task, "failed", { error: host.redact(execution.error) });
-                    return;
-                case "writeSkipped":
-                case "sourceInvalid":
-                    // Nothing more is written: after `sourceInvalid` the state is rewound past saved windows.
-                    endRunning(task, "skipped", { reason: execution.endReason });
-                    return;
-                case "stopped":
-                    endRunning(task, "cancelled");
-                    return;
-            }
-            // The standard implementation reports it after summarizing the windows before it.
-            if (plan.error !== undefined) {
-                endRunning(task, "failed", { error: host.redact(plan.error) });
-                return;
-            }
-            endRunning(task, "done", warming !== undefined ? { reason: "warmingFailed", error: warming } : {});
         } catch (error) {
             endFromError(task, error, host);
         }
@@ -806,6 +1009,7 @@ export function createMemoryTasks(deps: {
             chatRef: entry.chatRef,
             epoch: registryEpoch,
             retained: pending.retained,
+            manual: pending.manual,
             controller: new AbortController(),
             deadlineAt: now() + limits.taskDeadlineMs,
             deadline: undefined,
@@ -881,9 +1085,10 @@ export function createMemoryTasks(deps: {
         /**
          * Queues the chat's latest input (replacing a queued one). Dropped while paused or shutting down,
          * when its epoch or source generation is no longer the chat's, past the pending-chat limit, or
-         * when the retention cap cannot make room. Satisfies the chat's `pendingManual`.
+         * when the retention cap cannot make room. Satisfies the chat's `pendingManual`, whose manual
+         * mark the queued input takes.
          */
-        handOff(input: MemoryTaskInput): void {
+        handOff(input: AnyMemoryTaskInput): void {
             if (closed || paused) {
                 return;
             }
@@ -907,11 +1112,13 @@ export function createMemoryTasks(deps: {
             hold(retained, "pending");
             hold(retained, "latest");
             const queued = !entry.pending;
+            const manual = service.pendingManual(entry.chatRef);
             if (entry.pending) {
                 drop(entry.pending.retained, "pending");
                 entry.pending.retained = retained;
+                entry.pending.manual ||= manual;
             } else {
-                entry.pending = { taskId: randomUUID(), retained };
+                entry.pending = { taskId: randomUUID(), retained, manual };
                 queue.add(entry.key);
             }
             if (entry.latest) {
@@ -984,9 +1191,10 @@ export function createMemoryTasks(deps: {
         },
 
         /**
-         * A manual start (D8): the chat's running or queued task as it is; else its retained latest input
-         * queued again when its epoch and source generation are current and a fresh scope has its
-         * settings fingerprint; else `pendingManual` (the chat's next input job hands off).
+         * A manual start (D8): the chat's running task as it is, its queued one marked manual; else its
+         * retained latest input queued again, marked manual, when its epoch and source generation are
+         * current and a fresh scope has its settings fingerprint; else `pendingManual` (the chat's next
+         * input job hands off).
          */
         start(chatRef: MemoryChatRef): MemoryTaskStartResult {
             if (closed) {
@@ -1003,6 +1211,7 @@ export function createMemoryTasks(deps: {
                 return { outcome: "running", status: runningStatus(entry.running) };
             }
             if (entry.pending) {
+                entry.pending.manual = true;
                 return { outcome: "queued", status: queuedStatus(entry.pending) };
             }
             const latest = entry.latest;
@@ -1016,7 +1225,7 @@ export function createMemoryTasks(deps: {
                     if (queue.size >= limits.maxPendingChats) {
                         return { outcome: "refused", reason: "queueFull" };
                     }
-                    const pending = { taskId: randomUUID(), retained: latest };
+                    const pending: Pending = { taskId: randomUUID(), retained: latest, manual: true };
                     hold(latest, "pending");
                     entry.pending = pending;
                     queue.add(entry.key);
@@ -1065,7 +1274,7 @@ export function createMemoryTasks(deps: {
             if (!entry) {
                 return;
             }
-            const older = (input: MemoryTaskInput) => input.sourceGeneration < notice.sourceGeneration;
+            const older = (input: MemoryTaskBase) => input.sourceGeneration < notice.sourceGeneration;
             if (entry.pending && older(entry.pending.retained.input)) {
                 endPending(entry, "cancelled", { reason: "sourceChanged" });
             }

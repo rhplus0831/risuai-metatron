@@ -463,21 +463,19 @@ export type MemoryTokenPolicy = {
 };
 
 /**
- * What a job hands to the memory task service, captured just before its memory step and deep-copied:
+ * What a job hands to the memory task service for either kind of task, captured in its memory step
+ * and deep-copied:
  *
- * - `history`: the processed prompt history the memory step gets (message-id memos), `sources` one per
- *   entry (same length), and `historyStart`, the index of its first chat history entry;
- * - the counts: `currentTokens` (the prompt before memory), `maxContext`, `maxResponse`, and the
- *   token policy; `settingsFingerprint`, a digest of the memory-relevant settings (the Hypa preset,
- *   the `memory` slot, the embedding model);
+ * - the counts: `maxContext`, `maxResponse`, and the token policy; `settingsFingerprint`, a digest of
+ *   the memory-relevant settings (the Hypa preset, the `memory` slot, the embedding model);
  * - `binding`: the ids the job was admitted with; `effective`: the presets it ran with and whether a
  *   `presetChain` picked the prompt preset;
  * - `speakerId`: the character the job replied as (null for none);
  * - freshness: the `epoch`, `admittedRevision` (the chat revision the job was admitted at, the job's
  *   `context.chatRevision`, never a revision read later), and `sourceGeneration`, the chat's source
- *   generation read in the same synchronous chat read that produced the history's source snapshot.
+ *   generation read in the same synchronous chat read that produced the snapshot the step reads.
  */
-export type MemoryTaskInput = {
+export type MemoryTaskBase = {
     chatRef: MemoryChatRef;
     epoch: string;
     admittedRevision: string;
@@ -485,28 +483,53 @@ export type MemoryTaskInput = {
     speakerId: string | null;
     binding: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
     effective: { presetId: string; modelPresetId: string; fromChain: boolean };
-    history: OpenAIChat[];
-    sources: MemoryEntrySource[];
-    historyStart: number;
-    currentTokens: number;
     maxContext: number;
     maxResponse: number;
     tokenPolicy: MemoryTokenPolicy;
     settingsFingerprint: string;
 };
 
+/**
+ * A HypaV3 task's input, captured just before the job's memory step: `history`, the processed prompt
+ * history the step gets (message-id memos), `sources` one per entry (same length), `historyStart`,
+ * the index of its first chat history entry, and `currentTokens`, the prompt before memory. `kind`
+ * stays absent, so what a HypaV3 task sends and reports is unchanged by the other kind.
+ */
+export type MemoryTaskInput = MemoryTaskBase & {
+    kind?: "hypaV3";
+    history: OpenAIChat[];
+    sources: MemoryEntrySource[];
+    historyStart: number;
+    currentTokens: number;
+};
+
+/**
+ * A Structured Memory writer task's input. The task reads the chat and its coverage from the store, so
+ * all it takes from the job beyond the base is the ceiling: `confirmedBefore`, the id of the message
+ * the writer's windows stop before (`writerCeiling`), captured in the step because a message appended
+ * after the reply must not confirm it. A manual task, confirmed by the person who started it, uses
+ * this only when the chat as stored has no ceiling of its own.
+ */
+export type StructuredMemoryTaskInput = MemoryTaskBase & { kind: "structuredMemory"; confirmedBefore: string };
+
+/** A task's input of either kind, as the memory task service takes and keeps it. */
+export type AnyMemoryTaskInput = MemoryTaskInput | StructuredMemoryTaskInput;
+
 export type MemoryTaskState = "queued" | "running" | "done" | "failed" | "cancelled" | "skipped";
 
 /**
- * A chat's memory task as the service reports it: `done` of `total` summaries; for a terminal state
- * the reason (`skipped`) or redacted error (`failed`), and `terminalRevision`, the chat's revision
+ * A chat's memory task as the service reports it: `done` of `total` summaries, or of writer windows on
+ * a Structured Memory task (`kind`, absent on a HypaV3 task); for a terminal state the reason (`skipped`,
+ * a `done` that left work) or redacted error (`failed`), and `terminalRevision`, the chat's revision
  * read in the step that closed the task's writes and published the terminal (null: the chat is
- * gone), with `lastCommittedRevision` when the task committed a summary.
+ * gone), with `lastCommittedRevision` when the task committed a summary. Both are chat revisions, what
+ * the tab's fence compares: a memory revision never goes here.
  */
 export type MemoryTaskStatus =
-    | { taskId: string; state: "queued" | "running"; done: number; total: number }
+    | { taskId: string; kind?: "structuredMemory"; state: "queued" | "running"; done: number; total: number }
     | {
           taskId: string;
+          kind?: "structuredMemory";
           state: "done" | "failed" | "cancelled" | "skipped";
           done: number;
           total: number;
@@ -528,7 +551,7 @@ export type SummaryWriterLease = { release(): void };
  * waits for the chat's next input.
  */
 export interface MemoryTaskService {
-    handOff(input: MemoryTaskInput): void;
+    handOff(input: AnyMemoryTaskInput): void;
     status(chatRef: MemoryChatRef): MemoryTaskStatus | null;
     acquireSummaryWriter(chatRef: MemoryChatRef, ownerId: string): Promise<SummaryWriterLease>;
     pendingManual(chatRef: MemoryChatRef): boolean;

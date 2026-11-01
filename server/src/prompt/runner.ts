@@ -5,6 +5,7 @@ import { greetingText } from "../../../shared/greetings.ts";
 import { supaMemoryOnCount } from "../../../shared/characters.ts";
 import { completionNotification } from "../../../shared/notifications.ts";
 import {
+    type AnyMemoryTaskInput,
     type CallbackPayloads,
     type CallbackResult,
     type GenerationStage,
@@ -12,7 +13,7 @@ import {
     MEMORY_TRIM_CHOICES,
     type MemoryBlockingReason,
     type MemoryGapChoice,
-    type MemoryTaskInput,
+    type MemoryTaskBase,
     type MemoryTrimChoice,
     type SummaryWriterLease,
 } from "../../../shared/jobs.ts";
@@ -76,6 +77,7 @@ import {
 } from "./assemble.ts";
 import { postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
+import { readRecordedMessages } from "./memory/structured/window.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
 import { localModelRefusal } from "./transformers.ts";
@@ -497,7 +499,7 @@ async function runSend(
     // Whether a `presetChain` pick is the job's prompt preset (the memory task input says so).
     const fromChain = !!chain && "scope" in chain;
     let last: { messageId: string; alternatives?: string[] } | null = null;
-    /** The memory task of the last completed speaker or round (its HypaV3 step's input), or none. */
+    /** The memory task of the last completed speaker or round (its memory step's input), or none. */
     let memoryTask: MemoryTaskHandOff | undefined;
     /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
     const replyIds = new Set<string>();
@@ -612,15 +614,16 @@ function handOffTranslations(job: RunningJob, deps: GenerationRunnerDeps, messag
     }
 }
 
-/** A HypaV3 step's task input and whether its lookahead plan says summaries are due. */
-type MemoryTaskHandOff = { input: MemoryTaskInput; due: boolean };
+/** A memory step's task input and whether it has work due. */
+type MemoryTaskHandOff = { input: AnyMemoryTaskInput; due: boolean };
 
 /**
  * The chat's background memory: after the final writes and before `done`, the last completed speaker
- * or round's HypaV3 input goes to the memory task service when summaries are due or a manual start
- * waits for it (`pendingManual`). Nothing without a service, for an aborted or non-input job, or when
- * the input's epoch or source generation is no longer the chat's (a whole-chat replace or a delete
- * since the history was read): the next send's input is used. Never fails the send.
+ * or round's memory input goes to the memory task service when work is due (HypaV3's summaries, a
+ * Structured Memory window) or a manual start waits for it (`pendingManual`). Nothing without a
+ * service, for an aborted or non-input job, or when the input's epoch or source generation is no
+ * longer the chat's (a whole-chat replace or a delete since the history was read): the next send's
+ * input is used. Never fails the send.
  */
 function handOffMemory(job: RunningJob, deps: GenerationRunnerDeps, memoryTask: MemoryTaskHandOff | undefined) {
     const tasks = deps.memoryTasks;
@@ -649,7 +652,7 @@ type SpeakerResult =
           type: "reply";
           messageId: string;
           alternatives?: string[];
-          /** The round's HypaV3 task input (only with a memory task service and an input job). */
+          /** The round's memory task input (only with a memory task service and an input job). */
           memoryTask?: MemoryTaskHandOff;
           /**
            * The next round of this speaker: a continue of this reply (auto-continue, with the tokens
@@ -1119,8 +1122,30 @@ async function runSpeaker(arg: {
             fence: () => setup.check(),
             signal: nativeCtx.signal,
         };
-        // The HypaV3 step's side of the job: its kind, the task service, the gap question, the writer
-        // lease, the `memoryProgress` runs, and the chat's sources.
+        // What a memory task of either kind takes from this job.
+        const memoryTaskBase = (sourceGeneration: number): MemoryTaskBase => ({
+            chatRef,
+            epoch: job.epoch,
+            admittedRevision: job.context.chatRevision,
+            sourceGeneration,
+            speakerId: currentChar.chaId ?? null,
+            binding: {
+                presetId: job.context.presetId ?? null,
+                modelPresetId: job.context.modelPresetId ?? null,
+                personaId: job.context.personaId ?? null,
+            },
+            effective: {
+                presetId: scope.promptPreset.id,
+                modelPresetId: scope.modelPreset.id,
+                fromChain: arg.fromChain,
+            },
+            maxContext: db.maxContext,
+            maxResponse: db.maxResponse,
+            tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditonalTokens),
+            settingsFingerprint: memorySettingsFingerprint(scope),
+        });
+        // The memory steps' side of the job: its kind, the task service, the gap question, the writer
+        // lease, the `memoryProgress` runs, the chat's sources, and the writer's stored coverage.
         const memoryJob: AssemblyMemoryJob = {
             preview: job.kind === "preview" || job.kind === "previewPrompt",
             input: INPUT_KINDS.has(job.kind),
@@ -1214,30 +1239,14 @@ async function runSpeaker(arg: {
                     registerStop: () => job.registerMemoryControl?.(runId) ?? null,
                 };
             },
-            taskInput: (part) =>
-                deps.memoryTasks
-                    ? {
-                          ...part,
-                          chatRef,
-                          epoch: job.epoch,
-                          admittedRevision: job.context.chatRevision,
-                          speakerId: currentChar.chaId ?? null,
-                          binding: {
-                              presetId: job.context.presetId ?? null,
-                              modelPresetId: job.context.modelPresetId ?? null,
-                              personaId: job.context.personaId ?? null,
-                          },
-                          effective: {
-                              presetId: scope.promptPreset.id,
-                              modelPresetId: scope.modelPreset.id,
-                              fromChain: arg.fromChain,
-                          },
-                          maxContext: db.maxContext,
-                          maxResponse: db.maxResponse,
-                          tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditonalTokens),
-                          settingsFingerprint: memorySettingsFingerprint(scope),
-                      }
-                    : null,
+            taskInput: (part) => (deps.memoryTasks ? { ...part, ...memoryTaskBase(part.sourceGeneration) } : null),
+            structuredMemory: {
+                recorded: () => readRecordedMessages(store, characterId, chatId),
+                taskInput: (sourceGeneration, confirmedBefore) =>
+                    deps.memoryTasks
+                        ? { ...memoryTaskBase(sourceGeneration), kind: "structuredMemory", confirmedBefore }
+                        : null,
+            },
         };
         state.stage = "assembly";
         const assembled: AssembledPrompt = await assemblePrompt(

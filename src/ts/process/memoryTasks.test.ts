@@ -741,3 +741,22 @@ describe("memory fences on digest-matched reconnects", () => {
         },
     );
 });
+
+describe("structured memory status frames", () => {
+    it("preserves the structured kind in queued, running and terminal frames while HypaV3 has no kind", async () => {
+        const { tasks, serverRevision } = await boot();
+        for (const kind of ["structuredMemory", undefined] as const) {
+            const taskId = kind ?? "hypa";
+            for (const status of [
+                live(taskId, "queued"),
+                live(taskId, "running", 1, 2),
+                terminal(taskId, "done", serverRevision(), { done: 2, total: 2 }),
+            ]) {
+                const frameStatus = { ...status, ...(kind ? { kind } : {}) };
+                tasks.noteMemoryTaskFrame(entry(frameStatus));
+                expect(tasks.memoryTaskStatus(refK)).toEqual(frameStatus);
+                if (!kind) expect(tasks.memoryTaskStatus(refK)).not.toHaveProperty("kind");
+            }
+        }
+    });
+});

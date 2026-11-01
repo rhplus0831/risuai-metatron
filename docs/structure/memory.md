@@ -94,7 +94,8 @@
 - The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by
   `supaModelType`).
 - The result is written back to the current chat: `hypaV2Data`, `hypaV3Data`, or `supaMemoryData`.
-- `memoryAlgorithmType` is written by the UI and never read.
+- `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory.md#the-writer-task) ahead of that
+  order; no other value is read.
 
 ### V3 standard flow
 
@@ -192,7 +193,8 @@ attempted, and a background task ends `skipped` with `localSummarization`; a sen
 
 `server/src/prompt/memory/memoryTasks.ts` `createMemoryTasks`, on the detached host `memoryTaskHost.ts` (their doc
 comments hold the queue, start checks, ends, and the host's requests; `MEMORY_TASK_LIMITS` the caps). Wiring, routes,
-and the feed frame are in [server generation](server-generation.md).
+and the feed frame are in [server generation](server-generation.md); the second task kind is the
+[Structured Memory writer](structured-memory.md#the-writer-task).
 
 - Right before a job emits `done`, the runner hands the service the job's `MemoryTaskInput` (`shared/jobs.ts`) when a
   lookahead plan says summaries are due or a manual start waits (`pendingManual`).
@@ -255,7 +257,7 @@ it matches a removable entry), so a prompt still over the context with them ends
 
 - DB settings:
   - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`,
-    `memoryAlgorithmType` (unused).
+    `memoryAlgorithmType` (only `structuredMemory` is read).
   - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`. `supaMemoryKey` is edited only on
     the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status and
     links there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state,
