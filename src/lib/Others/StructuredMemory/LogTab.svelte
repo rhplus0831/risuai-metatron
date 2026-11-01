@@ -32,6 +32,7 @@
     const text = language.structuredMemory.log;
     const receiptText = language.structuredMemory.receipt;
     const warningKinds = language.structuredMemory.warningKinds;
+    const refusalKinds = language.structuredMemory.refusalKinds;
     const unverifiedReasons = language.structuredMemory.unverifiedReasons;
     const panelText = language.structuredMemory.panel;
 
@@ -202,6 +203,12 @@
             {#if candidate.reason !== ""}
                 <p class="text-textcolor2">{candidate.reason}</p>
             {/if}
+        {/each}
+    {/if}
+    {#if view.refused.length > 0}
+        <h3 class="font-semibold">{receiptText.refused}</h3>
+        {#each view.refused as item}
+            <p>{item.candidate}{item.refusal ? `: ${codeText(refusalKinds, item.refusal)}` : ""}</p>
         {/each}
     {/if}
     {#if view.unverified.length > 0}

@@ -1,0 +1,274 @@
+// @vitest-environment node
+import { expect, it } from "vitest";
+import {
+    STRUCTURED_MEMORY_LIMITS as LIMITS,
+    type MemoryPage,
+    type MemoryPatch,
+    type MemorySection,
+} from "../../../../../shared/structuredMemory.ts";
+import { memoryRecords } from "../../../tests/memoryFixtures.ts";
+import { type PageChanges, type PageStamp } from "./pages.ts";
+import { applyPatches, parsePatches, showTargets } from "./patches.ts";
+
+const section = (heading: string, body = `Old ${heading}`): MemorySection => ({
+    heading,
+    body,
+    provenance: ["old-event"],
+    sources: [{ messageId: "old-message", hash: "old-hash", index: 0 }],
+    locked: false,
+    updatedAt: 1,
+});
+const page = (id = "bad"): MemoryPage => ({
+    ...memoryRecords([id], id).pages[0],
+    sections: [section("Gate"), section("Hearth")],
+});
+const patch = (heading: string, fields: Partial<MemoryPatch> = {}): MemoryPatch => ({
+    pageId: "bad",
+    heading,
+    op: "upsert",
+    body: "New text",
+    ...fields,
+});
+const stamp = (): PageStamp => {
+    let id = 0;
+    return {
+        eventId: "event",
+        sources: [{ messageId: "message", hash: "hash", index: 100 }],
+        at: 123,
+        newId: () => `history-${++id}`,
+    };
+};
+const shown = (pages: MemoryPage[]) =>
+    new Map(
+        pages.map((page) => [
+            page.id,
+            new Map(page.sections.map(({ heading, body }) => [heading, body as string | null])),
+        ]),
+    );
+
+it.each([
+    ["locked section", "lockedSection"],
+    ["unshown section", "unseenSection"],
+    ["deleted section", "unseenSection"],
+    ["added section", "unseenSection"],
+    ["duplicate heading", "duplicateHeading"],
+    ["non-slot heading", "notASlot"],
+    ["too many sections", "tooManySections"],
+    ["blank body", "emptyBody"],
+    ["oversized body", "sectionTooLong"],
+    ["empty page", "emptiesPage"],
+] as const)("refuses every patch for %s while applying other pages", (fault, reason) => {
+    const bad = page();
+    const good = page("good");
+    const seen = shown([bad, good]);
+    let patches = [patch("Gate"), patch("Hearth")];
+    if (fault === "locked section") bad.sections[1].locked = true;
+    if (fault === "unshown section") seen.get("bad")!.set("Hearth", null);
+    if (fault === "deleted section") bad.sections.pop();
+    if (fault === "added section") seen.get("bad")!.delete("Hearth");
+    if (fault === "duplicate heading") patches[1] = patch("Gate");
+    if (fault === "non-slot heading") {
+        bad.type = "character";
+        patches[1] = patch("Invented slot");
+    }
+    if (fault === "too many sections") {
+        bad.sections.push(...Array.from({ length: LIMITS.sectionsPerPage - 2 }, (_, i) => section(`Extra ${i}`)));
+        patches[1] = patch("Overflow");
+    }
+    if (fault === "blank body") patches[1].body = " \n\t";
+    if (fault === "oversized body") {
+        const parsed = parsePatches(
+            JSON.stringify({ patches: [patch("Hearth", { body: "x".repeat(LIMITS.sectionBodyChars + 1) })] }),
+        );
+        if (!parsed.ok) throw new Error(parsed.error);
+        patches[1] = parsed.patches[0];
+    }
+    if (fault === "empty page") patches = [patch("Gate", { op: "delete" }), patch("Hearth", { op: "delete" })];
+    patches.push(patch("Gate", { pageId: "good", body: "Allowed" }));
+    const before = structuredClone(bad);
+    const changes: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([
+            [bad.id, bad],
+            [good.id, good],
+        ]),
+        changes,
+        patches,
+        seen,
+        stamp: stamp(),
+    });
+    expect(changes.has("bad")).toBe(false);
+    expect(bad).toEqual(before);
+    expect(changes.get("good")!.page.sections).toEqual([
+        expect.objectContaining({ heading: "Gate", body: "Allowed" }),
+        good.sections[1],
+    ]);
+    expect(warnings).toEqual([
+        expect.objectContaining({
+            kind: fault === "empty page" ? "emptiesPage" : "pageRefused",
+            pageId: "bad",
+            heading: patches[0].heading,
+        }),
+        expect.objectContaining({ kind: reason, pageId: "bad", heading: patches[1].heading }),
+    ]);
+});
+
+it("shows whole sections within the patch budget and marks omitted headings", () => {
+    const full = page("full");
+    full.sections = Array.from({ length: LIMITS.promptPatchChars / LIMITS.sectionBodyChars }, (_, i) =>
+        section(`Full ${i}`, "x".repeat(LIMITS.sectionBodyChars)),
+    );
+    full.sections.push(section("Omitted", "must not be truncated"));
+    const excluded = page("excluded");
+    const targets = [full, excluded].map((page) => ({
+        page,
+        candidate: { targetId: page.id, confidence: 1, reason: "Update" },
+    }));
+    const result = showTargets(targets);
+    expect(result.rows).toEqual([
+        {
+            id: "full",
+            title: "full",
+            type: "location",
+            sections: full.sections.slice(0, -1).map(({ heading, body }) => ({ heading, body })),
+            notShown: ["Omitted"],
+        },
+    ]);
+    expect(result.seen.get("full")!.get("Omitted")).toBeNull();
+    expect(result.seen.has("excluded")).toBe(false);
+    expect(result.refused).toEqual([{ candidate: targets[1].candidate, refusal: "overBudget" }]);
+});
+
+it("preserves conflict history, disputes weak contradictions, and refuses overflowing joins", () => {
+    const cases = [
+        {
+            name: "change",
+            fields: { was: "Old Gate" },
+            body: "New Gate\n(was: Old Gate)",
+            kind: "change",
+            disputed: false,
+        },
+        {
+            name: "existing was line",
+            fields: { was: "Old Gate", body: "New Gate\n(was: Old Gate)" },
+            body: "New Gate\n(was: Old Gate)",
+            kind: "change",
+            disputed: false,
+        },
+        {
+            name: "strong contradiction",
+            fields: { conflict: "contradiction", confidence: LIMITS.contradictionConfidence },
+            body: "New Gate",
+            kind: "contradiction",
+            disputed: false,
+        },
+        {
+            name: "weak contradiction",
+            fields: { conflict: "contradiction", confidence: LIMITS.contradictionConfidence - 0.01 },
+            body: "Old Gate\n[disputed] New Gate",
+            kind: "contradiction",
+            disputed: true,
+        },
+        {
+            name: "unscored contradiction",
+            fields: { conflict: "contradiction" },
+            body: "Old Gate\n[disputed] New Gate",
+            kind: "contradiction",
+            disputed: true,
+        },
+    ] as const;
+    for (const row of cases) {
+        const before = page();
+        const changes: PageChanges = new Map();
+        const warnings = applyPatches({
+            pages: new Map([[before.id, before]]),
+            changes,
+            patches: [patch("Gate", { body: "New Gate", ...row.fields })],
+            seen: shown([before]),
+            stamp: stamp(),
+        });
+        const after = changes.get("bad")!.page;
+        expect(after.sections[0].body, row.name).toBe(row.body);
+        expect(after.sections[0].disputed ?? false, row.name).toBe(row.disputed);
+        expect(after.history, row.name).toEqual([
+            expect.objectContaining({
+                heading: "Gate",
+                kind: row.kind,
+                eventId: "event",
+                before: { body: "Old Gate", provenance: ["old-event"], sources: before.sections[0].sources },
+            }),
+        ]);
+        expect(warnings, row.name).toEqual(
+            row.disputed ? [expect.objectContaining({ kind: "disputed", pageId: "bad", heading: "Gate" })] : [],
+        );
+    }
+    for (const fields of [{ was: "old" }, { conflict: "contradiction" as const }]) {
+        const before = page();
+        const changes: PageChanges = new Map();
+        const warnings = applyPatches({
+            pages: new Map([[before.id, before]]),
+            changes,
+            patches: [patch("Gate", { body: "x".repeat(LIMITS.sectionBodyChars), ...fields })],
+            seen: shown([before]),
+            stamp: stamp(),
+        });
+        expect(changes.size).toBe(0);
+        expect(warnings).toEqual([expect.objectContaining({ kind: "sectionTooLong" })]);
+    }
+});
+
+it("bounds section evidence and replacement history while preserving untouched bytes", () => {
+    const before = page();
+    before.sections.push(section("Untouched", " \r\n  exact 한글 😀\t "));
+    before.sections[0].provenance = Array.from({ length: LIMITS.sectionEvidence }, (_, i) => `event-${i}`);
+    before.sections[0].sources = Array.from({ length: LIMITS.sectionEvidence }, (_, i) => ({
+        messageId: `m-${i}`,
+        hash: `hash-${i}`,
+        index: i,
+    }));
+    before.history = Array.from({ length: LIMITS.pageHistoryEntries }, (_, i) => ({
+        id: `old-${i}`,
+        heading: "Gate",
+        before: null,
+        kind: "create",
+        highlighted: false,
+        eventId: `event-${i}`,
+        at: i,
+    }));
+    const changes: PageChanges = new Map();
+    expect(
+        applyPatches({
+            pages: new Map([[before.id, before]]),
+            changes,
+            patches: [patch("Gate"), patch("Hearth", { op: "delete" })],
+            seen: shown([before]),
+            stamp: stamp(),
+        }),
+    ).toEqual([]);
+    const after = changes.get("bad")!.page;
+    expect(after.sections).toEqual([
+        expect.objectContaining({
+            heading: "Gate",
+            body: "New text",
+            provenance: [...before.sections[0].provenance.slice(1), "event"],
+            sources: [...before.sections[0].sources.slice(1), { messageId: "message", hash: "hash", index: 100 }],
+        }),
+        before.sections[2],
+    ]);
+    expect(after.history).toEqual([
+        ...before.history.slice(2),
+        ...["Gate", "Hearth"].map((heading, i) => ({
+            id: `history-${i + 1}`,
+            heading,
+            before: {
+                body: before.sections[i].body,
+                provenance: before.sections[i].provenance,
+                sources: before.sections[i].sources,
+            },
+            kind: i === 0 ? "change" : "delete",
+            highlighted: false,
+            eventId: "event",
+            at: 123,
+        })),
+    ]);
+});

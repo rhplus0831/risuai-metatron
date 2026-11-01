@@ -555,3 +555,14 @@ function deferred() {
     const promise = new Promise<void>((done) => (resolve = done));
     return { promise, resolve };
 }
+
+it("refuses a snapshot containing two scene pages in one chat", async () => {
+    const { source, output } = await memoryFixture();
+    const db = new DatabaseSync(source);
+    db.exec("DROP INDEX memory_pages_scene");
+    db.exec("UPDATE memory_pages SET type = 'scene', data = json_set(data, '$.type', 'scene') WHERE chatSeq = 8");
+    db.close();
+    const staging = stageValidatedSnapshot(source, output, kinds);
+    await expect(staging).rejects.toThrow(ResourceValidationError);
+    await expect(staging).rejects.toThrow(/second scene page/);
+});

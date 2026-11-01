@@ -862,7 +862,7 @@ describe("the context report", () => {
                 gapConfirmTokens?: number;
             },
         ) {
-            const records = options.records ?? { events: [], threads: [], runs: [], paused: false };
+            const records = options.records ?? { events: [], threads: [], stage: [], runs: [], paused: false };
             const preset = createHypaV3Preset(
                 "Structured",
                 {
@@ -941,6 +941,7 @@ describe("the context report", () => {
         const stored = (events: MemoryEvent[], threads: MemoryRecords["threads"] = []): MemoryRecords => ({
             events,
             threads,
+            stage: [],
             runs: [],
             paused: false,
         });

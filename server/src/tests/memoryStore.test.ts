@@ -564,3 +564,33 @@ it("hashes only role and data with SHA-256 and preserves the boundary between fi
     expect(left.role + left.data).toBe(right.role + right.data);
     expect(messageSourceHash(left)).not.toBe(messageSourceHash(right));
 });
+
+it("validates the final scene set atomically while allowing rewrites and replacement", () => {
+    const { store, db, events } = fileStore();
+    seed(store);
+    const scene = (id: string): MemoryPage => ({ ...records([id]).pages[0], type: "scene", participants: [] });
+    for (const alreadyStored of [false, true]) {
+        if (alreadyStored) write(store, contents(store).revision, { pages: [scene("scene")] });
+        const revision = contents(store).revision;
+        const before = memoryRows(db);
+        const writes = store.writeCount();
+        events.length = 0;
+        const changes = {
+            ...records(["unrelated"]),
+            pages: alreadyStored ? [scene("second")] : [scene("scene"), scene("second")],
+        };
+        expect(() => write(store, revision, changes)).toThrow(ResourceValidationError);
+        expect(memoryRows(db)).toEqual(before);
+        expect(contents(store).revision).toBe(revision);
+        expect(store.writeCount()).toBe(writes);
+        expect(events).toEqual([]);
+    }
+    const rewritten = { ...scene("scene"), title: "Current scene" };
+    write(store, contents(store).revision, { pages: [rewritten] });
+    expect(store.memory.readRecord("c", "k", "pages", "scene")!.data).toEqual(rewritten);
+    write(store, contents(store).revision, { remove: { pages: ["scene"] }, pages: [scene("replacement")] });
+    expect(contents(store).pages.map(({ id }) => id)).toEqual(["replacement"]);
+    seed(store, "other");
+    write(store, contents(store, "other").revision, { pages: [scene("other-scene")] }, "other");
+    expect(contents(store, "other").pages.map(({ id }) => id)).toEqual(["other-scene"]);
+});

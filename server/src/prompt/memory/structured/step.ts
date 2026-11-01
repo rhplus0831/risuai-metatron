@@ -56,6 +56,8 @@ export type MemoryRecords = {
     events: MemoryEvent[];
     /** The threads not ended. */
     threads: MemoryThread[];
+    /** The page ids the scene page has present; empty with no scene page. */
+    stage: string[];
     /** The run rows, never a run's body: that holds a whole prompt. */
     runs: MemoryContents["runs"];
     /** Whether automatic recording is paused (`writerPaused`). */
@@ -130,9 +132,11 @@ export function readMemoryRecords(store: Pick<ResourceStore, "memory">, chaId: s
     const runs = contents?.runs ?? [];
     const events = contents?.events ?? [];
     const threads = (contents?.threads ?? []).filter(({ state }) => !memoryThreadEnded(state));
+    const scene = contents?.pages.find(({ type }) => type === "scene");
     return {
         events: events.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
         threads: threads.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "threads", id)?.data ?? []),
+        stage: (scene && store.memory.readRecord(chaId, chatId, "pages", scene.id)?.data.participants) ?? [],
         runs,
         paused: writerPaused(runs),
     };
@@ -196,7 +200,7 @@ function cardEntries(
  */
 export async function selectMemory(
     input: MemorySelectionInput,
-    records: Pick<MemoryRecords, "events" | "threads">,
+    records: Pick<MemoryRecords, "events" | "threads" | "stage">,
 ): Promise<MemorySelection> {
     const { host, settings, tokenizer, chats, historyStart, entries, maxContextTokens, continueMessageId } = input;
     const structured = normalizeStructuredMemorySettings(settings.structured);
@@ -212,7 +216,7 @@ export async function selectMemory(
         threads: records.threads,
         entries,
         window,
-        stage: [],
+        stage: records.stage,
         settings: structured,
     });
     const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);

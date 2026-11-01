@@ -25,8 +25,9 @@ import { type ExcludedItem, itemKey, type Lane, type LaneCandidate, type RawWind
  * - Evidence is the sources of the lane's events, then older messages by lexical match. Semantic scoring
  *   only reranks those matches, so embedding stays at `lexicalCandidates` texts a send, and a paraphrase
  *   sharing no term is not found.
- * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as every thread is
- *   until pages exist; one naming someone needs them on stage.
+ * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as a thread recorded
+ *   before its chat had pages is; one naming someone needs them on stage, which is the scene page's
+ *   attendance.
  * - A failed embedding never fails the send: the prompt stays valid without it and the answer says why.
  *   The events lane then opens by the reading alone, over events sharing someone with the stage. A
  *   cancelled job or a latched failure still escapes through `host.fence()`.
@@ -125,8 +126,8 @@ export function readsAsPast(texts: readonly string[]): boolean {
 }
 
 /**
- * The texts embedded for `event`. These must stay `warmEvent`'s in `writer.ts` exactly, summary and key
- * lines alike, so the vectors it warms are the ones read here.
+ * The texts embedded for `event`, summary and key lines alike. The writer warms these same texts
+ * (`warmRecords` in `writer.ts`), so the vectors it warms are the ones read here.
  */
 export function eventVectorTexts({ summary, keyLines }: Pick<MemoryEvent, "summary" | "keyLines">): string[] {
     const texts = [summary, ...keyLines.map(({ text }) => text)].map((text) => text.trim());
@@ -151,7 +152,7 @@ export function lexicalTerms(text: string): Set<string> {
 
 const hasText = ({ text }: ReadEntry) => text.trim() !== "";
 
-/** The share of `ids` on `stage`; 0 with no ids, as on every record until pages exist. */
+/** The share of `ids` on `stage`; 0 with no ids, as on a record written before its chat had pages. */
 function stageShare(ids: readonly string[], stage: ReadonlySet<string>): number {
     const named = new Set(ids);
     return named.size === 0 ? 0 : [...named].filter((id) => stage.has(id)).length / named.size;

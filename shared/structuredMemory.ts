@@ -59,6 +59,14 @@ export const MEMORY_HISTORY_CHANGE_KINDS = [
 ] as const;
 export type MemoryHistoryChangeKind = (typeof MEMORY_HISTORY_CHANGE_KINDS)[number];
 
+/** What a page patch does to its section. */
+export const MEMORY_PATCH_OPS = ["upsert", "delete"] as const;
+export type MemoryPatchOp = (typeof MEMORY_PATCH_OPS)[number];
+
+/** How a patch's new value stands to the old one: the story moved on, or the two cannot both be true. */
+export const MEMORY_PATCH_CONFLICTS = ["change", "contradiction"] as const;
+export type MemoryPatchConflict = (typeof MEMORY_PATCH_CONFLICTS)[number];
+
 /** How a writer run ended; `pending` while it has not. */
 export const MEMORY_RUN_RESULTS = ["pending", "recorded", "failed", "skipped"] as const;
 export type MemoryRunResult = (typeof MEMORY_RUN_RESULTS)[number];
@@ -125,6 +133,19 @@ export const STRUCTURED_MEMORY_LIMITS = {
     /** Page ids in one list: an event's participants, a thread's `who`, a knowledge item's `knowers`. */
     pageRefsPerItem: 16,
     pageCandidates: 8,
+    /** The confidence a new page needs; anything less stays an unresolved mention. */
+    createConfidence: 0.75,
+    /** The confidence from which a contradiction supersedes; anything less keeps both values as disputed. */
+    contradictionConfidence: 0.75,
+    aliasesPerPage: 16,
+    sectionsPerPage: 32,
+    sectionBodyChars: 4000,
+    /** The newest events and messages a section's `provenance` and `sources` each keep. */
+    sectionEvidence: 32,
+    /** Patches one call may return. */
+    patchesPerCall: 32,
+    /** One field of the scene: its place, time, or state. */
+    sceneFieldChars: 800,
     /** Failed runs in a row after which automatic recording pauses until the user resumes it. */
     consecutiveFailures: 5,
     axisMax: 3,
@@ -149,6 +170,11 @@ export const STRUCTURED_MEMORY_LIMITS = {
     pageHistoryEntries: 60,
     /** Pages the writer's prompt lists. */
     promptPages: 40,
+    /** A listed page's last state in the writer's prompt, and what it shows of each section. */
+    promptPageStateChars: 200,
+    promptSectionSummaryChars: 120,
+    /** Section bodies the patch call shows, across its pages. */
+    promptPatchChars: 12000,
     /** Open threads the writer's prompt lists, the newest ones. */
     promptThreads: 40,
     /** The scene text the writer's prompt holds. */
@@ -244,10 +270,35 @@ export type MemoryPageCandidate = { reason: string; confidence: number } & (
     | { create: { type: MemoryPageType; title: string; aliases: string[] }; targetId?: never }
 );
 
+/** The scene as the writer returns it: a blank field, or an empty list, keeps what the scene page says. */
+export interface MemorySceneDraft {
+    /** Page ids. */
+    participants: string[];
+    place: string;
+    time: string;
+    state: string;
+}
+
 /** The writer's output as parsed, before admission and deduplication. */
 export interface MemoryAnalysisResult {
     event: MemoryEventDraft;
     pageCandidates: MemoryPageCandidate[];
+    /** Null when nothing about the scene changed; absent on a run stored before the writer read one. */
+    scene?: MemorySceneDraft | null;
+}
+
+/** One change to one section, as the patch call returns it. */
+export interface MemoryPatch {
+    pageId: string;
+    heading: string;
+    op: MemoryPatchOp;
+    /** The section's whole new text, on an upsert. */
+    body?: string;
+    conflict?: MemoryPatchConflict;
+    /** The value a superseding upsert replaces. */
+    was?: string;
+    /** How sure a contradiction is, 0 to 1; absent counts as 0. */
+    confidence?: number;
 }
 
 /** A recorded event. */
@@ -369,7 +420,7 @@ export interface MemoryReceipt {
             historyId?: string;
         }[];
     }[];
-    /** Candidates code turned down. */
+    /** Candidates code turned down; `lowConfidence` ones are the unresolved mentions. */
     refused: { candidate: MemoryPageCandidate; refusal: string }[];
     /**
      * Items whose quote was not found in the window, or that name no page: kept out of the records and
@@ -403,6 +454,10 @@ export interface MemoryRun {
     settingsFingerprint?: string;
     /** The extraction as parsed; `eventId` is what was committed from it. */
     analysis?: MemoryAnalysisResult;
+    /** The patch call's exact input; absent when no such call was made. */
+    patchInput?: string;
+    /** The patch call's answer as parsed. */
+    patches?: MemoryPatch[];
     eventId?: string;
     receipt?: MemoryReceipt;
     /** The preset's own prompt replaced the default one for this run. */

@@ -159,7 +159,7 @@ completed plans and retrieval commands.
 | Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search | [chat-pipeline](docs/structure/chat-pipeline.md)                       |
 | SupaMemory, HypaV2/V3, Hanurai, embeddings                                               | [memory](docs/structure/memory.md)                                     |
 | Structured memory: events, pages, threads, receipts, the HypaV3 projection               | [structured-memory](docs/structure/structured-memory.md)               |
-| Structured memory writer: windows, writer tasks, runs, admission, record now             | [structured-memory-writer](docs/structure/structured-memory-writer.md) |
+| Structured memory writer: windows, tasks, runs, admission, pages, record now             | [structured-memory-writer](docs/structure/structured-memory-writer.md) |
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                         |
 | CBS, markdown/sanitization, chat variables, partial edit, highlighting                   | [cbs-rendering](docs/structure/cbs-rendering.md)                       |
 | Regex, triggers v2, Lua editors/shared engines                                           | [scripts-triggers](docs/structure/scripts-triggers.md)                 |
@@ -191,7 +191,8 @@ coupling links.
 - **structured-memory**: `shared/structuredMemory.ts`,
   `server/src/{data/memoryStore.ts,routes/structuredMemory.ts,prompt/memory/structured/}`,
   `src/{ts/process/structuredMemory.svelte.ts,lib/Others/StructuredMemory/}`.
-- **structured-memory-writer**: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,recordJob}.ts`.
+- **structured-memory-writer**:
+  `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,recordJob}.ts`.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,

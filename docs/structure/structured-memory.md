@@ -121,7 +121,8 @@ own transaction. Nothing async can run inside it.
    `memory_state` row. A stale empty write is still refused.
 3. Every record is checked before anything is written, so a `ResourceValidationError` changes nothing: an id repeated
    within a kind, or both written and removed; an invalid id; a `title` that is not a string; a closed value outside its
-   `const` list; a stored text over `MAX_READ_RESPONSE_BYTES`.
+   `const` list; a stored text over `MAX_READ_RESPONSE_BYTES`;
+   [a second scene page](structured-memory-writer.md#the-scene-page).
 4. Removals, then upserts, then the revision moves up by exactly one, however much changed. Removing an absent id is no
    refusal and still moves it.
 
@@ -423,9 +424,9 @@ group is refused, and a full one is checked and restored.
 
 - The limits are starting values. Only `keyLinesPerEvent`, `pageCandidates`, `consecutiveFailures`, `axisMax`,
   `gradeMax`, `importantEventGrade`, and `dedupeSimilarity` are design numbers.
-- `eventVectorTexts` must stay `warmEvent`'s text rule; a retrieval that embeds other text pays for every event again.
+- `eventVectorTexts` is what the writer warms; a retrieval that embeds other text pays for every event again.
 - Every number in `RETRIEVAL_LIMITS` is a starting value, and a cosine threshold does not mean the same on every model.
-  An unknown stage is empty, so a named thread waits for a scene page.
+  The stage is the scene page's `participants`, so a named thread waits for them.
 - A report stored on every reply grows with `items` and `excluded`, up to a few kilobytes a message. D5's
   `memory_manifests` table is the way out if that matters.
 - A send's retrieval embeds every eligible event's texts. Warm, `addText` still compares every text with every vector

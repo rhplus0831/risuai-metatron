@@ -145,9 +145,11 @@ export const CHAT_SUMMARY_TABLE_SQL = `
  * revision over all of them, which a chat has no row in until its first memory write. `seq` is storage
  * order, not message order. `data` is the last column, so a table-of-contents read stops before it.
  * Keyed by the chat's incarnation (`chats.seq`): deleting the chat drops its rows by cascade, and the
- * prefix of `UNIQUE (chatSeq, id)` keeps that cascade from scanning a table. Created when missing; not
- * part of the required snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot from before them restores
- * with none, but a snapshot with any of them has them all checked and restored (`walkMemorySnapshot`).
+ * prefix of `UNIQUE (chatSeq, id)` keeps that cascade from scanning a table. `memory_pages_scene` holds
+ * a chat to one `scene` page; `memoryStore.ts` refuses a second one before it reaches this index. Created
+ * when missing; not part of the required snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot from
+ * before them restores with none, but a snapshot with any of them has them all checked and restored
+ * (`walkMemorySnapshot`).
  */
 export const MEMORY_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS memory_state (
@@ -163,6 +165,7 @@ export const MEMORY_TABLES_SQL = `
         data TEXT NOT NULL,
         UNIQUE (chatSeq, id)
     ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_pages_scene ON memory_pages (chatSeq) WHERE type = 'scene';
     CREATE TABLE IF NOT EXISTS memory_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,

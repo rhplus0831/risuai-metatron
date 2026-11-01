@@ -235,6 +235,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision",
     );
     const selectCreatedRevision = db.prepare("SELECT createdRevision FROM memory_events WHERE chatSeq = ? AND id = ?");
+    const selectScenePage = db.prepare("SELECT id FROM memory_pages WHERE chatSeq = ? AND type = 'scene'");
     const tables = {
         pages: prepareTable(db, MEMORY_TABLES.pages),
         events: prepareTable(db, MEMORY_TABLES.events),
@@ -244,6 +245,23 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
 
     function revisionOf(seq: number): number {
         return (selectRevision.get(seq) as { revision: number } | undefined)?.revision ?? 0;
+    }
+
+    /**
+     * Refuses page rows that would give a chat a second `scene` page: two in the set, or one while the
+     * chat keeps another. The existing page must be the same id or among `removed`, since removals run
+     * first; rewriting it to another type in the same set is refused too, so the order of the upserts
+     * can never reach `memory_pages_scene`. `rows` are as `prepareKind` builds them: `id`, `title`, `type`.
+     */
+    function assertOneScene(seq: number, rows: readonly (string | number)[][], removed: ReadonlySet<string>) {
+        const [scene, second] = rows.filter(([, , type]) => type === "scene").map(([id]) => id);
+        if (scene === undefined) {
+            return;
+        }
+        const kept = selectScenePage.get(seq) as { id: string } | undefined;
+        if (second !== undefined || (kept && kept.id !== scene && !removed.has(kept.id))) {
+            throw refusal("pages", second ?? scene, "a chat holds one scene page");
+        }
     }
 
     /**
@@ -298,6 +316,9 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 throw refusal(kind, id, "removed twice");
             }
             removedIds.add(id);
+        }
+        if (kind === "pages") {
+            assertOneScene(seq, rows, removedIds);
         }
         return rows;
     }
@@ -449,8 +470,9 @@ function hasMemoryTables(source: DatabaseSync): boolean {
  * `ResourceValidationError`. `chatIds` holds each chat's id by its seq (`walkChatSnapshot`).
  *
  * A record passes what a live write checks (`recordRow`, the stored size) and what a live write leaves
- * true: its chat has a `memory_state` row, though a state row needs no records, and an event's
- * `createdRevision` is within that revision. Its shape past that is unchecked here as there.
+ * true: its chat has a `memory_state` row, though a state row needs no records, an event's
+ * `createdRevision` is within that revision, and a chat holds one `scene` page. Its shape past that is
+ * unchecked here as there.
  *
  * Only `seq`, `chatSeq`, and `data` are read. The columns a record decides come from the record, as in a
  * live write, and are never compared with the source's: a live write can leave the two unequal (a
@@ -495,6 +517,7 @@ export function walkMemorySnapshot(
         const { table, stamped } = MEMORY_TABLES[kind];
         // One table's ids: the same id in two tables is legal.
         const keys = new Set<string>();
+        const scenes = new Set<number>();
         let lastSeq = 0;
         for (const [row, number] of snapshotRows(
             source,
@@ -538,6 +561,12 @@ export function walkMemorySnapshot(
                     }
                     keys.add(key);
                 });
+                if (kind === "pages" && record.type === "scene") {
+                    if (scenes.has(chatSeq)) {
+                        throw new ResourceValidationError("a second scene page in chat");
+                    }
+                    scenes.add(chatSeq);
+                }
                 if (stamped) {
                     const { createdRevision } = record;
                     if (!isPositiveSafeInteger(createdRevision) || createdRevision > revision) {

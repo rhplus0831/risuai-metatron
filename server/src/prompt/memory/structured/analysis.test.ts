@@ -48,6 +48,7 @@ describe("analysis admission", () => {
             { kind: "malformed", detail: "keyLines: 1" },
             { kind: "capped", detail: "keyLines: 1" },
             { kind: "capped", detail: "openThreads.add: 1" },
+            { kind: "malformed", detail: "pageCandidates: 1" },
         ]);
     });
 

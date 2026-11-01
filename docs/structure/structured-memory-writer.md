@@ -1,12 +1,12 @@
-# Structured Memory Writer: Windows, Tasks, Runs, Admission
+# Structured Memory Writer: Windows, Tasks, Runs, Admission, Pages
 
 ## Scope
 
 - Owns the `structuredMemory` writer: its settings and their overrides, the windows it records, its task kind in the
-  memory task service, a writer run, the analysis prompt, admission of the model's answer, and record now with the
-  `memoryRecord` job.
-- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,recordJob}.ts`, the writer's task kind in
-  `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in `server/src/prompt/assemble.ts`.
+  memory task service, a writer run, the analysis and patch prompts, admission of the model's answer, the pages it
+  maintains, and record now with the `memoryRecord` job.
+- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,recordJob}.ts`, the writer's
+  task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in `server/src/prompt/assemble.ts`.
 - See [structured memory](structured-memory.md) for how the algorithm is selected, and [Active Plans](../plan/README.md)
   for the design and remaining work.
 - Not here:
@@ -26,8 +26,13 @@
 - `server/src/prompt/memory/structured/window.ts`: the writer's windows: `confirmedWindows`, `WriterWindow`,
   `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `confirmedThrough`,
   `windowStillConfirmed`.
-- `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`.
+- `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`, `patchSlots`,
+  `assemblePatchPrompt`.
 - `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
+- `server/src/prompt/memory/structured/pages.ts`: the pure page rules: `castSlice`, `planPages`, `aliasSeeds`,
+  `windowSpeaker`, `changeSection`, `rewriteScene`, `sectionVectorText`.
+- `server/src/prompt/memory/structured/patches.ts`: the pure patch rules: `showTargets`, `parsePatches`, `applyPatches`,
+  `commitPages`.
 - `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `commitWindow`, a
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
   `writerPaused`.
@@ -104,7 +109,8 @@ with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one 
 
 ### A writer run
 
-`createStructuredWriter` makes one analysis call per window. `memory_runs` is its whole state.
+`createStructuredWriter` makes one analysis call per window and, when a candidate was accepted, one patch call.
+`memory_runs` is its whole state.
 
 1. Pause: `consecutiveFailures` `failed` rows at the end of the runs end an automatic run `skipped` (`writerPaused`),
    with no call and no row. `skipped` and `pending` rows neither count nor reset, a `recorded` row resets, and a manual
@@ -120,11 +126,17 @@ with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one 
    the chat's replies. A provider failure, an unusable answer, or a `MemoryHostFailure` ends the run `failed` with a
    redacted error and a failed receipt, and the task with it. Any other throw is an ended task: the row stays `pending`
    for the next run, and `commit` refuses, which is how output after the deadline is discarded.
-6. Commit: event, threads, and the `recorded` run in one write, on the revision the opening write returned. A
-   `revisionConflict` admits the answer again from fresh records with no call, 3 attempts in all, then `skipped`
-   (`revisionConflict`). `staleInput` and `windowChanged` end it `skipped` and leave the row to step 2.
-7. Warming: the trimmed event summary and key lines through `HypaProcesser.addText`, unless `laneTargets.events` is 0. A
-   failure keeps the event. A retrieval that embeds other text misses this cache.
+6. Patch call: [below](#the-patch-call), on the same host and rules as step 5. It runs after admission and has no
+   `pending` write of its own, because a retry replays only the analysis. A failed one ends the run `failed`
+   (`patchFailed`) with no event, since an event would close the window for good; the row keeps `analysis` and
+   `patchInput`.
+7. Commit: event, threads, pages, and the `recorded` run in one write, on the revision the opening write returned. Both
+   calls count in `inputTokens`, `outputTokens`, and `durationMs`. A `revisionConflict` admits the answer again from
+   fresh records with no call, 3 attempts in all, then `skipped` (`revisionConflict`); a new page keeps its id across
+   them, because the patches name it. `staleInput` and `windowChanged` end it `skipped` and leave the row to step 2.
+8. Warming: `eventVectorTexts` unless `laneTargets.events` is 0, and each changed non-scene section's
+   `sectionVectorText` unless `laneTargets.pages` is 0, through `HypaProcesser.addText`. A failure keeps the records. A
+   retrieval that embeds other text misses this cache.
 
 ### Record now
 
@@ -171,24 +183,111 @@ a ChatML message, and a value holding a slot's name stays as it is. Message text
 inlays shown as `[Image]`. `fineTuning` is not read yet. The language is the chat's override, the owner's, the preset's,
 then `db.language`.
 
+`castSlice` fills the `cast` slot, at most `promptPages` rows, in this order: `always` pages, the scene's
+`participants`, then pages whose title or alias is a case-insensitive substring of a window message. The scene page has
+its own slot. A row holds the id, type, title, aliases, last state, and clamped section summaries, so a cast of forty
+costs what a cast of four costs. The match is plain substring until the read path shares lore's matching.
+
 ### Admission
 
 `parseAnalysis` takes the text from the first brace to the last, after any `<Thoughts>`; the event may sit under
 `event`. A missing or mistyped required field fails the run naming it. Strings clamp to the limits without splitting a
 surrogate pair, a malformed element is left out, and a list stops at its cap, each counted once per field in `warnings`
-(`malformed`, `capped`). Axes round and clamp, and an object lacking a score is no axes. Page candidates are not read.
+(`malformed`, `capped`). Axes round and clamp, and an object lacking a score is no axes. `pageCandidates` and `scene`
+are read from the top level whether or not the event sits under `event`, and both may be missing; a candidate with no
+finite confidence is malformed.
 
 `admitAnalysis` works from records read for that attempt:
 
 - Evidence: a key line's text and each `quote` must be a contiguous piece of a window message's raw `data`, so a quote
   from context or across `[Image]` fails. It goes to `unverified` (`quoteNotFound`).
-- Pages: a participant, `who`, or knower naming no page is removed with an `unknownPage` warning, an item with a quote
-  goes to `unverified` (`unknownPage`), and a relationship shift naming none is left out with a warning.
+- Pages: a reference is a page's id, or the title of a create the plan accepted, which is stored as the new page's id. A
+  participant, `who`, knower, or `scene.participants` entry naming neither is removed with an `unknownPage` warning, an
+  item with a quote goes to `unverified` (`unknownPage`), and a relationship shift naming neither is left out with a
+  warning. `speakerId` comes from the plan and never reaches a repeated event.
 - Threads: `add` opens one; `close`, then `transitions`, move only a thread that exists and has not ended (else
   `unknownThread`, `endedThread`), one write per thread, the last naming winning. `closedBy` is set on an end.
 - Repeat: when the last stored event is active, has the same participants, a summary at `dedupeSimilarity` or above by
   character bigrams, and sources that still read from the chat, no event is made. That event takes `repeatCount + 1` and
   the window's sources, or the window would stay open forever; everything else on it stays, and thread changes name it.
+
+### Pages
+
+`planPages` works on the chat's whole pages at every attempt, because the store has no bulk read:
+
+- A `targetId` that exists is a target at any confidence, and a missing one is refused `unknownPage`. The scene page and
+  a create of that type are refused `sceneOwned`.
+- A create is matched first, by name key (trimmed, lower-cased) over existing pages of its type, so a create never
+  duplicates a page and adds no alias: aliases are user tools. Two creates of one name are one page.
+- With no match, a create under `createConfidence` is refused `lowConfidence`. `receipt.refused` with that code is the
+  "unresolved mentions" list; no store holds it. Otherwise it is a new page, `contextMode: "auto"`, with no sections
+  until a patch gives it some. A patch call that gives none leaves the identity, so its references stand.
+- Seeds (`aliasSeeds`): a lore entry of the owner, chat, or modules matches on its `comment` alone, and a page created
+  under that name takes its comma-split keys as aliases, never the reverse: `Rivals` keyed `Alice,Bob` ties nothing to
+  Alice. A group member's `name` and `nickname` tie both ways. Seeds never stand in for confidence.
+- Group speaker: a window with one speaking member (`windowSpeaker`) sets `speakerId` to that member's character page,
+  which code makes when missing. That name is exact, so no threshold applies and it makes no patch call.
+- A repeat makes no page and no patch call; its candidates are refused `repeatedEvent`, and a scene rewrite still runs.
+
+`commitPages` gathers every page change of a commit in one map by id, because the store refuses an id written twice in
+one change set: created pages, the scene page when the chat has none, patches, links, then the scene rewrite.
+
+- History: each section change adds one entry with the replaced content, its kind, and the event, to
+  `pageHistoryEntries`; a new page has one `heading: null` `create` entry. `highlighted` stays false until highlighting
+  reads the settings.
+- Evidence: a change adds the event to `provenance` and the window to `sources`, each to the newest `sectionEvidence`.
+  Trust flags and `locked` stay; `unsupported` clears; `disputed` clears unless the change sets it.
+- Links: a relationship shift adds `to` to its `from` page's `links`, to `pageRefsPerItem`, with no section change.
+
+### The scene page
+
+`writer` keeps the chat's one scene page; no candidate reaches it. The first recorded window creates it
+(`type: "scene"`, title `Scene`, `contextMode: "always"`) even with no `scene` in the answer, so a chat with records has
+one. A `scene` answer rewrites the fixed sections `place`, `time`, and `state` and `participants` inside the analysis
+call, because a patch call runs only when a candidate is accepted. A blank field, or one that says the same, changes
+nothing, and an empty or fully unresolved list keeps the attendance. Sections are independent facts, so a lock skips one
+section with `lockedSection` and the rest go on. A rewrite is a `change` entry, so the bounded history keeps old scenes;
+attendance alone has none, and each event's participants record it. `readMemoryRecords` gives `participants` to the read
+path as `stage`.
+
+The store holds the rule: the partial unique index `memory_pages_scene`, a `ResourceValidationError` from `write` before
+any statement runs (a second scene page in a set, or one while the chat keeps another that is not in `remove.pages`),
+and the same refusal from `walkMemorySnapshot`, so a crafted file never reaches the staged store's index.
+
+### The patch call
+
+`showTargets` lists the accepted pages. A section shows whole or not at all, in target order, while `promptPatchChars`
+of bodies last; one past that is listed under `notShown`, and a target with sections, none of which fit, is refused
+`overBudget`. The call holds the admitted event and no message, so an item whose quote failed never reaches a page, and
+everything on a page traces to its `provenance` event. The prompt is bounded by limits, so it has no size check, and
+`RUN_RECORD_MARGIN_BYTES` covers it.
+
+An answer needs a `patches` list. `op` is `upsert` or `delete`; an upsert's `body` is the section's whole new text.
+
+`applyPatches` compares each patch with the fresh page and refuses, as a warning whose `kind` is the code and whose
+`detail` is `<page title>: <heading>`:
+
+| Code               | Patch                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| `unseenPage`       | names a page the call did not list, or one that is gone                              |
+| `lockedSection`    | touches a locked section                                                             |
+| `unseenSection`    | names a section not shown, one changed, deleted, or added since, or deletes none     |
+| `duplicateHeading` | names a heading of its page twice                                                    |
+| `notASlot`         | adds a section to a character page outside `CHARACTER_SECTION_SLOTS`                 |
+| `tooManySections`  | adds a section past `sectionsPerPage`                                                |
+| `emptyBody`        | upserts blank text                                                                   |
+| `sectionTooLong`   | has a body past `sectionBodyChars`, or would join one past it: nothing is cut to fit |
+
+A page applies whole or not at all, so a fact moved between sections cannot lose one half of the move: its other patches
+read `pageRefused`. A group that would leave a page with no text is refused `emptiesPage`. Other pages still apply and
+the event commits: a refusal is no failure of the run.
+
+Conflict classes:
+
+- An upsert over a section is a `change`; a non-blank `was` adds one `(was: ...)` line unless the body holds it.
+- `conflict: "contradiction"` at `contradictionConfidence` or above supersedes the same way, with kind `contradiction`.
+- Below it, a missing confidence being 0, both values stay as `<old>\n[disputed] <new>`, `disputed: true`, with kind
+  `contradiction` and a `disputed` warning. Neither waits for approval.
 
 ## State
 
@@ -213,6 +312,8 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
   `upstreamHypaV3Presets` leaves `structured` out.
 - `memoryRecord` is a [generation](server-generation.md) `command` job; `recordJob.ts` shares the runner's job helpers
   (`createJobMemoryHost`, `jobMemoryTaskBase`, and the like).
+- `analysis.ts` and `patches.ts` share `answerJson`, `readList`, and `readConfidence`; `sectionVectorText` is the text a
+  retrieval of sections must embed.
 
 ## Invariants
 
@@ -253,12 +354,13 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
   an injected `structuredWriter`, the writer itself with none, through the scripted provider and read back from
   `store.memory`. `memoryJobs.test.ts` drives the hand-off with `createFakeMemoryTasks`, `assemble.test.ts` the
   selection, and `src/ts/process/memoryTasks.test.ts` the status's `kind`.
-- `structured/analysis.test.ts` and `prompts.test.ts` drive the pure pieces with plain values; `prompts.test.ts` parses
-  with the real CBS evaluator.
+- `structured/analysis.test.ts`, `pages.test.ts`, `patches.test.ts`, and `prompts.test.ts` drive the pure pieces with
+  plain values; `prompts.test.ts` parses with the real CBS evaluator. The one-scene rule is in `memoryStore.test.ts` and
+  `restoreStage.test.ts`.
 - Record now: `memoryTasks.test.ts` for the lock refusal and `through`; `memoryJobs.test.ts` for the job's two paths on
   a real stack.
 - Focused command:
-  `pnpm --silent test:agent server/src/prompt/memory/structured/window.test.ts server/src/prompt/memory/structured/analysis.test.ts server/src/prompt/memory/structured/prompts.test.ts normalizeCollections memoryTaskHost upstreamExport memoryTasks memoryJobs assemble`.
+  `pnpm --silent test:agent server/src/prompt/memory/structured/ normalizeCollections memoryTaskHost upstreamExport memoryStore restoreStage memoryTasks memoryJobs assemble`.
   No `slow` or `e2e` membership of its own.
 
 ## Known Hazards
@@ -270,6 +372,12 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
   plan.
 - An interrupted run never counts toward the pause, so a model that only ever overruns the task deadline does not pause
   recording. Decision: Structured Memory D3, plan.
+- A failed patch call costs the retry its analysis call again: the window replays from the start, because one page
+  refresh must not close a window. Decision: Structured Memory D3, plan.
+- A page locked or changed in a way a patch cannot apply is refused whole, so one bad patch delays that page's other
+  changes to a later window. Decision: Structured Memory D3, plan.
+- Section evidence keeps the newest `sectionEvidence`, so a section can read `unsupported` while an older dropped event
+  still supports it. Decision: Structured Memory slice 4a, plan.
 - Record now has no cost preview, which D3 asks for: `maxWriterWindows` bounds a press, and the previewed path is
   backfill. Decision: Structured Memory slice 2d, plan.
 - Recording in a job sets no `memoryTaskFenced` fence and no task status: only the pressing tab sees it, through its
@@ -279,8 +387,8 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
 
 ### Gotchas
 
-- Until a chat has pages, every participant is removed and every item naming a page is left out of the event, so an
-  event holds its title, summary, key lines, and thread changes.
+- An event recorded before its chat had pages holds its title, summary, key lines, and thread changes: its participants
+  were removed and items naming a page left out.
 - `memory_runs.input` is never pruned, so a run costs about its prompt in storage. `inputTokens` counts one attempt
   though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated JSON.
 - Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the lane

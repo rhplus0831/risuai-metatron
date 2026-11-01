@@ -2,6 +2,7 @@ import { truncateCheckpointText as clampText } from "../../../../../shared/chatC
 import type { Message } from "../../../../../shared/database.ts";
 import {
     MEMORY_KNOWLEDGE_STANCES,
+    MEMORY_PAGE_TYPES,
     MEMORY_THREAD_STATES,
     type MemoryAnalysisResult,
     type MemoryAxes,
@@ -10,7 +11,9 @@ import {
     memoryGrade,
     type MemoryKnowledge,
     type MemoryKnowledgeDraft,
+    type MemoryPageCandidate,
     type MemoryReceipt,
+    type MemorySceneDraft,
     type MemoryThread,
     type MemoryThreadState,
     memoryThreadEnded,
@@ -18,6 +21,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 import { type MemoryEventWrite, messageSourceHash } from "../../../data/memoryStore.ts";
+import { nameKey, SCENE_SECTIONS, type Warning } from "./pages.ts";
 import type { WriterWindow } from "./window.ts";
 
 /**
@@ -28,8 +32,6 @@ import type { WriterWindow } from "./window.ts";
  * a quote must be found in the window's raw messages, a page or thread id must exist, and whatever
  * fails is listed in the receipt and kept out of the records, never dropped silently.
  */
-
-type Warning = MemoryReceipt["warnings"][number];
 
 /** The draft and what bounding it cut, or why the answer cannot be used. */
 export type ParsedAnalysis =
@@ -43,6 +45,10 @@ export type Admission = {
     threads: MemoryThread[];
     unverified: MemoryReceipt["unverified"];
     warnings: Warning[];
+    /** This recording repeats the last stored event: `event` is that event. */
+    repeated: boolean;
+    /** The scene with its participants checked; null when the answer changes nothing about it. */
+    scene: MemorySceneDraft | null;
 };
 
 /** A required field that is missing or of the wrong type. */
@@ -84,7 +90,7 @@ function readStrings<K extends string>(value: unknown, limits: Record<K, number>
  * What `read` accepts of `list`, at most `cap`. One warning per field counts the elements turned down
  * and one those past the cap, which are not read at all, so a long answer cannot grow the receipt.
  */
-function readList<T>(
+export function readList<T>(
     field: string,
     list: readonly unknown[],
     cap: number,
@@ -129,6 +135,11 @@ function readAxes(value: unknown): MemoryAxes | undefined {
     }
     const axis = (score: number) => Math.min(Math.max(Math.round(score), 0), LIMITS.axisMax);
     return { persistence: axis(persistence), change: axis(change), reach: axis(reach) };
+}
+
+/** A finite number clamped to 0..1; undefined for anything else, as `1e999` parses to Infinity. */
+export function readConfidence(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : undefined;
 }
 
 function readStoryTime(value: unknown): MemoryEventDraft["storyTime"] {
@@ -273,28 +284,93 @@ function readDraft(root: Record<string, unknown>, warnings: Warning[]): MemoryEv
     };
 }
 
+/** A candidate needs a confidence and either a `targetId` or a `create` of a known type with a title. */
+function readCandidate(value: unknown, warnings: Warning[]): MemoryPageCandidate | undefined {
+    if (!isPlainObject(value)) {
+        return undefined;
+    }
+    const { targetId, create, reason } = value;
+    const confidence = readConfidence(value.confidence);
+    if (confidence === undefined) {
+        return undefined;
+    }
+    const fields = { reason: typeof reason === "string" ? clampText(reason, LIMITS.factChars) : "", confidence };
+    if (typeof targetId === "string" && targetId !== "") {
+        return { ...fields, targetId: clampText(targetId, LIMITS.idChars) };
+    }
+    const type = isPlainObject(create) ? MEMORY_PAGE_TYPES.find((entry) => entry === create.type) : undefined;
+    if (!type || !isPlainObject(create) || typeof create.title !== "string" || create.title.trim() === "") {
+        return undefined;
+    }
+    const aliases = readList(
+        "pageCandidates.aliases",
+        Array.isArray(create.aliases) ? create.aliases : [],
+        LIMITS.aliasesPerPage,
+        (alias) => (typeof alias === "string" ? clampText(alias, LIMITS.labelChars) : undefined),
+        warnings,
+    );
+    return { ...fields, create: { type, title: clampText(create.title.trim(), LIMITS.labelChars), aliases } };
+}
+
+/** The answer's candidates, which may be missing; a value that is no list is counted as one malformed. */
+function readCandidates({ pageCandidates }: Record<string, unknown>, warnings: Warning[]): MemoryPageCandidate[] {
+    if (pageCandidates !== undefined && pageCandidates !== null && !Array.isArray(pageCandidates)) {
+        warnings.push({ kind: "malformed", detail: "pageCandidates: 1" });
+        return [];
+    }
+    const read = (value: unknown) => readCandidate(value, warnings);
+    return readList("pageCandidates", pageCandidates ?? [], LIMITS.pageCandidates, read, warnings);
+}
+
+/** The answer's scene as a bounded draft: missing fields are blank, and anything of another type is no scene. */
+function readScene({ scene }: Record<string, unknown>, warnings: Warning[]): MemorySceneDraft | null {
+    if (scene === undefined || scene === null) {
+        return null;
+    }
+    const fields = isPlainObject(scene) ? SCENE_SECTIONS.map((field) => scene[field] ?? "") : [];
+    const participants = isPlainObject(scene) ? (scene.participants ?? []) : undefined;
+    if (!Array.isArray(participants) || fields.some((field) => typeof field !== "string")) {
+        warnings.push({ kind: "malformed", detail: "scene: 1" });
+        return null;
+    }
+    const [place, time, state] = (fields as string[]).map((field) => clampText(field, LIMITS.sceneFieldChars));
+    return { participants: readIds("scene.participants", participants, warnings), place, time, state };
+}
+
 /**
- * A model's answer as a bounded draft. Thoughts go first; then the text from the first brace to the
- * last is the JSON, which leaves a Markdown fence and any words around the object behind. The event
- * may stand at the top level or under `event`. A required field that is missing or mistyped fails the
- * whole answer, naming the field; a malformed list element is left out and counted; `storyTime` may be
- * missing. Page candidates are not read.
+ * The JSON of a model's answer; undefined when it holds none. Thoughts go first; then the text from the
+ * first brace to the last is the JSON, which leaves a Markdown fence and any words around the object
+ * behind.
+ */
+export function answerJson(text: string): unknown {
+    const answer = text.replace(/<Thoughts>[\s\S]*?<\/Thoughts>/g, "");
+    try {
+        return JSON.parse(answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1));
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * A model's answer as a bounded draft (`answerJson`). The event may stand at the top level or under
+ * `event`; page candidates and the scene are read from the top level either way, and both may be
+ * missing, as `storyTime` may. A required field that is missing or mistyped fails the whole answer,
+ * naming the field; a malformed list element is left out and counted.
  */
 export function parseAnalysis(text: string): ParsedAnalysis {
-    const answer = text.replace(/<Thoughts>[\s\S]*?<\/Thoughts>/g, "");
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1));
-    } catch {
+    const parsed = answerJson(text);
+    if (parsed === undefined) {
         return { ok: false, reason: "invalidJson", error: "The model's answer is not valid JSON" };
     }
     const root = isPlainObject(parsed) && isPlainObject(parsed.event) ? parsed.event : parsed;
-    if (!isPlainObject(root)) {
+    if (!isPlainObject(parsed) || !isPlainObject(root)) {
         return { ok: false, reason: "invalidJson", error: "The model's answer is not a JSON object" };
     }
     const warnings: Warning[] = [];
     try {
-        return { ok: true, analysis: { event: readDraft(root, warnings), pageCandidates: [] }, warnings };
+        const event = readDraft(root, warnings);
+        const pageCandidates = readCandidates(parsed, warnings);
+        return { ok: true, analysis: { event, pageCandidates, scene: readScene(parsed, warnings) }, warnings };
     } catch (error) {
         if (error instanceof InvalidField) {
             return {
@@ -360,14 +436,15 @@ function repeatsEvent(
  * - Evidence: a key line's text and a knowledge or state item's `quote` must be a non-empty contiguous
  *   piece of a window message's raw `data`, never of a context message or of the text the prompt showed,
  *   so one that spans an `[Image]` fails. What fails goes to `unverified`.
- * - Pages: a participant, `who`, or knower that names no page is removed and a knowledge, state, or
- *   relationship item that names none is left out, each listed.
+ * - Pages: a page reference is a page's id, or the title of a create it accepted (`created`). A
+ *   participant, `who`, or knower that names neither is removed and a knowledge, state, or relationship
+ *   item that names neither is left out, each listed, and `scene.participants` reads the same way.
  * - Threads: `add` makes a thread; `close` and `transitions`, in that order, move only a thread that
  *   exists and has not ended, and any other id is a warning. A thread named twice is written once, the
  *   last naming winning.
  * - A repeat of the last stored event (`repeatsEvent`) makes no new event: that event counts it and
  *   cites the window, or the window would stay open forever, and the thread changes name it. Everything
- *   else on it stays, pins included.
+ *   else on it stays, pins included, and `speakerId` does not reach it.
  */
 export function admitAnalysis(arg: {
     draft: MemoryEventDraft;
@@ -377,6 +454,12 @@ export function admitAnalysis(arg: {
     runId: string;
     /** The ids of the chat's pages. */
     pages: ReadonlySet<string>;
+    /** A page id by the name key of the title a create gave it (`PagePlan.names`). */
+    created?: ReadonlyMap<string, string>;
+    /** The scene as parsed. */
+    scene?: MemorySceneDraft | null;
+    /** The page of the group member whose turn this was. */
+    speakerId?: string;
     /** The chat's threads the draft moves, as stored, by id. */
     threads: ReadonlyMap<string, MemoryThread>;
     /** The chat's last stored event. */
@@ -385,23 +468,30 @@ export function admitAnalysis(arg: {
     messages: readonly Message[];
     newId: () => string;
 }): Admission {
-    const { draft, window, pages, threads, lastEvent, newId } = arg;
+    const { draft, window, pages, threads, lastEvent, newId, speakerId } = arg;
     const warnings = [...arg.warnings];
     const unverified: MemoryReceipt["unverified"] = [];
 
-    const existingPages = (ids: readonly string[], field: string) =>
-        [...new Set(ids)].filter((id) => {
-            if (!pages.has(id)) {
-                warnings.push({ kind: "unknownPage", pageId: id, detail: field });
-            }
-            return pages.has(id);
-        });
+    /** The page a reference names. */
+    const pageOf = (reference: string) => (pages.has(reference) ? reference : arg.created?.get(nameKey(reference)));
+    const named = (reference: string, field: string) => {
+        if (pageOf(reference) === undefined) {
+            warnings.push({ kind: "unknownPage", pageId: reference, detail: field });
+            return false;
+        }
+        return true;
+    };
+    const existingPages = (ids: readonly string[], field: string) => [
+        ...new Set(
+            [...new Set(ids)].filter((reference) => named(reference, field)).map((reference) => pageOf(reference)!),
+        ),
+    ];
     /** Whether an item stands: its quote is in the window and the page it names, if any, exists. */
     const verified = (kind: string, quote: string, pageId?: string) => {
         const quoted = quote.trim() !== "" && window.messages.some(({ data }) => data.includes(quote));
         const reason = !quoted
             ? "quoteNotFound"
-            : pageId !== undefined && !pages.has(pageId)
+            : pageId !== undefined && pageOf(pageId) === undefined
               ? "unknownPage"
               : undefined;
         if (reason) {
@@ -412,21 +502,29 @@ export function admitAnalysis(arg: {
 
     const participants = existingPages(draft.participants, "participants");
     const keyLines = draft.keyLines.filter(({ text }) => verified("keyLine", text));
-    const stateChanges = draft.stateChanges.filter(({ quote, pageId }) => verified("stateChange", quote, pageId));
+    const stateChanges = draft.stateChanges
+        .filter(({ quote, pageId }) => verified("stateChange", quote, pageId))
+        .map((item) => ({ ...item, pageId: pageOf(item.pageId)! }));
     const knowledge = draft.knowledge
         .filter(({ quote, pageId }) => verified("knowledge", quote, pageId))
         .map((item): MemoryKnowledge => {
             const grade = memoryGrade(item.axes);
             return {
                 ...item,
+                pageId: pageOf(item.pageId)!,
                 ...(item.knowers ? { knowers: existingPages(item.knowers, "knowledge.knowers") } : {}),
                 ...(grade !== undefined ? { grade } : {}),
             };
         });
-    const relationshipShifts = draft.relationshipShifts.filter(({ from, to }) => {
-        const named = new Set([from, to]);
-        return existingPages([...named], "relationshipShifts").length === named.size;
+    const relationshipShifts = draft.relationshipShifts.flatMap((shift) => {
+        const references = [...new Set([shift.from, shift.to])];
+        return references.filter((reference) => named(reference, "relationshipShifts")).length === references.length
+            ? [{ ...shift, from: pageOf(shift.from)!, to: pageOf(shift.to)! }]
+            : [];
     });
+    const scene = arg.scene
+        ? { ...arg.scene, participants: existingPages(arg.scene.participants, "scene.participants") }
+        : null;
 
     const repeated = lastEvent && repeatsEvent(lastEvent, draft.summary, participants, arg.messages) ? lastEvent : null;
     const eventId = repeated ? repeated.id : newId();
@@ -483,6 +581,7 @@ export function admitAnalysis(arg: {
               status: "active",
               writerRun: arg.runId,
               ...(grade !== undefined ? { grade } : {}),
+              ...(speakerId !== undefined ? { speakerId } : {}),
           };
-    return { event, threads: writtenThreads, unverified, warnings };
+    return { event, threads: writtenThreads, unverified, warnings, repeated: repeated !== null, scene };
 }

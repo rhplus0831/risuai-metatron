@@ -4,23 +4,30 @@ import type { Message } from "../../../../../shared/database.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
     MEMORY_KNOWLEDGE_STANCES,
+    MEMORY_PAGE_TYPES,
+    MEMORY_PATCH_CONFLICTS,
+    MEMORY_PATCH_OPS,
     MEMORY_THREAD_STATES,
     type MemoryPage,
     type MemoryThread,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
 } from "../../../../../shared/structuredMemory.ts";
-import type { MemoryContents } from "../../../data/memoryStore.ts";
+import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 import type { MemoryHost } from "../host.ts";
+import { type CastRow, SCENE_SECTIONS } from "./pages.ts";
+import type { PatchRow } from "./patches.ts";
 import type { WriterWindow } from "./window.ts";
 
 /**
- * The writer's analysis prompt: a ChatML frame with named slots, read through the task host's parser.
- * The frame and the preset's `instructions` go through ChatML and CBS. The slot values are filled in
- * afterwards, in one pass over the parsed messages, so chat text never reaches CBS and cannot start a
- * ChatML message, and a value that holds a slot's name stays as it is.
+ * The writer's two prompts: ChatML frames with named slots, read through the task host's parser. The
+ * frame and the preset's `instructions` go through ChatML and CBS. The slot values are filled in
+ * afterwards, in one pass over the parsed messages, so chat and model text never reach CBS and cannot
+ * start a ChatML message, and a value that holds a slot's name stays as it is.
  *
- * The prompt's size is a cost on every recorded turn: its fixed parts stay short and everything it
- * lists is bounded. Only `messages` is not, because a quote must be found in the window's whole text.
+ * The analysis prompt's size is a cost on every recorded turn: its fixed parts stay short and everything
+ * it lists is bounded. Only `messages` is not, because a quote must be found in the window's whole text.
+ * The patch prompt holds no message and everything in it is bounded, so it needs no size check of its
+ * own.
  */
 
 /** The prompt's named inputs. */
@@ -29,11 +36,14 @@ export type AnalysisSlots = Record<
     string
 >;
 
+/** The patch prompt's named inputs: the same names, where `cast` is its pages and `previous` the event. */
+export type PatchSlots = Record<"format" | "rules" | "language" | "cast" | "previous", string>;
+
 /** What the slots are written from. */
 export type AnalysisInput = {
     language: string;
-    /** The chat's pages, in contents order. */
-    pages: MemoryContents["pages"];
+    /** The pages to list (`castSlice`). */
+    cast: readonly CastRow[];
     scene: MemoryPage | null;
     /** The open threads to show. */
     threads: readonly MemoryThread[];
@@ -44,6 +54,14 @@ export type AnalysisInput = {
     window: WriterWindow;
     /** A message's speaker label. */
     speaker(message: Message): string;
+};
+
+/** What the patch slots are written from. */
+export type PatchInput = {
+    language: string;
+    rows: readonly PatchRow[];
+    /** The event as admitted, so nothing unverified reaches a page. */
+    event: MemoryEventWrite;
 };
 
 /** `inlayTokenRegex` of `src/ts/util/inlayTokens.ts`. */
@@ -67,15 +85,33 @@ const FORMAT = `Answer with one JSON object and nothing else, with exactly these
     "close": ["id of a thread this resolves"],
     "transitions": [{ "threadId": "thread id", "to": "${MEMORY_THREAD_STATES.join(" or ")}" }]
   },
-  "axes": { "persistence": 0, "change": 0, "reach": 0 }
+  "axes": { "persistence": 0, "change": 0, "reach": 0 },
+  "pageCandidates": [
+    { "targetId": "page id", "reason": "what changes on it", "confidence": 0.9 },
+    { "create": { "type": "${MEMORY_PAGE_TYPES.filter((type) => type !== "scene").join(" or ")}", "title": "its name", "aliases": ["another name"] }, "reason": "why it needs a page", "confidence": 0.9 }
+  ],
+  "scene": { "participants": ["page id"], "place": "where it is now", "time": "when it is now", "state": "what is going on now" }
 }
 Axes score how long it lasts, how much it changes, and how many it touches.
-Empty lists stay as []. At most ${LIMITS.keyLinesPerEvent} keyLines, ${LIMITS.stateChangesPerEvent} stateChanges, ${LIMITS.knowledgePerEvent} knowledge, ${LIMITS.relationshipShiftsPerEvent} relationshipShifts, and ${LIMITS.threadsPerEvent} of each thread list.`;
+Empty lists stay as []. At most ${LIMITS.keyLinesPerEvent} keyLines, ${LIMITS.stateChangesPerEvent} stateChanges, ${LIMITS.knowledgePerEvent} knowledge, ${LIMITS.relationshipShiftsPerEvent} relationshipShifts, ${LIMITS.threadsPerEvent} of each thread list, and ${LIMITS.pageCandidates} pageCandidates.
+"scene" is null when nothing about it changed; a blank field keeps what the scene says.`;
 
 const RULES = `Rules:
 - A quote (a key line's text and every "quote") is copied verbatim from one message under "Messages to record", at most ${LIMITS.keyLineChars} characters: never reworded, never joined across messages or across an [Image] mark, never taken from the context.
-- Page and thread ids come only from the lists shown. Never invent an id: leave out what has no id in a list.
+- Page and thread ids come only from the lists shown. Never invent an id: a lasting subject with no listed page gets a "create" in pageCandidates, and its exact title stands in for its id in this answer. Leave out the rest.
+- pageCandidates name the pages whose facts these messages change: a listed page by "targetId", a new one by "create". Confidence runs from 0 to 1 and says how sure you are of it.
 - Each axis is an integer from 0 to ${LIMITS.axisMax}.`;
+
+const PATCH_FORMAT = `Answer with one JSON object and nothing else:
+{ "patches": [{ "pageId": "page id", "heading": "section heading", "op": "${MEMORY_PATCH_OPS.join(" or ")}", "body": "the section's whole new text, on an upsert", "conflict": "${MEMORY_PATCH_CONFLICTS.join(" or ")}, when it replaces a value", "was": "the value it replaces", "confidence": 0.9 }] }
+At most ${LIMITS.patchesPerCall} patches, each body at most ${LIMITS.sectionBodyChars} characters. With nothing to change, answer { "patches": [] }.`;
+
+const PATCH_RULES = `Rules:
+- Change only what the event establishes, on the pages listed. A section you do not name stays as it is.
+- An upsert replaces the section's whole text, so repeat what stays true in it.
+- Never patch a section marked locked or listed under notShown, and never leave a page with no text.
+- A character page uses only the headings it lists, and a heading marked empty has no text yet.
+- "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.`;
 
 /** The default frame, with the preset's text after the fixed instructions. */
 function analysisFrame(instructions: string): string {
@@ -103,6 +139,27 @@ Messages to record:
 {{slot::messages}}<|im_end|>`;
 }
 
+/**
+ * The patch call's frame: the same shape, with its pages and the event in place of the chat. The
+ * preset's text is cut to `promptPatchChars`, which is what keeps this prompt within the run's margin.
+ */
+function patchFrame(instructions: string): string {
+    const text = clampText(instructions.trim(), LIMITS.promptPatchChars);
+    const added = text === "" ? "" : `\n\n${text}`;
+    return `<|im_start|>system<|im_sep|>You keep the pages of a long roleplay's memory. Update them to say what the event establishes, and nothing else.
+
+{{slot::format}}
+
+{{slot::rules}}
+
+Write all text but ids in this language: {{slot::language}}${added}<|im_end|>
+<|im_start|>user<|im_sep|>Pages:
+{{slot::cast}}
+
+Event:
+{{slot::previous}}<|im_end|>`;
+}
+
 /** A message's text as the prompt shows it: raw, so a quote can match, with inlays as `[Image]`. */
 const shownText = (message: Message) => message.data.replace(INLAY_TOKEN_REGEX, "[Image]");
 
@@ -120,19 +177,26 @@ function previousSlot(input: AnalysisInput): string {
     return lines.length === 0 ? NONE : `Context only: never quote it.\n${lines.join("\n")}`;
 }
 
+/** What the scene page says: its fixed sections and who is present, by page id. */
+function sceneSlot(scene: MemoryPage | null): string {
+    const lines = SCENE_SECTIONS.flatMap((heading) => {
+        const body = scene?.sections.find((section) => section.heading === heading)?.body;
+        return body ? [`${heading}: ${body}`] : [];
+    });
+    if (scene?.participants?.length) {
+        lines.push(`participants: ${JSON.stringify(scene.participants)}`);
+    }
+    return clampText(lines.join("\n"), LIMITS.promptSceneChars) || NONE;
+}
+
 /** The slot values of one recording. */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
-    const scene = input.scene?.sections.map(({ body }) => body).join("\n") ?? "";
     return {
         format: FORMAT,
         rules: RULES,
         language: input.language,
-        cast:
-            input.pages
-                .slice(0, LIMITS.promptPages)
-                .map(({ id, type, title }) => JSON.stringify({ id, type, title }))
-                .join("\n") || NONE,
-        scene: clampText(scene, LIMITS.promptSceneChars) || NONE,
+        cast: input.cast.map((row) => JSON.stringify(row)).join("\n") || NONE,
+        scene: sceneSlot(input.scene),
         threads:
             input.threads.map(({ id, title, who, state }) => JSON.stringify({ id, title, who, state })).join("\n") ||
             NONE,
@@ -146,18 +210,56 @@ export function analysisSlots(input: AnalysisInput): AnalysisSlots {
     };
 }
 
-/** The analysis call's messages: the frame parsed with its slots in place, then the slots filled. */
+/** The slot values of one patch call. */
+export function patchSlots({ language, rows, event }: PatchInput): PatchSlots {
+    const { title, summary, participants, storyTime, keyLines, stateChanges, knowledge, relationshipShifts } = event;
+    return {
+        format: PATCH_FORMAT,
+        rules: PATCH_RULES,
+        language: clampText(language, LIMITS.labelChars),
+        cast: rows.map((row) => JSON.stringify(row)).join("\n"),
+        previous: JSON.stringify({
+            title,
+            summary,
+            participants,
+            storyTime,
+            keyLines,
+            stateChanges,
+            knowledge,
+            relationshipShifts,
+        }),
+    };
+}
+
+/** `frame` parsed with its slots in place, then the slots filled in one pass. */
+function assemblePrompt<Slots extends Record<string, string>>(
+    host: Pick<MemoryHost, "parseChatML">,
+    frame: string,
+    slots: Slots,
+): OpenAIChat[] {
+    // Each frame starts with a ChatML marker, so it always parses.
+    return host.parseChatML(frame)!.map((message) => ({
+        ...message,
+        content: message.content.replace(SLOT_TOKEN_REGEX, (token, name: string) =>
+            Object.hasOwn(slots, name) ? slots[name] : token,
+        ),
+    }));
+}
+
+/** The analysis call's messages. */
 export function assembleAnalysisPrompt(
     host: Pick<MemoryHost, "parseChatML">,
     instructions: string,
     slots: AnalysisSlots,
 ): OpenAIChat[] {
-    // The frame starts with a ChatML marker, so it always parses.
-    const frame = host.parseChatML(analysisFrame(instructions))!;
-    return frame.map((message) => ({
-        ...message,
-        content: message.content.replace(SLOT_TOKEN_REGEX, (token, name: keyof AnalysisSlots) =>
-            Object.hasOwn(slots, name) ? slots[name] : token,
-        ),
-    }));
+    return assemblePrompt(host, analysisFrame(instructions), slots);
+}
+
+/** The patch call's messages. */
+export function assemblePatchPrompt(
+    host: Pick<MemoryHost, "parseChatML">,
+    instructions: string,
+    slots: PatchSlots,
+): OpenAIChat[] {
+    return assemblePrompt(host, patchFrame(instructions), slots);
 }

@@ -172,7 +172,7 @@ describe("structured memory retrieval", () => {
         });
         const weak = event("weak", ["old"], { summary: " Large weak vector " });
         expect(eventVectorTexts(aligned)).toEqual(["Unrelated summary", "Aligned quote"]);
-        // This is warmEvent's public seam, using explicit expected texts, not retrieval's text builder.
+        // This is the writer's warming seam, using explicit expected texts, not retrieval's text builder.
         await new HypaProcesser(h.host.embeddings, h.host.db.hypaModel).addText([
             "Unrelated summary",
             "Aligned quote",

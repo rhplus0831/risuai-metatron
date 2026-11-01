@@ -157,7 +157,11 @@
                 {#if view.refused.length > 0}
                     <span class="font-semibold">{text.refused}</span>
                     {#each view.refused as item}
-                        <span>{item.candidate}{item.refusal ? `: ${item.refusal}` : ""}</span>
+                        <span>
+                            {item.candidate}{item.refusal
+                                ? `: ${reasonText(language.structuredMemory.refusalKinds, item.refusal)}`
+                                : ""}
+                        </span>
                     {/each}
                 {/if}
                 {#if view.model !== undefined}

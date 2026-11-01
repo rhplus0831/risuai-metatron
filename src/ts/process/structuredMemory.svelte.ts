@@ -908,6 +908,7 @@ export type MemoryRunView = {
         reason: string;
         confidence?: number;
     }[];
+    refused: MemoryReceiptView["refused"];
     unverified: MemoryReceiptView["unverified"];
     warnings: MemoryReceiptView["warnings"];
 };
@@ -978,7 +979,7 @@ export function memoryRunView(run: unknown): MemoryRunView {
     const analysis = isPlainObject(stored.analysis) ? stored.analysis : {};
     const window = storedItems(stored.window);
     const positions = window.flatMap(({ index }) => storedCount(index) ?? []);
-    const { unverified, warnings } = memoryReceiptView(stored.receipt, { newest: false, taskLive: false });
+    const { refused, unverified, warnings } = memoryReceiptView(stored.receipt, { newest: false, taskLive: false });
     const quotes = new Set(unverified.map(({ kind, text }) => quoteKey(kind, text)));
     return {
         id: storedText(stored.id) ?? "",
@@ -1005,6 +1006,7 @@ export function memoryRunView(run: unknown): MemoryRunView {
                 ...present("confidence", storedCount(confidence)),
             };
         }),
+        refused,
         unverified,
         warnings,
     };

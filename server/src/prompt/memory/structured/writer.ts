@@ -6,7 +6,9 @@ import { selectedHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../../../shared/resources.ts";
 import {
+    type MemoryAnalysisResult,
     type MemoryAnchoredSource,
+    type MemoryPage,
     type MemoryReceipt,
     type MemoryRun,
     type MemoryThread,
@@ -17,6 +19,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
 import { ResourceBatchConflictError, ResourceConflictError, type ResourceStore } from "../../../data/resourceStore.ts";
+import { jobModuleLorebooks } from "../../../jobs/cbsHost.ts";
 import { JobWriteConflictError } from "../../../jobs/generationJobs.ts";
 import { scopeChat } from "../../../jobs/jobScope.ts";
 import { resolveJobRequestModel } from "../../../llm/request.ts";
@@ -24,14 +27,26 @@ import { HypaProcesser } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
 import { MemoryHostFailure, type MemoryTaskHostDeps } from "../memoryTaskHost.ts";
 import type { StructuredMemoryCommit, StructuredMemoryWriter, StructuredMemoryWriterResult } from "../memoryTasks.ts";
-import { admitAnalysis, parseAnalysis } from "./analysis.ts";
-import { analysisSlots, assembleAnalysisPrompt } from "./prompts.ts";
+import { admitAnalysis, type Admission, parseAnalysis } from "./analysis.ts";
+import {
+    type AliasSeed,
+    aliasSeeds,
+    castSlice,
+    type PagePlan,
+    planPages,
+    storedText,
+    type Warning,
+    windowSpeaker,
+} from "./pages.ts";
+import { commitPages, parsePatches, showTargets } from "./patches.ts";
+import { analysisSlots, assembleAnalysisPrompt, assemblePatchPrompt, patchSlots } from "./prompts.ts";
+import { eventVectorTexts } from "./retrieve.ts";
 import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
 
 /**
- * The Structured Memory writer: one analysis call per window, and a `memory_runs` row that shows how it
- * went. The rows are the writer's whole state: a restart loses nothing, and pausing needs no table of
- * its own.
+ * The Structured Memory writer: an analysis call per window, a patch call when a page candidate was
+ * accepted, and a `memory_runs` row that shows how it went. The rows are the writer's whole state: a
+ * restart loses nothing, and pausing needs no table of its own.
  *
  * - Interrupted runs: one task runs per chat, so a `pending` row found at a start is abandoned (a
  *   cancel, a checkpoint load, maintenance, a restart, a deadline). The write that opens the new run
@@ -42,19 +57,25 @@ import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./w
  * - Replay: the newest row that did not record is the only one read. Its input is sent again, exactly,
  *   when its window (by message id and hash) and its settings are still this run's; otherwise, so that
  *   fixed instructions take effect and a regrouped window rebuilds, the prompt is built anew.
- * - Snapshot: no call is made before its exact input is stored in a `pending` row. An input too large
- *   for a record fails the run with no call.
+ * - Snapshot: no analysis call is made before its exact input is stored in a `pending` row. An input too
+ *   large for a record fails the run with no call.
  * - Failure: a provider failure, an empty or unexpected answer, or an answer `parseAnalysis` refuses
  *   ends the run `failed`, with a redacted error and no event. A `MemoryHostFailure` does too, and goes
  *   on to end the task. Any other throw, which is an ended task or an abort, leaves the row `pending`
  *   for the next run to close, and `commit`'s own check throws once the task ended: that is how output
  *   after the deadline is discarded.
- * - Success: one commit writes the event, its threads, and the recorded run. A refusal for the revision
- *   admits the answer again against fresh records, with no call.
+ * - Patch call: it comes after admission, so it holds the admitted event and everything on a page traces
+ *   to that event. It has no snapshot of its own: a retry replays the analysis, and the closing write
+ *   keeps what it sent. It fails as the analysis call does, `patchFailed`, because an event committed
+ *   without it would close the window for good. A page it may not touch is no such failure: that page is
+ *   listed and the rest commit.
+ * - Success: one commit writes the event, its threads, its pages, and the recorded run. A refusal for
+ *   the revision admits the answer again against fresh records, with no call, and a new page keeps its
+ *   id, which the patches name.
  * - Receipt: a recorded or failed run carries one, and that commit copies it onto the window's assistant
  *   messages (`commitWindow`), where a person reads it. The writer itself never touches the chat.
- * - Warming: the committed event's summary and key lines are embedded into the shared vector cache. A
- *   failure keeps the event.
+ * - Warming: the committed event's summary and key lines and the sections it changed are embedded into
+ *   the shared vector cache. A failure keeps the records.
  */
 
 type WriterArg = Parameters<StructuredMemoryWriter>[0];
@@ -62,13 +83,28 @@ type WriterArg = Parameters<StructuredMemoryWriter>[0];
 /** A run whose snapshot is stored: what the call and the later commits work from. */
 type OpenedRun = { run: MemoryRun; formated: OpenAIChat[]; revision: string };
 
+/** What every admission of one run's answer works from. */
+type Recording = {
+    analysis: MemoryAnalysisResult;
+    /** What bounding the answer cut. */
+    warnings: readonly Warning[];
+    seeds: readonly AliasSeed[];
+    /** The group member who spoke the window. */
+    speaker: { name: string; nickname?: string } | undefined;
+    /** The threads the draft moves. */
+    named: ReadonlySet<string>;
+    /** A new page's id by its name key, the same on every attempt, because the patches name it. */
+    newPageId(key: string): string;
+};
+
 /** A write's tries while the memory revision keeps moving. */
 const WRITE_ATTEMPTS = 3;
 /**
- * What a stored snapshot leaves of a record for the rest of its run. The analysis, the receipt, and the
- * error are bounded by `STRUCTURED_MEMORY_LIMITS`: about 2 MiB with every text at its longest in escapes.
+ * What a stored snapshot leaves of a record for the rest of its run. The analysis, the patches and what
+ * their call sent, the receipt, and the error are bounded by `STRUCTURED_MEMORY_LIMITS`: about 3.5 MiB
+ * with every text at its longest in escapes.
  */
-const RUN_RECORD_MARGIN_BYTES = 3 * 1024 * 1024;
+const RUN_RECORD_MARGIN_BYTES = 4 * 1024 * 1024;
 
 /**
  * A request's settings as the writer takes them: temperature 0 and without the preset's structured
@@ -139,14 +175,29 @@ function speakerLabels(arg: WriterArg, ownerName: string) {
     };
 }
 
+/** Every page `contents` lists, whole: the store has no bulk read. */
+function readPages(store: Pick<ResourceStore, "memory">, arg: WriterArg, contents: MemoryContents): MemoryPage[] {
+    const { chaId, chatId } = arg.input.chatRef;
+    return contents.pages.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "pages", id)?.data ?? []);
+}
+
+/** The language a run writes in: the chat's override, its owner's, the preset's, then the app's. */
+function writerLanguage({ scope, host, input }: WriterArg): string {
+    const owner = scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId);
+    return (
+        structuredMemoryLanguageOverride(scopeChat(scope)) ??
+        structuredMemoryLanguageOverride(owner) ??
+        (writerSettings(host).language || host.db.language)
+    );
+}
+
 /** The prompt for `arg.window`, from the records as `contents` lists them. */
 function buildPrompt(store: Pick<ResourceStore, "memory">, arg: WriterArg, contents: MemoryContents): OpenAIChat[] {
     const { scope, host, input, window } = arg;
     const { chaId, chatId } = input.chatRef;
     const chat = scopeChat(scope);
     const owner = scope.db.characters.find((entry) => entry?.chaId === chaId);
-    const settings = writerSettings(host);
-    const scenePage = contents.pages.find(({ type }) => type === "scene");
+    const pages = readPages(store, arg, contents);
     const threads: MemoryThread[] = [];
     for (const { id } of contents.threads
         .filter(({ state }) => !memoryThreadEnded(state))
@@ -157,19 +208,16 @@ function buildPrompt(store: Pick<ResourceStore, "memory">, arg: WriterArg, conte
         }
     }
     const slots = analysisSlots({
-        language:
-            structuredMemoryLanguageOverride(chat) ??
-            structuredMemoryLanguageOverride(owner) ??
-            (settings.language || host.db.language),
-        pages: contents.pages,
-        scene: scenePage ? (store.memory.readRecord(chaId, chatId, "pages", scenePage.id)?.data ?? null) : null,
+        language: writerLanguage(arg),
+        cast: castSlice(pages, window.messages),
+        scene: pages.find(({ type }) => type === "scene") ?? null,
         threads,
         previousTitle: contents.events.findLast(({ status }) => status === "active")?.title,
         messages: chat?.message ?? [],
         window,
         speaker: speakerLabels(arg, owner?.name ?? ""),
     });
-    return assembleAnalysisPrompt(host, settings.instructions, slots);
+    return assembleAnalysisPrompt(host, writerSettings(host).instructions, slots);
 }
 
 /** The input to send again, from the newest run that did not record, when it is still this run's. */
@@ -399,25 +447,96 @@ function admissionState(
     };
 }
 
-/**
- * Embeds `event`'s summary and key lines into the vector cache, unless the preset gives the events lane
- * nothing. Answers the text of a failure, which keeps the event; an ended task or a host failure is
- * thrown.
- */
-async function warmEvent(host: MemoryHost, event: MemoryEventWrite) {
-    if (writerSettings(host).laneTargets.events === 0) {
+/** The alias seeds of the chat: the lore of its owner, of the chat, and of its modules, and a group's members. */
+function chatSeeds({ scope, input }: WriterArg): AliasSeed[] {
+    const { characters } = scope.db;
+    const owner = characters.find((entry) => entry?.chaId === input.chatRef.chaId);
+    const members =
+        owner?.type === "group"
+            ? owner.characters.flatMap((id) => characters.find((entry) => entry?.chaId === id) ?? [])
+            : [];
+    const lore = [owner?.globalLore, scopeChat(scope)?.localLore, jobModuleLorebooks(scope)];
+    return aliasSeeds(
+        lore.flatMap((list) => (Array.isArray(list) ? list : [])),
+        members,
+    );
+}
+
+/** The group member who spoke every reply of the window; none in a solo chat. */
+function groupSpeaker({ scope, input, window }: WriterArg): Recording["speaker"] {
+    const { characters } = scope.db;
+    if (characters.find((entry) => entry?.chaId === input.chatRef.chaId)?.type !== "group") {
         return undefined;
     }
-    const texts = [event.summary, ...event.keyLines.map(({ text }) => text)].map((text) => text.trim());
+    const speaker = windowSpeaker(window.messages);
+    const member = speaker === undefined ? undefined : characters.find((entry) => entry?.chaId === speaker);
+    const name = storedText(member?.name);
+    return name.trim() === "" ? undefined : { name, nickname: storedText(member?.nickname) };
+}
+
+/**
+ * What `recording`'s answer comes to against the records as `contents` lists them, `pages` being the
+ * chat's pages, whole. Admission tells a repeat, and it needs the plan to read the participants. A repeat
+ * makes no page, so it is planned and admitted again: a thread it keeps must not name a page that never
+ * came.
+ */
+function admitRecording(
+    store: Pick<ResourceStore, "memory">,
+    arg: WriterArg,
+    runId: string,
+    recording: Recording,
+    contents: MemoryContents,
+    pages: readonly MemoryPage[],
+): { plan: PagePlan; admission: Admission } {
+    const { analysis, warnings, seeds, speaker, named, newPageId } = recording;
+    const state = admissionState(store, arg, contents, named);
+    const planned = (repeated: boolean) =>
+        planPages({ pages, candidates: analysis.pageCandidates, seeds, speaker, repeated, newPageId });
+    const admitted = (plan: PagePlan) =>
+        admitAnalysis({
+            draft: analysis.event,
+            warnings,
+            window: arg.window,
+            runId,
+            ...state,
+            created: plan.names,
+            scene: analysis.scene,
+            speakerId: plan.speakerId,
+            messages: scopeChat(arg.scope)?.message ?? [],
+            newId: randomUUID,
+        });
+    const plan = planned(false);
+    const admission = admitted(plan);
+    if (!admission.repeated) {
+        return { plan, admission };
+    }
+    const repeatPlan = planned(true);
+    return { plan: repeatPlan, admission: admitted(repeatPlan) };
+}
+
+/**
+ * Embeds what a commit wrote into the vector cache: the event's texts, unless the preset gives the
+ * events lane nothing, and `sectionTexts`, unless it gives the pages lane nothing. Answers the text of a
+ * failure, which keeps the records; an ended task or a host failure is thrown.
+ */
+async function warmRecords(host: MemoryHost, event: MemoryEventWrite, sectionTexts: readonly string[]) {
+    const { laneTargets } = writerSettings(host);
+    const texts = [
+        ...(laneTargets.events === 0 ? [] : eventVectorTexts(event)),
+        ...(laneTargets.pages === 0 ? [] : sectionTexts),
+    ];
+    if (texts.length === 0) {
+        return undefined;
+    }
     try {
-        await new HypaProcesser(host.embeddings, host.db.hypaModel).addText([...new Set(texts)].filter(Boolean));
+        await new HypaProcesser(host.embeddings, host.db.hypaModel).addText([...new Set(texts)]);
         host.fence();
         return undefined;
     } catch (error) {
         if (host.signal.aborted || error instanceof MemoryHostFailure) {
             throw error;
         }
-        console.warn("[memory] warming the new event failed");
+        console.warn("[memory] warming the new records failed");
         return host.redact(error instanceof Error ? error.message : String(error));
     }
 }
@@ -429,7 +548,8 @@ export function createStructuredWriter(
 ): StructuredMemoryWriter {
     const now = options.now ?? Date.now;
     return async (arg) => {
-        const { host, window } = arg;
+        const { host, input, tokenizer, window } = arg;
+        const { chaId, chatId } = input.chatRef;
         const opened = await openRun(store, arg);
         if ("outcome" in opened) {
             return opened;
@@ -442,58 +562,114 @@ export function createStructuredWriter(
             const answer = commitFresh(store, arg, opened.revision, () => ({ runs: [failed] }));
             return answer.outcome === "committed" ? { outcome: "failed", error } : answer;
         };
+        /** One model call: its text, or how the run ended. `failure` replaces a failed call's own code. */
+        const ask = async (
+            formated: OpenAIChat[],
+            failure?: string,
+        ): Promise<{ text: string } | { ended: StructuredMemoryWriterResult }> => {
+            try {
+                const response = await host.request(formated);
+                run = { ...run, model: response.model ?? run.model };
+                if (response.type === "fail") {
+                    return { ended: fail(failure ?? "requestFailed", response.result) };
+                }
+                if (response.type !== "success") {
+                    const text = `Unexpected response type: ${response.type}`;
+                    return { ended: fail(failure ?? "unexpectedResponse", text) };
+                }
+                if (response.result.trim() === "") {
+                    return { ended: fail(failure ?? "emptyResponse", "The model's answer is empty") };
+                }
+                run = { ...run, outputTokens: run.outputTokens + (await host.tokenize(response.result)) };
+                return { text: response.result };
+            } catch (error) {
+                if (error instanceof MemoryHostFailure) {
+                    fail("hostFailure", error.message);
+                }
+                throw error;
+            }
+        };
 
-        let parsed: ReturnType<typeof parseAnalysis>;
-        try {
-            const response = await host.request(opened.formated);
-            run = { ...run, model: response.model ?? run.model };
-            if (response.type === "fail") {
-                return fail("requestFailed", response.result);
-            }
-            if (response.type !== "success") {
-                return fail("unexpectedResponse", `Unexpected response type: ${response.type}`);
-            }
-            if (response.result.trim() === "") {
-                return fail("emptyResponse", "The model's answer is empty");
-            }
-            run = { ...run, outputTokens: await host.tokenize(response.result) };
-            parsed = parseAnalysis(response.result);
-        } catch (error) {
-            if (error instanceof MemoryHostFailure) {
-                fail("hostFailure", error.message);
-            }
-            throw error;
+        const answered = await ask(opened.formated);
+        if ("ended" in answered) {
+            return answered.ended;
         }
+        const parsed = parseAnalysis(answered.text);
         if (!parsed.ok) {
             return fail(parsed.reason, parsed.error);
         }
-
         const { analysis, warnings } = parsed;
+        run = { ...run, analysis };
+
+        const newPageIds = new Map<string, string>();
+        const recording: Recording = {
+            analysis,
+            warnings,
+            seeds: chatSeeds(arg),
+            speaker: groupSpeaker(arg),
+            named: new Set([
+                ...analysis.event.openThreads.close,
+                ...analysis.event.openThreads.transitions.map(({ threadId }) => threadId),
+            ]),
+            newPageId(key) {
+                const id = newPageIds.get(key) ?? randomUUID();
+                newPageIds.set(key, id);
+                return id;
+            },
+        };
+        const sceneId = randomUUID();
+        const contents = store.memory.readContents(chaId, chatId);
+        if (!contents) {
+            return { outcome: "skipped", reason: "chatGone" };
+        }
+        const first = admitRecording(store, arg, run.id, recording, contents, readPages(store, arg, contents));
+        const shown = showTargets(first.plan.targets);
+        let patchWarnings: Warning[] = [];
+        if (shown.rows.length > 0) {
+            const language = writerLanguage(arg);
+            const slots = patchSlots({ language, rows: shown.rows, event: first.admission.event });
+            const formated = assemblePatchPrompt(host, writerSettings(host).instructions, slots);
+            run = { ...run, patchInput: JSON.stringify(formated) };
+            for (const message of formated) {
+                run = { ...run, inputTokens: run.inputTokens + (await tokenizer.tokenizeChat(message)) };
+            }
+            const patchAnswer = await ask(formated, "patchFailed");
+            if ("ended" in patchAnswer) {
+                return patchAnswer.ended;
+            }
+            const patched = parsePatches(patchAnswer.text);
+            if (!patched.ok) {
+                return fail("patchFailed", patched.error);
+            }
+            run = { ...run, patches: patched.patches };
+            patchWarnings = patched.warnings;
+        }
+
         const durationMs = now() - startedAt;
-        const named = new Set([
-            ...analysis.event.openThreads.close,
-            ...analysis.event.openThreads.transitions.map(({ threadId }) => threadId),
-        ]);
         let event: MemoryEventWrite | undefined;
-        const answer = commitFresh(store, arg, opened.revision, (contents) => {
-            const admission = admitAnalysis({
-                draft: analysis.event,
-                warnings,
-                window,
-                runId: run.id,
-                ...admissionState(store, arg, contents, named),
-                messages: scopeChat(arg.scope)?.message ?? [],
-                newId: randomUUID,
-            });
+        let sectionTexts: string[] = [];
+        const answer = commitFresh(store, arg, opened.revision, (fresh) => {
+            const pages = readPages(store, arg, fresh);
+            const { plan, admission } = admitRecording(store, arg, run.id, recording, fresh, pages);
             ({ event } = admission);
+            const written = commitPages({
+                pages,
+                plan,
+                admission,
+                patches: run.patches ?? [],
+                seen: shown.seen,
+                sceneId,
+                stamp: { eventId: admission.event.id, sources: window.sources, at: now(), newId: randomUUID },
+            });
+            sectionTexts = written.vectorTexts;
             const receipt: MemoryReceipt = {
                 state: "recorded",
                 runId: run.id,
                 eventId: admission.event.id,
-                pages: [],
-                refused: [],
+                pages: written.receipts,
+                refused: [...plan.refused, ...shown.refused],
                 unverified: admission.unverified,
-                warnings: admission.warnings,
+                warnings: [...admission.warnings, ...patchWarnings, ...written.warnings],
                 model: run.model,
                 inputTokens: run.inputTokens,
                 outputTokens: run.outputTokens,
@@ -502,16 +678,15 @@ export function createStructuredWriter(
                 ...run,
                 result: "recorded",
                 durationMs,
-                analysis,
                 eventId: admission.event.id,
                 receipt,
             };
-            return { events: [admission.event], threads: admission.threads, runs: [recorded] };
+            return { events: [admission.event], threads: admission.threads, pages: written.pages, runs: [recorded] };
         });
         if (answer.outcome !== "committed") {
             return answer;
         }
-        const warmingError = await warmEvent(host, event!);
+        const warmingError = await warmRecords(host, event!, sectionTexts);
         return warmingError === undefined ? { outcome: "recorded" } : { outcome: "recorded", warmingError };
     };
 }

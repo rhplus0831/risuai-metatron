@@ -112,8 +112,8 @@ export type StructuredMemoryCommit =
     | { outcome: "refused"; reason: "staleInput" | "windowChanged" | "revisionConflict" };
 
 /**
- * How a writer ended one window. `warmingError` says the recorded event's vectors were not warmed. The
- * task redacts a failure's `error` and a `warmingError` before publishing them.
+ * How a writer ended one window. `warmingError` says the vectors of what it recorded were not warmed.
+ * The task redacts a failure's `error` and a `warmingError` before publishing them.
  */
 export type StructuredMemoryWriterResult =
     | { outcome: "recorded"; warmingError?: string }

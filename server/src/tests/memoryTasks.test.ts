@@ -21,7 +21,14 @@ import type {
 import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import type { MemoryEventDraft } from "../../../shared/structuredMemory.ts";
+import {
+    type MemoryEventDraft,
+    type MemoryPage,
+    normalizeStructuredMemorySettings,
+    STRUCTURED_MEMORY_LIMITS as LIMITS,
+} from "../../../shared/structuredMemory.ts";
+import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
+import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
@@ -2499,6 +2506,472 @@ describe("structured memory tasks", () => {
         await t.service.drain();
         return ended.status;
     };
+
+    const pageRecords = (t: Harness) =>
+        contents(t).pages.map(({ id }) => t.store.memory.readRecord("c", "k1", "pages", id)!.data);
+    const nextPatch = (t: Harness, index: number, terminal: Promise<MemoryTaskEvent>) =>
+        Promise.race([
+            t.provider.request(index),
+            terminal.then(({ status }) => {
+                throw new Error(`Patch did not run: ${JSON.stringify(status)}`);
+            }),
+        ]);
+    const finishRecording = async (t: Harness, terminal: Promise<MemoryTaskEvent>) => {
+        const ended = await Promise.race([
+            terminal,
+            t.provider.request(t.provider.requests.length).then(() => {
+                throw new Error("Unexpected extra model call");
+            }),
+        ]);
+        await t.service.drain();
+        expect(ended.status).toMatchObject({ state: "done", done: 1, total: 1 });
+    };
+    const recordOnly = async (t: Harness, answer: object, input = writerInput(t, "m3")) => {
+        const { request, terminal } = await beginAnalysis(t, input);
+        request.answer(JSON.stringify(answer));
+        await finishRecording(t, terminal);
+    };
+
+    it("commits admitted page candidates and surviving patch groups across a revision conflict", async () => {
+        const t = structuredHarness({ owner: { globalLore: [{ comment: "Harbor", key: "Port, Quay" }] } });
+        t.write("k1", [{ op: "setText", id: "m2", text: "Watcher reaches Harbor. The gate opens." }]);
+        const cara: MemoryPage = {
+            ...memoryRecords(["cara"], "Cara").pages[0],
+            type: "character",
+            aliases: ["Watcher"],
+            sections: [
+                {
+                    heading: "identity",
+                    body: "Original identity",
+                    locked: false,
+                    provenance: [],
+                    sources: [],
+                    updatedAt: 1,
+                },
+                {
+                    heading: "knowledge",
+                    body: "User locked fact",
+                    locked: true,
+                    provenance: [],
+                    sources: [],
+                    updatedAt: 1,
+                },
+            ],
+        };
+        const scene: MemoryPage = {
+            ...memoryRecords(["scene"], "Scene").pages[0],
+            type: "scene",
+            contextMode: "always",
+            participants: ["cara"],
+            sections: [],
+        };
+        const always = { ...memoryRecords(["always"], "Law").pages[0], contextMode: "always" as const };
+        writeMemory(t.store, "c", "k1", {
+            pages: [
+                cara,
+                scene,
+                always,
+                ...memoryRecords(
+                    Array.from({ length: 40 }, (_, i) => `stranger-${i}`),
+                    "Unrelated",
+                ).pages,
+            ],
+        });
+        const { request, terminal } = await beginAnalysis(t);
+        const cast = request.body.messages.find((m: OpenAIChat) => m.role === "user").content.split("\n\nScene:")[0];
+        expect(cast).toContain('"id":"cara"');
+        expect(cast).toContain('"id":"always"');
+        expect(cast).not.toContain('"id":"scene"');
+        expect(cast).not.toContain("stranger-");
+        const candidate = (title: string, type: MemoryPage["type"], confidence: number, aliases: string[] = []) => ({
+            create: { title, type, aliases },
+            confidence,
+            reason: "A lasting subject",
+        });
+        const candidates = [
+            candidate("Harbor", "location", LIMITS.createConfidence),
+            candidate("Myth", "concept", LIMITS.createConfidence - 0.01),
+            candidate("Watcher", "character", 0, ["Unapproved alias"]),
+            candidate("Cara", "character", 0),
+            candidate("Another scene", "scene", 1),
+            { targetId: "scene", reason: "Move it", confidence: 1 },
+        ];
+        request.answer(
+            JSON.stringify({
+                ...analysis({
+                    participants: ["Harbor", "Watcher", "Ghost"],
+                    stateChanges: [
+                        {
+                            pageId: "Harbor",
+                            section: "Gate",
+                            before: "closed",
+                            after: "open",
+                            quote: "The gate opens.",
+                        },
+                    ],
+                    knowledge: [
+                        {
+                            pageId: "Watcher",
+                            fact: "Harbor opened",
+                            stance: "knows",
+                            knowers: ["Harbor", "Ghost"],
+                            quote: "The gate opens.",
+                        },
+                        { pageId: "Harbor", fact: "Fabricated fact", stance: "knows", quote: "A quote never spoken" },
+                        { pageId: "Ghost", fact: "Unknown subject", stance: "knows", quote: "The gate opens." },
+                    ],
+                    relationshipShifts: [{ from: "Watcher", to: "Harbor", direction: "arrives", note: "Visit" }],
+                    openThreads: {
+                        add: [{ title: "Return to Harbor", who: ["Watcher", "Ghost"] }],
+                        close: [],
+                        transitions: [],
+                    },
+                }),
+                pageCandidates: candidates,
+            }),
+        );
+        const patchRequest = await nextPatch(t, request.index + 1, terminal);
+        const patchText = patchRequest.body.messages.find((m: OpenAIChat) => m.role === "user").content as string;
+        const patchRows = patchText
+            .split("\n\nEvent:\n")[0]
+            .slice("Pages:\n".length)
+            .split("\n")
+            .map((line) => JSON.parse(line));
+        const harborId = patchRows.find((row) => row.title === "Harbor").id as string;
+        expect(patchRows.map((row) => row.id)).toEqual([harborId, "cara"]);
+        const admitted = JSON.parse(patchText.split("\n\nEvent:\n")[1]);
+        expect(admitted.participants).toEqual([harborId, "cara"]);
+        expect(admitted.stateChanges).toEqual([
+            { pageId: harborId, section: "Gate", before: "closed", after: "open", quote: "The gate opens." },
+        ]);
+        expect(admitted.knowledge).toEqual([
+            { pageId: "cara", fact: "Harbor opened", stance: "knows", knowers: [harborId], quote: "The gate opens." },
+        ]);
+        expect(patchText).not.toContain("Fabricated fact");
+        expect(patchText).not.toContain("A quote never spoken");
+        const concurrent = { id: "concurrent", title: "User's pending question", who: [], state: "open" as const };
+        writeMemory(t.store, "c", "k1", { threads: [concurrent] });
+        patchRequest.answer(
+            JSON.stringify({
+                patches: [
+                    { pageId: harborId, heading: "Gate", op: "upsert", body: "The gate is open." },
+                    { pageId: "cara", heading: "identity", op: "upsert", body: "Must roll back" },
+                    { pageId: "cara", heading: "knowledge", op: "upsert", body: "Must not overwrite" },
+                ],
+            }),
+        );
+        await finishRecording(t, terminal);
+        expect(t.provider.requests).toHaveLength(2);
+        const saved = eventRecord(t);
+        expect(saved).toMatchObject({
+            participants: [harborId, "cara"],
+            stateChanges: admitted.stateChanges,
+            knowledge: admitted.knowledge,
+            relationshipShifts: [{ from: "cara", to: harborId, direction: "arrives", note: "Visit" }],
+            openThreads: { add: [{ title: "Return to Harbor", who: ["cara"] }] },
+        });
+        expect(saved).not.toHaveProperty("speakerId");
+        const harbor = t.store.memory.readRecord("c", "k1", "pages", harborId)!.data;
+        expect(harbor).toMatchObject({
+            title: "Harbor",
+            aliases: ["Port", "Quay"],
+            sections: [
+                { heading: "Gate", body: "The gate is open.", provenance: [saved.id], sources: runRecord(t).window },
+            ],
+        });
+        expect(harbor.history).toEqual([
+            expect.objectContaining({ heading: null, before: null, kind: "create", eventId: saved.id }),
+            expect.objectContaining({ heading: "Gate", before: null, kind: "create", eventId: saved.id }),
+        ]);
+        expect(t.store.memory.readRecord("c", "k1", "pages", "cara")!.data).toMatchObject({
+            aliases: ["Watcher"],
+            sections: cara.sections,
+            history: [],
+            links: [harborId],
+        });
+        expect(pageRecords(t).filter(({ title }) => ["Myth", "Another scene"].includes(title))).toEqual([]);
+        expect(t.store.memory.readRecord("c", "k1", "threads", "concurrent")!.data).toEqual(concurrent);
+        expect(runRecord(t).receipt).toMatchObject({
+            state: "recorded",
+            refused: [
+                { candidate: candidates[1], refusal: "lowConfidence" },
+                { candidate: candidates[4], refusal: "sceneOwned" },
+                { candidate: candidates[5], refusal: "sceneOwned" },
+            ],
+            unverified: [
+                { kind: "knowledge", text: "A quote never spoken", reason: "quoteNotFound" },
+                { kind: "knowledge", text: "The gate opens.", reason: "unknownPage" },
+            ],
+        });
+        expect(runRecord(t).receipt!.warnings).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ kind: "unknownPage", pageId: "Ghost" }),
+                expect.objectContaining({ kind: "pageRefused", pageId: "cara", heading: "identity" }),
+                expect.objectContaining({ kind: "lockedSection", pageId: "cara", heading: "knowledge" }),
+            ]),
+        );
+        expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual([
+            "Cara promises to return.",
+            "Harbor: Gate\nThe gate is open.",
+        ]);
+    });
+
+    it("records refused candidates and repeated events without calling the patch model or creating entities", async () => {
+        const t = structuredHarness();
+        const low = {
+            create: { title: "Rumor", type: "concept", aliases: [] },
+            reason: "Uncertain",
+            confidence: LIMITS.createConfidence - 0.01,
+        };
+        await recordOnly(t, {
+            ...analysis(),
+            pageCandidates: [
+                low,
+                { create: { title: "Scene", type: "scene", aliases: [] }, reason: "Scene", confidence: 1 },
+            ],
+        });
+        expect(t.provider.requests).toHaveLength(1);
+        expect(pageRecords(t)).toEqual([
+            expect.objectContaining({
+                type: "scene",
+                sections: [],
+                history: [expect.objectContaining({ heading: null, kind: "create" })],
+            }),
+        ]);
+        expect(runRecord(t).receipt!.refused).toEqual([
+            { candidate: low, refusal: "lowConfidence" },
+            expect.objectContaining({ refusal: "sceneOwned" }),
+        ]);
+        const before = pageRecords(t);
+        const id = eventRecord(t).id;
+        const strong = { ...low, confidence: LIMITS.createConfidence };
+        await recordOnly(t, { ...analysis(), pageCandidates: [strong] }, writerInput(t, "m5"));
+        expect(t.provider.requests).toHaveLength(2);
+        expect(contents(t).events.map(({ id }) => id)).toEqual([id]);
+        expect(eventRecord(t)).toMatchObject({ id, repeatCount: 1 });
+        expect(pageRecords(t)).toEqual(before);
+        expect(runRecord(t).receipt!.refused).toEqual([{ candidate: strong, refusal: "repeatedEvent" }]);
+    });
+
+    it.each(["provider failure", "empty answer", "unusable JSON"] as const)(
+        "keeps the window open after a patch %s and pauses after consecutive failures",
+        async (failure) => {
+            const t = structuredHarness();
+            const answer = {
+                ...analysis(),
+                pageCandidates: [
+                    {
+                        create: { title: "Harbor", type: "location", aliases: [] },
+                        confidence: LIMITS.createConfidence,
+                        reason: "Arrived",
+                    },
+                ],
+            };
+            let firstInput: string | undefined;
+            let firstBody: unknown;
+            for (let attempt = 0; attempt < LIMITS.consecutiveFailures; attempt++) {
+                const { request, terminal } = await beginAnalysis(t);
+                if (attempt === 0) {
+                    firstInput = runRecord(t).input;
+                    firstBody = request.body;
+                }
+                expect(runRecord(t).input).toBe(firstInput);
+                expect(request.body).toEqual(firstBody);
+                request.answer(JSON.stringify(answer));
+                const patchRequest = await nextPatch(t, request.index + 1, terminal);
+                if (failure === "provider failure") patchRequest.fail("Patch provider failed");
+                else patchRequest.answer(failure === "empty answer" ? " " : '{"wrong": []}');
+                expect((await terminal).status).toMatchObject({ state: "failed", done: 0 });
+                await t.service.drain();
+                expect(runRecord(t)).toMatchObject({
+                    result: "failed",
+                    receipt: { state: "failed", reason: "patchFailed" },
+                });
+                expect(contents(t).events).toEqual([]);
+                expect(contents(t).pages).toEqual([]);
+                if (attempt === 0)
+                    writeMemory(t.store, "c", "k1", {
+                        threads: [{ id: "new-context", title: "Must not enter the replay", state: "open", who: [] }],
+                    });
+            }
+            const terminal = t.nextTerminal("k1");
+            t.service.handOff(writerInput(t, "m3"));
+            const ended = await Promise.race([
+                terminal,
+                t.provider.request(t.provider.requests.length).then(() => {
+                    throw new Error("Paused writer made a call");
+                }),
+            ]);
+            expect(ended.status).toMatchObject({ state: "skipped", reason: "writerPaused" });
+            expect(contents(t).runs).toHaveLength(LIMITS.consecutiveFailures);
+            expect(t.provider.requests).toHaveLength(2 * LIMITS.consecutiveFailures);
+        },
+    );
+
+    it.each(["group", "solo", "multi-speaker group"] as const)(
+        "assigns the speaking member's page only in a %s chat",
+        async (kind) => {
+            const t = structuredHarness({
+                owner:
+                    kind !== "solo"
+                        ? {
+                              type: "group",
+                              characters: ["member", "other-member"],
+                              characterTalks: [1, 1],
+                              characterActive: [true, true],
+                          }
+                        : {},
+                hypaSettings: {
+                    structured: { cadence: "everyK", cadenceTurns: kind === "multi-speaker group" ? 2 : 1 },
+                },
+            });
+            t.store.put(
+                t.kinds.get("characters")!,
+                "member",
+                { chaId: "member", type: "character", name: "Mira", nickname: "Captain", globalLore: [] },
+                null,
+            );
+            t.store.put(
+                t.kinds.get("characters")!,
+                "other-member",
+                { chaId: "other-member", type: "character", name: "Nora", globalLore: [] },
+                null,
+            );
+            t.write("k1", [
+                { op: "patchMessage", id: "m2", set: { saying: "member" } },
+                { op: "patchMessage", id: "m4", set: { saying: "other-member" } },
+            ]);
+            await recordOnly(t, analysis(), writerInput(t, kind === "multi-speaker group" ? "m5" : "m3"));
+            const members = pageRecords(t).filter(({ type }) => type === "character");
+            if (kind === "group") {
+                expect(members).toEqual([
+                    expect.objectContaining({
+                        title: "Mira",
+                        aliases: ["Captain"],
+                        sections: [],
+                        history: [
+                            expect.objectContaining({ heading: null, kind: "create", eventId: eventRecord(t).id }),
+                        ],
+                    }),
+                ]);
+                expect(eventRecord(t).speakerId).toBe(members[0].id);
+            } else {
+                expect(members).toEqual([]);
+                expect(eventRecord(t)).not.toHaveProperty("speakerId");
+            }
+            expect(t.provider.requests).toHaveLength(1);
+        },
+    );
+
+    it("rewrites one scene without patches, preserves blank and locked fields, and carries attendance into retrieval", async () => {
+        const t = structuredHarness();
+        writeMemory(t.store, "c", "k1", { pages: memoryRecords(["cara", "mira"]).pages });
+        await recordOnly(t, {
+            ...analysis(),
+            scene: { place: "Inn", time: "Dawn", state: "Waiting", participants: ["cara"] },
+        });
+        const first = pageRecords(t).find(({ type }) => type === "scene")!;
+        expect(first.sections.map(({ heading, body }) => ({ heading, body }))).toEqual([
+            { heading: "place", body: "Inn" },
+            { heading: "time", body: "Dawn" },
+            { heading: "state", body: "Waiting" },
+        ]);
+        writeMemory(t.store, "c", "k1", {
+            pages: [
+                {
+                    ...first,
+                    sections: first.sections.map((section) => ({ ...section, locked: section.heading === "place" })),
+                },
+            ],
+        });
+        await recordOnly(
+            t,
+            {
+                ...analysis({
+                    summary: "Mira arrives at the inn.",
+                    openThreads: {
+                        add: [{ title: "Ask Mira about the gate", who: ["mira"] }],
+                        close: [],
+                        transitions: [],
+                    },
+                }),
+                scene: { place: "Harbor", time: " ", state: "Mira arrives", participants: ["mira"] },
+            },
+            writerInput(t, "m5"),
+        );
+        const scenes = pageRecords(t).filter(({ type }) => type === "scene");
+        expect(scenes).toHaveLength(1);
+        expect(scenes[0]).toMatchObject({
+            id: first.id,
+            participants: ["mira"],
+            sections: [
+                { ...first.sections[0], locked: true },
+                first.sections[1],
+                expect.objectContaining({
+                    heading: "state",
+                    body: "Mira arrives",
+                    provenance: [eventRecord(t, 0).id, eventRecord(t).id],
+                }),
+            ],
+        });
+        expect(scenes[0].history.at(-1)).toMatchObject({
+            heading: "state",
+            kind: "change",
+            eventId: eventRecord(t).id,
+            before: { body: "Waiting", provenance: [eventRecord(t, 0).id], sources: first.sections[2].sources },
+        });
+        expect(runRecord(t).receipt!.warnings).toEqual([
+            expect.objectContaining({ kind: "lockedSection", pageId: first.id, heading: "place" }),
+        ]);
+        expect(t.provider.requests).toHaveLength(2);
+        expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual([
+            "Cara promises to return.",
+            "Mira arrives at the inn.",
+        ]);
+        const records = readMemoryRecords(t.store, "c", "k1");
+        expect(records.stage).toEqual(["mira"]);
+        const scope = t.jobScope("k1");
+        const { host } = createMemoryTaskHost({
+            scope,
+            input: writerInput(t),
+            deps: t.hostDeps,
+            signal: new AbortController().signal,
+            fence: () => {},
+        });
+        const selected = await retrieveLanes(host, {
+            ...records,
+            entries: [],
+            window: { start: 0, dropped: new Set() },
+            settings: normalizeStructuredMemorySettings({
+                flowEvents: 0,
+                laneTargets: { events: 0, pages: 0, evidence: 0, threads: 100 },
+            }),
+        });
+        expect(selected.lanes.find(({ lane }) => lane === "threads")!.items).toEqual([
+            expect.objectContaining({ id: records.threads[0].id, reason: "onStage" }),
+        ]);
+    });
+
+    it("does not warm changed page sections when the pages lane is disabled", async () => {
+        const t = structuredHarness({
+            hypaSettings: { structured: { cadence: "everyTurn", laneTargets: { pages: 0 } } },
+        });
+        writeMemory(t.store, "c", "k1", { pages: memoryRecords(["harbor"], "Harbor").pages });
+        const { request, terminal } = await beginAnalysis(t);
+        request.answer(
+            JSON.stringify({
+                ...analysis(),
+                pageCandidates: [{ targetId: "harbor", reason: "Gate opens", confidence: 1 }],
+            }),
+        );
+        const patchRequest = await nextPatch(t, request.index + 1, terminal);
+        patchRequest.answer(
+            JSON.stringify({ patches: [{ pageId: "harbor", heading: "Gate", op: "upsert", body: "Open" }] }),
+        );
+        await finishRecording(t, terminal);
+        expect(t.store.memory.readRecord("c", "k1", "pages", "harbor")!.data.sections[0].body).toBe("Open");
+        expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual(["Cara promises to return."]);
+    });
 
     it("patches recorded and failed receipts onto every assistant in a window without changing its evidence or other generation info", async () => {
         for (const outcome of ["recorded", "failed"] as const) {
