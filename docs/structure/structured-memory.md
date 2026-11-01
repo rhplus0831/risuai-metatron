@@ -9,7 +9,8 @@
   `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts`.
 - The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
   tests, and no screen calls the tab's client. Production has its writer, which pages and the read path do not use yet.
-  Its design and remaining work are in [Active Plans](../plan/README.md).
+  The read path's pieces exist, and `assemblePrompt` does not call them yet. Its design and remaining work are in
+  [Active Plans](../plan/README.md).
 - Not here:
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
@@ -47,6 +48,11 @@
 - `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
 - `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `writerHostDeps`, what a
   writer task's requests ignore of the preset.
+- `server/src/prompt/memory/structured/lanes.ts`: the pure read rules: `ReadEntry`, `rawWindow`, `coveredMessages`,
+  `readBudget`, `spendLanes`, `LaneItem`, `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`.
+- `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
+  `eventVectorTexts`, `lexicalTerms`.
+- `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard`, `itemTag`, and the line builders.
 - `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
   (`structuredWriter` replaces `createStructuredWriter`, in tests), `StructuredMemoryWriterResult`,
   `StructuredMemoryCommit`, `MemoryTaskLimits.maxWriterWindows`.
@@ -229,6 +235,28 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
   character bigrams, and sources that still read from the chat, no event is made. That event takes `repeatCount + 1` and
   the window's sources, or the window would stay open forever; everything else on it stays, and thread changes name it.
 
+### The read path
+
+Nothing here writes: `retrieveLanes` offers candidates, and `buildMemoryCard` spends the budget on them.
+`assemblePrompt` calls neither yet, and the required and pages lanes are not built. The modules' comments hold the lane
+rules.
+
+- `ReadEntry.role` is the stored message's, because assembly rewrites a prompt role in a group chat and under
+  `sendName`. `text` is the processed content, so evidence quotes what the prompt would have shown.
+- An event with no source among the entries has no place, which says nothing about staleness: a disabled message is just
+  not in this send.
+- `rawWindow` leaves every uncovered entry raw for the caller's gap trim, and an event wholly inside the window with
+  text is not retrieved. Older sources do not count as in the prompt: that trim may remove them.
+- A `requires` names an `itemKey`, so a flow title never satisfies an excerpt's event, and a flow tag differs from the
+  event's, so it never verifies the event's text. Flow has no token target: its `target` reaches `spend` as
+  `Number.MAX_SAFE_INTEGER`.
+- `maximum` bounds the two card parts counted as one system chat each, so it holds wherever the volatile part goes. A
+  wrapper the prompt adds is not part of it.
+- An embedding failure answers `similarity: "failed"` and the send goes on, where HypaV3 fails it. Cancellation still
+  escapes through `host.fence()`.
+- `excluded` is per lane, so an event in flow can be excluded from `events`: `retrieveLanes` lists what is no candidate,
+  `buildMemoryCard` what lost on budget. Neither bounds its list, so a report does.
+
 ## State
 
 - A chat's records are events, pages, and threads, with the chat's own messages as the evidence. Each writer run leaves
@@ -380,12 +408,19 @@ group is refused, and a full one is checked and restored.
   selection, and `src/ts/process/memoryTasks.test.ts` the status's `kind`.
 - `structured/analysis.test.ts` and `prompts.test.ts` drive the pure pieces with plain values; `prompts.test.ts` parses
   with the real CBS evaluator.
+- `structured/lanes.test.ts` and `card.test.ts` drive the read rules with plain values and a fake tokenizer.
+  `structured/retrieve.test.ts` runs real embeddings over a vector cache with a scripted provider.
 - Focused command:
   `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts server/src/prompt/memory/structured restoreStage backups normalizeCollections memoryTaskHost upstreamExport memoryTasks memoryJobs assemble`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
 ## Known Hazards
+
+### Issues
+
+- A paraphrase of an old message that shares no query term is not found: semantic scoring only reranks lexical matches,
+  to keep embedding at `lexicalCandidates` texts a send. D6 names both as channels.
 
 ### Limitations
 
@@ -411,5 +446,11 @@ group is refused, and a full one is checked and restored.
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
   owner decisions.
 - A character's language override does not travel in a card: the card exporters use explicit field lists.
+- `eventVectorTexts` must stay `warmEvent`'s text rule; a retrieval that embeds other text pays for every event again.
+- Every number in `RETRIEVAL_LIMITS` is a starting value, and a cosine threshold does not mean the same on every model.
+  An unknown stage is empty, so a named thread waits for a scene page.
+- A send's retrieval embeds every eligible event's texts. Warm, `addText` still compares every text with every vector
+  synchronously, so the cost grows with the square of the chat's event texts. Cold (a model change, a cleared cache), it
+  is one provider call per 50 texts, in sequence, inside the send.
 - `readRecordedMessages` reads every stored event of the chat once per send and once per task, because the store has no
   bulk read, so its cost grows with the chat's events.
