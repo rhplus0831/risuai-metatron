@@ -33,7 +33,7 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 
 export type Warning = MemoryReceipt["warnings"][number];
 
-type ReceiptSection = MemoryReceipt["pages"][number]["sections"][number];
+export type ReceiptSection = MemoryReceipt["pages"][number]["sections"][number];
 
 /** Names lore or a group ties to one subject. */
 export type AliasSeed = {

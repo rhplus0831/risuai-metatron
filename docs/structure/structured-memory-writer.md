@@ -5,8 +5,9 @@
 - Owns the `structuredMemory` writer: its settings and their overrides, the windows it records, its task kind in the
   memory task service, a writer run, the analysis and patch prompts, admission of the model's answer, the pages it
   maintains, and record now with the `memoryRecord` job.
-- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,recordJob}.ts`, the writer's
-  task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in `server/src/prompt/assemble.ts`.
+- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`, the
+  writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
+  `server/src/prompt/assemble.ts`.
 - See [structured memory](structured-memory.md) for how the algorithm is selected, and [Active Plans](../plan/README.md)
   for the design and remaining work.
 - Not here:
@@ -22,18 +23,21 @@
   - Writer settings: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, `STRUCTURED_MEMORY_CADENCES`,
     `STRUCTURED_MEMORY_HIGHLIGHT_MODES`, `STRUCTURED_MEMORY_HIGHLIGHT_KINDS`.
   - Per-record overrides: `structuredMemoryLanguageOverride`, `structuredMemoryHighlightOverride`.
+  - Section budgets: `MEMORY_SECTION_BUDGETS`, `memorySectionOverBudget`.
 - `HypaV3Settings.structured` (`shared/memory.ts`), filled by `createHypaV3Preset` (`shared/hypaV3Presets.ts`).
 - `memorySettingsFingerprint` (`server/src/jobs/jobScope.ts`) digests the settings a writer task reads.
 - `server/src/prompt/memory/structured/window.ts`: the writer's windows: `confirmedWindows`, `WriterWindow`,
   `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `confirmedThrough`,
   `windowStillConfirmed`.
 - `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`, `patchSlots`,
-  `assemblePatchPrompt`.
+  `assemblePatchPrompt`, `compactSlots`, `assembleCompactPrompt`.
 - `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
 - `server/src/prompt/memory/structured/pages.ts`: the pure page rules: `castSlice`, `planPages`, `aliasSeeds`,
   `windowSpeaker`, `changeSection`, `rewriteScene`, `sectionVectorText`.
 - `server/src/prompt/memory/structured/patches.ts`: the pure patch rules: `showTargets`, `parsePatches`, `applyPatches`,
   `commitPages`.
+- `server/src/prompt/memory/structured/compact.ts`: the pure compaction rules: `compactionTargets`, `readCompaction`,
+  `applyCompactions`.
 - `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `commitWindow`, a
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
   `writerPaused`, re-exported from `shared/`.
@@ -111,8 +115,8 @@ with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one 
 
 ### A writer run
 
-`createStructuredWriter` makes one analysis call per window and, when a candidate was accepted, one patch call.
-`memory_runs` is its whole state.
+`createStructuredWriter` makes one analysis call per window, one patch call when a candidate was accepted, and one
+compaction call per section that patch left past its budget. `memory_runs` is its whole state.
 
 1. Pause: `consecutiveFailures` `failed` rows at the end of the runs end an automatic run `skipped` (`writerPaused`),
    with no call and no row. `skipped` and `pending` rows neither count nor reset, a `recorded` row resets, and a manual
@@ -132,11 +136,13 @@ with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one 
    `pending` write of its own, because a retry replays only the analysis. A failed one ends the run `failed`
    (`patchFailed`) with no event, since an event would close the window for good; the row keeps `analysis` and
    `patchInput`.
-7. Commit: event, threads, pages, and the `recorded` run in one write, on the revision the opening write returned. Both
-   calls count in `inputTokens`, `outputTokens`, and `durationMs`. A `revisionConflict` admits the answer again from
+7. Compaction calls: [below](#compaction), after the patch call and before the commit. A failure here never fails the
+   run.
+8. Commit: event, threads, pages, and the `recorded` run in one write, on the revision the opening write returned. Every
+   call counts in `inputTokens`, `outputTokens`, and `durationMs`. A `revisionConflict` admits the answer again from
    fresh records with no call, 3 attempts in all, then `skipped` (`revisionConflict`); a new page keeps its id across
    them, because the patches name it. `staleInput` and `windowChanged` end it `skipped` and leave the row to step 2.
-8. Warming: `eventVectorTexts` unless `laneTargets.events` is 0, and each changed non-scene section's
+9. Warming: `eventVectorTexts` unless `laneTargets.events` is 0, and each changed non-scene section's
    `sectionVectorText` unless `laneTargets.pages` is 0, through `HypaProcesser.addText`. A failure keeps the records. A
    retrieval that embeds other text misses this cache.
 
@@ -293,6 +299,34 @@ Conflict classes:
 - Below it, a missing confidence being 0, both values stay as `<old>\n[disputed] <new>`, `disputed: true`, with kind
   `contradiction` and a `disputed` warning. Neither waits for approval.
 
+### Compaction
+
+`MEMORY_SECTION_BUDGETS` gives each page type a budget in `body.length`, under the hard `sectionBodyChars`. A dry run of
+the commit, after a patch call that answered patches, names the sections (`compactionTargets`): those it really changed
+(an identical upsert and a delete do not count), on a non-scene page, past the budget. A section it did not change gets
+no call, so one that cannot shrink is not asked again every window. No id of the dry run reaches a record, and the
+commit is worked out anew on each attempt. Events are never compacted: nothing here reads one.
+
+Each section gets one call, with no cap but `patchesPerCall`. `prompts.ts` fills the section through a slot, so it never
+reaches CBS; the call sees no message, and `fineTuning` does not replace this prompt. Its prompt and answer stay out of
+the run, whose record margin does not cover them.
+
+| Warning                | Meaning                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `compacted`            | applied; `detail` adds the old and new length                                           |
+| `compactionSkipped`    | `userCorrected` or `disputed`: no call, because the text waits on a person              |
+| `compactionFailed`     | the call failed, or its answer has no usable `body`                                     |
+| `compactionNotSmaller` | not strictly shorter, so discarded; a shorter one need not reach the budget             |
+| `compactionStale`      | this commit attempt did not change the section, or left another body or a person's mark |
+
+A locked section gets no call and no warning, since a patch already refused it. Nothing is cut to fit. A
+`MemoryHostFailure` or any other throw ends the run as it does for the patch call.
+
+`applyCompactions` runs inside `commitPages`, right after the patches, through `changeSection` with kind `compact`. So a
+section gains two history entries in one commit, the second's `before` being the long body, and two receipt rows, each
+with its hashes and `historyId`. The text diff is the Pages tab's history; the receipt line shows the warning.
+`changedSectionTexts` warms the shorter body.
+
 ## State
 
 - The records a writer run leaves, and the tables holding them: [structured memory](structured-memory.md#memory-tables).
@@ -358,9 +392,11 @@ Conflict classes:
   an injected `structuredWriter`, the writer itself with none, through the scripted provider and read back from
   `store.memory`. `memoryJobs.test.ts` drives the hand-off with `createFakeMemoryTasks`, `assemble.test.ts` the
   selection, and `src/ts/process/memoryTasks.test.ts` the status's `kind`.
-- `structured/analysis.test.ts`, `pages.test.ts`, `patches.test.ts`, and `prompts.test.ts` drive the pure pieces with
-  plain values; `prompts.test.ts` parses with the real CBS evaluator. The one-scene rule is in `memoryStore.test.ts` and
-  `restoreStage.test.ts`.
+- `structured/analysis.test.ts`, `pages.test.ts`, `patches.test.ts`, `compact.test.ts`, and `prompts.test.ts` drive the
+  pure pieces with plain values; `prompts.test.ts` parses with the real CBS evaluator. The one-scene rule is in
+  `memoryStore.test.ts` and `restoreStage.test.ts`.
+- Compaction's calls and its one commit: `memoryTasks.test.ts`. `recordJob.ts` runs the same writer, with no test of its
+  own for this.
 - Record now: `memoryTasks.test.ts` for the lock refusal and `through`; `memoryJobs.test.ts` for the job's two paths on
   a real stack.
 - Focused command:
@@ -382,6 +418,12 @@ Conflict classes:
   changes to a later window. Decision: Structured Memory D3, plan.
 - Section evidence keeps the newest `sectionEvidence`, so a section can read `unsupported` while an older dropped event
   still supports it. Decision: Structured Memory slice 4a, plan.
+- `userCorrected` outlives later patches, so a section a person once corrected is never compacted, and can grow until
+  `sectionTooLong` refuses its page's patches. The person trims it. A section a failed or discarded compaction left long
+  waits for its next change. Decision: Structured Memory D13, plan.
+- Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs
+  before the commit, so a deadline during one costs the run its analysis and patch calls, and a person pressing record
+  now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, plan.
 - Record now has no cost preview, which D3 asks for: `maxWriterWindows` bounds a press, and the previewed path is
   backfill. Decision: Structured Memory slice 2d, plan.
 - Recording in a job sets no `memoryTaskFenced` fence and no task status: only the pressing tab sees it, through its
@@ -395,6 +437,7 @@ Conflict classes:
   were removed and items naming a page left out.
 - `memory_runs.input` is never pruned, so a run costs about its prompt in storage. `inputTokens` counts one attempt
   though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated JSON.
+- `MEMORY_SECTION_BUDGETS` are starting values with no setting; `memorySectionOverBudget` is the one test of them.
 - Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the lane
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
   owner decisions.

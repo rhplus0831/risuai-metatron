@@ -13,6 +13,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 import { type Admission, answerJson, readConfidence, readList } from "./analysis.ts";
+import { applyCompactions, type Compaction } from "./compact.ts";
 import {
     addLinks,
     addPage,
@@ -277,8 +278,9 @@ export function applyPatches(arg: {
 /**
  * Everything one commit does to pages, from `pages`, the chat's whole pages as they stand now: the pages
  * `plan` makes, the scene page when the chat has none, so a chat with records has one, the patches, the
- * links of a new event's relationship shifts, and the scene. A repeat stops the links and the patches,
- * which it lists as unseen, but not the scene.
+ * compactions of what those changed, the links of a new event's relationship shifts, and the scene. A
+ * repeat stops the links and the patches, which it lists as unseen, and so the compactions, which it
+ * lists as stale, but not the scene.
  */
 export function commitPages(arg: {
     pages: readonly MemoryPage[];
@@ -286,11 +288,13 @@ export function commitPages(arg: {
     admission: Pick<Admission, "event" | "repeated" | "scene">;
     patches: readonly MemoryPatch[];
     seen: ShownPages["seen"];
+    /** The shorter bodies the run's compaction calls gave. */
+    compactions: readonly Compaction[];
     /** The id of a scene page made now, the same on every attempt of a run. */
     sceneId: string;
     stamp: PageStamp;
 }): { pages: MemoryPage[]; receipts: MemoryReceipt["pages"]; warnings: Warning[]; vectorTexts: string[] } {
-    const { plan, admission, patches, stamp } = arg;
+    const { plan, admission, patches, compactions, stamp } = arg;
     const pages = new Map(arg.pages.map((page) => [page.id, page]));
     const changes: PageChanges = new Map();
     for (const page of plan.created) {
@@ -299,6 +303,7 @@ export function commitPages(arg: {
     const scene = arg.pages.find(({ type }) => type === "scene") ?? addPage(changes, newScenePage(arg.sceneId), stamp);
     const seen = admission.repeated ? new Map() : arg.seen;
     const warnings = applyPatches({ changes, pages, patches, seen, stamp });
+    warnings.push(...applyCompactions({ changes, pages, compactions, stamp }));
     if (!admission.repeated) {
         addLinks(changes, pages, admission.event.relationshipShifts);
     }

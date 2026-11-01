@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -22,6 +23,7 @@ import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import {
+    MEMORY_SECTION_BUDGETS,
     type MemoryEventDraft,
     type MemoryPage,
     normalizeStructuredMemorySettings,
@@ -2531,6 +2533,310 @@ describe("structured memory tasks", () => {
         request.answer(JSON.stringify(answer));
         await finishRecording(t, terminal);
     };
+
+    const beginPagePatch = async (t: Harness, pages: MemoryPage[], draft = analysis()) => {
+        writeMemory(t.store, "c", "k1", { pages });
+        const { request, terminal } = await beginAnalysis(t);
+        const analysisAnswer = JSON.stringify({
+            ...draft,
+            pageCandidates: pages.map(({ id }) => ({ targetId: id, reason: "New facts", confidence: 1 })),
+        });
+        request.answer(analysisAnswer);
+        const patchRequest = await nextPatch(t, request.index + 1, terminal);
+        return { request, terminal, patchRequest, analysisAnswer };
+    };
+
+    it("compacts each overflowing section in the recording commit and warms only its final body", async () => {
+        const t = structuredHarness();
+        const page = memoryRecords(["harbor"], "Harbor").pages[0];
+        page.sections.push({ ...page.sections[0], heading: "Untouched", body: "Keep these exact words" });
+        const writes = vi.spyOn(t.store.memory, "write");
+        cleanups.push(() => {
+            writes.mockRestore();
+        });
+        const draft = analysis({ summary: "e".repeat(LIMITS.eventSummaryChars) });
+        const { terminal, patchRequest, analysisAnswer } = await beginPagePatch(t, [page], draft);
+        const targets = [
+            {
+                heading: "Gate",
+                body: "g".repeat(MEMORY_SECTION_BUDGETS.location + 200),
+                shorter: "g".repeat(MEMORY_SECTION_BUDGETS.location + 1),
+            },
+            {
+                heading: "Hearth",
+                body: "h".repeat(MEMORY_SECTION_BUDGETS.location + 100),
+                shorter: "The hearth is lit.",
+            },
+        ];
+        const patchAnswer = JSON.stringify({
+            patches: targets.map(({ heading, body }) => ({ pageId: page.id, heading, op: "upsert", body })),
+        });
+        t.clock.now += 20;
+        patchRequest.answer(patchAnswer);
+        const answers = [analysisAnswer, patchAnswer];
+        for (const [i, target] of targets.entries()) {
+            const compactRequest = await nextPatch(t, patchRequest.index + 1 + i, terminal);
+            expect(compactRequest.body.messages.filter((message: OpenAIChat) => message.role === "user")).toEqual([
+                {
+                    role: "user",
+                    content: `Page:\n${JSON.stringify({ type: "location", title: "Harbor", heading: target.heading })}\n\nSection:\n${target.body}`,
+                },
+            ]);
+            expect(contents(t).events).toEqual([]);
+            expect(runRecord(t).result).toBe("pending");
+            expect(pageRecords(t)).toEqual([page]);
+            t.clock.now += 30;
+            const answer = JSON.stringify({ body: target.shorter });
+            answers.push(answer);
+            compactRequest.answer(answer);
+        }
+        await finishRecording(t, terminal);
+        expect(t.provider.requests).toHaveLength(4);
+        const saved = t.store.memory.readRecord("c", "k1", "pages", page.id)!.data;
+        const run = runRecord(t);
+        const recorded = eventRecord(t);
+        expect(recorded).toMatchObject({ ...draft, writerRun: run.id });
+        expect(contents(t).runs).toHaveLength(1);
+        const inputTokens = t.provider.requests.reduce(
+            (sum, request) =>
+                sum +
+                request.body.messages.reduce(
+                    (count: number, message: OpenAIChat) => count + message.content.length + CHAT_ADDITIONAL,
+                    0,
+                ),
+            0,
+        );
+        const outputTokens = answers.reduce((sum, answer) => sum + answer.length, 0);
+        expect(run).toMatchObject({
+            result: "recorded",
+            eventId: recorded.id,
+            durationMs: 80,
+            inputTokens,
+            outputTokens,
+            receipt: { state: "recorded", inputTokens, outputTokens },
+        });
+        expect(saved.sections.find(({ heading }) => heading === "Untouched")).toEqual(page.sections[1]);
+        const hash = (body: string) => createHash("sha256").update(body, "utf8").digest("hex");
+        for (const target of targets) {
+            expect(saved.sections.find(({ heading }) => heading === target.heading)).toMatchObject({
+                body: target.shorter,
+                provenance: [recorded.id],
+                sources: run.window,
+            });
+            const history = saved.history.filter(
+                ({ heading, kind }) => heading === target.heading && kind === "compact",
+            );
+            expect(history).toEqual([
+                expect.objectContaining({
+                    heading: target.heading,
+                    kind: "compact",
+                    eventId: recorded.id,
+                    before: { body: target.body, provenance: [recorded.id], sources: run.window },
+                }),
+            ]);
+            expect(run.receipt!.pages.find(({ pageId }) => pageId === page.id)!.sections).toContainEqual({
+                heading: target.heading,
+                beforeHash: hash(target.body),
+                afterHash: hash(target.shorter),
+                historyId: history[0].id,
+            });
+        }
+        expect(run.receipt!.warnings).toEqual(
+            targets.map(({ heading, body, shorter }) => ({
+                kind: "compacted",
+                pageId: page.id,
+                heading,
+                detail: `Harbor: ${heading} (${body.length} → ${shorter.length})`,
+            })),
+        );
+        expect(t.chat("k1")!.message.find(({ chatId }) => chatId === "m2")!.generationInfo!.memory).toEqual(
+            run.receipt,
+        );
+        // Seeding and opening the pending run precede the one write of all recording results.
+        expect(writes).toHaveBeenCalledTimes(3);
+        expect(writes.mock.calls[2][3]).toMatchObject({
+            events: [expect.objectContaining({ id: recorded.id, summary: draft.summary, writerRun: run.id })],
+            runs: [run],
+            pages: expect.arrayContaining([saved]),
+        });
+        expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual([
+            draft.summary,
+            ...targets.map(({ heading, shorter }) => `Harbor: ${heading}\n${shorter}`),
+        ]);
+    });
+
+    it("makes no compaction call for locked, corrected, disputed, identical, or untouched sections", async () => {
+        const t = structuredHarness();
+        const body = "x".repeat(MEMORY_SECTION_BUDGETS.location + 1);
+        const pages = memoryRecords(["locked", "corrected", "disputed", "identical", "untouched"]).pages;
+        for (const page of pages) page.title = page.id;
+        pages[0].sections[0] = { ...pages[0].sections[0], locked: true, body };
+        pages[1].sections[0].userCorrected = true;
+        pages[3].sections[0].body = body;
+        pages[4].sections[0].body = body;
+        const { terminal, patchRequest } = await beginPagePatch(t, pages);
+        patchRequest.answer(
+            JSON.stringify({
+                patches: pages.map(({ id }) => ({
+                    pageId: id,
+                    heading: id === "untouched" ? "Hearth" : "Gate",
+                    op: "upsert",
+                    body: id === "untouched" ? "Lit" : body,
+                    ...(id === "disputed" ? { conflict: "contradiction", confidence: 0 } : {}),
+                })),
+            }),
+        );
+        await finishRecording(t, terminal);
+        expect(t.provider.requests).toHaveLength(2);
+        const saved = pageRecords(t);
+        expect(saved.find(({ id }) => id === "locked")).toEqual(pages[0]);
+        expect(saved.find(({ id }) => id === "corrected")!.sections[0]).toMatchObject({ body, userCorrected: true });
+        expect(saved.find(({ id }) => id === "disputed")!.sections[0]).toMatchObject({
+            body: `${pages[2].sections[0].body}\n[disputed] ${body}`,
+            disputed: true,
+        });
+        expect(saved.find(({ id }) => id === "identical")!.sections[0].body).toBe(body);
+        expect(saved.find(({ id }) => id === "untouched")!.sections[0]).toEqual(pages[4].sections[0]);
+        expect(saved.flatMap(({ history }) => history).filter(({ kind }) => kind === "compact")).toEqual([]);
+        expect(runRecord(t).receipt!.warnings.filter(({ kind }) => kind.startsWith("compaction"))).toEqual([
+            { kind: "compactionSkipped", pageId: "corrected", heading: "Gate", detail: "corrected: Gate" },
+            { kind: "compactionSkipped", pageId: "disputed", heading: "Gate", detail: "disputed: Gate" },
+        ]);
+        expect(contents(t).events).toHaveLength(1);
+    });
+
+    it("records the event and gives every target one call despite failed, unusable, or non-smaller compactions", async () => {
+        const t = structuredHarness();
+        const page = memoryRecords(["harbor"], "Harbor").pages[0];
+        const headings = ["Provider failure", "Unusable answer", "Not smaller", "Success"];
+        page.sections = headings.map((heading) => ({ ...page.sections[0], heading, body: "Old" }));
+        const body = "x".repeat(MEMORY_SECTION_BUDGETS.location + 1);
+        const { terminal, patchRequest } = await beginPagePatch(t, [page]);
+        patchRequest.answer(
+            JSON.stringify({ patches: headings.map((heading) => ({ pageId: page.id, heading, op: "upsert", body })) }),
+        );
+        for (const [i, heading] of headings.entries()) {
+            const request = await nextPatch(t, patchRequest.index + 1 + i, terminal);
+            expect(request.body.messages.find((message: OpenAIChat) => message.role === "user").content).toContain(
+                JSON.stringify({ type: "location", title: "Harbor", heading }),
+            );
+            if (i === 0) request.fail("Compaction provider failed");
+            else request.answer(JSON.stringify(i === 1 ? { wrong: "No body" } : { body: i === 2 ? body : "Short" }));
+        }
+        await finishRecording(t, terminal);
+        expect(t.provider.requests).toHaveLength(6);
+        expect(eventRecord(t).summary).toBe(analysis().summary);
+        const saved = t.store.memory.readRecord("c", "k1", "pages", page.id)!.data;
+        expect(saved.sections.map(({ body }) => body)).toEqual([body, body, body, "Short"]);
+        expect(saved.history.filter(({ kind }) => kind === "compact").map(({ heading }) => heading)).toEqual([
+            "Success",
+        ]);
+        expect(runRecord(t)).toMatchObject({
+            result: "recorded",
+            receipt: {
+                state: "recorded",
+                warnings: [
+                    {
+                        kind: "compactionFailed",
+                        pageId: page.id,
+                        heading: headings[0],
+                        detail: `Harbor: ${headings[0]}`,
+                    },
+                    {
+                        kind: "compactionFailed",
+                        pageId: page.id,
+                        heading: headings[1],
+                        detail: `Harbor: ${headings[1]}`,
+                    },
+                    {
+                        kind: "compactionNotSmaller",
+                        pageId: page.id,
+                        heading: headings[2],
+                        detail: `Harbor: ${headings[2]}`,
+                    },
+                    {
+                        kind: "compacted",
+                        pageId: page.id,
+                        heading: headings[3],
+                        detail: `Harbor: Success (${body.length} → 5)`,
+                    },
+                ],
+            },
+        });
+    });
+
+    it("drops a completed compaction when a concurrent lock makes the fresh patch group refuse", async () => {
+        const t = structuredHarness();
+        const page = memoryRecords(["harbor"], "Harbor").pages[0];
+        page.sections.push({ ...page.sections[0], heading: "Hearth", body: "Unlit" });
+        const { terminal, patchRequest } = await beginPagePatch(t, [page]);
+        patchRequest.answer(
+            JSON.stringify({
+                patches: [
+                    {
+                        pageId: page.id,
+                        heading: "Gate",
+                        op: "upsert",
+                        body: "x".repeat(MEMORY_SECTION_BUDGETS.location + 1),
+                    },
+                    { pageId: page.id, heading: "Hearth", op: "upsert", body: "Lit" },
+                ],
+            }),
+        );
+        const request = await nextPatch(t, patchRequest.index + 1, terminal);
+        page.sections[1].locked = true;
+        writeMemory(t.store, "c", "k1", { pages: [page] });
+        request.answer('{"body":"Short"}');
+        await finishRecording(t, terminal);
+        expect(t.provider.requests).toHaveLength(3);
+        expect(t.store.memory.readRecord("c", "k1", "pages", page.id)!.data).toEqual(page);
+        expect(runRecord(t).receipt!.warnings).toEqual([
+            { kind: "pageRefused", pageId: page.id, heading: "Gate", detail: "Harbor: Gate" },
+            { kind: "lockedSection", pageId: page.id, heading: "Hearth", detail: "Harbor: Hearth" },
+            { kind: "compactionStale", pageId: page.id, heading: "Gate", detail: "Harbor: Gate" },
+        ]);
+        expect(runRecord(t).receipt!.pages.find(({ pageId }) => pageId === page.id)).toBeUndefined();
+        expect(contents(t).events).toHaveLength(1);
+        expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual([analysis().summary]);
+    });
+
+    it("ends the run without recording when the compaction request ends its memory host", async () => {
+        const t = structuredHarness();
+        const runInJob = t.hostDeps.llm.runInJob;
+        let calls = 0;
+        t.hostDeps.llm.runInJob = async (spec) => {
+            const response = await runInJob(spec);
+            if (++calls === 3) spec.endJob("Compaction host stopped");
+            return response;
+        };
+        const page = memoryRecords(["harbor"], "Harbor").pages[0];
+        const { terminal, patchRequest } = await beginPagePatch(t, [page]);
+        patchRequest.answer(
+            JSON.stringify({
+                patches: [
+                    {
+                        pageId: page.id,
+                        heading: "Gate",
+                        op: "upsert",
+                        body: "x".repeat(MEMORY_SECTION_BUDGETS.location + 1),
+                    },
+                ],
+            }),
+        );
+        const request = await nextPatch(t, patchRequest.index + 1, terminal);
+        request.answer('{"body":"Short"}');
+        expect((await terminal).status).toMatchObject({ state: "failed", error: "Compaction host stopped" });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(3);
+        expect(contents(t).events).toEqual([]);
+        expect(pageRecords(t)).toEqual([page]);
+        expect(runRecord(t)).toMatchObject({
+            result: "failed",
+            error: "Compaction host stopped",
+            receipt: { state: "failed", reason: "hostFailure" },
+        });
+        expect(t.embeddings.bodies).toEqual([]);
+    });
 
     it("commits admitted page candidates and surviving patch groups across a revision conflict", async () => {
         const t = structuredHarness({ owner: { globalLore: [{ comment: "Harbor", key: "Port, Quay" }] } });

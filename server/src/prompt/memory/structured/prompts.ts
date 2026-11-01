@@ -7,6 +7,7 @@ import {
     MEMORY_PAGE_TYPES,
     MEMORY_PATCH_CONFLICTS,
     MEMORY_PATCH_OPS,
+    MEMORY_SECTION_BUDGETS,
     MEMORY_THREAD_STATES,
     type MemoryPage,
     type MemoryThread,
@@ -14,12 +15,13 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 import type { MemoryHost } from "../host.ts";
+import type { CompactionTarget } from "./compact.ts";
 import { type CastRow, SCENE_SECTIONS } from "./pages.ts";
 import type { PatchRow } from "./patches.ts";
 import type { WriterWindow } from "./window.ts";
 
 /**
- * The writer's two prompts: ChatML frames with named slots, read through the task host's parser. The
+ * The writer's three prompts: ChatML frames with named slots, read through the task host's parser. The
  * frame and the preset's `instructions` go through ChatML and CBS. The slot values are filled in
  * afterwards, in one pass over the parsed messages, so chat and model text never reach CBS and cannot
  * start a ChatML message, and a value that holds a slot's name stays as it is.
@@ -27,7 +29,7 @@ import type { WriterWindow } from "./window.ts";
  * The analysis prompt's size is a cost on every recorded turn: its fixed parts stay short and everything
  * it lists is bounded. Only `messages` is not, because a quote must be found in the window's whole text.
  * The patch prompt holds no message and everything in it is bounded, so it needs no size check of its
- * own.
+ * own. Neither does the compaction prompt: it holds one section, and no run keeps it.
  */
 
 /** The prompt's named inputs. */
@@ -38,6 +40,9 @@ export type AnalysisSlots = Record<
 
 /** The patch prompt's named inputs: the same names, where `cast` is its pages and `previous` the event. */
 export type PatchSlots = Record<"format" | "rules" | "language" | "cast" | "previous", string>;
+
+/** The compaction prompt's named inputs: `page` says what the section is, and `section` is its body. */
+export type CompactSlots = Record<"format" | "rules" | "language" | "page" | "section", string>;
 
 /** What the slots are written from. */
 export type AnalysisInput = {
@@ -62,6 +67,12 @@ export type PatchInput = {
     rows: readonly PatchRow[];
     /** The event as admitted, so nothing unverified reaches a page. */
     event: MemoryEventWrite;
+};
+
+/** What the compaction slots are written from. */
+export type CompactInput = {
+    language: string;
+    target: CompactionTarget;
 };
 
 /** `inlayTokenRegex` of `src/ts/util/inlayTokens.ts`. */
@@ -113,6 +124,15 @@ const PATCH_RULES = `Rules:
 - A character page uses only the headings it lists, and a heading marked empty has no text yet.
 - "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.`;
 
+const COMPACT_FORMAT = `Answer with one JSON object and nothing else:
+{ "body": "the section's whole shorter text" }`;
+
+/** The compaction call's rules for a section whose budget is `budget`. */
+const compactRules = (budget: number) => `Rules:
+- Keep every fact that is still true and each current value, and add nothing.
+- Drop repetition and superseded "(was: ...)" lines first.
+- Aim for at most ${budget} characters.`;
+
 /** The default frame, with the preset's text after the fixed instructions. */
 function analysisFrame(instructions: string): string {
     const added = instructions.trim() === "" ? "" : `\n\n${instructions.trim()}`;
@@ -140,24 +160,44 @@ Messages to record:
 }
 
 /**
- * The patch call's frame: the same shape, with its pages and the event in place of the chat. The
- * preset's text is cut to `promptPatchChars`, which is what keeps this prompt within the run's margin.
+ * The preset's text as the patch and compaction frames add it, cut to `promptPatchChars`, which is what
+ * keeps the patch prompt within the run's margin.
  */
-function patchFrame(instructions: string): string {
+function addedInstructions(instructions: string): string {
     const text = clampText(instructions.trim(), LIMITS.promptPatchChars);
-    const added = text === "" ? "" : `\n\n${text}`;
+    return text === "" ? "" : `\n\n${text}`;
+}
+
+/** The patch call's frame: the same shape, with its pages and the event in place of the chat. */
+function patchFrame(instructions: string): string {
     return `<|im_start|>system<|im_sep|>You keep the pages of a long roleplay's memory. Update them to say what the event establishes, and nothing else.
 
 {{slot::format}}
 
 {{slot::rules}}
 
-Write all text but ids in this language: {{slot::language}}${added}<|im_end|>
+Write all text but ids in this language: {{slot::language}}${addedInstructions(instructions)}<|im_end|>
 <|im_start|>user<|im_sep|>Pages:
 {{slot::cast}}
 
 Event:
 {{slot::previous}}<|im_end|>`;
+}
+
+/** The compaction call's frame: the same shape, with one section of one page and nothing else. */
+function compactFrame(instructions: string): string {
+    return `<|im_start|>system<|im_sep|>You keep the pages of a long roleplay's memory. Make one section of a page shorter without changing what it says.
+
+{{slot::format}}
+
+{{slot::rules}}
+
+Write all text but ids in this language: {{slot::language}}${addedInstructions(instructions)}<|im_end|>
+<|im_start|>user<|im_sep|>Page:
+{{slot::page}}
+
+Section:
+{{slot::section}}<|im_end|>`;
 }
 
 /** A message's text as the prompt shows it: raw, so a quote can match, with inlays as `[Image]`. */
@@ -231,6 +271,19 @@ export function patchSlots({ language, rows, event }: PatchInput): PatchSlots {
     };
 }
 
+/** The slot values of one compaction call. */
+export function compactSlots({ language, target }: CompactInput): CompactSlots {
+    const { page, heading, body } = target;
+    const { type, title } = page;
+    return {
+        format: COMPACT_FORMAT,
+        rules: compactRules(MEMORY_SECTION_BUDGETS[type]),
+        language: clampText(language, LIMITS.labelChars),
+        page: JSON.stringify({ type, title, heading }),
+        section: body,
+    };
+}
+
 /** `frame` parsed with its slots in place, then the slots filled in one pass. */
 function assemblePrompt<Slots extends Record<string, string>>(
     host: Pick<MemoryHost, "parseChatML">,
@@ -262,4 +315,13 @@ export function assemblePatchPrompt(
     slots: PatchSlots,
 ): OpenAIChat[] {
     return assemblePrompt(host, patchFrame(instructions), slots);
+}
+
+/** The compaction call's messages. */
+export function assembleCompactPrompt(
+    host: Pick<MemoryHost, "parseChatML">,
+    instructions: string,
+    slots: CompactSlots,
+): OpenAIChat[] {
+    return assemblePrompt(host, compactFrame(instructions), slots);
 }

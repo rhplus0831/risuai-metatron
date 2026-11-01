@@ -193,7 +193,7 @@ coupling links.
   the rest of `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts` (the receipt and panel
   parts: **structured-memory-read**).
 - **structured-memory-writer**:
-  `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,recordJob}.ts`.
+  `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`.
 - **structured-memory-read**: `server/src/prompt/memory/structured/{lanes,retrieve,card,step}.ts`,
   `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and in
   `src/ts/process/structuredMemory.svelte.ts` the receipt and panel functions (`memoryReceiptView`,

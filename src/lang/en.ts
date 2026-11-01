@@ -2500,6 +2500,11 @@ export const languageEnglish = {
             emptiesPage: "This would have left the page empty",
             sectionTooLong: "The new text is too long for the section",
             disputed: "Both values were kept as disputed",
+            compacted: "A long section was shortened",
+            compactionFailed: "A long section could not be shortened",
+            compactionNotSmaller: "The new text was no shorter, so a long section was left as it is",
+            compactionStale: "The records changed during the run, so a shorter text was left out",
+            compactionSkipped: "A long section a person corrected, or one in dispute, was left as it is",
         } as Record<string, string>,
         refusalKinds: {
             lowConfidence: "an unresolved mention, too uncertain to make a page",

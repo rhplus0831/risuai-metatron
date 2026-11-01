@@ -29,18 +29,27 @@ import type { MemoryHost } from "../host.ts";
 import { MemoryHostFailure, type MemoryTaskHostDeps } from "../memoryTaskHost.ts";
 import type { StructuredMemoryCommit, StructuredMemoryWriter, StructuredMemoryWriterResult } from "../memoryTasks.ts";
 import { admitAnalysis, type Admission, parseAnalysis } from "./analysis.ts";
+import { type Compaction, compactionTargets, readCompaction } from "./compact.ts";
 import {
     type AliasSeed,
     aliasSeeds,
     castSlice,
     type PagePlan,
     planPages,
+    sectionWarning,
     storedText,
     type Warning,
     windowSpeaker,
 } from "./pages.ts";
 import { commitPages, parsePatches, showTargets } from "./patches.ts";
-import { analysisSlots, assembleAnalysisPrompt, assemblePatchPrompt, patchSlots } from "./prompts.ts";
+import {
+    analysisSlots,
+    assembleAnalysisPrompt,
+    assembleCompactPrompt,
+    assemblePatchPrompt,
+    compactSlots,
+    patchSlots,
+} from "./prompts.ts";
 import { eventVectorTexts } from "./retrieve.ts";
 import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
 
@@ -48,8 +57,9 @@ export { writerPaused };
 
 /**
  * The Structured Memory writer: an analysis call per window, a patch call when a page candidate was
- * accepted, and a `memory_runs` row that shows how it went. The rows are the writer's whole state: a
- * restart loses nothing, and pausing needs no table of its own.
+ * accepted, a compaction call for each section a patch left past its budget, and a `memory_runs` row
+ * that shows how it went. The rows are the writer's whole state: a restart loses nothing, and pausing
+ * needs no table of its own.
  *
  * - Interrupted runs: one task runs per chat, so a `pending` row found at a start is abandoned (a
  *   cancel, a checkpoint load, maintenance, a restart, a deadline). The write that opens the new run
@@ -72,6 +82,13 @@ export { writerPaused };
  *   keeps what it sent. It fails as the analysis call does, `patchFailed`, because an event committed
  *   without it would close the window for good. A page it may not touch is no such failure: that page is
  *   listed and the rest commit.
+ * - Compaction: it comes before the commit, in the one run, so the event, its pages, and the recorded run
+ *   stay one commit. A dry run of that commit names the sections, each gets one call, and every attempt of
+ *   the commit works everything out again, so no id of the dry run reaches a record and a compaction
+ *   the records no longer allow is dropped (`compact.ts`). A failed call, or an answer that is not kept,
+ *   is a warning and the run goes on: a compaction is never why a window stays open. A `MemoryHostFailure`
+ *   or any other throw goes as for the patch call. Its prompt and answer stay out of the run, whose record
+ *   margin does not cover them.
  * - Success: one commit writes the event, its threads, its pages, and the recorded run. A refusal for
  *   the revision admits the answer again against fresh records, with no call, and a new page keeps its
  *   id, which the patches name.
@@ -549,23 +566,19 @@ export function createStructuredWriter(
             const answer = commitFresh(store, arg, opened.revision, () => ({ runs: [failed] }));
             return answer.outcome === "committed" ? { outcome: "failed", error } : answer;
         };
-        /** One model call: its text, or how the run ended. `failure` replaces a failed call's own code. */
-        const ask = async (
-            formated: OpenAIChat[],
-            failure?: string,
-        ): Promise<{ text: string } | { ended: StructuredMemoryWriterResult }> => {
+        /** One model call: its text, or why it gave none, as a stored code and the unredacted error. */
+        const call = async (formated: OpenAIChat[]): Promise<{ text: string } | { reason: string; error: string }> => {
             try {
                 const response = await host.request(formated);
                 run = { ...run, model: response.model ?? run.model };
                 if (response.type === "fail") {
-                    return { ended: fail(failure ?? "requestFailed", response.result) };
+                    return { reason: "requestFailed", error: response.result };
                 }
                 if (response.type !== "success") {
-                    const text = `Unexpected response type: ${response.type}`;
-                    return { ended: fail(failure ?? "unexpectedResponse", text) };
+                    return { reason: "unexpectedResponse", error: `Unexpected response type: ${response.type}` };
                 }
                 if (response.result.trim() === "") {
-                    return { ended: fail(failure ?? "emptyResponse", "The model's answer is empty") };
+                    return { reason: "emptyResponse", error: "The model's answer is empty" };
                 }
                 run = { ...run, outputTokens: run.outputTokens + (await host.tokenize(response.result)) };
                 return { text: response.result };
@@ -575,6 +588,14 @@ export function createStructuredWriter(
                 }
                 throw error;
             }
+        };
+        /** A call the run needs: its text, or how the run ended. `failure` replaces a failed call's own code. */
+        const ask = async (
+            formated: OpenAIChat[],
+            failure?: string,
+        ): Promise<{ text: string } | { ended: StructuredMemoryWriterResult }> => {
+            const answer = await call(formated);
+            return "reason" in answer ? { ended: fail(failure ?? answer.reason, answer.error) } : answer;
         };
 
         const answered = await ask(opened.formated);
@@ -632,22 +653,60 @@ export function createStructuredWriter(
             patchWarnings = patched.warnings;
         }
 
-        const durationMs = now() - startedAt;
-        let event: MemoryEventWrite | undefined;
-        let sectionTexts: string[] = [];
-        const answer = commitFresh(store, arg, opened.revision, (fresh) => {
+        /** What one attempt at the commit makes of the records `fresh` lists, with nothing written yet. */
+        const attempt = (fresh: MemoryContents, compactions: readonly Compaction[]) => {
             const pages = readPages(store, arg, fresh);
             const { plan, admission } = admitRecording(store, arg, run.id, recording, fresh, pages);
-            ({ event } = admission);
             const written = commitPages({
                 pages,
                 plan,
                 admission,
                 patches: run.patches ?? [],
                 seen: shown.seen,
+                compactions,
                 sceneId,
                 stamp: { eventId: admission.event.id, sources: window.sources, at: now(), newId: randomUUID },
             });
+            return { plan, admission, written };
+        };
+
+        const compactions: Compaction[] = [];
+        const compactionWarnings: Warning[] = [];
+        if (run.patches?.length) {
+            const fresh = store.memory.readContents(chaId, chatId);
+            if (!fresh) {
+                return { outcome: "skipped", reason: "chatGone" };
+            }
+            const { written } = attempt(fresh, []);
+            const { targets, warnings: skipped } = compactionTargets(written.pages, written.receipts);
+            compactionWarnings.push(...skipped);
+            const language = writerLanguage(arg);
+            for (const target of targets) {
+                const slots = compactSlots({ language, target });
+                const formated = assembleCompactPrompt(host, writerSettings(host).instructions, slots);
+                for (const message of formated) {
+                    run = { ...run, inputTokens: run.inputTokens + (await tokenizer.tokenizeChat(message)) };
+                }
+                const compactAnswer = await call(formated);
+                if ("reason" in compactAnswer) {
+                    compactionWarnings.push(sectionWarning("compactionFailed", target.page, target.heading));
+                    continue;
+                }
+                const read = readCompaction(target, compactAnswer.text);
+                if (read.ok) {
+                    compactions.push(read.compaction);
+                } else {
+                    compactionWarnings.push(read.warning);
+                }
+            }
+        }
+
+        const durationMs = now() - startedAt;
+        let event: MemoryEventWrite | undefined;
+        let sectionTexts: string[] = [];
+        const answer = commitFresh(store, arg, opened.revision, (fresh) => {
+            const { plan, admission, written } = attempt(fresh, compactions);
+            ({ event } = admission);
             sectionTexts = written.vectorTexts;
             const receipt: MemoryReceipt = {
                 state: "recorded",
@@ -656,7 +715,7 @@ export function createStructuredWriter(
                 pages: written.receipts,
                 refused: [...plan.refused, ...shown.refused],
                 unverified: admission.unverified,
-                warnings: [...admission.warnings, ...patchWarnings, ...written.warnings],
+                warnings: [...admission.warnings, ...patchWarnings, ...compactionWarnings, ...written.warnings],
                 model: run.model,
                 inputTokens: run.inputTokens,
                 outputTokens: run.outputTokens,

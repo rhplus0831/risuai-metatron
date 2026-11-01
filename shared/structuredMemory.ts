@@ -184,6 +184,26 @@ export const STRUCTURED_MEMORY_LIMITS = {
     contextMessageChars: 1000,
 } as const;
 
+/**
+ * How long a section may grow by page type, in `body.length`, before a change that leaves it longer gets
+ * the writer's compaction call. These are starting values, with no setting. A scene field is rewritten
+ * whole and clamped, so its budget is that clamp and nothing compacts it.
+ */
+export const MEMORY_SECTION_BUDGETS = {
+    character: 1600,
+    location: 1200,
+    faction: 1200,
+    item: 800,
+    concept: 1200,
+    scene: STRUCTURED_MEMORY_LIMITS.sceneFieldChars,
+    note: 1600,
+} as const satisfies Record<MemoryPageType, number>;
+
+/** Whether `body`, a section of a page of `type`, is past its budget. */
+export function memorySectionOverBudget(type: MemoryPageType, body: string): boolean {
+    return body.length > MEMORY_SECTION_BUDGETS[type];
+}
+
 /** A message a record cites, as it was when the record was written. */
 export interface MemoryAnchoredSource {
     messageId: string;

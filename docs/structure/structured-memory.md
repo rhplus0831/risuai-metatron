@@ -24,7 +24,8 @@
 
 - `shared/structuredMemory.ts`: types and pure rules only, safe in the tab and on the server.
   - `STRUCTURED_MEMORY_ALGORITHM`: the persisted discriminator.
-  - `STRUCTURED_MEMORY_LIMITS`: the record limits, and `CHARACTER_SECTION_SLOTS`: the fixed character sections.
+  - `STRUCTURED_MEMORY_LIMITS`: the record limits, `CHARACTER_SECTION_SLOTS`: the fixed character sections, and
+    `MEMORY_SECTION_BUDGETS`: what [compaction](structured-memory-writer.md#compaction) holds a section to.
   - Records: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`.
   - Writer output: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`.
   - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
