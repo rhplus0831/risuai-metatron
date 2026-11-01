@@ -9,6 +9,7 @@ import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
+import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { createResourceTestClient, json, type ResourceTestClient, type TestServerOptions } from "./testSupport.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -525,6 +526,8 @@ describe("checkpoint load transactions", () => {
 
     it("rolls back stale loads and post-replace failures without changing safety history, the floor, policy, writes or notices", () => {
         const t = storeFixture();
+        const records = memoryRecords(["z", "a"]);
+        writeMemory(t.store, ref.characterId, ref.chatId, records);
         const saved = t.checkpoint();
         expect(t.service().load(t.request(saved.id)).status).toBe(200);
         t.checkpoint("second safety", "safety");
@@ -532,8 +535,27 @@ describe("checkpoint load transactions", () => {
         t.store.checkpoints.writePolicy(ref.characterId, ref.chatId, { autoEvery: 4, autoKeep: 2, lastAutoTurns: 99 });
         const stale = t.request(saved.id);
         t.write([{ op: "setText", id: "a", text: "Keep this" }]);
+        writeMemory(t.store, ref.characterId, ref.chatId, {
+            ...memoryRecords(["z", "later"], "Keep this memory"),
+            remove: { pages: ["a"], events: ["a"], threads: ["a"], runs: ["a"] },
+        });
+        const memory = () => {
+            const contents = t.store.memory.readContents(ref.characterId, ref.chatId)!;
+            return {
+                revision: contents.revision,
+                records: Object.fromEntries(
+                    memoryKinds.map((kind) => [
+                        kind,
+                        contents[kind].map(
+                            ({ id }) => t.store.memory.readRecord(ref.characterId, ref.chatId, kind, id)!.data,
+                        ),
+                    ]),
+                ),
+            };
+        };
         const state = () => ({
             chat: t.chat(),
+            memory: memory(),
             floor: t.store.checkpoints.readFloor(ref.characterId, ref.chatId),
             checkpoints: t.store.checkpoints.list(ref.characterId, ref.chatId),
             policy: t.store.checkpoints.readPolicy(ref.characterId, ref.chatId),
@@ -547,6 +569,11 @@ describe("checkpoint load transactions", () => {
         expect(() =>
             t
                 .service(() => {
+                    expect(memory().records).toEqual({
+                        ...records,
+                        events: records.events.map((event) => ({ ...event, createdRevision: 1 })),
+                    });
+                    expect(memory().revision).not.toBe(before.memory.revision);
                     throw new Error("after load failed");
                 })
                 .load(t.request(saved.id)),

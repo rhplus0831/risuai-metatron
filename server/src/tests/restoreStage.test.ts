@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
+import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
 import {
     createResourceStore,
@@ -340,6 +341,186 @@ function seedLiveMemory(store: ResourceStore) {
     });
     writeMemory(store, "old", "old", memoryRecords(["live-only"]));
 }
+
+function readMemory(store: ResourceStore, characterId = "z", chatId = "z") {
+    const contents = store.memory.readContents(characterId, chatId)!;
+    return {
+        revision: contents.revision,
+        records: Object.fromEntries(
+            memoryKinds.map((kind) => [
+                kind,
+                contents[kind].map(({ id }) => store.memory.readRecord(characterId, chatId, kind, id)!.data),
+            ]),
+        ),
+    };
+}
+
+function loadCheckpoint(store: ResourceStore, id: string) {
+    return createCheckpointService({ store, busy: () => false, memoryTasks: null }).load({
+        epoch: store.epoch(),
+        body: { characterId: "z", chatId: "z", id, chatBaseRevision: store.chatRevision("z", "z") },
+    });
+}
+
+it.each(["live save", "legacy checkpoint"] as const)(
+    "restores a snapshot with a %s and preserves its memory load behavior",
+    async (format) => {
+        const { dir, source } = fixture();
+        const store = createResourceStore({ file: source, kinds });
+        const initial = memoryRecords(["z", "a"]);
+        const current = memoryRecords(["z", "later"], "Snapshot memory");
+        const snapshot = path.join(dir, "saved.sqlite");
+        let id = "saved";
+        try {
+            writeMemory(store, "z", "z", initial);
+            if (format === "live save") id = store.checkpoints.save("z", "z", "With memory", "manual")!.id;
+            writeMemory(store, "z", "z", {
+                ...current,
+                remove: { pages: ["a"], events: ["a"], threads: ["a"], runs: ["a"] },
+            });
+            await store.backupTo(snapshot);
+        } finally {
+            store.close();
+        }
+        const restored = createResourceStore({ file: path.join(dir, "restored.sqlite"), kinds });
+        try {
+            seedLiveMemory(restored);
+            await installSnapshot(restored, snapshot, kinds);
+            const before = readMemory(restored);
+            expect(before.records).toEqual({
+                ...current,
+                events: current.events.map((event, index) => ({ ...event, createdRevision: index + 1 })),
+            });
+            expect(loadCheckpoint(restored, id).status).toBe(200);
+            if (format === "legacy checkpoint") {
+                expect(readMemory(restored)).toEqual(before);
+            } else {
+                expect(readMemory(restored).records).toEqual({
+                    ...initial,
+                    events: initial.events.map((event) => ({ ...event, createdRevision: 1 })),
+                });
+                expect(readMemory(restored).revision).not.toBe(before.revision);
+            }
+        } finally {
+            restored.close();
+        }
+    },
+);
+
+type MemoryChunks = Partial<Record<(typeof memoryKinds)[number], unknown[]>>;
+type MemoryForgery = {
+    name: string;
+    chunks: MemoryChunks;
+    editManifest?: (manifest: Record<string, string[]>) => void;
+    includeChunkRefs?: boolean;
+};
+
+/** Hash-correct pages on the old fixture's checkpoint; only the chosen memory rule is broken. */
+function attachCheckpointMemory(
+    source: string,
+    chunks: MemoryChunks,
+    editManifest?: MemoryForgery["editManifest"],
+    includeChunkRefs = true,
+) {
+    const db = new DatabaseSync(source);
+    try {
+        const put = (value: unknown) => {
+            const text = JSON.stringify(value);
+            const digest = hash(text);
+            db.prepare("INSERT INTO checkpointPages VALUES (?, ?)").run(digest, text);
+            return digest;
+        };
+        const manifest = Object.fromEntries(memoryKinds.map((kind) => [kind, (chunks[kind] ?? []).map(put)]));
+        if (includeChunkRefs) {
+            for (const digest of Object.values(manifest).flat())
+                db.prepare("INSERT INTO checkpointPageRefs VALUES (31, ?)").run(digest);
+        }
+        editManifest?.(manifest);
+        const digest = put(manifest);
+        db.prepare("INSERT INTO checkpointPageRefs VALUES (31, ?)").run(digest);
+        db.prepare("UPDATE chatCheckpoints SET fields = ? WHERE id = 'saved'").run(
+            JSON.stringify({ structuredMemoryRecords: digest }),
+        );
+    } finally {
+        db.close();
+    }
+}
+
+const eventText = (id: string, title = "Saved", createdRevision = 1) =>
+    JSON.stringify({ ...memoryRecords([id], title).events[0], createdRevision });
+const sceneText = (id: string) => JSON.stringify({ ...memoryRecords([id]).pages[0], type: "scene", participants: [] });
+const forgedCheckpointMemory: MemoryForgery[] = [
+    {
+        name: "manifest missing a kind",
+        chunks: {},
+        editManifest: (manifest) => {
+            delete manifest.runs;
+        },
+    },
+    {
+        name: "manifest naming an absent page",
+        chunks: {},
+        editManifest: (manifest) => {
+            manifest.pages = ["f".repeat(64)];
+        },
+    },
+    { name: "chunk that is not an array", chunks: { events: [{}] } },
+    { name: "chunk with a non-string row", chunks: { events: [[{}]] } },
+    {
+        name: "row failing the record check",
+        chunks: {
+            events: [[JSON.stringify({ ...memoryRecords(["e"]).events[0], createdRevision: 1, status: "invalid" })]],
+        },
+    },
+    {
+        name: "duplicate id across chunks",
+        chunks: { events: [[eventText("e")], [eventText("e", "Different bytes")]] },
+    },
+    {
+        name: "second scene across chunks",
+        chunks: { pages: [[sceneText("one")], [sceneText("two")]] },
+    },
+    {
+        name: "refs missing a chunk hash",
+        chunks: { events: [[eventText("e")]] },
+        includeChunkRefs: false,
+    },
+];
+
+it.each(forgedCheckpointMemory)(
+    "refuses forged checkpoint memory as a validation error: $name",
+    async ({ chunks, editManifest, includeChunkRefs }) => {
+        const { source, output } = fixture();
+        attachCheckpointMemory(source, chunks, editManifest, includeChunkRefs);
+        const staging = stageValidatedSnapshot(source, output, kinds);
+        await expect(staging).rejects.toThrow(ResourceValidationError);
+    },
+);
+
+it("refuses loading a checkpoint event created past the new memory revision without changing any state", async () => {
+    const { dir, source } = fixture();
+    attachCheckpointMemory(source, { events: [[eventText("future", "Future event", 3)]] });
+    const store = createResourceStore({ file: path.join(dir, "live.sqlite"), kinds });
+    try {
+        await installSnapshot(store, source, kinds);
+        writeMemory(store, "z", "z", memoryRecords(["current"]));
+        // Current memory is revision 1; loading would make it 2, below the event's 3.
+        const state = () => ({
+            chat: store.readChatSource("z", "z"),
+            memory: readMemory(store),
+            checkpoints: store.checkpoints.list("z", "z"),
+            writes: store.writeCount(),
+        });
+        const before = state();
+        expect(loadCheckpoint(store, "saved")).toEqual({
+            status: 400,
+            body: { error: expect.any(String) },
+        });
+        expect(state()).toEqual(before);
+    } finally {
+        store.close();
+    }
+});
 
 it("restores an old snapshot with the entire memory table group absent", async () => {
     const { dir, source, output } = await memoryFixture();

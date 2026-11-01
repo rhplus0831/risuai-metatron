@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
     CHECKPOINT_CHAT_FIELDS,
+    CHECKPOINT_MEMORY_FIELD,
     CHECKPOINT_PREVIEW_TEXT_LENGTH,
     isToggleKey,
     MAX_AUTO_EVERY,
@@ -14,15 +15,24 @@ import {
 } from "../../../shared/chatCheckpoints.ts";
 import type {
     CheckpointKind,
+    CheckpointMemoryManifest,
     CheckpointPolicy,
     CheckpointPolicyState,
     CheckpointPreview,
     CheckpointSummary,
 } from "../../../shared/chatCheckpoints.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
+import { MEMORY_RECORD_KINDS } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { normalizeChatMeta, normalizeMessage } from "./chats.ts";
 import { COUNT_USER_TURNS_SQL, STAGED_CHAT_SEQS } from "./chatStore.ts";
+import {
+    checkMemoryRow,
+    type MemoryRecordKind,
+    memoryRowClaims,
+    type MemoryRowClaims,
+    type MemoryRowTexts,
+} from "./memoryStore.ts";
 import {
     isValidResourceId,
     nextRevision,
@@ -37,6 +47,11 @@ import {
  * Content pages are shared across chats: `prune` and `delete` remove the pages they freed, and the
  * table-wide sweep at open collects the rest, such as the pages a chat's cascade left unreferenced.
  * Snapshots carry all four tables together; an install replaces them on the restored chat incarnations.
+ *
+ * A checkpoint's structured memory lives in pages too: `fields` names a manifest page under
+ * `CHECKPOINT_MEMORY_FIELD`, the manifest lists each record kind's chunk pages, and a chunk is a JSON
+ * array of strings, each a row's `data` text verbatim. So a restored record keeps its bytes, and the
+ * manifest's chunks are named by the checkpoint's refs like any other page it holds.
  */
 const CHECKPOINT_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS chatCheckpoints (
@@ -125,6 +140,9 @@ type SummaryRow = Omit<CheckpointSummary, "revision" | "preview"> & {
 };
 type CheckpointRow = SummaryRow & { pages: string; fields: string };
 
+/** What a checkpoint holds of the chat's structured memory (`readMemory`). */
+export type CheckpointMemory = { captured: false } | { captured: true; texts: MemoryRowTexts };
+
 /** Validated snapshot rows, with stored JSON and page text unchanged; refs are rebuilt from manifests. */
 export type CheckpointSnapshotRows = {
     readonly checkpoints: readonly (CheckpointRow & { chatSeq: number; chatRevision: string })[];
@@ -136,7 +154,8 @@ export type CheckpointSnapshotRows = {
  * Where `walkCheckpointSnapshot` hands what it checked, as it reads it. Every page comes first, each
  * with a text that matches its hash, whether a checkpoint names it or not; `pageText` answers from what
  * the sink took, so a page's text is never read from the source twice. `hashes` of a checkpoint are the
- * pages it names. `end` closes a walk that found the tables, with the pages the checkpoints name.
+ * pages it names, its memory chunks included. `end` closes a walk that found the tables, with the pages
+ * the checkpoints name.
  */
 export type CheckpointSnapshotSink = {
     page(hash: string, text: string): void;
@@ -165,9 +184,13 @@ function assertKind(kind: CheckpointKind) {
  * prune's deleted/pagesRemoved counts, writePolicy's boolean, and sweep's count report changes so
  * the owner can count only committed writes. `prune` and `delete` remove only the content pages their
  * own checkpoints freed; `sweep` scans the whole page table and, as a single statement, also works in
- * autocommit.
+ * autocommit. `memoryRows` reads a chat's memory rows for `save`, one at a time (`createMemoryTables`).
  */
-export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions) {
+export function createCheckpointTables(
+    db: DatabaseSync,
+    tokens: TokenFunctions,
+    memoryRows: (chatSeq: number, kind: MemoryRecordKind) => Iterable<{ id: string; data: string }>,
+) {
     db.exec(CHECKPOINT_SCHEMA_SQL);
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectMessages = db.prepare("SELECT id, data FROM messages WHERE chatSeq = ? ORDER BY position");
@@ -242,6 +265,36 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
         return hash;
     }
 
+    /**
+     * Cuts rows, taken one at a time, into content pages and returns the pages' hashes in order. A
+     * page's text is a JSON array of its rows' `rowText`s, and those texts are all it holds in memory
+     * and what its size counts.
+     */
+    function putRowPages(rows: Iterable<{ id: string; data: string }>, rowText: (data: string) => string): string[] {
+        const pages: string[] = [];
+        let rowTexts: string[] = [];
+        let pageBytes = 0;
+        for (const row of rows) {
+            const text = rowText(row.data);
+            rowTexts.push(text);
+            pageBytes += Buffer.byteLength(text, "utf8");
+            // Id anchors keep later pages stable when a nearby row changes. Cuts include the row.
+            if (
+                createHash("sha256").update(row.id, "utf8").digest()[0] % 16 === 0 ||
+                rowTexts.length >= MAX_PAGE_ROWS ||
+                pageBytes >= MAX_PAGE_BYTES
+            ) {
+                pages.push(putPage("[" + rowTexts.join(",") + "]"));
+                rowTexts = [];
+                pageBytes = 0;
+            }
+        }
+        if (rowTexts.length) {
+            pages.push(putPage("[" + rowTexts.join(",") + "]"));
+        }
+        return pages;
+    }
+
     function readPage(hash: string): unknown {
         const row = selectPage.get(hash) as { text: string } | undefined;
         if (!row) {
@@ -289,8 +342,10 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
         },
 
         /**
-         * Captures stored message text and story fields without changing the chat. Missing chat: null.
-         * Counts come from SQL and pages from the stored row texts; only the two preview rows are parsed.
+         * Captures stored message text, story fields, and structured memory records without changing
+         * the chat. Missing chat: null. Counts come from SQL and pages from the stored row texts; only
+         * the two preview rows are parsed. A memory chunk encodes its rows' texts as JSON strings, so
+         * its size counts the escaping too.
          */
         save(characterId: string, chatId: string, name: string, kind: CheckpointKind): CheckpointSummary | null {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
@@ -324,28 +379,18 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
                 loreEntries: Array.isArray(meta.localLore) ? meta.localLore.length : 0,
                 variables: isPlainObject(meta.scriptstate) ? Object.keys(meta.scriptstate).length : 0,
             };
-            const pages: string[] = [];
-            let rowTexts: string[] = [];
-            let pageBytes = 0;
             const { count: messageCount } = countMessages.get(chat.seq) as { count: number };
             const { count: userTurns } = countUserTurns.get(chat.seq) as { count: number };
-            for (const row of selectMessages.iterate(chat.seq) as Iterable<{ id: string; data: string }>) {
-                rowTexts.push(row.data);
-                pageBytes += Buffer.byteLength(row.data, "utf8");
-                // Id anchors keep later pages stable when a nearby row changes. Cuts include the row.
-                if (
-                    createHash("sha256").update(row.id, "utf8").digest()[0] % 16 === 0 ||
-                    rowTexts.length >= MAX_PAGE_ROWS ||
-                    pageBytes >= MAX_PAGE_BYTES
-                ) {
-                    pages.push(putPage("[" + rowTexts.join(",") + "]"));
-                    rowTexts = [];
-                    pageBytes = 0;
-                }
-            }
-            if (rowTexts.length) {
-                pages.push(putPage("[" + rowTexts.join(",") + "]"));
-            }
+            const pages = putRowPages(
+                selectMessages.iterate(chat.seq) as Iterable<{ id: string; data: string }>,
+                (data) => data,
+            );
+            const memory = Object.fromEntries(
+                MEMORY_RECORD_KINDS.map((kind) => [
+                    kind,
+                    putRowPages(memoryRows(chat.seq, kind), (data) => JSON.stringify(data)),
+                ]),
+            ) as CheckpointMemoryManifest;
             const fields = Object.fromEntries(
                 Object.entries(CHECKPOINT_CHAT_FIELDS).flatMap(([key, behavior]) => {
                     const value = meta[key];
@@ -359,6 +404,7 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
                     return [];
                 }),
             );
+            fields[CHECKPOINT_MEMORY_FIELD] = putPage(JSON.stringify(memory));
             const id = randomUUID();
             const createdAt = Date.now();
             const result = insertCheckpoint.run(
@@ -375,7 +421,7 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
                 JSON.stringify(fields),
             );
             const seq = Number(result.lastInsertRowid);
-            for (const hash of new Set([...pages, ...Object.values(fields)])) {
+            for (const hash of new Set([...pages, ...Object.values(fields), ...Object.values(memory).flat()])) {
                 insertRef.run(seq, hash);
             }
             return {
@@ -488,6 +534,27 @@ export function createCheckpointTables(db: DatabaseSync, tokens: TokenFunctions)
                 ...Object.fromEntries(entries),
                 message: pages.flatMap((hash) => readPage(hash) as Message[]),
             } as Chat;
+        },
+
+        /**
+         * The structured memory a checkpoint holds, its row texts by kind in order; writes nothing.
+         * Missing chat or checkpoint: null. `captured` is false for a checkpoint from before they held
+         * memory, which says nothing of the chat's records.
+         */
+        readMemory(characterId: string, chatId: string, id: string): CheckpointMemory | null {
+            const checkpoint = findCheckpoint(characterId, chatId, id);
+            if (!checkpoint) {
+                return null;
+            }
+            const fields = JSON.parse(checkpoint.fields) as Record<string, string>;
+            if (!Object.hasOwn(fields, CHECKPOINT_MEMORY_FIELD)) {
+                return { captured: false };
+            }
+            const manifest = readPage(fields[CHECKPOINT_MEMORY_FIELD]) as CheckpointMemoryManifest;
+            const texts = Object.fromEntries(
+                MEMORY_RECORD_KINDS.map((kind) => [kind, manifest[kind].flatMap((hash) => readPage(hash) as string[])]),
+            ) as Record<MemoryRecordKind, string[]>;
+            return { captured: true, texts };
         },
 
         /** No policy row, or no chat, means null (automatic checkpoints are off). */
@@ -605,15 +672,69 @@ function checkFieldPage(key: string, text: string, chatId: string) {
     normalizeChatMeta(serialize({ [key]: value }).stored, chatId);
 }
 
+/** Checks a memory manifest page's text: exactly the record kinds, each listing existing pages. */
+function checkMemoryManifest(text: string, hash: string, pageHashes: ReadonlySet<string>): CheckpointMemoryManifest {
+    const manifest = snapshotJson(text, `memory manifest ${hash}`);
+    if (
+        !isPlainObject(manifest) ||
+        Object.keys(manifest).length !== MEMORY_RECORD_KINDS.length ||
+        !MEMORY_RECORD_KINDS.every((kind) => {
+            const chunks = manifest[kind];
+            return Array.isArray(chunks) && chunks.every((chunk) => typeof chunk === "string");
+        })
+    ) {
+        throw new ResourceValidationError(`memory manifest ${hash} must list chunk hashes by record kind`);
+    }
+    const checked = manifest as CheckpointMemoryManifest;
+    for (const chunk of Object.values(checked).flat()) {
+        if (!pageHashes.has(chunk)) {
+            throw new ResourceValidationError(`memory manifest ${hash}: no such checkpointPages hash ${chunk}`);
+        }
+    }
+    return checked;
+}
+
+/** What the rules across one checkpoint's chunks need of a checked chunk. */
+type MemoryChunkRows = { ids: string[]; scenes: number };
+
+/**
+ * Checks a memory chunk's text as rows of `kind`. A chunk's `createdRevision`s have no bound here: it
+ * holds no revision to compare with, a live save never leaves one past the chat's, and `replace` refuses
+ * a crafted one when it is loaded.
+ */
+function checkMemoryChunk(kind: MemoryRecordKind, text: string, hash: string): MemoryChunkRows {
+    const rows = snapshotJson(text, `memory chunk ${hash}`);
+    if (!Array.isArray(rows) || !rows.every((row) => typeof row === "string")) {
+        throw new ResourceValidationError(`memory chunk ${hash} must be an array of strings`);
+    }
+    const chunk: MemoryChunkRows = { ids: [], scenes: 0 };
+    const claims: MemoryRowClaims = {
+        id(id) {
+            chunk.ids.push(id);
+        },
+        scene() {
+            chunk.scenes += 1;
+        },
+    };
+    rows.forEach((row: string, index) => {
+        checkMemoryRow(`memory chunk ${hash} row ${index + 1}`, kind, row, claims, Number.MAX_SAFE_INTEGER);
+    });
+    return chunk;
+}
+
 /**
  * Reads the optional checkpoint table group, one row at a time, checking every row and each distinct
- * use of a content page: the same text can be valid as messages and not as a field, or as one field
- * and not as another, so a page's message ids and its field checks are remembered apart. An
- * unreferenced page gets only its hash check. Every checked row goes to `sink` with its stored text
- * verbatim, pages by hash, then checkpoints by seq and policies by chat. An absent group calls nothing
- * on `sink`; a partial group or an inconsistent row is a `ResourceValidationError`. `chatIds` holds each
- * chat's id by its seq (`walkChatSnapshot`). Refs are not handed on: they follow from the manifests,
- * and a snapshot's own are only checked against them.
+ * use of a content page: the same text can be valid as messages and not as a field, as one field and
+ * not as another, or as one record kind's chunk and not as another's, so a page's message ids, its field
+ * checks, and its chunk rows are remembered apart. An unreferenced page gets only its hash check. Every
+ * checked row goes to `sink` with its stored text verbatim, pages by hash, then checkpoints by seq and
+ * policies by chat. An absent group calls nothing on `sink`; a partial group or an inconsistent row is a
+ * `ResourceValidationError`. `chatIds` holds each chat's id by its seq (`walkChatSnapshot`). Refs are not
+ * handed on: they follow from the manifests, and a snapshot's own are only checked against them.
+ *
+ * A memory chunk's rows pass the check a snapshot's memory rows do (`checkMemoryRow`). Its size is not
+ * held to the page limits, which a single record may legally pass, and its records are not compared
+ * with the checkpoint's messages: a record's sources can legitimately disagree with them.
  */
 export function walkCheckpointSnapshot(
     source: DatabaseSync,
@@ -689,6 +810,7 @@ export function walkCheckpointSnapshot(
     const expectedRefs = new Map<number, Set<string>>();
     const pageMessageIds = new Map<string, string[]>();
     const validatedFieldPages = new Set<string>();
+    const memoryChunks = new Map<string, MemoryChunkRows>();
     for (const [row, number] of rowsOf("chatCheckpoints", "seq")) {
         const where = `chatCheckpoints row ${number}`;
         if (!isPositiveSafeInteger(row.seq) || expectedRefs.has(row.seq) || !isPositiveSafeInteger(row.revision)) {
@@ -752,7 +874,10 @@ export function walkCheckpointSnapshot(
                 const behavior = Object.hasOwn(CHECKPOINT_CHAT_FIELDS, key)
                     ? CHECKPOINT_CHAT_FIELDS[key as keyof typeof CHECKPOINT_CHAT_FIELDS]
                     : undefined;
-                return (behavior === "capture" || behavior === "split") && typeof hash === "string";
+                return (
+                    (key === CHECKPOINT_MEMORY_FIELD || behavior === "capture" || behavior === "split") &&
+                    typeof hash === "string"
+                );
             })
         ) {
             throw new ResourceValidationError(`${where}: fields must map captured field names to hashes`);
@@ -761,6 +886,15 @@ export function walkCheckpointSnapshot(
         for (const hash of hashes) {
             if (!pageHashes.has(hash)) {
                 throw new ResourceValidationError(`${where}: no such checkpointPages hash ${hash}`);
+            }
+        }
+        let memoryManifest: CheckpointMemoryManifest | undefined;
+        if (Object.hasOwn(fields, CHECKPOINT_MEMORY_FIELD)) {
+            const hash = fields[CHECKPOINT_MEMORY_FIELD] as string;
+            const text = sink.pageText(hash);
+            memoryManifest = checkedContent(where, () => checkMemoryManifest(text, hash, pageHashes));
+            for (const chunk of Object.values(memoryManifest).flat()) {
+                hashes.add(chunk);
             }
         }
         expectedRefs.set(row.seq, hashes);
@@ -781,12 +915,33 @@ export function walkCheckpointSnapshot(
         }
         for (const [key, hash] of Object.entries(fields) as [string, string][]) {
             const fieldPage = `${key}\u0000${hash}`;
-            if (validatedFieldPages.has(fieldPage)) {
+            if (key === CHECKPOINT_MEMORY_FIELD || validatedFieldPages.has(fieldPage)) {
                 continue;
             }
             const text = sink.pageText(hash);
             checkedContent(where, () => checkFieldPage(key, text, chatIds.get(row.chatSeq as number)!));
             validatedFieldPages.add(fieldPage);
+        }
+        if (memoryManifest) {
+            for (const kind of MEMORY_RECORD_KINDS) {
+                const claims = memoryRowClaims();
+                for (const hash of memoryManifest[kind]) {
+                    const chunkPage = `${kind}\u0000${hash}`;
+                    let chunk = memoryChunks.get(chunkPage);
+                    if (!chunk) {
+                        const text = sink.pageText(hash);
+                        chunk = checkedContent(where, () => checkMemoryChunk(kind, text, hash));
+                        memoryChunks.set(chunkPage, chunk);
+                    }
+                    const { ids, scenes } = chunk;
+                    checkedContent(`${where}: memory ${kind}`, () => {
+                        ids.forEach((id) => claims.id(id));
+                        for (let scene = 0; scene < scenes; scene += 1) {
+                            claims.scene();
+                        }
+                    });
+                }
+            }
         }
         sink.checkpoint(
             {

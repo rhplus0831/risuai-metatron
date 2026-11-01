@@ -1,6 +1,7 @@
 import type { ChatMeta } from "./chats.ts";
 import type { Message } from "./database.ts";
 import { TOGGLE_VARIABLE_PREFIX } from "./prompt/toggles.ts";
+import type { StructuredMemoryRecordKind } from "./structuredMemory.ts";
 
 /** Every persisted chat field's behavior when saving and composing a checkpoint. */
 export const CHECKPOINT_CHAT_FIELDS: Record<keyof ChatMeta, "capture" | "keep" | "split"> = {
@@ -41,6 +42,16 @@ export const CHECKPOINT_CHAT_FIELDS: Record<keyof ChatMeta, "capture" | "keep" |
     structuredMemoryHighlight: "keep",
     modules: "keep",
 };
+
+/**
+ * The `chatCheckpoints.fields` key that names a checkpoint's `CheckpointMemoryManifest` page. Reserved:
+ * never a key of `ChatMeta`. Every saved checkpoint has it, also for a chat with no records, so a
+ * checkpoint without it comes from before checkpoints held structured memory.
+ */
+export const CHECKPOINT_MEMORY_FIELD = "structuredMemoryRecords";
+
+/** A checkpoint's memory: each record kind's chunk page hashes, in order. */
+export type CheckpointMemoryManifest = Record<StructuredMemoryRecordKind, string[]>;
 
 export const MAX_CHECKPOINT_NAME = 200;
 export const MAX_MANUAL_CHECKPOINTS = 100;

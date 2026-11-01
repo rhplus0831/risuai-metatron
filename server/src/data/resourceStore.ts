@@ -304,11 +304,14 @@ export type AppliedChanges = {
     chatOrders: ChatOrderResult[];
 };
 
-/** Checkpoint access valid only inside one `applyChanges` transaction callback. */
+/**
+ * Checkpoint access valid only inside one `applyChanges` transaction callback. `restoreMemory` makes
+ * given record texts the chat's whole structured memory (`replace` of `createMemoryTables`).
+ */
 export type CheckpointTransaction = Pick<
     ReturnType<typeof createCheckpointTables>,
     "save" | "prune" | "setFloor" | "readPolicy" | "writePolicy"
->;
+> & { restoreMemory: ReturnType<typeof createMemoryTables>["replace"] };
 
 export type ApplyChangesTransaction = {
     before?: (tx: CheckpointTransaction) => unknown;
@@ -486,9 +489,10 @@ export function* snapshotRows(
  * safe-integer `seq` and revision, and data the kind's normalizer and `serialize` accept), and
  * the chat tables (`walkChatSnapshot`: chats of existing characters, messages of existing
  * chats, one exact order per character). The optional checkpoint tables must be all present or all
- * absent; their rows, references, content hashes, messages, fields, and policies are checked without
- * changing stored text (`walkCheckpointSnapshot`). So must the optional memory tables, whose rows are
- * checked with each record's text unchanged and its columns taken from it (`walkMemorySnapshot`).
+ * absent; their rows, references, content hashes, messages, fields, memory chunks, and policies are
+ * checked without changing stored text (`walkCheckpointSnapshot`). So must the optional memory tables,
+ * whose rows are checked with each record's text unchanged and its columns taken from it
+ * (`walkMemorySnapshot`).
  * Throws `ResourceValidationError` for anything else; a failure of the sink's own stays what it is.
  * Rows are checked as they are read, so of a refused row and a later row SQLite cannot read, the
  * refused row is the one reported.
@@ -1195,8 +1199,8 @@ export function createResourceStore(options: {
         return Number.isSafeInteger(seq) && Number.isSafeInteger(revision) ? { seq, revision } : null;
     }
 
-    const checkpointTables = createCheckpointTables(db, { token, parse: parseToken });
     const memoryTables = createMemoryTables(db, { token, parse: parseToken });
+    const checkpointTables = createCheckpointTables(db, { token, parse: parseToken }, memoryTables.rows);
     const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
     if (checkpointTables.sweep() > 0) {
         countWrite();
@@ -1510,6 +1514,11 @@ export function createResourceStore(options: {
                     checkpointWrites += Number(changed);
                     return changed;
                 },
+                restoreMemory(...args) {
+                    check();
+                    memoryTables.replace(...args);
+                    checkpointWrites += 1;
+                },
             };
             try {
                 checkpointCallbackScope.run(true, () => {
@@ -1758,6 +1767,10 @@ export function createResourceStore(options: {
             compose(...args: Parameters<typeof checkpointTables.compose>) {
                 assertOpen();
                 return checkpointTables.compose(...args);
+            },
+            readMemory(...args: Parameters<typeof checkpointTables.readMemory>) {
+                assertOpen();
+                return checkpointTables.readMemory(...args);
             },
             readPolicy(...args: Parameters<typeof checkpointTables.readPolicy>) {
                 assertOpen();
@@ -2332,9 +2345,9 @@ export function createResourceStore(options: {
          * `options.inTransaction`: `before(tx)` runs after BEGIN, before any batch writes;
          * `after(applied, tx)` runs only with no conflicts, before COMMIT. Both must be synchronous:
          * a throw or returned thenable rolls back the entire batch, including checkpoint writes.
-         * `tx` exposes only save/prune/setFloor/readPolicy/writePolicy, joins this transaction, and
-         * expires when its callback returns. Public store writes from a callback or its asynchronous
-         * continuations throw. Callback writes count toward `writeCount` only after COMMIT.
+         * `tx` exposes only save/prune/setFloor/readPolicy/writePolicy/restoreMemory, joins this
+         * transaction, and expires when its callback returns. Public store writes from a callback or its
+         * asynchronous continuations throw. Callback writes count toward `writeCount` only after COMMIT.
          *
          * `options.committed` (a generation job's write): runs once the write has committed, before
          * its change is published, and returns the generation locks of the chats it touched, which

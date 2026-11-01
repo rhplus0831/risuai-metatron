@@ -81,6 +81,9 @@ export type MemoryContents = StructuredMemoryContentsAnswer;
 /** A record's body, with the memory revision an edit of it names. */
 export type MemoryRecordRead<K extends MemoryRecordKind> = { revision: string; data: MemoryRecordOf[K] };
 
+/** Each kind's records as their stored texts, in storage order: what `replace` makes a chat's memory. */
+export type MemoryRowTexts = Readonly<Record<MemoryRecordKind, readonly string[]>>;
+
 /**
  * Where `walkMemorySnapshot` hands what it checked, as it reads it: every `memory_state` row, then each
  * record table by `seq`. `row` is the record's columns after `chatSeq`, as `upsert` binds them.
@@ -173,7 +176,11 @@ function prepareTable(db: DatabaseSync, description: MemoryTable) {
             `SELECT ${listed.join(", ")}, octet_length(data) AS bytes FROM ${table} WHERE chatSeq = ? ORDER BY seq`,
         ),
         selectRecord: db.prepare(`SELECT data FROM ${table} WHERE chatSeq = ? AND id = ?`),
+        selectSeqs: db.prepare(`SELECT seq FROM ${table} WHERE chatSeq = ? ORDER BY seq`),
+        selectRow: db.prepare(`SELECT id, data FROM ${table} WHERE seq = ?`),
         remove: db.prepare(`DELETE FROM ${table} WHERE chatSeq = ? AND id = ?`),
+        removeAll: db.prepare(`DELETE FROM ${table} WHERE chatSeq = ?`),
+        insert: db.prepare(insertRecordSql(description)),
         // Never `INSERT OR REPLACE`: an updated record keeps its `seq`.
         upsert: db.prepare(
             `${insertRecordSql(description)} ON CONFLICT (chatSeq, id) DO UPDATE SET ${updates.join(", ")}`,
@@ -217,8 +224,81 @@ function recordRow(kind: MemoryRecordKind, stored: Record<string, unknown>, clai
 }
 
 /**
+ * What `checkMemoryRow` reports of a row for the rules that span rows, each as soon as it is known: `id`
+ * takes a valid id, `scene` a scene page.
+ */
+export type MemoryRowClaims = { id(id: string): void; scene(): void };
+
+/** Claims that refuse a repeat, for one chat's rows of one kind: the same id in another kind is legal. */
+export function memoryRowClaims(): MemoryRowClaims {
+    const ids = new Set<string>();
+    let scene = false;
+    return {
+        id(id) {
+            if (ids.has(id)) {
+                throw new ResourceValidationError("duplicate id in chat");
+            }
+            ids.add(id);
+        },
+        scene() {
+            if (scene) {
+                throw new ResourceValidationError("a second scene page in chat");
+            }
+            scene = true;
+        },
+    };
+}
+
+/**
+ * Checks a record's stored text as a row of `kind` and returns the row as `insert` binds it, with `text`
+ * verbatim as `data` and every other column taken from the record. A snapshot's rows, a checkpoint's
+ * chunks, and `replace` all come through here, so a row one of them accepts the others accept. A refusal
+ * is a `ResourceValidationError` that opens with `where`. An event's `createdRevision` must lie within
+ * `maxCreatedRevision`.
+ */
+export function checkMemoryRow(
+    where: string,
+    kind: MemoryRecordKind,
+    text: string,
+    claims: MemoryRowClaims,
+    maxCreatedRevision: number,
+): RecordRow {
+    try {
+        if (Buffer.byteLength(text, "utf8") > MAX_READ_RESPONSE_BYTES) {
+            throw new ResourceValidationError(`data is longer than ${MAX_READ_RESPONSE_BYTES} bytes`);
+        }
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            throw new ResourceValidationError("data is not JSON");
+        }
+        const { stored } = serialize(parsed);
+        const record = isPlainObject(stored) ? stored : {};
+        const row = recordRow(kind, record, (id) => claims.id(id));
+        if (kind === "pages" && record.type === "scene") {
+            claims.scene();
+        }
+        if (MEMORY_TABLES[kind].stamped) {
+            const { createdRevision } = record;
+            if (!isPositiveSafeInteger(createdRevision) || createdRevision > maxCreatedRevision) {
+                throw new ResourceValidationError("invalid createdRevision");
+            }
+            row.push(createdRevision);
+        }
+        row.push(text);
+        return row;
+    } catch (error) {
+        if (error instanceof ResourceValidationError) {
+            throw new ResourceValidationError(`${where}: ${error.message}`);
+        }
+        throw error;
+    }
+}
+
+/**
  * Prepares the memory statements and returns the methods over them; the tables must exist
- * (`openChatSchema` runs first). `write` joins the caller's open transaction.
+ * (`openChatSchema` runs first). `write` and `replace` join the caller's open transaction.
  */
 export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     const selectChat = db.prepare("SELECT seq FROM chats WHERE characterId = ? AND id = ?");
@@ -368,6 +448,18 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         },
 
         /**
+         * One kind's rows of the chat with this `seq`, in `seq` order and one at a time, each `id` and
+         * `data` as stored. The order comes from a statement of its own: `ORDER BY seq` over `data`
+         * would have SQLite sort every row's text before it answers the first.
+         */
+        *rows(chatSeq: number, kind: MemoryRecordKind): Generator<{ id: string; data: string }, void, undefined> {
+            const { selectSeqs, selectRow } = tables[kind];
+            for (const { seq } of selectSeqs.iterate(chatSeq) as Iterable<{ seq: number }>) {
+                yield selectRow.get(seq) as { id: string; data: string };
+            }
+        },
+
+        /**
          * Applies `changes` at exactly `baseRevision`: removals, then upserts, then the revision moves up
          * by one, however much changed. A missing chat is a `ResourceConflictError` with no current
          * revision, a base that is not the current token one naming the current token, and every other
@@ -414,6 +506,37 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             }
             upsertRevision.run(chat.seq, revision);
             return { revision: tokens.token(chat.seq, revision), wrote: true };
+        },
+
+        /**
+         * Makes `texts` the chat's whole memory: every row of the four kinds is deleted, each text goes in
+         * verbatim with a fresh `seq` in the given order, and the revision moves up by one, also with no
+         * records. Not `write`: a record in `texts` can be one the chat holds, and an event keeps the
+         * `createdRevision` of its text. Every row is checked before the first statement that writes
+         * (`checkMemoryRow`), so a `ResourceValidationError` changes nothing; a `createdRevision` past the
+         * new revision is refused too, since a snapshot of such a chat would be. A missing chat is a
+         * `ResourceConflictError` with no current revision.
+         */
+        replace(characterId: string, chatId: string, texts: MemoryRowTexts): void {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            if (!chat) {
+                throw new ResourceConflictError(null);
+            }
+            const revision = nextRevision(revisionOf(chat.seq), 1);
+            const prepared = MEMORY_RECORD_KINDS.map((kind) => {
+                const claims = memoryRowClaims();
+                const rows = texts[kind].map((text, index) =>
+                    checkMemoryRow(`${MEMORY_TABLES[kind].table} row ${index + 1}`, kind, text, claims, revision),
+                );
+                return { kind, rows };
+            });
+            for (const { kind, rows } of prepared) {
+                tables[kind].removeAll.run(chat.seq);
+                for (const row of rows) {
+                    tables[kind].insert.run(chat.seq, ...row);
+                }
+            }
+            upsertRevision.run(chat.seq, revision);
         },
     };
 }
@@ -473,10 +596,10 @@ function hasMemoryTables(source: DatabaseSync): boolean {
  * staged store. An absent group calls nothing on `sink`; a partial group or a refused row is a
  * `ResourceValidationError`. `chatIds` holds each chat's id by its seq (`walkChatSnapshot`).
  *
- * A record passes what a live write checks (`recordRow`, the stored size) and what a live write leaves
- * true: its chat has a `memory_state` row, though a state row needs no records, an event's
- * `createdRevision` is within that revision, and a chat holds one `scene` page. Its shape past that is
- * unchecked here as there.
+ * A record passes what a live write checks and what a live write leaves true (`checkMemoryRow`): its
+ * chat has a `memory_state` row, though a state row needs no records, an event's `createdRevision` is
+ * within that revision, and a chat holds one `scene` page. Its shape past that is unchecked here as
+ * there.
  *
  * Only `seq`, `chatSeq`, and `data` are read. The columns a record decides come from the record, as in a
  * live write, and are never compared with the source's: a live write can leave the two unequal (a
@@ -518,10 +641,8 @@ export function walkMemorySnapshot(
     }
 
     for (const kind of MEMORY_RECORD_KINDS) {
-        const { table, stamped } = MEMORY_TABLES[kind];
-        // One table's ids: the same id in two tables is legal.
-        const keys = new Set<string>();
-        const scenes = new Set<number>();
+        const { table } = MEMORY_TABLES[kind];
+        const claimsByChat = new Map<number, MemoryRowClaims>();
         let lastSeq = 0;
         for (const [row, number] of snapshotRows(
             source,
@@ -545,47 +666,12 @@ export function walkMemorySnapshot(
             if (typeof data !== "string") {
                 throw new ResourceValidationError(`${where}: data is not text`);
             }
-            if (Buffer.byteLength(data, "utf8") > MAX_READ_RESPONSE_BYTES) {
-                throw new ResourceValidationError(`${where}: data is longer than ${MAX_READ_RESPONSE_BYTES} bytes`);
+            let claims = claimsByChat.get(chatSeq);
+            if (!claims) {
+                claims = memoryRowClaims();
+                claimsByChat.set(chatSeq, claims);
             }
-            let parsed: unknown;
-            try {
-                parsed = JSON.parse(data);
-            } catch {
-                throw new ResourceValidationError(`${where}: data is not JSON`);
-            }
-            let columns: RecordRow;
-            try {
-                const { stored } = serialize(parsed);
-                const record = isPlainObject(stored) ? stored : {};
-                columns = recordRow(kind, record, (id) => {
-                    const key = `${chatSeq}\u0000${id}`;
-                    if (keys.has(key)) {
-                        throw new ResourceValidationError("duplicate id in chat");
-                    }
-                    keys.add(key);
-                });
-                if (kind === "pages" && record.type === "scene") {
-                    if (scenes.has(chatSeq)) {
-                        throw new ResourceValidationError("a second scene page in chat");
-                    }
-                    scenes.add(chatSeq);
-                }
-                if (stamped) {
-                    const { createdRevision } = record;
-                    if (!isPositiveSafeInteger(createdRevision) || createdRevision > revision) {
-                        throw new ResourceValidationError("invalid createdRevision");
-                    }
-                    columns.push(createdRevision);
-                }
-            } catch (error) {
-                if (error instanceof ResourceValidationError) {
-                    throw new ResourceValidationError(`${where}: ${error.message}`);
-                }
-                throw error;
-            }
-            columns.push(data);
-            sink.record(kind, chatSeq, columns);
+            sink.record(kind, chatSeq, checkMemoryRow(where, kind, data, claims, revision));
         }
     }
 }

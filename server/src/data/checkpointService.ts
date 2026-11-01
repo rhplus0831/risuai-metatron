@@ -252,8 +252,9 @@ export function createCheckpointService({
                     return generating();
                 }
                 const composed = store.checkpoints.compose(characterId, chatId, id);
+                const memory = store.checkpoints.readMemory(characterId, chatId, id);
                 const checkpoint = store.checkpoints.list(characterId, chatId)?.find((entry) => entry.id === id);
-                if (!composed || !checkpoint) {
+                if (!composed || !memory || !checkpoint) {
                     return notFound();
                 }
                 const current = store.chatRevision(characterId, chatId);
@@ -291,6 +292,9 @@ export function createCheckpointService({
                                     saved.safety = safety;
                                 },
                                 after(_applied, tx) {
+                                    if (memory.captured) {
+                                        tx.restoreMemory(characterId, chatId, memory.texts);
+                                    }
                                     tx.setFloor(characterId, chatId);
                                     const policy = tx.readPolicy(characterId, chatId);
                                     if (policy) {

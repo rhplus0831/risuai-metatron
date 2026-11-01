@@ -18,6 +18,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -113,6 +114,22 @@ function pages(db: DatabaseSync): Record<string, string> {
         (
             db.prepare("SELECT hash, text FROM checkpointPages ORDER BY hash").all() as { hash: string; text: string }[]
         ).map((row) => [row.hash, row.text]),
+    );
+}
+function loadCheckpoint(store: ResourceStore, id: string) {
+    return createCheckpointService({ store, busy: () => false, memoryTasks: null }).load({
+        epoch: store.epoch(),
+        body: { characterId: "c", chatId: "k", id, chatBaseRevision: store.chatRevision("c", "k") },
+    });
+}
+function memoryTexts(db: DatabaseSync) {
+    return Object.fromEntries(
+        memoryKinds.map((kind) => [
+            kind,
+            (db.prepare(`SELECT data FROM memory_${kind} ORDER BY seq`).all() as { data: string }[]).map(
+                ({ data }) => data,
+            ),
+        ]),
     );
 }
 function expectMessagePages(db: DatabaseSync, id: string, groups: string[][]) {
@@ -230,6 +247,164 @@ function fullChat(): Required<Chat> {
 }
 
 describe("chat checkpoints", () => {
+    it("loads every memory kind in storage order with exact row text and restores pre-load memory from safety", () => {
+        const { store, db, file } = fileStore();
+        seed(store, { name: "K", note: "note", localLore: [], message: [m("saved")] });
+        const records = memoryRecords(["z", "a"], 'Saved 한글 😀 "quoted"\nline');
+        writeMemory(store, "c", "k", records);
+        // Legal stored JSON whose whitespace and escapes would be lost by reserialization.
+        const expected = Object.fromEntries(
+            memoryKinds.map((kind) => [
+                kind,
+                records[kind].map((record) =>
+                    ` \n${JSON.stringify(kind === "events" ? { ...record, createdRevision: 1 } : record, null, 2)}\t`.replaceAll(
+                        "한",
+                        "\\uD55C",
+                    ),
+                ),
+            ]),
+        );
+        const writer = new DatabaseSync(file);
+        try {
+            for (const kind of memoryKinds) {
+                const update = writer.prepare(`UPDATE memory_${kind} SET data = ? WHERE id = ?`);
+                records[kind].forEach((record, index) => update.run(expected[kind][index], record.id));
+            }
+        } finally {
+            writer.close();
+        }
+        const saved = save(store);
+        writeMemory(store, "c", "k", {
+            ...memoryRecords(["z", "later"], "Before loading"),
+            remove: { pages: ["a"], events: ["a"], threads: ["a"], runs: ["a"] },
+        });
+        edit(store, [{ op: "setText", id: "saved", text: "Before loading" }]);
+        const before = memoryTexts(db);
+        const oldRevision = store.memory.readContents("c", "k")!.revision;
+        const loaded = loadCheckpoint(store, saved.id);
+        expect(loaded.status).toBe(200);
+        if (loaded.status !== 200) throw new Error("load refused");
+        expect(memoryTexts(db)).toEqual(expected);
+        const contents = store.memory.readContents("c", "k")!;
+        expect(contents.revision).not.toBe(oldRevision);
+        for (const kind of memoryKinds) {
+            expect(contents[kind].map(({ id }) => id)).toEqual(["z", "a"]);
+            expect(store.memory.readRecord("c", "k", kind, "later")).toBeNull();
+            for (const record of records[kind]) {
+                expect(store.memory.readRecord("c", "k", kind, record.id)).toEqual({
+                    revision: contents.revision,
+                    data: kind === "events" ? { ...record, createdRevision: 1 } : record,
+                });
+            }
+        }
+        expect(() =>
+            store.memory.write("c", "k", { epoch: store.epoch(), baseRevision: oldRevision }, memoryRecords(["stale"])),
+        ).toThrow(ResourceConflictError);
+        expect(memoryTexts(db)).toEqual(expected);
+        expect(loadCheckpoint(store, loaded.body.safety.id).status).toBe(200);
+        expect(memoryTexts(db)).toEqual(before);
+        expect(store.memory.readContents("c", "k")!.revision).not.toBe(contents.revision);
+    });
+
+    it("loading an empty memory checkpoint clears all kinds and advances even an empty chat's memory revision", () => {
+        const { store, db } = fileStore();
+        seed(store);
+        const empty = save(store);
+        for (const changes of [{}, memoryRecords(["later"])]) {
+            writeMemory(store, "c", "k", changes);
+            const oldRevision = store.memory.readContents("c", "k")!.revision;
+            expect(loadCheckpoint(store, empty.id).status).toBe(200);
+            expect(memoryTexts(db)).toEqual({ pages: [], events: [], threads: [], runs: [] });
+            expect(store.memory.readContents("c", "k")).toEqual({
+                revision: expect.any(String),
+                pages: [],
+                events: [],
+                threads: [],
+                runs: [],
+            });
+            expect(store.memory.readContents("c", "k")!.revision).not.toBe(oldRevision);
+            expect(() =>
+                store.memory.write(
+                    "c",
+                    "k",
+                    { epoch: store.epoch(), baseRevision: oldRevision },
+                    memoryRecords(["stale"]),
+                ),
+            ).toThrow(ResourceConflictError);
+        }
+    });
+
+    it.each(["delete", "prune"] as const)(
+        "%s frees only unshared memory chunks and manifests after incremental saves",
+        (action) => {
+            const { store, db } = fileStore();
+            const [anchor] = messageIds(true, 1);
+            const [tail, appended] = messageIds(false, 2);
+            seed(store, { name: "K", note: "note", localLore: [], message: [m(anchor), m(tail)] });
+            const records = memoryRecords([anchor]);
+            records.pages.push(...memoryRecords([tail]).pages);
+            writeMemory(store, "c", "k", records);
+            const first = save(store, "First", "auto");
+            const firstPages = pages(db);
+            const manifestHash = checkpoint(db, first.id).fields.structuredMemoryRecords;
+            const manifest = JSON.parse(firstPages[manifestHash]) as Record<(typeof memoryKinds)[number], string[]>;
+            expect(manifest).toEqual({
+                pages: [expect.any(String), expect.any(String)],
+                events: [expect.any(String)],
+                threads: [expect.any(String)],
+                runs: [expect.any(String)],
+            });
+            for (const kind of memoryKinds) {
+                expect(manifest[kind].map((hash) => JSON.parse(firstPages[hash]))).toEqual(
+                    records[kind].map((record) => [
+                        JSON.stringify(kind === "events" ? { ...record, createdRevision: 1 } : record),
+                    ]),
+                );
+            }
+            const messages = rowTexts(db);
+            const messageHashes = expectMessagePages(db, first.id, [[messages[0]], [messages[1]]]);
+            const unchanged = save(store, "Unchanged");
+            expect(pages(db)).toEqual(firstPages);
+            expect(checkpoint(db, unchanged.id).fields.structuredMemoryRecords).toBe(manifestHash);
+
+            const added = memoryRecords([appended]).pages[0];
+            writeMemory(store, "c", "k", { pages: [added] });
+            const next = save(store, "Appended");
+            const allPages = pages(db);
+            const nextManifestHash = checkpoint(db, next.id).fields.structuredMemoryRecords;
+            const nextManifest = JSON.parse(allPages[nextManifestHash]) as typeof manifest;
+            expect(nextManifest).toEqual({
+                ...manifest,
+                pages: [manifest.pages[0], expect.any(String)],
+            });
+            expect(JSON.parse(allPages[nextManifest.pages[1]])).toEqual([
+                JSON.stringify(records.pages[1]),
+                JSON.stringify(added),
+            ]);
+            expect(Object.keys(allPages).sort()).toEqual(
+                [...Object.keys(firstPages), nextManifest.pages[1], nextManifestHash].sort(),
+            );
+            for (const [hash, text] of Object.entries(firstPages)) expect(allPages[hash]).toBe(text);
+            expect(expectMessagePages(db, next.id, [[messages[0]], [messages[1]]])).toEqual(messageHashes);
+
+            store.checkpoints.delete("c", "k", unchanged.id, unchanged.revision);
+            expect(pages(db)).toEqual(allPages);
+            const removed =
+                action === "delete"
+                    ? store.checkpoints.delete("c", "k", first.id, first.revision)
+                    : store.checkpoints.prune("c", "k", "auto", 0);
+            expect(removed).toEqual({ deleted: action === "delete" ? true : 1, pagesRemoved: 2 });
+            expect(pages(db)).toEqual(
+                Object.fromEntries(
+                    Object.entries(allPages).filter(([hash]) => hash !== manifest.pages[1] && hash !== manifestHash),
+                ),
+            );
+            expect(store.checkpoints.list("c", "k")).toEqual([next]);
+            expect(loadCheckpoint(store, next.id).status).toBe(200);
+            expect(store.memory.readContents("c", "k")!.pages.map(({ id }) => id)).toEqual([anchor, tail, appended]);
+        },
+    );
+
     it("saves counts, ordered previews and page hashes while parsing at most two message rows", () => {
         const { store, db } = fileStore();
         const [anchor] = messageIds(true, 1);
@@ -427,11 +602,13 @@ describe("chat checkpoints", () => {
         const record = checkpoint(db, saved.id);
         const content = pages(db);
         const expectedFields = { ...captured, GLGlobalVariables: storyVariables };
-        expect(record.fields).toEqual(
+        const { structuredMemoryRecords: memoryManifest, ...capturedFields } = record.fields;
+        expect(capturedFields).toEqual(
             Object.fromEntries(
                 Object.entries(expectedFields).map(([key, value]) => [key, sha256(JSON.stringify(value))]),
             ),
         );
+        expect(JSON.parse(content[memoryManifest])).toEqual({ pages: [], events: [], threads: [], runs: [] });
         for (const [key, value] of Object.entries(expectedFields)) {
             expect(content[record.fields[key]]).toBe(JSON.stringify(value));
         }

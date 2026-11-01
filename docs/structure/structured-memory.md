@@ -34,10 +34,14 @@
   - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
     pause rule, shared with the panel's writer line; `writer.ts` re-exports it.
   - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
-- `server/src/data/memoryStore.ts`: `createMemoryTables`, the synchronous reads and the write over the tables;
-  `MemoryChanges`, `MemoryContents`; `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`.
+- `server/src/data/memoryStore.ts`: `createMemoryTables`, the synchronous reads and the writes over the tables;
+  `MemoryChanges`, `MemoryContents`, `MemoryRowTexts`; `checkMemoryRow`, the one check of a record's stored text;
+  `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`.
 - `server/src/data/chatStore.ts`: `MEMORY_TABLES_SQL`, part of `CHAT_OPEN_SCHEMA_SQL`.
-- `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`.
+- `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`;
+  `CheckpointTransaction.restoreMemory`.
+- `server/src/data/checkpointStore.ts` and `shared/chatCheckpoints.ts`: what a checkpoint holds of them,
+  `CHECKPOINT_MEMORY_FIELD`, `CheckpointMemoryManifest`, and `readMemory` ([A checkpoint](#a-checkpoint)).
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
@@ -140,6 +144,29 @@ own transaction. Nothing async can run inside it.
 The write publishes nothing: the chat's revision and the change feed stay as they were, and it counts toward snapshots
 like a checkpoint write.
 
+### A checkpoint
+
+A checkpoint holds the chat's whole memory, all four kinds, runs included, so a loaded chat's Log matches its events.
+
+- `save` reads each kind's rows in `seq` order (`rows`) and cuts them by the message page rule into content pages. A
+  chunk's text is a JSON array of strings, each a row's `data` verbatim, so a restored record keeps its bytes.
+- The page `fields` names under `CHECKPOINT_MEMORY_FIELD` lists each kind's chunks (`CheckpointMemoryManifest`), and
+  `checkpointPageRefs` holds the manifest and the chunks. A save stores only the chunks that changed, and delete, prune,
+  and a restore treat them as any other page.
+- Every save writes the manifest, also for a chat with no records. A checkpoint without the key comes from before
+  checkpoints held memory, and loading it leaves the records and the revision alone.
+- `load` reads the texts beside `compose` (`readMemory`) and restores them in `after`, in the load's transaction, with
+  `tx.restoreMemory` (`replace` of `createMemoryTables`). The safety checkpoint, taken in `before`, holds the memory
+  from before the load.
+- `replace` checks every row, deletes all four kinds, inserts the texts in order with fresh `seq`s, and moves the
+  revision up by one, also with no records. It is not `write`: a record can be both held and restored, and an event
+  keeps the `createdRevision` of its text. A stale write from before the load is refused by the new revision.
+- `walkCheckpointSnapshot` checks the manifest and each chunk through `checkMemoryRow`, as a snapshot's rows and
+  `replace` are checked, with duplicate ids and a second scene page caught across a checkpoint's chunks. A chunk is not
+  held to the page limits: one record may pass them. Its sources are not compared with the checkpoint's messages.
+- The walk has no counter to bound a `createdRevision` with, so `replace` refuses one past the new revision: a 400 at
+  load that changes nothing. A live save never leaves one.
+
 ### The HypaV3 projection
 
 `projectHypaV3Data(events, manifest)` answers a reader that expects `hypaV3Data`, without storing anything.
@@ -192,9 +219,9 @@ group is refused, and a full one is checked and restored.
 - The tables follow the [epoch rules](server-resources.md#epoch-and-response-rules) and the snapshot walk of
   [server resources](server-resources.md#snapshots-and-restore). `readSnapshotFile` passes no memory sink: the upstream
   export neither reads the tables nor stops on a problem in them.
-- The memory revision says nothing about the chat's messages. A whole-chat `replace` or a checkpoint load keeps
-  `chats.seq`, so the rows and the revision survive it, and only the memory task's fence stops a writer working from the
-  old messages ([memory](memory.md)).
+- The memory revision says nothing about the chat's messages. A whole-chat `replace` keeps `chats.seq`, so the rows and
+  the revision survive it, and only the memory task's fence stops a writer working from the old messages
+  ([memory](memory.md)). A checkpoint load replaces the rows too ([A checkpoint](#a-checkpoint)).
 - The route answers are shared types because tab code never imports `server/`; each route answers with `satisfies`, so a
   store type that drifts fails `pnpm check`.
 - `app.ts` admits the routes as resource handlers: tracked, refused during shutdown, and `no-store`. `ROUTE_TEMPLATES`
@@ -203,7 +230,8 @@ group is refused, and a full one is checked and restored.
 ## Invariants
 
 - Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check. The
-  one exception is a restore's staged writer and install copy.
+  exceptions are a restore's staged writer and install copy, and a checkpoint load's `tx.restoreMemory`, in the load's
+  transaction under its writer lease.
 - A route writes only a closed edit applied to the record as stored ([the edit route](#the-edit-route)), never a record
   the tab sent.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
@@ -263,8 +291,10 @@ group is refused, and a full one is checked and restored.
   root `tsconfig.json`, where the server routes do not type-check.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
   fence on a real app, holding a task on a tokenizer read and a job on its runner.
-- Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits`. No `slow` or
-  `e2e` membership of its own; `backups.test.ts` holds other slow cases.
+- `chatCheckpoints.test.ts` and `chatCheckpointRoutes.test.ts` drive a checkpoint's memory through the checkpoint
+  service; `restoreStage.test.ts` forges its manifests and chunks.
+- Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits chatCheckpoint`. No
+  `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
 ## Known Hazards
@@ -275,6 +305,10 @@ group is refused, and a full one is checked and restored.
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
+- A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, and runs are
+  never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
+  automatic checkpoint and every load's safety checkpoint: about 660 ms for 64 MB of runs on tmpfs. A load parses every
+  record on top. Decision: Structured Memory slice 5d, plan.
 
 ### Gotchas
 
