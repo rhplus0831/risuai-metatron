@@ -809,7 +809,7 @@ Files: `server/src/data/upstream/exportDatabase.ts`, the full-chat read in `serv
 Files: `src/ts/characters.ts` (chat export and import), `routes/structuredMemory.ts`,
 `src/ts/process/structuredMemory.svelte.ts`, `shared/structuredMemory.ts`, `shared/diagnostics.ts`, `src/lang/en.ts`, tests.
 
-- Exported chat JSON carries the records and `importChat` restores them on the new chat, through a route that writes
+- Exported chat JSON carries the pages, events, and threads, never the runs (owner, 2026-11-02): a run holds a whole prompt, and a file can be passed on. A chat imported this way starts with an empty Log and no pause. `importChat` restores them on the new chat, through a route that writes
   tab-sent records. It is the one such route: it takes only a chat with no records, and the structured memory guide's
   invariant narrows to say so. Split from 5d (owner, 2026-11-02), because `create` cannot carry records and the route
   file has one writer at a time. An imported record is checked as a live write is, and 5a's reconciliation answers for a
