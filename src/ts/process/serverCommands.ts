@@ -28,6 +28,7 @@ import {
     followGenerationJob,
     type GenerationFollow,
     GenerationBusyError,
+    holdGenerationPluginWork,
     readGenerationJob,
     readChatGeneration,
     stopChatGeneration,
@@ -35,6 +36,28 @@ import {
     savedGenerationJobIds,
 } from "../network/generationJobs";
 import { compareRevision } from "../../../shared/resources.ts";
+import { replaySkippedListeners } from "../network/jobChannel";
+
+/** Whether a terminal lists listeners for the tab to run late (`replaySkippedListeners`). */
+function listsSkippedListeners(
+    terminal: GenerationTerminalEvent | "lost",
+): terminal is Extract<GenerationTerminalEvent, { type: "done" }> {
+    return (
+        terminal !== "lost" &&
+        terminal.type === "done" &&
+        !!terminal.skipped?.some((hook) => hook.name === "chatOutput")
+    );
+}
+
+/** The plugin-work holds of follows whose terminal lists listeners to run late, by job id. */
+const replayHolds = new Map<string, () => void>();
+
+/** Takes the hold before `terminal` is applied (its release ends the job's own plugin work). */
+function holdForReplay(jobId: string, terminal: GenerationTerminalEvent) {
+    if (listsSkippedListeners(terminal) && !replayHolds.has(jobId)) {
+        replayHolds.set(jobId, holdGenerationPluginWork());
+    }
+}
 import {
     type ChatRef,
     ensureChatLoaded,
@@ -254,6 +277,7 @@ export function followJobToEnd(
                         recordClientEvent({ kind: "jobLink", phase: "kept", jobId });
                     }
                     // Released as the socket's terminal releases the job (its locks, channel, saved job).
+                    holdForReplay(jobId, result.terminal);
                     applyGenerationEvent(jobId, target as ChatRef, result.terminal);
                 }
                 if (result !== "gone") {
@@ -266,11 +290,31 @@ export function followJobToEnd(
                         noteJobDone(target, end);
                     }
                 }
-                if (target !== "lost" && (replayedStatuses.has(jobId) || needsChatRead(result, target))) {
-                    await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome");
+                // The listeners the job skipped while this tab was away need the reply: they run once
+                // this tab holds the terminal's revision (a socket's final hydration may have been
+                // refused for local work), after a read when it does not; after a read that did not
+                // take they do not run (the chat is read again later, without the job).
+                const lateListeners = target !== "lost" && listsSkippedListeners(end) ? end : null;
+                const holdsEnd = () =>
+                    lateListeners !== null && holdsRevision(target as ChatRef, lateListeners.revision);
+                let current = true;
+                if (
+                    target !== "lost" &&
+                    (replayedStatuses.has(jobId) ||
+                        needsChatRead(result, target) ||
+                        (lateListeners !== null && !holdsEnd()))
+                ) {
+                    current = await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome");
+                }
+                if (lateListeners !== null && current && holdsEnd()) {
+                    await replaySkippedListeners(target as ChatRef, lateListeners).catch((error) =>
+                        console.error("[Generation]", error),
+                    );
                 }
                 return end;
             } finally {
+                replayHolds.get(jobId)?.();
+                replayHolds.delete(jobId);
                 following.delete(jobId);
                 replayedStatuses.delete(jobId);
                 followedJobs.update((jobs) => {
@@ -293,6 +337,15 @@ export function followJobToEnd(
  * hydration never came), for an error (it carries no revision, and an abort keeps the text so far)
  * or a done whose revision is newer than the one this tab holds.
  */
+/** Whether this tab's copy of the chat is at least `revision` (null: nothing was written). */
+function holdsRevision(ref: ChatRef, revision: string | null): boolean {
+    if (revision === null) {
+        return true;
+    }
+    const held = heldChatRevision(ref);
+    return held !== null && (compareRevision(held, revision) ?? -1) >= 0;
+}
+
 function needsChatRead(result: FollowEnd, ref: ChatRef): boolean {
     if (typeof result === "string") {
         return true;
@@ -560,6 +613,9 @@ async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus):
         }
         attached = true;
         const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
+            if (event.type === "done") {
+                holdForReplay(jobId, event);
+            }
             applyGenerationEvent(jobId, ref, event, follow);
             if (event.type === "sequence") {
                 incrementStatic("messages");
@@ -612,7 +668,9 @@ async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus):
 /**
  * What the tab shows at a server job's end: its error, or that it was lost. A job a restore or
  * import ended (`maintenance`) shows the restore notice once the data is replaced
- * (`watchForRestore`), or its error when nothing was replaced.
+ * (`watchForRestore`), or its error when nothing was replaced. A done whose reply hooks were skipped
+ * while the tab was away names the ones that changed nothing then (`serverJob.hooksSkipped`); the
+ * skipped listeners run late instead (`replaySkippedListeners`).
  */
 function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     if (end === "lost") {
@@ -640,6 +698,12 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
         alertToast(language.serverJob.stoppedElsewhere);
     } else if (end.type === "error" && end.reason !== "aborted") {
         alertJobError(jobId, end);
+    }
+    if (end !== "lost" && end.type === "done" && end.skipped) {
+        const names = [...new Set(end.skipped.map((hook) => hook.name))].filter((name) => name !== "chatOutput");
+        if (names.length > 0) {
+            alertToast(language.serverJob.hooksSkipped.replace("{hooks}", () => names.join(", ")));
+        }
     }
 }
 

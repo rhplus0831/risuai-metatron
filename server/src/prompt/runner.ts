@@ -14,6 +14,7 @@ import {
     type MemoryGapChoice,
     type MemoryTaskInput,
     type MemoryTrimChoice,
+    type SkippedHook,
     type SummaryWriterLease,
 } from "../../../shared/jobs.ts";
 import { LLMFormat } from "../../../shared/llm.ts";
@@ -304,7 +305,15 @@ export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps):
 
 export type PromptSendResult =
     | { type: "preview"; result: unknown }
-    | { type: "reply"; revision: string | null; messageId?: string; alternatives?: string[]; stopped?: true };
+    | {
+          type: "reply";
+          revision: string | null;
+          messageId?: string;
+          alternatives?: string[];
+          stopped?: true;
+          /** The reply hooks skipped for want of an owner tab (`done.skipped`), when any was. */
+          skipped?: SkippedHook[];
+      };
 
 /** Runs one send, including its failure metadata and hand-offs, without ending the registry job. */
 export async function runPromptSend(
@@ -424,6 +433,7 @@ async function runSend(
                     cache: state.scriptCache,
                     assetMatches: state.assetMatches,
                     showEmotion: (chaId, name, image) => showEmotion(job, state, chaId, name, image),
+                    skipped: state.skippedHooks,
                 });
                 data = (await processor.process(owner, data, "editinput")).data;
                 if (!setup.bindings.services.refresh()) {
@@ -580,6 +590,7 @@ async function runSend(
         ...(last ? { messageId: last.messageId } : {}),
         ...(last?.alternatives ? { alternatives: last.alternatives } : {}),
         ...(stopped ? { stopped: true as const } : {}),
+        ...(state.skippedHooks.length > 0 ? { skipped: [...state.skippedHooks] } : {}),
     };
 }
 
@@ -1004,6 +1015,7 @@ async function runSpeaker(arg: {
             cache: state.scriptCache,
             assetMatches: state.assetMatches,
             showEmotion: (chaId, name, image) => showEmotion(job, state, chaId, name, image),
+            skipped: state.skippedHooks,
         });
         /** `runCurrentChatFunction`: every message through CBS with variables, the changed ones written. */
         const runCurrentChatFunction = () => {
@@ -1463,8 +1475,9 @@ async function runSpeaker(arg: {
         /**
          * A callback of the tail. Answered: its value. Null: the hook is not registered, the hook itself
          * failed (logged), or no tab is attached (the Safety Contract: listeners and images of a reply
-         * that completes while its client is away are skipped). A barrier or protocol failure, a
-         * timeout, or an abort ends the job.
+         * that completes while its client is away are skipped; skipped listeners are recorded for the
+         * tab to run late, `done.skipped`). A barrier or protocol failure, a timeout, or an abort ends
+         * the job.
          */
         const tailCallback = async <N extends "chatOutput" | "imggen">(
             name: N,
@@ -1483,6 +1496,10 @@ async function runSpeaker(arg: {
                 case "answered":
                     return { value: outcome.value };
                 case "disconnected":
+                    // Listeners a tab had taken may have run there: only ones nobody took run late.
+                    if (name === "chatOutput" && !outcome.delivered) {
+                        state.skippedHooks.push({ name, payload: payload as CallbackPayloads["chatOutput"] });
+                    }
                     return null;
                 case "refused":
                     if (outcome.refusal === "unregistered") {

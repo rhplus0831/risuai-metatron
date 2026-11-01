@@ -70,6 +70,8 @@ const liveJobs = new Set<string>();
 const busyJobs = new Map<string, Set<{ reading: boolean }>>();
 let queuedChannelWork = 0;
 let channelCallbacks = 0;
+/** Holds taken by a follow for listeners it runs after its job ended (`replaySkippedListeners`). */
+let replayHolds = 0;
 const pluginWorkListeners = new Set<() => void>();
 
 function notifyPluginWork() {
@@ -90,8 +92,27 @@ export function generationPluginWorkActive(): boolean {
         busyJobs.size > 0 ||
         queuedChannelWork > 0 ||
         channelCallbacks > 0 ||
+        replayHolds > 0 ||
         savedGenerationJobIds().length > 0
     );
+}
+
+/**
+ * Keeps plugin work active past a job's release, for listeners the follow runs late; returns the
+ * release (idempotent). Taken before the job's terminal is applied, so no reload slips in between.
+ */
+export function holdGenerationPluginWork(): () => void {
+    replayHolds += 1;
+    notifyPluginWork();
+    let released = false;
+    return () => {
+        if (released) {
+            return;
+        }
+        released = true;
+        replayHolds -= 1;
+        notifyPluginWork();
+    };
 }
 
 /** Called after any of the above may have ended; returns the unsubscribe function. */

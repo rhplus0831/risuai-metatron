@@ -292,7 +292,14 @@ the barrier, request state, the root lane, and each hook's call context. A new c
   run without the hook context.
 - Replacers and edit hooks stop at the first throw; interceptors log and continue. `chatOutput` runs the output
   listeners in order, each with a plain copy of the speaker and the chat as they are then and indices looked up again,
-  logs a listener's throw, and answers `true`.
+  logs a listener's throw, and answers `true`. `replaySkippedListeners` runs them again for the `chatOutput` entries of
+  `done.skipped` (replies that completed with no tab attached): `followJobToEnd` calls it after the terminal's chat read
+  took, under `capturePluginContext` of the chat.
+- A late listener run waits for the plugins' startup (`pluginsStarted`) and holds plugin work
+  (`holdGenerationPluginWork`) from before the terminal is applied until it ran, so a deferred reload neither empties
+  the registry meanwhile nor precedes the guests' registrations. A `chatOutput` callback a tab had taken before it left
+  (`delivered`) is not listed, so it is never run twice; the other skipped hooks are named once in a toast
+  (`serverJob.hooksSkipped`).
 - `imggen` runs `stableDiff` and `generateImage` runs `generateAIImage` with the callback's `AbortSignal`, which the
   callback's cancel or the job's end aborts; neither answers a result that arrives after the cancel.
 - `provider` calls the plugin provider with the server's argument and an `AbortSignal` the callback's cancel aborts. A

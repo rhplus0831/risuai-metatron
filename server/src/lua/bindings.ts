@@ -10,6 +10,7 @@ import type {
     GenerationQuestion,
     ImageOrientation,
     QuestionResult,
+    SkippedHook,
 } from "../../../shared/jobs.ts";
 import type {
     InlaySignature,
@@ -99,6 +100,11 @@ export type LuaBindingDeps = {
     mcp?: { registry: McpRegistry; state: JobToolState };
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
     onFatal?: (error: LuaJobFatalError) => void;
+    /**
+     * Where a reply hook skipped for want of an owner tab is recorded (`JobRunState.skippedHooks`):
+     * the `replacerafterRequest` hook keeps the text then instead of failing the request.
+     */
+    skipped?: SkippedHook[];
     /**
      * The generation lock: a chat write touching a message any generation owns, this job's own
      * included, is skipped (the client's `liveWrite` has no generation capability either).
@@ -700,7 +706,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         payload: CallbackPayloads[N],
         ctx: HostContext,
         options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
-    ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true; value: unknown } | { ok: false; error: string; skipped?: true }> => {
         let result: CallbackResult;
         // Nothing is asked of the tab once the call or the job is over.
         fence(ctx);
@@ -718,7 +724,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
         if (options.skipDisconnected && result.outcome === "disconnected") {
             fence(ctx);
-            return { ok: false, error: result.error ?? "No owner was connected" };
+            return { ok: false, error: result.error ?? "No owner was connected", skipped: true };
         }
         switch (result.outcome) {
             case "answered":
@@ -1007,8 +1013,29 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 : {}),
             ...(job.hooks.replacers.afterRequest
                 ? {
+                      // The reply is in hand: with no owner tab before the deadline the text goes on
+                      // unchanged and the skip is recorded, as the tail's listeners are skipped.
                       afterRequest: async (text: string, model: string) => {
-                          const value = await replacer("replacerafterRequest", { text, model });
+                          let answer: Awaited<ReturnType<typeof tryCallback>>;
+                          try {
+                              answer = await tryCallback("replacerafterRequest", { text, model }, ctx, {
+                                  skipDisconnected: true,
+                              });
+                          } catch (error) {
+                              throw markFailure(error, { stage: "script" });
+                          }
+                          if (!answer.ok) {
+                              if (answer.skipped) {
+                                  deps.skipped?.push({ name: "replacerafterRequest" });
+                                  return text;
+                              }
+                              throw markFailure(new Error("The replacerafterRequest hook failed"), { stage: "script" });
+                          }
+                          const value = answer.value;
+                          if (value === null) {
+                              // Registered when the job started, gone now: the browser path rejects too.
+                              throw markFailure(new Error("The replacerafterRequest hook failed"), { stage: "script" });
+                          }
                           if (typeof value !== "string") {
                               throw latch(
                                   markFailure(new LuaJobFatalError("The replacerafterRequest answer is not a string"), {

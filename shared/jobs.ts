@@ -297,6 +297,12 @@ export type GenerationTerminalEvent =
           stopped?: true;
           /** Progress of the command job's server-run `/multisend` sequence. */
           sequence?: GenerationSequence;
+          /**
+           * The plugin hooks of its replies the job skipped because no owner tab was attached when
+           * they came due (`disconnected`); absent when none was. The tab runs the `chatOutput`
+           * listeners of each entry late (`replaySkippedListeners`) once it holds the job's chat.
+           */
+          skipped?: SkippedHook[];
       }
     | {
           type: "error";
@@ -319,6 +325,19 @@ export type GenerationTerminalEvent =
 
 /** A command job's sequence progress, retained with its terminal. */
 export type GenerationSequence = { total: number; sent: number; stopped?: string };
+
+/**
+ * A plugin hook of a completed reply that its job skipped because no owner tab was attached before
+ * the callback's deadline: the text went on unchanged (`editoutput`, `replacerafterRequest`), or
+ * the listeners never ran (`chatOutput`, whose payload lets the tab run them late; a `chatOutput`
+ * callback a tab had taken before it left is not listed, since its listeners may have run). Hooks
+ * that shape the request (`editinput`, `editprocess`, `replacerbeforeRequest`, `bodyIntercepter`)
+ * are never skipped: with no request made yet, failing the job loses nothing, while a silently
+ * changed prompt would.
+ */
+export type SkippedHook =
+    | { name: "editoutput" | "replacerafterRequest" }
+    | { name: "chatOutput"; payload: { messageId: string; speakerId: string } };
 
 /** The most queued parts of one command job, and the longest part in characters. */
 export const MAX_SEQUENCE_PARTS = 64;
@@ -678,7 +697,13 @@ export type CallbackResult =
     | { outcome: "answered"; value: unknown }
     | { outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] }
     | { outcome: "refused"; refusal?: CallbackRefusal; error?: string }
-    | { outcome: "timedOut" | "disconnected" | "aborted"; error?: string };
+    /**
+     * `disconnected`: no owner answered before the deadline. `delivered`: an owner socket had taken
+     * the callback before it left, so the tab may have run its hook (its answer never arrived); a
+     * caller that would run the hook again later skips a delivered one.
+     */
+    | { outcome: "disconnected"; error?: string; delivered?: true }
+    | { outcome: "timedOut" | "aborted"; error?: string };
 
 /**
  * How long a callback the server cancelled after delivering it keeps its client's lane at most: the

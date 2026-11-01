@@ -117,6 +117,7 @@ export function createBootMock<K extends keyof BootModules>(
             updatePlugin: vi.fn<BootModules["plugins"]["updatePlugin"]>(),
             importPlugin: vi.fn<BootModules["plugins"]["importPlugin"]>(),
             loadPlugins: vi.fn<BootModules["plugins"]["loadPlugins"]>(),
+            pluginsStarted: vi.fn<BootModules["plugins"]["pluginsStarted"]>(async () => {}),
             loadPluginsForBoot: vi.fn<BootModules["plugins"]["loadPluginsForBoot"]>(async () => ({
                 guestsStarted: Promise.resolve(true),
                 stopFollowingGuests: vi.fn(),

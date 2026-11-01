@@ -1108,6 +1108,7 @@ export const languageKorean = {
         requestIdReused: "이 요청 ID는 이미 다른 작업에 사용되었습니다. 다시 보내면 새 요청이 시작됩니다.",
         lost: "서버 작업과의 연결이 끊겼습니다. 변경 사항을 보려면 채팅을 다시 불러와 주세요.",
         endedAway: "페이지가 꺼져 있는 동안 응답 작업이 끝나 채팅을 다시 불러왔습니다",
+        hooksSkipped: "페이지가 꺼져 있는 동안 플러그인 처리를 건너뛰었습니다: {hooks}",
         sequenceStopped: "/multisend가 전체 {total}개 중 {sent}개를 보낸 뒤 중단되었습니다: {reason}",
         sequenceReasons: {
             shutdown: "서버를 종료하고 있습니다",

@@ -5,6 +5,7 @@ import {
     MAX_SEQUENCE_PARTS,
     type MemoryGapChoice,
     type MemoryTaskService,
+    type SkippedHook,
 } from "../../../shared/jobs.ts";
 import type { character, Chat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -145,6 +146,8 @@ export type JobRunState = {
      * Where the send runner is: the stage a failure that names none gets (`runPromptSend`).
      */
     stage: GenerationErrorStage;
+    /** The reply hooks skipped for want of an owner tab, in order (`done.skipped`). */
+    skippedHooks: SkippedHook[];
 };
 
 /**
@@ -201,6 +204,7 @@ export function createJobRunState(job: RunningJob, budget: LuaBudget = createLua
         rounds: { count: 0 },
         tools: createJobToolState(),
         stage: "setup",
+        skippedHooks: [],
     };
 }
 
@@ -278,6 +282,7 @@ export function createRunSetup(
         ...(deps.mcp ? { mcp: { registry: deps.mcp, state: state.tools } } : {}),
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
+        skipped: state.skippedHooks,
         ...(options.frozen ? { frozen: true } : {}),
         ...(deps.cbsTimeLimits ? { cbsTimeLimits: deps.cbsTimeLimits } : {}),
     });

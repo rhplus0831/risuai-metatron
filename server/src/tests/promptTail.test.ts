@@ -44,6 +44,12 @@ let fallback: Answer = { chunks: ["Done."] };
 const CHUNK_DELAY_MS = 20;
 /** Resolves once the current job's owner socket is open (set per job by `job()`). */
 let socketOpen: Promise<void> = Promise.resolve();
+/**
+ * Resolves once the provider may answer: at once, or for a job whose owner leaves (`closeOn`) once
+ * the socket's close handshake completed, so the server's end is no longer open (a callback sent
+ * into it would count as delivered and hold the client's lane) when the tail's callbacks come.
+ */
+let providerGate: Promise<void> = Promise.resolve();
 /** The current job's owner events (`job()`), and the waiters for a text the owner's chunks rebuild. */
 let ownerEvents: any[] = [];
 let ownerWaiters: { text: string; resolve: () => void }[] = [];
@@ -64,6 +70,7 @@ const provider = http.createServer(async (req, res) => {
     const answer = answers.shift() ?? fallback;
     // The owner socket attaches after the create answered: wait for it, so every chunk is a `chunk` event.
     await socketOpen;
+    await providerGate;
     if (answer.status) {
         res.writeHead(answer.status, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: "upstream broke" } }));
@@ -312,6 +319,14 @@ let attach = 0;
 type JobOptions = {
     /** Answers a `callback` event: the answer message's fields. */
     answerCallback?: (event: any) => Record<string, unknown>;
+    /**
+     * Closes the owner socket at the first event this matches (the tab went away): the job runs on
+     * with no owner, and its end is read from its status instead. The provider answers only after
+     * the close completed (`providerGate`) unless `answerBeforeClose` (a close the reply's own tail
+     * brings about).
+     */
+    closeOn?: (event: any) => boolean;
+    answerBeforeClose?: true;
     hooks?: typeof NO_GENERATION_HOOKS;
     /** `context.client.emotions`: the emotions the tab showed last, by character. */
     emotions?: Record<string, string[]>;
@@ -330,6 +345,13 @@ async function job(
     socketOpen = new Promise<void>((resolve) => {
         opened = resolve;
     });
+    let releaseProvider = () => {};
+    providerGate =
+        options.closeOn && !options.answerBeforeClose
+            ? new Promise<void>((resolve) => {
+                  releaseProvider = resolve;
+              })
+            : Promise.resolve();
     const events: any[] = [];
     ownerEvents = events;
     ownerWaiters = [];
@@ -368,6 +390,7 @@ async function job(
         `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
     const ws = new WebSocket(url);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let closedEarly = false;
     const ended = new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 45_000);
         ws.onmessage = (message) => {
@@ -377,6 +400,14 @@ async function job(
             }
             events.push(event);
             ownerEventAdded();
+            if (!closedEarly && options.closeOn?.(event)) {
+                closedEarly = true;
+                ws.onclose = () => releaseProvider();
+                ws.close();
+                clearTimeout(timer);
+                resolve();
+                return;
+            }
             if (event.type === "callback") {
                 const answer = options.answerCallback?.(event) ?? { outcome: "answered", value: true };
                 ws.send(JSON.stringify({ type: "answer", id: event.id, ...answer }));
@@ -399,6 +430,20 @@ async function job(
     });
     await ended;
     ws.close();
+    if (closedEarly) {
+        // No owner to receive the terminal: the status carries it once the job ended.
+        let status: any = null;
+        // Polled gently: the status route counts against the HTTP rate limit of the whole file.
+        await waitFor(
+            async () => {
+                status = (await api(`/api/generations/${jobId}?clientId=tab`)).body;
+                return status?.state === "ended";
+            },
+            45_000,
+            250,
+        );
+        return { ...created, events, terminal: status?.terminal };
+    }
     return {
         ...created,
         events,
@@ -466,7 +511,9 @@ beforeAll(async () => {
     // A stored image inlay the `generateImage` callback can answer with.
     mkdirSync(path.join(rootDir, "save", "assets"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "assets", "inlay_cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-    server = createTestServer({ rootDir, generationRandom: () => 0, pushTransport });
+    // The owner absence wait is short so a tail with no owner tab (`closeOn`) settles within a test;
+    // every other job attaches its socket right after the create, long before the wait.
+    server = createTestServer({ rootDir, generationRandom: () => 0, pushTransport, generationOwnerAbsentMs: 2_500 });
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -761,6 +808,112 @@ describe("the streaming tail", () => {
                     expect(bodies.length).toBe(before + 1);
                 },
             );
+        },
+        SLOW,
+    );
+});
+
+describe("a reply that completes with no owner tab", () => {
+    // The owner socket closed before the tail: the plugin hooks of the reply nobody can answer settle
+    // `disconnected` at the absence deadline. `editoutput` keeps the text (the regex after it still
+    // runs) and the listeners are skipped, both recorded in `done.skipped` for the tab that comes back.
+    // The socket closes at `accepted` and the provider answers once that close completed
+    // (`providerGate`), so no callback is sent into a still-open socket: one would count as
+    // delivered and hold the client's lane (`CANCELLED_CALLBACK_DRAIN_MS`) through the next test.
+    it(
+        "a streaming reply: the editoutput hook and the listeners are skipped and recorded, the regex still runs, and the job ends done",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", customscript: [regex("greet", "Hello", "Howdy")] });
+            // Not paced: a paced answer waits for the owner to hold each chunk, and the owner is gone.
+            answers = [{ chunks: ["Hel", "lo", " there"] }];
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], chatOutput: true },
+                    closeOn: (event) => event.type === "accepted",
+                },
+            );
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            const chat = await readChat(chaId);
+            const reply = chat.data.message[1];
+            expect(texts(chat)).toEqual(["user:q", "char:Howdy there"]);
+            expect((terminal as any).skipped).toEqual([
+                { name: "editoutput" },
+                { name: "chatOutput", payload: { messageId: reply.chatId, speakerId: chaId } },
+            ]);
+            expect((terminal as any).messageId).toBe(reply.chatId);
+            // Nothing reached the closed socket: the tab never saw a callback of this reply.
+            expect(callbacks(events)).toHaveLength(0);
+            expect(await clientSetText(chaId, reply.chatId, "edited by the tab")).toBe(200);
+        },
+        SLOW,
+    );
+
+    it(
+        "a listener callback the tab took before it left is not recorded: its listeners may have run there",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            answers = [{ chunks: ["Hello there"] }];
+            // The socket closes once the `chatOutput` callback arrived, without answering it: the
+            // server waits for the owner (the absence bound), then goes on without recording it.
+            const { events, terminal, body } = await job(
+                "send",
+                chaId,
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, chatOutput: true },
+                    closeOn: (event) => event.type === "callback" && event.name === "chatOutput",
+                    answerBeforeClose: true,
+                },
+            );
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect((terminal as any).skipped).toBeUndefined();
+            const taken = callbacks(events, "chatOutput");
+            expect(taken).toHaveLength(1);
+            // As the tab would once its listeners settled: the cancelled callback no longer holds the
+            // client's lane (otherwise the next job's callbacks would wait out its drain bound).
+            const drained = await api(`/api/generations/${body.jobId}/drained?clientId=tab`, {
+                method: "POST",
+                body: JSON.stringify({ callbackId: taken[0].id }),
+            });
+            expect(drained.status, JSON.stringify(drained.body)).toBe(200);
+            expect(drained.body).toEqual({ drained: true });
+        },
+        SLOW,
+    );
+
+    it(
+        "a non-streaming reply: the afterRequest replacer is skipped too and the text goes on unchanged",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", customscript: [regex("greet", "Hello", "Howdy")] });
+            await withSettings({ useStreaming: false }, async () => {
+                answers = [{ chunks: ["Hello there"] }];
+                const { terminal } = await job(
+                    "send",
+                    chaId,
+                    {},
+                    {
+                        hooks: {
+                            ...NO_GENERATION_HOOKS,
+                            replacers: { beforeRequest: false, afterRequest: true },
+                            scripts: ["editoutput"],
+                            chatOutput: true,
+                        },
+                        closeOn: (event) => event.type === "accepted",
+                    },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                const chat = await readChat(chaId);
+                const reply = chat.data.message[1];
+                expect(texts(chat)).toEqual(["user:q", "char:Howdy there"]);
+                expect((terminal as any).skipped).toEqual([
+                    { name: "replacerafterRequest" },
+                    { name: "editoutput" },
+                    { name: "chatOutput", payload: { messageId: reply.chatId, speakerId: chaId } },
+                ]);
+            });
         },
         SLOW,
     );

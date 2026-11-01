@@ -277,8 +277,9 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 
 - MCP owner checks exclude silent sockets. A live tab answering pings can keep a long non-streaming provider call
   running without progress frames.
-- A provider failure on absence expiry (`disconnected`) follows the partial-save and job-end path; tail hooks that skip
-  on `disconnected` can continue.
+- A provider failure on absence expiry (`disconnected`) follows the partial-save and job-end path. A completed reply's
+  hooks skip ([server generation](server-generation.md#generation-channels)): `editoutput` and `replacerafterRequest`
+  keep the text; `chatOutput` runs late in a returning tab under the chat's own context.
 
 ## State
 
