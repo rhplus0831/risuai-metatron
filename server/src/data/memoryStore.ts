@@ -10,12 +10,14 @@ import {
 } from "../../../shared/structuredMemory.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { STAGED_CHAT_SEQS } from "./chatStore.ts";
 import {
     isValidResourceId,
     nextRevision,
     ResourceConflictError,
     ResourceValidationError,
     serialize,
+    snapshotRows,
 } from "./resourceStore.ts";
 
 /**
@@ -26,7 +28,8 @@ import {
  *
  * The resource store owns the connection, the epoch, and the transactions: the writers here join the
  * caller's open transaction and never begin or commit one, so a caller can compose them with its own
- * work.
+ * work. Past `createMemoryTables`, only a restore writes these tables: its staged writer
+ * (`createMemoryStagingSink`) and the install's copy (`copyStagedMemory`).
  *
  * The revision is a counter in `memory_state` and a token (`tokens.token(chatSeq, revision)`) everywhere
  * else: a token carries the chat's incarnation, so a writer that read a deleted chat cannot match the
@@ -83,6 +86,15 @@ export type MemoryContents = {
 /** A record's body, with the memory revision an edit of it names. */
 export type MemoryRecordRead<K extends MemoryRecordKind> = { revision: string; data: MemoryRecordOf[K] };
 
+/**
+ * Where `walkMemorySnapshot` hands what it checked, as it reads it: every `memory_state` row, then each
+ * record table by `seq`. `row` is the record's columns after `chatSeq`, as `upsert` binds them.
+ */
+export type MemorySnapshotSink = {
+    state(row: { chatSeq: number; revision: number }): void;
+    record(kind: MemoryRecordKind, chatSeq: number, row: readonly (string | number)[]): void;
+};
+
 /** What sets one record table apart from the others; everything else is one code path. */
 type MemoryTable = {
     table: string;
@@ -129,12 +141,37 @@ const MEMORY_TABLES: Record<MemoryRecordKind, MemoryTable> = {
 
 const MEMORY_RECORD_KINDS = Object.keys(MEMORY_TABLES) as MemoryRecordKind[];
 
+/** Column names of the memory tables, in `PRAGMA table_xinfo` order (snapshot layout check). */
+const MEMORY_TABLE_COLUMNS: Record<string, readonly string[]> = {
+    memory_state: ["chatSeq", "revision"],
+    memory_pages: ["seq", "chatSeq", "id", "type", "title", "data"],
+    memory_events: ["seq", "chatSeq", "id", "title", "status", "createdRevision", "data"],
+    memory_threads: ["seq", "chatSeq", "id", "title", "state", "data"],
+    memory_runs: ["seq", "chatSeq", "id", "result", "data"],
+};
+
+/** The columns a table of contents lists. */
+function listedColumns({ titled, statusColumn }: MemoryTable): string[] {
+    return ["id", ...(titled ? ["title"] : []), statusColumn];
+}
+
+/** The columns a write binds after `chatSeq`, in that order. */
+function writtenColumns(description: MemoryTable): string[] {
+    return [...listedColumns(description), ...(description.stamped ? ["createdRevision"] : []), "data"];
+}
+
+/** The insert of one record's row, which takes `seq` from the table. */
+function insertRecordSql(description: MemoryTable): string {
+    const written = writtenColumns(description);
+    return `INSERT INTO ${description.table} (chatSeq, ${written.join(", ")}) VALUES (?${", ?".repeat(written.length)})`;
+}
+
 /** One record table's statements, built from its description. */
-function prepareTable(db: DatabaseSync, { table, titled, statusColumn, stamped }: MemoryTable) {
-    const listed = ["id", ...(titled ? ["title"] : []), statusColumn];
-    const written = [...listed, ...(stamped ? ["createdRevision"] : []), "data"];
+function prepareTable(db: DatabaseSync, description: MemoryTable) {
+    const { table } = description;
+    const listed = listedColumns(description);
     // An update leaves `id` and `createdRevision` as the row has them.
-    const updates = written
+    const updates = writtenColumns(description)
         .filter((column) => column !== "id" && column !== "createdRevision")
         .map((column) => `${column} = excluded.${column}`);
     return {
@@ -146,14 +183,44 @@ function prepareTable(db: DatabaseSync, { table, titled, statusColumn, stamped }
         remove: db.prepare(`DELETE FROM ${table} WHERE chatSeq = ? AND id = ?`),
         // Never `INSERT OR REPLACE`: an updated record keeps its `seq`.
         upsert: db.prepare(
-            `INSERT INTO ${table} (chatSeq, ${written.join(", ")}) VALUES (?${", ?".repeat(written.length)}) ` +
-                `ON CONFLICT (chatSeq, id) DO UPDATE SET ${updates.join(", ")}`,
+            `${insertRecordSql(description)} ON CONFLICT (chatSeq, id) DO UPDATE SET ${updates.join(", ")}`,
         ),
     };
 }
 
 function refusal(kind: MemoryRecordKind, id: unknown, reason: string) {
     return new ResourceValidationError(`Memory ${kind} ${JSON.stringify(id)}: ${reason}`);
+}
+
+/** A record's row as `upsert` binds it, `id` first. */
+type RecordRow = [id: string, ...columns: (string | number)[]];
+
+/**
+ * Checks the fields a record gives its columns and returns the row up to its status column, every value
+ * taken from `stored`, the record as stored. A live write and a snapshot's walk both come through here,
+ * so one code path decides what a row's columns hold. `claimId` takes the id once it is valid, before
+ * any other field is looked at, so the caller can refuse one it already saw.
+ */
+function recordRow(kind: MemoryRecordKind, stored: Record<string, unknown>, claimId: (id: string) => void): RecordRow {
+    const { titled, statusColumn, statusValues } = MEMORY_TABLES[kind];
+    const { id, title } = stored;
+    if (!isValidResourceId(id)) {
+        throw refusal(kind, id, "invalid id");
+    }
+    claimId(id);
+    const row: RecordRow = [id];
+    if (titled) {
+        if (typeof title !== "string") {
+            throw refusal(kind, id, "title must be a string");
+        }
+        row.push(title);
+    }
+    const status = stored[statusColumn];
+    if (typeof status !== "string" || !statusValues.includes(status)) {
+        throw refusal(kind, id, `${statusColumn} must be one of ${statusValues.join(", ")}`);
+    }
+    row.push(status);
+    return row;
 }
 
 /**
@@ -194,31 +261,18 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         records: readonly unknown[],
         removed: readonly string[],
     ): (string | number)[][] {
-        const { titled, statusColumn, statusValues, stamped } = MEMORY_TABLES[kind];
+        const { stamped } = MEMORY_TABLES[kind];
         const writtenIds = new Set<string>();
         const rows = records.map((record) => {
             const serialized = serialize(record);
             const stored = isPlainObject(serialized.stored) ? serialized.stored : {};
-            const { id, title } = stored;
-            if (!isValidResourceId(id)) {
-                throw refusal(kind, id, "invalid id");
-            }
-            if (writtenIds.has(id)) {
-                throw refusal(kind, id, "written twice");
-            }
-            writtenIds.add(id);
-            const row: (string | number)[] = [id];
-            if (titled) {
-                if (typeof title !== "string") {
-                    throw refusal(kind, id, "title must be a string");
+            const row = recordRow(kind, stored, (id) => {
+                if (writtenIds.has(id)) {
+                    throw refusal(kind, id, "written twice");
                 }
-                row.push(title);
-            }
-            const status = stored[statusColumn];
-            if (typeof status !== "string" || !statusValues.includes(status)) {
-                throw refusal(kind, id, `${statusColumn} must be one of ${statusValues.join(", ")}`);
-            }
-            row.push(status);
+                writtenIds.add(id);
+            });
+            const [id] = row;
             let { text } = serialized;
             if (stamped) {
                 const existing = selectCreatedRevision.get(seq, id) as { createdRevision: number } | undefined;
@@ -337,6 +391,218 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             return { revision: tokens.token(chat.seq, revision), wrote: true };
         },
     };
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+/**
+ * Whether the snapshot `source` has the memory tables: all of them, each an ordinary table with this
+ * store's exact columns, or none. A partial group, or anything else under one of their names, is a
+ * `ResourceValidationError`.
+ */
+function hasMemoryTables(source: DatabaseSync): boolean {
+    const tables = Object.entries(MEMORY_TABLE_COLUMNS);
+    let present = 0;
+    for (const [table, columns] of tables) {
+        try {
+            const objects = source
+                .prepare("SELECT name, type, sql FROM sqlite_schema WHERE name = ? COLLATE NOCASE")
+                .all(table) as { name: string; type: string; sql: string | null }[];
+            if (objects.length === 0) {
+                continue;
+            }
+            if (
+                objects.length !== 1 ||
+                objects[0].name !== table ||
+                objects[0].type !== "table" ||
+                !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")
+            ) {
+                throw new ResourceValidationError(`${table}: not an ordinary memory table`);
+            }
+            const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
+            if (
+                info.length !== columns.length ||
+                !info.every((column, index) => column.name === columns[index] && column.hidden === 0)
+            ) {
+                throw new ResourceValidationError(`${table}: invalid memory table columns`);
+            }
+            present += 1;
+        } catch (error) {
+            if (error instanceof ResourceValidationError) {
+                throw error;
+            }
+            throw new ResourceValidationError(`${table}: cannot read memory table layout`);
+        }
+    }
+    if (present !== 0 && present !== tables.length) {
+        throw new ResourceValidationError("Incomplete memory tables in resource database");
+    }
+    return present !== 0;
+}
+
+/**
+ * Reads the optional memory table group, `memory_state` first and then each record table by `seq`, one
+ * row at a time, checking each so that a crafted file is a refusal and never a constraint failure of the
+ * staged store. An absent group calls nothing on `sink`; a partial group or a refused row is a
+ * `ResourceValidationError`. `chatIds` holds each chat's id by its seq (`walkChatSnapshot`).
+ *
+ * A record passes what a live write checks (`recordRow`, the stored size) and what a live write leaves
+ * true: its chat has a `memory_state` row, though a state row needs no records, and an event's
+ * `createdRevision` is within that revision. Its shape past that is unchecked here as there.
+ *
+ * Only `seq`, `chatSeq`, and `data` are read. The columns a record decides come from the record, as in a
+ * live write, and are never compared with the source's: a live write can leave the two unequal (a
+ * title with a lone surrogate binds as U+FFFD and stays an escape in `data`), and a column that drifted
+ * is healed.
+ *
+ * `data` goes on as the source's text. Chats and messages are written back because a normalizer can
+ * change them; a record has no normalizer, and serializing it again can lengthen it, since `serialize`
+ * keeps the spelling a `JSON.rawJSON` stored (`1e21` would come back as `1e+21`), which could carry a
+ * record at the size limit past it.
+ */
+export function walkMemorySnapshot(
+    source: DatabaseSync,
+    chatIds: ReadonlyMap<number, string>,
+    sink: MemorySnapshotSink,
+    signal?: AbortSignal,
+): void {
+    if (!hasMemoryTables(source)) {
+        return;
+    }
+
+    const revisions = new Map<number, number>();
+    for (const [row, number] of snapshotRows(
+        source,
+        "SELECT chatSeq, revision FROM memory_state ORDER BY chatSeq",
+        "memory_state: cannot read memory rows",
+        signal,
+    )) {
+        const where = `memory_state row ${number}`;
+        const { chatSeq, revision } = row;
+        if (typeof chatSeq !== "number" || !chatIds.has(chatSeq) || revisions.has(chatSeq)) {
+            throw new ResourceValidationError(`${where}: no such chat or a duplicate state`);
+        }
+        if (!isPositiveSafeInteger(revision)) {
+            throw new ResourceValidationError(`${where}: invalid revision`);
+        }
+        revisions.set(chatSeq, revision);
+        sink.state({ chatSeq, revision });
+    }
+
+    for (const kind of MEMORY_RECORD_KINDS) {
+        const { table, stamped } = MEMORY_TABLES[kind];
+        // One table's ids: the same id in two tables is legal.
+        const keys = new Set<string>();
+        let lastSeq = 0;
+        for (const [row, number] of snapshotRows(
+            source,
+            `SELECT seq, chatSeq, data FROM ${table} ORDER BY seq`,
+            `${table}: cannot read memory rows`,
+            signal,
+        )) {
+            const where = `${table} row ${number}`;
+            const { seq, chatSeq, data } = row;
+            if (!isPositiveSafeInteger(seq) || seq <= lastSeq) {
+                throw new ResourceValidationError(`${where}: invalid or duplicate seq`);
+            }
+            lastSeq = seq;
+            if (typeof chatSeq !== "number" || !chatIds.has(chatSeq)) {
+                throw new ResourceValidationError(`${where}: no such chat`);
+            }
+            const revision = revisions.get(chatSeq);
+            if (revision === undefined) {
+                throw new ResourceValidationError(`${where}: its chat has no memory_state row`);
+            }
+            if (typeof data !== "string") {
+                throw new ResourceValidationError(`${where}: data is not text`);
+            }
+            if (Buffer.byteLength(data, "utf8") > MAX_READ_RESPONSE_BYTES) {
+                throw new ResourceValidationError(`${where}: data is longer than ${MAX_READ_RESPONSE_BYTES} bytes`);
+            }
+            let parsed: unknown;
+            try {
+                parsed = JSON.parse(data);
+            } catch {
+                throw new ResourceValidationError(`${where}: data is not JSON`);
+            }
+            let columns: RecordRow;
+            try {
+                const { stored } = serialize(parsed);
+                const record = isPlainObject(stored) ? stored : {};
+                columns = recordRow(kind, record, (id) => {
+                    const key = `${chatSeq}\u0000${id}`;
+                    if (keys.has(key)) {
+                        throw new ResourceValidationError("duplicate id in chat");
+                    }
+                    keys.add(key);
+                });
+                if (stamped) {
+                    const { createdRevision } = record;
+                    if (!isPositiveSafeInteger(createdRevision) || createdRevision > revision) {
+                        throw new ResourceValidationError("invalid createdRevision");
+                    }
+                    columns.push(createdRevision);
+                }
+            } catch (error) {
+                if (error instanceof ResourceValidationError) {
+                    throw new ResourceValidationError(`${where}: ${error.message}`);
+                }
+                throw error;
+            }
+            columns.push(data);
+            sink.record(kind, chatSeq, columns);
+        }
+    }
+}
+
+/**
+ * The memory half of a staged store's writer (`writeValidatedStore`). A row keeps the source's numeric
+ * `chatSeq`, since a staged chat keeps its seq, and a record takes a seq of the staged table's, in source
+ * order. Revisions stay as stored: the new epoch and the new chat seq make every old token stale, and
+ * no record holds a token or a chat seq.
+ */
+export function createMemoryStagingSink(db: DatabaseSync): MemorySnapshotSink {
+    const insertState = db.prepare("INSERT INTO memory_state (chatSeq, revision) VALUES (?, ?)");
+    const insertRecord = {
+        pages: db.prepare(insertRecordSql(MEMORY_TABLES.pages)),
+        events: db.prepare(insertRecordSql(MEMORY_TABLES.events)),
+        threads: db.prepare(insertRecordSql(MEMORY_TABLES.threads)),
+        runs: db.prepare(insertRecordSql(MEMORY_TABLES.runs)),
+    };
+    return {
+        state(row) {
+            insertState.run(row.chatSeq, row.revision);
+        },
+        record(kind, chatSeq, row) {
+            insertRecord[kind].run(chatSeq, ...row);
+        },
+    };
+}
+
+/**
+ * Copies the staged memory tables into the emptied live ones inside the caller's transaction, after
+ * `copyStagedChats` and before `copyStagedCheckpoints`, whose policy copy stays the install's last,
+ * with the staged store attached as `staged`: onto the live chats through `STAGED_CHAT_SEQS`, each
+ * record table by staged seq with fresh live seqs, so every chat's storage order holds. Every row here
+ * was checked by the staging walk, and nothing is parsed.
+ */
+export function copyStagedMemory(db: DatabaseSync): void {
+    const records = Object.values(MEMORY_TABLES).map((description) => {
+        const columns = writtenColumns(description);
+        return `
+            INSERT INTO main.${description.table} (chatSeq, ${columns.join(", ")})
+                SELECT seqs.liveSeq, ${columns.map((column) => `r.${column}`).join(", ")}
+                    FROM staged.${description.table} r JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = r.chatSeq
+                    ORDER BY r.seq;`;
+    });
+    db.exec(`
+        INSERT INTO main.memory_state (chatSeq, revision)
+            SELECT seqs.liveSeq, s.revision
+                FROM staged.memory_state s JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = s.chatSeq;
+        ${records.join("")}
+    `);
 }
 
 /**

@@ -84,7 +84,9 @@ like a checkpoint write.
 
 The tables sit in `data/resources.sqlite`, keyed by the chat's incarnation `chats.seq` with `ON DELETE CASCADE`, so a
 deleted and recreated chat inherits nothing. Routes still address a chat by `(characterId, chatId)`. Created when
-missing, with no version change, and outside the snapshot layout, so a restore starts with none.
+missing, with no version change, and outside the required snapshot layout: all five are an optional group, like the
+[checkpoint tables](server-resources.md#checkpoint-tables). A snapshot from before them restores with none, a partial
+group is refused, and a full one is checked and restored.
 
 - `memory_state` (`chatSeq` primary key, `revision`): one revision over all of a chat's records. A chat has no row until
   its first write, and an existing chat with no row is at revision 0.
@@ -92,6 +94,10 @@ missing, with no version change, and outside the snapshot layout, so a restore s
   `state`), `memory_runs` (`result`): each with `seq` autoincrement, `chatSeq`, `id`, and `data`, the whole record as
   stored JSON, unique `(chatSeq, id)`. Sections stay embedded in the page's row.
 - `seq` is storage order, not message order; an update keeps it, because upserts never use `INSERT OR REPLACE`.
+- A restore (`walkMemorySnapshot`, `createMemoryStagingSink`, `copyStagedMemory`) keeps `data` and every revision as
+  stored, gives records fresh `seq`s in the source's order, and moves `chatSeq` through the staged chat seq map. The
+  listed columns come from the record, never from the source's columns, which a live write can leave unequal (a title
+  with a lone surrogate binds as U+FFFD and stays an escape in `data`).
 
 ## Coupling
 
@@ -103,14 +109,19 @@ missing, with no version change, and outside the snapshot layout, so a restore s
   loads. Upstream has none of this: `METATRON_CHAT_FIELDS` and `METATRON_CHARACTER_FIELDS` strip the overrides, and
   `upstreamHypaV3Presets` leaves `structured` out.
 - The tables follow the [epoch rules](server-resources.md#epoch-and-response-rules) and the snapshot walk of
-  [server resources](server-resources.md#snapshots-and-restore), which does not read them yet.
+  [server resources](server-resources.md#snapshots-and-restore). `readSnapshotFile` passes no memory sink: the upstream
+  export neither reads the tables nor stops on a problem in them.
 - The memory revision says nothing about the chat's messages. A whole-chat `replace` or a checkpoint load keeps
   `chats.seq`, so the rows and the revision survive it, and only the memory task's fence stops a writer working from the
   old messages ([memory](memory.md)).
 
 ## Invariants
 
-- Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check.
+- Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check. The
+  one exception is a restore's staged writer and install copy.
+- A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
+  never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
+  `createdRevision` is within that row's revision, without being unique or the latest.
 - A memory revision is a token, `<epoch>:<chatSeq>:<revision>`, never a bare number: a chat recreated under the same ids
   restarts at 0, and only the token's `seq` tells the two apart. `readContents` and `readRecord` both answer one.
 - A stale write is refused whole and retried from a fresh read, never merged by field.
@@ -154,8 +165,9 @@ missing, with no version change, and outside the snapshot layout, so a restore s
 - A new closed value: append to its `const` list; a validator reads the list, so it follows.
 - A new writer setting: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, and the fresh-boot fixture
   `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. The whole object already joins the fingerprint.
-- A new column: `CREATE TABLE IF NOT EXISTS` never extends a table, so it needs its own migration in `openChatSchema`.
-  Read a new listed field through `json_extract` over `data` first when that is enough.
+- A new column: `CREATE TABLE IF NOT EXISTS` never extends a table, so it needs its own migration in `openChatSchema`,
+  and `MEMORY_TABLE_COLUMNS` matches exactly, so the walk must also take a snapshot of the old layout. Read a new listed
+  field through `json_extract` over `data` first when that is enough.
 
 ## Tests
 
@@ -166,9 +178,11 @@ missing, with no version change, and outside the snapshot layout, so a restore s
   `server/src/tests/upstreamExport.test.ts` drives what the upstream export leaves out.
 - `server/src/tests/memoryStore.test.ts` drives `createResourceStore` on a real file, with a read-only second connection
   to see the rows, a SQLite trigger to fail a write midway, and `installSnapshot` for restores.
+- `server/src/tests/restoreStage.test.ts` drives a crafted source through the real staging and install, and
+  `backups.test.ts` drives the snapshot and archive routes. Both take their records from `tests/memoryFixtures.ts`.
 - Focused command:
-  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts normalizeCollections memoryTaskHost upstreamExport`.
-  No `slow` or `e2e` membership.
+  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts restoreStage backups normalizeCollections memoryTaskHost upstreamExport`.
+  No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
 ## Known Hazards

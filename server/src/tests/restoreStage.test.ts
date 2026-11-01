@@ -7,8 +7,15 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
-import { createResourceStore, NORMALIZATION_VERSION, ResourceValidationError } from "../data/resourceStore.ts";
+import {
+    createResourceStore,
+    NORMALIZATION_VERSION,
+    ResourceValidationError,
+    type ResourceStore,
+} from "../data/resourceStore.ts";
 import { stageValidatedSnapshot, verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
+import { memoryKinds, memoryRecords, memoryTables, writeMemory } from "./memoryFixtures.ts";
+import { INJECTED_COPY_FAILURE, installSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 
 const characters: ResourceKind = { name: "characters", schemaVersion: 1, normalize: (v) => v };
 const single: ResourceKind = {
@@ -303,6 +310,239 @@ it("refuses a staged header with an unsupported version even when its report mat
         const epoch = store.epoch();
         const writes = store.writeCount();
         expect(() => store.replaceAll(output, report)).toThrow(ResourceValidationError);
+        expect(store.epoch()).toBe(epoch);
+        expect(store.writeCount()).toBe(writes);
+    } finally {
+        store.close();
+    }
+});
+
+async function memoryFixture() {
+    const base = fixture();
+    const store = createResourceStore({ file: base.source, kinds });
+    const initial = memoryRecords(["z", "a"]);
+    const updated = memoryRecords(["z"], "Updated z");
+    const source = path.join(base.dir, "memory-snapshot.sqlite");
+    try {
+        for (const id of ["z", "a"]) writeMemory(store, id, id, initial);
+        writeMemory(store, "z", "z", updated);
+        await store.backupTo(source);
+    } finally {
+        store.close();
+    }
+    return { ...base, source, initial, updated };
+}
+
+function seedLiveMemory(store: ResourceStore) {
+    store.put(characters, "old", { chaId: "old" }, null);
+    store.applyChanges({
+        chats: [{ characterId: "old", chatId: "old", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
+    });
+    writeMemory(store, "old", "old", memoryRecords(["live-only"]));
+}
+
+it("restores an old snapshot with the entire memory table group absent", async () => {
+    const { dir, source, output } = await memoryFixture();
+    const db = new DatabaseSync(source);
+    db.exec(memoryTables.map((table) => `DROP TABLE ${table}`).join(";"));
+    db.close();
+    const report = await stageValidatedSnapshot(source, output, kinds);
+    const file = path.join(dir, "live.sqlite");
+    const store = createResourceStore({ file, kinds });
+    try {
+        store.replaceAll(output, report);
+        expect(rows(file, "SELECT id FROM chats ORDER BY seq")).toEqual([{ id: "z" }, { id: "a" }]);
+        for (const table of memoryTables) expect(rows(file, `SELECT * FROM ${table}`)).toEqual([]);
+    } finally {
+        store.close();
+    }
+});
+
+it.each(memoryTables)("refuses a partial memory group missing %s", async (table) => {
+    const { source, output } = await memoryFixture();
+    const db = new DatabaseSync(source);
+    db.exec(`DROP TABLE ${table}`);
+    db.close();
+    const staging = stageValidatedSnapshot(source, output, kinds);
+    await expect(staging).rejects.toThrow(ResourceValidationError);
+    await expect(staging).rejects.toThrow(/memory/i);
+});
+
+it("replaceAll leaves no memory rows belonging to replaced chats", async () => {
+    const { dir, source, output } = fixture();
+    const report = await stageValidatedSnapshot(source, output, kinds);
+    const file = path.join(dir, "live.sqlite");
+    const store = createResourceStore({ file, kinds });
+    try {
+        seedLiveMemory(store);
+        store.replaceAll(output, report);
+        expect(store.memory.readContents("old", "old")).toBeNull();
+        // Count the physical rows too: reads through the new chats cannot reveal orphans.
+        for (const table of memoryTables) expect(rows(file, `SELECT * FROM ${table}`)).toEqual([]);
+    } finally {
+        store.close();
+    }
+});
+
+it("maps memory rows to restored chats' fresh seqs with their storage order and revisions", async () => {
+    const { dir, source, output, initial, updated } = await memoryFixture();
+    const report = await stageValidatedSnapshot(source, output, kinds);
+    const file = path.join(dir, "live.sqlite");
+    const store = createResourceStore({ file, kinds });
+    try {
+        seedLiveMemory(store);
+        const oldSeq = rows(file, "SELECT seq FROM chats")[0].seq as number;
+        const epoch = store.replaceAll(output, report);
+        const chats = rows(file, "SELECT seq, id FROM chats ORDER BY seq") as { seq: number; id: string }[];
+        expect(chats.map(({ id }) => id)).toEqual(["z", "a"]);
+        for (const { id, seq } of chats) {
+            expect(seq).toBeGreaterThan(oldSeq);
+            const revision = `${epoch}:${seq}:${id === "z" ? 2 : 1}`;
+            const contents = store.memory.readContents(id, id)!;
+            expect(contents.revision).toBe(revision);
+            for (const kind of memoryKinds) {
+                expect(contents[kind].map((record) => record.id)).toEqual(["z", "a"]);
+                const expected = id === "z" ? [updated[kind][0], initial[kind][1]] : initial[kind];
+                for (const record of expected) {
+                    expect(store.memory.readRecord(id, id, kind, record.id)).toEqual({
+                        revision,
+                        data: kind === "events" ? { ...record, createdRevision: 1 } : record,
+                    });
+                }
+            }
+        }
+        expect(rows(file, "SELECT chatSeq, revision FROM memory_state ORDER BY chatSeq")).toEqual([
+            { chatSeq: chats[0].seq, revision: 2 },
+            { chatSeq: chats[1].seq, revision: 1 },
+        ]);
+        for (const kind of memoryKinds) {
+            expect(rows(file, `SELECT chatSeq, id FROM memory_${kind} ORDER BY chatSeq, seq`)).toEqual(
+                chats.flatMap(({ seq }) => [
+                    { chatSeq: seq, id: "z" },
+                    { chatSeq: seq, id: "a" },
+                ]),
+            );
+        }
+    } finally {
+        store.close();
+    }
+});
+
+it.each([
+    ["no such chat", "PRAGMA foreign_keys = OFF; UPDATE memory_events SET chatSeq = 999 WHERE chatSeq = 8", /chat/],
+    ["missing memory state", "DELETE FROM memory_state WHERE chatSeq = 8", /memory_state/],
+    ["non-JSON data", "UPDATE memory_events SET data = '{'", /JSON/],
+    ["invalid status", "UPDATE memory_events SET data = json_set(data, '$.status', 'invalid')", /status/],
+    [
+        "duplicate id in a chat",
+        "UPDATE memory_events SET data = json_set(data, '$.id', 'z') WHERE id = 'a'",
+        /duplicate/,
+    ],
+    [
+        "invalid createdRevision",
+        "UPDATE memory_events SET data = json_set(data, '$.createdRevision', 0)",
+        /createdRevision/,
+    ],
+    [
+        "createdRevision above memory revision",
+        "UPDATE memory_events SET data = json_set(data, '$.createdRevision', 3)",
+        /createdRevision/,
+    ],
+] as const)("refuses crafted memory rows as validation errors: %s", async (_name, sql, reason) => {
+    const { source, output } = await memoryFixture();
+    const db = new DatabaseSync(source);
+    db.exec(sql);
+    db.close();
+    const staging = stageValidatedSnapshot(source, output, kinds);
+    await expect(staging).rejects.toThrow(ResourceValidationError);
+    await expect(staging).rejects.toThrow(reason);
+});
+
+it("accepts live memory with shared ids, an empty state, a re-added event and a lone-surrogate title", async () => {
+    const { dir, source } = fixture();
+    const store = createResourceStore({ file: source, kinds });
+    const records = memoryRecords(["same"], "Lone \ud800");
+    const snapshot = path.join(dir, "legal-memory.sqlite");
+    try {
+        writeMemory(store, "z", "z", records);
+        writeMemory(store, "z", "z", { remove: { events: ["same"] } });
+        writeMemory(store, "z", "z", { events: records.events });
+        writeMemory(store, "a", "a", { threads: records.threads });
+        writeMemory(store, "a", "a", { remove: { threads: ["same"] } });
+        await store.backupTo(snapshot);
+        await installSnapshot(store, snapshot, kinds);
+        for (const kind of memoryKinds) {
+            expect(store.memory.readRecord("z", "z", kind, "same")?.data).toEqual(
+                kind === "events" ? { ...records.events[0], createdRevision: 3 } : records[kind][0],
+            );
+            expect(store.memory.readContents("a", "a")![kind]).toEqual([]);
+        }
+        expect(
+            rows(
+                source,
+                "SELECT c.id, m.revision FROM memory_state m JOIN chats c ON c.seq = m.chatSeq ORDER BY c.seq",
+            ),
+        ).toEqual([
+            { id: "z", revision: 3 },
+            { id: "a", revision: 2 },
+        ]);
+    } finally {
+        store.close();
+    }
+});
+
+it("restores memory data text byte for byte without reserializing JSON", async () => {
+    const { dir, source, output } = await memoryFixture();
+    const text =
+        ' {\n "id":"z", "result":"recorded", "window":[], "model":"writer", "inputTokens":1e21, "outputTokens":20, "durationMs":30, "input":"\\u0061 한글 😀"\n}\n';
+    const db = new DatabaseSync(source);
+    db.prepare("UPDATE memory_runs SET data = ? WHERE chatSeq = 8 AND id = 'z'").run(text);
+    db.close();
+    const report = await stageValidatedSnapshot(source, output, kinds);
+    const file = path.join(dir, "live.sqlite");
+    const store = createResourceStore({ file, kinds });
+    try {
+        store.replaceAll(output, report);
+        for (const checked of [output, file]) {
+            expect(
+                rows(
+                    checked,
+                    "SELECT m.data FROM memory_runs m JOIN chats c ON c.seq = m.chatSeq WHERE c.id = 'z' AND m.id = 'z'",
+                ),
+            ).toEqual([{ data: text }]);
+        }
+        expect(store.memory.readRecord("z", "z", "runs", "z")?.data).toEqual({
+            id: "z",
+            result: "recorded",
+            window: [],
+            model: "writer",
+            inputTokens: 1e21,
+            outputTokens: 20,
+            durationMs: 30,
+            input: "a 한글 😀",
+        });
+    } finally {
+        store.close();
+    }
+});
+
+it("rolls memory rows back with the chats and epoch when install fails after copying", async () => {
+    const { dir, source, output } = await memoryFixture();
+    const report = await stageValidatedSnapshot(source, output, kinds);
+    const file = path.join(dir, "live.sqlite");
+    const store = createResourceStore({ file, kinds });
+    try {
+        seedLiveMemory(store);
+        const before = memoryTables.map((table) => rows(file, `SELECT * FROM ${table} ORDER BY rowid`));
+        const chats = rows(file, "SELECT * FROM chats ORDER BY seq");
+        const contents = store.memory.readContents("old", "old");
+        const epoch = store.epoch();
+        const writes = store.writeCount();
+        expect(() => withFailingInstallCopy(() => store.replaceAll(output, report))).toThrow(INJECTED_COPY_FAILURE);
+        expect(memoryTables.map((table) => rows(file, `SELECT * FROM ${table} ORDER BY rowid`))).toEqual(before);
+        expect(rows(file, "SELECT * FROM chats ORDER BY seq")).toEqual(chats);
+        expect(store.memory.readContents("old", "old")).toEqual(contents);
+        expect(store.memory.readContents("z", "z")).toBeNull();
         expect(store.epoch()).toBe(epoch);
         expect(store.writeCount()).toBe(writes);
     } finally {

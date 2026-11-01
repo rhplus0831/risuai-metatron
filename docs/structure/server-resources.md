@@ -263,9 +263,9 @@ missing asset files and repairing damaged ones under the [content-name rule](#ba
   restore's sink, the raw validated-row writer (`writeValidatedStore`), writes them into a new file created exclusively,
   with the live schema, a rollback journal in memory, and no fsync.
 - Numeric revisions stay as stored, chats and checkpoints keep their source `seq`, positions are compacted to `0..n-1`,
-  fences and checkpoint pages stay byte for byte, refs come from the manifests, projections from the normalized
-  metadata; retired kinds, the source's `meta` rows, its summaries, `chatGroups`, and `chatRestoreFloors` stay out, and
-  no singleton is materialized.
+  fences, checkpoint pages, and memory records stay byte for byte, refs come from the manifests, projections from the
+  normalized metadata; retired kinds, the source's `meta` rows, its summaries, `chatGroups`, and `chatRestoreFloors`
+  stay out, and no singleton is materialized.
 - What stays in memory is the largest row or page and the id sets of the cross-row checks. Every page goes into the
   staged table as it is read, and the unreferenced ones are deleted at the end.
 - `validateRunner.ts` runs this in one `worker_threads` thread per restore on the default kinds, under
@@ -304,7 +304,8 @@ finishes, its worker included, and `dispose` waits for it.
   row: it takes the import, verifies the staged file, and checks the epoch and the accepted write count again right
   before maintenance (the hash pass is a new window); a change answers 412 or `409 changedSinceReview` and hands the
   import back with a fresh TTL.
-- Export reads the snapshot without checkpoint tables, so upstream saves do not include named checkpoint history.
+- Export reads the snapshot without checkpoint or memory tables, so upstream saves do not include named checkpoint
+  history.
 
 ### File imports
 
@@ -343,7 +344,8 @@ settings sections and collections, no `root` record; tables as in version 2).
   `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, with no version change. It
   is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats
   cascades).
-- The `memory_*` tables are created and restored the same way ([structured memory](structured-memory.md#memory-tables)).
+- The `memory_*` tables are created the same way, but a restore carries them as an optional group, like the
+  [checkpoint tables](#checkpoint-tables) ([structured memory](structured-memory.md#memory-tables)).
 
 ### Summary projection
 
@@ -446,8 +448,9 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
   `BackupArchiveManifest`, and the client reader in `src/ts/drive/backuplocal.ts`; bump the manifest version.
 - Add a table a restore carries: its DDL in one of the schema strings a staged store shares with the live store
   (`STORE_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`, `CHECKPOINT_SCHEMA_SQL`), its checks in the walk (`walkSnapshotFile`),
-  its row in the sinks (`readSnapshotFile`'s and the staged writer's), and its copy in the install (`copyStagedChats`,
-  `copyStagedCheckpoints`, or `replaceAll`), through a seq map when it references a seq.
+  its row in the sinks (the staged writer's, and `readSnapshotFile`'s when a reader uses it), and its copy in the
+  install (`copyStagedChats`, `copyStagedMemory`, `copyStagedCheckpoints`, or `replaceAll`), through a seq map when it
+  references a seq.
 
 ## Tests
 

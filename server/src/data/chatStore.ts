@@ -146,8 +146,8 @@ export const CHAT_SUMMARY_TABLE_SQL = `
  * order, not message order. `data` is the last column, so a table-of-contents read stops before it.
  * Keyed by the chat's incarnation (`chats.seq`): deleting the chat drops its rows by cascade, and the
  * prefix of `UNIQUE (chatSeq, id)` keeps that cascade from scanning a table. Created when missing; not
- * part of the snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot's copy is not restored and a
- * restore starts with none.
+ * part of the required snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot from before them restores
+ * with none, but a snapshot with any of them has them all checked and restored (`walkMemorySnapshot`).
  */
 export const MEMORY_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS memory_state (
@@ -2618,7 +2618,7 @@ export function messageSearchSnippet(
  * valid message, and a well-formed fence; every character has exactly one order with a positive
  * unique `seq`, and each order is a duplicate-free permutation of that character's chats. Each row
  * goes to `sink` once it passed, chats by seq, messages by chat and position, orders by seq. Throws
- * `ResourceValidationError`. Returns each chat's id by its seq, for the checkpoint tables.
+ * `ResourceValidationError`. Returns each chat's id by its seq, for the checkpoint and memory tables.
  *
  * Message positions are handed on compacted to `0..n-1` in stored order: positions are internal, and
  * the insertion arithmetic assumes they start at or above 0 and leave room to grow (a crafted

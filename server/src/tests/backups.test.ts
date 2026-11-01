@@ -34,6 +34,7 @@ import {
     waitFor,
 } from "./testSupport.ts";
 import { installSnapshot } from "./stagedRestore.ts";
+import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 
 const servers: ResourceTestClient[] = [];
 
@@ -1448,7 +1449,7 @@ describe("chats in snapshots and archives", () => {
     });
 });
 
-describe("checkpoints in backups", () => {
+describe("checkpoints and memory in backups", () => {
     async function checkpointServer(
         label = "Saved",
         beforeStart?: (store: ResourceStore, savePath: string) => Promise<void>,
@@ -1531,6 +1532,90 @@ describe("checkpoints in backups", () => {
         expect(composed).toEqual(expected.chat);
         expect(store.checkpoints.readPolicy("c", "k")).toEqual(expected.policy);
     }
+
+    async function expectSavedMemory(s: ResourceTestClient, expected: ReturnType<typeof memoryRecords>) {
+        await s.context.dispose();
+        const store = createResourceStore({
+            file: path.join(s.savePath, "data", "resources.sqlite"),
+            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+        });
+        try {
+            const contents = store.memory.readContents("c", "k")!;
+            expect(contents.revision).toMatch(/:1$/);
+            for (const kind of memoryKinds) {
+                expect(contents[kind].map((record) => record.id)).toEqual(expected[kind].map((record) => record.id));
+                for (const record of expected[kind]) {
+                    expect(store.memory.readRecord("c", "k", kind, record.id)).toEqual({
+                        revision: contents.revision,
+                        data: kind === "events" ? { ...record, createdRevision: 1 } : record,
+                    });
+                }
+            }
+        } finally {
+            store.close();
+        }
+    }
+
+    it("restores structured memory rows through the snapshot restore route", async () => {
+        const snapshotId = "resources-20260101T000000000Z-12345678";
+        const saved = memoryRecords(["z", "a"]);
+        const { s } = await checkpointServer("Saved", async (store, savePath) => {
+            writeMemory(store, "c", "k", saved);
+            mkdirSync(path.join(savePath, "backups"));
+            await store.backupTo(path.join(savePath, "backups", `${snapshotId}.sqlite`));
+            writeMemory(store, "c", "k", memoryRecords(["z", "live-only"], "After snapshot"));
+        });
+        const result = await restore(s, snapshotId);
+        expect(result.status, await result.clone().text()).toBe(200);
+        await expectSavedMemory(s, saved);
+    });
+
+    it("carries structured memory rows through archive export and version-2 import routes", async () => {
+        const saved = memoryRecords(["z", "a"]);
+        const { s: source } = await checkpointServer("Source", async (store) => {
+            writeMemory(store, "c", "k", saved);
+        });
+        const archive = await exportArchive(source);
+        const manifest = parseArchive(archive).find((record) => record.name === "manifest.json")!;
+        expect(JSON.parse(manifest.data.toString("utf8"))).toMatchObject({ version: 2 });
+        const { s: target } = await checkpointServer("Target", async (store) => {
+            writeMemory(store, "c", "k", memoryRecords(["live-only"]));
+        });
+        const result = await importArchive(target, archive);
+        expect(result.status, await result.clone().text()).toBe(200);
+        await expectSavedMemory(target, saved);
+    });
+
+    it.each(["snapshot", "archive"])(
+        "refuses crafted memory with 400 through the %s route without replacing live rows",
+        async (mode) => {
+            const snapshotId = "resources-20260101T000000000Z-12345678";
+            const saved = memoryRecords(["z", "a"]);
+            const { s } = await checkpointServer("Saved", async (store, savePath) => {
+                writeMemory(store, "c", "k", saved);
+                mkdirSync(path.join(savePath, "backups"));
+                const file = path.join(savePath, "backups", `${snapshotId}.sqlite`);
+                await store.backupTo(file);
+                const db = new DatabaseSync(file);
+                try {
+                    // The distinct physical ids conceal a duplicate record id until validation parses data.
+                    db.exec("UPDATE memory_events SET data = json_set(data, '$.id', 'z') WHERE id = 'a'");
+                } finally {
+                    db.close();
+                }
+            });
+            const epoch = s.epoch;
+            const result =
+                mode === "snapshot"
+                    ? await restore(s, snapshotId)
+                    : await importArchive(s, archiveOf(readFileSync(path.join(backupsDir(s), `${snapshotId}.sqlite`))));
+            expect(result.status, await result.clone().text()).toBe(400);
+            expect(((await result.json()) as { error: string }).error).toMatch(/memory_events|duplicate/);
+            expect(await s.readEpoch()).toBe(epoch);
+            expect((await listBackups(s)).map((item) => item.id)).toEqual([snapshotId]);
+            await expectSavedMemory(s, saved);
+        },
+    );
 
     it.each(["full", "partial"])(
         "round-trips checkpoints and policies through a %s archive with the selected assets",

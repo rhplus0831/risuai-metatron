@@ -78,7 +78,15 @@ import {
 } from "./chatStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
-import { createMemoryTables, type MemoryChanges, type MemoryRecordKind } from "./memoryStore.ts";
+import {
+    copyStagedMemory,
+    createMemoryStagingSink,
+    createMemoryTables,
+    type MemoryChanges,
+    type MemoryRecordKind,
+    type MemorySnapshotSink,
+    walkMemorySnapshot,
+} from "./memoryStore.ts";
 
 /**
  * Version of the resource database, kept in `PRAGMA user_version`. Version 2 added the chat tables;
@@ -280,12 +288,13 @@ export type ValidatedSnapshot = {
 
 /**
  * Where `walkSnapshotFile` hands each row it checked, as it reads them: resources, chats, messages,
- * chat orders, then the checkpoint tables. Without `checkpoints`, those tables are neither read nor
- * checked.
+ * chat orders, the checkpoint tables, then the memory tables. Without `checkpoints` or `memory`, those
+ * tables are neither read nor checked: a restore's writer passes both, `readSnapshotFile` no `memory`.
  */
 export type SnapshotSink = ChatSnapshotSink & {
     resource(row: ValidatedSnapshot["rows"][number]): void;
     checkpoints?: CheckpointSnapshotSink;
+    memory?: MemorySnapshotSink;
 };
 
 /** What `applyChanges` wrote: resource tokens in op order, chat group results, and every changed chat order. */
@@ -478,9 +487,11 @@ export function* snapshotRows(
  * the chat tables (`walkChatSnapshot`: chats of existing characters, messages of existing
  * chats, one exact order per character). The optional checkpoint tables must be all present or all
  * absent; their rows, references, content hashes, messages, fields, and policies are checked without
- * changing stored text (`walkCheckpointSnapshot`). Throws `ResourceValidationError` for anything else;
- * a failure of the sink's own stays what it is. Rows are checked as they are read, so of a refused row
- * and a later row SQLite cannot read, the refused row is the one reported.
+ * changing stored text (`walkCheckpointSnapshot`). So must the optional memory tables, whose rows are
+ * checked with each record's text unchanged and its columns taken from it (`walkMemorySnapshot`).
+ * Throws `ResourceValidationError` for anything else; a failure of the sink's own stays what it is.
+ * Rows are checked as they are read, so of a refused row and a later row SQLite cannot read, the
+ * refused row is the one reported.
  */
 export function walkSnapshotFile(
     file: string,
@@ -570,6 +581,9 @@ export function walkSnapshotFile(
         if (sink.checkpoints) {
             walkCheckpointSnapshot(source, chatIds, sink.checkpoints, signal);
         }
+        if (sink.memory) {
+            walkMemorySnapshot(source, chatIds, sink.memory, signal);
+        }
     } finally {
         source.close();
     }
@@ -577,7 +591,9 @@ export function walkSnapshotFile(
 
 /**
  * Reads and checks a snapshot file (`walkSnapshotFile`) into memory. With `checkpoints: false`,
- * checkpoint tables are neither read nor validated and the result omits `checkpoints`.
+ * checkpoint tables are neither read nor validated and the result omits `checkpoints`. The memory
+ * tables are never read or checked here, unlike in a restore: nothing that reads the result uses them,
+ * and its one production caller is the upstream export, which a memory table problem must not stop.
  */
 export function readSnapshotFile(
     file: string,
@@ -605,10 +621,11 @@ export function readSnapshotFile(
  * checked rows into a new store at `output`, created exclusively, with the live schema. Numeric
  * revisions stay as stored, chats and checkpoints keep their source `seq`, the other rows take the
  * staged tables' seqs in source order, and no singleton is materialized: `replaceAll` does that once.
- * `chatGroups` and `chatRestoreFloors` stay empty (receipts belong to an incarnation, floors to an
- * epoch), and the source's `meta` rows and stamp are not copied. One transaction, with a rollback
- * journal in memory and no fsync: a crash loses only this file, and once closed it is one
- * self-contained file, without a sidecar.
+ * Memory rows keep the source's `chatSeq`, a record its `data` text, and a source without the memory
+ * or checkpoint tables leaves them empty. `chatGroups` and `chatRestoreFloors` stay empty (receipts
+ * belong to an incarnation, floors to an epoch), and the source's `meta` rows and stamp are not
+ * copied. One transaction, with a rollback journal in memory and no fsync: a crash loses only this
+ * file, and once closed it is one self-contained file, without a sidecar.
  */
 export function writeValidatedStore(
     source: string,
@@ -639,6 +656,7 @@ export function writeValidatedStore(
                 resource: (row) => void insertResource.run(row.kind, row.id, row.revision, row.schemaVersion, row.text),
                 ...createChatStagingSink(db),
                 checkpoints: createCheckpointStagingSink(db),
+                memory: createMemoryStagingSink(db),
             },
             signal,
         );
@@ -2416,8 +2434,10 @@ export function createResourceStore(options: {
          * `nextRevision` keeps a counter a crafted snapshot placed at the limit from overflowing on
          * the next write). Replaces checkpoints, their content pages, and policies with the staged
          * ones, attached to the restored chats with their text unchanged; a staged store without
-         * checkpoints clears them. The memos change only after the commit, and a `DETACH` that fails
-         * is logged: the data has changed by then, and the next install detaches first.
+         * checkpoints clears them. Structured memory is replaced the same way (`copyStagedMemory`), and
+         * a staged store without it leaves the chats with none. The memos change only after the
+         * commit, and a `DETACH` that fails is logged: the data has changed by then, and the next
+         * install detaches first.
          */
         replaceAll(stagedFile: string, report: StagedFileReport): string {
             assertWritable();
@@ -2444,6 +2464,7 @@ export function createResourceStore(options: {
                         SELECT kind, id, revision, schemaVersion, data FROM staged.resources ORDER BY seq;
                 `);
                 copyStagedChats(db);
+                copyStagedMemory(db);
                 copyStagedCheckpoints(db);
                 db.exec(`DROP TABLE ${STAGED_CHAT_SEQS}`);
                 // A failure of either rolls the whole restore back.

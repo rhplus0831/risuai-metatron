@@ -509,16 +509,18 @@ it("adds memory tables when opening a store file from before structured memory",
 });
 
 it.each(["with memory tables", "without memory tables"])(
-    "restores a snapshot %s with empty memory and refuses old tokens",
+    "restores the memory a snapshot %s holds and refuses old tokens",
     async (layout) => {
+        const kept = layout === "with memory tables";
         const { store, db, dir } = fileStore();
         seed(store);
         const old = write(store, contents(store).revision, records(["z"]));
+        const saved = contents(store);
         const oldEpoch = store.epoch();
         const beforeChat = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data;
         const snapshot = path.join(dir, "snapshot.sqlite");
         await store.backupTo(snapshot);
-        if (layout === "without memory tables") editFile(snapshot, dropMemoryTables);
+        if (!kept) editFile(snapshot, dropMemoryTables);
         write(store, old, records(["live-only"]));
         store.applyChanges({
             chats: [group(store.chatRevision("c", "k"), [{ op: "meta", set: { note: "After snapshot" } }])],
@@ -527,13 +529,15 @@ it.each(["with memory tables", "without memory tables"])(
         expect(restoredEpoch).not.toBe(oldEpoch);
         expect(store.epoch()).toBe(restoredEpoch);
         expect(store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data).toEqual(beforeChat);
-        expect(contents(store)).toEqual(emptyContents(token(store, db, 0)));
-        expect(memoryRows(db)).toEqual(Object.fromEntries(tables.map((table) => [table, []])));
+        expect(contents(store)).toEqual(
+            kept ? { ...saved, revision: token(store, db, 1) } : emptyContents(token(store, db, 0)),
+        );
+        if (!kept) expect(memoryRows(db)).toEqual(Object.fromEntries(tables.map((table) => [table, []])));
         expect(() => store.memory.write("c", "k", { epoch: oldEpoch, baseRevision: old }, records(["old"]))).toThrow(
             ResourceEpochError,
         );
         expectConflict(() => write(store, old, records(["old"])), contents(store).revision);
-        expect(write(store, contents(store).revision, records(["fresh"]))).toBe(token(store, db, 1));
+        expect(write(store, contents(store).revision, records(["fresh"]))).toBe(token(store, db, kept ? 2 : 1));
     },
 );
 
