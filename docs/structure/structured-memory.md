@@ -6,11 +6,12 @@
   client and Markdown package, writer settings, the writer's windows and task kind, and the HypaV3 compatibility
   projection.
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
-  `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts`.
+  `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts`,
+  `src/lib/ChatScreens/MemoryReceiptLine.svelte`.
 - The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
-  tests, and no screen calls the tab's client. Production has its writer, which pages and the read path do not use yet.
-  The read path's pieces exist, and `assemblePrompt` does not call them yet. Its design and remaining work are in
-  [Active Plans](../plan/README.md).
+  tests, and no screen calls the tab's reads, so its receipt line shows only there. Production has its writer, which
+  pages and the read path do not use yet. The read path's pieces exist, and `assemblePrompt` does not call them yet. Its
+  design and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
@@ -46,8 +47,12 @@
   `writerCeiling`, `writerCadence`, `readRecordedMessages`, `windowStillConfirmed`.
 - `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`.
 - `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
-- `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `writerHostDeps`, what a
-  writer task's requests ignore of the preset.
+- `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `commitWindow`, a
+  writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
+  `writerPaused`.
+- `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command.
+- `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
+  `newestAssistantMessageId` in `structuredMemory.svelte.ts` are its pure part.
 - `server/src/prompt/memory/structured/lanes.ts`: the pure read rules: `ReadEntry`, `rawWindow`, `coveredMessages`,
   `readBudget`, `spendLanes`, `LaneItem`, `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`.
 - `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
@@ -166,8 +171,8 @@ the eligible one, and `hash` from `messageSourceHash`.
    `handOffMemory` hands off a not-due input when a manual start waits. It asks no blocking reason, unlike HypaV3.
 3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
    `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
-   or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`: that
-   status is how the reason reaches the tab.
+   or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`. What a
+   person reads of that is the reply's own [receipt](#receipts), which does not wait for a task.
 4. Work: the fresh scope's chat and the stored events give the windows, up to `maxWriterWindows`. The hand-off gives an
    automatic task only its ceiling. `total` counts the windows the task runs and `done` those the writer returned
    recorded. Nothing open is `done` with 0 of 0.
@@ -180,9 +185,9 @@ the eligible one, and `hash` from `messageSourceHash`.
 
 `commit(baseRevision, changes)` is the writer's only write, synchronous, checked in this order: the task is live (it
 throws once ended), the gate is open, the service is open with the input's epoch and source generation (else refused
-`staleInput`), the window still reads from the chat as stored under the ceiling it was computed with
-(`windowStillConfirmed`, else `windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal
-writes nothing.
+`staleInput`), then `commitWindow`: the window still reads from the chat as stored under the ceiling it was computed
+with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one of its messages (`messagesLocked`, else
+`windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal writes nothing.
 
 ### A writer run
 
@@ -207,6 +212,46 @@ writes nothing.
    (`revisionConflict`). `staleInput` and `windowChanged` end it `skipped` and leave the row to step 2.
 7. Warming: the trimmed event summary and key lines through `HypaProcesser.addText`, unless `laneTargets.events` is 0. A
    failure keeps the event. A retrieval that embeds other text misses this cache.
+
+### Receipts
+
+`generationInfo.memory` on a message says what happened to its turn. The stored kinds, by who writes them:
+
+- `recorded` and `failed`: `commitWindow`, from the receipt of the run in `changes`, right after the memory write and in
+  the same synchronous step, one `patchMessage` per assistant message of the window, each keeping its other generation
+  info. So every turn of an `everyK` or `tokens` window carries the same receipt. Two transactions, not one: a receipt
+  that conflicts anyway is logged, the commit stands, and `MemoryRun.receipt` keeps it.
+- `notAutomatic` (`pluginModel`, `requestTrigger`, `localSummarization`) and `skipped` (`writerPaused`): the send's job,
+  on its own reply's generation info (`structuredMemoryStep`), so no extra chat write. It cannot be left to the task,
+  which is handed off only when a window is due. A run that records the turn replaces it, because the patch sets the
+  whole `memory` field.
+- `pending` is never stored. On the newest assistant message with no receipt the line reads as the writer working while
+  the chat's task is live (about the chat, not that row), else as having no receipt yet. Older rows without one show
+  nothing: no receipt proves nothing, see `Invariants`.
+
+The row list mounts `Chat` once per text, so `messageGenerationInfo` keeps what the row was mounted with: the line reads
+the held chat, and a feed patch moves it.
+
+### Record now
+
+"Record now" and resume are the `memoryRecord` command (`messageId` or none), a job and not a call on the service: the
+service keeps no input across a restart, where `start` would only wait for the next send, and only a job's scope can
+tell a slot that needs the tab. The tab calls `runServerJob` directly, because `runServerCommand` refuses a group chat.
+
+1. Admission: refused when the algorithm is not selected, memory is off, the summarizer is local, or `messageId` is not
+   an eligible char message. The job holds the chat's slot, so nothing generates then. No ceiling and no `messageId`
+   ends `done`.
+2. With a service and nothing tab-bound: `MemoryTasks.record` queues a fresh input, marked manual, with `through`. The
+   latest press wins, one with no message clears it, and a later hand-off keeps both. It answers a refusal where
+   `handOff` drops silently. The job ends at once, and the task starts after its terminal.
+3. A Plugin `memory` slot, a `request` trigger, or no service: the writer runs in the job, as blocking HypaV3 does, on
+   the chat's writer lease, because only `services.request` reaches the plugin provider and the trigger.
+   `scope.request.db` takes `writerRequestDb`, the windows run in order up to `maxWriterWindows`, and the first that
+   does not record ends the job with an error. Past the cap it is an ordinary `done`.
+
+`through` is an `inclusive` ceiling (`WriterCeiling`): the windows run through that message, newest reply included,
+because the press is its confirmation. They stay oldest first, so a press records the oldest open windows, never that
+message ahead of them.
 
 ### The analysis prompt
 
@@ -268,7 +313,8 @@ rules.
   max context under a `ratio` one; each mode keeps the other's field.
 - `MemoryEventDraft` is what the writer returns; `MemoryEvent` adds what code owns (id, sources, status, grade, repeat
   count). `MemoryRun.analysis` keeps the bounded draft before evidence checks and deduplication, so the log shows what
-  the model said even when `eventId` names something else. `MemoryRun.receipt` holds what the run listed.
+  the model said even when `eventId` names something else. `MemoryRun.receipt` holds what the run listed; a message's
+  `generationInfo.memory` is its copy, or what the send said ([Receipts](#receipts)).
 - A grade is the sum of a record's axes, 0 to 9; a record without axes has none.
 
 ### Memory tables
@@ -313,6 +359,8 @@ group is refused, and a full one is checked and restored.
   store type that drifts fails `pnpm check`.
 - `app.ts` admits the routes as resource handlers: tracked, refused during shutdown, and `no-store`. `ROUTE_TEMPLATES`
   in `shared/diagnostics.ts` lists each route.
+- `memoryRecord` is a [generation](server-generation.md) `command` job; `recordJob.ts` shares the runner's job helpers
+  (`createJobMemoryHost`, `jobMemoryTaskBase`, and the like).
 
 ## Invariants
 
@@ -372,6 +420,10 @@ group is refused, and a full one is checked and restored.
 - `terminalRevision` and `lastCommittedRevision` stay chat revisions on both task kinds, because the tab's fence
   compares chat revisions. A memory revision never goes into a status.
 - A HypaV3 input and status carry no `kind` key, so its frames stay byte-identical. `MemoryTaskInput` is HypaV3's shape.
+- A receipt is a display copy: `memory_runs` is the record. A message with no receipt is no proof that nothing was
+  recorded, since a checkpoint load restores older rows while the tables survive and a whole-row `setMessage` replaces
+  the field. Nothing reads a receipt to decide what to record.
+- `memoryReceiptView` reads a receipt as stored data of any shape: a state it does not know hides the line.
 
 ## Recipes
 
@@ -410,8 +462,11 @@ group is refused, and a full one is checked and restored.
   with the real CBS evaluator.
 - `structured/lanes.test.ts` and `card.test.ts` drive the read rules with plain values and a fake tokenizer.
   `structured/retrieve.test.ts` runs real embeddings over a vector cache with a scripted provider.
+- Receipts and record now: `memoryTasks.test.ts` for the patches, the lock refusal, and `through`; `memoryJobs.test.ts`
+  for the reply's notice and the job's two paths on a real stack; `structuredMemory.test.ts` for `memoryReceiptView`;
+  `MemoryReceiptLine.svelte.test.ts` and `Chat.interactions.svelte.test.ts` for the line and its gate.
 - Focused command:
-  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts server/src/prompt/memory/structured restoreStage backups normalizeCollections memoryTaskHost upstreamExport memoryTasks memoryJobs assemble`.
+  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts server/src/prompt/memory/structured src/lib/ChatScreens/MemoryReceiptLine.svelte.test.ts src/lib/ChatScreens/Chat.interactions.svelte.test.ts restoreStage backups normalizeCollections memoryTaskHost upstreamExport memoryTasks memoryJobs assemble`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
@@ -431,6 +486,13 @@ group is refused, and a full one is checked and restored.
   recording. Decision: Structured Memory D3, plan.
 - The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
   plan.
+- Record now has no cost preview, which D3 asks for: `maxWriterWindows` bounds a press, and the previewed path is
+  backfill. Decision: Structured Memory slice 2d, plan.
+- Recording in a job sets no `memoryTaskFenced` fence and no task status: only the pressing tab sees it, through its
+  button and the `memoryProgress` overlay, as with a blocking HypaV3 summary. The job holds the chat's slot and the
+  lease. A throw there leaves the run `pending` with no failed receipt, and the next run closes it `interrupted`.
+  Decision: Structured Memory slice 2d, plan.
+- `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
 
@@ -454,3 +516,6 @@ group is refused, and a full one is checked and restored.
   is one provider call per 50 texts, in sequence, inside the send.
 - `readRecordedMessages` reads every stored event of the chat once per send and once per task, because the store has no
   bulk read, so its cost grows with the chat's events.
+- A window message with no `generationInfo` (an imported chat) gains `{ memory }` alone, so with `requestInfoInsideChat`
+  its row shows an "Unknown" model button after its next mount.
+- A copied or branched chat carries its receipts along with its messages.

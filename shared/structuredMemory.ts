@@ -62,7 +62,10 @@ export type MemoryHistoryChangeKind = (typeof MEMORY_HISTORY_CHANGE_KINDS)[numbe
 export const MEMORY_RUN_RESULTS = ["pending", "recorded", "failed", "skipped"] as const;
 export type MemoryRunResult = (typeof MEMORY_RUN_RESULTS)[number];
 
-/** The outcome of one turn's recording, stored with the confirmed message. */
+/**
+ * The outcome of one turn's recording, stored with its message. `pending` is never stored: only a tab
+ * can tell a turn the writer has not reached yet, from the chat's live task.
+ */
 export const MEMORY_RECEIPT_STATES = ["recorded", "pending", "failed", "skipped", "notAutomatic"] as const;
 export type MemoryReceiptState = (typeof MEMORY_RECEIPT_STATES)[number];
 

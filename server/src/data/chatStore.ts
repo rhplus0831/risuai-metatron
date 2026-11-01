@@ -2076,6 +2076,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return !!guard && [...guard.characterHolders(characterId)].some((token) => token !== jobToken);
         },
 
+        /** Whether a generation job owns any of the chat's `messageIds` (what `refusedByLock` reads). */
+        messagesLocked(characterId: string, chatId: string, messageIds: readonly string[]): boolean {
+            return !!guard && messageIds.some((id) => guard.holder(characterId, chatId, id) !== null);
+        },
+
         /** The chat's revision token, or null when it does not exist (no metadata or messages read). */
         chatRevision(characterId: string, id: string): string | null {
             const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;

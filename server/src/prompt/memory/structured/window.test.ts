@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
-import { confirmedWindows, writerCeiling, type WriterCadence } from "./window.ts";
+import { confirmedWindows, windowStillConfirmed, writerCeiling, type WriterCadence } from "./window.ts";
 
 describe("confirmed writer windows", () => {
     it("closes only uncovered confirmed turns at the selected cadence", async () => {
@@ -150,4 +150,59 @@ describe("confirmed writer windows", () => {
             ).toEqual(row.expected);
         }
     });
+});
+
+it("includes the manually confirmed assistant in both window planning and commit validation", async () => {
+    const messages: Message[] = ["u1", "a1", "u2", "a2"].map((id) => ({
+        chatId: id,
+        role: id.startsWith("u") ? "user" : "char",
+        data: id,
+    }));
+    for (const row of [
+        { id: "a1", inclusive: true, expected: [["u1", "a1"]] },
+        {
+            id: "a2",
+            inclusive: true,
+            expected: [
+                ["u1", "a1"],
+                ["u2", "a2"],
+            ],
+        },
+        { id: "a2", inclusive: false, expected: [["u1", "a1"]] },
+    ]) {
+        const windows = await confirmedWindows({
+            messages,
+            confirmedBefore: row.id,
+            inclusive: row.inclusive,
+            recorded: new Set(),
+            cadence: {
+                cadence: "manual",
+                cadenceTurns: 3,
+                cadenceTokens: 100,
+                cadenceRatio: 0.1,
+                budgetMode: "tokens",
+            },
+            manual: true,
+            maxContext: 1000,
+            tokenizer: { tokenizeChat: async () => 1 },
+            limit: 10,
+        });
+        expect(windows?.map((window) => window.messages.map((message) => message.chatId))).toEqual(row.expected);
+        for (const window of windows!) {
+            expect(windowStillConfirmed(window, messages, row.id, { inclusive: row.inclusive })).toBe(true);
+            if (window.sources.at(-1)!.messageId === row.id) {
+                expect(windowStillConfirmed(window, messages, row.id)).toBe(false);
+                expect(
+                    windowStillConfirmed(
+                        window,
+                        messages.map((message) =>
+                            message.chatId === row.id ? { ...message, disabled: true } : message,
+                        ),
+                        row.id,
+                        { inclusive: true },
+                    ),
+                ).toBe(false);
+            }
+        }
+    }
 });

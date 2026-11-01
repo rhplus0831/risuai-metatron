@@ -8,6 +8,8 @@ import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceC
 import {
     buildStructuredMemoryPackage,
     memoryPagePath,
+    memoryReceiptView,
+    newestAssistantMessageId,
     readStructuredMemoryContents,
     readStructuredMemoryRecord,
     renderMemoryPage,
@@ -312,4 +314,39 @@ it("keeps page files inside their type folder and gives distinct ids distinct pa
         expect(path.posix.dirname(filename)).toBe("pages/location");
     }
     expect(new Set(paths).size).toBe(ids.length);
+});
+
+it("shows missing receipts only on the newest eligible assistant and distinguishes recorded, failed, paused, and tab-bound turns", () => {
+    const message = (chatId: string, role: "user" | "char", disabled?: true | "allBefore") => ({
+        chatId,
+        role,
+        data: chatId,
+        disabled,
+    });
+    const messages = [
+        message("a0", "char"),
+        message("reset", "user", "allBefore"),
+        message("a1", "char"),
+        message("u2", "user"),
+        message("disabled", "char", true),
+    ];
+    expect(newestAssistantMessageId(messages)).toBe("a1");
+    expect(newestAssistantMessageId(messages.slice(0, 2))).toBeUndefined();
+    for (const taskLive of [true, false]) {
+        for (const row of messages) {
+            expect(memoryReceiptView(undefined, { newest: row.chatId === "a1", taskLive })).toMatchObject({
+                kind: row.chatId !== "a1" ? "hidden" : taskLive ? "working" : "none",
+                action: row.chatId === "a1" ? "record" : null,
+            });
+        }
+    }
+    for (const [receipt, kind, action] of [
+        [{ state: "recorded", eventId: "event" }, "recorded", null],
+        [{ state: "failed", reason: "requestFailed" }, "failed", "record"],
+        [{ state: "notAutomatic", reason: "pluginModel" }, "notAutomatic", "record"],
+        [{ state: "notAutomatic", reason: "requestTrigger" }, "notAutomatic", "record"],
+        [{ state: "skipped", reason: "writerPaused" }, "paused", "resume"],
+    ] as const) {
+        expect(memoryReceiptView(receipt, { newest: false, taskLive: false })).toMatchObject({ kind, action });
+    }
 });

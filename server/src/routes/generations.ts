@@ -74,7 +74,15 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
         return value === undefined ? undefined : "command is only for a command job";
     }
     const invalidShape =
-        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, or { type: "manual", name: string }';
+        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, { type: "manual", name: string }, or { type: "memoryRecord", messageId?: string }';
+    if (isPlainObject(value) && value.type === "memoryRecord") {
+        if (value.messageId === undefined) {
+            return { type: "memoryRecord" };
+        }
+        return isValidResourceId(value.messageId)
+            ? { type: "memoryRecord", messageId: value.messageId }
+            : "command.messageId must be an id when present";
+    }
     if (isPlainObject(value) && value.type === "manual" && typeof value.name === "string") {
         if (Buffer.byteLength(value.name, "utf8") > MAX_TRIGGER_NAME_BYTES) {
             return `command.name must be at most ${MAX_TRIGGER_NAME_BYTES} bytes`;

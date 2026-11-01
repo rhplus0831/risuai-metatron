@@ -18,7 +18,7 @@ import type {
     MessagePresetInfo,
 } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
-import type { HypaV3Budget, HypaV3BudgetReduction } from "../../../shared/hypaV3Presets.ts";
+import { type HypaV3Budget, type HypaV3BudgetReduction, summarizesLocally } from "../../../shared/hypaV3Presets.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type {
@@ -41,7 +41,7 @@ import {
     toggleStorageKey,
     valueToggles,
 } from "../../../shared/prompt/toggles.ts";
-import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+import { type MemoryReceipt, STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import type { MemoryControl } from "../jobs/generationJobs.ts";
 import { HypaProcesser } from "./embeddings.ts";
 import { hanuraiMemory } from "./memory/hanurai.ts";
@@ -209,6 +209,8 @@ export type AssemblyMemoryJob = {
         recorded(): ReadonlySet<string>;
         /** The job's writer input for the chat snapshot of `sourceGeneration`, or null without a service. */
         taskInput(sourceGeneration: number, confirmedBefore: string): StructuredMemoryTaskInput | null;
+        /** Whether automatic recording is paused (`writerPaused`). Synchronous. */
+        paused(): boolean;
     };
 };
 
@@ -454,11 +456,37 @@ function rethrowHypaV3(memory: MemoryHost, error: unknown): never {
 }
 
 /**
+ * What a reply's receipt says when no writer run will reach it on its own: why recording is not
+ * automatic (the slot or trigger that needs the tab, a local model), else that it is paused. Only the
+ * send can say so: a task is handed off only when a window is due, so under `everyK`, `tokens`, or
+ * `manual` its word would come late or never. A run that records the reply replaces this.
+ */
+function writerNotice(
+    db: Database,
+    job: AssemblyMemoryJob,
+    writer: NonNullable<AssemblyMemoryJob["structuredMemory"]>,
+): MemoryReceipt | undefined {
+    const reason = job.blockingReason() ?? (summarizesLocally(db) ? "localSummarization" : null);
+    if (!reason && !writer.paused()) {
+        return undefined;
+    }
+    return {
+        state: reason ? "notAutomatic" : "skipped",
+        reason: reason ?? "writerPaused",
+        pages: [],
+        refused: [],
+        unverified: [],
+        warnings: [],
+    };
+}
+
+/**
  * The Structured Memory step of a job: it keeps the raw history, so what does not fit falls to the
  * final token recheck, and it adds nothing to the prompt. An input job with a memory task service gets
  * the writer's hand-off, whether or not a window is due, since a waiting manual start takes one that is
- * not. Nothing here refuses a tab-bound `memory` slot or a `request` trigger as `hypaV3Step` does: the
- * task ends `skipped` with the reason, and that status is how the reason reaches the tab.
+ * not, and the receipt its reply carries when recording will not reach it (`writerNotice`). Nothing
+ * here refuses a tab-bound `memory` slot or a `request` trigger as `hypaV3Step` does: the task ends
+ * `skipped` with the reason, and a person starts the recording, which runs in a job of its own.
  *
  * `messages` and `sourceGeneration` are the snapshot the job's history was built from.
  */
@@ -471,16 +499,20 @@ async function structuredMemoryStep(
         continueMessageId: string | undefined;
         tokenizer: MemoryTokenizer;
     },
-): Promise<{ input: StructuredMemoryTaskInput; due: boolean } | undefined> {
+): Promise<{ memoryTask?: { input: StructuredMemoryTaskInput; due: boolean }; receipt?: MemoryReceipt }> {
     const job = host.memoryJob;
-    if (!job?.tasks || !job.input || !job.structuredMemory || arg.sourceGeneration === undefined) {
-        return undefined;
+    if (!job?.tasks || !job.input || !job.structuredMemory) {
+        return {};
     }
+    const notice = writerNotice(host.db, job, job.structuredMemory);
+    const reply = notice ? { receipt: notice } : {};
     const confirmedBefore = writerCeiling(arg.messages, arg.continueMessageId);
     const input =
-        confirmedBefore === null ? null : job.structuredMemory.taskInput(arg.sourceGeneration, confirmedBefore);
+        confirmedBefore === null || arg.sourceGeneration === undefined
+            ? null
+            : job.structuredMemory.taskInput(arg.sourceGeneration, confirmedBefore);
     if (!input) {
-        return undefined;
+        return reply;
     }
     const windows = await confirmedWindows({
         messages: arg.messages,
@@ -491,7 +523,7 @@ async function structuredMemoryStep(
         tokenizer: arg.tokenizer,
         limit: 1,
     });
-    return { input, due: (windows?.length ?? 0) > 0 };
+    return { ...reply, memoryTask: { input, due: (windows?.length ?? 0) > 0 } };
 }
 
 /**
@@ -1708,6 +1740,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
      */
     const protectedEntries = new Set<OpenAIChat>();
     let memoryTask: { input: AnyMemoryTaskInput; due: boolean } | undefined;
+    /** What the Structured Memory step has to say on the reply (`generationInfo.memory`). */
+    let memoryReceipt: MemoryReceipt | undefined;
     /** The memory branch that ran, for the report. */
     let memoryRun: MemoryRun | null = null;
     /** The no-memory trim ledger after the trim loop: its headroom and the entries it would drop next. */
@@ -1725,12 +1759,14 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         const memory = host.memory;
         try {
             if (structuredMemory) {
-                memoryTask = await structuredMemoryStep(host, {
+                const step = await structuredMemoryStep(host, {
                     messages: currentChat.message,
                     sourceGeneration: currentChatGeneration,
                     continueMessageId: input.continueMessageId,
                     tokenizer: memoryTokenizer,
                 });
+                memoryTask = step.memoryTask;
+                memoryReceipt = step.receipt;
                 host.fence();
             } else if (db.hanuraiEnable) {
                 const hn = await hanuraiMemory(memory, chats, {
@@ -2315,6 +2351,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             stage3: 0,
             stage4: 0,
         },
+        ...(memoryReceipt ? { memory: memoryReceipt } : {}),
     };
 
     return {

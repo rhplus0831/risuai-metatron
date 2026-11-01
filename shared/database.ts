@@ -27,7 +27,7 @@ import type {
     TranslatorPreset,
 } from "./settings.ts";
 import type { triggerscript } from "./triggers.ts";
-import type { StructuredMemoryHighlightMode } from "./structuredMemory.ts";
+import type { MemoryReceipt, StructuredMemoryHighlightMode } from "./structuredMemory.ts";
 import type { TogglePreset } from "./togglePresets.ts";
 
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
@@ -1355,6 +1355,11 @@ export interface MessageGenerationInfo {
         stage3?: number;
         stage4?: number;
     };
+    /**
+     * What Structured Memory's writer did about this turn, or why it is not recording. Written with
+     * the reply or by the run that closed the turn's window; a tab reads it as data of any shape.
+     */
+    memory?: DeepReadonly<MemoryReceipt>;
 }
 
 export interface MessagePresetInfo {

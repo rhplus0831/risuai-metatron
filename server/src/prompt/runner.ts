@@ -12,6 +12,7 @@ import {
     MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
     type MemoryBlockingReason,
+    type MemoryChatRef,
     type MemoryGapChoice,
     type MemoryTaskBase,
     type MemoryTrimChoice,
@@ -75,9 +76,10 @@ import {
     assemblePrompt,
     getGenerationModelString,
 } from "./assemble.ts";
-import { postJson } from "./embeddings.ts";
+import { type EmbeddingEnv, postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
 import { readRecordedMessages } from "./memory/structured/window.ts";
+import { writerPaused } from "./memory/structured/writer.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
 import { localModelRefusal } from "./transformers.ts";
@@ -647,6 +649,222 @@ function handOffMemory(job: RunningJob, deps: GenerationRunnerDeps, memoryTask: 
     }
 }
 
+/** What a memory task of either kind takes from a job on `scope`. */
+export function jobMemoryTaskBase(arg: {
+    job: RunningJob;
+    scope: JobScope;
+    sourceGeneration: number;
+    speakerId: string | null;
+    /** Whether the job's prompt preset is a `presetChain` pick. */
+    fromChain: boolean;
+    chatAdditionalTokens: number;
+}): MemoryTaskBase {
+    const { job, scope } = arg;
+    return {
+        chatRef: { chaId: job.context.characterId, chatId: job.context.chatId },
+        epoch: job.epoch,
+        admittedRevision: job.context.chatRevision,
+        sourceGeneration: arg.sourceGeneration,
+        speakerId: arg.speakerId,
+        binding: {
+            presetId: job.context.presetId ?? null,
+            modelPresetId: job.context.modelPresetId ?? null,
+            personaId: job.context.personaId ?? null,
+        },
+        effective: {
+            presetId: scope.promptPreset.id,
+            modelPresetId: scope.modelPreset.id,
+            fromChain: arg.fromChain,
+        },
+        maxContext: scope.db.maxContext,
+        maxResponse: scope.db.maxResponse,
+        tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditionalTokens),
+        settingsFingerprint: memorySettingsFingerprint(scope),
+    };
+}
+
+/** Why a job's memory requests need its tab: a Plugin `memory` model, a `request` trigger; or null. */
+export function jobMemoryBlockingReason(scope: JobScope): MemoryBlockingReason | null {
+    const resolved = resolveJobRequestModel(scope.request.db, "memory");
+    if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
+        return "pluginModel";
+    }
+    const stored = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
+    return hasRequestTriggers(stored, moduleTriggers(scope)) ? "requestTrigger" : null;
+}
+
+/**
+ * The memory algorithms' services of one run of a job (`memory-on-server`): the job's settings, its own
+ * requests and embeddings, its chat's CBS, and its abort. `track` wraps the local summarizer's calls,
+ * and `onProgress` hears each `progress` notice.
+ */
+export function createJobMemoryHost(arg: {
+    deps: GenerationRunnerDeps;
+    setup: RunSetup;
+    chatRef: MemoryChatRef;
+    embeddingEnv: EmbeddingEnv;
+    track?: <T>(call: () => Promise<T>) => Promise<T>;
+    onProgress?: (open: boolean) => void;
+}): MemoryHost {
+    const { deps, setup, chatRef, embeddingEnv } = arg;
+    const { scope, nativeCtx } = setup;
+    const { services } = setup.bindings;
+    const track = arg.track ?? ((call) => call());
+    return {
+        db: scope.db,
+        tokenize: (text) => services.tokenize(text),
+        request: async (memoryPrompt) => {
+            setup.check();
+            const response = await services.request(
+                {
+                    formated: memoryPrompt,
+                    bias: {},
+                    useStreaming: false,
+                    noMultiGen: true,
+                    chatRef,
+                } as Parameters<typeof services.request>[0],
+                "memory",
+                nativeCtx,
+                "memory",
+            );
+            setup.check();
+            return response;
+        },
+        completions: async (body) => {
+            setup.check();
+            const response = await postJson(
+                embeddingEnv,
+                "https://api.openai.com/v1/completions",
+                { headers: { Authorization: "Bearer " + embeddingEnv.supaMemoryKey }, body },
+                { strictJson: true },
+            );
+            setup.check();
+            // The browser path's proxy refuses a successful answer that carries the stored key
+            // (`routes/proxy.ts`): a summary must not put it into the chat or the next request.
+            if (response.ok && embeddingEnv.carries(response.data)) {
+                return {
+                    ok: false,
+                    data: { error: "The openai-completions answer carried the stored credential; it is not sent" },
+                };
+            }
+            return response;
+        },
+        summarizer: (text) =>
+            track(async () => {
+                setup.check();
+                try {
+                    return await deps.transformers.runSummarizer(text, nativeCtx.signal);
+                } finally {
+                    setup.check();
+                }
+            }),
+        embeddings: embeddingEnv,
+        regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
+        ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
+        parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
+        userName: () => scope.effectivePersona.name,
+        progress: (payload) => {
+            arg.onProgress?.(payload.open);
+            services.notice({ kind: "progress", payload });
+        },
+        random: deps.random ?? Math.random,
+        redact: (text) => embeddingEnv.redact(text),
+        fence: () => setup.check(),
+        signal: nativeCtx.signal,
+    };
+}
+
+/** The token count of a job's prompt on `scope`, as `memoryTokenPolicy` describes it. */
+export function jobChatTokenCounter(
+    deps: GenerationRunnerDeps,
+    scope: JobScope,
+    chatAdditionalTokens: number,
+): ChatTokenCounter {
+    const { db } = scope;
+    const requestDb = scope.request.db;
+    return new ChatTokenCounter(chatAdditionalTokens, db.aiModel.startsWith("gpt") ? "noName" : "name", {
+        count: (text) => deps.tokens.count(text, tokenScopeFor(requestDb)),
+        supportsInlayImage: () => mainModelTakesImages(requestDb),
+        mainModel: () => mainModelOf(requestDb),
+        requestModel: () => {
+            if (requestDb.aiModel === "openrouter") return requestDb.openrouterRequestModel;
+            if (requestDb.aiModel === "nanogpt") return requestDb.nanogptRequestModel;
+            return undefined;
+        },
+        gptVisionQuality: () => db.gptVisionQuality,
+    });
+}
+
+/** The chat's summary writer lease for a job (a no-op one without a service); the caller releases it. */
+export async function acquireJobWriter(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    setup: RunSetup,
+): Promise<SummaryWriterLease> {
+    const tasks = deps.memoryTasks;
+    if (!tasks) {
+        return { release: () => {} };
+    }
+    setup.check();
+    const { characterId: chaId, chatId } = job.context;
+    const pending = tasks.acquireSummaryWriter({ chaId, chatId }, job.id);
+    let lease: SummaryWriterLease;
+    try {
+        lease = await untilAborted(pending, setup.nativeCtx.signal);
+    } catch (error) {
+        // A lease granted after the job stopped waiting is given back.
+        pending.then(
+            (late) => late.release(),
+            () => {},
+        );
+        throw error;
+    }
+    try {
+        setup.check();
+    } catch (error) {
+        lease.release();
+        throw error;
+    }
+    return lease;
+}
+
+/** A new memory run of a job (a fresh `runId`): its `memoryProgress` notices and stop control. */
+export function openJobMemoryRun(
+    job: RunningJob,
+    setup: RunSetup,
+    phase: "blocking" | "initial" | "selection",
+    reason: MemoryBlockingReason | null,
+): AssemblyMemoryRun {
+    const { services } = setup.bindings;
+    const { characterId: chaId, chatId } = job.context;
+    const chatRef = { chaId, chatId };
+    const runId = randomUUID();
+    let opened = false;
+    let closed = false;
+    return {
+        update: (progress) => {
+            if (closed) {
+                return;
+            }
+            opened = true;
+            services.notice({
+                kind: "memoryProgress",
+                payload: { chatRef, runId, open: true, phase, reason, ...progress },
+            });
+        },
+        close: () => {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (opened) {
+                services.notice({ kind: "memoryProgress", payload: { chatRef, runId, open: false } });
+            }
+        },
+        registerStop: () => job.registerMemoryControl?.(runId) ?? null,
+    };
+}
+
 type SpeakerResult =
     | {
           type: "reply";
@@ -1060,90 +1278,26 @@ async function runSpeaker(arg: {
             runEmbedding: (...args) => trackLocalModel(() => embeddingTransformers.runEmbedding(...args)),
         };
         let memoryProgressOpen = false;
-        const memory: MemoryHost = {
-            db,
-            tokenize: (text) => services.tokenize(text),
-            request: async (memoryPrompt) => {
-                setup.check();
-                const response = await services.request(
-                    {
-                        formated: memoryPrompt,
-                        bias: {},
-                        useStreaming: false,
-                        noMultiGen: true,
-                        chatRef,
-                    } as Parameters<typeof services.request>[0],
-                    "memory",
-                    nativeCtx,
-                    "memory",
-                );
-                setup.check();
-                return response;
-            },
-            completions: async (body) => {
-                setup.check();
-                const response = await postJson(
-                    embeddingEnv,
-                    "https://api.openai.com/v1/completions",
-                    { headers: { Authorization: "Bearer " + embeddingEnv.supaMemoryKey }, body },
-                    { strictJson: true },
-                );
-                setup.check();
-                // The browser path's proxy refuses a successful answer that carries the stored key
-                // (`routes/proxy.ts`): a summary must not put it into the chat or the next request.
-                if (response.ok && embeddingEnv.carries(response.data)) {
-                    return {
-                        ok: false,
-                        data: { error: "The openai-completions answer carried the stored credential; it is not sent" },
-                    };
-                }
-                return response;
-            },
-            summarizer: (text) =>
-                trackLocalModel(async () => {
-                    setup.check();
-                    try {
-                        return await deps.transformers.runSummarizer(text, nativeCtx.signal);
-                    } finally {
-                        setup.check();
-                    }
-                }),
-            embeddings: embeddingEnv,
-            regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
-            ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
-            parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
-            userName: () => scope.effectivePersona.name,
-            progress: (payload) => {
-                memoryProgressOpen = payload.open;
-                services.notice({ kind: "progress", payload });
-            },
-            random: deps.random ?? Math.random,
-            redact: (text) => embeddingEnv.redact(text),
-            fence: () => setup.check(),
-            signal: nativeCtx.signal,
-        };
-        // What a memory task of either kind takes from this job.
-        const memoryTaskBase = (sourceGeneration: number): MemoryTaskBase => ({
+        const memory = createJobMemoryHost({
+            deps,
+            setup,
             chatRef,
-            epoch: job.epoch,
-            admittedRevision: job.context.chatRevision,
-            sourceGeneration,
-            speakerId: currentChar.chaId ?? null,
-            binding: {
-                presetId: job.context.presetId ?? null,
-                modelPresetId: job.context.modelPresetId ?? null,
-                personaId: job.context.personaId ?? null,
+            embeddingEnv,
+            track: trackLocalModel,
+            onProgress: (open) => {
+                memoryProgressOpen = open;
             },
-            effective: {
-                presetId: scope.promptPreset.id,
-                modelPresetId: scope.modelPreset.id,
-                fromChain: arg.fromChain,
-            },
-            maxContext: db.maxContext,
-            maxResponse: db.maxResponse,
-            tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditonalTokens),
-            settingsFingerprint: memorySettingsFingerprint(scope),
         });
+        // What a memory task of either kind takes from this job.
+        const memoryTaskBase = (sourceGeneration: number): MemoryTaskBase =>
+            jobMemoryTaskBase({
+                job,
+                scope,
+                sourceGeneration,
+                speakerId: currentChar.chaId ?? null,
+                fromChain: arg.fromChain,
+                chatAdditionalTokens: arg.chatAdditonalTokens,
+            });
         // The memory steps' side of the job: its kind, the task service, the gap question, the writer
         // lease, the `memoryProgress` runs, the chat's sources, and the writer's stored coverage.
         const memoryJob: AssemblyMemoryJob = {
@@ -1170,75 +1324,14 @@ async function runSpeaker(arg: {
                 }
                 return { messages: chat.message, fmIndex: chat.fmIndex, greeting };
             },
-            blockingReason: (): MemoryBlockingReason | null => {
-                // After a stop the job's later steps select only, whatever would block them now.
-                if (state.memoryGap === "stopped") {
-                    return null;
-                }
-                const resolved = resolveJobRequestModel(scope.request.db, "memory");
-                if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
-                    return "pluginModel";
-                }
-                const stored = scope.db.characters.find((entry) => entry?.chaId === characterId);
-                return hasRequestTriggers(stored, moduleTriggers(scope)) ? "requestTrigger" : null;
-            },
+            // After a stop the job's later steps select only, whatever would block them now.
+            blockingReason: () => (state.memoryGap === "stopped" ? null : jobMemoryBlockingReason(scope)),
             confirmGap: confirmMemoryGap,
             markStopped: () => {
                 state.memoryGap = "stopped";
             },
-            acquireWriter: async (): Promise<SummaryWriterLease> => {
-                const tasks = deps.memoryTasks;
-                if (!tasks) {
-                    return { release: () => {} };
-                }
-                setup.check();
-                const pending = tasks.acquireSummaryWriter(chatRef, job.id);
-                let lease: SummaryWriterLease;
-                try {
-                    lease = await untilAborted(pending, nativeCtx.signal);
-                } catch (error) {
-                    // A lease granted after the job stopped waiting is given back.
-                    pending.then(
-                        (late) => late.release(),
-                        () => {},
-                    );
-                    throw error;
-                }
-                try {
-                    setup.check();
-                } catch (error) {
-                    lease.release();
-                    throw error;
-                }
-                return lease;
-            },
-            openRun: (phase, reason): AssemblyMemoryRun => {
-                const runId = randomUUID();
-                let opened = false;
-                let closed = false;
-                return {
-                    update: (progress) => {
-                        if (closed) {
-                            return;
-                        }
-                        opened = true;
-                        services.notice({
-                            kind: "memoryProgress",
-                            payload: { chatRef, runId, open: true, phase, reason, ...progress },
-                        });
-                    },
-                    close: () => {
-                        if (closed) {
-                            return;
-                        }
-                        closed = true;
-                        if (opened) {
-                            services.notice({ kind: "memoryProgress", payload: { chatRef, runId, open: false } });
-                        }
-                    },
-                    registerStop: () => job.registerMemoryControl?.(runId) ?? null,
-                };
-            },
+            acquireWriter: () => acquireJobWriter(job, deps, setup),
+            openRun: (phase, reason) => openJobMemoryRun(job, setup, phase, reason),
             taskInput: (part) => (deps.memoryTasks ? { ...part, ...memoryTaskBase(part.sourceGeneration) } : null),
             structuredMemory: {
                 recorded: () => readRecordedMessages(store, characterId, chatId),
@@ -1246,6 +1339,7 @@ async function runSpeaker(arg: {
                     deps.memoryTasks
                         ? { ...memoryTaskBase(sourceGeneration), kind: "structuredMemory", confirmedBefore }
                         : null,
+                paused: () => writerPaused(store.memory.readContents(characterId, chatId)?.runs ?? []),
             },
         };
         state.stage = "assembly";
@@ -1333,21 +1427,7 @@ async function runSpeaker(arg: {
                             setup.check();
                         }
                     }),
-                tokenizer: new ChatTokenCounter(
-                    arg.chatAdditonalTokens,
-                    db.aiModel.startsWith("gpt") ? "noName" : "name",
-                    {
-                        count: (text) => deps.tokens.count(text, tokenScopeFor(requestDb)),
-                        supportsInlayImage: () => mainModelTakesImages(requestDb),
-                        mainModel: () => mainModelOf(requestDb),
-                        requestModel: () => {
-                            if (requestDb.aiModel === "openrouter") return requestDb.openrouterRequestModel;
-                            if (requestDb.aiModel === "nanogpt") return requestDb.nanogptRequestModel;
-                            return undefined;
-                        },
-                        gptVisionQuality: () => db.gptVisionQuality,
-                    },
-                ),
+                tokenizer: jobChatTokenCounter(deps, scope, arg.chatAdditonalTokens),
                 tokenScope: tokenizerIdentityKey(tokenScopeFor(requestDb)),
                 getModelInfo: (model) =>
                     resolveModelInfo(model, {

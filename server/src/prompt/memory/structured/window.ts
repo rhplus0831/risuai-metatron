@@ -19,7 +19,9 @@ import type { MemoryTokenizer } from "../host.ts";
  * - Confirmation: a reply is evidence once the user sends the next message, or presses to record it.
  *   The job names the message its windows stop before (`writerCeiling`), a manual task takes it from
  *   the chat as stored, and everything here reads only what lies before it, so the newest reply and
- *   one being generated or continued stay out. Swipe candidates are not stored messages at all.
+ *   one being generated or continued stay out. A press on a message is its confirmation, so that id
+ *   is `inclusive`: the windows run through it, newest reply included. Swipe candidates are not stored
+ *   messages at all.
  * - A turn is one assistant message and the unrecorded messages since the turn before it: an event
  *   names one speaker, so two replies in a row are two turns.
  * - Recorded means cited by a stored event in any status: the writer must not automatically record it
@@ -40,6 +42,9 @@ export type WriterCadence = Pick<
 
 /** A confirmed message, with the id that anchors it and its place in the stored list. */
 type ConfirmedMessage = { id: string; message: Message; index: number };
+
+/** Where windows stop: before the message `id`, or through it when a press confirmed it (`inclusive`). */
+export type WriterCeiling = { id: string; inclusive: boolean };
 
 /** The selected memory preset's cadence settings. */
 export function writerCadence(db: Parameters<typeof selectedHypaV3Preset>[0]): WriterCadence {
@@ -89,11 +94,15 @@ export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId
 }
 
 /**
- * The eligible messages before the ceiling, in chat order, positioned in the stored list (a message
- * without a `chatId` cannot be anchored). Null when the ceiling is not itself eligible: a message that
- * is gone, disabled, or cut off by an `allBefore` confirms nothing.
+ * The eligible messages before the ceiling, or through it when `inclusive`, in chat order, positioned
+ * in the stored list (a message without a `chatId` cannot be anchored). Null when the ceiling is not
+ * itself eligible: a message that is gone, disabled, or cut off by an `allBefore` confirms nothing.
  */
-function confirmedMessages(messages: readonly Message[], confirmedBefore: string): ConfirmedMessage[] | null {
+function confirmedMessages(
+    messages: readonly Message[],
+    confirmedBefore: string,
+    inclusive: boolean,
+): ConfirmedMessage[] | null {
     const placed = messages.map((message, index) => ({ message, index, disabled: message.disabled }));
     const eligible = eligibleHistory(placed).messages;
     const ceiling = eligible.findIndex(({ message }) => message.chatId === confirmedBefore);
@@ -101,7 +110,7 @@ function confirmedMessages(messages: readonly Message[], confirmedBefore: string
         return null;
     }
     const confirmed: ConfirmedMessage[] = [];
-    for (const { message, index } of eligible.slice(0, ceiling)) {
+    for (const { message, index } of eligible.slice(0, inclusive ? ceiling + 1 : ceiling)) {
         if (message.chatId) {
             confirmed.push({ id: message.chatId, message, index });
         }
@@ -147,11 +156,13 @@ function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
  * accumulate until their messages reach the threshold.
  *
  * `manual` (a manual start) also closes the trailing partial window, and under the `manual` cadence,
- * which closes none on its own, makes one window of each turn.
+ * which closes none on its own, makes one window of each turn. `inclusive` reads `confirmedBefore` as
+ * the last confirmed message instead of the one after it.
  */
 export async function confirmedWindows(arg: {
     messages: readonly Message[];
     confirmedBefore: string;
+    inclusive?: boolean;
     recorded: ReadonlySet<string>;
     cadence: WriterCadence;
     maxContext: number;
@@ -160,7 +171,7 @@ export async function confirmedWindows(arg: {
     manual?: boolean;
 }): Promise<WriterWindow[] | null> {
     const { recorded, cadence, tokenizer, limit, manual = false } = arg;
-    const confirmed = confirmedMessages(arg.messages, arg.confirmedBefore);
+    const confirmed = confirmedMessages(arg.messages, arg.confirmedBefore, arg.inclusive ?? false);
     if (!confirmed) {
         return null;
     }
@@ -209,14 +220,16 @@ export async function confirmedWindows(arg: {
 /**
  * Whether `window` still reads from the chat as stored in `messages`: `confirmedBefore` is still an
  * eligible message, and every source's message is there, still confirmed under it, with the same hash.
- * A message that only moved keeps its window; its source's `index` is not compared.
+ * A message that only moved keeps its window; its source's `index` is not compared. `inclusive` is
+ * what the window was computed under.
  */
 export function windowStillConfirmed(
     window: Pick<WriterWindow, "sources">,
     messages: readonly Message[],
     confirmedBefore: string,
+    options: { inclusive?: boolean } = {},
 ): boolean {
-    const confirmed = confirmedMessages(messages, confirmedBefore);
+    const confirmed = confirmedMessages(messages, confirmedBefore, options.inclusive ?? false);
     if (!confirmed) {
         return false;
     }

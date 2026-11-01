@@ -2120,6 +2120,16 @@ export function createResourceStore(options: {
             return chatTables.chatRevision(characterId, id);
         },
 
+        /**
+         * Whether a generation job owns any of the chat's `messageIds`: a write of one without that
+         * job's token conflicts with `reason: "generating"`. For a caller with another write to make
+         * first, in the same synchronous step.
+         */
+        messagesLocked(characterId: string, chatId: string, messageIds: readonly string[]): boolean {
+            assertOpen();
+            return chatTables.messagesLocked(characterId, chatId, messageIds);
+        },
+
         /** How many of a chat's messages have the user role, or null when it does not exist (no message row read). */
         countUserTurns(characterId: string, id: string): number | null {
             assertOpen();

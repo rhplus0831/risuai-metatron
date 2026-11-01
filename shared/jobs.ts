@@ -82,13 +82,16 @@ export const MAX_TRIGGER_NAME_BYTES = 4096;
 
 /**
  * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, a Lua form
- * (`risu-form`) with its attribute's key and submitted string values, or a manual trigger
- * (`risu-trigger`, `/trigger`) by name (its `risu-id` is `context.triggerId`).
+ * (`risu-form`) with its attribute's key and submitted string values, a manual trigger (`risu-trigger`,
+ * `/trigger`) by name (its `risu-id` is `context.triggerId`), or a person's start of Structured
+ * Memory's writer: "record now" through the message `messageId`, which that press confirms, or resume
+ * without one. The only one of them a group chat runs.
  */
 export type GenerationCommand =
     | { type: "button"; data: string }
     | { type: "form"; key: string; values: Record<string, string | string[]> }
-    | { type: "manual"; name: string };
+    | { type: "manual"; name: string }
+    | { type: "memoryRecord"; messageId?: string };
 
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 
@@ -508,7 +511,8 @@ export type MemoryTaskInput = MemoryTaskBase & {
  * all it takes from the job beyond the base is the ceiling: `confirmedBefore`, the id of the message
  * the writer's windows stop before (`writerCeiling`), captured in the step because a message appended
  * after the reply must not confirm it. A manual task, confirmed by the person who started it, uses
- * this only when the chat as stored has no ceiling of its own.
+ * this only when the chat as stored has no ceiling of its own, and a press on a message replaces it
+ * altogether (`MemoryTaskService.record`).
  */
 export type StructuredMemoryTaskInput = MemoryTaskBase & { kind: "structuredMemory"; confirmedBefore: string };
 
@@ -522,8 +526,8 @@ export type MemoryTaskState = "queued" | "running" | "done" | "failed" | "cancel
  * a Structured Memory task (`kind`, absent on a HypaV3 task); for a terminal state the reason (`skipped`,
  * a `done` that left work) or redacted error (`failed`), and `terminalRevision`, the chat's revision
  * read in the step that closed the task's writes and published the terminal (null: the chat is
- * gone), with `lastCommittedRevision` when the task committed a summary. Both are chat revisions, what
- * the tab's fence compares: a memory revision never goes here.
+ * gone), with `lastCommittedRevision` when the task committed a summary or a receipt. Both are chat
+ * revisions, what the tab's fence compares: a memory revision never goes here.
  */
 export type MemoryTaskStatus =
     | { taskId: string; kind?: "structuredMemory"; state: "queued" | "running"; done: number; total: number }
@@ -542,16 +546,23 @@ export type MemoryTaskStatus =
 /** A held summary writer lease (`MemoryTaskService.acquireSummaryWriter`). */
 export type SummaryWriterLease = { release(): void };
 
+/** `MemoryTaskService.record`'s answer: the chat's queued task, or why it could not be queued. */
+export type MemoryTaskRecordAnswer =
+    | { outcome: "queued"; status: MemoryTaskStatus }
+    | { outcome: "refused"; reason: "shuttingDown" | "maintenance" | "staleInput" | "queueFull" };
+
 /**
  * The detached memory task service a job talks to. `handOff` queues the chat's latest input (a newer
- * one replaces a pending one); `status` is the chat's current or last task (null for none);
- * `acquireSummaryWriter` closes the write fence of the chat's running task, waits (bounded) for its
- * last write to settle, and resolves the lease `ownerId` (the job) holds until `release` (hand-offs
- * and manual starts for the chat only queue meanwhile); `pendingManual` tells whether a manual start
- * waits for the chat's next input.
+ * one replaces a pending one); `record` does so for a person's press, marked manual, with `through` the
+ * message that press confirms, and answers a refusal instead of dropping the input; `status` is the
+ * chat's current or last task (null for none); `acquireSummaryWriter` closes the write fence of the
+ * chat's running task, waits (bounded) for its last write to settle, and resolves the lease `ownerId`
+ * (the job) holds until `release` (hand-offs and manual starts for the chat only queue meanwhile);
+ * `pendingManual` tells whether a manual start waits for the chat's next input.
  */
 export interface MemoryTaskService {
     handOff(input: AnyMemoryTaskInput): void;
+    record(input: StructuredMemoryTaskInput, options?: { through?: string }): MemoryTaskRecordAnswer;
     status(chatRef: MemoryChatRef): MemoryTaskStatus | null;
     acquireSummaryWriter(chatRef: MemoryChatRef, ownerId: string): Promise<SummaryWriterLease>;
     pendingManual(chatRef: MemoryChatRef): boolean;

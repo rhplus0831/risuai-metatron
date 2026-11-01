@@ -218,3 +218,8 @@ export function selectedHypaV3Preset(state: {
     const presets = state.hypaV3Presets ?? [];
     return presets.find((preset) => preset.id === state.hypaV3PresetId) ?? presets[0];
 }
+
+/** Whether the selected preset summarizes on a local model: only the tab can run one, never a memory task. */
+export function summarizesLocally(state: Parameters<typeof selectedHypaV3Preset>[0]): boolean {
+    return selectedHypaV3Preset(state)?.settings.summarizationModel !== "subModel";
+}

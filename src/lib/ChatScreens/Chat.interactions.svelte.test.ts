@@ -24,7 +24,7 @@ import * as serverAuth from "src/ts/storage/serverAuth";
 import * as diagnostics from "src/ts/diagnostics/collector";
 import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
 import { runServerButton, runServerJob, runServerManualTrigger } from "src/ts/process/serverCommands";
-import { characterList } from "src/ts/storage/characterStore.svelte";
+import { characterList, updateCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     appendMessage,
     createChat,
@@ -205,6 +205,21 @@ afterEach(async () => {
 });
 
 describe("chat message interactions", () => {
+    it("shows memory receipts only when Structured Memory is selected for the live assistant row", async () => {
+        updateCharacter(ref.chaId, { supaMemory: true });
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const { element, instance } = renderChat();
+        await settle(10);
+        await instance.whenRendered();
+        expect(element.querySelectorAll("[data-memory-receipt]")).toHaveLength(1);
+
+        for (const algorithm of ["none", "supaMemory", "hypaV2", "hanuraiMemory", "hypaV3"]) {
+            settings.ui.memoryAlgorithmType = algorithm;
+            flushSync();
+            expect(element.querySelector("[data-memory-receipt]"), algorithm).toBeNull();
+        }
+    });
+
     it("switches from a folded chat with no stale fold index and opens the next chat's full window", async () => {
         appendMessage(ref, { chatId: "a-last", role: "char", data: "A last" });
         const next = createChat(ref.chaId, {

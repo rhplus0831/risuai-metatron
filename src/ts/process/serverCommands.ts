@@ -660,8 +660,11 @@ export async function resumeServerJobs(): Promise<void> {
  */
 export type ServerCommandOutcome = "started" | "replayed" | "followed" | "refused" | "unknown";
 
-/** What a server job runs as, for its refusal alerts: a send (every send kind), a Lua button, or a manual trigger. */
-export type ServerJobLabel = "send" | "button" | "trigger";
+/**
+ * What a server job runs as, for its refusal alerts: a send (every send kind), a Lua button, a manual
+ * trigger, or a start of the memory writer.
+ */
+export type ServerJobLabel = "send" | "button" | "trigger" | "memoryRecord";
 
 /** What a server job of this tab runs: its kind, its command, and the context fields of the caller. */
 export type ServerJobRequest = {

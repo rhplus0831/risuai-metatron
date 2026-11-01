@@ -1,4 +1,6 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
+import type { Message } from "../../../shared/database.ts";
+import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     STRUCTURED_MEMORY_PATH,
@@ -22,6 +24,8 @@ import { authFetch } from "../storage/serverAuth";
  * In the package Markdown is display and the metadata lines are the authority. A metadata value is JSON
  * on one line, which is also valid YAML, and `bodyLines` and `summaryLines` count the lines of the text
  * they describe, so a body holding `## x` or `---` can still be split exactly.
+ *
+ * `memoryReceiptView` turns a message's stored receipt into what its receipt line shows.
  *
  * This module imports no alert or language module: the caller shows the notices for the outcomes the
  * reads return.
@@ -103,6 +107,144 @@ async function readAnswer<T>(
     } catch (error) {
         return { outcome: "failed", error: errorText(error) };
     }
+}
+
+/** What a receipt line shows: a stored outcome, or what the chat is doing when a row has none. */
+export type MemoryReceiptViewKind =
+    "recorded" | "failed" | "notAutomatic" | "paused" | "skipped" | "working" | "none" | "hidden";
+
+export type MemoryReceiptView = {
+    kind: MemoryReceiptViewKind;
+    /** The stored reason code. */
+    reason?: string;
+    /** Events, pages, refused candidates, and unverified items the receipt lists. */
+    counts: { events: number; pages: number; refused: number; unverified: number };
+    /** The items behind the counts, as plain text, and what the recording cost. */
+    warnings: { kind: string; detail?: string }[];
+    unverified: { kind: string; text: string; reason?: string }[];
+    refused: { candidate: string; refusal: string }[];
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    /** What the line's button does: record through this message, or resume recording. */
+    action: "record" | "resume" | null;
+};
+
+const NO_RECEIPT_ITEMS = {
+    counts: { events: 0, pages: 0, refused: 0, unverified: 0 },
+    warnings: [],
+    unverified: [],
+    refused: [],
+} satisfies Partial<MemoryReceiptView>;
+
+/** The object entries of a stored list. */
+function storedItems(value: unknown): Record<string, unknown>[] {
+    return Array.isArray(value) ? value.filter(isPlainObject) : [];
+}
+
+const storedText = (value: unknown) => (typeof value === "string" ? value : undefined);
+
+const storedCount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** `{ [key]: value }`, or nothing for a value the receipt does not hold. */
+const present = <K extends string, V>(key: K, value: V | undefined) =>
+    (value === undefined ? {} : { [key]: value }) as { [P in K]?: V };
+
+/** A refused candidate as text: the title it would have created, else the page it named. */
+function candidateText(candidate: unknown): string {
+    const { create, targetId } = isPlainObject(candidate) ? candidate : {};
+    return storedText(isPlainObject(create) ? create.title : undefined) ?? storedText(targetId) ?? "";
+}
+
+/** What a row without an outcome shows: only the chat's newest assistant message shows anything. */
+function noOutcomeView(context: { newest: boolean; taskLive: boolean }): MemoryReceiptView {
+    if (!context.newest) {
+        return { ...NO_RECEIPT_ITEMS, kind: "hidden", action: null };
+    }
+    return { ...NO_RECEIPT_ITEMS, kind: context.taskLive ? "working" : "none", action: "record" };
+}
+
+/**
+ * What a message's receipt line shows. `receipt` is stored data and read as such: a list of another
+ * shape counts as empty, and a state this code does not know hides the line.
+ *
+ * Nothing stored says a turn is pending, and a message without a receipt is no proof that nothing was
+ * recorded: a checkpoint load restores older rows while the memory tables survive, and a whole-row
+ * write replaces the field. So such a row says nothing, except the chat's `newest` assistant message,
+ * which is where the writer's next word lands: it reads as the writer working while the chat's task is
+ * live (`taskLive`, about the chat, not this row), else as having no receipt yet.
+ */
+export function memoryReceiptView(
+    receipt: unknown,
+    context: { newest: boolean; taskLive: boolean },
+): MemoryReceiptView {
+    if (receipt === undefined || receipt === null) {
+        return noOutcomeView(context);
+    }
+    if (!isPlainObject(receipt)) {
+        return { ...NO_RECEIPT_ITEMS, kind: "hidden", action: null };
+    }
+    const reason = storedText(receipt.reason);
+    const refused = storedItems(receipt.refused);
+    const unverified = storedItems(receipt.unverified);
+    const stored = {
+        ...present("reason", reason),
+        counts: {
+            events: storedText(receipt.eventId) ? 1 : 0,
+            pages: storedItems(receipt.pages).length,
+            refused: refused.length,
+            unverified: unverified.length,
+        },
+        warnings: storedItems(receipt.warnings).map(({ kind, detail }) => ({
+            kind: storedText(kind) ?? "",
+            ...present("detail", storedText(detail)),
+        })),
+        unverified: unverified.map((item) => ({
+            kind: storedText(item.kind) ?? "",
+            text: storedText(item.text) ?? "",
+            ...present("reason", storedText(item.reason)),
+        })),
+        refused: refused.map((item) => ({
+            candidate: candidateText(item.candidate),
+            refusal: storedText(item.refusal) ?? "",
+        })),
+        ...present("model", storedText(receipt.model) || undefined),
+        ...present("inputTokens", storedCount(receipt.inputTokens)),
+        ...present("outputTokens", storedCount(receipt.outputTokens)),
+    };
+    switch (receipt.state) {
+        case "recorded":
+            return { ...stored, kind: "recorded", action: null };
+        case "failed":
+            return { ...stored, kind: "failed", action: "record" };
+        case "notAutomatic":
+            return { ...stored, kind: "notAutomatic", action: reason === "localSummarization" ? null : "record" };
+        case "skipped":
+            return reason === "writerPaused"
+                ? { ...stored, kind: "paused", action: "resume" }
+                : { ...stored, kind: "skipped", action: "record" };
+        case "pending":
+            return noOutcomeView(context);
+        default:
+            return { ...NO_RECEIPT_ITEMS, kind: "hidden", action: null };
+    }
+}
+
+/**
+ * The id of the newest assistant message a send reads (`eligibleHistory`, from the end so a long chat
+ * costs nothing), or undefined with none.
+ */
+export function newestAssistantMessageId(messages: readonly DeepReadonly<Message>[]): string | undefined {
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const { disabled, role, chatId } = messages[index];
+        if (disabled === "allBefore") {
+            return undefined;
+        }
+        if (disabled !== true && role === "char") {
+            return chatId;
+        }
+    }
+    return undefined;
 }
 
 function chatPath(ref: ChatRef): string {

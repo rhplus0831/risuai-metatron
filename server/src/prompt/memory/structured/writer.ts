@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
-import type { Message } from "../../../../../shared/database.ts";
+import type { ChatGroup, ChatOp } from "../../../../../shared/chats.ts";
+import type { Chat, Message } from "../../../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../../../shared/resources.ts";
@@ -15,15 +16,17 @@ import {
     structuredMemoryLanguageOverride,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
-import type { ResourceStore } from "../../../data/resourceStore.ts";
+import { ResourceBatchConflictError, ResourceConflictError, type ResourceStore } from "../../../data/resourceStore.ts";
+import { JobWriteConflictError } from "../../../jobs/generationJobs.ts";
 import { scopeChat } from "../../../jobs/jobScope.ts";
 import { resolveJobRequestModel } from "../../../llm/request.ts";
 import { HypaProcesser } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
 import { MemoryHostFailure, type MemoryTaskHostDeps } from "../memoryTaskHost.ts";
-import type { StructuredMemoryWriter, StructuredMemoryWriterResult } from "../memoryTasks.ts";
+import type { StructuredMemoryCommit, StructuredMemoryWriter, StructuredMemoryWriterResult } from "../memoryTasks.ts";
 import { admitAnalysis, parseAnalysis } from "./analysis.ts";
 import { analysisSlots, assembleAnalysisPrompt } from "./prompts.ts";
+import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
 
 /**
  * The Structured Memory writer: one analysis call per window, and a `memory_runs` row that shows how it
@@ -48,6 +51,8 @@ import { analysisSlots, assembleAnalysisPrompt } from "./prompts.ts";
  *   after the deadline is discarded.
  * - Success: one commit writes the event, its threads, and the recorded run. A refusal for the revision
  *   admits the answer again against fresh records, with no call.
+ * - Receipt: a recorded or failed run carries one, and that commit copies it onto the window's assistant
+ *   messages (`commitWindow`), where a person reads it. The writer itself never touches the chat.
  * - Warming: the committed event's summary and key lines are embedded into the shared vector cache. A
  *   failure keeps the event.
  */
@@ -66,10 +71,17 @@ const WRITE_ATTEMPTS = 3;
 const RUN_RECORD_MARGIN_BYTES = 3 * 1024 * 1024;
 
 /**
- * A writer task's host dependencies: every request runs at temperature 0 and without the preset's
- * structured output, because `jsonSchemaEnabled` and `extractJson` shape the chat's replies, not the
- * writer's fixed format, and would keep its JSON from arriving. All three are root fields of the
- * prompt preset that a request reads from its spec's db, so each request gets its own copy and
+ * A request's settings as the writer takes them: temperature 0 and without the preset's structured
+ * output, because `jsonSchemaEnabled` and `extractJson` shape the chat's replies, not the writer's
+ * fixed format, and would keep its JSON from arriving. All three are root fields of the prompt preset
+ * that a request reads from its db.
+ */
+export function writerRequestDb<T extends object>(db: T) {
+    return { ...db, temperature: 0, jsonSchemaEnabled: false, extractJson: "" };
+}
+
+/**
+ * A writer task's host dependencies: every request gets its own copy of `writerRequestDb`, so
  * `MemoryHost` stays the same for both task kinds.
  */
 export function writerHostDeps(deps: MemoryTaskHostDeps): MemoryTaskHostDeps {
@@ -77,13 +89,7 @@ export function writerHostDeps(deps: MemoryTaskHostDeps): MemoryTaskHostDeps {
         ...deps,
         llm: {
             runInJob: (spec) =>
-                deps.llm.runInJob({
-                    ...spec,
-                    loaded: {
-                        ...spec.loaded,
-                        db: { ...spec.loaded.db, temperature: 0, jsonSchemaEnabled: false, extractJson: "" },
-                    },
-                }),
+                deps.llm.runInJob({ ...spec, loaded: { ...spec.loaded, db: writerRequestDb(spec.loaded.db) } }),
         },
     };
 }
@@ -100,6 +106,11 @@ function trailingFailures(runs: MemoryContents["runs"]): number {
         }
     }
     return failures;
+}
+
+/** Whether automatic recording is paused: `consecutiveFailures` failed runs at the end of `runs`. */
+export function writerPaused(runs: MemoryContents["runs"]): boolean {
+    return trailingFailures(runs) >= LIMITS.consecutiveFailures;
 }
 
 const sameWindow = (a: readonly MemoryAnchoredSource[], b: readonly MemoryAnchoredSource[]) =>
@@ -199,6 +210,76 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
 }
 
 /**
+ * A writer's one write for `window`, read under `ceiling`, once its caller's fence has passed
+ * (synchronous). `writeReceipt` applies a chat group on the caller's own write path.
+ *
+ * The source generation moves only on a whole-chat replace or a delete, so an edit, a removal, a
+ * disabled flag, or a continue since the window was read shows only in the chat as stored now, which is
+ * checked here under the ceiling the window was computed with. A continue takes its message's lock
+ * before it changes the text, so a window holding a message a generation job owns is refused too: its
+ * hash still matches, and its receipt could not land.
+ *
+ * A run in `changes` with a receipt puts that receipt on the window's assistant messages, each with
+ * its other generation info as stored. A receipt moves the chat's revision and no source hash, so it
+ * keeps every window valid. A receipt that conflicts all the same is logged and left to the run, which
+ * keeps it: the memory commit stands and the window is neither failed nor run again.
+ */
+export function commitWindow(
+    store: Pick<ResourceStore, "memory" | "readChatSource" | "messagesLocked">,
+    arg: {
+        input: WriterArg["input"];
+        window: WriterWindow;
+        ceiling: WriterCeiling;
+        baseRevision: string;
+        changes: MemoryChanges;
+        writeReceipt(group: ChatGroup): void;
+    },
+): StructuredMemoryCommit {
+    const { input, window, ceiling, changes } = arg;
+    const { chaId, chatId } = input.chatRef;
+    const chat = store.readChatSource(chaId, chatId);
+    const stored = chat.data as Chat | null;
+    const sources = window.sources.map(({ messageId }) => messageId);
+    if (
+        !stored ||
+        chat.revision === null ||
+        !windowStillConfirmed(window, stored.message, ceiling.id, { inclusive: ceiling.inclusive }) ||
+        store.messagesLocked(chaId, chatId, sources)
+    ) {
+        return { outcome: "refused", reason: "windowChanged" };
+    }
+    let revision: string;
+    try {
+        revision = store.memory.write(chaId, chatId, { epoch: input.epoch, baseRevision: arg.baseRevision }, changes);
+    } catch (error) {
+        if (error instanceof ResourceConflictError) {
+            return { outcome: "refused", reason: "revisionConflict" };
+        }
+        throw error;
+    }
+    const receipt = changes.runs?.findLast((run) => run.receipt)?.receipt;
+    if (receipt) {
+        const inWindow = new Set(sources);
+        const ops: ChatOp[] = stored.message
+            .filter(({ role, chatId: id }) => role === "char" && id !== undefined && inWindow.has(id))
+            .map((message) => ({
+                op: "patchMessage",
+                id: message.chatId!,
+                set: { generationInfo: { ...message.generationInfo, memory: receipt } },
+            }));
+        try {
+            arg.writeReceipt({ characterId: chaId, chatId, baseRevision: chat.revision, ops });
+        } catch (error) {
+            if (!(error instanceof ResourceBatchConflictError || error instanceof JobWriteConflictError)) {
+                throw error;
+            }
+            console.warn("[memory] a receipt could not be written to the chat; its run keeps it");
+        }
+    }
+    return { outcome: "committed", revision };
+}
+
+/**
  * Starts a run: from the records as stored, closes what an earlier run left `pending` and commits this
  * one with its snapshot, in one write. Answers the run, or how the writer ended without a call. Nothing
  * awaited here costs a model call, so a moved revision just starts over.
@@ -216,7 +297,7 @@ async function openRun(
         if (!contents) {
             return { outcome: "skipped", reason: "chatGone" };
         }
-        if (!arg.manual && trailingFailures(contents.runs) >= LIMITS.consecutiveFailures) {
+        if (!arg.manual && writerPaused(contents.runs)) {
             return { outcome: "skipped", reason: "writerPaused" };
         }
         const interrupted: MemoryRun[] = [];

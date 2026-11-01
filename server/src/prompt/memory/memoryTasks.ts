@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Chat, character, groupChat } from "../../../../shared/database.ts";
 import { greetingText } from "../../../../shared/greetings.ts";
-import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { summarizesLocally } from "../../../../shared/hypaV3Presets.ts";
 import type {
     AnyMemoryTaskInput,
     GenerationContext,
     MemoryChatRef,
     MemoryTaskBase,
     MemoryTaskInput,
+    MemoryTaskRecordAnswer,
     MemoryTaskService,
     MemoryTaskStatus,
     StructuredMemoryTaskInput,
@@ -22,7 +23,6 @@ import type { MemoryChanges } from "../../data/memoryStore.ts";
 import {
     type ChatInvalidation,
     ResourceBatchConflictError,
-    ResourceConflictError,
     ResourceEpochError,
     type ResourceStore,
 } from "../../data/resourceStore.ts";
@@ -54,12 +54,12 @@ import { createMemoryTaskHost, MemoryHostFailure, type MemoryTaskHostDeps } from
 import {
     confirmedWindows,
     readRecordedMessages,
-    windowStillConfirmed,
     writerCadence,
     writerCeiling,
+    type WriterCeiling,
     type WriterWindow,
 } from "./structured/window.ts";
-import { createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
+import { commitWindow, createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
 
 /** The service's caps and times (D9). Tests shrink them. */
 export type MemoryTaskLimits = {
@@ -122,8 +122,9 @@ export type StructuredMemoryWriterResult =
 
 /**
  * Records one window. `commit` is its only write path: synchronous, into the memory tables at
- * `baseRevision`, and it throws once the task ended. A throw ends the task as any failed work does.
- * `manual` says a person started the task.
+ * `baseRevision` (a run's receipt also goes onto the window's assistant messages), and it throws once
+ * the task ended. A throw ends the task as any failed work does. `manual` says a person started the
+ * task.
  */
 export type StructuredMemoryWriter = (arg: {
     scope: JobScope;
@@ -154,8 +155,8 @@ type Skip = { skip: string };
 /** One captured input and who keeps it: `"pending"`, `"latest"`, or a task whose work has not settled. */
 type Retained = { input: AnyMemoryTaskInput; size: number; holders: Set<unknown> };
 
-/** A chat's queued input, with whether a manual start asked for it. */
-type Pending = { taskId: string; retained: Retained; manual: boolean };
+/** A chat's queued input, with whether a manual start asked for it and the message a press confirmed. */
+type Pending = { taskId: string; retained: Retained; manual: boolean; through?: string };
 
 type Task = {
     taskId: string;
@@ -166,6 +167,8 @@ type Task = {
     retained: Retained;
     /** A manual start asked for it. HypaV3 ignores this. */
     manual: boolean;
+    /** The message a person's press confirmed: the Structured Memory task's ceiling, inclusive. */
+    through?: string;
     controller: AbortController;
     deadlineAt: number;
     deadline: ReturnType<typeof setTimeout> | undefined;
@@ -209,17 +212,20 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  * finds them again.
  *
  * - Queue: per chat one running task and one queued input (a newer hand-off replaces it, keeping its
- *   task id and manual mark); a queued input starts after the current turn (so after the handing-off
- *   job's terminal), when the chat has no running task and no summary writer lease, and fewer than
- *   `maxRunning` tasks have unsettled work (an ended task counts until its work, and the host calls it
- *   stopped waiting for, settle). At most `maxPendingChats` chats queue; a hand-off past it is dropped
- *   with a log line.
+ *   task id, manual mark, and `through`); a queued input starts after the current turn (so after the
+ *   handing-off job's terminal), when the chat has no running task and no summary writer lease, and
+ *   fewer than `maxRunning` tasks have unsettled work (an ended task counts until its work, and the
+ *   host calls it stopped waiting for, settle). At most `maxPendingChats` chats queue; a hand-off past
+ *   it is dropped with a log line.
  * - Retention: the inputs a running task, a queue, or a chat's latest hand-off keep are capped at
  *   `maxRetainedBytes` (their JSON size); a hand-off evicts idle latest inputs least recently used
  *   first and is dropped when that is not enough. Running and queued inputs are never evicted.
  * - Manual mark: `start` sets it on the chat's queued input, new or already queued, and so does a
  *   hand-off that satisfies `pendingManual`; the task keeps it. A Structured Memory task then takes
  *   its ceiling from the chat as stored and closes its trailing partial window too. HypaV3 ignores it.
+ * - A person's press (`record`, the `memoryRecord` command): queues its input with the mark, and with
+ *   `through`, the message the press confirmed, which replaces the ceiling. The latest press wins, and
+ *   one naming no message clears it. Unlike a hand-off it answers why it could not queue.
  * - Start checks (synchronous, before anything is awaited; a failure ends the task `skipped` with the
  *   reason): the chat exists (`chatGone`); the epoch and source generation are the input's
  *   (`staleInput`); the admitted binding is still the chat's (`bindingInvalid`); a fresh `loadJobScope`
@@ -238,13 +244,15 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   vectors are warmed (also the saved prefix of a provider failure); a warming failure keeps them.
  * - Structured Memory work: the fresh scope's chat and the stored events give the windows below the
  *   ceiling: an automatic task's is the input's, the only thing it takes from the hand-off; a manual
- *   task's is `writerCeiling` of that chat, else the input's, since a person's start is the
- *   confirmation the captured one stands in for (a ceiling no longer eligible: `skipped staleInput`).
- *   `total` counts the windows the task runs, at most `maxWriterWindows`, and `done` those the writer
- *   returned recorded. The first window that ends otherwise ends the task. `commit` is the writer's
- *   only write path: refused when the service closed, the epoch or source generation moved, the
- *   window no longer reads from the chat as stored under that same ceiling (`windowStillConfirmed`),
- *   or the memory revision conflicts.
+ *   task's is `through`, inclusive, else `writerCeiling` of that chat, else the input's, since a
+ *   person's start is the confirmation the captured one stands in for (a ceiling no longer eligible:
+ *   `skipped staleInput`). Windows stay oldest first, so a press on a message records the oldest open
+ *   ones, never that message ahead of them. `total` counts the windows the task runs, at most
+ *   `maxWriterWindows`, and `done` those the writer returned recorded. The first window that ends
+ *   otherwise ends the task. `commit` is the writer's only write path: refused when the service closed,
+ *   the epoch or source generation moved, the window no longer reads from the chat as stored under that
+ *   same ceiling (`windowStillConfirmed`), a generation job owns one of its messages, or the memory
+ *   revision conflicts. A run's receipt then goes onto the window's assistant messages (`commitWindow`).
  * - Ends: `done` (`windowsLeft`: the cap stopped a task with windows left; `warmingFailed`: a warming
  *   failure kept what was written); `failed` (a provider failure, a writer's failure, a host failure,
  *   the deadline: errors redacted); `skipped` (a start check, `writeSkipped`, `sourceInvalid`, a
@@ -644,7 +652,7 @@ export function createMemoryTasks(deps: {
         if (hasRequestTriggers(owner, moduleTriggers(scope))) {
             return { skip: "requestTrigger" };
         }
-        if (selectedHypaV3Preset(db)?.settings.summarizationModel !== "subModel") {
+        if (summarizesLocally(db)) {
             return { skip: "localSummarization" };
         }
         if (memorySettingsFingerprint(scope) !== input.settingsFingerprint) {
@@ -881,34 +889,43 @@ export function createMemoryTasks(deps: {
     }
 
     /**
-     * A writer's one write, for `window`, read under `confirmedBefore` (synchronous). The source
-     * generation moves only on a whole-chat replace or a delete, so an edit, a removal, a disabled flag,
-     * or a continue since the window was read shows only in the chat as stored now, which is checked
-     * here under the ceiling the window was computed with. The answer is a memory revision: it stays
-     * out of `lastCommittedRevision` and `terminalRevision`, the chat revisions the tab's fence compares.
+     * A writer's one write, for `window`, read under `ceiling` (synchronous): `commitWindow` behind the
+     * task's fence. The answer is a memory revision: it stays out of `lastCommittedRevision` and
+     * `terminalRevision`, the chat revisions the tab's fence compares. A receipt's chat revision goes
+     * in, so that fence waits for what the task wrote; it is no recorded window, so `done` stays.
      */
     const commitOf =
-        (task: Task, input: StructuredMemoryTaskInput, window: WriterWindow, confirmedBefore: string) =>
+        (task: Task, input: StructuredMemoryTaskInput, window: WriterWindow, ceiling: WriterCeiling) =>
         (baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit => {
             live(task);
             gate.assertOpen();
             if (closed || !inputCurrent(input)) {
                 return { outcome: "refused", reason: "staleInput" };
             }
-            const { chaId, chatId } = input.chatRef;
-            const stored = store.readChatSource(chaId, chatId).data as Chat | null;
-            if (!stored || !windowStillConfirmed(window, stored.message, confirmedBefore)) {
-                return { outcome: "refused", reason: "windowChanged" };
-            }
-            try {
-                const revision = store.memory.write(chaId, chatId, { epoch: input.epoch, baseRevision }, changes);
-                return { outcome: "committed", revision };
-            } catch (error) {
-                if (error instanceof ResourceConflictError) {
-                    return { outcome: "refused", reason: "revisionConflict" };
-                }
-                throw error;
-            }
+            return commitWindow(store, {
+                input,
+                window,
+                ceiling,
+                baseRevision,
+                changes,
+                writeReceipt: (group) => {
+                    store.applyChanges(
+                        { chats: [group] },
+                        {
+                            epoch: input.epoch,
+                            // Before the change is published: a listener that ends the task meanwhile
+                            // reports this revision too.
+                            committed: (applied) => {
+                                const revision = applied.chats[0]?.revision;
+                                if (revision) {
+                                    task.lastCommittedRevision = revision;
+                                }
+                                return [];
+                            },
+                        },
+                    );
+                },
+            });
         };
 
     /**
@@ -926,13 +943,18 @@ export function createMemoryTasks(deps: {
     ) {
         const { chaId, chatId } = input.chatRef;
         const messages = scopeChat(scope)?.message ?? [];
-        // A person's start is the confirmation the captured ceiling stands in for, and that one is as
-        // old as the last hand-off, which a cadence with nothing due may not have made for many turns.
-        // An automatic task keeps it: a message appended after the reply must not confirm the reply.
-        const confirmedBefore = (task.manual ? writerCeiling(messages) : null) ?? input.confirmedBefore;
+        // A press on a message confirms it. Any other person's start is the confirmation the captured
+        // ceiling stands in for, and that one is as old as the last hand-off, which a cadence with
+        // nothing due may not have made for many turns. An automatic task keeps it: a message appended
+        // after the reply must not confirm the reply.
+        const ceiling: WriterCeiling =
+            task.through !== undefined
+                ? { id: task.through, inclusive: true }
+                : { id: (task.manual ? writerCeiling(messages) : null) ?? input.confirmedBefore, inclusive: false };
         const windows = await confirmedWindows({
             messages,
-            confirmedBefore,
+            confirmedBefore: ceiling.id,
+            inclusive: ceiling.inclusive,
             recorded: readRecordedMessages(store, chaId, chatId),
             cadence: writerCadence(scope.db),
             maxContext: input.maxContext,
@@ -959,7 +981,7 @@ export function createMemoryTasks(deps: {
                 tokenizer,
                 window,
                 manual: task.manual,
-                commit: commitOf(task, input, window, confirmedBefore),
+                commit: commitOf(task, input, window, ceiling),
             });
             if (result.outcome === "recorded") {
                 task.done++;
@@ -1022,6 +1044,7 @@ export function createMemoryTasks(deps: {
             epoch: registryEpoch,
             retained: pending.retained,
             manual: pending.manual,
+            ...(pending.through !== undefined ? { through: pending.through } : {}),
             controller: new AbortController(),
             deadlineAt: now() + limits.taskDeadlineMs,
             deadline: undefined,
@@ -1090,15 +1113,57 @@ export function createMemoryTasks(deps: {
         }
     };
 
+    /**
+     * Makes `input` the chat's queued and latest input, replacing a queued one and satisfying the chat's
+     * `pendingManual`, whose manual mark the queued input takes. Answers the chat's entry, or what kept
+     * the input out: the pending-chat limit or the retention cap.
+     */
+    const enqueue = (input: AnyMemoryTaskInput): ChatEntry | "pendingChats" | "retention" => {
+        const owned = structuredClone(input);
+        const size = Buffer.byteLength(JSON.stringify(owned));
+        const entry = entryOf(owned.chatRef);
+        if (!entry.pending && queue.size >= limits.maxPendingChats) {
+            prune(entry);
+            return "pendingChats";
+        }
+        if (!makeRoom(entry, size)) {
+            prune(entry);
+            return "retention";
+        }
+        const retained: Retained = { input: owned, size, holders: new Set() };
+        hold(retained, "pending");
+        hold(retained, "latest");
+        const queued = !entry.pending;
+        const manual = service.pendingManual(entry.chatRef);
+        if (entry.pending) {
+            drop(entry.pending.retained, "pending");
+            entry.pending.retained = retained;
+            entry.pending.manual ||= manual;
+        } else {
+            entry.pending = { taskId: randomUUID(), retained, manual };
+            queue.add(entry.key);
+        }
+        if (entry.latest) {
+            drop(entry.latest, "latest");
+        }
+        entry.latest = retained;
+        entry.pendingManual = null;
+        entry.lru = ++lruClock;
+        if (queued && !entry.running) {
+            publish(owned.epoch, entry.chatRef, queuedStatus(entry.pending));
+        }
+        schedulePump();
+        return entry;
+    };
+
     // ---------------------------------------------------------------------------------------------
     // The service
 
     const service = {
         /**
-         * Queues the chat's latest input (replacing a queued one). Dropped while paused or shutting down,
-         * when its epoch or source generation is no longer the chat's, past the pending-chat limit, or
-         * when the retention cap cannot make room. Satisfies the chat's `pendingManual`, whose manual
-         * mark the queued input takes.
+         * Queues the chat's latest input (`enqueue`). Dropped while paused or shutting down, when its
+         * epoch or source generation is no longer the chat's, past the pending-chat limit, or when the
+         * retention cap cannot make room.
          */
         handOff(input: AnyMemoryTaskInput): void {
             if (closed || paused) {
@@ -1107,42 +1172,38 @@ export function createMemoryTasks(deps: {
             if (!inputCurrent(input)) {
                 return;
             }
-            const owned = structuredClone(input);
-            const size = Buffer.byteLength(JSON.stringify(owned));
-            const entry = entryOf(owned.chatRef);
-            if (!entry.pending && queue.size >= limits.maxPendingChats) {
+            const queued = enqueue(input);
+            if (queued === "pendingChats") {
                 console.warn("[memory] hand-off dropped: too many chats are queued");
-                prune(entry);
-                return;
-            }
-            if (!makeRoom(entry, size)) {
+            } else if (queued === "retention") {
                 console.warn("[memory] hand-off dropped: the retained inputs are at their cap");
-                prune(entry);
-                return;
             }
-            const retained: Retained = { input: owned, size, holders: new Set() };
-            hold(retained, "pending");
-            hold(retained, "latest");
-            const queued = !entry.pending;
-            const manual = service.pendingManual(entry.chatRef);
-            if (entry.pending) {
-                drop(entry.pending.retained, "pending");
-                entry.pending.retained = retained;
-                entry.pending.manual ||= manual;
-            } else {
-                entry.pending = { taskId: randomUUID(), retained, manual };
-                queue.add(entry.key);
+        },
+
+        /**
+         * A person's press: queues `input` as `handOff` does, marked manual, with `through` the message
+         * the press confirmed. The latest press wins, one naming no message clears it, and a later
+         * hand-off keeps both. Answers what `handOff` drops silently. The caller's job can end before
+         * the task starts: the queue is pumped after the current turn.
+         */
+        record(input: StructuredMemoryTaskInput, options: { through?: string } = {}): MemoryTaskRecordAnswer {
+            if (closed) {
+                return { outcome: "refused", reason: "shuttingDown" };
             }
-            if (entry.latest) {
-                drop(entry.latest, "latest");
+            if (paused || gate.active) {
+                return { outcome: "refused", reason: "maintenance" };
             }
-            entry.latest = retained;
-            entry.pendingManual = null;
-            entry.lru = ++lruClock;
-            if (queued && !entry.running) {
-                publish(owned.epoch, entry.chatRef, queuedStatus(entry.pending));
+            if (!inputCurrent(input)) {
+                return { outcome: "refused", reason: "staleInput" };
             }
-            schedulePump();
+            const entry = enqueue(input);
+            if (typeof entry === "string") {
+                return { outcome: "refused", reason: "queueFull" };
+            }
+            const pending = entry.pending!;
+            pending.manual = true;
+            pending.through = options.through;
+            return { outcome: "queued", status: queuedStatus(pending) };
         },
 
         /** The chat's running task, else its queued one, else its last terminal (kept `terminalRetentionMs`). */

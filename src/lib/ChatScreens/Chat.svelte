@@ -110,7 +110,9 @@
     } from "../../ts/storage/chatStore.svelte";
     import { alertStore, HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import ChatBody from "./ChatBody.svelte";
+    import MemoryReceiptLine from "./MemoryReceiptLine.svelte";
     import { waitForSettledRender } from "./settledRender.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from "./PartialEditController.svelte";
@@ -1202,6 +1204,9 @@
                     {capitalize(getModelInfo(messageGenerationInfo.model).shortName)}
                 </span>
             </button>
+        {/if}
+        {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && currentCharacter?.supaMemory}
+            <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={currentCharacter} />
         {/if}
         <!-- An open translation editor keeps its Save and Cancel whatever the settings do meanwhile (it writes to its captured target). -->
         {#if editTranslationMode || (settings.memoryTranslateMedia.translatorType === "llm" && (storedPath ? storedWanted : translated))}

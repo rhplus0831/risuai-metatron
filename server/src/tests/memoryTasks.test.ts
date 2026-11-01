@@ -24,6 +24,7 @@ import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { MemoryEventDraft } from "../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
+import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
 import { messageSourceHash, type MemoryEventWrite } from "../data/memoryStore.ts";
@@ -293,7 +294,8 @@ const MESSAGES = (): Message[] =>
 function openStore(options: StoreOptions = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-tasks-"));
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
-    const store = createResourceStore({ file: path.join(dir, "resources.sqlite"), kinds });
+    const lock = createGenerationLock();
+    const store = createResourceStore({ file: path.join(dir, "resources.sqlite"), kinds, guard: lock });
     const kind = (name: string) => kinds.get(name)!;
     const replace = (name: string, update: (data: any) => unknown) => {
         const record = store.get(kind(name), "main")!;
@@ -405,6 +407,7 @@ function openStore(options: StoreOptions = {}) {
     return {
         dir,
         store,
+        lock,
         kinds,
         ids: { presetId, modelPresetId, personaId },
         replace,
@@ -2374,6 +2377,7 @@ describe("the server wiring", () => {
             status: () => null,
             acquireSummaryWriter: async () => ({ release() {} }),
             pendingManual: () => false,
+            record: () => ({ outcome: "refused", reason: "shuttingDown" }),
         } satisfies MemoryTaskService;
         for (const memoryTasks of ["disabled", fake] as const) {
             const closed = await createResourceTestClient({ memoryTasks });
@@ -2495,6 +2499,170 @@ describe("structured memory tasks", () => {
         await t.service.drain();
         return ended.status;
     };
+
+    it("patches recorded and failed receipts onto every assistant in a window without changing its evidence or other generation info", async () => {
+        for (const outcome of ["recorded", "failed"] as const) {
+            const t = structuredHarness({ hypaSettings: { structured: { cadence: "everyK", cadenceTurns: 2 } } });
+            const before = t.chat("k1")!.message;
+            const hashes = before.map(messageSourceHash);
+            const { request, terminal } = await beginAnalysis(t, writerInput(t, "m5"));
+            // An edit during inference must survive the receipt's by-id patch.
+            for (const id of ["m2", "m4"]) {
+                t.write("k1", [
+                    {
+                        op: "patchMessage",
+                        id,
+                        set: {
+                            generationInfo: { model: `reply-${id}`, inputTokens: 123, outputTokens: 45 },
+                            time: 987,
+                        },
+                    },
+                ]);
+            }
+            if (outcome === "recorded") request.answer(JSON.stringify(analysis()));
+            else request.fail("Provider unavailable");
+            const status = (await terminal).status;
+            await t.service.drain();
+            expect(status.state).toBe(outcome === "recorded" ? "done" : "failed");
+            const stored = t.chat("k1")!.message;
+            expect(stored.map(messageSourceHash)).toEqual(hashes);
+            const receipt = runRecord(t).receipt!;
+            expect(receipt).toMatchObject(
+                outcome === "recorded"
+                    ? { state: "recorded", eventId: eventRecord(t).id }
+                    : { state: "failed", reason: "requestFailed" },
+            );
+            for (const id of ["m2", "m4"]) {
+                expect(stored.find((message) => message.chatId === id)).toMatchObject({
+                    time: 987,
+                    generationInfo: { model: `reply-${id}`, inputTokens: 123, outputTokens: 45, memory: receipt },
+                });
+            }
+            expect(stored.filter((message) => !["m2", "m4"].includes(message.chatId!))).toEqual(
+                before.filter((message) => !["m2", "m4"].includes(message.chatId!)),
+            );
+            expect(contents(t).events).toHaveLength(outcome === "recorded" ? 1 : 0);
+            expect(status).toMatchObject({
+                terminalRevision: t.revision("k1"),
+                lastCommittedRevision: t.revision("k1"),
+            });
+        }
+    });
+
+    it("refuses the whole window when a generation owns any of its messages before analysis commits", async () => {
+        for (const messageId of ["m1", "m2"]) {
+            const t = structuredHarness();
+            const { request, terminal } = await beginAnalysis(t);
+            const before = t.chat("k1");
+            t.lock.addToken("generation-token");
+            t.lock.acquire(
+                { characterId: "c", chatId: "k1", messageId },
+                {
+                    jobId: "generation",
+                    generationId: "g",
+                    token: "generation-token",
+                },
+            );
+            request.answer(JSON.stringify(analysis()));
+            expect((await terminal).status).toMatchObject({ state: "skipped", reason: "windowChanged", done: 0 });
+            await t.service.drain();
+            expect(contents(t).events).toEqual([]);
+            expect(runRecord(t).result).toBe("pending");
+            expect(t.chat("k1")).toEqual(before);
+        }
+    });
+
+    it("records through the pressed newest reply and resumes past a pause in oldest-window order", async () => {
+        for (const through of ["m6", undefined]) {
+            const t = structuredHarness({ hypaSettings: { structured: { cadence: "manual" } } });
+            if (through) t.write("k1", [{ op: "remove", ids: ["m7"] }]);
+            writeMemory(t.store, "c", "k1", {
+                runs: Array.from({ length: 5 }, (_, index) => ({
+                    id: `failure-${index}`,
+                    window: [],
+                    model: "writer",
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    durationMs: 0,
+                    result: "failed" as const,
+                })),
+            });
+            const terminal = t.nextTerminal("k1");
+            // This stale captured ceiling cannot confirm any turn by itself.
+            expect(t.service.record(writerInput(t, "m1"), through ? { through } : {}).outcome).toBe("queued");
+            for (const [index, assistant] of ["m2", "m4", "m6"].entries()) {
+                const request = await Promise.race([
+                    t.provider.request(index),
+                    terminal.then(({ status }) => {
+                        throw new Error(`Recording stopped: ${JSON.stringify(status)}`);
+                    }),
+                ]);
+                expect(contents(t).events).toHaveLength(index);
+                expect(runRecord(t).window.map((source) => source.messageId)).toEqual([`m${index * 2 + 1}`, assistant]);
+                request.answer(JSON.stringify(analysis({ summary: `Turn ${index + 1}` })));
+            }
+            expect((await terminal).status).toMatchObject({ state: "done", done: 3, total: 3 });
+            await t.service.drain();
+            expect(
+                contents(t).events.map(
+                    (entry) => t.store.memory.readRecord("c", "k1", "events", entry.id)!.data.summary,
+                ),
+            ).toEqual(["Turn 1", "Turn 2", "Turn 3"]);
+            expect(
+                t
+                    .chat("k1")!
+                    .message.filter((message) => message.role === "char")
+                    .map((message) => message.generationInfo?.memory?.state),
+            ).toEqual(["recorded", "recorded", "recorded"]);
+        }
+    });
+
+    it("keeps a queued message confirmation across a send hand-off until a later press clears it", async () => {
+        for (const clear of [false, true]) {
+            const t = structuredHarness();
+            t.write("k1", [{ op: "remove", ids: ["m7"] }]);
+            const input = writerInput(t, "m3");
+            const running = await beginAnalysis(t, input);
+            const queued = t.service.record(input, { through: "m6" });
+            if (queued.outcome !== "queued") throw new Error(`Recording refused: ${queued.reason}`);
+            t.service.handOff(input);
+            if (clear) expect(t.service.record(input).outcome).toBe("queued");
+            const terminal = t.nextEvent(
+                ({ status }) => status.taskId === queued.status.taskId && TERMINAL.has(status.state),
+            );
+
+            running.request.answer(JSON.stringify(analysis()));
+            expect((await running.terminal).status.state).toBe("done");
+            for (let index = 1; ; index++) {
+                const request = await Promise.race([t.provider.request(index), terminal.then(() => null)]);
+                if (!request) break;
+                request.answer(
+                    JSON.stringify(
+                        analysis({
+                            summary: index === 1 ? "Rain floods the harbor." : "The villagers rebuild the bridge.",
+                        }),
+                    ),
+                );
+            }
+            expect((await terminal).status).toMatchObject({ state: "done", done: clear ? 1 : 2 });
+            await t.service.drain();
+            const windows = contents(t).events.map(({ id }) =>
+                t.store.memory.readRecord("c", "k1", "events", id)!.data.sources.map((source) => source.messageId),
+            );
+            expect(windows).toEqual(
+                clear
+                    ? [
+                          ["m1", "m2"],
+                          ["m3", "m4"],
+                      ]
+                    : [
+                          ["m1", "m2"],
+                          ["m3", "m4"],
+                          ["m5", "m6"],
+                      ],
+            );
+        }
+    });
 
     it("uses the memory slot at temperature zero without preset schema or extraction and snapshots before answering", async () => {
         const configurePreset = (t: Harness) =>
@@ -3327,7 +3495,28 @@ describe("structured memory tasks", () => {
                     await release.promise;
                     try {
                         attempts.push(
-                            call.commit(contents(t).revision, { events: [event("late", call.window.sources)] }),
+                            call.commit(contents(t).revision, {
+                                events: [event("late", call.window.sources)],
+                                runs: [
+                                    {
+                                        id: "late-run",
+                                        window: call.window.sources,
+                                        model: "writer",
+                                        inputTokens: 1,
+                                        outputTokens: 1,
+                                        durationMs: 0,
+                                        result: "recorded",
+                                        receipt: {
+                                            state: "recorded",
+                                            eventId: "late",
+                                            pages: [],
+                                            refused: [],
+                                            unverified: [],
+                                            warnings: [],
+                                        },
+                                    },
+                                ],
+                            }),
                         );
                     } catch (error) {
                         attempts.push(error);
@@ -3345,9 +3534,11 @@ describe("structured memory tasks", () => {
             const status = (await ended).status;
             expect(status).toMatchObject({ kind: "structuredMemory", state: "cancelled", done: 0 });
             const before = contents(t);
+            const chatBefore = t.chat("k1");
             release.resolve();
             await settled.promise;
             (await lease)?.release();
+            expect(t.chat("k1")).toEqual(chatBefore);
             expect(attempts).toHaveLength(1);
             expect(attempts[0]).toBeInstanceOf(Error);
             expect(contents(t)).toEqual(before);

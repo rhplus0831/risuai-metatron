@@ -242,6 +242,12 @@ export type RunningJob = {
         build: () => JobChanges,
         options?: { covers?: readonly { messageId: string; generationId: string; seq: number }[] },
     ): JobWriteResult;
+    /**
+     * Throws what `write` throws before it builds anything: the job ended, or maintenance closed the
+     * writes. For a runner with a write of its own to make first, in the same synchronous step
+     * (available on registry jobs).
+     */
+    assertWritable?(): void;
     /** Sequence coordination, available on registry jobs (absent on read-only render facades). */
     sequence?: {
         /** Synchronous preflight immediately before the part's write. An absent stop code means aborted. */
@@ -1466,6 +1472,10 @@ export function createGenerationJobs(options: {
                     // Every job write fails here: a conflict, a refused write, a storage failure.
                     throw markFailure(error, { stage: "persist" });
                 }
+            },
+            assertWritable() {
+                assertLive(job);
+                gate.assertOpen();
             },
             sequence: {
                 beginPart() {

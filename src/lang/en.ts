@@ -1698,6 +1698,7 @@ export const languageEnglish = {
             send: "A conflict discarded local changes; the send did not run",
             button: "A conflict discarded local changes; the button did not run",
             trigger: "A conflict discarded local changes; the trigger did not run",
+            memoryRecord: "A conflict discarded local changes; the recording did not start",
         },
         saveFailed: "Local changes could not be saved: {0}",
         refusedDraft:
@@ -2380,6 +2381,65 @@ export const languageEnglish = {
             shutdown: "the server shut down",
             cancelled: "cancelled",
             epoch: "the data was restored",
+            notStructuredMemory: "structured memory is not the memory in use",
+            windowsLeft: "more turns are waiting for the next reply",
+            writerPaused: "recording is paused after repeated failures",
+            windowChanged: "the chat changed during recording",
+            revisionConflict: "the memory was changed meanwhile",
+        } as Record<string, string>,
+    },
+    structuredMemory: {
+        receipt: {
+            recorded: (counts: { events: number; pages: number; refused: number; unverified: number }) => {
+                const { events, pages, refused, unverified } = counts;
+                const parts = [
+                    ...(events > 0 ? [events === 1 ? "1 event" : `${events} events`] : []),
+                    ...(pages > 0 ? [pages === 1 ? "1 page updated" : `${pages} pages updated`] : []),
+                    ...(refused > 0 ? [`${refused} refused`] : []),
+                    ...(unverified > 0 ? [`${unverified} to check`] : []),
+                ];
+                return parts.length > 0 ? `Recorded: ${parts.join(", ")}` : "Recorded";
+            },
+            notRecorded: (reason: string) => (reason ? `Not recorded: ${reason}` : "Not recorded"),
+            notAutomatic: (reason: string) =>
+                reason ? `Not recording automatically: ${reason}` : "Not recording automatically",
+            paused: "Recording is paused after repeated failures",
+            working: "The memory writer is working in this chat",
+            none: "No memory receipt yet",
+            recordNow: "Record now",
+            resume: "Resume",
+            requested: "Recording requested",
+            busy: "This chat is busy. Try again when the running job ends.",
+            warnings: "Warnings",
+            unverified: "To check",
+            refused: "Refused",
+            model: "Model",
+            tokens: (input: number, output: number) => `Tokens: ${input} in, ${output} out`,
+        },
+        notAutomaticReasons: {
+            pluginModel: "the memory model is a plugin model, which needs this tab",
+            requestTrigger: "a request trigger applies, which needs this tab",
+            localSummarization: "the server cannot run this summarization model",
+        } as Record<string, string>,
+        failureReasons: {
+            requestFailed: "the model request failed",
+            unexpectedResponse: "the model's answer was of an unexpected kind",
+            emptyResponse: "the model's answer was empty",
+            invalidJson: "the model's answer was not valid JSON",
+            invalidField: "the model's answer lacked a required field",
+            inputTooLarge: "the prompt was too large to store",
+            hostFailure: "the memory task failed",
+        } as Record<string, string>,
+        unverifiedReasons: {
+            quoteNotFound: "the quote was not found in these messages",
+            unknownPage: "it names no known page",
+        } as Record<string, string>,
+        warningKinds: {
+            malformed: "A malformed item was left out",
+            capped: "Items past the limit were left out",
+            unknownPage: "A page that does not exist was named",
+            unknownThread: "A thread that does not exist was named",
+            endedThread: "A thread that already ended was named",
         } as Record<string, string>,
     },
     bulkEnabling: "Lorebook Bulk Enabling",

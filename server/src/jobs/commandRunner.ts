@@ -3,6 +3,7 @@ import type { Chat, character } from "../../../shared/database.ts";
 import type { GenerationCommand } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
+import { runMemoryRecord } from "../prompt/memory/structured/recordJob.ts";
 import { runPromptJob, runPromptSend } from "../prompt/runner.ts";
 import { localModelRefusal } from "../prompt/transformers.ts";
 import {
@@ -25,11 +26,16 @@ import {
 export type { GenerationRunnerDeps } from "./runSetup.ts";
 
 /**
- * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers); every
- * other kind is a send, a continue, or a preview (`src/server/prompt/runner.ts`).
+ * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers),
+ * but for a start of the memory writer (`recordJob.ts`); every other kind is a send, a continue, or a
+ * preview (`src/server/prompt/runner.ts`).
  */
 export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRunner {
     return async (job) => {
+        if (job.command?.type === "memoryRecord") {
+            await runMemoryRecord(job, job.command.messageId, deps);
+            return;
+        }
         if (job.kind === "command") {
             await runCommand(job, deps);
             return;

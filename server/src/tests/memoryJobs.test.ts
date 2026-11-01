@@ -8,6 +8,8 @@ import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
     type GenerationTerminalEvent,
+    type StructuredMemoryTaskInput,
+    type MemoryTaskRecordAnswer,
     type MemoryChatRef,
     type MemoryTaskInput,
     type MemoryTaskService,
@@ -16,6 +18,9 @@ import {
 } from "../../../shared/jobs.ts";
 import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
@@ -433,6 +438,7 @@ async function job(
     chaId: string,
     extra: Record<string, unknown> = {},
     options: {
+        command?: Record<string, unknown>;
         observeStages?: boolean;
         onEvent?: (event: any) => void;
         answer?: (event: any) => unknown | Promise<unknown>;
@@ -466,6 +472,7 @@ async function job(
         body: JSON.stringify({
             kind,
             clientId: "tab",
+            ...(options.command ? { command: options.command } : {}),
             ...(options.hooks ? { hooks: options.hooks } : {}),
             context: {
                 characterId: chaId,
@@ -1589,6 +1596,8 @@ describe("credentials and the other consumers", () => {
 // with its source-generation check. The service is a fake: hand-offs and leases recorded, the status
 // and `pendingManual` set by the test.
 function createFakeMemoryTasks() {
+    const records: { input: StructuredMemoryTaskInput; options: { through?: string } }[] = [];
+    let recordAnswer: MemoryTaskRecordAnswer = { outcome: "refused", reason: "shuttingDown" };
     const handOffs: MemoryTaskInput[] = [];
     const leases: { chatRef: MemoryChatRef; ownerId: string; released: boolean }[] = [];
     let status: MemoryTaskStatus | null = null;
@@ -1612,11 +1621,19 @@ function createFakeMemoryTasks() {
         pendingManual() {
             return manual;
         },
+        record(input: StructuredMemoryTaskInput, options: { through?: string } = {}) {
+            records.push({ input, options });
+            return recordAnswer;
+        },
     } satisfies MemoryTaskService;
     return {
         service,
         handOffs,
         leases,
+        records,
+        set recordAnswer(value: MemoryTaskRecordAnswer) {
+            recordAnswer = value;
+        },
         setStatus(value: MemoryTaskStatus | null) {
             status = value;
         },
@@ -1624,6 +1641,8 @@ function createFakeMemoryTasks() {
             manual = value;
         },
         reset() {
+            records.length = 0;
+            recordAnswer = { outcome: "refused", reason: "shuttingDown" };
             handOffs.length = 0;
             leases.length = 0;
             status = null;
@@ -2790,5 +2809,250 @@ describe("structured memory job hand-offs", () => {
         expect(continued.terminal?.type, JSON.stringify(continued.terminal)).toBe("done");
         expect(fake.handOffs).toHaveLength(1);
         expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "a2" });
+    });
+    describe("recording receipts and commands", () => {
+        const requestTrigger = {
+            comment: "Record request",
+            type: "request",
+            conditions: [],
+            lowLevelAccess: true,
+            effect: [
+                {
+                    type: "v2SetRequestState",
+                    indent: 0,
+                    index: "0",
+                    indexType: "value",
+                    value: "Request trigger reached the memory writer",
+                    valueType: "value",
+                },
+            ],
+        };
+        const analysis = (index: number) =>
+            JSON.stringify({
+                title: index === 0 ? "The promise" : "The storm",
+                summary: index === 0 ? "Cara promises to return." : "Lightning destroys the harbor.",
+                participants: [],
+                storyTime: { text: "" },
+                keyLines: [],
+                stateChanges: [],
+                knowledge: [],
+                relationshipShifts: [],
+                openThreads: { add: [], close: [], transitions: [] },
+            });
+        const pluginHooks = {
+            ...NO_GENERATION_HOOKS,
+            providers: [
+                {
+                    name: "receipt-provider",
+                    model: {
+                        id: "pluginmodel:::receipt-provider",
+                        name: "receipt-provider",
+                        shortName: "receipt-provider",
+                        fullName: "receipt-provider",
+                        internalID: "pluginmodel:::receipt-provider",
+                        provider: LLMProvider.AsIs,
+                        format: LLMFormat.Plugin,
+                        flags: [LLMFlags.hasFullSystemPrompt],
+                        parameters: ["temperature"],
+                        tokenizer: LLMTokenizer.Unknown,
+                    } satisfies LLMModel,
+                },
+            ],
+        };
+        beforeAll(async () => {
+            const profiles = await single("modelProfiles");
+            expect(
+                (
+                    await batch({
+                        ops: [
+                            {
+                                kind: "modelProfiles",
+                                id: "main",
+                                baseRevision: profiles.revision,
+                                data: [
+                                    ...profiles.data,
+                                    {
+                                        ...profiles.data[0],
+                                        id: "receipt-plugin",
+                                        name: "Receipt Plugin",
+                                        customAPIFormat: LLMFormat.Plugin,
+                                        currentPluginProvider: "receipt-provider",
+                                    },
+                                ],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+        });
+        beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+        afterEach(async () => {
+            vi.useRealTimers();
+            await patchPreset("modelPresets", { seperateModelsForAxModels: false, auxSlots: {} });
+        });
+        const pluginSlot = (enabled: boolean) =>
+            patchPreset("modelPresets", {
+                seperateModelsForAxModels: enabled,
+                auxSlots: enabled ? { memory: { profileId: "receipt-plugin" } } : {},
+            });
+
+        it("stores a reply's tab requirement or paused notice even when its cadence hands off no task", async () => {
+            for (const cadence of ["everyK", "manual"]) {
+                await patchHypaV3({ structured: { cadence, cadenceTurns: 3 } });
+                for (const reason of ["pluginModel", "requestTrigger", "writerPaused"]) {
+                    fake.reset();
+                    await pluginSlot(reason === "pluginModel");
+                    const chaId = await seedCharacter({
+                        messages,
+                        extra:
+                            reason === "requestTrigger"
+                                ? { lowLevelAccess: true, triggerscript: [requestTrigger] }
+                                : {},
+                    });
+                    if (reason === "writerPaused") {
+                        const store = createResourceStore({
+                            file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                        });
+                        try {
+                            writeMemory(store, chaId, "k", {
+                                runs: Array.from({ length: 5 }, (_, index) => ({
+                                    id: `failed-${index}`,
+                                    window: [],
+                                    model: "writer",
+                                    inputTokens: 0,
+                                    outputTokens: 0,
+                                    durationMs: 0,
+                                    result: "failed" as const,
+                                })),
+                            });
+                        } finally {
+                            store.close();
+                        }
+                    }
+                    const sent = await job("send", chaId, { input: "Confirm both", userMessageId: "u3" });
+                    expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+                    const reply = (await readChat(chaId)).data.message.at(-1);
+                    expect(reply.generationInfo).toMatchObject({
+                        memory: {
+                            state: reason === "writerPaused" ? "skipped" : "notAutomatic",
+                            reason,
+                        },
+                    });
+                    expect(fake.handOffs).toEqual([]);
+                }
+            }
+        });
+
+        it("validates record commands and hands the pressed message or resume to the memory service", async () => {
+            const chaId = await seedCharacter({ messages });
+            fake.recordAnswer = {
+                outcome: "queued",
+                status: { kind: "structuredMemory", taskId: "record", state: "queued", done: 0, total: 0 },
+            };
+            for (const command of [{ type: "memoryRecord", messageId: "a2" }, { type: "memoryRecord" }]) {
+                const result = await job("command", chaId, { mode: "manual" }, { command });
+                expect(result.terminal?.type, JSON.stringify(result)).toBe("done");
+            }
+            expect(
+                fake.records.map(({ input, options }) => ({ kind: input.kind, chatRef: input.chatRef, options })),
+            ).toEqual([
+                { kind: "structuredMemory", chatRef: { chaId, chatId: "k" }, options: { through: "a2" } },
+                { kind: "structuredMemory", chatRef: { chaId, chatId: "k" }, options: {} },
+            ]);
+            expect((await readChat(chaId)).data.message).toEqual(messages);
+            for (const messageId of ["", null, 42]) {
+                const invalid = await job(
+                    "command",
+                    chaId,
+                    { mode: "manual" },
+                    { command: { type: "memoryRecord", messageId } },
+                );
+                expect(invalid.status).toBe(400);
+            }
+            const user = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "u1" } },
+            );
+            expect(user.terminal).toMatchObject({ type: "error" });
+            expect(fake.records).toHaveLength(2);
+            fake.recordAnswer = { outcome: "refused", reason: "queueFull" };
+            const full = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a2" } },
+            );
+            expect(full.terminal).toMatchObject({ type: "error", message: expect.stringContaining("Too many chats") });
+        });
+
+        it("records tab-bound windows in order on the owner's job channel through the newest reply", async () => {
+            await patchHypaV3({ structured: { cadence: "manual" } });
+            for (const plugin of [true, false]) {
+                fake.reset();
+                await pluginSlot(plugin);
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: plugin ? {} : { lowLevelAccess: true, triggerscript: [requestTrigger] },
+                });
+                state.summaries = [analysis(0), analysis(1)];
+                state.summaryIndex = 0;
+                const callbacks: any[] = [];
+                const result = await job(
+                    "command",
+                    chaId,
+                    { mode: "manual" },
+                    {
+                        command: { type: "memoryRecord", messageId: "a2" },
+                        hooks: pluginHooks,
+                        answerCallback: (event) => {
+                            callbacks.push(event);
+                            return {
+                                outcome: "answered",
+                                value: { success: true, content: analysis(callbacks.length - 1) },
+                            };
+                        },
+                    },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const data = (await api(`/api/memory/structured/${chaId}/k`)).body;
+                expect(data.events).toHaveLength(2);
+                const records = await Promise.all(
+                    data.events.map(
+                        async ({ id }: { id: string }) =>
+                            (await api(`/api/memory/structured/${chaId}/k/records/events/${id}`)).body,
+                    ),
+                );
+                expect(
+                    records.map((record) =>
+                        record.data.sources.map((source: { messageId: string }) => source.messageId),
+                    ),
+                ).toEqual([
+                    ["u1", "a1"],
+                    ["u2", "a2"],
+                ]);
+                const chat = (await readChat(chaId)).data;
+                expect(
+                    chat.message
+                        .filter((message: any) => message.role === "char")
+                        .map((message: any) => message.generationInfo?.memory?.state),
+                ).toEqual(["recorded", "recorded"]);
+                expect(fake.records).toEqual([]);
+                expect(fake.leases).toHaveLength(1);
+                expect(fake.leases[0].released).toBe(true);
+                if (plugin) {
+                    expect(callbacks).toHaveLength(2);
+                    expect(callbacks.every((event) => event.name === "provider")).toBe(true);
+                } else {
+                    expect(callbacks).toEqual([]);
+                    expect(summaries().map((entry) => entry.body.messages[0].content)).toEqual([
+                        "Request trigger reached the memory writer",
+                        "Request trigger reached the memory writer",
+                    ]);
+                }
+            }
+        });
     });
 });
