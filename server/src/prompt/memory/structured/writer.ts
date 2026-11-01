@@ -16,6 +16,7 @@ import {
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     structuredMemoryLanguageOverride,
+    writerPaused,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
 import { ResourceBatchConflictError, ResourceConflictError, type ResourceStore } from "../../../data/resourceStore.ts";
@@ -42,6 +43,8 @@ import { commitPages, parsePatches, showTargets } from "./patches.ts";
 import { analysisSlots, assembleAnalysisPrompt, assemblePatchPrompt, patchSlots } from "./prompts.ts";
 import { eventVectorTexts } from "./retrieve.ts";
 import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
+
+export { writerPaused };
 
 /**
  * The Structured Memory writer: an analysis call per window, a patch call when a page candidate was
@@ -132,22 +135,6 @@ export function writerHostDeps(deps: MemoryTaskHostDeps): MemoryTaskHostDeps {
 
 const writerSettings = (host: MemoryHost) =>
     normalizeStructuredMemorySettings(selectedHypaV3Preset(host.db)?.settings?.structured);
-
-/** How many runs at the end of `runs` failed, recorded ones ending the count; others say nothing. */
-function trailingFailures(runs: MemoryContents["runs"]): number {
-    let failures = 0;
-    for (let index = runs.length - 1; index >= 0 && runs[index].result !== "recorded"; index--) {
-        if (runs[index].result === "failed") {
-            failures++;
-        }
-    }
-    return failures;
-}
-
-/** Whether automatic recording is paused: `consecutiveFailures` failed runs at the end of `runs`. */
-export function writerPaused(runs: MemoryContents["runs"]): boolean {
-    return trailingFailures(runs) >= LIMITS.consecutiveFailures;
-}
 
 const sameWindow = (a: readonly MemoryAnchoredSource[], b: readonly MemoryAnchoredSource[]) =>
     a.length === b.length && a.every(({ messageId, hash }, i) => messageId === b[i].messageId && hash === b[i].hash);

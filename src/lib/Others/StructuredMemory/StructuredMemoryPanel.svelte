@@ -1,31 +1,60 @@
 <script lang="ts">
     import { RefreshCcwIcon, XIcon } from "@lucide/svelte";
-    import { untrack } from "svelte";
+    import { untrack, type Component } from "svelte";
     import { language } from "src/lang";
+    import { requestMessageJump } from "src/ts/messageSearch.svelte";
     import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { memoryTaskAwaitingSync, memoryTaskFenced, memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
-    import { currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import {
+        memoryWriterNotice,
+        newestAssistantMessageId,
+        newestMemoryReceipt,
+        readStructuredMemoryContents,
+        type MemoryPanelTabProps,
+        type MemoryPanelTarget,
+    } from "src/ts/process/structuredMemory.svelte";
+    import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
+    import { currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
+    import { setChatOpen } from "src/ts/storage/selection.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { hypaV3ModalOpen } from "src/ts/stores.svelte";
+    import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
+    import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+    import { normalizeStructuredMemorySettings, writerPaused } from "../../../../shared/structuredMemory.ts";
     import { memoryTaskStatusLine } from "../HypaV3Modal/taskStatusLine";
     import CoverageTab from "./CoverageTab.svelte";
     import LogTab from "./LogTab.svelte";
+    import { pressMemoryRecord } from "./memoryRecordPress";
+    import { memoryReasonText } from "./memoryText";
+    import PagesTab from "./PagesTab.svelte";
     import PreviewTab from "./PreviewTab.svelte";
+    import ThreadsTab from "./ThreadsTab.svelte";
+    import TimelineTab from "./TimelineTab.svelte";
 
     // The memory panel of a Structured Memory chat: `App.svelte` mounts it in place of the HypaV3 modal,
-    // under the same `hypaV3ModalOpen` store. A tab is one component taking `chatRef`, `readOnly`, and
-    // `refresh`, mounted while it shows, so opening it is its first read and a new entry here adds one.
+    // under the same `hypaV3ModalOpen` store. A tab is one component taking `MemoryPanelTabProps`, mounted
+    // while it shows, so opening it is its first read and a new entry here adds one. `open` takes the
+    // panel to a record in another tab, and `jump` out of the panel to a message.
     //
     // A tab reads again each time `refresh` moves: on the button, and when the panel stops being
     // read-only, which is when a memory task or a record-now job has finished writing. It joins held
     // data itself, so a change of the held messages needs no request. Preview is the exception: a
     // preview makes the panel read-only itself, so it runs only on its own button.
+    //
+    // Pages and Threads write, each edit checked against the revision it was made on and fenced on the
+    // server; read-only here only turns their controls off first. The writer line says when recording
+    // is not automatic and why, from the current state, and holds the buttons that start it.
 
     const text = language.structuredMemory.panel;
-    const TABS = [
+    const receiptText = language.structuredMemory.receipt;
+    const TABS: { value: string; label: string; component: Component<MemoryPanelTabProps> }[] = [
         { value: "coverage", label: text.coverage, component: CoverageTab },
         { value: "preview", label: text.preview, component: PreviewTab },
+        { value: "pages", label: text.pages, component: PagesTab },
+        { value: "timeline", label: text.timeline, component: TimelineTab },
+        { value: "threads", label: text.threads, component: ThreadsTab },
         { value: "log", label: text.log, component: LogTab },
     ];
 
@@ -62,7 +91,9 @@
                 memoryTaskFenced(chatRef))
         );
     });
-    const taskLine = $derived(memoryTaskStatusLine(chatRef ? memoryTaskStatus(chatRef) : null));
+    const taskStatus = $derived(chatRef ? memoryTaskStatus(chatRef) : null);
+    const taskLine = $derived(memoryTaskStatusLine(taskStatus));
+    const taskLive = $derived(taskStatus?.state === "queued" || taskStatus?.state === "running");
 
     // The chat the last check saw: another chat's tab reads on its own, as it mounts.
     let seen: { chatKey: string | null; readOnly: boolean } | null = null;
@@ -74,8 +105,102 @@
         seen = now;
     });
 
+    /** The chat whose runs say the writer is paused; a read that failed says nothing of the kind. */
+    let pausedChat = $state<string | null>(null);
+    let pausedRead = 0;
+
+    async function readPaused() {
+        const ref = chatRef;
+        const key = chatKey;
+        const number = ++pausedRead;
+        const result = ref ? await readStructuredMemoryContents(ref) : null;
+        if (number === pausedRead) {
+            pausedChat = result?.outcome === "ok" && writerPaused(result.value.runs) ? key : null;
+        }
+    }
+
+    $effect(() => {
+        refresh;
+        chatKey;
+        untrack(() => void readPaused());
+    });
+
+    const messages = $derived(chatRef ? (findChat(chatRef)?.message ?? []) : []);
+    const newestReply = $derived(newestAssistantMessageId(messages));
+    const cadence = $derived(
+        normalizeStructuredMemorySettings(
+            selectedHypaV3Preset({
+                hypaV3Presets: settings.hypaV3Presets.items,
+                hypaV3PresetId: settings.hypaV3Presets.selectedId,
+            })?.settings.structured,
+        ).cadence,
+    );
+    const notice = $derived(
+        memoryWriterNotice({
+            memoryOn: chatRef !== null && !!findCharacter(chatRef.chaId)?.supaMemory,
+            cadence,
+            paused: pausedChat !== null && pausedChat === chatKey,
+            receipt: newestMemoryReceipt(messages),
+            taskLive,
+        }),
+    );
+    /** Record names the newest reply, so a chat without one has nothing to press. */
+    const writerAction = $derived(notice.action === "record" && newestReply === undefined ? null : notice.action);
+    const writerText = $derived.by(() => {
+        switch (notice.kind) {
+            case "memoryOff":
+                return text.memoryOff;
+            case "paused":
+                return receiptText.paused;
+            case "notAutomatic":
+                return receiptText.notAutomatic(memoryReasonText(notice.reason));
+            default:
+                return null;
+        }
+    });
+
+    let pressing = $state(false);
+
+    async function pressWriter() {
+        const ref = chatRef;
+        const owner = characterList().find((entry) => entry?.chaId === ref?.chaId);
+        if (!ref || !owner || pressing) {
+            return;
+        }
+        pressing = true;
+        try {
+            await pressMemoryRecord(owner, ref, writerAction === "resume" ? undefined : newestReply);
+        } finally {
+            pressing = false;
+        }
+    }
+
     function close() {
         $hypaV3ModalOpen = false;
+    }
+
+    /** What a jump between tabs asked the tab to show, in the chat it was asked in. */
+    let asked = $state.raw<(MemoryPanelTarget & { chatKey: string | null }) | null>(null);
+    const focus = $derived(asked?.chatKey === chatKey ? asked : null);
+
+    function open(target: MemoryPanelTarget) {
+        tab = target.tab;
+        asked = { ...target, chatKey };
+    }
+
+    /** A person's choice of tab: nothing a jump asked for carries over. */
+    function chooseTab(value: string | number) {
+        tab = value;
+        asked = null;
+    }
+
+    /** Leaves for the message. The panel can sit over a closed chat, so the jump opens it. */
+    function jump(messageId: string) {
+        if (chatRef) {
+            setChatOpen(true);
+            requestMessageJump(chatRef, messageId);
+            close();
+        }
     }
 </script>
 
@@ -114,7 +239,15 @@
                 </div>
             </div>
 
-            <SegmentedControl bind:value={tab} options={TABS} size="sm" margin={false} label={text.sections} />
+            <div class="max-w-full overflow-x-auto shrink-0">
+                <SegmentedControl
+                    bind:value={() => tab, chooseTab}
+                    options={TABS}
+                    size="sm"
+                    margin={false}
+                    label={text.sections}
+                />
+            </div>
 
             {#if readOnly || taskLine || awaitingSync}
                 <div class="flex flex-col gap-1 text-sm text-textcolor2">
@@ -130,10 +263,33 @@
                 </div>
             {/if}
 
+            {#if chatRef && (writerText !== null || writerAction !== null)}
+                <div
+                    class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
+                    data-memory-writer-line={notice.kind ?? "none"}
+                >
+                    {#if writerText !== null}
+                        <span role="status" class="min-w-0">{writerText}</span>
+                    {/if}
+                    {#if writerAction !== null}
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={pressing || readOnly || taskLive}
+                            onclick={pressWriter}
+                        >
+                            <span data-memory-writer-action={writerAction}>
+                                {writerAction === "resume" ? receiptText.resume : receiptText.recordNow}
+                            </span>
+                        </Button>
+                    {/if}
+                </div>
+            {/if}
+
             <div class="flex flex-col flex-1 min-h-0 overflow-y-auto" tabindex="-1">
                 {#if chatRef}
                     {#key chatKey}
-                        <activeTab.component {chatRef} {readOnly} {refresh} />
+                        <activeTab.component {chatRef} {readOnly} {refresh} {focus} {open} {jump} />
                     {/key}
                 {/if}
             </div>

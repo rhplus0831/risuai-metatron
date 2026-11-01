@@ -15,7 +15,7 @@ import {
     setMessageText,
     patchMessage,
 } from "src/ts/storage/chatStore.svelte";
-import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { selection, setChatOpen, selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { hypaV3ModalOpen, loadedStore } from "src/ts/stores.svelte";
@@ -23,6 +23,9 @@ import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
+import { alertError } from "src/ts/alert";
+import { pendingMessageJump } from "src/ts/messageSearch.svelte";
+import { STRUCTURED_MEMORY_LIMITS, type MemoryPage, type MemoryThread } from "../../../../shared/structuredMemory.ts";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
 import PreviewTab from "./PreviewTab.svelte";
 
@@ -130,6 +133,7 @@ beforeEach(() => {
         throw new Error(`Unexpected request: ${url}`);
     });
     io.runServerJob.mockReset();
+    vi.mocked(alertError).mockClear();
     io.downloadFile.mockReset().mockResolvedValue(undefined);
     resetMemoryTasks();
     followedJobs.set(new Map());
@@ -158,7 +162,7 @@ it("switches Coverage and Log with SegmentedControl and refreshes after each cha
     );
     await open();
     expect(query('[data-memory-panel="coverage"]')).not.toBeNull();
-    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(3);
+    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(6);
     expect(query('[data-segment-btn][aria-pressed="true"]')?.textContent).toBe(
         language.structuredMemory.panel.coverage,
     );
@@ -659,4 +663,434 @@ it("never displays a pending preview's answer after the user switches chats", as
     expect(query("[data-memory-manifest]")).toBeNull();
     expect(target.textContent).not.toContain("Foreign memory");
     expect(io.runServerJob).toHaveBeenCalledTimes(1);
+});
+
+const editablePage = (): MemoryPage => ({
+    id: "p",
+    title: "The gate",
+    type: "location",
+    aliases: [],
+    contextMode: "auto",
+    sections: [
+        {
+            heading: "Facts",
+            body: "Original memory",
+            provenance: ["event"],
+            sources: [{ messageId: "u0", hash: "hash", index: 0 }],
+            locked: true,
+            updatedAt: 1,
+        },
+    ],
+    history: [],
+    links: [],
+    retrieval: { keywords: [] },
+});
+const editableThread = (): MemoryThread => ({
+    id: "t",
+    title: "A promise",
+    state: "done",
+    who: ["p"],
+    openedBy: "event",
+    closedBy: "event",
+});
+function serveMemory() {
+    const state = {
+        page: editablePage(),
+        thread: editableThread(),
+        revision: "read-revision",
+        runs: [] as { id: string; result: string }[],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                pages: [
+                    { id: "p", title: "The gate", type: "location", bytes: 100 },
+                    { id: "scene", title: "Current scene", type: "scene", bytes: 100 },
+                ],
+                events: [{ id: "event", title: "Opening", status: "active", bytes: 100 }],
+                threads: [{ id: "t", title: "A promise", state: state.thread.state, bytes: 100 }],
+                runs: state.runs,
+            });
+        if (url.endsWith("/records/pages/p")) return Response.json({ revision: state.revision, data: state.page });
+        if (url.endsWith("/records/pages/scene"))
+            return Response.json({
+                revision: state.revision,
+                data: { ...state.page, id: "scene", type: "scene", contextMode: "always" },
+            });
+        if (url.endsWith("/records/threads/t")) return Response.json({ revision: state.revision, data: state.thread });
+        if (url.endsWith("/records/events/event"))
+            return Response.json({
+                revision: state.revision,
+                data: { id: "event", summary: "The gate opened", participants: ["p"] },
+            });
+        return fetch(url, init, options);
+    });
+    return state;
+}
+async function chooseTab(name: "pages" | "timeline" | "threads") {
+    const button = [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.panel[name],
+    );
+    expect(button).toBeDefined();
+    button!.click();
+    await settle();
+    expect(query(`[data-memory-panel="${name}"]`)).not.toBeNull();
+}
+function press(selector: string) {
+    const button = query(selector)?.closest("button");
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(false);
+    button!.click();
+    flushSync();
+}
+function changeSelect(selector: string, value: string) {
+    const input = target.querySelector<HTMLSelectElement>(selector)!;
+    expect(input).not.toBeNull();
+    expect(input.disabled).toBe(false);
+    input.value = value;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    flushSync();
+}
+function typeSection(value: string) {
+    const input = target.querySelector("textarea")!;
+    expect(input).not.toBeNull();
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+}
+const sentEdits = () => reads("edits").map(([, init]) => JSON.parse(init!.body as string));
+
+it("sends one page change with the copy revision and uses each successful answer for the next edit", async () => {
+    const state = serveMemory();
+    const fetch = io.authFetch.getMockImplementation()!;
+    const corrected = {
+        ...state.page,
+        sections: [{ ...state.page.sections[0], body: "Corrected memory", userCorrected: true }],
+    };
+    const unlocked = { ...corrected, sections: [{ ...corrected.sections[0], locked: false }] };
+    const hidden = { ...unlocked, contextMode: "never" };
+    const answers = [corrected, unlocked, hidden, { ...hidden, grade: 3, gradeByUser: true }, hidden];
+    let index = 0;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits")
+            ? Promise.resolve(Response.json({ revision: `saved-${++index}`, kind: "pages", data: answers[index - 1] }))
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map((row) => row.dataset.memoryPage),
+    ).toEqual(["scene", "p"]);
+    click('[data-memory-page="scene"]');
+    await settle();
+    expect(query("[data-memory-page-mode]")).toBeNull();
+    click('[data-memory-page="p"]');
+    await settle();
+    press("[data-memory-section-edit]");
+    typeSection(" \n");
+    expect(query("[data-memory-section-save]")!.closest("button")!.disabled).toBe(true);
+    typeSection("x".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars + 1));
+    expect(query("[data-memory-section-save]")!.closest("button")!.disabled).toBe(true);
+    typeSection("Corrected memory");
+    press("[data-memory-section-save]");
+    await settle();
+    expect(query("textarea")).toBeNull();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Corrected memory");
+    click('[data-memory-section] input[type="checkbox"]');
+    await settle();
+    changeSelect("[data-memory-page-mode]", "never");
+    await settle();
+    changeSelect("[data-memory-page-grade]", "3");
+    await settle();
+    changeSelect("[data-memory-page-grade]", "");
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "read-revision",
+            edit: { kind: "section", pageId: "p", heading: "Facts", body: "Corrected memory" },
+        },
+        { revision: "saved-1", edit: { kind: "sectionLock", pageId: "p", heading: "Facts", locked: false } },
+        { revision: "saved-2", edit: { kind: "page", pageId: "p", contextMode: "never" } },
+        { revision: "saved-3", edit: { kind: "page", pageId: "p", grade: 3 } },
+        { revision: "saved-4", edit: { kind: "page", pageId: "p", grade: null } },
+    ]);
+});
+
+it.each(["pages", "threads"] as const)(
+    "undoes a refused %s edit, gives notice, rereads and retains the next successful revision",
+    async (tab) => {
+        const state = serveMemory();
+        const refusal = deferred<Response>();
+        const reread = deferred<Response>();
+        const fetch = io.authFetch.getMockImplementation()!;
+        let holdingRead = false;
+        let edits = 0;
+        io.authFetch.mockImplementation((url, init, options) => {
+            if (url.endsWith("/edits")) {
+                edits++;
+                if (edits === 1) return refusal.promise;
+                return Promise.resolve(
+                    Response.json({
+                        revision: "success-revision",
+                        kind: tab,
+                        data:
+                            tab === "pages"
+                                ? { ...state.page, contextMode: edits === 2 ? "never" : "auto" }
+                                : { ...state.thread, state: edits === 2 ? "open" : "done", closedBy: undefined },
+                    }),
+                );
+            }
+            if (
+                holdingRead &&
+                (tab === "pages" ? url.endsWith("/records/pages/p") : url === "/api/memory/structured/c/k")
+            )
+                return reread.promise;
+            return fetch(url, init, options);
+        });
+        await open();
+        await chooseTab(tab);
+        if (tab === "pages") {
+            click('[data-memory-page="p"]');
+            await settle();
+        } else {
+            click("[data-memory-thread] button");
+            await settle();
+        }
+        const selector = tab === "pages" ? "[data-memory-page-mode]" : "[data-memory-thread-state]";
+        const value = () => target.querySelector<HTMLSelectElement>(selector)!.value;
+        const before = tab === "pages" ? "auto" : "done";
+        const attempted = tab === "pages" ? "never" : "open";
+        changeSelect(selector, attempted);
+        expect(value()).toBe(attempted);
+        expect(target.querySelector<HTMLSelectElement>(selector)!.disabled).toBe(true);
+        holdingRead = true;
+        const reason = tab === "pages" ? "changed" : "fenced";
+        refusal.resolve(Response.json({ reason, revision: "newer" }, { status: 409 }));
+        await settle();
+        expect(value()).toBe(before);
+        expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused[reason]);
+        expect(
+            io.authFetch.mock.calls.filter(([url]) =>
+                tab === "pages" ? url.endsWith("/records/pages/p") : url === "/api/memory/structured/c/k",
+            ).length,
+        ).toBeGreaterThanOrEqual(2);
+        reread.resolve(
+            Response.json(
+                tab === "pages"
+                    ? { revision: "reread-revision", data: state.page }
+                    : {
+                          revision: "reread-revision",
+                          pages: [],
+                          events: [],
+                          runs: [],
+                          threads: [{ ...state.thread, bytes: 100 }],
+                      },
+            ),
+        );
+        await settle();
+        changeSelect(selector, attempted);
+        await settle();
+        expect(value()).toBe(attempted);
+        changeSelect(selector, before);
+        await settle();
+        const edit = (value: string) =>
+            tab === "pages"
+                ? { kind: "page", pageId: "p", contextMode: value }
+                : { kind: "thread", threadId: "t", state: value };
+        expect(sentEdits()).toEqual([
+            { revision: "read-revision", edit: edit(attempted) },
+            { revision: "reread-revision", edit: edit(attempted) },
+            { revision: "success-revision", edit: edit(before) },
+        ]);
+    },
+);
+
+it("closes an overtaken section draft with a changed notice when the writer fence falls", async () => {
+    const state = serveMemory();
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    press("[data-memory-section-edit]");
+    typeSection("My unsaved draft");
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(target.querySelector("textarea")!.value).toBe("My unsaved draft");
+    expect(query("[data-memory-section-save]")!.closest("button")!.disabled).toBe(true);
+    state.revision = "writer-revision";
+    state.page = { ...state.page, sections: [{ ...state.page.sections[0], body: "New writer text" }] };
+    release();
+    await settle();
+    expect(query("textarea")).toBeNull();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("New writer text");
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused.changed);
+    expect(sentEdits()).toEqual([]);
+});
+
+it("badges only verified Pages and Timeline records from the newest valid report", async () => {
+    install([
+        message("u0", "user"),
+        message("a0", "char"),
+        message("u1", "user"),
+        message("a1", "char"),
+        message("invalid", "char"),
+    ]);
+    serveMemory();
+    patchMessage(ref, "a0", {
+        generationInfo: { context: memoryReport([{ ...included("scene"), kind: "page" }, included("older")]) },
+    });
+    patchMessage(ref, "a1", {
+        generationInfo: {
+            context: memoryReport([
+                included("event"),
+                included("unverified", false),
+                { ...included("p"), kind: "page" },
+                { ...included("scene", false), kind: "page" },
+            ]),
+        },
+    });
+    // An invalid later report does not hide the newest valid one.
+    patchMessage(ref, "invalid", { generationInfo: { context: { v: 99 } as unknown as ContextReport } });
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/coverage")
+            ? Promise.resolve(
+                  Response.json({
+                      revision: "r1",
+                      runs: [],
+                      next: null,
+                      events: ["older", "unverified", "event", "p"].map((id) => ({
+                          id,
+                          title: id,
+                          status: "active",
+                          messageIds: ["u0"],
+                      })),
+                  }),
+              )
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    const badged = (selector: string, attribute: string) =>
+        [...target.querySelectorAll(selector)]
+            .filter((row) => row.querySelector("[data-memory-used]"))
+            .map((row) => row.getAttribute(attribute));
+    expect(badged("[data-memory-page]", "data-memory-page")).toEqual(["p"]);
+    await chooseTab("timeline");
+    expect(badged("[data-memory-event]", "data-memory-event")).toEqual(["event"]);
+    patchMessage(ref, "a1", {
+        generationInfo: { context: context({ kind: "hypaV3", tokens: 10, coverage: "covered" }) },
+    });
+    await settle();
+    expect(query("[data-memory-used]")).toBeNull();
+    await chooseTab("pages");
+    expect(query("[data-memory-used]")).toBeNull();
+});
+
+it("follows record links between tabs and opens the chat and closes the panel for a message link", async () => {
+    serveMemory();
+    setChatOpen(false);
+    await open();
+    await chooseTab("threads");
+    click("[data-memory-thread] button");
+    await settle();
+    click('[data-memory-link="p"]');
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Original memory");
+    click('[data-memory-provenance="event"]');
+    await settle();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-event="event"] button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(target.textContent).toContain("The gate opened");
+    click('[data-memory-participant="p"]');
+    await settle();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    click('[data-memory-source="u0"]');
+    expect(selection.chatOpen).toBe(true);
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: "u0" });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+    setChatOpen(false);
+    hypaV3ModalOpen.set(true);
+    await chooseTab("timeline");
+    click('[data-memory-event="event"] button');
+    await settle();
+    click('[data-memory-source="u0"]');
+    expect(selection.chatOpen).toBe(true);
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: "u0" });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+});
+
+it("derives the writer line from current state and dispatches record and resume through the job client", async () => {
+    install([
+        message("u0", "user"),
+        message("a0", "char"),
+        message("u1", "user"),
+        message("a1", "char"),
+        message("latest-question", "user"),
+    ]);
+    const state = serveMemory();
+    const owner = characterList().find(({ chaId }) => chaId === "c")!;
+    const action = () => query("[data-memory-writer-action]");
+    const line = () => query("[data-memory-writer-line]");
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    await open();
+    expect(action()?.dataset.memoryWriterAction).toBe("record");
+    press("[data-memory-writer-action]");
+    await settle();
+    expect(io.runServerJob.mock.calls[0]).toEqual([
+        owner,
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRecord", messageId: "a1" },
+            label: "memoryRecord",
+            context: { mode: "manual" },
+        },
+    ]);
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "manual";
+    await settle();
+    expect(line()?.textContent).toContain(language.structuredMemory.notAutomaticReasons.manual);
+    patchMessage(ref, "a1", { generationInfo: { memory: { state: "notAutomatic", reason: "pluginModel" } } });
+    await settle();
+    expect(line()?.textContent).toContain(language.structuredMemory.notAutomaticReasons.pluginModel);
+    state.runs = Array.from({ length: STRUCTURED_MEMORY_LIMITS.consecutiveFailures }, (_, i) => ({
+        id: String(i),
+        result: "failed",
+    }));
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(action()?.dataset.memoryWriterAction).toBe("resume");
+    press("[data-memory-writer-action]");
+    await settle();
+    expect(io.runServerJob.mock.calls[1]).toEqual([
+        owner,
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRecord" },
+            label: "memoryRecord",
+            context: { mode: "manual" },
+        },
+    ]);
+    state.runs = [];
+    patchMessage(ref, "a1", { generationInfo: { memory: { state: "skipped", reason: "writerPaused" } } });
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(action()?.dataset.memoryWriterAction).toBe("resume");
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(action()!.closest("button")!.disabled).toBe(true);
+    action()!.closest("button")!.click();
+    expect(io.runServerJob).toHaveBeenCalledTimes(2);
+    release();
+    owner.supaMemory = false;
+    await settle();
+    expect(line()?.dataset.memoryWriterLine).toBe("memoryOff");
+    expect(action()).toBeNull();
 });

@@ -36,7 +36,7 @@
   `commitPages`.
 - `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `commitWindow`, a
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
-  `writerPaused`.
+  `writerPaused`, re-exported from `shared/`.
 - `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command; `recordGapInJob`, a
   send's approved gap.
 - `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
@@ -254,7 +254,9 @@ path as `stage`.
 
 The store holds the rule: the partial unique index `memory_pages_scene`, a `ResourceValidationError` from `write` before
 any statement runs (a second scene page in a set, or one while the chat keeps another that is not in `remove.pages`),
-and the same refusal from `walkMemorySnapshot`, so a crafted file never reaches the staged store's index.
+and the same refusal from `walkMemorySnapshot`, so a crafted file never reaches the staged store's index. A live `write`
+also refuses losing the page: removing it with no scene row in the set, or a row that retypes it. Replacing it in one
+set is legal, and a restore checks neither, because a snapshot may predate the page.
 
 ### The patch call
 

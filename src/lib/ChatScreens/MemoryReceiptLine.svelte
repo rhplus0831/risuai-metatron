@@ -1,12 +1,11 @@
 <script lang="ts">
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { alertToast } from "src/ts/alert";
     import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
-    import { runServerJob } from "src/ts/process/serverCommands";
     import { memoryReceiptView, newestAssistantMessageId } from "src/ts/process/structuredMemory.svelte";
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { pressMemoryRecord } from "../Others/StructuredMemory/memoryRecordPress";
 
     // One assistant message's line about Structured Memory's writer: what it recorded, why it did not,
     // or why it will not on its own, collapsed to one row, with the button that starts it. The row list
@@ -82,17 +81,7 @@
         }
         pressing = true;
         try {
-            const { outcome, terminal } = await runServerJob(owner, chatRef, {
-                kind: "command",
-                command: { type: "memoryRecord", ...(view.action === "resume" ? {} : { messageId }) },
-                label: "memoryRecord",
-                context: { mode: "manual" },
-            });
-            if (outcome === "followed") {
-                alertToast(language.structuredMemory.receipt.busy);
-            } else if (terminal !== null && terminal !== "lost" && terminal.type === "done") {
-                alertToast(language.structuredMemory.receipt.requested);
-            }
+            await pressMemoryRecord(owner, chatRef, view.action === "resume" ? undefined : messageId);
         } finally {
             pressing = false;
         }

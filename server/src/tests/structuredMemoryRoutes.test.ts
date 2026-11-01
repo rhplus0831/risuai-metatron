@@ -1,8 +1,12 @@
 // @vitest-environment node
 import path from "node:path";
+import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { MEMORY_RUNS_ROUND_ROWS } from "../../../shared/structuredMemory.ts";
+import { MEMORY_RUNS_ROUND_ROWS, STRUCTURED_MEMORY_LIMITS } from "../../../shared/structuredMemory.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { RunningJob } from "../jobs/generationJobs.ts";
+import { loadJobScope, memorySettingsFingerprint, memoryTokenPolicy } from "../jobs/jobScope.ts";
+import type { StructuredMemoryTaskInput } from "../../../shared/jobs.ts";
 import type { Chat } from "../../../shared/database.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -55,7 +59,7 @@ const event = (id: string, summary = "Event body"): MemoryEvent => ({
     createdRevision: 1,
 });
 
-async function answer(response: Response, status = 200) {
+async function answer(response: Response, status = 200): Promise<any> {
     expect(response.headers.get("cache-control")).toBe("no-store");
     const body = await response.json();
     expect(response.status, JSON.stringify(body)).toBe(status);
@@ -290,7 +294,7 @@ it("serves coverage facts in storage order without reading recorded runs or disc
         expect(await answer(await s.request(`${base}/coverage`))).toEqual({
             revision,
             events: [
-                { id: "z", title: "Event z", status: "active", messageIds: ["m1"] },
+                { id: "z", title: "Event z", status: "active", messageIds: ["m1"], sourceIndex: 0 },
                 {
                     id: "a",
                     title: "Event a",
@@ -298,6 +302,7 @@ it("serves coverage facts in storage order without reading recorded runs or disc
                     staleReason: "changed",
                     suppressed: true,
                     messageIds: ["m1"],
+                    sourceIndex: 0,
                 },
             ],
             runs: [
@@ -408,3 +413,307 @@ it.each(["coverage", "runs"])(
         });
     },
 );
+
+it("applies only a closed edit to stored evidence and records the replaced locked body", async () => {
+    const s = await server();
+    const original = page("p", "The gate was closed.");
+    Object.assign(original.sections[0], {
+        provenance: ["opening"],
+        sources: [{ messageId: "m", hash: "kept-hash", index: 3 }],
+        locked: true,
+        unsupported: true,
+        disputed: true,
+    });
+    original.history = [{ id: "prior", heading: "Facts", before: null, kind: "edit", highlighted: false, at: 1 }];
+    let revision = s.write({ pages: [original] });
+    const edited = await answer(
+        await s.json(`${base}/edits`, {
+            revision,
+            edit: {
+                kind: "section",
+                pageId: "p",
+                heading: "Facts",
+                body: "The gate is open.",
+                id: "forged",
+                type: "scene",
+                history: [],
+                provenance: [],
+                sources: [],
+                locked: false,
+                unsupported: false,
+                eventId: "forged",
+                sections: [],
+            },
+            data: { ...original, id: "forged" },
+        }),
+    );
+    expect(edited.kind).toBe("pages");
+    expect(edited.revision).not.toBe(revision);
+    const { disputed: _disputed, ...kept } = original.sections[0];
+    const expected = {
+        ...original,
+        sections: [{ ...kept, body: "The gate is open.", userCorrected: true, updatedAt: Date.now() }],
+        history: [
+            ...original.history,
+            {
+                id: expect.any(String),
+                heading: "Facts",
+                before: {
+                    body: "The gate was closed.",
+                    provenance: ["opening"],
+                    sources: original.sections[0].sources,
+                },
+                kind: "edit",
+                highlighted: false,
+                at: Date.now(),
+            },
+        ],
+    };
+    expect(edited.data).toEqual(expected);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: edited.revision,
+        data: expected,
+    });
+    expect((await answer(await s.request(base))).pages.map((row: MemoryPage) => row.id)).toEqual(["p"]);
+    revision = edited.revision;
+    for (const body of [" \n\t", "x".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars + 1)]) {
+        await answer(
+            await s.json(`${base}/edits`, { revision, edit: { kind: "section", pageId: "p", heading: "Facts", body } }),
+            400,
+        );
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: expected });
+    }
+});
+
+it("refuses stale edits including no-ops without writing any record or revision", async () => {
+    const s = await server();
+    const p = page("p");
+    const thread: MemoryThread = { id: "t", title: "Promise", who: [], state: "open" };
+    const stale = s.write({ pages: [p], threads: [thread] });
+    const current = s.write({ events: [event("new")] });
+    const before = await answer(await s.request(base));
+    for (const edit of [
+        { kind: "section", pageId: "p", heading: "Facts", body: "A rejected correction" },
+        { kind: "section", pageId: "p", heading: "Facts", body: p.sections[0].body },
+        { kind: "sectionLock", pageId: "p", heading: "Facts", locked: false },
+        { kind: "page", pageId: "p", contextMode: "auto" },
+        { kind: "thread", threadId: "t", state: "open" },
+    ]) {
+        expect(await answer(await s.json(`${base}/edits`, { revision: stale, edit }), 409)).toMatchObject({
+            revision: current,
+        });
+        expect(await answer(await s.request(base))).toEqual(before);
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision: current, data: p });
+        expect(await answer(await s.request(`${base}/records/threads/t`))).toEqual({ revision: current, data: thread });
+    }
+    const accepted = await answer(
+        await s.json(`${base}/edits`, { revision: current, edit: { kind: "thread", threadId: "t", state: "paused" } }),
+    );
+    expect(accepted).toEqual({ revision: expect.any(String), kind: "threads", data: { ...thread, state: "paused" } });
+    expect(accepted.revision).not.toBe(current);
+    expect(await answer(await s.request(`${base}/records/threads/t`))).toEqual({
+        revision: accepted.revision,
+        data: accepted.data,
+    });
+});
+
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+function bindChat(s: Awaited<ReturnType<typeof server>>, id = chatId) {
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const first = (name: string) => (s.store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+    const binding = { presetId: first("presets"), modelPresetId: first("modelPresets"), personaId: first("personas") };
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId: id,
+                baseRevision: s.store.chatRevision(characterId, id),
+                ops: [
+                    {
+                        op: "meta",
+                        set: {
+                            promptPresetId: binding.presetId,
+                            modelPresetId: binding.modelPresetId,
+                            bindedPersona: binding.personaId,
+                        },
+                    },
+                    {
+                        op: "append",
+                        anchor: { end: true },
+                        messages: [
+                            { chatId: "u", role: "user", data: "A gate." },
+                            { chatId: "a", role: "char", data: "The gate opens." },
+                            { chatId: "next", role: "user", data: "Continue." },
+                        ],
+                    },
+                ],
+            },
+        ],
+    });
+    return {
+        characterId,
+        chatId: id,
+        ...binding,
+        chatRevision: s.store.chatRevision(characterId, id)!,
+        mode: "normal" as const,
+        input: "",
+    };
+}
+
+it("refuses edits while the real memory task is queued or running and accepts them after cancellation", async () => {
+    // Hold tokenizer file I/O, not a task implementation; fake deadlines cannot race the test.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const s = await server({ memoryTaskOptions: { now: () => 0 } });
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    function replace<T>(name: string, update: (data: T) => T) {
+        const kind = kinds.get(name)!;
+        const record = s.store.get(kind, "main")!;
+        s.store.put(kind, "main", update(record.data as T), record.revision);
+    }
+    replace<Record<string, unknown>>("ui", (data) => ({ ...data, memoryAlgorithmType: "structuredMemory" }));
+    replace<Record<string, unknown>[]>("modelProfiles", (data) => [
+        { ...data[0], modelId: "reverse_proxy", customTokenizer: "claude" },
+    ]);
+    replace<{ items: { settings: Record<string, unknown> }[] }>("hypaV3Presets", (data) => ({
+        ...data,
+        items: [{ ...data.items[0], settings: { ...data.items[0].settings, structured: { cadence: "tokens" } } }],
+    }));
+    const characterKind = kinds.get("characters")!;
+    const owner = s.store.get(characterKind, characterId)!;
+    s.store.put(characterKind, characterId, { ...(owner.data as object), supaMemory: true }, owner.revision);
+    const context = bindChat(s);
+    const scope = loadJobScope(s.store, kinds, context);
+    const { presetId, modelPresetId, personaId } = context;
+    const input: StructuredMemoryTaskInput = {
+        kind: "structuredMemory",
+        chatRef: { chaId: characterId, chatId },
+        epoch: s.epoch,
+        admittedRevision: scope.chatRevision,
+        sourceGeneration: scope.chatSourceGeneration!,
+        speakerId: null,
+        binding: { presetId, modelPresetId, personaId },
+        effective: { presetId, modelPresetId, fromChain: false },
+        maxContext: 10000,
+        maxResponse: 100,
+        tokenPolicy: memoryTokenPolicy(scope, 3),
+        settingsFingerprint: memorySettingsFingerprint(scope),
+        confirmedBefore: "next",
+    };
+    const revision = s.write({ pages: [page("p")] });
+    const before = await answer(await s.request(`${base}/records/pages/p`));
+    const entered = deferred();
+    const release = deferred();
+    const access = fs.access;
+    const spy = vi.spyOn(fs, "access").mockImplementation(async (...args) => {
+        if (String(args[0]).endsWith("/claude/claude.json")) {
+            entered.resolve();
+            await release.promise;
+        }
+        return access(...args);
+    });
+    const tasks = s.context.memoryTasks!;
+    const lease = await tasks.acquireSummaryWriter(input.chatRef, "hold-queue");
+    const edit = { kind: "section", pageId: "p", heading: "Facts", body: "Correction after writer" };
+    const refused = async () => {
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual(before);
+    };
+    try {
+        tasks.handOff(input);
+        expect(tasks.status(input.chatRef)?.state).toBe("queued");
+        await refused();
+        lease.release();
+        await entered.promise;
+        expect(tasks.status(input.chatRef)?.state).toBe("running");
+        await refused();
+    } finally {
+        tasks.cancel(input.chatRef);
+        lease.release();
+        release.resolve();
+        await tasks.drain();
+        spy.mockRestore();
+    }
+    expect((await answer(await s.json(`${base}/edits`, { revision, edit }))).data.sections[0].body).toBe(
+        "Correction after writer",
+    );
+});
+
+it("refuses edits for an admitted job and for its message lock on a different chat", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred<RunningJob>();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve(job);
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    bindChat(s, "other");
+    const revision = s.write({ pages: [page("p")] });
+    const otherPath = base.replace(encodeURIComponent(chatId), "other");
+    const otherRevision = s.store.memory.write(
+        characterId,
+        "other",
+        {
+            epoch: s.epoch,
+            baseRevision: s.store.memory.readContents(characterId, "other")!.revision,
+        },
+        { pages: [page("p")] },
+    );
+    const edit = { kind: "sectionLock", pageId: "p", heading: "Facts", locked: true };
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    const job = await entered.promise;
+    try {
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: page("p") });
+        // A chat slot alone must not fence a sibling chat.
+        await answer(await s.json(`${otherPath}/edits`, { revision: otherRevision, edit: { ...edit, locked: false } }));
+        job.write(() => ({
+            chats: [
+                {
+                    characterId,
+                    chatId: "other",
+                    baseRevision: s.store.chatRevision(characterId, "other"),
+                    ops: [{ op: "begin", id: "a", generationId: "held" }],
+                },
+            ],
+        }));
+        expect(s.context.generationJobs.chatBusy(characterId, "other")).toBe(false);
+        expect(await answer(await s.json(`${otherPath}/edits`, { revision: otherRevision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${otherPath}/records/pages/p`))).toEqual({
+            revision: otherRevision,
+            data: page("p"),
+        });
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    for (const [url, token] of [
+        [base, revision],
+        [otherPath, otherRevision],
+    ])
+        expect((await answer(await s.json(`${url}/edits`, { revision: token, edit }))).data.sections[0].locked).toBe(
+            true,
+        );
+});

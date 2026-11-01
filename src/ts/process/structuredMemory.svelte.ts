@@ -11,17 +11,24 @@ import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     itemTag,
+    MEMORY_PAGE_TYPES,
     memoryEventCovers,
     rawWindow,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
     type MemoryManifestItem,
+    type MemoryManifestItemKind,
     type MemoryPage,
+    type MemoryPageHistoryEntry,
+    type MemoryPageType,
     type ReadEntry,
+    type StructuredMemoryCadence,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
+    type StructuredMemoryEdit,
+    type StructuredMemoryEditAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryRecordAnswer,
@@ -34,9 +41,9 @@ import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 
 /**
- * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), and the
- * downloadable package built from them: a zip of Markdown with one file per page and one timeline of
- * the events.
+ * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
+ * edits of it (`editStructuredMemory`), and the downloadable package built from the reads: a zip of
+ * Markdown with one file per page and one timeline of the events.
  *
  * In the package Markdown is display and the metadata lines are the authority. A metadata value is JSON
  * on one line, which is also valid YAML, and `bodyLines` and `summaryLines` count the lines of the text
@@ -44,19 +51,25 @@ import { authFetch } from "../storage/serverAuth";
  *
  * `memoryReceiptView` turns a message's stored receipt into what its receipt line shows.
  *
- * The memory panel's data is here too. `joinMemoryCoverage` joins the held messages with the record
- * facts the coverage route answers, because the tab holds the chat's whole message list and a route
- * has no job scope. `memoryRunView` turns a stored run into what a Log row shows.
+ * The memory panel's data is here too. `joinMemoryCoverage` and `memoryTimelineRows` join the held
+ * messages with the record facts the coverage route answers, because the tab holds the chat's whole
+ * message list and a route has no job scope. `memoryRunView` turns a stored run into what a Log row
+ * shows, `memoryPageTree` and `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice`
+ * the current state into the panel's writer line.
  *
  * What a send reported is read here too: `memoryStatusWord` for the context meter's line,
- * `memoryEventsUsed` for the panel's badges, and `memoryBlockEntries` for a preview's block.
+ * `memoryItemsUsed` for the panel's badges, and `memoryBlockEntries` for a preview's block.
  *
  * This module imports no alert or language module: the caller shows the notices for the outcomes the
- * reads return. It counts no tokens either, so it stays free of the tokenizer: the panel does that.
+ * reads and edits return. It counts no tokens either, so it stays free of the tokenizer: the panel does
+ * that.
  */
 
-/** Why a read did not answer: the chat or record is gone, the database was replaced, or its memory kept changing. */
-export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed";
+/**
+ * Why a read or an edit did not answer: the chat or record is gone, the database was replaced, its memory
+ * moved on, or, for an edit, something that can write it holds the chat.
+ */
+export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced";
 
 export type StructuredMemoryResult<T> =
     | { outcome: "ok"; value: T }
@@ -116,16 +129,25 @@ function roundRefusalOf(response: Response, body: AnswerBody): Unanswered {
     return response.status === 409 ? { outcome: "refused", reason: "changed" } : refusalOf(response, body);
 }
 
-/** GETs `path` and turns its answer into a result: `parse` answers null for a body of the wrong shape. */
+/** An edit's refusal: a 409 says what holds the chat, or that the memory moved on since its revision. */
+function editRefusalOf(response: Response, body: AnswerBody): Unanswered {
+    return response.status === 409
+        ? { outcome: "refused", reason: body.reason === "fenced" ? "fenced" : "changed" }
+        : refusalOf(response, body);
+}
+
+/** Asks `path` and turns its answer into a result: `parse` answers null for a body of the wrong shape. */
 async function readAnswer<T>(
     path: string,
     parse: (body: AnswerBody) => T | null,
     refuse: (response: Response, body: AnswerBody) => Unanswered = refusalOf,
+    init: Omit<RequestInit, "headers"> & { headers?: Record<string, string> } = {},
 ): Promise<StructuredMemoryResult<T>> {
     try {
         const response = await authFetch(path, {
+            ...init,
             cache: "no-store",
-            headers: { [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+            headers: { ...init.headers, [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
         });
         const body = await readBody(response);
         if (!response.ok) {
@@ -259,21 +281,71 @@ export function memoryReceiptView(
     }
 }
 
-/**
- * The id of the newest assistant message a send reads (`eligibleHistory`, from the end so a long chat
- * costs nothing), or undefined with none.
- */
-export function newestAssistantMessageId(messages: readonly DeepReadonly<Message>[]): string | undefined {
+/** The newest assistant message a send reads (`eligibleHistory`, from the end so a long chat costs nothing). */
+function newestAssistantMessage(messages: readonly DeepReadonly<Message>[]): DeepReadonly<Message> | undefined {
     for (let index = messages.length - 1; index >= 0; index--) {
-        const { disabled, role, chatId } = messages[index];
-        if (disabled === "allBefore") {
+        const message = messages[index];
+        if (message.disabled === "allBefore") {
             return undefined;
         }
-        if (disabled !== true && role === "char") {
-            return chatId;
+        if (message.disabled !== true && message.role === "char") {
+            return message;
         }
     }
     return undefined;
+}
+
+/** The id of the newest assistant message a send reads, or undefined with none. */
+export function newestAssistantMessageId(messages: readonly DeepReadonly<Message>[]): string | undefined {
+    return newestAssistantMessage(messages)?.chatId;
+}
+
+/** The receipt stored on the newest assistant message a send reads, as data of any shape. */
+export function newestMemoryReceipt(messages: readonly DeepReadonly<Message>[]): unknown {
+    return newestAssistantMessage(messages)?.generationInfo?.memory;
+}
+
+/** What the panel's writer line says; `kind` is null when recording needs no word. */
+export type MemoryWriterNotice = {
+    kind: "memoryOff" | "paused" | "notAutomatic" | null;
+    /** Why recording is not automatic: a stored reason code, or `manual` for the preset's cadence. */
+    reason?: string;
+    /** What the line's button does. */
+    action: MemoryReceiptView["action"];
+};
+
+/**
+ * The panel's writer line, decided from the current state: a receipt is a display copy of its moment,
+ * so `paused` is the chat's runs as they stand now, and a newest receipt only adds to it. The first of
+ * these holds. With memory off the command refuses, so there is no action. Paused, by the runs or by
+ * `receipt`, offers resume. A `notAutomatic` receipt gives its reason, and a `manual` cadence its own.
+ * Past those, and in the `manual` case, the action is `memoryReceiptView`'s for the newest message.
+ * `receipt` is `newestMemoryReceipt`, stored data of any shape.
+ */
+export function memoryWriterNotice({
+    memoryOn,
+    cadence,
+    paused,
+    receipt,
+    taskLive,
+}: {
+    memoryOn: boolean;
+    cadence: StructuredMemoryCadence;
+    paused: boolean;
+    receipt: unknown;
+    taskLive: boolean;
+}): MemoryWriterNotice {
+    if (!memoryOn) {
+        return { kind: "memoryOff", action: null };
+    }
+    const { kind, reason, action } = memoryReceiptView(receipt, { newest: true, taskLive });
+    if (paused || kind === "paused") {
+        return { kind: "paused", action: "resume" };
+    }
+    if (kind === "notAutomatic") {
+        return { kind, ...present("reason", reason), action };
+    }
+    return cadence === "manual" ? { kind: "notAutomatic", reason: "manual", action } : { kind: null, action };
 }
 
 function chatPath(ref: ChatRef): string {
@@ -306,6 +378,13 @@ function parseCoverageRound(body: AnswerBody, cursor: number): StructuredMemoryC
         : null;
 }
 
+function parseEditAnswer(body: AnswerBody): StructuredMemoryEditAnswer | null {
+    const { revision, kind, data } = body;
+    return typeof revision === "string" && (kind === "pages" || kind === "threads") && isPlainObject(data)
+        ? (body as StructuredMemoryEditAnswer)
+        : null;
+}
+
 function parseRunsRound(body: AnswerBody, cursor: number): StructuredMemoryRunsRound | null {
     const { revision, total, runs, next } = body;
     return typeof revision === "string" &&
@@ -334,6 +413,22 @@ export function readStructuredMemoryRecord<K extends StructuredMemoryRecordKind>
             ? (body as StructuredMemoryRecordAnswer<K>)
             : null,
     );
+}
+
+/**
+ * Sends one person's edit, made on the copy read at `revision`. The answer's revision is what the next
+ * edit names. The caller shows the notice for a refusal.
+ */
+export function editStructuredMemory(
+    ref: ChatRef,
+    revision: string,
+    edit: StructuredMemoryEdit,
+): Promise<StructuredMemoryResult<StructuredMemoryEditAnswer>> {
+    return readAnswer(`${chatPath(ref)}/edits`, parseEditAnswer, editRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision, edit }),
+    });
 }
 
 /**
@@ -590,6 +685,21 @@ export function buildStructuredMemoryLog(
     });
 }
 
+/** What a panel tab can send the panel to: an event in Timeline or a page in Pages. */
+export type MemoryPanelTarget = { tab: "timeline" | "pages"; id: string };
+
+/** What the panel hands every tab. */
+export type MemoryPanelTabProps = {
+    chatRef: ChatRef;
+    readOnly: boolean;
+    refresh: number;
+    /** What to show after a jump from another tab, or null. */
+    focus: MemoryPanelTarget | null;
+    open: (target: MemoryPanelTarget) => void;
+    /** Leaves the panel for this message in the chat. */
+    jump: (messageId: string) => void;
+};
+
 /** What the memory panel says of a stored message. */
 export const MEMORY_COVERAGE_STATES = ["covered", "pending", "failed", "skipped", "excluded", "stale"] as const;
 export type MemoryCoverageState = (typeof MEMORY_COVERAGE_STATES)[number];
@@ -619,13 +729,19 @@ export type MemoryCoverageJoin = {
     leaving: number[];
 };
 
+/** What the join reads of the coverage route's facts. */
+type CoverageFacts = {
+    events: readonly Omit<StructuredMemoryCoverageEvent, "sourceIndex">[];
+    runs: readonly StructuredMemoryCoverageRun[];
+};
+
 /** A row's fields that the join decides. */
 type CoverageDecision = Pick<MemoryCoverageRow, "state" | "eventId" | "runId" | "reason">;
 
 /** What an event says of a message it cites. A higher `rank` wins, and a later event among equals. */
 type Citation = Pick<MemoryCoverageRow, "state" | "reason"> & { eventId: string; rank: number };
 
-function citationOf(event: StructuredMemoryCoverageEvent): Citation {
+function citationOf(event: CoverageFacts["events"][number]): Citation {
     const { id: eventId, status, staleReason } = event;
     if (memoryEventCovers(event)) {
         return { eventId, rank: 3, state: "covered" };
@@ -660,7 +776,7 @@ function runState({ result }: StructuredMemoryCoverageRun): MemoryCoverageState 
  */
 export function joinMemoryCoverage(
     messages: readonly DeepReadonly<Message>[],
-    facts: Pick<StructuredMemoryCoverage, "events" | "runs">,
+    facts: CoverageFacts,
     { windowTurns, memoryOn }: { windowTurns: number; memoryOn: boolean },
 ): MemoryCoverageJoin {
     const citations = new Map<string, Citation>();
@@ -752,6 +868,117 @@ export function groupMemoryCoverage(rows: readonly MemoryCoverageRow[]): MemoryC
     return groups;
 }
 
+/** Each held message's position by id, built once so a long chat's lookups stay cheap. */
+export function memoryMessageIndexes(
+    messages: readonly DeepReadonly<Pick<Message, "chatId">>[],
+): ReadonlyMap<string, number> {
+    const indexes = new Map<string, number>();
+    messages.forEach(({ chatId }, index) => {
+        if (chatId !== undefined) {
+            indexes.set(chatId, index);
+        }
+    });
+    return indexes;
+}
+
+/** One event in the Timeline. */
+export type MemoryTimelineRow = {
+    event: StructuredMemoryCoverageEvent;
+    /** Where it sorts; Infinity when nothing says. */
+    position: number;
+    /** As a send's flow lane counts it, or null with none of its messages left. */
+    turnsAgo: number | null;
+};
+
+/**
+ * The Timeline of a chat: `events` in the order of `messages` as held. A row sorts by its first message
+ * still present, else by the position its sources stored, else last, ties in the given order. It ages
+ * from its newest message still present, as the flow lane ages an event: the `char` messages with text
+ * at or after it that a send reads (`eligibleHistory`), at least 1.
+ */
+export function memoryTimelineRows(
+    events: readonly StructuredMemoryCoverageEvent[],
+    messages: readonly DeepReadonly<Message>[],
+): MemoryTimelineRow[] {
+    const indexes = memoryMessageIndexes(messages);
+    const read = eligibleHistory(messages.map(({ disabled }, index) => ({ disabled, index }))).messages;
+    const eligible = new Set(read.map(({ index }) => index));
+    const turnsFrom = new Array<number>(messages.length);
+    for (let index = messages.length - 1, turns = 0; index >= 0; index--) {
+        const { role, data } = messages[index];
+        if (eligible.has(index) && role === "char" && data.trim() !== "") {
+            turns++;
+        }
+        turnsFrom[index] = turns;
+    }
+    const rows = events.map((event): MemoryTimelineRow => {
+        let first = Infinity;
+        let newest = -1;
+        for (const id of event.messageIds) {
+            const index = indexes.get(id);
+            if (index !== undefined) {
+                first = Math.min(first, index);
+                newest = Math.max(newest, index);
+            }
+        }
+        return newest < 0
+            ? { event, position: event.sourceIndex ?? Infinity, turnsAgo: null }
+            : { event, position: first, turnsAgo: Math.max(1, turnsFrom[newest]) };
+    });
+    return rows.sort((a, b) => (a.position === b.position ? 0 : a.position - b.position));
+}
+
+/** One type's rows in the Pages tree. */
+export type MemoryPageGroup<Row> = { type: MemoryPageType; rows: Row[] };
+
+/** Contents rows by type: the scene first, then `MEMORY_PAGE_TYPES`' order, each group in the given order. */
+export function memoryPageTree<Row extends { type: MemoryPageType }>(rows: readonly Row[]): MemoryPageGroup<Row>[] {
+    const types: MemoryPageType[] = ["scene", ...MEMORY_PAGE_TYPES.filter((type) => type !== "scene")];
+    return types.flatMap((type) => {
+        const grouped = rows.filter((row) => row.type === type);
+        return grouped.length > 0 ? [{ type, rows: grouped }] : [];
+    });
+}
+
+/** One page history entry as the Pages tab lists it. */
+export type MemoryPageHistoryRow = Pick<MemoryPageHistoryEntry, "id" | "heading" | "kind" | "at"> & {
+    /** The section's text before and after the change; null where it had none. */
+    before: string | null;
+    after: string | null;
+};
+
+/**
+ * `page`'s history, newest first. No `after` is stored: the state after an entry is the next entry's of
+ * the same section, or the live section past the last one. An entry that concerns the whole page
+ * (`heading: null`) holds no text to compare.
+ */
+export function memoryPageHistoryView({
+    sections,
+    history,
+}: Pick<MemoryPage, "sections" | "history">): MemoryPageHistoryRow[] {
+    const states = new Map<string, string | null>(sections.map(({ heading, body }) => [heading, body]));
+    return [...history].reverse().map(({ id, heading, kind, at, before }) => {
+        if (heading === null) {
+            return { id, heading, kind, at, before: null, after: null };
+        }
+        const after = states.get(heading) ?? null;
+        states.set(heading, before?.body ?? null);
+        return { id, heading, kind, at, before: before?.body ?? null, after };
+    });
+}
+
+/** One run of a diff, which the tab renders as a span. */
+export type MemoryDiffPart = { change: "same" | "added" | "removed"; text: string };
+
+/** `before` to `after`, word by word. `diff` loads here, when the first history entry opens. */
+export async function memoryTextDiff(before: string, after: string): Promise<MemoryDiffPart[]> {
+    const { diffWordsWithSpace } = await import("diff");
+    return diffWordsWithSpace(before, after).map(({ added, removed, value }) => ({
+        change: added ? "added" : removed ? "removed" : "same",
+        text: value,
+    }));
+}
+
 /** The most code points of a message a Coverage row shows. */
 const EXCERPT_CODE_POINTS = 120;
 
@@ -777,19 +1004,20 @@ export function memoryStatusWord({ coverage, writer }: Pick<ReportedMemory, "cov
 }
 
 /**
- * The ids of the events the last send verifiably used. The last send is the newest valid report in
- * `messages`, found as the context meter finds its own, so a report of another kind means nothing was
- * used and an older one is never reached. It reads only each scanned message's `generationInfo`, never
- * `data`, so streaming text does not rerun it.
+ * The ids of the records of `itemKind` the last send verifiably used. The last send is the newest valid
+ * report in `messages`, found as the context meter finds its own, so a report of another kind means
+ * nothing was used and an older one is never reached. It reads only each scanned message's
+ * `generationInfo`, never `data`, so streaming text does not rerun it.
  */
-export function memoryEventsUsed(
+export function memoryItemsUsed(
     messages: readonly DeepReadonly<Pick<Message, "generationInfo">>[],
+    itemKind: MemoryManifestItemKind,
 ): ReadonlySet<string> {
     for (let index = messages.length - 1; index >= 0; index--) {
         const report = parseContextReport(messages[index].generationInfo?.context);
         if (report) {
             const items = report.memory?.kind === "structuredMemory" ? (report.memory.items ?? []) : [];
-            return new Set(items.flatMap(({ id, kind, verified }) => (kind === "event" && verified ? [id] : [])));
+            return new Set(items.flatMap(({ id, kind, verified }) => (kind === itemKind && verified ? [id] : [])));
         }
     }
     return new Set();
@@ -966,6 +1194,11 @@ function runEventView(event: Record<string, unknown>, unverified: ReadonlySet<st
             })),
         },
     };
+}
+
+/** What Timeline shows of a stored event, read as an extraction is: as data of any shape. */
+export function memoryEventView(event: unknown): MemoryRunEventView {
+    return runEventView(isPlainObject(event) ? event : {}, new Set());
 }
 
 /**

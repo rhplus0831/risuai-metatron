@@ -12,6 +12,8 @@ import {
     readStructuredMemoryCoverage,
     joinMemoryCoverage,
     memoryRunView,
+    memoryTimelineRows,
+    memoryPageHistoryView,
     memoryBlockEntries,
     memoryPagePath,
     memoryReceiptView,
@@ -577,4 +579,61 @@ it("extracts every final message carrying an included item's encoded tag in prom
     ];
     expect(memoryBlockEntries(messages, items)).toEqual([messages[1], messages[3]]);
     expect(memoryBlockEntries(messages, [])).toEqual([]);
+});
+
+it("orders Timeline by surviving messages then stored positions and ages from the newest surviving source", () => {
+    const messages: Message[] = [
+        { chatId: "before", role: "char", data: "Before boundary" },
+        { chatId: "boundary", role: "user", data: "Boundary", disabled: "allBefore" },
+        { chatId: "a", role: "char", data: "First reply" },
+        { chatId: "disabled", role: "char", data: "Not read", disabled: true },
+        { chatId: "blank", role: "char", data: " \n" },
+        { chatId: "b", role: "char", data: "Second reply" },
+        { chatId: "tail", role: "user", data: "Latest question" },
+    ];
+    const events = [
+        { id: "unknown", messageIds: ["gone"] },
+        { id: "late", messageIds: ["tail"], sourceIndex: 0 },
+        { id: "tie-first", messageIds: [], sourceIndex: 2 },
+        { id: "spanning", messageIds: ["b", "gone", "a"], sourceIndex: 99 },
+        { id: "tie-last", messageIds: ["a"] },
+        { id: "fallback", messageIds: ["gone"], sourceIndex: 1 },
+        { id: "old", messageIds: ["before"] },
+        { id: "unknown-last", messageIds: [] },
+    ].map((row) => ({ sourceIndex: null, ...row, title: row.id, status: "active" as const }));
+    expect(memoryTimelineRows(events, messages).map(({ event, turnsAgo }) => [event.id, turnsAgo])).toEqual([
+        ["old", 2],
+        ["fallback", null],
+        ["tie-first", null],
+        ["spanning", 1],
+        ["tie-last", 2],
+        ["late", 1],
+        ["unknown", null],
+        ["unknown-last", null],
+    ]);
+});
+
+it("compares page history only with the next entry of its heading or the live section", () => {
+    const p = page("p", "Facts now");
+    p.sections.push({ ...p.sections[0], heading: "Other", body: "Other now" });
+    const entry = (id: string, heading: string | null, body: string | null, at: number) => ({
+        id,
+        heading,
+        before: body === null ? null : { body, provenance: [], sources: [] },
+        kind: "edit" as const,
+        highlighted: false,
+        at,
+    });
+    p.history = [
+        entry("created", "Facts", null, 1),
+        entry("other", "Other", "Other before", 2),
+        entry("updated", "Facts", "Facts before", 3),
+        entry("page", null, null, 4),
+    ];
+    expect(memoryPageHistoryView(p)).toEqual([
+        { id: "page", heading: null, kind: "edit", at: 4, before: null, after: null },
+        { id: "updated", heading: "Facts", kind: "edit", at: 3, before: "Facts before", after: "Facts now" },
+        { id: "other", heading: "Other", kind: "edit", at: 2, before: "Other before", after: "Other now" },
+        { id: "created", heading: "Facts", kind: "edit", at: 1, before: null, after: "Facts before" },
+    ]);
 });

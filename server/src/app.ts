@@ -654,7 +654,7 @@ export function createServerContext(options: {
         // reads the resource store between yields (shutdown waits for it before closing the store).
         // The memory task routes read the store and change the memory task registry; every answer of
         // theirs is `no-store`, the limiter's 429 and the body limit's 413 included. The structured
-        // memory reads are admitted and answered the same way.
+        // memory routes are admitted and answered the same way.
         const memoryTask = c.req.path === MEMORY_TASKS_PATH || c.req.path.startsWith(`${MEMORY_TASKS_PATH}/`);
         const structuredMemory =
             c.req.path === STRUCTURED_MEMORY_PATH || c.req.path.startsWith(`${STRUCTURED_MEMORY_PATH}/`);
@@ -717,9 +717,9 @@ export function createServerContext(options: {
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
     // resource read's, the login, crypto, and set-password routes', the message search's, the memory
-    // task start's, the checkpoint POSTs' and policy PUT's, the token routes', and the missing asset
-    // check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB,
-    // 32 MiB, 16 KiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB, 64 KiB).
+    // task start's, the structured memory edit's, the checkpoint POSTs' and policy PUT's, the token
+    // routes', and the missing asset check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB,
+    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB, 16 KiB, 2 MiB, 64 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -735,6 +735,7 @@ export function createServerContext(options: {
                     route === DIAGNOSTICS_REPORT_PATH ||
                     route === MESSAGE_SEARCH_PATH ||
                     route === MEMORY_TASKS_PATH ||
+                    route.startsWith(`${STRUCTURED_MEMORY_PATH}/`) ||
                     route.startsWith(`${CHAT_CHECKPOINTS_PATH}/`) ||
                     route === TOKEN_COUNT_PATH ||
                     route === TOKEN_ENCODE_PATH ||
@@ -831,11 +832,20 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
     });
+    // A job of any kind holds the chat, and a generation job owns its message.
+    const chatHeld = (characterId: string, chatId: string) =>
+        generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0;
     registerStructuredMemoryRoutes(app, {
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         packageRoundBytes: options.routeLimits?.memoryPackageRoundBytes ?? MAX_READ_RESPONSE_BYTES,
+        // The chat's task, and a job too: a record-now job or a send's gap run writes with no task, and
+        // the writer's retry after a revision conflict reapplies an old answer over a person's edit.
+        fenced: (characterId, chatId) => {
+            const task = memoryTasks?.status({ chaId: characterId, chatId })?.state;
+            return task === "queued" || task === "running" || chatHeld(characterId, chatId);
+        },
     });
     registerPushRoutes(app, { push, auth, limiter: authenticatedRouteLimiter.middleware });
     registerLlmRoutes(app, {
@@ -904,8 +914,7 @@ export function createServerContext(options: {
     });
     const checkpoints = createCheckpointService({
         store: resources,
-        busy: (characterId, chatId) =>
-            generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0,
+        busy: chatHeld,
         memoryTasks,
     });
     registerChatCheckpointRoutes(app, {

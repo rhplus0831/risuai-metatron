@@ -16,7 +16,7 @@ import { isPlainObject } from "./valueKinds.ts";
 /** The value `memoryAlgorithmType` stores for this algorithm. Persisted: never rename it. */
 export const STRUCTURED_MEMORY_ALGORITHM = "structuredMemory" as const;
 
-/** The per-chat read routes (`server/src/routes/structuredMemory.ts`). */
+/** The per-chat routes (`server/src/routes/structuredMemory.ts`). */
 export const STRUCTURED_MEMORY_PATH = "/api/memory/structured";
 
 /** What a page describes. A chat has exactly one `scene` page, rewritten rather than appended to. */
@@ -551,7 +551,11 @@ export type StructuredMemoryPackageRound = {
 export type StructuredMemoryCoverageEvent = Pick<
     MemoryEvent,
     "id" | "title" | "status" | "staleReason" | "suppressed"
-> & { messageIds: string[] };
+> & {
+    messageIds: string[];
+    /** The smallest position its anchored sources stored, for an event none of whose messages is left. */
+    sourceIndex: number | null;
+};
 
 /**
  * A run that is not `recorded` as the coverage route lists it. `reason` is the run's own, else its
@@ -570,6 +574,22 @@ export type StructuredMemoryCoverageRound = {
     runs: StructuredMemoryCoverageRun[];
     next: number | null;
 };
+
+/**
+ * What a person can change of a chat's memory, one change per request. The tab never sends a record:
+ * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be
+ * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade.
+ */
+export type StructuredMemoryEdit =
+    | { kind: "section"; pageId: string; heading: string; body: string }
+    | { kind: "sectionLock"; pageId: string; heading: string; locked: boolean }
+    | { kind: "page"; pageId: string; contextMode?: MemoryContextMode; grade?: number | null }
+    | { kind: "thread"; threadId: string; state: MemoryThreadState };
+
+/** The edit route's answer: the record as it now stands, with the revision the next edit names. */
+export type StructuredMemoryEditAnswer = { revision: string } & (
+    { kind: "pages"; data: MemoryPage } | { kind: "threads"; data: MemoryThread }
+);
 
 /** The most runs one round of the runs route holds, however small they are. */
 export const MEMORY_RUNS_ROUND_ROWS = 50;
@@ -693,6 +713,22 @@ export function memoryGrade(axes: MemoryAxes | undefined): number | undefined {
 /** Whether a thread in `state` is over: it takes no more transitions. */
 export function memoryThreadEnded(state: MemoryThreadState): boolean {
     return state === "done" || state === "cancelled";
+}
+
+/** How many runs at the end of `runs` failed, recorded ones ending the count; others say nothing. */
+function trailingFailures(runs: readonly Pick<MemoryRun, "result">[]): number {
+    let failures = 0;
+    for (let index = runs.length - 1; index >= 0 && runs[index].result !== "recorded"; index--) {
+        if (runs[index].result === "failed") {
+            failures++;
+        }
+    }
+    return failures;
+}
+
+/** Whether automatic recording is paused: `consecutiveFailures` failed runs at the end of `runs`. */
+export function writerPaused(runs: readonly Pick<MemoryRun, "result">[]): boolean {
+    return trailingFailures(runs) >= STRUCTURED_MEMORY_LIMITS.consecutiveFailures;
 }
 
 /**

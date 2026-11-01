@@ -594,3 +594,35 @@ it("validates the final scene set atomically while allowing rewrites and replace
     write(store, contents(store, "other").revision, { pages: [scene("other-scene")] }, "other");
     expect(contents(store, "other").pages.map(({ id }) => id)).toEqual(["other-scene"]);
 });
+
+it("refuses losing or retyping an existing scene without partially writing the batch", () => {
+    const { store, db, events } = fileStore();
+    seed(store);
+    // A chat may acquire ordinary memory before the writer creates its scene.
+    write(store, contents(store).revision, records(["ordinary"]));
+    const scene: MemoryPage = {
+        ...records(["scene"]).pages[0],
+        type: "scene",
+        contextMode: "always",
+        participants: [],
+    };
+    const revision = write(store, contents(store).revision, { pages: [scene] });
+    const before = memoryRows(db);
+    const writes = store.writeCount();
+    events.length = 0;
+    for (const changes of [
+        { ...records(["unrelated"]), remove: { pages: ["scene"] } },
+        { ...records(["unrelated"]), pages: [{ ...scene, type: "location" as const }] },
+    ]) {
+        expect(() => write(store, revision, changes)).toThrow(ResourceValidationError);
+        expect(memoryRows(db)).toEqual(before);
+        expect(contents(store).revision).toBe(revision);
+        expect(store.writeCount()).toBe(writes);
+        expect(events).toEqual([]);
+    }
+    write(store, revision, { remove: { pages: ["scene"] }, pages: [{ ...scene, id: "replacement" }] });
+    expect(contents(store).pages.map(({ id, type }) => ({ id, type }))).toEqual([
+        { id: "ordinary", type: "location" },
+        { id: "replacement", type: "scene" },
+    ]);
+});

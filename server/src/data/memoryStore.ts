@@ -5,10 +5,19 @@ import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
 import {
     MEMORY_EVENT_STATUSES,
     MEMORY_PAGE_TYPES,
+    MEMORY_RECORD_KINDS,
     MEMORY_RUN_RESULTS,
     MEMORY_THREAD_STATES,
 } from "../../../shared/structuredMemory.ts";
-import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
+import type {
+    MemoryEvent,
+    MemoryPage,
+    MemoryRun,
+    MemoryThread,
+    StructuredMemoryContentsAnswer,
+    StructuredMemoryRecordKind,
+    StructuredMemoryRecordOf,
+} from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { STAGED_CHAT_SEQS } from "./chatStore.ts";
 import {
@@ -47,14 +56,9 @@ type TokenFunctions = {
 type ChatRow = { seq: number };
 
 /** The record each kind holds. */
-export type MemoryRecordOf = {
-    pages: MemoryPage;
-    events: MemoryEvent;
-    threads: MemoryThread;
-    runs: MemoryRun;
-};
+export type MemoryRecordOf = StructuredMemoryRecordOf;
 
-export type MemoryRecordKind = keyof MemoryRecordOf;
+export type MemoryRecordKind = StructuredMemoryRecordKind;
 
 /** An event as a writer hands it over: the store stamps `createdRevision`. */
 export type MemoryEventWrite = Omit<MemoryEvent, "createdRevision">;
@@ -71,17 +75,8 @@ export type MemoryChanges = {
 /** `wrote` is false when the change set named nothing, so the owner counts only real writes. */
 export type MemoryWriteResult = { revision: string; wrote: boolean };
 
-/** A table-of-contents row: the record's listed fields and the size of its stored text in bytes. */
-type ContentsRow<T, Field extends keyof T> = Pick<T, Field> & { bytes: number };
-
 /** A chat's table of contents, with the memory revision a write based on it names. */
-export type MemoryContents = {
-    revision: string;
-    pages: ContentsRow<MemoryPage, "id" | "type" | "title">[];
-    events: ContentsRow<MemoryEvent, "id" | "title" | "status">[];
-    threads: ContentsRow<MemoryThread, "id" | "title" | "state">[];
-    runs: ContentsRow<MemoryRun, "id" | "result">[];
-};
+export type MemoryContents = StructuredMemoryContentsAnswer;
 
 /** A record's body, with the memory revision an edit of it names. */
 export type MemoryRecordRead<K extends MemoryRecordKind> = { revision: string; data: MemoryRecordOf[K] };
@@ -138,8 +133,6 @@ const MEMORY_TABLES: Record<MemoryRecordKind, MemoryTable> = {
         stamped: false,
     },
 };
-
-const MEMORY_RECORD_KINDS = Object.keys(MEMORY_TABLES) as MemoryRecordKind[];
 
 /** Column names of the memory tables, in `PRAGMA table_xinfo` order (snapshot layout check). */
 const MEMORY_TABLE_COLUMNS: Record<string, readonly string[]> = {
@@ -248,19 +241,30 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     }
 
     /**
-     * Refuses page rows that would give a chat a second `scene` page: two in the set, or one while the
-     * chat keeps another. The existing page must be the same id or among `removed`, since removals run
-     * first; rewriting it to another type in the same set is refused too, so the order of the upserts
-     * can never reach `memory_pages_scene`. `rows` are as `prepareKind` builds them: `id`, `title`, `type`.
+     * Refuses a change set that would leave a chat with anything but the scene page it has. A second
+     * one is refused: two in the set, or one while the chat keeps another. The existing page must be the
+     * same id or among `removed`, since removals run first; rewriting it to another type in the same set
+     * is refused too, so the order of the upserts can never reach `memory_pages_scene`. Losing it is
+     * refused as well: `removed` naming it with no scene row in the set, or a row retyping it. Replacing
+     * it in one set is fine. A chat with no scene page yet has none to lose: the writer makes it. `rows`
+     * are as `prepareKind` builds them: `id`, `title`, `type`.
      */
     function assertOneScene(seq: number, rows: readonly (string | number)[][], removed: ReadonlySet<string>) {
-        const [scene, second] = rows.filter(([, , type]) => type === "scene").map(([id]) => id);
-        if (scene === undefined) {
+        if (rows.length === 0 && removed.size === 0) {
             return;
         }
+        const [scene, second] = rows.filter(([, , type]) => type === "scene").map(([id]) => id);
         const kept = selectScenePage.get(seq) as { id: string } | undefined;
-        if (second !== undefined || (kept && kept.id !== scene && !removed.has(kept.id))) {
+        if (second !== undefined || (scene !== undefined && kept && kept.id !== scene && !removed.has(kept.id))) {
             throw refusal("pages", second ?? scene, "a chat holds one scene page");
+        }
+        if (scene === undefined && kept) {
+            if (removed.has(kept.id)) {
+                throw refusal("pages", kept.id, "the scene page can only be replaced in one write");
+            }
+            if (rows.some(([id]) => id === kept.id)) {
+                throw refusal("pages", kept.id, "the scene page keeps its type");
+            }
         }
     }
 

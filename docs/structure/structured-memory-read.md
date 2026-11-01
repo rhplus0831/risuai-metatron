@@ -32,13 +32,16 @@
   `CONTEXT_MEMORY_EXCLUDED`. `trimHistoryToContext` in `hypav3.ts` is the trim both algorithms share.
 - `previewChatReport` in `src/ts/process/index.svelte.ts`: a preview's messages and report. `GenerationPreviewResult` in
   `shared/jobs.ts` is that job's `done.result`.
-- `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `LogTab.svelte`,
-  `PreviewTab.svelte`, `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared with
-  `ContextMeter`), and `memoryText.ts`, the stored codes as text. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the
-  status line it shares with the modal.
+- `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `PreviewTab.svelte`,
+  `PagesTab.svelte`, `TimelineTab.svelte`, `ThreadsTab.svelte`, `LogTab.svelte`, `MemoryLinkButton.svelte`,
+  `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared with `ContextMeter`),
+  `memoryText.ts`, the stored codes as text, and `memoryRecordPress.ts`, the `memoryRecord` press the panel shares with
+  the receipt line. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares with the modal.
 - `src/ts/process/structuredMemory.svelte.ts`, the pure parts the panel reads with: `joinMemoryCoverage`,
-  `groupMemoryCoverage`, `memoryMessageExcerpt`, and `memoryRunView`.
-- The same file, pure, for what a send reported: `memoryStatusWord`, `memoryEventsUsed`, `usedMemoryCoverageGroups`,
+  `groupMemoryCoverage`, `memoryMessageExcerpt`, `memoryRunView`, `memoryTimelineRows`, `memoryPageTree`,
+  `memoryPageHistoryView`, `memoryEventView`, `memoryWriterNotice`, `MemoryPanelTabProps`. `memoryTextDiff` loads `diff`
+  when the first history entry opens.
+- The same file, pure, for what a send reported: `memoryStatusWord`, `memoryItemsUsed`, `usedMemoryCoverageGroups`,
   `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`.
 - `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
   `newestAssistantMessageId` in `structuredMemory.svelte.ts` are its pure part.
@@ -142,11 +145,12 @@ the held chat, and a feed patch moves it.
 `StructuredMemoryPanel` replaces `HypaV3Modal` when `memoryAlgorithmType` selects the algorithm, under the same
 `hypaV3ModalOpen` store, so `chatStatus.svelte.ts` still counts the transcript as hidden. `App.svelte` picks it, and the
 menu row in `DefaultChatScreen` and the button in `CharConfig` open it ahead of any older memory flag. A tab is one
-component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while it shows. It writes nothing yet.
+component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages and Threads write; the rest read.
 
-- "Used in the last send" comes from `memoryEventsUsed`: the newest valid report, found as the meter finds its own, and
-  its `verified` event items. A newer report of another kind means none, and no older report is reached. Coverage badges
-  a row by `eventId` and a closed group by any of its rows; Log badges a run by the event it committed.
+- "Used in the last send" comes from `memoryItemsUsed`: the newest valid report, found as the meter finds its own, and
+  its `verified` items of one kind. A newer report of another kind means none, and no older report is reached. Coverage
+  badges a row by `eventId` and a closed group by any of its rows, Log a run by the event it committed, Timeline an
+  event, and Pages a page.
 - Preview runs only on its button. A preview is a local send, so it flips `readOnly`, which moves `refresh`: a run on
   `refresh` would never stop. It answers the prompt with no next message, so it says the next send can differ.
 - `memoryBlockEntries` finds the block by `itemTag`, because `editRequest` can rebuild entries without their `memo`. A
@@ -172,12 +176,49 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
 - A stored run is data of any shape (`memoryRunView`), and all model and message text renders as plain text. The export
   is `{ logVersion, revision, runs }` as JSON, read whole at one revision and restarted on a 409 as the package is.
 
+### Pages, Timeline, and Threads
+
+- Pages lists the contents through `memoryPageTree`, the scene first, and reads a page by id when selected. A section's
+  heading is a key, shown through `pages.headings`, and a key it does not know shows as it is. There is no editor for a
+  page's title, aliases, type, or links.
+- History comes from `memoryPageHistoryView`, newest first. An entry's "after" is the next entry of the same heading, or
+  the live section, because no `after` is stored ([the rule](structured-memory.md#invariants)). The diff renders as
+  spans, one open at a time.
+- Timeline reads the coverage route, not the contents: it already answers every event's `messageIds` at one revision,
+  and `readContents` stays free of `data` because a send and every round call it. `memoryTimelineRows` sorts by an
+  event's first message still present, else its stored `sourceIndex`, else last, and ages it from its newest message
+  still present, as the flow lane does. `memory_events.seq` says nothing of message order. Opening a row reads its
+  record through `memoryEventView`.
+- Threads lists the contents, with the state on each row, and opening one reads its `who`, `openedBy`, and `closedBy`.
+- A link between tabs is `open(target)`, which the panel turns into `focus` for the tab it shows. A message link is
+  `jump(messageId)`: `setChatOpen`, `requestMessageJump`, then the panel closes. The panel can sit over a closed chat.
+
+### Panel edits
+
+Each goes through [the edit route](structured-memory.md#the-edit-route), naming the revision of the copy it was made on,
+one at a time per tab. A tab applies the edit to its copy, and a refusal restores the copy, shows the notice (none for
+`epoch`, which halts on its own), and reads again. A success keeps the answer and its revision. `readOnly` only turns
+the controls off first: the server's fence decides.
+
+An open section editor keeps the body it opened on. A read that brings another body for that section closes it with the
+`changed` notice, so a draft written against old text cannot replace the writer's new text. Read-only keeps the draft
+and turns Save off, and the read when it falls applies the same rule.
+
+### The writer line
+
+`memoryWriterNotice` decides the line under the status lines from the current state, because a receipt or a report is a
+copy of its moment. The first that holds: memory off, no action, because the command refuses; `writerPaused` over the
+current runs (from the contents) or a newest receipt that reads paused, resume; a newest `notAutomatic` receipt, its
+reason and `memoryReceiptView`'s action; a `manual` cadence, reason `manual`. Past those only the action shows. The
+press is `pressMemoryRecord`, as on the receipt line, off while pressing, read-only, or the task is live.
+
 ## State
 
 - The read path stores nothing of its own: its records are [structured memory's](structured-memory.md#state). What a
   send leaves is on the reply's `generationInfo`: the report in `context` and the receipt in `memory`
   ([Receipts](#receipts)).
-- The panel writes nothing yet. Its rows are derived in the tab from the held chat and the read routes' answers.
+- The panel's rows are derived in the tab from the held chat and the routes' answers. Pages and Threads hold a copy of
+  what they show, which an edit's answer or a read replaces.
 
 ## Coupling
 
@@ -185,8 +226,8 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
   task fence, and embeddings belong to [memory](memory.md#selection-in-assembleprompt).
 - The report is `ContextReport.memory`; its parser and the `memory.coverage` rule for other algorithms are in
   [chat-pipeline](chat-pipeline.md).
-- The panel reads the coverage, runs, and package routes of [structured memory](structured-memory.md#the-read-routes);
-  the receipts of recorded and failed windows are written by
+- The panel reads the routes of [structured memory](structured-memory.md#the-read-routes) and writes through
+  [its edit route](structured-memory.md#the-edit-route); the receipts of recorded and failed windows are written by
   [the writer's commit](structured-memory-writer.md#the-writer-task).
 
 ## Invariants
@@ -202,7 +243,7 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
 
 - A new Memory settings page control: expose a preset field only once something reads it, then add it to the list
   `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with.
-- A new panel tab: add one component to `TABS` taking `chatRef`, `readOnly`, and `refresh`.
+- A new panel tab: add one component to `TABS` taking `MemoryPanelTabProps`.
 - A new stored code the panel or the receipt line shows: give it text in `memoryText.ts`, and keep reading the stored
   value as data of any shape (`memoryRunView`, `memoryReceiptView`).
 
@@ -222,8 +263,9 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
   `Chat.interactions.svelte.test.ts` for the line and its gate.
 - The panel: `structuredMemoryRoutes.test.ts` poisons a run's stored `data` through a second connection, so a read that
   should not happen fails the request. `structuredMemory.test.ts` drives the join and the restarts.
-  `StructuredMemoryPanel.test.ts` mounts the real panel and `App.svelte` on fake timers with `authFetch` scripted, and
-  the two openers are in `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
+  `StructuredMemoryPanel.test.ts` mounts the real panel and `App.svelte` on fake timers with `authFetch` scripted, edits
+  and refusals included, and the two openers are in `DefaultChatScreen.drafts.test.ts` and
+  `CharConfig.emotions.test.ts`.
 - Selection and the meter: `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with the list
   it may expose, so a new control fails it until something reads the field. `Toggles.test.ts` holds the toggle and
   `alwaysToggleOn`, `ContextMeter.svelte.test.ts` the line and the popover's one read.
@@ -240,6 +282,9 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
 - A paraphrase of an old message that shares no query term is not found: in the evidence lane semantic scoring only
   reranks lexical matches, to keep embedding at `lexicalCandidates` texts a send. D6 names both as channels. The pages
   lane has similarity as a channel of its own.
+- The writer line learns a tab-bound reason (`pluginModel`, `requestTrigger`) only from the newest reply's receipt: the
+  rule needs a job's scope, which a route does not load. So it says nothing before the first send, or right after a
+  record now replaced that receipt, until the next send. Record now still works there.
 
 ### Limitations
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
@@ -10,6 +11,7 @@ import {
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
+    type StructuredMemoryEditAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryRecordAnswer,
@@ -19,16 +21,28 @@ import {
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
+import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
+import {
+    applyPageEdit,
+    applyThreadEdit,
+    MemoryEditRefusal,
+    parseMemoryEdit,
+} from "../prompt/memory/structured/edits.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 import { storeErrorResponse } from "./resources.ts";
 
 export { STRUCTURED_MEMORY_PATH };
 
+/** An edit holds one section at `sectionBodyChars`, which JSON's escapes can lengthen, and its ids. */
+const MAX_EDIT_BODY_BYTES = 64 * 1024;
+
 const REFUSAL_TEXT = {
     chatGone: "Chat not found",
     recordGone: "Record not found",
+    fenced: "Something is writing this chat's memory",
 } as const;
 
 function isRecordKind(kind: string): kind is StructuredMemoryRecordKind {
@@ -76,6 +90,18 @@ function sourceIds(sources: unknown): string[] {
         : [];
 }
 
+/** The smallest anchored position of a stored source list, which the store does not check the shape of. */
+function firstSourceIndex(sources: unknown): number | null {
+    let first: number | null = null;
+    for (const source of Array.isArray(sources) ? sources : []) {
+        const index: unknown = isPlainObject(source) ? source.index : null;
+        if (Number.isSafeInteger(index) && (first === null || (index as number) < first)) {
+            first = index as number;
+        }
+    }
+    return first;
+}
+
 /** What a round's answer reads: the chat's contents, the position it starts at, and a record that is listed. */
 type RoundRead = {
     contents: StructuredMemoryContentsAnswer;
@@ -84,7 +110,7 @@ type RoundRead = {
 };
 
 /**
- * The per-chat structured memory reads (`shared/structuredMemory.ts`):
+ * The per-chat structured memory routes (`shared/structuredMemory.ts`):
  *
  * - `GET /api/memory/structured/:characterId/:chatId`: the table of contents, answered
  *   `StructuredMemoryContentsAnswer`; 404 `chatGone`.
@@ -107,11 +133,19 @@ type RoundRead = {
  *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
  *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Bytes, `cursor`,
  *   `revision`, and the refusals work as in the package round.
+ * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
+ *   (`StructuredMemoryEdit`, `structured/edits.ts`), answered `StructuredMemoryEditAnswer`. An edit that
+ *   changes nothing still names a revision, so a stale one is refused like any other. 400 for a
+ *   malformed edit or one the record refuses, 404 `chatGone` or `recordGone` (a heading the page lacks
+ *   too), 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }` when
+ *   `revision` is not the current token. The body is read after authentication and capped at 64 KiB.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
  * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
+ * An edit's checks and its write share one such step too, after its body is read, so nothing can take
+ * the chat between the fence and the write.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -120,9 +154,12 @@ export function registerStructuredMemoryRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         packageRoundBytes: number;
+        /** Whether something that can write this chat's memory holds the chat, which refuses an edit. */
+        fenced: (characterId: string, chatId: string) => boolean;
     },
 ) {
-    const { store, auth, limiter, packageRoundBytes } = arg;
+    const { store, auth, limiter, packageRoundBytes, fenced } = arg;
+    const limitBody = limitedBody(MAX_EDIT_BODY_BYTES);
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -251,7 +288,15 @@ export function registerStructuredMemoryRoutes(
             for (const { kind, id } of rows) {
                 if (kind === "events") {
                     const { title, status, staleReason, suppressed, sources } = read(kind, id);
-                    events.push({ id, title, status, staleReason, suppressed, messageIds: sourceIds(sources) });
+                    events.push({
+                        id,
+                        title,
+                        status,
+                        staleReason,
+                        suppressed,
+                        messageIds: sourceIds(sources),
+                        sourceIndex: firstSourceIndex(sources),
+                    });
                 } else {
                     const { result, reason, receipt, window } = read(kind, id);
                     runs.push({ id, result, reason: reason ?? receipt?.reason, messageIds: sourceIds(window) });
@@ -277,4 +322,70 @@ export function registerStructuredMemoryRoutes(
             } satisfies StructuredMemoryRunsRound;
         }),
     );
+
+    app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/edits`, limiter, authenticated, limitBody, async (c) => {
+        const characterId = c.req.param("characterId");
+        const chatId = c.req.param("chatId");
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        if (!isPlainObject(read.body)) {
+            return c.json({ error: "The body must be an object" }, 400);
+        }
+        const { revision } = read.body;
+        if (typeof revision !== "string") {
+            return c.json({ error: "revision must be a string" }, 400);
+        }
+        const edit = parseMemoryEdit(read.body.edit);
+        if (!edit || !isValidResourceId(edit.kind === "thread" ? edit.threadId : edit.pageId)) {
+            return c.json({ error: "edit is not a valid memory edit" }, 400);
+        }
+        const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+        if (epoch !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        if (fenced(characterId, chatId)) {
+            return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+        }
+        const gone = () => {
+            const reason = store.chatRevision(characterId, chatId) === null ? "chatGone" : "recordGone";
+            return c.json({ error: REFUSAL_TEXT[reason], reason }, 404);
+        };
+        const options = { epoch, baseRevision: revision };
+        try {
+            if (edit.kind === "thread") {
+                const stored = store.memory.readRecord(characterId, chatId, "threads", edit.threadId);
+                if (!stored) {
+                    return gone();
+                }
+                const edited = applyThreadEdit(stored.data, edit);
+                const written = store.memory.write(characterId, chatId, options, edited ? { threads: [edited] } : {});
+                return compressedJson(c, {
+                    revision: written,
+                    kind: "threads",
+                    data: edited ?? stored.data,
+                } satisfies StructuredMemoryEditAnswer);
+            }
+            const stored = store.memory.readRecord(characterId, chatId, "pages", edit.pageId);
+            if (!stored) {
+                return gone();
+            }
+            const edited = applyPageEdit(stored.data, edit, { now: Date.now(), newId: randomUUID });
+            const written = store.memory.write(characterId, chatId, options, edited ? { pages: [edited] } : {});
+            return compressedJson(c, {
+                revision: written,
+                kind: "pages",
+                data: edited ?? stored.data,
+            } satisfies StructuredMemoryEditAnswer);
+        } catch (error) {
+            if (error instanceof MemoryEditRefusal) {
+                return error.reason === "sectionGone" ? gone() : c.json({ error: error.message }, 400);
+            }
+            return storeErrorResponse(c, error);
+        }
+    });
 }

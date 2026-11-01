@@ -2,8 +2,8 @@
 
 ## Scope
 
-- Owns the `structuredMemory` algorithm's records: their shapes and limits, the tables and store, read routes, the tab's
-  client and Markdown package, and the HypaV3 compatibility projection.
+- Owns the `structuredMemory` algorithm's records: their shapes and limits, the tables and store, read and edit routes,
+  the tab's client and Markdown package, and the HypaV3 compatibility projection.
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
   `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](structured-memory-writer.md); the read
   path's: [the read path guide](structured-memory-read.md)), and `src/ts/process/structuredMemory.svelte.ts` (its
@@ -30,7 +30,8 @@
   - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
   - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events.
-  - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`.
+  - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
+    pause rule, shared with the panel's writer line; `writer.ts` re-exports it.
   - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
 - `server/src/data/memoryStore.ts`: `createMemoryTables`, the synchronous reads and the write over the tables;
   `MemoryChanges`, `MemoryContents`; `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`.
@@ -39,11 +40,13 @@
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
-  `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`.
+  `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`.
+- `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
+  `applyThreadEdit`, `MemoryEditRefusal`.
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
   `readStructuredMemoryCoverage`, `readStructuredMemoryRuns`, `buildStructuredMemoryPackage`,
-  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; the pure `renderMemoryPage`,
-  `renderMemoryTimeline`, and `memoryPagePath`.
+  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; `editStructuredMemory`; the pure
+  `renderMemoryPage`, `renderMemoryTimeline`, and `memoryPagePath`.
 
 ## Flows
 
@@ -60,15 +63,43 @@ All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated
   [the read budget](server-resources.md#read-budget) is: a round's first record is served whatever its size. `next` is
   the position to continue from, null at the end.
 - `/coverage?cursor=N&revision=R` answers one round of the chat's events followed by its runs that are not `recorded`:
-  what each says of its messages (`messageIds`), an event's title, and a run's `reason`, or its receipt's, which is
-  where a failed run keeps its code. No error and no message text. The list comes from the contents, so a recorded run's
-  `input` is never parsed.
+  what each says of its messages (`messageIds`), an event's title and `sourceIndex` (the smallest stored anchored
+  position, for an event with no message left), and a run's `reason`, or its receipt's, which is where a failed run
+  keeps its code. No error and no message text. The list comes from the contents, so a recorded run's `input` is never
+  parsed.
 - `/runs?cursor=N&revision=R` answers one round of the chat's runs, newest first, without `input` and
   `settingsFingerprint`, and `total`. A round also stops at `MEMORY_RUNS_ROUND_ROWS`, however small the runs are.
 - Both charge and budget as `/package` does, before any record is read: a round's first record is served whatever its
   size.
 - `revision` is compared whole as an opaque token, and a different one is 409 naming the current one. A round is one
   snapshot, and that comparison is what ties rounds into one.
+
+### The edit route
+
+`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/edits`, `{ revision, edit }`, capped at 64 KiB, answers
+`StructuredMemoryEditAnswer`: the record as it now stands, with the revision the next edit names. `edit` is the closed
+union `StructuredMemoryEdit`, one change per request, so the tab never sends a record and cannot set history, evidence,
+a type, or an id.
+
+1. Ids, the body, and the edit's shape: 400, a blank or over-long section body included.
+2. Epoch (412), then, with no await from here to the write, `fenced` (409 `reason: "fenced"`): the chat's task queued or
+   running, or a job or generation lock holding the chat. The job half is what stops a writer's retry after a revision
+   conflict from reapplying an old answer over a person's edit, because a record-now job or a send's gap run has no
+   task.
+3. The record is read and the edit applied to it. A missing chat, record, or heading is 404 `chatGone` or `recordGone`,
+   and a change the record refuses is 400.
+4. `store.memory.write` at the client's `revision`, stale 409. An edit that changes nothing goes through as an empty
+   change set, so a stale one is still refused.
+
+What an edit does (`edits.ts`):
+
+- A section body gains one `edit` history entry with no `eventId`, bounded by `pageHistoryEntries`, and
+  `userCorrected: true`. `provenance`, `sources`, and `unsupported` stay, since the edit changes no evidence; `disputed`
+  goes, because a person's edit is the review a dispute waits for. A locked section can be edited: the lock binds the
+  writer.
+- A lock takes no history entry and no `updatedAt`. A grade sets `gradeByUser`, and null clears both.
+- The scene page's `contextMode` stays `always`.
+- A thread takes any state, and leaving an ended one drops `closedBy`.
 
 ### The Markdown package
 
@@ -101,7 +132,7 @@ own transaction. Nothing async can run inside it.
 3. Every record is checked before anything is written, so a `ResourceValidationError` changes nothing: an id repeated
    within a kind, or both written and removed; an invalid id; a `title` that is not a string; a closed value outside its
    `const` list; a stored text over `MAX_READ_RESPONSE_BYTES`;
-   [a second scene page](structured-memory-writer.md#the-scene-page).
+   [a second scene page, or losing the one a chat has](structured-memory-writer.md#the-scene-page).
 4. Removals, then upserts, then the revision moves up by exactly one, however much changed. Removing an absent id is no
    refusal and still moves it.
 
@@ -172,6 +203,8 @@ group is refused, and a full one is checked and restored.
 
 - Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check. The
   one exception is a restore's staged writer and install copy.
+- A route writes only a closed edit applied to the record as stored ([the edit route](#the-edit-route)), never a record
+  the tab sent.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.
@@ -227,8 +260,10 @@ group is refused, and a full one is checked and restored.
 - `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
   metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
-- Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups`. No `slow` or `e2e`
-  membership of its own; `backups.test.ts` holds other slow cases.
+- `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
+  fence on a real app, holding a task on a tokenizer read and a job on its runner.
+- Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits`. No `slow` or
+  `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
 ## Known Hazards

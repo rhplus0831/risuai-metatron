@@ -7,7 +7,7 @@
         groupMemoryCoverage,
         joinMemoryCoverage,
         MEMORY_COVERAGE_STATES,
-        memoryEventsUsed,
+        memoryItemsUsed,
         memoryMessageExcerpt,
         readStructuredMemoryCoverage,
         usedMemoryCoverageGroups,
@@ -78,7 +78,7 @@
     const coverage = $derived(facts ? joinMemoryCoverage(messages, facts, { windowTurns, memoryOn }) : null);
     const groups = $derived(coverage ? groupMemoryCoverage(coverage.rows) : []);
     const eventTitles = $derived(new Map<string, string>(facts?.events.map(({ id, title }) => [id, title])));
-    const usedEvents = $derived(memoryEventsUsed(messages));
+    const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const usedGroups = $derived(usedMemoryCoverageGroups(coverage?.rows ?? [], groups, usedEvents));
 
     let shownGroups = $state(ROWS_AT_ONCE);

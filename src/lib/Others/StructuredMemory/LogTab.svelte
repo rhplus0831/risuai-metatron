@@ -6,7 +6,7 @@
     import { downloadFile } from "src/ts/globalApi.svelte";
     import {
         buildStructuredMemoryLog,
-        memoryEventsUsed,
+        memoryItemsUsed,
         memoryRunView,
         readStructuredMemoryRuns,
         type MemoryRunView,
@@ -49,7 +49,7 @@
     let readNumber = 0;
 
     const views = $derived(runs.map((run) => memoryRunView(run)));
-    const usedEvents = $derived(memoryEventsUsed(findChat(chatRef)?.message ?? []));
+    const usedEvents = $derived(memoryItemsUsed(findChat(chatRef)?.message ?? [], "event"));
 
     /**
      * Reads the round at `cursor`, after the runs in `held`. An answer for another chat, or one a newer

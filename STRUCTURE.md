@@ -197,7 +197,7 @@ coupling links.
 - **structured-memory-read**: `server/src/prompt/memory/structured/{lanes,retrieve,card,step}.ts`,
   `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and in
   `src/ts/process/structuredMemory.svelte.ts` the receipt and panel functions (`memoryReceiptView`,
-  `joinMemoryCoverage`, `memoryEventsUsed`).
+  `joinMemoryCoverage`, `memoryItemsUsed`).
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,
