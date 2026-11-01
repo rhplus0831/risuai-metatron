@@ -320,18 +320,23 @@ proposed cut, for the user to decide, not split unilaterally.
 ### Slice 6: the small guides and STRUCTURE.md's tables (D1; needs 2–5) — _small_
 
 - diagnostics, backup-sync-hub (receives the converters from Slice 2), scripts-triggers: headings
-  where a section is over 8,000 bytes, otherwise untouched.
+  where a section is over 8,000 bytes, and every item over 600 characters split or trimmed (27
+  items when Slice 5 finished), otherwise untouched. Slice 7 fails on them.
 - `STRUCTURE.md`: the `Choose By Task` and `Path Ownership` tables re-read against the final
-  guide set; the glossary unchanged.
+  guide set; `Repository-Wide Invariants` (9,023 bytes) split under `###` headings and its three
+  items over 600 characters split or trimmed; the glossary unchanged.
 
 ### Slice 7: the uniform budget (D2, D6; needs 2–6) — _small_
 
 - Delete the per-guide ceilings and the `allow` list from `util/docsBudget.json` (or the file,
-  if nothing else is in it); `pnpm check:docs` now applies 40,000 / 8,000 / 600 to every guide.
+  if nothing else is in it, with the check's read of it); `pnpm check:docs` now applies
+  40,000 / 8,000 / 600 to every guide and `STRUCTURE.md`, and a leaf or item over budget fails
+  instead of being reported.
 - The check's Vitest file covers: a guide over budget, a leaf heading over budget, an item over
   length (wrapped and unwrapped), parenthesis depth with a code span containing parentheses, a bad
   section order, a bad `Known Hazards` subheading, an unresolved link, an unresolved anchor, a
-  self-link, a `T5` label, and the `--report` output shape.
+  self-link, a `T5` label, and the `--report` output shape. Run that one file; the slice runs no
+  other test.
 
 ### Slice 8: close (needs all)
 
