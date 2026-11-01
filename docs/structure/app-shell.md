@@ -15,6 +15,8 @@
 
 ## Files
 
+### Entry and screens
+
 - `src/main.ts`: entry. Imports `./ts/polyfill` and `core-js`, registers the `vite:preloadError` alert, then branches on
   `isNodeServer`: true → dynamic `import("./boot")` and `boot()`; false → mounts `NodeServerRequired` and removes
   `#preloading`. The app graph (App, bootstrap, stores, DB) is never imported without the server.
@@ -30,48 +32,57 @@
   modals), and keep-alive audio.
 - `src/ts/keepAliveAudio.ts` `createKeepAliveAudio`: the audio of "Keep Session Alive: Via Sound"
   (`settings.ui.keepSessionAlive === "sound"`). `App.svelte` holds one controller: a click in that mode calls `start()`,
-  and any other mode calls `stop()`. Chrome counts a tab as playing audio by its measured output (silence below -72.25
-  dBFS), not the element's `volume`, and treats media of 5 s or less as transient (on Android: no media notification, no
-  foreground service). So the level is in the waveform: a generated 10 s, 20 Hz, 16-bit mono WAV (8 kHz, amplitude
-  0.002, about -57 dBFS) as a Blob URL, looped at full volume. `start()` is a no-op while active; the element's `pause`
-  event (the OS or another app took audio focus) or a rejected `play()` makes it inactive, so the next click plays the
-  same element again. It sets `navigator.mediaSession.metadata` (title "Risuai"); `stop()` pauses and clears it.
-- `src/ts/router/routes.ts`: the route table (pure). The slugs (`SETTINGS_PAGES`: slug → `SettingsMenuIndex`;
-  `PLAYGROUND_TOOLS`: slug → `PlaygroundStore` value) are the only place that maps the magic numbers to URLs; the
-  `Route` union; `formatRoute` (ids with `encodeURIComponent`) and `parseRoute` (null for anything that names no route:
-  unknown or prototype slugs, empty segments, bad encoding); `settingsPageOf`/`playgroundToolOf`. Settings indices 7, 8,
-  and 9 have no slug. `SETTINGS_PAGE_ALIASES` maps a former slug to its page (`bot` → `memory`): `parseRoute` reads it
-  as that page, so the boot replace writes the current slug.
-- `src/ts/router/router.svelte.ts`: `startRouter` and the history model (URL routes, below). `HistoryPort` wraps the
-  browser (`browserHistory`: live `path`/`state`, `push`, `replace`, `entryBelow(n)` from the Navigation API,
+  and any other mode calls `stop()`.
+  - Chrome counts a tab as playing audio by its measured output (silence below -72.25 dBFS), not the element's `volume`,
+    and treats media of 5 s or less as transient (on Android: no media notification, no foreground service). So the
+    level is in the waveform: a generated 10 s, 20 Hz, 16-bit mono WAV (8 kHz, amplitude 0.002, about -57 dBFS) as a
+    Blob URL, looped at full volume.
+  - `start()` is a no-op while active; the element's `pause` event (the OS or another app took audio focus) or a
+    rejected `play()` makes it inactive, so the next click plays the same element again. It sets
+    `navigator.mediaSession.metadata` (title "Risuai"); `stop()` pauses and clears it.
+
+### Router
+
+- `src/ts/router/routes.ts`: the route table (pure).
+  - The slugs (`SETTINGS_PAGES`: slug → `SettingsMenuIndex`; `PLAYGROUND_TOOLS`: slug → `PlaygroundStore` value) are the
+    only place that maps the magic numbers to URLs. Settings indices 7, 8, and 9 have no slug.
+  - The `Route` union; `formatRoute` (ids with `encodeURIComponent`) and `parseRoute` (null for anything that names no
+    route: unknown or prototype slugs, empty segments, bad encoding); `settingsPageOf`/`playgroundToolOf`.
+  - `SETTINGS_PAGE_ALIASES` maps a former slug to its page (`bot` → `memory`): `parseRoute` reads it as that page, so
+    the boot replace writes the current slug.
+- `src/ts/router/router.svelte.ts`: `startRouter` and the history model ([URL routes](#url-routes)). `HistoryPort` wraps
+  the browser (`browserHistory`: live `path`/`state`, `push`, `replace`, `entryBelow(n)` from the Navigation API,
   fire-and-forget `traverse(key)`, `popstate`), so the tests run a fake.
+
+### Bootstrap
+
 - `src/ts/bootstrap.ts`:
-  - `loadData`: reads through `loadBootSnapshot` (`readBoot` with an IndexedDB cache and a plain `readKinds` fallback),
-    then installs server records, applies first-boot defaults, awaits durable record, chat, and order recovery, runs
-    maintenance and presentation setup, starts resource sync, imports browser-local data, loads plugins, sets
-    `loadedStore = true`, then starts services. Cache rules and tests belong to
-    [boot cache](resource-sync.md#boot-cache).
+  - `loadData`: the [Boot](#boot) sequence. It reads through `loadBootSnapshot` (`readBoot` with an IndexedDB cache and
+    a plain `readKinds` fallback); cache rules and tests belong to [boot cache](resource-sync.md#boot-cache).
   - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see
     [boot load](resource-sync.md#boot-load)); no whole-database object is built.
   - `applyFirstBootDefaults`: on a store's first boot (`settings.ui.didFirstSetup` unset) the UI language follows the
     browser's when the UI has it, then the flag is set. There is no first-run wizard: the app opens on the home screen,
     and every other setting keeps the server's default until the settings pages change it.
-  - `maintainCharacters`: the boot's maintenance (trash pruning, then `checkCharOrderAtBoot` against the complete
-    inventory to drop dangling order ids); no character default.
+  - `maintainCharacters`: the boot's maintenance; no character default.
   - The boot's error alert (`loadData`'s catch) carries a line with the safe-boot address (`bootErrorWithSafeBootHint`,
-    below).
+    [Safe boot](#safe-boot)).
   - `registerSw`: returns `ready`, `unavailable`, or `reloading`. Registration or initialization failure lets boot
     continue without the worker. A non-2xx `/sw/init` reloads once per tab, guarded by the
     `risu.serviceWorker.initReload` session marker; an existing marker or unavailable session storage skips the reload,
     and a successful init clears the marker. Failures retain the existing service-worker diagnostics; a reload also
     records the sync event and flushes diagnostics.
-- `src/ts/safeBoot.ts`: safe boot, plugins or custom CSS and GUI HTML off for this page load (Flows, Safe boot).
-  `createSafeBoot(deps)` is the controller with its effects injected (the query, `localStorage`, the clock, the timer,
-  `SafeModeStore`, the notice); the module's own instance does nothing until `beginSafeBoot()`. Exports:
-  `parseSafeFlag`, `beginSafeBoot`, `safeBootOff(category)` (read by `plugins.svelte.ts` and `PluginSettings.svelte`),
-  `markSafeBootContentStage`, `latchSafeBootFailure`, `startSafeBootSettleWindow`, `bootErrorWithSafeBootHint`,
-  `safeBootUrl`; `SAFE_BOOT_KEY`, `SAFE_BOOT_THRESHOLD` (2), `SAFE_BOOT_SETTLE_MS` (10 s).
-- `src/ts/stores.svelte.ts`: all global UI stores (see State). `PlaygroundStore` is re-exported from
+- `src/ts/safeBoot.ts`: safe boot, plugins or custom CSS and GUI HTML off for this page load ([Safe boot](#safe-boot)).
+  - `createSafeBoot(deps)` is the controller with its effects injected (the query, `localStorage`, the clock, the timer,
+    `SafeModeStore`, the notice); the module's own instance does nothing until `beginSafeBoot()`.
+  - Exports: `parseSafeFlag`, `beginSafeBoot`, `safeBootOff(category)` (read by `plugins.svelte.ts` and
+    `PluginSettings.svelte`), `markSafeBootContentStage`, `latchSafeBootFailure`, `startSafeBootSettleWindow`,
+    `bootErrorWithSafeBootHint`, `safeBootUrl`; `SAFE_BOOT_KEY`, `SAFE_BOOT_THRESHOLD` (2), `SAFE_BOOT_SETTLE_MS` (10
+    s).
+
+### Stores and platform
+
+- `src/ts/stores.svelte.ts`: all global UI stores ([State](#state)). `PlaygroundStore` is re-exported from
   `src/ts/storage/selection.svelte.ts`, so chat status can read the same writable without starting the UI stores' module
   effects.
 - `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel`
@@ -80,12 +91,17 @@
   stream polyfills and the mobile drag/drop polyfill.
 - `src/vite-env.d.ts`: ambient declarations for the globals `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
 - `src/types.d.ts`: the `DeepPartial<T>` utility type only.
+- `src/ts/mutex.ts` `Mutex`: FIFO lock. Nothing in production imports it. `runExclusive` must keep its `finally`
+  release.
+
+### Hotkeys and observers
+
 - `src/ts/hotkey.ts`:
   - `initHotkey`: keydown dispatch switch.
   - `hotkeyMatches`: reads the hotkey only (a missing modifier flag is "not held"); it never writes the stored list.
   - `enabledHotkeys` (the dispatch) and `activeHotkeys` (`HotkeySettings.svelte`): the stored hotkeys without
     `scrollToActiveChar` while `enableScrollToActiveChar` is off; `activeHotkeys` also hides `quickSettings`.
-  - `quickSettings` (Ctrl+Q, still a default): the quick settings panel is removed, so it only shows
+  - `quickSettings` (Ctrl+Q, still a default): there is no quick settings panel, so it only shows
     `language.quickSettingsRemoved` (`alertNormal`) and keeps the key from the browser.
   - Ctrl+1..9 pick the prompt preset through `pickBinding` ([chat bindings](persistence.md)): the open chat's binding,
     else the tab's selection at home; nothing while a picker list or the binding dialog is open.
@@ -105,71 +121,79 @@
     (touch grants activation only on release). A source or media error skips only that marker, so another marker can
     still play; it is not retried on gestures, only after the marker has been missing from the DOM for more than 1 s and
     appears again.
-- `src/ts/mutex.ts` `Mutex`: FIFO lock. Its users were the browser scripting engines, removed when scripting moved to
-  the server, so nothing in production imports it now. `runExclusive` must keep its `finally` release.
-- `src/lib/UI/MainMenu.svelte`: home screen. Pinned chats come first (shared `SideBars/pinnedChats.ts` collector over
-  summaries; six cards until expanded, with an empty state); cards call `globalApi.openPinnedChat`, selecting the target
-  chat before the character and opening it. Pinned cards show the same per-chat generating, recovery, or unseen badge as
-  the sidebar rail, anchored over the icon with the status in the accessible name and hover title. Recent characters
-  (`collectHomeRecentCharacters` in `src/lib/UI/mainMenuProjection.ts`: by `characterLastChattedAt` (the chats'
-  last-message times, falling back to the frozen `lastInteraction`), newest first, without the trash and `§playground`;
-  a card calls `changeChar`, "View all" sets `gridOpenStore`), and an Explore card that switches to `RealmMain` via
-  `OpenRealmStore` (hidden by `settings.ui.hideRealm`). It fetches nothing from Realm itself.
+
+### Home screen
+
+- `src/lib/UI/MainMenu.svelte`: home screen. It fetches nothing from Realm itself.
+  - Pinned chats come first (shared `SideBars/pinnedChats.ts` collector over summaries; six cards until expanded, with
+    an empty state). Cards call `globalApi.openPinnedChat`, selecting the target chat before the character and opening
+    it.
+  - Pinned cards show the same per-chat generating, recovery, or unseen badge as the sidebar rail, anchored over the
+    icon with the status in the accessible name and hover title.
+  - Recent characters (`collectHomeRecentCharacters` in `src/lib/UI/mainMenuProjection.ts`): by `characterLastChattedAt`
+    (the chats' last-message times, falling back to the frozen `lastInteraction`), newest first, without the trash and
+    `§playground`. A card calls `changeChar`; "View all" sets `gridOpenStore`.
+  - An Explore card switches to `RealmMain` via `OpenRealmStore` (hidden by `settings.ui.hideRealm`).
 - `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
 
 ## Flows
 
-Boot:
+### Boot
 
 1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless
    `__NODE__` was injected, and otherwise loads `boot.ts`.
 2. `boot.ts:boot` starts the diagnostics collector, then `startApp.ts:startApp` mounts `App` before the DB is loaded.
    `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` first calls `beginSafeBoot()` (the `?safe` query, before anything navigates; Safe boot,
-   below), then reads through `loadBootSnapshot`: `readBoot` claims the IndexedDB boot cache, with `readKinds` as
-   fallback. See [cache behavior and fallback rules](resource-sync.md#boot-cache).
-   `seedResources`/`seedChats`/`seedInlays` capture the returned snapshot before installation, and
-   `seedPluginPermissions` puts the boot answer's `pluginPermissions` record (its grants and revision; empty at no
-   revision when absent) into the permission store, so the boot makes no second permissions read, then `loadSelection`,
-   `installBootRecords`, `applyFirstBootDefaults`, awaited `journalRecovery.ts:recoverJournal`, and `registerSw` run.
-   Recovery starts the page journal, adopts orphaned rows, purges expired rows, and classifies this tab's record, chat,
-   and order intent against the server snapshot. It installs safe intent through local writers (characters before their
-   chats and chat orders) and reconciles selection and language before maintenance and chat initialization. Ambiguous
-   current-epoch work becomes recovery drafts with Apply when supported; other-epoch drafts offer Export and Discard
-   only. Its 5 s deadline covers recovery and hand-off; failure records `sync` `journalFailed` (`timeout` or
-   `readFailed`), disables the journal for this page, fences late installation, and closes it with at most a further 3 s
-   drain, then boot continues. The server snapshot remains the save baseline and boot-cache input. Only a `ready` worker
-   enables `setUsingSw`; `unavailable` continues boot with object URLs for assets. On `reloading`, boot returns
-   immediately with the loading screen up, preserving import hashes until navigation. A failed server snapshot read
-   alerts and stops boot; there is no local snapshot fallback.
+3. `bootstrap.ts:loadData` first calls `beginSafeBoot()` (the `?safe` query, before anything navigates;
+   [Safe boot](#safe-boot)), then reads through `loadBootSnapshot`: `readBoot` claims the IndexedDB boot cache, with
+   `readKinds` as fallback. See [cache behavior and fallback rules](resource-sync.md#boot-cache). A failed server
+   snapshot read alerts and stops boot; there is no local snapshot fallback.
+   - `seedResources`/`seedChats`/`seedInlays` capture the returned snapshot before installation, and
+     `seedPluginPermissions` puts the boot answer's `pluginPermissions` record (its grants and revision; empty at no
+     revision when absent) into the permission store, so the boot makes no second permissions read.
+   - Then `loadSelection`, `installBootRecords`, `applyFirstBootDefaults`, awaited `journalRecovery.ts:recoverJournal`,
+     and `registerSw` run.
+   - Recovery starts the page journal, adopts orphaned rows, purges expired rows, and classifies this tab's record,
+     chat, and order intent against the server snapshot. It installs safe intent through local writers (characters
+     before their chats and chat orders) and reconciles selection and language before maintenance and chat
+     initialization.
+   - Recovery turns ambiguous current-epoch work into recovery drafts with Apply when supported; other-epoch drafts
+     offer Export and Discard only.
+   - Recovery's 5 s deadline covers recovery and hand-off; failure records `sync` `journalFailed` (`timeout` or
+     `readFailed`), disables the journal for this page, fences late installation, and closes it with at most a further 3
+     s drain, then boot continues. The server snapshot remains the save baseline and boot-cache input.
+   - Only a `ready` worker enables `setUsingSw`; `unavailable` continues boot with object URLs for assets. On
+     `reloading`, boot returns immediately with the loading screen up, preserving import hashes until navigation.
 4. Common tail of `loadData`:
    1. `maintainCharacters` (the trash pruning through `removeCharacters`, then `checkCharOrderAtBoot` against the
-      complete inventory, before saving and the event feed start), and `initializeChats`.
+      complete inventory to drop dangling order ids, before saving and the event feed start), and `initializeChats`.
    2. `markSafeBootContentStage()` (user content runs from here on: the attempt is counted, and a safe boot shows its
       notice), then presentation setup: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`,
       `updateHeightMode`, `updateErrorHandling`, `updateGuisize`.
    3. `startResourceSync()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches
       whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`), and
       after another writer's `characterOrder` it queues the add-only
-      [order repair](persistence.md#character-order-repair) (`queueRemoteCharOrderRepair`). Then `characterURLImport`
-      (not awaited): after the start, so a link's or share's module import waits for its save's acknowledgement
-      (`addImportedModule`, [characters](characters-modules.md)); before the router, which writes URLs without a query
-      or hash.
+      [order repair](persistence.md#character-order-repair) (`queueRemoteCharOrderRepair`).
+      - Then `characterURLImport` (not awaited): after the start, so a link's or share's module import waits for its
+        save's acknowledgement (`addImportedModule`, [characters](characters-modules.md)); before the router, which
+        writes URLs without a query or hash.
    4. `importBrowserLocalData` (moves old browser-only data to the server; its legacy permission migration reads the
       grants again after its merge), install remote-record owners, start the event feed (the first `hello`'s reconcile
       reads the grants again when another writer changed them after the boot read), then `loadPluginsForBoot` (nothing
-      while safe boot turned plugins off). Plugins load after normalization and ID assignment. A rejected plugin load is
-      logged and fails the safe-boot attempt; the boot goes on.
+      while safe boot turned plugins off).
+      - Plugins load after normalization and ID assignment. A rejected plugin load is logged and fails the safe-boot
+        attempt; the boot goes on.
    5. `loadedStore.set(true)`, `startSafeBootSettleWindow` (with the startup promises captured inside this boot's
       serialized plugin load), and `startRouter()`: the URL picks the screen, so a reload keeps it, the selected
-      character included (URL routes, below).
+      character included ([URL routes](#url-routes)).
    6. Push notifications, chat visibility/status tracking, resuming this tab's server jobs, DOM observers,
       `registerModelDynamic`, `moduleUpdate`, and `cleanLegacyAccountData`. There is no boot-time asset cleanup:
       orphaned `assets/*` files (including inlay blobs) are never purged automatically.
 
-Safe boot (`safeBoot.ts`). A plugin with main-document access or a broken custom CSS or GUI HTML can make every boot
-unusable; safe boot turns them off for one page load, client only: nothing is written to the server and no persisted
-field changes.
+### Safe boot
+
+`safeBoot.ts`. A plugin with main-document access or a broken custom CSS or GUI HTML can make every boot unusable; safe
+boot turns them off for one page load, client only: nothing is written to the server and no persisted field changes.
 
 - Categories: `plugins` and `css` (custom CSS and GUI HTML). `?safe` and `?safe=all` mean both; `?safe=plugins`,
   `?safe=css`, or a comma list (`?safe=plugins,css`) pick; unknown names are ignored. The query is read once, by
@@ -181,10 +205,10 @@ field changes.
   earlier (an unreachable server, the service worker's reload) does not count.
 - Failure latch: a rejected boot plugin load, the `loadData` catch, or a plugin this boot started whose script threw or
   did not run (`SandboxHost.startup` is `failed`, [plugins](plugins-mcp.md)) fails the attempt; nothing clears it in
-  this page load. A guest unloaded before it reported (a toggle, a reload) follows its replacement after the
-  `pluginReload` chain finishes, repeatedly until it reports or the settle window ends. No replacement counts as started
-  only when that name is no longer an enabled API 3.0 plugin; otherwise it fails. Reloads of guests that already
-  reported are not judged.
+  this page load.
+- A guest unloaded before it reported (a toggle, a reload) follows its replacement after the `pluginReload` chain
+  finishes, repeatedly until it reports or the settle window ends. No replacement counts as started only when that name
+  is no longer an enabled API 3.0 plugin; otherwise it fails. Reloads of guests that already reported are not judged.
 - Settled: `SAFE_BOOT_SETTLE_MS` (10 s) after `loadedStore` turned true, with no failure latched and every plugin this
   boot started reported as started (a guest still silent then fails the attempt). The settled boot removes the record,
   but only the one it wrote itself (compared by value), so a newer attempt of another tab stays counted.
@@ -206,7 +230,10 @@ field changes.
 - Not covered: modules, global regex, and Lua run on the server per job; turning them off would need a flag in the job
   request.
 
-Screen selection. `App.svelte` checks these in order:
+### Screen selection
+
+This is `App.svelte`'s render order, checked top down. A new screen or overlay follows
+[Add a screen or modal](#add-a-screen-or-modal).
 
 1. April Fools branch.
 2. Loading.
@@ -222,8 +249,11 @@ Inside `DefaultChatScreen.svelte`:
   name and an "Open most recent chat" button for its selected chat).
 - Otherwise the chat.
 
-URL routes (`src/ts/router/`). The stores above stay the state; the router keeps the URL and the history in sync with
-them in both directions. Overlays, modals, the side panel, and the sidebar's open state have no route.
+### URL routes
+
+The files are in [Router](#router); a new route follows [Add a screen or modal](#add-a-screen-or-modal). The stores stay
+the state; the router keeps the URL and the history in sync with them in both directions. Overlays, modals, the side
+panel, and the sidebar's open state have no route.
 
 - Base routes (a screen of its own): `/` home, `/realm`, `/chat/:chaId` (the closed chat), `/chat/:chaId/:chatId` (the
   open chat), `/playground`, `/playground/:tool`, `/playground/chat/:chatId` (the `§playground` character,
@@ -258,22 +288,38 @@ them in both directions. Overlays, modals, the side panel, and the sidebar's ope
   `click`), because Chrome's back button skips entries pushed without one.
 - Store corrections that keep the route run in their own effect: the playground value 2 with nothing selected becomes 1,
   the settings list on a wide screen becomes the model page, open settings closes the grid.
-- Escape closes the topmost layer only: an alert, else the prompt comparison (`PromptDiffModal`, a capture listener),
-  else a picker list (persona, model preset, prompt preset), the Checkpoints dialog, or the chat binding dialog
-  (`src/ts/gui/dialogLayers.ts` `topBindingLayer`, handled in `hotkey.ts`; also from a focused text field), else the
-  message search panel (`MessageSearch.svelte`) or the bookmark list (`BookmarkList.svelte`), each a capture listener
-  that yields to those layers, else settings, else the grid. A checkpoint load blocks other hotkeys until its save,
-  request, and refresh finish.
-- Alert dialogs and keys: a newly shown dialog of `AlertComp`'s main branch (not the `wait`, `wait2`, or `progress`
-  statuses) takes the focus, the panel itself (`tabindex="-1"`, so a stray Space clicks no button) or an `input`
-  dialog's own field, and returns it to the element it took it from once no dialog is shown or queued (the saved element
-  lives at module scope, since `AlertComp` unmounts in the gap between dialogs). So Enter and Escape reach `hotkey.ts`
-  even when the dialog appeared over the composer. The dialog key gate (`createDialogKeyGate`) decides whether a stroke
-  may answer: Enter answers `ask`/`normal`/`error` with "yes" and an `input` dialog with its field's value, a new Enter
-  on a dialog button is left to that button's click, and Escape answers "". While a dialog is shown or queued, Escape
-  stops at the document (window listeners of panels underneath never see it) and plain-key hotkeys (Space's
-  `focusInput`) do not run; settings close with an Escape only when no dialog remains after it, so a rejected Escape
-  leaves the dialog and settings open, while one that answers the last dialog closes both.
+
+### Escape order
+
+Escape closes the topmost layer only, in this order:
+
+1. An alert ([Alert dialog keys](#alert-dialog-keys) has where Escape stops while a dialog is shown or queued).
+2. The prompt comparison (`PromptDiffModal`, a capture listener).
+3. A picker list (persona, model preset, prompt preset), the Checkpoints dialog, or the chat binding dialog
+   (`src/ts/gui/dialogLayers.ts` `topBindingLayer`, handled in `hotkey.ts`; also from a focused text field).
+4. The message search panel (`MessageSearch.svelte`) or the bookmark list (`BookmarkList.svelte`), each a capture
+   listener that yields to those layers.
+5. Settings.
+6. The grid.
+
+A checkpoint load blocks other hotkeys until its save, request, and refresh finish.
+
+### Alert dialog keys
+
+Escape's place among the other layers is in [Escape order](#escape-order).
+
+- A newly shown dialog of `AlertComp`'s main branch (not the `wait`, `wait2`, or `progress` statuses) takes the focus:
+  the panel itself (`tabindex="-1"`, so a stray Space clicks no button) or an `input` dialog's own field.
+- It returns the focus to the element it took it from once no dialog is shown or queued (the saved element lives at
+  module scope, since `AlertComp` unmounts in the gap between dialogs). So Enter and Escape reach `hotkey.ts` even when
+  the dialog appeared over the composer.
+- The dialog key gate (`createDialogKeyGate`) decides whether a stroke may answer: Enter answers `ask`/`normal`/`error`
+  with "yes" and an `input` dialog with its field's value, a new Enter on a dialog button is left to that button's
+  click, and Escape answers "".
+- While a dialog is shown or queued, Escape stops at the document (window listeners of panels underneath never see it)
+  and plain-key hotkeys (Space's `focusInput`) do not run.
+- Settings close with an Escape only when no dialog remains after it, so a rejected Escape leaves the dialog and
+  settings open, while one that answers the last dialog closes both.
 
 ## State
 
@@ -286,11 +332,12 @@ All of these live in `src/ts/stores.svelte.ts`.
     `selectedCharacter()`; `selectedIndex()` is its index in the list (a removed selected character selects home).
   - Whether its chat is open: `selection.chatOpen` (per tab, never stored), set with `setChatOpen`. Selecting another
     character (every entry point: the sidebar, the grid, the home cards, the hotkeys, imports) closes it, so a character
-    starts on its closed-chat screen; `changeChatTo` (the closed-chat button, the chat lists, a new chat, a JSONL chat
-    import) opens it, `openPinnedChat` opens a pinned chat across characters, and so does a bookmark jump; a JSON or
-    HTML chat import only adds to the list. The chat module's `selectChat` only selects. Auto Mode stops at the end of
-    its current send when the chat closes. The selected chat is still selected and loaded while closed, so readers of
-    `selectedChat()` are unaffected; the playground chat ignores the flag.
+    starts on its closed-chat screen.
+  - `changeChatTo` (the closed-chat button, the chat lists, a new chat, a JSONL chat import) opens it, `openPinnedChat`
+    opens a pinned chat across characters, and so does a bookmark jump; a JSON or HTML chat import only adds to the
+    list. The chat module's `selectChat` only selects.
+  - Auto Mode stops at the end of its current send when the chat closes. The selected chat is still selected and loaded
+    while closed, so readers of `selectedChat()` are unaffected; the playground chat ignores the flag.
   - `settingsOpen`, `SettingsMenuIndex` (not reset on close; the router maps it to `/settings/:page`). `settingsOpen`
     and `gridOpenStore` are defined in `src/ts/screenVisibility.ts` and re-exported here, so `chatStatus.svelte.ts`
     reads them without importing this module. `src/ts/pageVisibility.svelte.ts` mirrors `document.visibilityState` into
@@ -305,21 +352,22 @@ All of these live in `src/ts/stores.svelte.ts`.
     transform's applied emotions and its result cache's generation, `cbs-rendering.md`).
   - `ReloadChatPointer`.
 - The message search panel's open state and scope (`messageSearchPanel`, `openMessageSearch`) and the pending jump to a
-  message live in `src/ts/messageSearch.svelte.ts`, not here ([UI](ui-theming.md) `MessageSearch.svelte`): a jump is
-  dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is another one at
-  any flush (so coming back never runs it again) or when its chat closes. Selecting the same chat again keeps it:
-  closing the catalog over that chat makes the router re-apply its URL with `selectChat`, which bumps
-  `chatSelectionVersion` without a move. A move away and back inside one flush is not seen.
+  message live in `src/ts/messageSearch.svelte.ts`, not here ([UI](ui-theming.md) `MessageSearch.svelte`).
+  - A jump is dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is
+    another one at any flush (so coming back never runs it again) or when its chat closes.
+  - Selecting the same chat again keeps a jump: closing the catalog over that chat makes the router re-apply its URL
+    with `selectChat`, which bumps `chatSelectionVersion` without a move. A move away and back inside one flush is not
+    seen.
 - The Checkpoints dialog and its busy state live in `src/ts/checkpoints/chatCheckpoints.svelte.ts`, not here; see
-  [UI](ui-theming.md). Its load blocks global hotkeys until the save, request, and refresh finish.
+  [UI](ui-theming.md).
 - Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay),
   `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, the
   picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen
   shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
-  `bookmarkListOpen` and `hypaV3ModalOpen` (with `settingsOpen` and `gridOpenStore`) are defined in
-  `src/ts/screenVisibility.ts`, and `popUpEditorStore` with its session helpers in
-  `src/ts/popupEditorSession.svelte.ts`, and re-exported here: `chatStatus.svelte.ts` reads them to tell whether the
-  transcript is shown without importing this module.
+  - `bookmarkListOpen` and `hypaV3ModalOpen` (with `settingsOpen` and `gridOpenStore`) are defined in
+    `src/ts/screenVisibility.ts`, and `popUpEditorStore` with its session helpers in
+    `src/ts/popupEditorSession.svelte.ts`, and re-exported here: `chatStatus.svelte.ts` reads them to tell whether the
+    transcript is shown without importing this module.
 - Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`,
   `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and
   `ChatPanelDef`.
@@ -364,81 +412,71 @@ All of these live in `src/ts/stores.svelte.ts`.
 
 ## Recipes
 
-- Add a top-level screen or modal:
-  1. Add a store in `stores.svelte.ts`.
-  2. Add its branch or overlay in `App.svelte`, respecting the branch order.
-  3. Set the store from the caller.
-  4. A screen of its own gets a route (a modal or overlay does not): a `Route` kind with `formatRoute`/`parseRoute` in
-     `router/routes.ts`; a new first path segment in `CLIENT_ROUTE_SEGMENTS` (`shared/routes.ts`) so the server serves
-     the client there; in `router.svelte.ts` the store mapping in `baseRouteOfState` or `layerRouteOfState` and its
-     application in `applyBase` or `applyLayer`; tests in `routes.test.ts` and `router.test.ts`. A new settings page or
-     playground tool needs only its slug in the table.
-  5. Verify with `pnpm check`, a fresh load, and a reload on the new screen.
-- Change startup:
-  - Server gate: `main.ts`.
-  - Ordering: `boot.ts`.
-  - Data and platform sequencing: `bootstrap.ts:loadData`.
-  - Keep the `loadedStore` transition intact.
-- Add a platform-specific behavior:
-  1. Add or adjust the flag in `platform.ts`.
-  2. Update every consumer.
-  3. There is no browser-only runtime to keep working; do not reintroduce `isNodeServer` branches past `main.ts`.
-- Add a hotkey: `shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`; the server `hotkeys` normalizer
-  (`server/src/data/normalize/collections.ts`) merges a new built-in hotkey into stored lists by `action`. A hotkey
-  gated by a setting is filtered by the readers (`enabledHotkeys`, `activeHotkeys`), not removed from the list.
+### Add a screen or modal
+
+1. Add a store in `stores.svelte.ts`.
+2. Add its branch or overlay in `App.svelte`, respecting the branch order.
+3. Set the store from the caller.
+4. A screen of its own gets a route (a modal or overlay does not): a `Route` kind with `formatRoute`/`parseRoute` in
+   `router/routes.ts`; a new first path segment in `CLIENT_ROUTE_SEGMENTS` (`shared/routes.ts`) so the server serves the
+   client there; in `router.svelte.ts` the store mapping in `baseRouteOfState` or `layerRouteOfState` and its
+   application in `applyBase` or `applyLayer`; tests in `routes.test.ts` and `router.test.ts`. A new settings page or
+   playground tool needs only its slug in the table.
+5. Verify with `pnpm check`, a fresh load, and a reload on the new screen.
+
+### Change startup
+
+- Server gate: `main.ts`.
+- Ordering: `boot.ts`.
+- Data and platform sequencing: `bootstrap.ts:loadData`.
+- Keep the `loadedStore` transition intact.
+
+### Add platform behavior
+
+1. Add or adjust the flag in `platform.ts`.
+2. Update every consumer.
+3. There is no browser-only runtime to keep working; do not reintroduce `isNodeServer` branches past `main.ts`.
+
+### Add a hotkey
+
+`shared/hotkeys.ts` (`defaultHotkeys`), `hotkey.ts:initHotkey`; the server `hotkeys` normalizer
+(`server/src/data/normalize/collections.ts`) merges a new built-in hotkey into stored lists by `action`. A hotkey gated
+by a setting is filtered by the readers (`enabledHotkeys`, `activeHotkeys`), not removed from the list.
 
 ## Tests
 
-- `src/boot.test.ts`: the entry's order over stubbed modules: importing `boot.ts` evaluates the collector only, and
-  `boot()` starts it before `startApp.ts` is loaded and started.
-- `src/ts/bootstrap.serviceWorker.test.ts`: `loadData` over a store-backed server with a fake `navigator.serviceWorker`,
-  `fetch`, `location.reload`, and `sessionStorage`: a rejected registration or `/sw/init` fetch records its diagnostic
-  and the boot completes (`loadedStore` true, `characterURLImport` and `startRouter` run once) with `getFileSrc`
-  answering an object URL and never fetching `/sw/check`; a non-2xx `/sw/init` reloads once with the marker set and the
-  diagnostics flushed, and nothing after the worker step runs; the marker present, or a throwing `sessionStorage`, boots
-  without the worker and without a reload; a 2xx clears the marker and `getFileSrc` answers `/sw/img/<hex>`; a missing
-  `navigator.serviceWorker` keeps the `unsupported` path.
-- The bootstrap suites share the complete typed service defaults in `src/ts/tests/bootMocks.ts`; each keeps its hoisted
-  mock registrations and scenario overrides. Handwritten `stores.svelte.ts` doubles use `src/ts/tests/storesMock.ts`,
-  which omits DOM subscriptions and module effects.
-- Safe boot: `src/ts/safeBoot.test.ts` covers the controller's query parsing, attempt counter, failure latch, and settle
-  window; `src/ts/bootstrap.safeBoot.test.ts` covers those behaviors through `loadData`, including the content-stage
-  order and plugin-start outcomes.
-- Boot cache is tested in `src/ts/storage/tests/bootCache.test.ts` and `src/ts/storage/tests/bootCacheServer.test.ts`;
-  see [ownership and cache behavior](resource-sync.md#boot-cache).
-- `src/ts/hotkey.test.ts`: Ctrl+1–9 preset routing, suppression by picker/dialog layers, Escape layer order, Ctrl+Q
-  (`quickSettings`: the removal notice, the default prevented; `activeHotkeys` hides it from the table),
-  `previewRequest` (the `previewChat` body shown; a refused preview shows nothing and clears only its own wait; a busy
-  chat refused before any wait), and the dialog keys (a rejected Escape keeps the dialog and settings, Escape stops at
-  the document while a dialog is shown or queued, no plain-key hotkey behind a dialog, a new Enter on a dialog button
-  left to its click), and IME composition (a composing stroke, or Safari's `keyCode` 229 commit key, runs no hotkey).
-  `src/lib/Others/AlertComp.test.ts`: a dialog takes the focus from the composer (its panel, or an `input` dialog's
-  field), Enter and Escape then answer it, and the focus returns once no dialog remains (across the gap between two,
-  never over focus moved elsewhere); the statuses take no focus. Screen precedence, platform detection, the other hotkey
-  actions, and `Mutex` lack focused unit coverage.
-- `src/ts/router/routes.test.ts`: the route table (every slug both ways, encoding, unknown input).
-  `src/ts/router/router.test.ts`: the router against a fake `HistoryPort` with the real store graph and Svelte effects:
-  boot with and without state, every `popstate` applied, the history steps, backs only to a listed entry and never
-  without the Navigation API, no retry of a back that did nothing, the closed chat (an open pushes, a switch while open
-  replaces, Go Back goes back, a selection closes, the playground ignores it), the layers (depths, close by back or
-  replace, layer switches, base changes and `rebased`, the mobile list), the root insertion and its events, and
-  `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the client-route
-  fallback.
-- Not covered by unit tests: Chrome's skipping of entries pushed without a user activation, and real Navigation API
-  behavior (checked by hand).
-- `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers: BGM marker
-  parsing, selection, grace stop, failure and autoplay retry policy, and the delegated code-block menu. Mutation records
-  are delivered with `takeRecords()` because happy-dom's own timer is not faked. `src/ts/observer.markers.test.ts`: the
-  BGM sync's document-wide `[risu-ctrl]` scan does not run for text or plain HTML mutations and runs once for an added
-  or removed marker element (nested or not) and for a `risu-ctrl` attribute change, with the playback that follows.
-- `src/ts/keepAliveAudio.test.ts`: the keep-alive controller over stubbed `Audio`, `URL.createObjectURL`, and
-  `navigator.mediaSession`: one looping element at full volume with the metadata, a repeated start plays nothing new,
-  the generated WAV (format, 10 s, about -57 dBFS RMS, 20 Hz), the same element again after an outside `pause` or a
-  rejected `play()` (no unhandled rejection), and `stop()` (paused, metadata cleared, nothing before a start). Whether
-  Chrome shows the tab as playing audio is checked by hand.
-- `src/lib/UI/mainMenuProjection.test.ts`: the home screen's recent characters (order, tie by name, limit, the trash,
-  `§playground`, and no stamp left out) and the relative-time text.
+Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). This area has no `slow` tests.
+
+- Boot and safe boot: `pnpm --silent test:agent src/boot.test.ts src/ts/bootstrap.*.test.ts src/ts/safeBoot.test.ts`.
+- Router: `pnpm --silent test:agent src/ts/router`.
+- Hotkeys and dialogs: `pnpm --silent test:agent src/ts/hotkey*.test.ts src/lib/Others/AlertComp.test.ts`.
+- Observers and home:
+  `pnpm --silent test:agent src/ts/observer*.test.ts src/ts/keepAliveAudio.test.ts src/lib/UI/mainMenuProjection.test.ts`.
+- `e2e`: `e2e/openChat.spec.ts` drives the chat routes in a browser; `e2e/0-idleReload.spec.ts` the first boot's
+  defaults.
+- `src/ts/tests/bootMocks.ts`: the complete typed service defaults the bootstrap suites share; each suite keeps its
+  hoisted mock registrations and scenario overrides.
+- `src/ts/tests/storesMock.ts`: the base of handwritten `stores.svelte.ts` doubles; it omits DOM subscriptions and
+  module effects.
 - Some tests mock `stores.svelte` and `platform` (the parser tests). They exercise consumers, not these modules.
+- `src/boot.test.ts` runs the entry's order over stubbed modules.
+- `src/ts/bootstrap.serviceWorker.test.ts` runs `loadData` over a store-backed server with a fake
+  `navigator.serviceWorker`, `fetch`, `location.reload`, and `sessionStorage`.
+- `src/ts/bootstrap.safeBoot.test.ts` runs safe boot through the real `loadData`; `src/ts/safeBoot.test.ts` runs the
+  controller.
+- Boot cache: `src/ts/storage/tests/bootCache.test.ts` and `src/ts/storage/tests/bootCacheServer.test.ts`; see
+  [ownership and cache behavior](resource-sync.md#boot-cache).
+- `src/ts/router/router.test.ts` runs the router against a fake `HistoryPort` with the real store graph and Svelte
+  effects, and `browserHistory` against happy-dom and a fake Navigation API. `server/src/tests/app.test.ts` covers the
+  client-route fallback.
+- `src/ts/observer.test.ts` covers `startObserveDom` under happy-dom with an `Audio` stub and fake timers. Mutation
+  records are delivered with `takeRecords()` because happy-dom's own timer is not faked.
+- `src/ts/keepAliveAudio.test.ts` runs the controller over stubbed `Audio`, `URL.createObjectURL`, and
+  `navigator.mediaSession`.
+- Not tested: screen precedence, platform detection, the other hotkey actions, and `Mutex` (no focused unit tests).
+- Not tested: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked
+  by hand).
+- Not tested: whether Chrome shows the tab as playing audio (checked by hand).
 
 ## Known Hazards
 
