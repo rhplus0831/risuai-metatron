@@ -512,7 +512,7 @@ The answer to the first complaint. Everything below reads stored data; nothing i
   settings page; the `supaMemory` toggle gate, the trim question, `supaMemoryOnCount`, and the memory card stay. One
   owner per chat: turning it on for a chat that has HypaV3 data offers migration (D12), never both.
 - Plugins that read `hypaV3Data` get a projection: each active event as a summary with `chatMemos` = its source ids,
-  `isImportant` for events with grade or pins, metrics from the last manifest. Writes to that projection from plugins
+  `isImportant` for pinned events and events of grade 6 or above (`importantEventGrade`, code's constant), metrics from the last manifest. Writes to that projection from plugins
   are refused with a notice.
 - The upstream export writes the same projection.
 
@@ -674,7 +674,8 @@ only); `shared/structuredMemory.ts`; `memoryStore.ts`.
 - Plain-mode slot assembly through the task host's ChatML parser and CBS, with the language setting. Temperature 0;
   output validated and clamped; no page candidates yet (participants only name existing pages).
 - Code checks quotes against the window's messages; an unverified item is listed, never dropped. Deduplication, caps,
-  threads closed by id only, grades from axes.
+  threads closed by id only. A grade is the sum of the three axes (0–9); an event without axes has none.
+  `projectHypaV3Data` takes the grade threshold of D11, in `shared/structuredMemory.ts`, and the guide's Limitations entry on it goes.
 - `memory_runs` keeps the exact input snapshot, tokens, and result. A failed run retries the same window from that
   snapshot; after 5 consecutive failures auto-recording pauses; output after the deadline is discarded; event vectors are
   warmed as `warmHypaV3Vectors` does, into the existing cache.
@@ -918,7 +919,8 @@ Answered by the owner on 2026-11-01:
   automatically" together with the reason (the slot or trigger that needs the tab), so the user knows why and can press
   "record now" (D3). HypaV3 keeps its blocking-in-job path.
 - **Q7. Grades and gauges.** As recommended: scored axes and a grade on events and knowledge items; emotion gauges out
-  of the first version (D3, D10).
+  of the first version (D3, D10). The projection's `isImportant` threshold is grade 6 (owner, 2026-11-01; D11); Q8's
+  highlighting threshold is separate.
 - **Q8. Review mode.** No change ever waits for approval: writer output is applied and used at once, every change is
   in the receipt and the page history, and the user reverts from either. The owner's three-mode idea (as Claude Code's
   permission modes) is kept as a **highlighting** setting, per chat with a global default: highlight nothing /
