@@ -358,7 +358,8 @@ different guides; the links into persistence.md's successors are retargeted by S
   items over 600 characters, 0 table rows over 600, 2 segments above parenthesis depth 2, 0
   unresolved links. The report counts nested and numbered items, measures leaves in bytes, and
   skips code spans and link destinations, so it differs from the survey in **Current state**.
-  After: filled in by Slice 8.
+  After, at Slice 7: 23 guides, 864,053 bytes, 428 `###` headings, 0 guides over 40,000 bytes, largest leaf 6,950 bytes,
+  0 list items and 0 table rows over 600 characters, 0 segments above parenthesis depth 2, 0 unresolved links.
 - **Reader acceptance**, run for every split or trimmed guide over 30,000 bytes: for three tasks
   the guide's `Choose By Task` row names, a fresh agent given only `STRUCTURE.md` and the guide's
   heading list picks one heading, reads that subsection (under 8,000 bytes), and names the files
