@@ -389,6 +389,7 @@ export const ROUTE_TEMPLATES = [
     "/api/memory/structured/:characterId/:chatId/runs",
     "/api/memory/structured/:characterId/:chatId/records/:kind/:id",
     "/api/memory/structured/:characterId/:chatId/edits",
+    "/api/memory/structured/:characterId/:chatId/inherit",
     "/api/memory/structured/:characterId/:chatId",
     "/api/push/key",
     "/api/push/subscription",

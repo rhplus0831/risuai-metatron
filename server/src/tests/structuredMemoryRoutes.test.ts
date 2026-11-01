@@ -17,6 +17,8 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
+import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
+import { memoryKinds, writeMemory } from "./memoryFixtures.ts";
 import { createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -97,6 +99,162 @@ async function server(options: TestServerOptions = {}) {
         );
     return { ...s, store, write };
 }
+
+async function inheritanceServer(branch: boolean) {
+    const s = await server();
+    const messages: Message[] = [
+        { chatId: "early", role: "char", data: "The gate is closed." },
+        { chatId: "late", role: "char", data: "The gate opens." },
+    ];
+    s.store.applyChanges({
+        chats: [
+            { id: "other", message: messages },
+            { id: chatId, message: branch ? messages.slice(0, 1) : messages },
+        ].map(({ id, message }) => ({
+            characterId,
+            chatId: id,
+            baseRevision: s.store.chatRevision(characterId, id),
+            ops: [{ op: "append" as const, anchor: { end: true as const }, messages: message }],
+        })),
+    });
+    const events = messages.map((m, index) => ({
+        ...event(m.chatId!),
+        sources: [{ messageId: m.chatId!, index, hash: messageSourceHash(m) }],
+    }));
+    const changes: PageChanges = new Map();
+    let p: MemoryPage = { ...page("gate"), sections: [] };
+    events.forEach((e, index) => {
+        changeSection(
+            changes,
+            p,
+            { heading: "Facts", body: messages[index].data, kind: "change" },
+            {
+                eventId: e.id,
+                sources: e.sources,
+                at: index + 1,
+                newId: () => `history-${index}`,
+            },
+        );
+        p = changes.get(p.id)!.page;
+    });
+    // The source's event insert revision differs from the destination's first write.
+    writeMemory(s.store, characterId, "other", { pages: [p] });
+    writeMemory(s.store, characterId, "other", {
+        pages: [p],
+        events,
+        threads: [{ id: "promise", title: "Return", who: ["gate"], state: "open", openedBy: "early" }],
+        runs: [run("source-log", "recorded")],
+    });
+    return { ...s, events, p };
+}
+
+function memorySnapshot(s: Awaited<ReturnType<typeof server>>, id: string) {
+    const contents = s.store.memory.readContents(characterId, id)!;
+    return {
+        contents,
+        records: Object.fromEntries(
+            memoryKinds.map((kind) => [
+                kind,
+                contents[kind].map(
+                    ({ id: recordId }) => s.store.memory.readRecord(characterId, id, kind, recordId)!.data,
+                ),
+            ]),
+        ),
+    };
+}
+
+it.each([false, true])(
+    "inherits server records for branch=%s once, with no source runs or later branch body",
+    async (branch) => {
+        const s = await inheritanceServer(branch);
+        const sourceBefore = memorySnapshot(s, "other");
+        const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+        const inherited = await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+        expect(inherited).toEqual({ revision: expect.any(String), inherited: true });
+        expect(inherited.revision).not.toBe(initial);
+        const expectedPage = branch
+            ? {
+                  ...s.p,
+                  sections: [
+                      {
+                          heading: "Facts",
+                          body: "The gate is closed.",
+                          provenance: ["early"],
+                          sources: s.events[0].sources,
+                          locked: false,
+                          updatedAt: 2,
+                      },
+                  ],
+                  history: [s.p.history[0]],
+              }
+            : s.p;
+        expect(await answer(await s.request(`${base}/package`))).toEqual({
+            revision: inherited.revision,
+            pages: [expectedPage],
+            events: (branch ? s.events.slice(0, 1) : s.events).map((e) => ({ ...e, createdRevision: 1 })),
+            next: null,
+        });
+        expect(await answer(await s.request(`${base}/records/threads/promise`))).toEqual({
+            revision: inherited.revision,
+            data: { id: "promise", title: "Return", who: ["gate"], state: "open", openedBy: "early" },
+        });
+        expect(await answer(await s.request(`${base}/runs`))).toEqual({
+            revision: inherited.revision,
+            total: 0,
+            runs: [],
+            next: null,
+        });
+        expect(memorySnapshot(s, "other")).toEqual(sourceBefore);
+        const copied = memorySnapshot(s, chatId);
+        writeMemory(s.store, characterId, "other", { pages: [page("new-source-page")] });
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+            revision: inherited.revision,
+            inherited: false,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(copied);
+    },
+);
+
+it.each(memoryKinds)("writes nothing when the destination already holds only a %s row", async (kind) => {
+    const s = await inheritanceServer(true);
+    const records = {
+        pages: [page("existing")],
+        events: [event("existing")],
+        threads: [{ id: "existing", title: "Existing", who: [], state: "paused" as const }],
+        runs: [run("existing")],
+    };
+    s.write({ [kind]: records[kind] });
+    const before = memorySnapshot(s, chatId);
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+        revision: before.contents.revision,
+        inherited: false,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("leaves an empty destination unchanged on an epoch refusal or missing source", async () => {
+    const s = await inheritanceServer(true);
+    const before = memorySnapshot(s, chatId);
+    expect(
+        await answer(
+            await s.request(
+                `${base}/inherit`,
+                {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ sourceChatId: "other" }),
+                },
+                "old-epoch",
+            ),
+            412,
+        ),
+    ).toEqual({ error: "EpochMismatch", epoch: s.epoch });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "missing" }), 404)).toMatchObject({
+        reason: "chatGone",
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
 
 it("lists only this chat's metadata and reads every record kind exactly as stored", async () => {
     const s = await server();
@@ -580,7 +738,7 @@ function bindChat(s: Awaited<ReturnType<typeof server>>, id = chatId) {
     };
 }
 
-it("refuses edits while the real memory task is queued or running and accepts them after cancellation", async () => {
+it("refuses edits and inheritance while the real memory task is queued or running and accepts them after cancellation", async () => {
     // Hold tokenizer file I/O, not a task implementation; fake deadlines cannot race the test.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const s = await server({ memoryTaskOptions: { now: () => 0 } });
@@ -639,6 +797,10 @@ it("refuses edits while the real memory task is queued or running and accepts th
             reason: "fenced",
         });
         expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual(before);
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual(before);
     };
     try {
         tasks.handOff(input);
@@ -655,12 +817,16 @@ it("refuses edits while the real memory task is queued or running and accepts th
         await tasks.drain();
         spy.mockRestore();
     }
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+        revision,
+        inherited: false,
+    });
     expect((await answer(await s.json(`${base}/edits`, { revision, edit }))).data.sections[0].body).toBe(
         "Correction after writer",
     );
 });
 
-it("refuses edits for an admitted job and for its message lock on a different chat", async () => {
+it("refuses edits and inheritance for an admitted job and for its message lock on a different chat", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const entered = deferred<RunningJob>();
     const release = deferred();
@@ -699,8 +865,15 @@ it("refuses edits for an admitted job and for its message lock on a different ch
             reason: "fenced",
         });
         expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: page("p") });
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }), 409)).toMatchObject({
+            reason: "fenced",
+        });
         // A chat slot alone must not fence a sibling chat.
         await answer(await s.json(`${otherPath}/edits`, { revision: otherRevision, edit: { ...edit, locked: false } }));
+        expect(await answer(await s.json(`${otherPath}/inherit`, { sourceChatId: chatId }))).toEqual({
+            revision: otherRevision,
+            inherited: false,
+        });
         job.write(() => ({
             chats: [
                 {
@@ -719,10 +892,17 @@ it("refuses edits for an admitted job and for its message lock on a different ch
             revision: otherRevision,
             data: page("p"),
         });
+        expect(await answer(await s.json(`${otherPath}/inherit`, { sourceChatId: chatId }), 409)).toMatchObject({
+            reason: "fenced",
+        });
     } finally {
         release.resolve();
         await s.context.generationJobs.drain();
     }
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+        revision,
+        inherited: false,
+    });
     for (const [url, token] of [
         [base, revision],
         [otherPath, otherRevision],

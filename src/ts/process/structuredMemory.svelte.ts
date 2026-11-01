@@ -31,6 +31,7 @@ import {
     type StructuredMemoryCoverageRun,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
+    type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryRecordAnswer,
@@ -44,8 +45,9 @@ import { authFetch } from "../storage/serverAuth";
 
 /**
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
- * edits of it (`editStructuredMemory`), and the downloadable package built from the reads: a zip of
- * Markdown with one file per page and one timeline of the events.
+ * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`), and the
+ * downloadable package built from the reads: a zip of Markdown with one file per page and one timeline
+ * of the events.
  *
  * In the package Markdown is display and the metadata lines are the authority. A metadata value is JSON
  * on one line, which is also valid YAML, and `bodyLines` and `summaryLines` count the lines of the text
@@ -70,8 +72,8 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read or an edit did not answer: the chat or record is gone, the database was replaced, its memory
- * moved on, or, for an edit, something that can write it holds the chat.
+ * Why a read, an edit, or an inherit did not answer: the chat or record is gone, the database was
+ * replaced, its memory moved on, or, for a write, something that can write it holds the chat.
  */
 export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced";
 
@@ -391,6 +393,13 @@ function parseEditAnswer(body: AnswerBody): StructuredMemoryEditAnswer | null {
         : null;
 }
 
+function parseInheritAnswer(body: AnswerBody): StructuredMemoryInheritAnswer | null {
+    const { revision, inherited } = body;
+    return typeof revision === "string" && typeof inherited === "boolean"
+        ? (body as StructuredMemoryInheritAnswer)
+        : null;
+}
+
 function parseRunsRound(body: AnswerBody, cursor: number): StructuredMemoryRunsRound | null {
     const { revision, total, runs, next } = body;
     return typeof revision === "string" &&
@@ -434,6 +443,23 @@ export function editStructuredMemory(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ revision, edit }),
+    });
+}
+
+/**
+ * Asks the server to give `ref`, a chat just copied or branched, the records of `sourceChatId`, the
+ * character's chat it came from. The server builds them from what it holds of both chats, so a 404
+ * `chatGone` says the new chat has not reached it, and a repeat answers `inherited: false`. The caller
+ * shows the notice for a refusal.
+ */
+export function inheritStructuredMemory(
+    ref: ChatRef,
+    sourceChatId: string,
+): Promise<StructuredMemoryResult<StructuredMemoryInheritAnswer>> {
+    return readAnswer(`${chatPath(ref)}/inherit`, parseInheritAnswer, editRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceChatId }),
     });
 }
 

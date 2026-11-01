@@ -86,7 +86,11 @@ vi.mock("src/ts/storage/serverAuth", () => ({
 }));
 vi.mock("src/ts/storage/resourceSync.svelte", () => {
     class GenerationBlockedError extends Error {}
-    return { flushResources: async () => ({ discarded: [], refused: [] }), GenerationBlockedError };
+    return {
+        beginMutationScope: () => ({ resource: 0, chat: 0 }),
+        flushResources: async () => ({ discarded: [], refused: [] }),
+        GenerationBlockedError,
+    };
 });
 
 import { language } from "src/lang";
@@ -512,23 +516,41 @@ function answerWith(answer: (body: Record<string, unknown>) => Promise<Response>
 }
 
 describe("branching a pinned chat", () => {
-    it("creates an unpinned branch while preserving the source pin", async () => {
-        const { ref } = boot("pinned-source");
-        setChatMeta(ref, { pinned: true });
-        const ui = render();
-        ui.click(ui.target.querySelector(".button-icon-menu"));
-        await vi.waitFor(() => expect(popupStore.children).not.toBeNull());
-        const popupTarget = document.createElement("div");
-        ui.target.appendChild(popupTarget);
-        mounted.push(mount(PopupList, { target: popupTarget }));
-        flushSync();
-        ui.click(ui.button(language.branch));
-        await vi.waitFor(() => expect(chatList("c")).toHaveLength(2));
-        const branch = chatList("c").find((entry) => entry.id !== ref.chatId)!;
-        const branchedChat = findChat({ chaId: "c", chatId: branch.id })!;
-        expect(branch).not.toHaveProperty("pinned");
-        expect(branchedChat).not.toHaveProperty("pinned");
-        expect(findChat(ref)).toHaveProperty("pinned", true);
+    it("creates an unpinned branch of the surviving messages and requests memory from its source", async () => {
+        vi.useFakeTimers();
+        try {
+            const { ref } = boot("pinned-source");
+            answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+            setChatMeta(ref, { pinned: true });
+            const ui = render();
+            ui.click(ui.target.querySelector(".button-icon-menu"));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(popupStore.children).not.toBeNull();
+            const popupTarget = document.createElement("div");
+            ui.target.appendChild(popupTarget);
+            mounted.push(mount(PopupList, { target: popupTarget }));
+            flushSync();
+            ui.click(ui.button(language.branch));
+            await vi.advanceTimersByTimeAsync(1);
+            expect(chatList("c")).toHaveLength(2);
+            const branch = chatList("c").find((entry) => entry.id !== ref.chatId)!;
+            const branchedChat = findChat({ chaId: "c", chatId: branch.id })!;
+            expect(branch).not.toHaveProperty("pinned");
+            expect(branchedChat).not.toHaveProperty("pinned");
+            expect(findChat(ref)).toHaveProperty("pinned", true);
+            expect(branchedChat.message.filter(({ isComment }) => !isComment)).toEqual([
+                { chatId: "a", role: "char", data: "A" },
+            ]);
+            expect(findChat(ref)?.message.map(({ chatId }) => chatId)).toEqual(["a", "b"]);
+            expect(fetchCalls).toEqual([
+                {
+                    path: `/api/memory/structured/c/${encodeURIComponent(branch.id)}/inherit`,
+                    body: { sourceChatId: ref.chatId },
+                },
+            ]);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 

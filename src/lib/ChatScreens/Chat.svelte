@@ -53,6 +53,7 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { longpress } from "src/ts/gui/longtouch";
     import { getModelInfo } from "src/ts/model/modellist";
+    import { createInheritingChat } from "src/ts/process/chatMemoryInherit.svelte";
     import { runServerButton, runServerJob, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { sayTTS } from "src/ts/process/tts";
     import {
@@ -94,7 +95,6 @@
     import {
         type ChatRef,
         chatSaveVersion,
-        createChat,
         chatOwnerToken,
         chatSelectionVersion,
         currentChatRef,
@@ -1920,7 +1920,7 @@
 
             // Selected by id in its own character (the selection of another character is not changed),
             // unless that character's selection changed while the branch was made.
-            createChat(target.ref.chaId, newChat, {
+            createInheritingChat(target.ref, newChat, {
                 index: 0,
                 select: chatSelectionVersion(target.ref.chaId) === selectedVersion,
             });

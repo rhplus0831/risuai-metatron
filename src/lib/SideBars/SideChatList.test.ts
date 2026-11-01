@@ -79,6 +79,8 @@ import { alertConfirm, alertSelect } from "src/ts/alert";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { applyRawCharacter } from "src/ts/storage/records.svelte";
+import * as resourceSync from "src/ts/storage/resourceSync.svelte";
+import * as serverAuth from "src/ts/storage/serverAuth";
 import {
     chatEntry,
     chatList,
@@ -617,6 +619,46 @@ describe("the sidebar's new chat button", () => {
             bindingReview: true,
         });
         expect(copy.id).not.toBe("j");
+    });
+
+    it("choosing Copy creates the chat and POSTs memory inheritance from its source", async () => {
+        vi.useFakeTimers();
+        const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        const request = vi
+            .spyOn(serverAuth, "authFetch")
+            .mockResolvedValue(Response.json({ revision: "memory-r1", inherited: true }));
+        try {
+            alerts.chatOption = 0;
+            selectChat("c", "k");
+            const side = renderSide("c");
+            side.options("Chat J").click();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(ids("c")).toHaveLength(4);
+            const copy = chatList("c").find((entry) => entry.name === "Chat J (Copy)")!;
+            expect(copy.id).not.toBe("j");
+            expect(findChat({ chaId: "c", chatId: copy.id })?.message).toEqual([
+                { role: "char", data: "hi from j", chatId: "m-j" },
+            ]);
+            expect(
+                request.mock.calls.map(([path, init]) => ({
+                    path,
+                    method: init?.method,
+                    body: JSON.parse(init!.body as string),
+                })),
+            ).toEqual([
+                {
+                    path: `/api/memory/structured/c/${encodeURIComponent(copy.id)}/inherit`,
+                    method: "POST",
+                    body: { sourceChatId: "j" },
+                },
+            ]);
+        } finally {
+            request.mockRestore();
+            save.mockRestore();
+            vi.useRealTimers();
+        }
     });
 });
 

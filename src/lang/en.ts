@@ -2697,6 +2697,10 @@ export const languageEnglish = {
             openedBy: "Opened by",
             closedBy: "Closed by",
         },
+        inherit: {
+            failed: (chat: string) =>
+                `Memory records could not be copied to "${chat}". The chat itself is intact, but its earlier messages are not covered by memory.`,
+        },
         settings: {
             description:
                 "Records the chat's turns as events in the background and builds the memory block from them. A chat starts with a coverage gap until its turns are recorded. Existing HypaV3 summaries are kept but not used.",

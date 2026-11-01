@@ -190,8 +190,8 @@ coupling links.
   `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`.
 - **structured-memory**: `shared/structuredMemory.ts`, `server/src/{data/memoryStore.ts,routes/structuredMemory.ts}`,
-  the rest of `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts` (the receipt and panel
-  parts: **structured-memory-read**).
+  the rest of `server/src/prompt/memory/structured/`, `src/ts/process/chatMemoryInherit.svelte.ts`,
+  `src/ts/process/structuredMemory.svelte.ts` (the receipt and panel parts: **structured-memory-read**).
 - **structured-memory-writer**:
   `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`.
 - **structured-memory-read**: `server/src/prompt/memory/structured/{lanes,retrieve,card,step}.ts`,

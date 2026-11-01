@@ -6,8 +6,9 @@
   the tab's client and Markdown package, and the HypaV3 compatibility projection.
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
   `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](structured-memory-writer.md); the read
-  path's: [the read path guide](structured-memory-read.md)), and `src/ts/process/structuredMemory.svelte.ts` (its
-  receipt and panel parts: [the read path guide](structured-memory-read.md)).
+  path's: [the read path guide](structured-memory-read.md)), `src/ts/process/chatMemoryInherit.svelte.ts`, and
+  `src/ts/process/structuredMemory.svelte.ts` (its receipt and panel parts:
+  [the read path guide](structured-memory-read.md)).
 - The Memory settings page selects it, ahead of the flags. Production has its [writer](structured-memory-writer.md), and
   `assemblePrompt` runs [the read path](structured-memory-read.md). The page exposes only the preset fields something
   reads. Its design and remaining work are in [Active Plans](../plan/README.md).
@@ -46,14 +47,19 @@
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
-  `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`.
+  `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`,
+  `StructuredMemoryInheritAnswer`.
 - `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
   `applyThreadEdit`, `applyEventRepair`, `MemoryEditRefusal`.
 - `server/src/prompt/memory/structured/reconcile.ts`: the server's side: `reconcileEvents` and `retireRerecorded`.
+- `server/src/prompt/memory/structured/inherit.ts`: what a copied or branched chat starts with, pure:
+  `inheritedRecords`, `MemoryInheritance`.
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
   `readStructuredMemoryCoverage`, `readStructuredMemoryRuns`, `buildStructuredMemoryPackage`,
-  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; `editStructuredMemory`; the pure
-  `renderMemoryPage`, `renderMemoryTimeline`, and `memoryPagePath`.
+  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; `editStructuredMemory`;
+  `inheritStructuredMemory`; the pure `renderMemoryPage`, `renderMemoryTimeline`, and `memoryPagePath`.
+- `src/ts/process/chatMemoryInherit.svelte.ts`: `createInheritingChat`, the wait and the notice. Its own file, because
+  they read the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
 
 ## Flows
 
@@ -207,6 +213,68 @@ A checkpoint holds the chat's whole memory, all four kinds, runs included, so a 
 - The walk has no counter to bound a `createdRevision` with, so `replace` refuses one past the new revision: a 400 at
   load that changes nothing. A live save never leaves one.
 
+### Copies and branches
+
+A chat copied from its row's options or branched from a message starts with the records its messages support, and
+nothing from after the branch point reaches its prompt. A new, imported, plugin-made, or recovered chat inherits
+nothing.
+
+`createInheritingChat` stands in for `createChat` at those two sites. The action finishes as it did, and the rest runs
+behind it, one attempt with no retry:
+
+1. The create must reach the server, so `flushResources` runs in a mutation scope begun before `createChat`. The chat's
+   key in `discarded` or `refused` ends it as a failure, and so does any error but the next one.
+2. `GenerationBlockedError` is thrown for any deferred chat, also when this one could save, so it is no failure. The
+   save loop goes on, and the tab waits for `chatHasUnackedWork` to fall, every 250 ms for 30 s at most. The wait proves
+   nothing: the route's `chatGone` says whether the chat landed.
+3. `inheritStructuredMemory` posts, on `createChat`'s answer: `createChat` may replace the id it was given.
+4. A failure, or any refusal but `epoch`, which halts on its own, leaves the chat with no records and shows
+   `structuredMemory.inherit.failed`. Every copy asks, because a chat can hold records under another algorithm, and only
+   a user of this one reads the notice.
+
+`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/inherit`, `{ sourceChatId }`, capped as an edit is, answers
+`StructuredMemoryInheritAnswer`:
+
+1. Ids and the body: 400, and a `sourceChatId` that is the chat itself too.
+2. Epoch (412), then, with no await from here to the write, `fenced` on the new chat (409 `reason: "fenced"`). The
+   source chat is not fenced: no writer of it can run inside this step.
+3. The new chat's contents, 404 `chatGone`. A row of any kind, runs included, answers `inherited: false` and writes
+   nothing, which is what a repeat finds.
+4. The source chat's contents, 404 `chatGone`. With no page, event, or thread, `inherited: false`.
+5. Every source page, event, and thread and both chats are read, `inheritedRecords` builds, and `store.memory.write`
+   commits it at the contents' revision. Runs stay out: the Log starts empty, and coverage comes from the events'
+   `sources`.
+
+What `inheritedRecords` decides:
+
+- A source maps by id, whatever its hash: ids repeat between a copy and its source, and reconciliation answers for a
+  message that no longer matches. Else by position: both chats' messages there have ids and the same role and text, and
+  the new chat's id is no source-chat message's, so a repeated "ok" never takes the copy of another. An unanchored
+  source never maps.
+- A mapped source keeps `hash` and `index`, and only `messageId` changes: reconciliation compares stored gaps, so a
+  current position would make an `inserted` event read whole.
+- An event with sources that all map crosses, with every field as stored but `createdRevision`, which the store stamps.
+  That takes in `retracted` and `stale`: `recordedMessages` counts any status, so a retracted event left out would be
+  recorded again. A remapped `keptState` only reads stale, which asks a person.
+- An event that does not cross is behind when a source that did not map names a message the source chat holds and the
+  new chat does not: what lies after the branch point. Any other stays out and undoes nothing, so a plain copy only
+  loses dead evidence: with no behind event no page is rewound and no thread moves.
+- A section is rewound, not flagged, because its body is replaced whole, `provenance` accumulates, and `shownSections`
+  does not read `unsupported`. For each heading, the first `page.history` entry of a behind event is the cut: it and
+  every later entry of that heading go, a person's edits included, and the section becomes its `before`. A `null`
+  removes it, and a heading with no live section comes back. It keeps the live section's `locked` and trust flags, loses
+  `disputed` and `unsupported`, and takes `updatedAt` from the cut.
+- A page whose `heading: null` entry names a behind event stays out, and its id leaves the crossing pages' `links` and
+  the crossing threads' `who`. The scene's `participants` have no history, so any behind event makes them `[]` for the
+  writer to refill.
+- Each section and each kept `before` keeps the crossing ids in `provenance` and the mapped `sources`. A section that
+  still names a behind event after the rewind, because the history lost that change, gets `unsupported`, with its body
+  kept, and so does one that had provenance and is left with no crossing event that is not `retracted`. No body is
+  blanked and nothing is `suppressed`, which no edit clears.
+- A thread opened by a behind event stays out. One a behind event moved, by name or as `closedBy`, takes the state the
+  crossing events give it, replayed from `open` in contents order as `admitAnalysis` commits them, with `closedBy` only
+  on an ended state. Any other stays as stored.
+
 ### The HypaV3 projection
 
 `projectHypaV3Data(events, manifest)` answers a reader that expects `hypaV3Data`, without storing anything.
@@ -272,8 +340,9 @@ group is refused, and a full one is checked and restored.
 - Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check. The
   exceptions are a restore's staged writer and install copy, and a checkpoint load's `tx.restoreMemory`, in the load's
   transaction under its writer lease.
-- A route writes only a closed edit applied to the record as stored ([the edit route](#the-edit-route)), never a record
-  the tab sent.
+- A route writes only a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
+  [the inherit route](#copies-and-branches) the records the server builds from the source chat, never a record the tab
+  sent.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.
@@ -337,7 +406,12 @@ group is refused, and a full one is checked and restored.
   fence on a real app, holding a task on a tokenizer read and a job on its runner.
 - `chatCheckpoints.test.ts` and `chatCheckpointRoutes.test.ts` drive a checkpoint's memory through the checkpoint
   service; `restoreStage.test.ts` forges its manifests and chunks.
-- Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits chatCheckpoint`. No
+- `structured/inherit.test.ts` drives the build with plain records and an injected `hashOf`,
+  `structuredMemoryRoutes.test.ts` the inherit route on a real app, and `chatMemoryInherit.test.ts` the tab's wait on
+  fake timers, with the save loop and `authFetch` scripted. `Chat.test.ts` and `SideChatList.test.ts` drive the two
+  sites.
+- Focused command:
+  `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits chatCheckpoint inherit Inherit`. No
   `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
@@ -356,6 +430,16 @@ group is refused, and a full one is checked and restored.
   never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
   automatic checkpoint and every load's safety checkpoint: about 660 ms for 64 MB of runs on tmpfs. A load parses every
   record on top. Decision: Structured Memory slice 5d, plan.
+- A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
+  nothing retries it. Decision: Structured Memory slice 5c, plan.
+- A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:
+  Structured Memory slice 5c, plan.
+- A copied or branched chat's receipts still read as they did, with no run behind them
+  ([Gotchas](structured-memory-read.md#gotchas)). Decision: Structured Memory slice 5c, plan.
+- A change the bounded history no longer holds cannot be rewound, so that section keeps its text, which can still reach
+  the prompt, flagged `unsupported`. Provenance is bounded too: a change `sectionEvidence` also dropped leaves nothing
+  to flag it by. A page whose `create` entry aged out crosses too. A person's edit after the branch point has no place
+  in the message order, so it crosses unless it follows a behind change. Decision: Structured Memory slice 5c, plan.
 
 ### Gotchas
 

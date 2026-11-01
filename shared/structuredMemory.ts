@@ -365,7 +365,11 @@ export interface MemorySection extends MemoryTrustFlags, MemorySectionContent {
     locked: boolean;
     /** `Date.now()` of the last change. */
     updatedAt: number;
-    /** Every event in `provenance` was retracted; flagged for review, never reverted automatically. */
+    /**
+     * The evidence does not answer for the body: each event in `provenance` was retracted or stayed out of
+     * this copied chat, or the body holds a change from after a branch point that the page's history could
+     * not rewind. Flagged for review, never reverted automatically.
+     */
     unsupported?: boolean;
     /** The body holds two conflicting values because a contradiction fell below the confidence threshold. */
     disputed?: boolean;
@@ -625,6 +629,13 @@ export type StructuredMemoryEditAnswer = { revision: string } & (
     | { kind: "threads"; data: MemoryThread }
     | { kind: "events"; data: MemoryEvent }
 );
+
+/**
+ * The inherit route's answer: the new chat's memory revision, and whether this call built its records
+ * from the source chat. It did not when the new chat already holds a row, which is what a repeat finds,
+ * or when the source chat holds no page, event, or thread.
+ */
+export type StructuredMemoryInheritAnswer = { revision: string; inherited: boolean };
 
 /** The most runs one round of the runs route holds, however small they are. */
 export const MEMORY_RUNS_ROUND_ROWS = 50;

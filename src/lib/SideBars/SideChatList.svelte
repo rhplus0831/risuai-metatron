@@ -50,6 +50,7 @@
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
     import { openMessageSearch } from "src/ts/messageSearch.svelte";
     import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
+    import { createInheritingChat } from "src/ts/process/chatMemoryInherit.svelte";
 
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
@@ -116,8 +117,8 @@
                     break;
                 }
                 delete source.pinned;
-                createChat(
-                    ref.chaId,
+                createInheritingChat(
+                    ref,
                     { ...source, name: createChatCopyName(source.name, "Copy", ref.chaId), id: v4() },
                     { index: 0, select: true },
                 );

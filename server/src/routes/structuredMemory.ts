@@ -15,6 +15,7 @@ import {
     type StructuredMemoryCoverageRun,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
+    type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryRecordAnswer,
@@ -34,6 +35,7 @@ import {
     MemoryEditRefusal,
     parseMemoryEdit,
 } from "../prompt/memory/structured/edits.ts";
+import { inheritedRecords } from "../prompt/memory/structured/inherit.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody } from "./limitedBody.ts";
@@ -156,13 +158,22 @@ type RoundRead = {
  *   `{ error, reason: "fenced" }` while `fenced` holds, 409 `{ error, reason: "changed" }` when a `keep`
  *   names a state the chat has left, and 409 `{ error, revision }` when `revision` is not the current
  *   token. The body is read after authentication and capped at 64 KiB.
+ * - `POST /api/memory/structured/:characterId/:chatId/inherit` `{ sourceChatId }`: gives a copied or
+ *   branched chat the records of the character's chat it came from, as far as its messages support them
+ *   (`structured/inherit.ts`), answered `StructuredMemoryInheritAnswer`. The server builds them from the
+ *   source chat, whose runs stay behind, and the tab sends no record. A new chat that holds a row of any
+ *   kind, which is what a repeat finds, and a source that holds no page, event, or thread answer
+ *   `inherited: false` and write nothing. 400 for a `sourceChatId` that is no id or is the chat itself,
+ *   404 `chatGone` for either chat, and 409 `{ error, reason: "fenced" }` while `fenced` holds for the new
+ *   chat. The source chat is not fenced. The body is read after authentication and capped at 64 KiB.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
  * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
- * An edit's checks and its write share one such step too, after its body is read, so nothing can take
- * the chat between the fence and the write.
+ * An edit's or an inherit's checks and its write share one such step too, after its body is read, so
+ * nothing can take the chat between the fence and the write, and no writer of the source chat comes
+ * between its reads.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -171,7 +182,7 @@ export function registerStructuredMemoryRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         packageRoundBytes: number;
-        /** Whether something that can write this chat's memory holds the chat, which refuses an edit. */
+        /** Whether something that can write this chat's memory holds the chat, which refuses an edit or an inherit. */
         fenced: (characterId: string, chatId: string) => boolean;
     },
 ) {
@@ -231,6 +242,20 @@ export function registerStructuredMemoryRoutes(
         }
     });
 
+    /** A record the chat's contents list, read in the same synchronous step as them, so nothing can remove it. */
+    const listedRecord = <K extends StructuredMemoryRecordKind>(
+        characterId: string,
+        chatId: string,
+        kind: K,
+        id: string,
+    ): StructuredMemoryRecordOf[K] => {
+        const record = store.memory.readRecord(characterId, chatId, kind, id);
+        if (!record) {
+            throw new Error(`Memory ${kind} ${JSON.stringify(id)} is listed but has no row`);
+        }
+        return record.data;
+    };
+
     /**
      * Answers one round of a budgeted read: the checks every such route shares, then `answer`, in one
      * synchronous step.
@@ -257,14 +282,7 @@ export function registerStructuredMemoryRoutes(
             if (revision !== undefined && revision !== contents.revision) {
                 return c.json({ error: "The chat's memory changed", revision: contents.revision }, 409);
             }
-            const read: RoundRead["read"] = (kind, id) => {
-                const record = store.memory.readRecord(characterId, chatId, kind, id);
-                if (!record) {
-                    // The listing and this read share one synchronous step, so nothing can remove it.
-                    throw new Error(`Memory ${kind} ${JSON.stringify(id)} is listed but has no row`);
-                }
-                return record.data;
-            };
+            const read: RoundRead["read"] = (kind, id) => listedRecord(characterId, chatId, kind, id);
             return compressedJson(c, answer({ contents, cursor, read }));
         } catch (error) {
             return storeErrorResponse(c, error);
@@ -429,6 +447,70 @@ export function registerStructuredMemoryRoutes(
                 }
                 return error.reason === "sectionGone" ? gone() : c.json({ error: error.message }, 400);
             }
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/inherit`, limiter, authenticated, limitBody, async (c) => {
+        const characterId = c.req.param("characterId");
+        const chatId = c.req.param("chatId");
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        if (!isPlainObject(read.body)) {
+            return c.json({ error: "The body must be an object" }, 400);
+        }
+        const { sourceChatId } = read.body;
+        if (!isValidResourceId(sourceChatId) || sourceChatId === chatId) {
+            return c.json({ error: "sourceChatId must be the id of another chat" }, 400);
+        }
+        const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+        if (epoch !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        if (fenced(characterId, chatId)) {
+            return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+        }
+        const gone = () => c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+        try {
+            const contents = store.memory.readContents(characterId, chatId);
+            if (!contents) {
+                return gone();
+            }
+            const { revision } = contents;
+            const nothingToBuild = { revision, inherited: false } satisfies StructuredMemoryInheritAnswer;
+            if ([contents.pages, contents.events, contents.threads, contents.runs].some(({ length }) => length > 0)) {
+                return compressedJson(c, nothingToBuild);
+            }
+            const source = store.memory.readContents(characterId, sourceChatId);
+            if (!source) {
+                return gone();
+            }
+            if ([source.pages, source.events, source.threads].every(({ length }) => length === 0)) {
+                return compressedJson(c, nothingToBuild);
+            }
+            const sourceChat = store.readChatSource(characterId, sourceChatId).data as Chat | null;
+            const chat = store.readChatSource(characterId, chatId).data as Chat | null;
+            if (!sourceChat || !chat) {
+                return gone();
+            }
+            const changes = inheritedRecords({
+                pages: source.pages.map(({ id }) => listedRecord(characterId, sourceChatId, "pages", id)),
+                events: source.events.map(({ id }) => listedRecord(characterId, sourceChatId, "events", id)),
+                threads: source.threads.map(({ id }) => listedRecord(characterId, sourceChatId, "threads", id)),
+                sourceMessages: sourceChat.message,
+                messages: chat.message,
+                hashOf: messageSourceHash,
+            });
+            return compressedJson(c, {
+                revision: store.memory.write(characterId, chatId, { epoch, baseRevision: revision }, changes),
+                inherited: true,
+            } satisfies StructuredMemoryInheritAnswer);
+        } catch (error) {
             return storeErrorResponse(c, error);
         }
     });
