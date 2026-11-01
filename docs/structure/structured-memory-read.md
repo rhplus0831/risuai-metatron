@@ -57,9 +57,9 @@ comments hold the lane rules.
 which read as a send does. With no `memoryJob` the history stays raw and no report says otherwise.
 
 1. Records: one synchronous read of every event and page, then `reconcileEvents` over the stored messages, on a copy
-   ([reconciliation](structured-memory.md#reconciliation-and-repairs)). `coveredMessages` (active, not suppressed) reads
-   the copy to say what may leave, and `recordedMessages` (any status) reads the events as stored to say what the writer
-   leaves alone, so history cited only by a stale or retracted event stays raw.
+   ([reconciliation](structured-memory-lifecycle.md#reconciliation-and-repairs)). `coveredMessages` (active, not
+   suppressed) reads the copy to say what may leave, and `recordedMessages` (any status) reads the events as stored to
+   say what the writer leaves alone, so history cited only by a stale or retracted event stays raw.
 2. Window: `rawWindow`, then the message a continue extends leaves `dropped` before retrieval, so an older one stays in
    the prompt and out of the evidence.
 3. Card: one `memo: "supaMemory"` entry at the front of the history, with no entry when no item is included. Under

@@ -147,34 +147,35 @@ Guide links below are the current ownership map, including behavior once describ
 [Active plans](docs/plan/README.md) describe unfinished work; [migration history](docs/archived-plan/README.md) records
 completed plans and retrieval commands.
 
-| Task                                                                                     | Guide                                                                  |
-| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Boot, screen selection, URL/history, stores, flags, hotkeys                              | [app-shell](docs/structure/app-shell.md)                               |
-| Network/proxy, tab job client/channel, assets/thumbnails, notifications, alerts, utils   | [global-api](docs/structure/global-api.md)                             |
-| Request history, checked failures, diagnostics, reports, support shares                  | [diagnostics](docs/structure/diagnostics.md)                           |
-| Persisted fields, records, settings views, normalization, chat bindings                  | [persistence](docs/structure/persistence.md)                           |
-| Boot load and cache, save loop, conflicts, credential writes, live updates               | [resource-sync](docs/structure/resource-sync.md)                       |
-| Chat module, chat writes, job hydration, chat checkpoints, restore floor                 | [chat-store](docs/structure/chat-store.md)                             |
-| Draft journal, composer rows, boot recovery, recovery drafts                             | [draft-recovery](docs/structure/draft-recovery.md)                     |
-| Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search | [chat-pipeline](docs/structure/chat-pipeline.md)                       |
-| SupaMemory, HypaV2/V3, Hanurai, embeddings                                               | [memory](docs/structure/memory.md)                                     |
-| Structured memory: events, pages, threads, store, routes, package, the HypaV3 projection | [structured-memory](docs/structure/structured-memory.md)               |
-| Structured memory writer: windows, tasks, runs, admission, pages, record now             | [structured-memory-writer](docs/structure/structured-memory-writer.md) |
-| Structured memory read path: lanes, card, report, receipts, the memory panel             | [structured-memory-read](docs/structure/structured-memory-read.md)     |
-| Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                         |
-| CBS, markdown/sanitization, chat variables, partial edit, highlighting                   | [cbs-rendering](docs/structure/cbs-rendering.md)                       |
-| Regex, triggers v2, Lua editors/shared engines                                           | [scripts-triggers](docs/structure/scripts-triggers.md)                 |
-| Plugin v3 sandbox/providers/hooks, MCP                                                   | [plugins-mcp](docs/structure/plugins-mcp.md)                           |
-| Cards/characters/groups, modules, personas, lore editor                                  | [characters-modules](docs/structure/characters-modules.md)             |
-| Chat/sidebar UI, GUI primitives, portals, theme                                          | [ui-theming](docs/structure/ui-theming.md)                             |
-| Settings registry/pages, preset editing/pickers, prompt editor, i18n                     | [settings-i18n](docs/structure/settings-i18n.md)                       |
-| TTS, images, translation, media, playground tools                                        | [media-aux](docs/structure/media-aux.md)                               |
-| Backups/upstream compatibility, Realm hub/creator blocking, settings report              | [backup-sync-hub](docs/structure/backup-sync-hub.md)                   |
-| Hono process, routes/auth, static serving, asset storage, proxies, push, Docker          | [self-host-server](docs/structure/self-host-server.md)                 |
-| Server resource store, chat tables, checkpoints, snapshots, backups, file imports        | [server-resources](docs/structure/server-resources.md)                 |
-| Generation jobs, live-update feed, job channel, transforms, LLM and token routes         | [server-generation](docs/structure/server-generation.md)               |
-| Scripts/config, build, dev runner, worker/PWA, upstream check, releases                  | [build-test-platforms](docs/structure/build-test-platforms.md)         |
-| Test wrapper, test rules, slow tests, network guard, Playwright stack, browser checks    | [test-harness](docs/structure/test-harness.md)                         |
+| Task                                                                                     | Guide                                                                        |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Boot, screen selection, URL/history, stores, flags, hotkeys                              | [app-shell](docs/structure/app-shell.md)                                     |
+| Network/proxy, tab job client/channel, assets/thumbnails, notifications, alerts, utils   | [global-api](docs/structure/global-api.md)                                   |
+| Request history, checked failures, diagnostics, reports, support shares                  | [diagnostics](docs/structure/diagnostics.md)                                 |
+| Persisted fields, records, settings views, normalization, chat bindings                  | [persistence](docs/structure/persistence.md)                                 |
+| Boot load and cache, save loop, conflicts, credential writes, live updates               | [resource-sync](docs/structure/resource-sync.md)                             |
+| Chat module, chat writes, job hydration, chat checkpoints, restore floor                 | [chat-store](docs/structure/chat-store.md)                                   |
+| Draft journal, composer rows, boot recovery, recovery drafts                             | [draft-recovery](docs/structure/draft-recovery.md)                           |
+| Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search | [chat-pipeline](docs/structure/chat-pipeline.md)                             |
+| SupaMemory, HypaV2/V3, Hanurai, embeddings                                               | [memory](docs/structure/memory.md)                                           |
+| Structured memory: events, pages, threads, store, routes, package, the HypaV3 projection | [structured-memory](docs/structure/structured-memory.md)                     |
+| Structured memory writer: windows, tasks, runs, admission, pages, record now             | [structured-memory-writer](docs/structure/structured-memory-writer.md)       |
+| Structured memory read path: lanes, card, report, receipts, the memory panel             | [structured-memory-read](docs/structure/structured-memory-read.md)           |
+| Structured memory lifecycle: reconciliation, repairs, retraction, checkpoints, copies    | [structured-memory-lifecycle](docs/structure/structured-memory-lifecycle.md) |
+| Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                               |
+| CBS, markdown/sanitization, chat variables, partial edit, highlighting                   | [cbs-rendering](docs/structure/cbs-rendering.md)                             |
+| Regex, triggers v2, Lua editors/shared engines                                           | [scripts-triggers](docs/structure/scripts-triggers.md)                       |
+| Plugin v3 sandbox/providers/hooks, MCP                                                   | [plugins-mcp](docs/structure/plugins-mcp.md)                                 |
+| Cards/characters/groups, modules, personas, lore editor                                  | [characters-modules](docs/structure/characters-modules.md)                   |
+| Chat/sidebar UI, GUI primitives, portals, theme                                          | [ui-theming](docs/structure/ui-theming.md)                                   |
+| Settings registry/pages, preset editing/pickers, prompt editor, i18n                     | [settings-i18n](docs/structure/settings-i18n.md)                             |
+| TTS, images, translation, media, playground tools                                        | [media-aux](docs/structure/media-aux.md)                                     |
+| Backups/upstream compatibility, Realm hub/creator blocking, settings report              | [backup-sync-hub](docs/structure/backup-sync-hub.md)                         |
+| Hono process, routes/auth, static serving, asset storage, proxies, push, Docker          | [self-host-server](docs/structure/self-host-server.md)                       |
+| Server resource store, chat tables, checkpoints, snapshots, backups, file imports        | [server-resources](docs/structure/server-resources.md)                       |
+| Generation jobs, live-update feed, job channel, transforms, LLM and token routes         | [server-generation](docs/structure/server-generation.md)                     |
+| Scripts/config, build, dev runner, worker/PWA, upstream check, releases                  | [build-test-platforms](docs/structure/build-test-platforms.md)               |
+| Test wrapper, test rules, slow tests, network guard, Playwright stack, browser checks    | [test-harness](docs/structure/test-harness.md)                               |
 
 ## Path Ownership
 
@@ -190,14 +191,16 @@ coupling links.
   `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`.
 - **structured-memory**: `shared/structuredMemory.ts`, `server/src/{data/memoryStore.ts,routes/structuredMemory.ts}`,
-  the rest of `server/src/prompt/memory/structured/`, `src/ts/process/chatMemoryInherit.svelte.ts`,
-  `src/ts/process/structuredMemory.svelte.ts` (the receipt and panel parts: **structured-memory-read**).
+  the rest of `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts` (the receipt and panel
+  parts: **structured-memory-read**).
 - **structured-memory-writer**:
   `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`.
 - **structured-memory-read**: `server/src/prompt/memory/structured/{lanes,retrieve,card,step}.ts`,
   `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and in
   `src/ts/process/structuredMemory.svelte.ts` the receipt and panel functions (`memoryReceiptView`,
   `joinMemoryCoverage`, `memoryItemsUsed`).
+- **structured-memory-lifecycle**: `server/src/prompt/memory/structured/{reconcile,inherit}.ts`,
+  `src/ts/process/chatMemoryInherit.svelte.ts`, and the repair, checkpoint, and inherit parts of the files above.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,

@@ -122,9 +122,9 @@ with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one 
 `windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal writes nothing. Around it,
 `retireRerecorded` turns a repair's closing write into the swap: the new event takes the old one's `pinned`,
 `suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set, with
-[its sections flagged](structured-memory.md#retraction-and-edits). An old event gone, unmarked, or retracted refuses the
-commit `windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit the same
-way, so a failed run leaves the old event and its mark, and each retry works it out again.
+[its sections flagged](structured-memory-lifecycle.md#retraction-and-edits). An old event gone, unmarked, or retracted
+refuses the commit `windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit
+the same way, so a failed run leaves the old event and its mark, and each retry works it out again.
 
 ### A writer run
 

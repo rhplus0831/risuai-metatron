@@ -163,8 +163,8 @@
   `setTranslation`, single `remove`, and `meta` apply to a stale revision while their message exists, with a base at or
   above the [restore floor](#restore-floor). `replace`, `delete`, bulk `remove`, reorders, and a `begin` of an unknown
   generation need the current revision.
-- `remove` may carry `retract`, [a person's yes](structured-memory.md#retraction-and-edits): under Structured Memory
-  `removeMessages` asks first and may remove later.
+- `remove` may carry `retract`, [a person's yes](structured-memory-lifecycle.md#retraction-and-edits): under Structured
+  Memory `removeMessages` asks first and may remove later.
 - `setMessage` sends the whole row, so on a stale revision it reverts fields another writer changed: it needs the
   current revision for fields it does not own (not enforced).
 - `patchMessage` (`set`/`unset` onto the stored row, never the translation) is the op for some fields: it sends every

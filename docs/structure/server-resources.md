@@ -230,8 +230,9 @@ leave absence as absence (upstream reads it as now).
 - [Own chat changes](server-generation.md#own-chat-changes) and [feed entries](server-generation.md#feed-chat-entries)
   stay out of the HTTP results.
 - The server-specific checkpoints live in `checkpointService.ts`: a load checks the current chat and generation locks,
-  takes a safety checkpoint, applies the replacement and [the memory records](structured-memory.md#a-checkpoint)
-  transactionally, sets the restore floor, and invalidates retained memory-task input.
+  takes a safety checkpoint, applies the replacement and
+  [the memory records](structured-memory-lifecycle.md#a-checkpoint) transactionally, sets the restore floor, and
+  invalidates retained memory-task input.
 - Automatic checkpoints run only after a job ends with a final `done`, when the chat policy's user-turn threshold is
   met; the count comes from the `messages_role` index (`countUserTurns`), so a turn that is not due reads no message
   row. A save takes its two counts from SQL, parses the last two rows for the preview and the metadata once for the
@@ -372,7 +373,7 @@ snapshot with any of them has them checked and restored (`walkCheckpointSnapshot
 - `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind`
   (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview`
   JSON, `pages` JSON (the ordered message page hashes), `fields` JSON (captured field → page hash, plus
-  [the memory manifest](structured-memory.md#a-checkpoint)), unique `(chatSeq, id)`).
+  [the memory manifest](structured-memory-lifecycle.md#a-checkpoint)), unique `(chatSeq, id)`).
 - `checkpointPages` (`hash` primary key, `text`).
 - `checkpointPageRefs` (`checkpointSeq` referencing `chatCheckpoints.seq` with `ON DELETE CASCADE`, `hash`, indexed).
 - `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`,
