@@ -8,8 +8,8 @@
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
   `server/src/prompt/memory/structured/`, `src/ts/process/structuredMemory.svelte.ts`.
 - The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
-  tests; production injects no writer, so a task would end `skipped`; and no screen calls the tab's client. Its design
-  and remaining work are in [Active Plans](../plan/README.md).
+  tests, and no screen calls the tab's client. Production has its writer, which pages and the read path do not use yet.
+  Its design and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
@@ -25,6 +25,7 @@
   - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
   - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events.
+  - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`.
   - Writer settings: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, `STRUCTURED_MEMORY_CADENCES`,
     `STRUCTURED_MEMORY_HIGHLIGHT_MODES`, `STRUCTURED_MEMORY_HIGHLIGHT_KINDS`.
   - Per-record overrides: `structuredMemoryLanguageOverride`, `structuredMemoryHighlightOverride`.
@@ -42,9 +43,13 @@
   `renderMemoryTimeline`, and `memoryPagePath`.
 - `server/src/prompt/memory/structured/window.ts`: the writer's windows: `confirmedWindows`, `WriterWindow`,
   `writerCeiling`, `writerCadence`, `readRecordedMessages`, `windowStillConfirmed`.
-- `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: the injected
-  `StructuredMemoryWriter` (`structuredWriter`), `StructuredMemoryWriterResult`, `StructuredMemoryCommit`,
-  `MemoryTaskLimits.maxWriterWindows`.
+- `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`.
+- `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
+- `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `writerHostDeps`, what a
+  writer task's requests ignore of the preset.
+- `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
+  (`structuredWriter` replaces `createStructuredWriter`, in tests), `StructuredMemoryWriterResult`,
+  `StructuredMemoryCommit`, `MemoryTaskLimits.maxWriterWindows`.
 - `server/src/prompt/assemble.ts`: `structuredMemoryStep`, `AssemblyMemoryJob.structuredMemory` (the runner fills it).
 - `shared/jobs.ts`: `StructuredMemoryTaskInput`, `MemoryTaskBase`, `AnyMemoryTaskInput`, `MemoryTaskStatus.kind`.
 
@@ -108,7 +113,7 @@ like a checkpoint write.
 
 - Only `active` events become summaries, in the given order; `retracted` and `stale` ones are left out. `text` is the
   event's `summary`, and `chatMemos` are its source message ids.
-- `isImportant` holds for a pinned event or one with any grade, 0 included.
+- `isImportant` holds for a pinned event or one graded `importantEventGrade` (6) or above.
 - `metrics` comes from the last manifest and is absent without one. Indices are positions in the projected `summaries`,
   never in `events`, because every metrics reader indexes `summaries`.
 - A metric records why that send selected a record, so only `verified` event items count: `flow` fills
@@ -156,8 +161,7 @@ the eligible one, and `hash` from `messageSourceHash`.
 3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
    `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
    or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`: that
-   status is how the reason reaches the tab. Without `structuredWriter` it ends `skipped` (`writerUnavailable`) before
-   reading anything.
+   status is how the reason reaches the tab.
 4. Work: the fresh scope's chat and the stored events give the windows, up to `maxWriterWindows`. The hand-off gives an
    automatic task only its ceiling. `total` counts the windows the task runs and `done` those the writer returned
    recorded. Nothing open is `done` with 0 of 0.
@@ -165,13 +169,65 @@ the eligible one, and `hash` from `messageSourceHash`.
    redacted error, because a later window recorded ahead of it would put events out of message order; a throw goes
    through `endFromError`.
 6. A task stopped by the cap with windows left ends `done` with reason `windowsLeft`. The next hand-off continues it,
-   which under the `manual` cadence takes another manual start.
+   which under the `manual` cadence takes another manual start. Otherwise a warming failure ends it `done` with reason
+   `warmingFailed` and the redacted error.
 
 `commit(baseRevision, changes)` is the writer's only write, synchronous, checked in this order: the task is live (it
 throws once ended), the gate is open, the service is open with the input's epoch and source generation (else refused
 `staleInput`), the window still reads from the chat as stored under the ceiling it was computed with
 (`windowStillConfirmed`, else `windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal
 writes nothing.
+
+### A writer run
+
+`createStructuredWriter` makes one analysis call per window. `memory_runs` is its whole state.
+
+1. Pause: `consecutiveFailures` `failed` rows at the end of the runs end an automatic run `skipped` (`writerPaused`),
+   with no call and no row. `skipped` and `pending` rows neither count nor reset, a `recorded` row resets, and a manual
+   start runs past the pause.
+2. Leftovers: one task runs per chat, so a `pending` row found here is abandoned. The write that opens the run closes it
+   `skipped` (`interrupted`): a cancel, a checkpoint load, or a restart proves nothing about the model.
+3. Input: only the newest row that did not record is read. Its `input` is sent again as stored when its window has the
+   same message ids and hashes and its `settingsFingerprint` is the task's. Otherwise the prompt is built anew, so
+   changed instructions take effect and a regrouped window rebuilds.
+4. Snapshot: a `pending` row holds the exact input before any call. An input too large for a record fails the run
+   (`inputTooLarge`) with no call.
+5. Call: `host.request`, on `writerHostDeps`: temperature 0, and no `jsonSchemaEnabled` or `extractJson`, which shape
+   the chat's replies. A provider failure, an unusable answer, or a `MemoryHostFailure` ends the run `failed` with a
+   redacted error and a failed receipt, and the task with it. Any other throw is an ended task: the row stays `pending`
+   for the next run, and `commit` refuses, which is how output after the deadline is discarded.
+6. Commit: event, threads, and the `recorded` run in one write, on the revision the opening write returned. A
+   `revisionConflict` admits the answer again from fresh records with no call, 3 attempts in all, then `skipped`
+   (`revisionConflict`). `staleInput` and `windowChanged` end it `skipped` and leave the row to step 2.
+7. Warming: the trimmed event summary and key lines through `HypaProcesser.addText`, unless `laneTargets.events` is 0. A
+   failure keeps the event. A retrieval that embeds other text misses this cache.
+
+### The analysis prompt
+
+`assembleAnalysisPrompt` parses the default ChatML frame and the preset's `instructions` with the slots in place, so CBS
+runs on them alone, then fills the slots in one pass over the parsed messages. Chat text never reaches CBS, cannot start
+a ChatML message, and a value holding a slot's name stays as it is. Message text stays raw so a quote can match, with
+inlays shown as `[Image]`. `fineTuning` is not read yet. The language is the chat's override, the owner's, the preset's,
+then `db.language`.
+
+### Admission
+
+`parseAnalysis` takes the text from the first brace to the last, after any `<Thoughts>`; the event may sit under
+`event`. A missing or mistyped required field fails the run naming it. Strings clamp to the limits without splitting a
+surrogate pair, a malformed element is left out, and a list stops at its cap, each counted once per field in `warnings`
+(`malformed`, `capped`). Axes round and clamp, and an object lacking a score is no axes. Page candidates are not read.
+
+`admitAnalysis` works from records read for that attempt:
+
+- Evidence: a key line's text and each `quote` must be a contiguous piece of a window message's raw `data`, so a quote
+  from context or across `[Image]` fails. It goes to `unverified` (`quoteNotFound`).
+- Pages: a participant, `who`, or knower naming no page is removed with an `unknownPage` warning, an item with a quote
+  goes to `unverified` (`unknownPage`), and a relationship shift naming none is left out with a warning.
+- Threads: `add` opens one; `close`, then `transitions`, move only a thread that exists and has not ended (else
+  `unknownThread`, `endedThread`), one write per thread, the last naming winning. `closedBy` is set on an end.
+- Repeat: when the last stored event is active, has the same participants, a summary at `dedupeSimilarity` or above by
+  character bigrams, and sources that still read from the chat, no event is made. That event takes `repeatCount + 1` and
+  the window's sources, or the window would stay open forever; everything else on it stays, and thread changes name it.
 
 ## State
 
@@ -183,8 +239,9 @@ writes nothing.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 - `MemoryEventDraft` is what the writer returns; `MemoryEvent` adds what code owns (id, sources, status, grade, repeat
-  count). `MemoryRun.analysis` keeps the extraction as parsed, before admission and deduplication, so the log shows what
-  the model said even when `eventId` names something else.
+  count). `MemoryRun.analysis` keeps the bounded draft before evidence checks and deduplication, so the log shows what
+  the model said even when `eventId` names something else. `MemoryRun.receipt` holds what the run listed.
+- A grade is the sum of a record's axes, 0 to 9; a record without axes has none.
 
 ### Memory tables
 
@@ -317,9 +374,12 @@ group is refused, and a full one is checked and restored.
   root `tsconfig.json`, where the server routes do not type-check.
 - `server/src/prompt/memory/structured/window.test.ts` drives the window rules as a table over plain messages with a
   fake tokenizer.
-- `server/src/tests/memoryTasks.test.ts` drives the task kind on `createMemoryTasks` over a real store with an injected
-  `structuredWriter`; `memoryJobs.test.ts` the hand-off with `createFakeMemoryTasks`; `assemble.test.ts` the selection;
-  `src/ts/process/memoryTasks.test.ts` the status's `kind`.
+- `server/src/tests/memoryTasks.test.ts` drives the task kind on `createMemoryTasks` over a real store: its windows with
+  an injected `structuredWriter`, the writer itself with none, through the scripted provider and read back from
+  `store.memory`. `memoryJobs.test.ts` drives the hand-off with `createFakeMemoryTasks`, `assemble.test.ts` the
+  selection, and `src/ts/process/memoryTasks.test.ts` the status's `kind`.
+- `structured/analysis.test.ts` and `prompts.test.ts` drive the pure pieces with plain values; `prompts.test.ts` parses
+  with the real CBS evaluator.
 - Focused command:
   `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts server/src/prompt/memory/structured restoreStage backups normalizeCollections memoryTaskHost upstreamExport memoryTasks memoryJobs assemble`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
@@ -329,8 +389,11 @@ group is refused, and a full one is checked and restored.
 
 ### Limitations
 
-- Every graded event projects as `isImportant`, so once the writer grades events the flag stops separating them. D11
-  says "events with grade or pins" and names no threshold. Decision: Structured Memory D11, plan.
+- A retried window replays its snapshot only while its messages group the same way: a failed manual partial window that
+  a cadence later regroups rebuilds its prompt. A replay resends the context as it was. Decision: Structured Memory D3,
+  plan.
+- An interrupted run never counts toward the pause, so a model that only ever overruns the task deadline does not pause
+  recording. Decision: Structured Memory D3, plan.
 - The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
@@ -338,8 +401,12 @@ group is refused, and a full one is checked and restored.
 
 ### Gotchas
 
-- `eventTitleChars`, `eventSummaryChars`, `keyLineChars`, and `pageHistoryEntries` are starting values. Only
-  `keyLinesPerEvent`, `pageCandidates`, `consecutiveFailures`, `axisMax`, and `gradeMax` are design numbers.
+- The limits are starting values. Only `keyLinesPerEvent`, `pageCandidates`, `consecutiveFailures`, `axisMax`,
+  `gradeMax`, `importantEventGrade`, and `dedupeSimilarity` are design numbers.
+- Until a chat has pages, every participant is removed and every item naming a page is left out of the event, so an
+  event holds its title, summary, key lines, and thread changes.
+- `memory_runs.input` is never pruned, so a run costs about its prompt in storage. `inputTokens` counts one attempt
+  though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated JSON.
 - Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the lane
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
   owner decisions.

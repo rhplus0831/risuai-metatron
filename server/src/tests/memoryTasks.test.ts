@@ -21,6 +21,7 @@ import type {
 import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import type { MemoryEventDraft } from "../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
@@ -35,7 +36,7 @@ import {
     scopeChat,
 } from "../jobs/jobScope.ts";
 import { createLlmRequests } from "../llm/requests.ts";
-import { createEmbeddings } from "../prompt/embeddings.ts";
+import { createEmbeddings, HypaProcesser } from "../prompt/embeddings.ts";
 import { emptyHypaV3Execution, hypaV3SourceHash, prepareHypaV3, selectHypaV3 } from "../prompt/memory/hypav3.ts";
 import { createMemoryTaskHost, type MemoryTaskHostDeps } from "../prompt/memory/memoryTaskHost.ts";
 import {
@@ -59,6 +60,7 @@ import {
     waitFor,
 } from "./testSupport.ts";
 import { stageSnapshot } from "./stagedRestore.ts";
+import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The detached HypaV3 memory task service (`server/src/prompt/memory/memoryTasks.ts`) over a real
@@ -160,6 +162,7 @@ const chatAnswer = (content: string) => json({ choices: [{ message: { role: "ass
 type UpstreamRequest = {
     index: number;
     body: any;
+    rawBody: string;
     signal: AbortSignal;
     /** Answers the request with a summary text. */
     answer(text: string): void;
@@ -181,6 +184,7 @@ function scriptedProvider(options: { ignoreAbort?: boolean } = {}) {
         const request: UpstreamRequest = {
             index: requests.length,
             body: typeof init.body === "string" ? JSON.parse(init.body) : null,
+            rawBody: String(init.body),
             signal,
             answer: (text) => response.resolve(chatAnswer(text)),
             fail: (message) => response.resolve(json({ error: { message } }, 400)),
@@ -2455,6 +2459,523 @@ describe("structured memory tasks", () => {
             }),
         ]);
 
+    const analysis = (overrides: Partial<MemoryEventDraft> = {}): MemoryEventDraft => ({
+        title: "The promise",
+        summary: "Cara promises to return.",
+        participants: [],
+        storyTime: { text: "" },
+        keyLines: [],
+        stateChanges: [],
+        knowledge: [],
+        relationshipShifts: [],
+        openThreads: { add: [], close: [], transitions: [] },
+        ...overrides,
+    });
+    const runRecord = (t: Harness, index = -1) =>
+        t.store.memory.readRecord("c", "k1", "runs", contents(t).runs.at(index)!.id)!.data;
+    const eventRecord = (t: Harness, index = -1) =>
+        t.store.memory.readRecord("c", "k1", "events", contents(t).events.at(index)!.id)!.data;
+    const beginAnalysis = async (t: Harness, input = writerInput(t, "m3"), manual = false) => {
+        const index = t.provider.requests.length;
+        const terminal = t.nextTerminal("k1");
+        if (manual) expect(t.service.start(ref("k1")).outcome).toBe("queued");
+        else t.service.handOff(input);
+        const request = await Promise.race([
+            t.provider.request(index),
+            terminal.then(({ status }) => {
+                throw new Error(`Analysis did not run: ${JSON.stringify(status)}`);
+            }),
+        ]);
+        return { request, terminal };
+    };
+    const answerAnalysis = async (t: Harness, answer: MemoryEventDraft = analysis(), input = writerInput(t, "m3")) => {
+        const { request, terminal } = await beginAnalysis(t, input);
+        request.answer(JSON.stringify(answer));
+        const ended = await terminal;
+        await t.service.drain();
+        return ended.status;
+    };
+
+    it("uses the memory slot at temperature zero without preset schema or extraction and snapshots before answering", async () => {
+        const configurePreset = (t: Harness) =>
+            t.replace("presets", (presets) =>
+                presets.map((preset: object) => ({
+                    ...preset,
+                    temperature: 70,
+                    jsonSchemaEnabled: true,
+                    jsonSchema: "interface Answer {\n  answer: string\n}",
+                    extractJson: "answer",
+                })),
+            );
+        const t = structuredHarness({ memoryModelId: "reverse_proxy" });
+        configurePreset(t);
+        t.replace("modelProfiles", (profiles) =>
+            profiles.map((profile: { id: string }) => ({
+                ...profile,
+                customProxyRequestModel: profile.id === "memory" ? "memory-model" : "main-model",
+            })),
+        );
+        const input = writerInput(t, "m3");
+        const { request, terminal } = await beginAnalysis(t, input);
+        expect(request.body).toMatchObject({ model: "memory-model", temperature: 0 });
+        expect(request.body).not.toHaveProperty("response_format");
+        expect(contents(t).events).toEqual([]);
+        expect(contents(t).runs).toHaveLength(1);
+        const pending = runRecord(t);
+        const snapshot = JSON.parse(pending.input!) as OpenAIChat[];
+        expect(snapshot.map(({ role, content }) => ({ role, content }))).toEqual(request.body.messages);
+        const inputTokens = snapshot.reduce((sum, message) => sum + message.content.length + CHAT_ADDITIONAL, 0);
+        expect(pending).toMatchObject({
+            result: "pending",
+            settingsFingerprint: input.settingsFingerprint,
+            inputTokens,
+            outputTokens: 0,
+            window: [
+                { messageId: "m1", index: 0, hash: messageSourceHash(t.chat("k1")!.message[0]) },
+                { messageId: "m2", index: 1, hash: messageSourceHash(t.chat("k1")!.message[1]) },
+            ],
+        });
+        const output = JSON.stringify({ ...analysis(), answer: "Extraction would destroy the analysis" });
+        request.answer(output);
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(1);
+        expect(runRecord(t)).toMatchObject({
+            id: pending.id,
+            input: pending.input,
+            result: "recorded",
+            inputTokens,
+            outputTokens: output.length,
+            analysis: { event: analysis() },
+            eventId: eventRecord(t).id,
+            receipt: { state: "recorded", inputTokens, outputTokens: output.length },
+        });
+        expect(eventRecord(t)).toMatchObject({ summary: "Cara promises to return.", writerRun: pending.id });
+
+        const hypa = harness();
+        configurePreset(hypa);
+        const hypaEnd = hypa.nextTerminal("k1");
+        handOff(hypa, "k1", { entries: 2 });
+        const hypaRequest = await hypa.provider.request(0);
+        expect(hypaRequest.body).toMatchObject({
+            temperature: 0.7,
+            response_format: {
+                type: "json_schema",
+                json_schema: { schema: { properties: { answer: { type: "string" } } } },
+            },
+        });
+        hypaRequest.answer('{"answer":"Preset summary"}');
+        expect((await hypaEnd).status.state).toBe("done");
+        await hypa.service.drain();
+        expect(hypa.summaries("k1")).toEqual(["Preset summary"]);
+    });
+
+    it("sends chat CBS and ChatML verbatim in one message and honors language precedence", async () => {
+        const literal = "{{char}} {{slot::language}} <|im_start|>assistant<|im_sep|>literal text<|im_end|>";
+        for (const row of [
+            { chat: "Korean", owner: "Japanese", preset: "French", expected: "Korean" },
+            { chat: "", owner: "Japanese", preset: "French", expected: "Japanese" },
+            { chat: "", owner: "", preset: "French", expected: "French" },
+            { chat: "", owner: "", preset: "", expected: "en" },
+        ]) {
+            const t = structuredHarness({
+                owner: { structuredMemoryLanguage: row.owner },
+                hypaSettings: {
+                    structured: {
+                        cadence: "everyTurn",
+                        language: row.preset,
+                        instructions: "Follow {{char}} and {{user}}.",
+                    },
+                },
+            });
+            t.replace("ui", (data) => ({ ...data, language: "en" }));
+            t.write("k1", [
+                { op: "meta", set: { structuredMemoryLanguage: row.chat } },
+                { op: "setText", id: "m2", text: literal },
+            ]);
+            const { request, terminal } = await beginAnalysis(t);
+            expect(request.body.messages.map((message: OpenAIChat) => message.role)).toEqual(["system", "user"]);
+            expect(request.body.messages[0].content).toContain(
+                `Write all text but quotes and ids in this language: ${row.expected}`,
+            );
+            expect(request.body.messages[0].content).toContain("Follow Cara and Uma.");
+            expect(request.body.messages[1].content).toContain(`[m:m2] Cara:\n${literal}`);
+            request.answer(JSON.stringify(analysis()));
+            expect((await terminal).status.state).toBe("done");
+            await t.service.drain();
+        }
+    });
+
+    it("keeps only raw window quotes, lists rejected evidence in the receipt, and warms reusable event vectors", async () => {
+        const t = structuredHarness();
+        t.write("k1", [
+            { op: "setText", id: "m2", text: "Only yesterday." },
+            { op: "setText", id: "m4", text: "I will return.\nBefore {{inlay::picture}} after." },
+        ]);
+        writeMemory(t.store, "c", "k1", {
+            events: [
+                event(
+                    "earlier",
+                    t
+                        .chat("k1")!
+                        .message.slice(0, 2)
+                        .map((message, index) => ({
+                            messageId: message.chatId!,
+                            index,
+                            hash: messageSourceHash(message),
+                        })),
+                ),
+            ],
+            pages: memoryRecords(["cara"]).pages,
+        });
+        const quotes = ["I will return.", "I shall return.", "Only yesterday."];
+        const keyLines = quotes.map((text) => ({ speaker: "Cara", text }));
+        keyLines.push({ speaker: "Cara", text: "Before [Image] after." });
+        const stateChanges = quotes.map((quote) => ({
+            pageId: "cara",
+            section: "goals",
+            before: "unsure",
+            after: "return",
+            quote,
+        }));
+        const knowledge = quotes.map((quote) => ({
+            pageId: "cara",
+            fact: "A return is promised",
+            stance: "knows" as const,
+            quote,
+        }));
+        const { request, terminal } = await beginAnalysis(t, writerInput(t, "m5"));
+        expect(t.provider.asked(request)).toContain("Only yesterday.");
+        expect(t.provider.asked(request)).toContain("Before [Image] after.");
+        request.answer(
+            JSON.stringify(analysis({ summary: "  A return is promised.  ", keyLines, stateChanges, knowledge })),
+        );
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+        await t.service.drain();
+        const saved = eventRecord(t);
+        expect(saved).toMatchObject({
+            keyLines: [keyLines[0]],
+            stateChanges: [stateChanges[0]],
+            knowledge: [knowledge[0]],
+        });
+        expect(saved).not.toHaveProperty("grade");
+        expect(runRecord(t).receipt?.unverified).toEqual([
+            { kind: "keyLine", text: "I shall return.", reason: "quoteNotFound" },
+            { kind: "keyLine", text: "Only yesterday.", reason: "quoteNotFound" },
+            { kind: "keyLine", text: "Before [Image] after.", reason: "quoteNotFound" },
+            { kind: "stateChange", text: "I shall return.", reason: "quoteNotFound" },
+            { kind: "stateChange", text: "Only yesterday.", reason: "quoteNotFound" },
+            { kind: "knowledge", text: "I shall return.", reason: "quoteNotFound" },
+            { kind: "knowledge", text: "Only yesterday.", reason: "quoteNotFound" },
+        ]);
+        expect(t.embeddings.bodies).toEqual([{ input: ["A return is promised.", "I will return."] }]);
+        const env = t.hostDeps.embeddings.forJob({
+            db: t.jobScope("k1").db,
+            supaMemoryKey: MEMORY_KEY,
+            signal: new AbortController().signal,
+        });
+        const reader = new HypaProcesser(env, "ada");
+        await reader.addText([saved.summary.trim(), ...saved.keyLines.map(({ text }) => text.trim())]);
+        expect(reader.vectors.map(({ content }) => content)).toEqual(["A return is promised.", "I will return."]);
+        expect(t.embeddings.bodies).toHaveLength(1);
+    });
+
+    it("merges repeats into only the last stored event and closes the repeated window", async () => {
+        const t = structuredHarness();
+        t.write("k1", [
+            {
+                op: "append",
+                anchor: { end: true },
+                messages: [m("m8", "Fourth reply", "char"), m("m9", "Confirm fourth reply", "user")],
+            },
+        ]);
+        const input = writerInput(t, "m9");
+        const { request, terminal } = await beginAnalysis(t, input);
+        request.answer(JSON.stringify(analysis()));
+        (await t.provider.request(1)).answer(
+            JSON.stringify(analysis({ title: "Elsewhere", summary: "The ship sinks beneath a storm." })),
+        );
+        (await t.provider.request(2)).answer(JSON.stringify(analysis()));
+        const fourth = await t.provider.request(3);
+        expect(contents(t).events).toHaveLength(3);
+        const first = eventRecord(t, 0);
+        const last = eventRecord(t);
+        writeMemory(t.store, "c", "k1", { events: [{ ...last, pinned: true }] });
+        fourth.answer(
+            JSON.stringify(
+                analysis({ title: "Different proposed title", axes: { persistence: 3, change: 3, reach: 3 } }),
+            ),
+        );
+        expect((await terminal).status).toMatchObject({ state: "done", done: 4, total: 4 });
+        await t.service.drain();
+        expect(contents(t).events).toHaveLength(3);
+        expect(eventRecord(t, 0)).toEqual(first);
+        expect(eventRecord(t)).toEqual({
+            ...last,
+            pinned: true,
+            repeatCount: 1,
+            sources: [
+                ...last.sources,
+                ...t
+                    .chat("k1")!
+                    .message.slice(6, 8)
+                    .map((message, index) => ({
+                        messageId: message.chatId!,
+                        index: index + 6,
+                        hash: messageSourceHash(message),
+                    })),
+            ],
+        });
+        expect(runRecord(t)).toMatchObject({ result: "recorded", eventId: last.id });
+        const empty = t.nextTerminal("k1");
+        t.service.handOff(input);
+        expect((await empty).status).toMatchObject({ state: "done", done: 0, total: 0 });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(4);
+    });
+
+    it("closes threads only by a known non-ended id and stores new threads and final transitions", async () => {
+        const t = structuredHarness();
+        writeMemory(t.store, "c", "k1", {
+            threads: [
+                { id: "open", title: "Open promise", who: [], state: "open" },
+                { id: "title-target", title: "Title only", who: [], state: "open" },
+                { id: "done", title: "Done promise", who: [], state: "done", closedBy: "old" },
+                { id: "cancelled", title: "Cancelled promise", who: [], state: "cancelled", closedBy: "old" },
+                { id: "moving", title: "Moving promise", who: [], state: "partial" },
+            ],
+        });
+        expect(
+            await answerAnalysis(
+                t,
+                analysis({
+                    openThreads: {
+                        add: [{ title: "New promise", who: [] }],
+                        close: ["open", "Title only", "missing", "done", "cancelled"],
+                        transitions: [
+                            { threadId: "moving", to: "progress" },
+                            { threadId: "moving", to: "paused" },
+                            { threadId: "done", to: "open" },
+                        ],
+                    },
+                }),
+            ),
+        ).toMatchObject({ state: "done", done: 1 });
+        const saved = eventRecord(t);
+        const threads = contents(t).threads.map(({ id }) => t.store.memory.readRecord("c", "k1", "threads", id)!.data);
+        expect(threads).toHaveLength(6);
+        expect(threads).toEqual(
+            expect.arrayContaining([
+                { id: "open", title: "Open promise", who: [], state: "done", closedBy: saved.id },
+                { id: "title-target", title: "Title only", who: [], state: "open" },
+                { id: "done", title: "Done promise", who: [], state: "done", closedBy: "old" },
+                { id: "cancelled", title: "Cancelled promise", who: [], state: "cancelled", closedBy: "old" },
+                { id: "moving", title: "Moving promise", who: [], state: "paused" },
+                { id: expect.any(String), title: "New promise", who: [], state: "open", openedBy: saved.id },
+            ]),
+        );
+        expect(saved.openThreads).toEqual({
+            add: [{ title: "New promise", who: [] }],
+            close: ["open"],
+            transitions: [{ threadId: "moving", to: "paused" }],
+        });
+        expect(runRecord(t).receipt?.warnings).toEqual([
+            { kind: "unknownThread", detail: "Title only" },
+            { kind: "unknownThread", detail: "missing" },
+            { kind: "endedThread", detail: "done" },
+            { kind: "endedThread", detail: "cancelled" },
+            { kind: "endedThread", detail: "done" },
+        ]);
+    });
+
+    it("replays a failed snapshot byte for byte despite thread changes and rebuilds when settings change", async () => {
+        const t = structuredHarness();
+        writeMemory(t.store, "c", "k1", {
+            threads: [{ id: "promise", title: "Original promise", who: [], state: "open" }],
+        });
+        const first = await beginAnalysis(t);
+        first.request.fail("Provider rejected the analysis");
+        expect((await first.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const failed = runRecord(t);
+        expect(failed).toMatchObject({ result: "failed", receipt: { state: "failed", reason: "requestFailed" } });
+        expect(contents(t).events).toEqual([]);
+        writeMemory(t.store, "c", "k1", {
+            threads: [{ id: "promise", title: "Changed promise", who: [], state: "progress" }],
+        });
+        const retry = await beginAnalysis(t);
+        expect(retry.request.rawBody).toBe(first.request.rawBody);
+        expect(runRecord(t)).toMatchObject({
+            input: failed.input,
+            window: failed.window,
+            inputTokens: failed.inputTokens,
+        });
+        retry.request.fail("Still unavailable");
+        expect((await retry.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        t.replace("hypaV3Presets", (data) => ({
+            ...data,
+            items: data.items.map((item: any) => ({
+                ...item,
+                settings: {
+                    ...item.settings,
+                    structured: { ...item.settings.structured, instructions: "Record the newly configured details." },
+                },
+            })),
+        }));
+        const changed = await beginAnalysis(t);
+        expect(changed.request.rawBody).not.toBe(first.request.rawBody);
+        expect(t.provider.asked(changed.request)).toContain("Changed promise");
+        expect(t.provider.asked(changed.request)).toContain("Record the newly configured details.");
+        expect(runRecord(t).settingsFingerprint).not.toBe(failed.settingsFingerprint);
+        expect(runRecord(t).window).toEqual(failed.window);
+        changed.request.answer(JSON.stringify(analysis()));
+        expect((await changed.terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+        await t.service.drain();
+        expect(contents(t).runs.map(({ result }) => result)).toEqual(["failed", "failed", "recorded"]);
+        expect(contents(t).events).toHaveLength(1);
+    });
+
+    it("pauses after five failures, permits a manual recording, and resets the failure count on success", async () => {
+        const t = structuredHarness({ limits: { maxWriterWindows: 1 } });
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const { request, terminal } = await beginAnalysis(t);
+            request.fail("Unavailable");
+            expect((await terminal).status.state).toBe("failed");
+            await t.service.drain();
+            expect(contents(t).runs).toHaveLength(attempt + 1);
+        }
+        const before = contents(t);
+        const paused = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        const pauseResult = await Promise.race([
+            paused,
+            t.provider.request(5).then(() => {
+                throw new Error("Paused writer made a model request");
+            }),
+        ]);
+        expect(pauseResult.status).toMatchObject({ state: "skipped", reason: "writerPaused", done: 0 });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(5);
+        expect(contents(t)).toEqual(before);
+        const manual = await beginAnalysis(t, writerInput(t, "m3"), true);
+        manual.request.answer(JSON.stringify(analysis()));
+        expect((await manual.terminal).status).toMatchObject({ state: "done", done: 1 });
+        await t.service.drain();
+        expect(runRecord(t).result).toBe("recorded");
+        // Four new failures must still run: the five before the recording no longer count.
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const { request, terminal } = await beginAnalysis(t, writerInput(t, "m5"));
+            request.fail("Unavailable again");
+            expect((await terminal).status.state).toBe("failed");
+            await t.service.drain();
+        }
+        expect(
+            await answerAnalysis(t, analysis({ summary: "A new voyage begins." }), writerInput(t, "m5")),
+        ).toMatchObject({ state: "done", done: 1 });
+        expect(t.provider.requests).toHaveLength(11);
+    });
+
+    it("closes abandoned pending runs as interrupted without counting them as failures", async () => {
+        const t = structuredHarness();
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const { request, terminal } = await beginAnalysis(t);
+            request.fail("Unavailable");
+            await terminal;
+            await t.service.drain();
+        }
+        const cancelled = await beginAnalysis(t);
+        const pending = runRecord(t);
+        expect(pending.result).toBe("pending");
+        expect(t.service.cancel(ref("k1"))).toBe(true);
+        expect((await cancelled.terminal).status.state).toBe("cancelled");
+        await t.service.drain();
+        expect(runRecord(t).result).toBe("pending");
+        const resumed = await beginAnalysis(t);
+        expect(t.store.memory.readRecord("c", "k1", "runs", pending.id)!.data).toMatchObject({
+            result: "skipped",
+            reason: "interrupted",
+            input: pending.input,
+        });
+        expect(resumed.request.rawBody).toBe(cancelled.request.rawBody);
+        resumed.request.fail("Fifth actual failure");
+        expect((await resumed.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const paused = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        expect(
+            (
+                await Promise.race([
+                    paused,
+                    t.provider.request(6).then(() => {
+                        throw new Error("Interrupted run reset the failure count");
+                    }),
+                ])
+            ).status,
+        ).toMatchObject({ state: "skipped", reason: "writerPaused" });
+        expect(t.provider.requests).toHaveLength(6);
+        expect(contents(t).events).toEqual([]);
+    });
+
+    it("discards analysis arriving after cancellation or the task deadline", async () => {
+        for (const stop of ["cancel", "deadline"] as const) {
+            const t = structuredHarness({ ignoreAbort: true, limits: { taskDeadlineMs: 60_000 } });
+            const { request, terminal } = await beginAnalysis(t);
+            if (stop === "cancel") expect(t.service.cancel(ref("k1"))).toBe(true);
+            else t.clock.now += 60_000;
+            request.answer(JSON.stringify(analysis()));
+            expect((await terminal).status).toMatchObject({
+                state: stop === "cancel" ? "cancelled" : "failed",
+                reason: stop === "cancel" ? "cancelled" : "deadline",
+                done: 0,
+            });
+            await t.service.drain();
+            expect(contents(t).events).toEqual([]);
+            expect(runRecord(t).result).toBe("pending");
+            expect(t.embeddings.bodies).toEqual([]);
+        }
+    });
+
+    it("fails invalid required output with its field name and keeps the failed run without an event", async () => {
+        const t = structuredHarness();
+        const { request, terminal } = await beginAnalysis(t);
+        const output = JSON.stringify({ ...analysis(), summary: 42 });
+        request.answer(output);
+        expect((await terminal).status).toMatchObject({
+            state: "failed",
+            error: expect.stringContaining('"summary"'),
+            done: 0,
+        });
+        await t.service.drain();
+        expect(runRecord(t)).toMatchObject({
+            result: "failed",
+            error: expect.stringContaining('"summary"'),
+            outputTokens: output.length,
+            receipt: { state: "failed", reason: "invalidField" },
+        });
+        expect(contents(t).events).toEqual([]);
+        expect(t.embeddings.bodies).toEqual([]);
+    });
+
+    it("keeps a recorded event and finishes done with warmingFailed when embeddings fail", async () => {
+        const t = structuredHarness({ embeddingFail: true });
+        expect(await answerAnalysis(t)).toMatchObject({
+            state: "done",
+            reason: "warmingFailed",
+            done: 1,
+            total: 1,
+            error: expect.any(String),
+        });
+        expect(contents(t).events).toHaveLength(1);
+        expect(eventRecord(t).summary).toBe("Cara promises to return.");
+        expect(runRecord(t)).toMatchObject({
+            result: "recorded",
+            eventId: eventRecord(t).id,
+            receipt: { state: "recorded" },
+        });
+        expect(t.embeddings.bodies).toEqual([{ input: ["Cara promises to return."] }]);
+    });
+
     it("records uncovered windows in order, resumes after a service restart, and keeps chat revisions in statuses", async () => {
         const seen: (string | undefined)[][] = [];
         const writer: StructuredMemoryWriter = async (call) => {
@@ -2654,7 +3175,6 @@ describe("structured memory tasks", () => {
 
     it("reports structured skip reasons and keeps HypaV3 statuses without a kind key", async () => {
         const rows: { reason: string; options?: HarnessOptions; hypa?: boolean; deselect?: boolean }[] = [
-            { reason: "writerUnavailable" },
             { reason: "pluginModel", options: { memoryModelId: "pluginmodel:::prov" } },
             { reason: "requestTrigger", options: { owner: { triggerscript: [REQUEST_TRIGGER] } } },
             { reason: "localSummarization", options: { hypaSettings: { summarizationModel: "localModel" } } },

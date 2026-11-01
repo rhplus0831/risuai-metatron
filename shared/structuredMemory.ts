@@ -110,19 +110,48 @@ export const CHARACTER_SECTION_SLOTS = [
 ] as const;
 export type CharacterSectionSlot = (typeof CHARACTER_SECTION_SLOTS)[number];
 
-/** Bounds on stored records. Axes and grades are inclusive integers from 0. */
+/** Bounds on stored records and the writer's prompt. Axes and grades are inclusive integers from 0. */
 export const STRUCTURED_MEMORY_LIMITS = {
     keyLinesPerEvent: 5,
+    stateChangesPerEvent: 8,
+    knowledgePerEvent: 8,
+    relationshipShiftsPerEvent: 8,
+    /** Each of an event's thread lists: added, closed, and moved. */
+    threadsPerEvent: 8,
+    /** Page ids in one list: an event's participants, a thread's `who`, a knowledge item's `knowers`. */
+    pageRefsPerItem: 16,
     pageCandidates: 8,
     /** Failed runs in a row after which automatic recording pauses until the user resumes it. */
     consecutiveFailures: 5,
     axisMax: 3,
     gradeMax: 9,
+    /** The grade from which an event counts as important (`projectHypaV3Data`). */
+    importantEventGrade: 6,
+    /** Near-identical summaries: the character-bigram Jaccard index from which an event merges into the last one. */
+    dedupeSimilarity: 0.8,
     eventTitleChars: 120,
     eventSummaryChars: 800,
     keyLineChars: 300,
+    /** A fact, a state's values, or a relationship's note. */
+    factChars: 300,
+    threadTitleChars: 120,
+    /** A short label: a speaker, a section heading, a relationship's direction, the story time. */
+    labelChars: 120,
+    /** The longest id a record can hold (`isValidResourceId`). */
+    idChars: 512,
+    /** A failed run's stored error. */
+    runErrorChars: 2000,
     /** Entries each page keeps; the oldest go first. */
     pageHistoryEntries: 60,
+    /** Pages the writer's prompt lists. */
+    promptPages: 40,
+    /** Open threads the writer's prompt lists, the newest ones. */
+    promptThreads: 40,
+    /** The scene text the writer's prompt holds. */
+    promptSceneChars: 2000,
+    /** Messages before a window that the writer's prompt shows as context, and the text kept of each. */
+    contextMessages: 3,
+    contextMessageChars: 1000,
 } as const;
 
 /** A message a record cites, as it was when the record was written. */
@@ -338,7 +367,10 @@ export interface MemoryReceipt {
     }[];
     /** Candidates code turned down. */
     refused: { candidate: MemoryPageCandidate; refusal: string }[];
-    /** Items whose quote was not found in the window: kept out of the records and listed here, never dropped. */
+    /**
+     * Items whose quote was not found in the window, or that name no page: kept out of the records and
+     * listed here, never dropped.
+     */
     unverified: { kind: string; text: string; reason?: string }[];
     warnings: { kind: string; pageId?: string; heading?: string; detail?: string }[];
     model?: string;
@@ -363,6 +395,8 @@ export interface MemoryRun {
     error?: string;
     /** The exact input, so a retry replays the same call; absent when no model call was made. */
     input?: string;
+    /** `input`'s settings (`memorySettingsFingerprint`): a retry under other settings builds a new input. */
+    settingsFingerprint?: string;
     /** The extraction as parsed; `eventId` is what was committed from it. */
     analysis?: MemoryAnalysisResult;
     eventId?: string;
@@ -471,7 +505,8 @@ export interface MemoryManifest {
 
 /**
  * The events as `hypaV3Data`, for readers that know only that shape: each active event, in the given
- * order, as one summary. Retracted and stale events are left out, as they are of the prompt.
+ * order, as one summary. Retracted and stale events are left out, as they are of the prompt. A summary
+ * is important when its event is pinned or graded `importantEventGrade` or above.
  *
  * `metrics` come from `manifest` and are absent without one. They count only the events the send
  * verifiably used, by position in the returned `summaries`: `flow` as recent, `events` as similar, and
@@ -512,7 +547,9 @@ export function projectHypaV3Data(
         summaries.push({
             text: event.summary,
             chatMemos: event.sources.map((source) => source.messageId),
-            isImportant: event.pinned === true || event.grade !== undefined,
+            isImportant:
+                event.pinned === true ||
+                (event.grade !== undefined && event.grade >= STRUCTURED_MEMORY_LIMITS.importantEventGrade),
         });
     }
 
@@ -528,6 +565,16 @@ export function projectHypaV3Data(
             lastRandomSummaries: [],
         },
     };
+}
+
+/** A record's grade: the sum of its axes, none without them. */
+export function memoryGrade(axes: MemoryAxes | undefined): number | undefined {
+    return axes ? axes.persistence + axes.change + axes.reach : undefined;
+}
+
+/** Whether a thread in `state` is over: it takes no more transitions. */
+export function memoryThreadEnded(state: MemoryThreadState): boolean {
+    return state === "done" || state === "cancelled";
 }
 
 /** `value` when it is a member of `list`, else `undefined`. */

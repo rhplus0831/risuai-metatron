@@ -59,6 +59,7 @@ import {
     writerCeiling,
     type WriterWindow,
 } from "./structured/window.ts";
+import { createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
 
 /** The service's caps and times (D9). Tests shrink them. */
 export type MemoryTaskLimits = {
@@ -110,13 +111,19 @@ export type StructuredMemoryCommit =
     | { outcome: "committed"; revision: string }
     | { outcome: "refused"; reason: "staleInput" | "windowChanged" | "revisionConflict" };
 
-/** How a writer ended one window. The task redacts a failure's `error` before publishing it. */
+/**
+ * How a writer ended one window. `warmingError` says the recorded event's vectors were not warmed. The
+ * task redacts a failure's `error` and a `warmingError` before publishing them.
+ */
 export type StructuredMemoryWriterResult =
-    { outcome: "recorded" } | { outcome: "skipped"; reason: string } | { outcome: "failed"; error: string };
+    | { outcome: "recorded"; warmingError?: string }
+    | { outcome: "skipped"; reason: string }
+    | { outcome: "failed"; error: string };
 
 /**
  * Records one window. `commit` is its only write path: synchronous, into the memory tables at
  * `baseRevision`, and it throws once the task ended. A throw ends the task as any failed work does.
+ * `manual` says a person started the task.
  */
 export type StructuredMemoryWriter = (arg: {
     scope: JobScope;
@@ -124,6 +131,7 @@ export type StructuredMemoryWriter = (arg: {
     host: MemoryHost;
     tokenizer: MemoryTokenizer;
     window: WriterWindow;
+    manual: boolean;
     commit(baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit;
 }) => Promise<StructuredMemoryWriterResult>;
 
@@ -196,9 +204,9 @@ const statusKind = (input: AnyMemoryTaskInput) =>
 /**
  * The detached memory task service: a job hands it its chat's memory input after `done`, and a task
  * works from the input's kind. A HypaV3 task writes the summaries the input's lookahead plan needs,
- * one per commit. A Structured Memory task runs the injected writer over the windows that the chat as
- * stored and its stored coverage leave open, so a restart that loses the queue loses nothing: the next
- * send finds them again.
+ * one per commit. A Structured Memory task runs the writer over the windows that the chat as stored
+ * and its stored coverage leave open, so a restart that loses the queue loses nothing: the next send
+ * finds them again.
  *
  * - Queue: per chat one running task and one queued input (a newer hand-off replaces it, keeping its
  *   task id and manual mark); a queued input starts after the current turn (so after the handing-off
@@ -228,36 +236,37 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   revision (a recreated chat conflicts) and the input's epoch, refused (`writeSkipped`) when the
  *   source generation moved, the merge refuses, or the write conflicts. Then the new summaries'
  *   vectors are warmed (also the saved prefix of a provider failure); a warming failure keeps them.
- * - Structured Memory work: without an injected writer `skipped writerUnavailable`, before anything
- *   is read. Else the fresh scope's chat and the stored events give the windows below the ceiling: an
- *   automatic task's is the input's, the only thing it takes from the hand-off; a manual task's is
- *   `writerCeiling` of that chat, else the input's, since a person's start is the confirmation the
- *   captured one stands in for (a ceiling no longer eligible: `skipped staleInput`). `total` counts
- *   the windows the task runs, at most `maxWriterWindows`, and `done` those the writer returned
- *   recorded. The first window that ends otherwise ends the task. `commit` is the writer's only write
- *   path: refused when the service closed, the epoch or source generation moved, the window no longer
- *   reads from the chat as stored under that same ceiling (`windowStillConfirmed`), or the memory
- *   revision conflicts.
- * - Ends: `done` (`windowsLeft`: the cap stopped a task with windows left); `failed` (a provider
- *   failure, a writer's failure, a host failure, the deadline: errors redacted); `skipped` (a start
- *   check, `writeSkipped`, `sourceInvalid`, a writer's reason); `cancelled` (`cancel`, a writer lease,
- *   an invalidation notice, maintenance, shutdown). A terminal closes the task's write fence, reads
- *   the chat's revision (`terminalRevision`, null when the chat is gone), and publishes, in one
- *   synchronous step; what the task's work does afterwards changes nothing. An epoch change clears the
- *   registry without publishing (the `epoch` event is the signal).
+ * - Structured Memory work: the fresh scope's chat and the stored events give the windows below the
+ *   ceiling: an automatic task's is the input's, the only thing it takes from the hand-off; a manual
+ *   task's is `writerCeiling` of that chat, else the input's, since a person's start is the
+ *   confirmation the captured one stands in for (a ceiling no longer eligible: `skipped staleInput`).
+ *   `total` counts the windows the task runs, at most `maxWriterWindows`, and `done` those the writer
+ *   returned recorded. The first window that ends otherwise ends the task. `commit` is the writer's
+ *   only write path: refused when the service closed, the epoch or source generation moved, the
+ *   window no longer reads from the chat as stored under that same ceiling (`windowStillConfirmed`),
+ *   or the memory revision conflicts.
+ * - Ends: `done` (`windowsLeft`: the cap stopped a task with windows left; `warmingFailed`: a warming
+ *   failure kept what was written); `failed` (a provider failure, a writer's failure, a host failure,
+ *   the deadline: errors redacted); `skipped` (a start check, `writeSkipped`, `sourceInvalid`, a
+ *   writer's reason); `cancelled` (`cancel`, a writer lease, an invalidation notice, maintenance,
+ *   shutdown). A terminal closes the task's write fence, reads the chat's revision (`terminalRevision`,
+ *   null when the chat is gone), and publishes, in one synchronous step; what the task's work does
+ *   afterwards changes nothing. An epoch change clears the registry without publishing (the `epoch`
+ *   event is the signal).
  */
 export function createMemoryTasks(deps: {
     store: ResourceStore;
     kinds: ResourceKindRegistry;
     gate: MaintenanceGate;
     hostDeps: MemoryTaskHostDeps;
-    /** Records a Structured Memory task's windows; without one such a task ends `skipped`. */
+    /** Records a Structured Memory task's windows, in place of `createStructuredWriter`. */
     structuredWriter?: StructuredMemoryWriter;
     now?: () => number;
     limits?: Partial<MemoryTaskLimits>;
 }) {
-    const { store, kinds, gate, hostDeps, structuredWriter } = deps;
+    const { store, kinds, gate, hostDeps } = deps;
     const now = deps.now ?? Date.now;
+    const structuredWriter = deps.structuredWriter ?? createStructuredWriter(store, { now });
     const limits: MemoryTaskLimits = { ...MEMORY_TASK_LIMITS, ...deps.limits };
     const charactersKind = kinds.get(RESOURCE_KIND.characters);
     if (!charactersKind) {
@@ -904,9 +913,9 @@ export function createMemoryTasks(deps: {
 
     /**
      * A Structured Memory task's work on its checked scope: the windows open in the chat as stored, each
-     * through the injected writer, in order. The first window that does not end `recorded` ends the task:
-     * a later one recorded ahead of it would put its events out of message order, and the windows stay
-     * open for the next hand-off.
+     * through the writer, in order. The first window that does not end `recorded` ends the task: a later
+     * one recorded ahead of it would put its events out of message order, and the windows stay open for
+     * the next hand-off.
      */
     async function structuredWork(
         task: Task,
@@ -915,10 +924,6 @@ export function createMemoryTasks(deps: {
         host: MemoryHost,
         tokenizer: MemoryTokenizer,
     ) {
-        if (!structuredWriter) {
-            endRunning(task, "skipped", { reason: "writerUnavailable" });
-            return;
-        }
         const { chaId, chatId } = input.chatRef;
         const messages = scopeChat(scope)?.message ?? [];
         // A person's start is the confirmation the captured ceiling stands in for, and that one is as
@@ -944,6 +949,7 @@ export function createMemoryTasks(deps: {
         const allowed = windows.slice(0, limits.maxWriterWindows);
         task.total = allowed.length;
         publishRunning(task);
+        let warming: string | undefined;
         for (const window of allowed) {
             live(task);
             const result = await structuredWriter({
@@ -952,10 +958,12 @@ export function createMemoryTasks(deps: {
                 host,
                 tokenizer,
                 window,
+                manual: task.manual,
                 commit: commitOf(task, input, window, confirmedBefore),
             });
             if (result.outcome === "recorded") {
                 task.done++;
+                warming ??= result.warmingError;
             }
             live(task);
             if (result.outcome === "skipped") {
@@ -968,7 +976,11 @@ export function createMemoryTasks(deps: {
             }
             publishRunning(task);
         }
-        endRunning(task, "done", windows.length > allowed.length ? { reason: "windowsLeft" } : {});
+        if (windows.length > allowed.length) {
+            endRunning(task, "done", { reason: "windowsLeft" });
+            return;
+        }
+        endRunning(task, "done", warming !== undefined ? { reason: "warmingFailed", error: host.redact(warming) } : {});
     }
 
     async function work(task: Task): Promise<void> {
@@ -984,7 +996,7 @@ export function createMemoryTasks(deps: {
             const built = createMemoryTaskHost({
                 scope,
                 input,
-                deps: trackedHostDeps(task),
+                deps: input.kind === "structuredMemory" ? writerHostDeps(trackedHostDeps(task)) : trackedHostDeps(task),
                 signal: task.controller.signal,
                 fence: () => live(task),
             });

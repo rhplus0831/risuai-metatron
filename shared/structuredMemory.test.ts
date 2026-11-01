@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type MemoryEvent, type MemoryManifestItem, projectHypaV3Data } from "./structuredMemory.ts";
+import { type MemoryEvent, type MemoryManifestItem, memoryGrade, projectHypaV3Data } from "./structuredMemory.ts";
 
 function event(id: string, overrides: Partial<MemoryEvent> = {}): MemoryEvent {
     return {
@@ -30,6 +30,17 @@ function item(
 }
 
 describe("projectHypaV3Data", () => {
+    it("marks grade six and pinned events important but leaves grade five and ungraded events ordinary", () => {
+        expect(
+            projectHypaV3Data([
+                event("five", { grade: 5 }),
+                event("six", { grade: 6 }),
+                event("ungraded"),
+                event("pinned", { pinned: true, grade: 0 }),
+            ]).summaries.map(({ isImportant }) => isImportant),
+        ).toEqual([false, true, false, true]);
+    });
+
     it("projects active events in order with their summaries, all source ids, and pin or grade importance", () => {
         const events = [
             event("retracted", { status: "retracted", pinned: true, grade: 9 }),
@@ -55,7 +66,7 @@ describe("projectHypaV3Data", () => {
                 isImportant: false,
             },
             { text: "The host offered a room.", chatMemos: [], isImportant: true },
-            { text: "They unpacked.", chatMemos: [], isImportant: true },
+            { text: "They unpacked.", chatMemos: [], isImportant: false },
             { text: "They promised to meet at dawn.", chatMemos: [], isImportant: true },
         ]);
     });
@@ -128,4 +139,11 @@ describe("projectHypaV3Data", () => {
         expect(metrics?.lastRecentSummaries).toHaveLength(2);
         expect(metrics?.lastSimilarSummaries).toHaveLength(2);
     });
+});
+
+it("sums all three grade axes from zero through nine and has no grade without axes", () => {
+    expect(memoryGrade({ persistence: 0, change: 0, reach: 0 })).toBe(0);
+    expect(memoryGrade({ persistence: 1, change: 2, reach: 3 })).toBe(6);
+    expect(memoryGrade({ persistence: 3, change: 3, reach: 3 })).toBe(9);
+    expect(memoryGrade(undefined)).toBeUndefined();
 });
