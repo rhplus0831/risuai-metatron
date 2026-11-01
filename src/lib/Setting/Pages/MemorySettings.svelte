@@ -36,6 +36,13 @@
         isVoyageEmbeddingModel,
         type HypaV3Settings,
     } from "../../../../shared/memory.ts";
+    import {
+        normalizeStructuredMemorySettings,
+        STRUCTURED_MEMORY_ALGORITHM,
+        STRUCTURED_MEMORY_CADENCES,
+        type StructuredMemoryCadence,
+        type StructuredMemorySettings,
+    } from "../../../../shared/structuredMemory.ts";
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
     import { memorySettingsSections, memorySupaMemoryItems } from "src/ts/setting/memorySettingsData";
@@ -181,98 +188,35 @@
         target.budgetMode = "tokens";
     }
     // End HypaV3
+
+    // Structured Memory selects by `memoryAlgorithmType`, ahead of the flags, as the server does. It
+    // shares the selected HypaV3 preset for its budget and keeps its own settings in `structured`.
+    const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
+
+    /**
+     * Changes the preset's `structured`. A stored value can be partial or damaged, which every reader
+     * fills field by field, so a change starts from that reading and stores it whole.
+     */
+    function setStructured(target: HypaV3Settings, change: (structured: StructuredMemorySettings) => void) {
+        const structured = normalizeStructuredMemorySettings(target.structured);
+        change(structured);
+        target.structured = structured;
+    }
+
+    /** A whole number as `normalizeStructuredMemorySettings` keeps it; an empty or invalid entry writes nothing. */
+    function setStructuredCount(
+        target: HypaV3Settings,
+        value: number | null | undefined,
+        min: number,
+        write: (structured: StructuredMemorySettings, count: number) => void,
+    ) {
+        if (typeof value === "number" && Number.isInteger(value) && value >= min) {
+            setStructured(target, (structured) => write(structured, value));
+        }
+    }
 </script>
 
-<h2 class="mb-2 text-2xl font-bold mt-2">{language.memorySettings}</h2>
-
-<span class="text-textcolor mt-4">{language.type}</span>
-
-<SelectInput
-    className="mb-4"
-    value={settings.memoryTranslateMedia.hypaV3
-        ? "hypaV3"
-        : settings.memoryTranslateMedia.hypav2
-          ? "hypaV2"
-          : settings.memoryTranslateMedia.supaModelType !== "none"
-            ? "supaMemory"
-            : settings.memoryTranslateMedia.hanuraiEnable
-              ? "hanuraiMemory"
-              : "none"}
-    onchange={(v) => {
-        //@ts-expect-error 'value' doesn't exist on EventTarget, but target is HTMLSelectElement here
-        const value = v.target.value;
-        if (value === "supaMemory") {
-            settings.memoryTranslateMedia.supaModelType = "distilbart";
-            settings.ui.memoryAlgorithmType = "supaMemory";
-            settings.memoryTranslateMedia.hypav2 = false;
-            settings.memoryTranslateMedia.hanuraiEnable = false;
-            settings.memoryTranslateMedia.hypaV3 = false;
-        } else if (value === "hanuraiMemory") {
-            settings.memoryTranslateMedia.supaModelType = "none";
-            settings.ui.memoryAlgorithmType = "hanuraiMemory";
-            settings.memoryTranslateMedia.hypav2 = false;
-            settings.memoryTranslateMedia.hanuraiEnable = true;
-            settings.memoryTranslateMedia.hypaV3 = false;
-        } else if (value === "hypaV2") {
-            settings.memoryTranslateMedia.supaModelType = "distilbart";
-            settings.ui.memoryAlgorithmType = "hypaMemoryV2";
-            settings.memoryTranslateMedia.hypav2 = true;
-            settings.memoryTranslateMedia.hanuraiEnable = false;
-            settings.memoryTranslateMedia.hypaV3 = false;
-        } else if (value === "hypaV3") {
-            settings.ui.memoryAlgorithmType = "hypaMemoryV3";
-            settings.memoryTranslateMedia.supaModelType = "none";
-            settings.memoryTranslateMedia.hanuraiEnable = false;
-            settings.memoryTranslateMedia.hypav2 = false;
-            settings.memoryTranslateMedia.hypaV3 = true;
-        } else {
-            settings.memoryTranslateMedia.supaModelType = "none";
-            settings.ui.memoryAlgorithmType = "none";
-            settings.memoryTranslateMedia.hypav2 = false;
-            settings.memoryTranslateMedia.hanuraiEnable = false;
-            settings.memoryTranslateMedia.hypaV3 = false;
-        }
-    }}
->
-    <OptionInput value="none">None</OptionInput>
-    <OptionInput value="supaMemory">{language.SuperMemory}</OptionInput>
-    <OptionInput value="hypaV2">{language.HypaMemory} V2</OptionInput>
-    <OptionInput value="hanuraiMemory">{language.hanuraiMemory}</OptionInput>
-    <OptionInput value="hypaV3">{language.HypaMemory} V3</OptionInput>
-</SelectInput>
-
-{#if settings.memoryTranslateMedia.hanuraiEnable}
-    <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hanuraiDesc}</span>
-    <span>Chunk Size</span>
-    <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hanuraiTokens} min={100} />
-    <div class="flex mb-4">
-        <Check bind:check={settings.memoryTranslateMedia.hanuraiSplit} name="Text Spliting" />
-    </div>
-{:else if settings.memoryTranslateMedia.hypav2}
-    <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hypaV2Desc}</span>
-    <span class="text-textcolor mt-4">{language.SuperMemory} {language.model}</span>
-    <SelectInput className="mt-2 mb-2" bind:value={settings.memoryTranslateMedia.supaModelType}>
-        <OptionInput value="distilbart">distilbart-cnn-6-6 (Free/Local)</OptionInput>
-        <OptionInput value="instruct35">OpenAI 3.5 Turbo Instruct</OptionInput>
-        <OptionInput value="subModel">{language.submodel}</OptionInput>
-    </SelectInput>
-    {#if settings.memoryTranslateMedia.supaModelType === "instruct35"}
-        <span class="mb-2 text-xs text-textcolor2">{language.supaMemoryKeyBelow}</span>
-    {/if}
-    <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
-    <TextAreaInput
-        size="sm"
-        bind:value={settings.memoryTranslateMedia.supaMemoryPrompt}
-        placeholder="Leave it blank to use default"
-    />
-    <span class="text-textcolor">{language.hypaChunkSize}</span>
-    <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaChunkSize} min={100} />
-    <span class="text-textcolor">{language.hypaAllocatedTokens}</span>
-    <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaAllocatedTokens} min={100} />
-{:else if settings.memoryTranslateMedia.hypaV3}
-    <span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2"
-        >{language.hypaV3Settings.descriptionLabel}</span
-    >
+{#snippet presetPicker()}
     <span class="text-textcolor">Preset</span>
     <select
         class={"risu-select border border-darkborderc focus:border-borderc rounded-md shadow-xs text-textcolor bg-transparent focus:ring-borderc focus:ring-2 focus:outline-hidden transition-colors duration-200 text-md px-4 py-2 mb-1"}
@@ -416,6 +360,308 @@
             <HardDriveUploadIcon size={24} />
         </button>
     </div>
+{/snippet}
+
+{#snippet budgetModeControl(preset: HypaV3Settings)}
+    <span class="text-textcolor">{language.hypaV3Settings.budgetModeLabel}</span>
+    <SegmentedControl
+        bind:value={
+            () => preset.budgetMode,
+            (value) => {
+                preset.budgetMode = value === "tokens" ? "tokens" : "ratio";
+            }
+        }
+        options={[
+            { value: "ratio", label: language.hypaV3Settings.budgetModeRatio },
+            { value: "tokens", label: language.hypaV3Settings.budgetModeTokens },
+        ]}
+        label={language.hypaV3Settings.budgetModeLabel}
+        size="md"
+    />
+{/snippet}
+
+{#snippet memoryMaximumControl(preset: HypaV3Settings)}
+    {#if preset.budgetMode === "tokens"}
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.memoryBudgetTokensLabel} <Help key="hypaV3MemoryBudgetTokens" /></span
+        >
+        <NumberInput
+            marginBottom
+            size="sm"
+            min={0}
+            bind:value={() => preset.memoryBudgetTokens, (value) => setTokenAmount(preset, "memoryBudgetTokens", value)}
+        />
+    {:else}
+        {#await estimateMaxMemoryRatio() then maxMemoryRatio}
+            <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensRatioLabel}</span>
+            <NumberInput marginBottom disabled size="sm" value={maxMemoryRatio} />
+        {:catch error}
+            <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensRatioError}</span>
+        {/await}
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.memoryTokensRatioLabel} <Help key="hypaV3MemoryTokensRatio" /></span
+        >
+        <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={preset.memoryTokensRatio} />
+    {/if}
+{/snippet}
+
+{#snippet budgetReducedNotes(reductions: readonly HypaV3BudgetReduction[])}
+    {#if reductions.length > 0}
+        {@const promptBudget = Math.max(0, hypaMaxContext - activePreset.maxResponse)}
+        <div class="-mt-2 mb-4 flex flex-col gap-1">
+            {#each reductions as reduction (reduction.field)}
+                <span class="text-draculared text-xs" data-hypav3-budget-reduced={reduction.field}
+                    >{budgetFieldLabels[reduction.field]}: {language.hypaV3Settings.budgetReducedWarning(
+                        hypaMaxContext.toLocaleString(),
+                        promptBudget.toLocaleString(),
+                        reduction.applied.toLocaleString(),
+                    )}</span
+                >
+            {/each}
+        </div>
+    {/if}
+{/snippet}
+
+{#snippet structuredCount(
+    preset: HypaV3Settings,
+    label: string,
+    min: number,
+    read: (structured: StructuredMemorySettings) => number,
+    write: (structured: StructuredMemorySettings, count: number) => void,
+)}
+    <span class="text-textcolor">{label}</span>
+    <NumberInput
+        marginBottom
+        size="sm"
+        {min}
+        bind:value={
+            () => read(normalizeStructuredMemorySettings(preset.structured)),
+            (value) => setStructuredCount(preset, value, min, write)
+        }
+    />
+{/snippet}
+
+<h2 class="mb-2 text-2xl font-bold mt-2">{language.memorySettings}</h2>
+
+<span class="text-textcolor mt-4">{language.type}</span>
+
+<SelectInput
+    className="mb-4"
+    value={structuredMemorySelected
+        ? STRUCTURED_MEMORY_ALGORITHM
+        : settings.memoryTranslateMedia.hypaV3
+          ? "hypaV3"
+          : settings.memoryTranslateMedia.hypav2
+            ? "hypaV2"
+            : settings.memoryTranslateMedia.supaModelType !== "none"
+              ? "supaMemory"
+              : settings.memoryTranslateMedia.hanuraiEnable
+                ? "hanuraiMemory"
+                : "none"}
+    onchange={(v) => {
+        //@ts-expect-error 'value' doesn't exist on EventTarget, but target is HTMLSelectElement here
+        const value = v.target.value;
+        if (value === STRUCTURED_MEMORY_ALGORITHM) {
+            settings.ui.memoryAlgorithmType = STRUCTURED_MEMORY_ALGORITHM;
+            settings.memoryTranslateMedia.supaModelType = "none";
+            settings.memoryTranslateMedia.hypav2 = false;
+            settings.memoryTranslateMedia.hanuraiEnable = false;
+            settings.memoryTranslateMedia.hypaV3 = false;
+        } else if (value === "supaMemory") {
+            settings.memoryTranslateMedia.supaModelType = "distilbart";
+            settings.ui.memoryAlgorithmType = "supaMemory";
+            settings.memoryTranslateMedia.hypav2 = false;
+            settings.memoryTranslateMedia.hanuraiEnable = false;
+            settings.memoryTranslateMedia.hypaV3 = false;
+        } else if (value === "hanuraiMemory") {
+            settings.memoryTranslateMedia.supaModelType = "none";
+            settings.ui.memoryAlgorithmType = "hanuraiMemory";
+            settings.memoryTranslateMedia.hypav2 = false;
+            settings.memoryTranslateMedia.hanuraiEnable = true;
+            settings.memoryTranslateMedia.hypaV3 = false;
+        } else if (value === "hypaV2") {
+            settings.memoryTranslateMedia.supaModelType = "distilbart";
+            settings.ui.memoryAlgorithmType = "hypaMemoryV2";
+            settings.memoryTranslateMedia.hypav2 = true;
+            settings.memoryTranslateMedia.hanuraiEnable = false;
+            settings.memoryTranslateMedia.hypaV3 = false;
+        } else if (value === "hypaV3") {
+            settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+            settings.memoryTranslateMedia.supaModelType = "none";
+            settings.memoryTranslateMedia.hanuraiEnable = false;
+            settings.memoryTranslateMedia.hypav2 = false;
+            settings.memoryTranslateMedia.hypaV3 = true;
+        } else {
+            settings.memoryTranslateMedia.supaModelType = "none";
+            settings.ui.memoryAlgorithmType = "none";
+            settings.memoryTranslateMedia.hypav2 = false;
+            settings.memoryTranslateMedia.hanuraiEnable = false;
+            settings.memoryTranslateMedia.hypaV3 = false;
+        }
+    }}
+>
+    <OptionInput value="none">None</OptionInput>
+    <OptionInput value="supaMemory">{language.SuperMemory}</OptionInput>
+    <OptionInput value="hypaV2">{language.HypaMemory} V2</OptionInput>
+    <OptionInput value="hanuraiMemory">{language.hanuraiMemory}</OptionInput>
+    <OptionInput value="hypaV3">{language.HypaMemory} V3</OptionInput>
+    <OptionInput value={STRUCTURED_MEMORY_ALGORITHM}>{language.structuredMemory.name}</OptionInput>
+</SelectInput>
+
+{#if structuredMemorySelected}
+    {@const text = language.structuredMemory.settings}
+    <span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2" data-structured-memory-description
+        >{text.description}</span
+    >
+    {@render presetPicker()}
+
+    {#if currentHypaV3?.settings}
+        {@const preset = currentHypaV3.settings}
+        {@const structured = normalizeStructuredMemorySettings(preset.structured)}
+
+        {@render budgetModeControl(preset)}
+        {@render memoryMaximumControl(preset)}
+        {@render budgetReducedNotes(budgetReduced.filter(({ field }) => field === "memory"))}
+        <span class="text-textcolor">{text.language}</span>
+        <TextInput
+            marginBottom
+            size="sm"
+            placeholder={text.languagePlaceholder}
+            bind:value={() => structured.language, (value) => setStructured(preset, (next) => (next.language = value))}
+        />
+        <span class="text-textcolor">{text.cadence}</span>
+        <SelectInput
+            className="mb-4"
+            value={structured.cadence}
+            onchange={({ currentTarget }) =>
+                setStructured(preset, (next) => (next.cadence = currentTarget.value as StructuredMemoryCadence))}
+        >
+            {#each STRUCTURED_MEMORY_CADENCES as cadence (cadence)}
+                <OptionInput value={cadence}>{text.cadences[cadence]}</OptionInput>
+            {/each}
+        </SelectInput>
+        {#if structured.cadence === "everyK"}
+            {@render structuredCount(
+                preset,
+                text.cadenceTurns,
+                1,
+                (read) => read.cadenceTurns,
+                (next, count) => (next.cadenceTurns = count),
+            )}
+        {:else if structured.cadence === "tokens" && preset.budgetMode === "tokens"}
+            {@render structuredCount(
+                preset,
+                text.cadenceTokens,
+                1,
+                (read) => read.cadenceTokens,
+                (next, count) => (next.cadenceTokens = count),
+            )}
+        {:else if structured.cadence === "tokens"}
+            <span class="text-textcolor">{text.cadenceRatio}</span>
+            <SliderInput
+                marginBottom
+                min={0.01}
+                max={0.99}
+                step={0.01}
+                fixed={2}
+                bind:value={
+                    () => structured.cadenceRatio,
+                    (value) => setStructured(preset, (next) => (next.cadenceRatio = value))
+                }
+            />
+        {/if}
+        {@render structuredCount(
+            preset,
+            text.windowTurns,
+            1,
+            (read) => read.windowTurns,
+            (next, count) => (next.windowTurns = count),
+        )}
+        {@render structuredCount(
+            preset,
+            text.flowEvents,
+            0,
+            (read) => read.flowEvents,
+            (next, count) => (next.flowEvents = count),
+        )}
+        {@render structuredCount(
+            preset,
+            text.eventsTarget,
+            0,
+            (read) => read.laneTargets.events,
+            (next, count) => (next.laneTargets.events = count),
+        )}
+        {@render structuredCount(
+            preset,
+            text.evidenceTarget,
+            0,
+            (read) => read.laneTargets.evidence,
+            (next, count) => (next.laneTargets.evidence = count),
+        )}
+        {@render structuredCount(
+            preset,
+            text.threadsTarget,
+            0,
+            (read) => read.laneTargets.threads,
+            (next, count) => (next.laneTargets.threads = count),
+        )}
+        <span class="text-textcolor">{text.instructions}</span>
+        <div class="mb-4">
+            <TextAreaInput
+                size="sm"
+                placeholder={text.instructionsPlaceholder}
+                popupEditorContext={currentHypaV3?.id}
+                bind:value={
+                    () => structured.instructions,
+                    (value) => setStructured(preset, (next) => (next.instructions = value))
+                }
+            />
+        </div>
+        <div class="mb-2 flex items-center">
+            <Check
+                name={text.volatileBeforeLastUser}
+                bind:check={
+                    () => structured.volatileBeforeLastUser,
+                    (value) => setStructured(preset, (next) => (next.volatileBeforeLastUser = value))
+                }
+            />
+        </div>
+    {/if}
+
+    <div class="mb-8"></div>
+{:else if settings.memoryTranslateMedia.hanuraiEnable}
+    <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hanuraiDesc}</span>
+    <span>Chunk Size</span>
+    <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hanuraiTokens} min={100} />
+    <div class="flex mb-4">
+        <Check bind:check={settings.memoryTranslateMedia.hanuraiSplit} name="Text Spliting" />
+    </div>
+{:else if settings.memoryTranslateMedia.hypav2}
+    <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hypaV2Desc}</span>
+    <span class="text-textcolor mt-4">{language.SuperMemory} {language.model}</span>
+    <SelectInput className="mt-2 mb-2" bind:value={settings.memoryTranslateMedia.supaModelType}>
+        <OptionInput value="distilbart">distilbart-cnn-6-6 (Free/Local)</OptionInput>
+        <OptionInput value="instruct35">OpenAI 3.5 Turbo Instruct</OptionInput>
+        <OptionInput value="subModel">{language.submodel}</OptionInput>
+    </SelectInput>
+    {#if settings.memoryTranslateMedia.supaModelType === "instruct35"}
+        <span class="mb-2 text-xs text-textcolor2">{language.supaMemoryKeyBelow}</span>
+    {/if}
+    <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
+    <TextAreaInput
+        size="sm"
+        bind:value={settings.memoryTranslateMedia.supaMemoryPrompt}
+        placeholder="Leave it blank to use default"
+    />
+    <span class="text-textcolor">{language.hypaChunkSize}</span>
+    <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaChunkSize} min={100} />
+    <span class="text-textcolor">{language.hypaAllocatedTokens}</span>
+    <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaAllocatedTokens} min={100} />
+{:else if settings.memoryTranslateMedia.hypaV3}
+    <span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2"
+        >{language.hypaV3Settings.descriptionLabel}</span
+    >
+    {@render presetPicker()}
 
     {#if currentHypaV3?.settings}
         {@const settings = currentHypaV3.settings}
@@ -453,33 +699,9 @@
                 popupEditorContext={currentHypaV3?.id}
             />
         </div>
-        <span class="text-textcolor">{language.hypaV3Settings.budgetModeLabel}</span>
-        <SegmentedControl
-            bind:value={
-                () => settings.budgetMode,
-                (value) => {
-                    settings.budgetMode = value === "tokens" ? "tokens" : "ratio";
-                }
-            }
-            options={[
-                { value: "ratio", label: language.hypaV3Settings.budgetModeRatio },
-                { value: "tokens", label: language.hypaV3Settings.budgetModeTokens },
-            ]}
-            label={language.hypaV3Settings.budgetModeLabel}
-            size="md"
-        />
+        {@render budgetModeControl(settings)}
+        {@render memoryMaximumControl(settings)}
         {#if settings.budgetMode === "tokens"}
-            <span class="text-textcolor"
-                >{language.hypaV3Settings.memoryBudgetTokensLabel} <Help key="hypaV3MemoryBudgetTokens" /></span
-            >
-            <NumberInput
-                marginBottom
-                size="sm"
-                min={0}
-                bind:value={
-                    () => settings.memoryBudgetTokens, (value) => setTokenAmount(settings, "memoryBudgetTokens", value)
-                }
-            />
             <span class="text-textcolor"
                 >{language.hypaV3Settings.lookaheadHeadroomTokensLabel}
                 <Help key="hypaV3LookaheadHeadroomTokens" /></span
@@ -506,31 +728,8 @@
                     (value) => setTokenAmount(settings, "extraSummarizationTokens", value)
                 }
             />
-            {#if budgetReduced.length > 0}
-                {@const promptBudget = Math.max(0, hypaMaxContext - activePreset.maxResponse)}
-                <div class="-mt-2 mb-4 flex flex-col gap-1">
-                    {#each budgetReduced as reduction (reduction.field)}
-                        <span class="text-draculared text-xs" data-hypav3-budget-reduced={reduction.field}
-                            >{budgetFieldLabels[reduction.field]}: {language.hypaV3Settings.budgetReducedWarning(
-                                hypaMaxContext.toLocaleString(),
-                                promptBudget.toLocaleString(),
-                                reduction.applied.toLocaleString(),
-                            )}</span
-                        >
-                    {/each}
-                </div>
-            {/if}
+            {@render budgetReducedNotes(budgetReduced)}
         {:else}
-            {#await estimateMaxMemoryRatio() then maxMemoryRatio}
-                <span class="text-textcolor">{language.hypaV3Settings.maxMemoryTokensRatioLabel}</span>
-                <NumberInput marginBottom disabled size="sm" value={maxMemoryRatio} />
-            {:catch error}
-                <span class="mb-4 text-red-400">{language.hypaV3Settings.maxMemoryTokensRatioError}</span>
-            {/await}
-            <span class="text-textcolor"
-                >{language.hypaV3Settings.memoryTokensRatioLabel} <Help key="hypaV3MemoryTokensRatio" /></span
-            >
-            <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.memoryTokensRatio} />
             <span class="text-textcolor"
                 >{language.hypaV3Settings.extraSummarizationRatioLabel}
                 <Help key="hypaV3ExtraSummarizationRatio" /></span

@@ -15,6 +15,7 @@
     import { chatToggleDefinitions, setChatToggle } from "src/ts/toggles/chatToggles.svelte";
     import { supaMemoryOnCount } from "../../../shared/characters.ts";
     import { resolveGlobalChatVar, valueToggles } from "../../../shared/prompt/toggles.ts";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import { compareTogglePreset, toggleValuesForChat } from "../../../shared/togglePresets.ts";
     import {
         applyTogglePreset,
@@ -130,6 +131,8 @@
             setChatToggle(chatRef, key, value);
         }
     }
+
+    const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
 
     // Turning memory on counts (`supaMemoryOnCount`): it voids every chat's "don't ask again" answer to
     // the no-memory trim question.
@@ -351,17 +354,19 @@
     {/if}
     {@render toggles(groupedToggles)}
 </fieldset>
-{#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
+{#if chara && (structuredMemorySelected || settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
     <div class="flex mt-2 items-center">
         <CheckInput
             bind:check={getMemoryToggle, setMemoryToggle}
-            name={settings.memoryTranslateMedia.hypaV3
-                ? language.ToggleHypaMemory
-                : settings.memoryTranslateMedia.hanuraiEnable
-                  ? language.hanuraiMemory
-                  : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
-                    ? language.ToggleHypaMemory
-                    : language.ToggleSuperMemory}
+            name={structuredMemorySelected
+                ? language.structuredMemory.toggle
+                : settings.memoryTranslateMedia.hypaV3
+                  ? language.ToggleHypaMemory
+                  : settings.memoryTranslateMedia.hanuraiEnable
+                    ? language.hanuraiMemory
+                    : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
+                      ? language.ToggleHypaMemory
+                      : language.ToggleSuperMemory}
         />
     </div>
 {/if}

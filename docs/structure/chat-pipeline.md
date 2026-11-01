@@ -88,7 +88,8 @@ Bare paths are under `src/ts/process/`.
   Memory entries never adopt history sources.
 - An `editRequest` that changes the list or a recheck removal of an entry without a whole source makes
   `attributionExact` false. `trim` exists without memory only (`contextTrim`).
-- `memory.coverage` is `"unknown"` for non-HypaV3 memory. HypaV3 starts `"gap"` for uncovered trim, else `"unknown"` for
+- `memory.coverage` is `"unknown"` for other memory. Structured Memory starts as
+  [its report](structured-memory.md#the-read-path) says. HypaV3 starts `"gap"` for uncovered trim, else `"unknown"` for
   stored summaries ahead of history, else `"covered"`. Later raw-history loss demotes only `"covered"`; returned memory
   with no traced memory-only survivor, or any untraced survivor, forces `"unknown"`.
 

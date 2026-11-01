@@ -11,6 +11,7 @@
     import { memoryTaskStatusLine } from "../HypaV3Modal/taskStatusLine";
     import CoverageTab from "./CoverageTab.svelte";
     import LogTab from "./LogTab.svelte";
+    import PreviewTab from "./PreviewTab.svelte";
 
     // The memory panel of a Structured Memory chat: `App.svelte` mounts it in place of the HypaV3 modal,
     // under the same `hypaV3ModalOpen` store. A tab is one component taking `chatRef`, `readOnly`, and
@@ -18,11 +19,13 @@
     //
     // A tab reads again each time `refresh` moves: on the button, and when the panel stops being
     // read-only, which is when a memory task or a record-now job has finished writing. It joins held
-    // data itself, so a change of the held messages needs no request.
+    // data itself, so a change of the held messages needs no request. Preview is the exception: a
+    // preview makes the panel read-only itself, so it runs only on its own button.
 
     const text = language.structuredMemory.panel;
     const TABS = [
         { value: "coverage", label: text.coverage, component: CoverageTab },
+        { value: "preview", label: text.preview, component: PreviewTab },
         { value: "log", label: text.log, component: LogTab },
     ];
 

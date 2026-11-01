@@ -1,13 +1,21 @@
 import { strToU8, zipSync, type Zippable } from "fflate";
-import { eligibleHistory } from "../../../shared/contextReport.ts";
+import {
+    eligibleHistory,
+    parseContextReport,
+    type ContextMemoryWriter,
+    type ContextReport,
+} from "../../../shared/contextReport.ts";
 import type { Message } from "../../../shared/database.ts";
+import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
+    itemTag,
     memoryEventCovers,
     rawWindow,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
+    type MemoryManifestItem,
     type MemoryPage,
     type ReadEntry,
     type StructuredMemoryContentsAnswer,
@@ -39,6 +47,9 @@ import { authFetch } from "../storage/serverAuth";
  * The memory panel's data is here too. `joinMemoryCoverage` joins the held messages with the record
  * facts the coverage route answers, because the tab holds the chat's whole message list and a route
  * has no job scope. `memoryRunView` turns a stored run into what a Log row shows.
+ *
+ * What a send reported is read here too: `memoryStatusWord` for the context meter's line,
+ * `memoryEventsUsed` for the panel's badges, and `memoryBlockEntries` for a preview's block.
  *
  * This module imports no alert or language module: the caller shows the notices for the outcomes the
  * reads return. It counts no tokens either, so it stays free of the tokenizer: the panel does that.
@@ -751,6 +762,96 @@ export function memoryMessageExcerpt(text: string): string {
     return points.length > EXCERPT_CODE_POINTS ? `${points.slice(0, EXCERPT_CODE_POINTS).join("")}…` : points.join("");
 }
 
+/** A report's memory field. */
+type ReportedMemory = NonNullable<ContextReport["memory"]>;
+
+/** The word the context meter's line shows for a Structured Memory report. */
+export type MemoryStatusWord = "gap" | "unknown" | ContextMemoryWriter["state"] | "memoryOn";
+
+/**
+ * The worst of what the report says: a coverage that is not `covered`, `gap` first, then the writer's
+ * state, `memoryOn` for a report without one.
+ */
+export function memoryStatusWord({ coverage, writer }: Pick<ReportedMemory, "coverage" | "writer">): MemoryStatusWord {
+    return coverage === "covered" ? (writer?.state ?? "memoryOn") : coverage;
+}
+
+/**
+ * The ids of the events the last send verifiably used. The last send is the newest valid report in
+ * `messages`, found as the context meter finds its own, so a report of another kind means nothing was
+ * used and an older one is never reached. It reads only each scanned message's `generationInfo`, never
+ * `data`, so streaming text does not rerun it.
+ */
+export function memoryEventsUsed(
+    messages: readonly DeepReadonly<Pick<Message, "generationInfo">>[],
+): ReadonlySet<string> {
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const report = parseContextReport(messages[index].generationInfo?.context);
+        if (report) {
+            const items = report.memory?.kind === "structuredMemory" ? (report.memory.items ?? []) : [];
+            return new Set(items.flatMap(({ id, kind, verified }) => (kind === "event" && verified ? [id] : [])));
+        }
+    }
+    return new Set();
+}
+
+/** The `start` of each of `groups` with a row whose event is in `used`: one pass, however many rows they hold. */
+export function usedMemoryCoverageGroups(
+    rows: readonly MemoryCoverageRow[],
+    groups: readonly MemoryCoverageGroup[],
+    used: ReadonlySet<string>,
+): ReadonlySet<number> {
+    const starts = new Set<number>();
+    if (used.size === 0) {
+        return starts;
+    }
+    for (const { start, end } of groups) {
+        for (let index = start; index < end; index++) {
+            const { eventId } = rows[index];
+            if (eventId !== undefined && used.has(eventId)) {
+                starts.add(start);
+                break;
+            }
+        }
+    }
+    return starts;
+}
+
+/** A manifest row's key in `memoryItemTitles`: records of two kinds can share an id. */
+export function memoryItemKey({ kind, id }: Pick<MemoryManifestItem, "kind" | "id">): string {
+    return `${kind}\u0000${id}`;
+}
+
+/** The titles of a chat's records by `memoryItemKey`. An `evidence` row has none: it names a message. */
+export function memoryItemTitles({
+    pages,
+    events,
+    threads,
+}: Pick<StructuredMemoryContentsAnswer, "pages" | "events" | "threads">): ReadonlyMap<string, string> {
+    const titles = new Map<string, string>();
+    const take = (kind: MemoryManifestItem["kind"], rows: readonly { id: string; title: string }[]) => {
+        for (const { id, title } of rows) {
+            titles.set(memoryItemKey({ kind, id }), title);
+        }
+    };
+    take("page", pages);
+    take("event", events);
+    take("thread", threads);
+    return titles;
+}
+
+/**
+ * The prompt's memory block: the `messages` that hold an item's tag, in order. Tags find it, not the
+ * entries' `memo`, which `editRequest` can rebuild them without.
+ */
+export function memoryBlockEntries<T extends Pick<OpenAIChat, "content">>(
+    messages: readonly T[],
+    items: readonly Pick<MemoryManifestItem, "lane" | "id">[],
+): T[] {
+    const tags = items.map((item) => itemTag(item));
+    return messages.filter(({ content }) => tags.some((tag) => content.includes(tag)));
+}
+
 /** What a Log row's expanded view shows of the event a run extracted. */
 export type MemoryRunEventView = {
     title: string;
@@ -796,6 +897,8 @@ export type MemoryRunView = {
     /** The run's stored reason code, else its receipt's. */
     reason?: string;
     error?: string;
+    /** The event the run committed, which can differ from what it extracted. */
+    eventId?: string;
     /** Null for a run with no extraction. */
     event: MemoryRunEventView | null;
     candidates: {
@@ -890,6 +993,7 @@ export function memoryRunView(run: unknown): MemoryRunView {
         result: storedText(stored.result) ?? "",
         ...present("reason", storedText(stored.reason) ?? storedText(receipt.reason)),
         ...present("error", storedText(stored.error)),
+        ...present("eventId", storedText(stored.eventId)),
         event: isPlainObject(analysis.event) ? runEventView(analysis.event, quotes) : null,
         candidates: storedItems(analysis.pageCandidates).map((candidate) => {
             const { create, reason, confidence } = candidate;

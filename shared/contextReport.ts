@@ -144,7 +144,7 @@ export type ContextReport = {
          * headroom, extra; absent when none was reduced.
          */
         budgetReduced?: readonly HypaV3BudgetReduction[];
-        /** "gap" when the step left uncovered history out; "unknown" when it cannot tell. */
+        /** "gap": uncovered history left out, or covered history with an empty card; "unknown": cannot tell. */
         coverage: "covered" | "gap" | "unknown";
         /**
          * HypaV3: how many of the history messages left out a stored summary covers (at most

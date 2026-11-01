@@ -1198,6 +1198,35 @@ describe("a send", () => {
         SLOW,
     );
 
+    it("failed preview and previewPrompt jobs leave the chat untouched even with inlayErrorResponse enabled", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const providers = (await single("providers")).data;
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        try {
+            await patchProviders({ inlayErrorResponse: true });
+            await patchPreset("modelProfiles", profileId, { maxContext: 100 });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [{ role: "user", chatId: "u1", data: "A protected final question. ".repeat(200) }],
+            });
+            const before = await readChat(chaId);
+            const requests = bodies.length;
+            for (const kind of ["preview", "previewPrompt"]) {
+                const result = await job(kind, chaId);
+                expect(result.terminal, kind).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("token"),
+                });
+                expect(await readChat(chaId)).toEqual(before);
+            }
+            expect(bodies).toHaveLength(requests);
+        } finally {
+            await patchProviders({ inlayErrorResponse: providers.inlayErrorResponse });
+            await patchPreset("modelProfiles", profileId, { maxContext: profile.maxContext });
+            vi.useRealTimers();
+        }
+    });
+
     it(
         "previewPrompt answers the provider body and preview the assembled messages, generating nothing",
         async () => {
@@ -1216,7 +1245,7 @@ describe("a send", () => {
             expect(preview.events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
                 "preparing",
             ]);
-            const formated = (preview.terminal as any).result as { role: string; content: string }[];
+            const formated = (preview.terminal as any).result.messages as { role: string; content: string }[];
             expect(formated[0]).toEqual({ role: "system", content: "Main Ann\n\nDesc of Ann" });
             expect(formated.at(-1)).toMatchObject({ role: "user", content: "q" });
             expect(bodies.length).toBe(before);
@@ -1249,7 +1278,7 @@ describe("a send", () => {
                     "Cannot find preset: Missing",
                 ]);
                 expect(missing.events.some((event) => event.type === "preset")).toBe(false);
-                expect(((missing.terminal as any).result as any[])[0].content).toMatch(/^Main Ann/);
+                expect(((missing.terminal as any).result.messages as any[])[0].content).toMatch(/^Main Ann/);
             } finally {
                 await patchProviders({ presetChain: "" });
             }

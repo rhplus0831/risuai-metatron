@@ -12,6 +12,7 @@ import {
     readStructuredMemoryCoverage,
     joinMemoryCoverage,
     memoryRunView,
+    memoryBlockEntries,
     memoryPagePath,
     memoryReceiptView,
     newestAssistantMessageId,
@@ -560,4 +561,20 @@ it("reads malformed stored runs without throwing or inventing an extraction", ()
         expect(memoryRunView(run)).not.toHaveProperty("inputTokens");
         expect(memoryRunView(run)).not.toHaveProperty("model");
     }
+});
+
+it("extracts every final message carrying an included item's encoded tag in prompt order regardless of memo", () => {
+    const messages = [
+        { role: "system", content: "Unrelated legacy block", memo: "supaMemory" },
+        { role: "system", content: "Stable [m:flow:past%20event] promise" },
+        { role: "user", content: "What now?", memo: "last" },
+        { role: "system", content: "Volatile [m:door%5D] is open", memo: "rewritten-by-script" },
+        { role: "system", content: "Excluded [m:not-in-manifest]" },
+    ];
+    const items = [
+        { lane: "threads" as const, id: "door]" },
+        { lane: "flow" as const, id: "past event" },
+    ];
+    expect(memoryBlockEntries(messages, items)).toEqual([messages[1], messages[3]]);
+    expect(memoryBlockEntries(messages, [])).toEqual([]);
 });

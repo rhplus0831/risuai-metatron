@@ -1,5 +1,8 @@
 import { type ChatRef, chatEntry, currentChatRef } from "../storage/chatStore.svelte";
+import { type ContextReport, parseContextReport } from "../../../shared/contextReport.ts";
+import type { GenerationPreviewResult } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { sendChatOnServer, type ServerSendArg, type ServerSendResult } from "./serverGeneration";
 import { beginLocalSend } from "./localSends";
 
@@ -62,9 +65,27 @@ export async function previewChat(
         return null;
     }
     if (kind === "preview") {
-        return Array.isArray(result) ? (result as OpenAIChat[]) : null;
+        return previewResult(result)?.messages ?? null;
     }
     return typeof result === "string" ? result : null;
+}
+
+/** A preview's messages, and the context report a send of them would store. */
+export type ChatPreviewReport = { messages: OpenAIChat[]; report: ContextReport | null };
+
+/**
+ * `previewChat("preview")` with the job's context report, for a caller that reads what the prompt was
+ * built from. The report is null when it does not parse (`parseContextReport`).
+ */
+export async function previewChatReport(target?: ChatRef): Promise<ChatPreviewReport | null> {
+    const { ok, result } = await runSend({ preview: true, target });
+    const preview = ok ? previewResult(result) : null;
+    return preview && { messages: preview.messages, report: parseContextReport(preview.context) };
+}
+
+/** A `preview` job's `done.result`, or null for one of another shape. */
+function previewResult(result: unknown): GenerationPreviewResult | null {
+    return isPlainObject(result) && Array.isArray(result.messages) ? (result as GenerationPreviewResult) : null;
 }
 
 async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknown }> {

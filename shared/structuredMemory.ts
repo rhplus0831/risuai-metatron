@@ -551,6 +551,22 @@ export interface MemoryManifest {
 }
 
 /**
+ * `String.prototype.toWellFormed`, which the server's `es2023` lib does not declare: under `u` a pair
+ * reads as one code point, so only a lone surrogate matches.
+ */
+const wellFormed = (text: string) => text.replace(/\p{Cs}/gu, "�");
+
+/**
+ * An item's tag in the memory card, which is how a send and the tab find the item in a prompt. A valid
+ * resource id can hold spaces, brackets, and lone surrogates, on which `encodeURIComponent` would
+ * throw, so the tag holds the id encoded; a UUID is unchanged.
+ */
+export function itemTag({ lane, id }: Pick<MemoryManifestItem, "lane" | "id">): string {
+    const encoded = encodeURIComponent(wellFormed(id));
+    return lane === "flow" ? `[m:flow:${encoded}]` : `[m:${encoded}]`;
+}
+
+/**
  * The events as `hypaV3Data`, for readers that know only that shape: each active event, in the given
  * order, as one summary. Retracted and stale events are left out, as they are of the prompt. A summary
  * is important when its event is pinned or graded `importantEventGrade` or above.

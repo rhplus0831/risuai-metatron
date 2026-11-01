@@ -7,8 +7,8 @@
   `memoryRecord` job.
 - Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,recordJob}.ts`, the writer's task kind in
   `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in `server/src/prompt/assemble.ts`.
-- The algorithm is not reachable yet: the settings cannot select it. See [structured memory](structured-memory.md) for
-  that state, and [Active Plans](../plan/README.md) for the design and remaining work.
+- See [structured memory](structured-memory.md) for how the algorithm is selected, and [Active Plans](../plan/README.md)
+  for the design and remaining work.
 - Not here:
   - Record shapes and limits, the tables and store, read routes, the Markdown package, the HypaV3 projection, the read
     path, and the receipts in the tab → [structured memory](structured-memory.md).
@@ -196,6 +196,9 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
 - The writer's settings are the selected memory preset's `settings.structured`, so they copy, export, and import with
   the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
   where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
+- `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
+  budget mode, and the memory maximum. `requiredCap`, `laneTargets.pages`, `highlight*`, and `screening` stay hidden
+  until their readers land. So a preset's `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 

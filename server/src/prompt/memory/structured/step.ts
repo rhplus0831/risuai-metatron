@@ -94,6 +94,8 @@ export type MemorySelected = {
     volatile: OpenAIChat | null;
     /** The tokens of the history the trim dropped. */
     gapTokens: number;
+    /** What the report says of the history that left the prompt. */
+    coverage: "covered" | "gap";
     budget: { maximum: number; reduced: readonly HypaV3BudgetReduction[] };
     items: MemoryManifestItem[];
     excluded: ExcludedItem[];
@@ -148,6 +150,11 @@ export function readEntries(history: readonly OpenAIChat[], messages: readonly M
     });
 }
 
+/** A history entry with nothing to send: blank text and no media. Formatting drops it. */
+export function blankEntry({ content, multimodals }: Pick<OpenAIChat, "content" | "multimodals">): boolean {
+    return content.trim() === "" && !(multimodals && multimodals.length > 0);
+}
+
 /** `rawWindow` without the entry at `continued` among what leaves the prompt. */
 function sendWindow(
     entries: readonly ReadEntry[],
@@ -182,6 +189,10 @@ function cardEntries(
  * that leave come off the count, the card's entries go on it, then the trim runs over what is left.
  * `input` is not changed, and every entry `chats` keeps is the same object, so a second pass after the
  * records changed starts over from it.
+ *
+ * `coverage` is `gap` when the trim dropped history, or when covered history with something to send
+ * left and the card that stands in for it is empty: the events cover it, but the model does not see
+ * them. Only `gapTokens` drives the gap question, so that second case asks nothing.
  */
 export async function selectMemory(
     input: MemorySelectionInput,
@@ -234,6 +245,7 @@ export async function selectMemory(
     if (!trimmed.fits) {
         return { type: "error", error: `${input.tooMuchToken}\n\nRequired Tokens: ${trimmed.currentTokens}` };
     }
+    const unseen = card.items.length === 0 && [...window.dropped].some((index) => !blankEntry(history[index]));
     return {
         type: "selected",
         chats: placed.card ? [placed.card, ...trimmed.history] : trimmed.history,
@@ -241,7 +253,9 @@ export async function selectMemory(
         protectedEntries: [...raw.slice(protectedStart), ...pinned],
         volatile: placed.volatile,
         gapTokens: trimmed.gap.tokens,
-        budget: { maximum, reduced },
+        coverage: trimmed.gap.tokens > 0 || unseen ? "gap" : "covered",
+        // The preset's headroom and extra are the summarizer's: this budget spends neither.
+        budget: { maximum, reduced: reduced.filter(({ field }) => field === "memory") },
         items: card.items,
         excluded: [...retrieved.excluded, ...card.excluded],
         lanes: card.spend,

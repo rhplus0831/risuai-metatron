@@ -6,6 +6,11 @@
     import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import type { SettingHit } from "src/ts/setting/searchIndex";
     import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
+    import {
+        memoryItemTitles,
+        memoryStatusWord,
+        readStructuredMemoryContents,
+    } from "src/ts/process/structuredMemory.svelte";
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
@@ -24,7 +29,9 @@
         type ContextReport,
     } from "../../../shared/contextReport.ts";
     import { maxContextOverrideOf } from "../../../shared/sections.ts";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
+    import MemoryManifest from "../Others/StructuredMemory/MemoryManifest.svelte";
     import Portal from "../UI/GUI/Portal.svelte";
 
     // The composer's context line: how the last request spent the model's context, read from the open
@@ -115,16 +122,12 @@
     const promptBudget = $derived(report ? report.maxContext - report.maxResponse : 0);
     const fixed = $derived(report ? fixedShare(report) * 100 : 0);
     const fixedOver = $derived(report !== null && fixed > warn);
-    const memoryName = $derived(
-        report?.memory && report.memory.kind !== "structuredMemory"
-            ? language.contextUsage.memoryKinds[report.memory.kind]
-            : "",
-    );
+    const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
     // The lore budget left entries out of the last request: the chip warns unless this chat turned
     // the warning off (the popover lists them either way).
     const loreWarnOff = $derived(findChat(chatRef)?.loreBudgetWarnOff === true);
     const loreWarn = $derived(report !== null && report.lore.rejectedCount > 0 && !loreWarnOff);
-    // HypaV3's token budget was reduced to fit the last request's max context, as the server reported it.
+    // The memory's token budget was reduced to fit the last request's max context, as the server reported it.
     const budgetReduced = $derived(report?.memory?.budgetReduced ?? []);
 
     // The chat's background HypaV3 summary task (`memoryTasks.svelte.ts`), live unlike the report: the
@@ -213,6 +216,7 @@
      */
     function estimateBasis(r: ContextReport, trim: Basis["trim"], messageId: string): Basis | null {
         const memoryConfigured =
+            readSettingsRoot("memoryAlgorithmType") === STRUCTURED_MEMORY_ALGORITHM ||
             readSettingsRoot("supaModelType") !== "none" ||
             !!readSettingsRoot("hanuraiEnable") ||
             !!readSettingsRoot("hypav2") ||
@@ -386,6 +390,15 @@
         };
     });
 
+    /** The line's word for a Structured Memory report. */
+    function memoryStatusText(memory: NonNullable<ContextReport["memory"]>): string {
+        const word = memoryStatusWord(memory);
+        if (word === "gap" || word === "memoryOn") {
+            return language.contextUsage[word];
+        }
+        return language.structuredMemory.meter.status[word];
+    }
+
     const chip = $derived.by(() => {
         if (!source) {
             return null;
@@ -399,7 +412,14 @@
         const keptText = unit === "user" ? language.contextUsage.turns(kept) : language.contextUsage.messages(kept);
         const percent = percentOf(r.input, promptBudget);
         let result: { parts: string[]; summary: string };
-        if (r.memory) {
+        if (r.memory?.kind === "structuredMemory") {
+            const tokens = language.contextUsage.tokens(fmt(r.memory.tokens));
+            const status = memoryStatusText(r.memory);
+            result = {
+                parts: [keptText, tokens, status, `${percent}%`],
+                summary: language.contextUsage.memorySummary(keptText, memoryName, `${tokens}, ${status}`),
+            };
+        } else if (r.memory) {
             // "covered" only says nothing left out is unsummarized: with nothing left out, no summary is behind it.
             const omitted = r.history.kept < r.history.total;
             const coverage =
@@ -525,6 +545,26 @@
     let panel: HTMLElement | undefined = $state();
     let place = $state({ right: EDGE, top: "auto", bottom: `${EDGE}px`, maxHeight: 240, width: PANEL_WIDTH });
     const panelId = $props.id();
+
+    // A Structured Memory report names records by id, so the popover reads their titles as it opens:
+    // the boolean keeps a new report from reading again, and a closed popover reads nothing. A failed
+    // read leaves the rows without titles.
+    const listsMemory = $derived(open && report?.memory?.kind === "structuredMemory");
+    let memoryTitles: ReadonlyMap<string, string> = $state.raw(new Map());
+    let titleRead = 0;
+    $effect(() => {
+        if (!listsMemory) {
+            return;
+        }
+        const number = ++titleRead;
+        untrack(() =>
+            readStructuredMemoryContents(chatRef).then((result) => {
+                if (number === titleRead) {
+                    memoryTitles = result.outcome === "ok" ? memoryItemTitles(result.value) : new Map();
+                }
+            }),
+        );
+    });
 
     // Prefer above the chip, then below; use the viewport when neither side has enough room.
     function position() {
@@ -1018,16 +1058,26 @@
                     {#if report.memory}
                         <div class="mt-1 ml-1 flex flex-col gap-1 border-l-2 border-darkborderc pl-2.5">
                             <div class="flex flex-col gap-1" data-context-meter-memory>
-                                {#if report.memory.kind === "hypaV3" && report.memory.budget !== undefined}
+                                {#if (report.memory.kind === "hypaV3" || report.memory.kind === "structuredMemory") && report.memory.budget !== undefined}
                                     <div class="flex justify-between gap-2">
-                                        <span>{language.contextUsage.memoryBudget(memoryName)}</span>
+                                        <!-- "Structured memory" already says memory, which `memoryBudget` adds. -->
+                                        <span
+                                            >{report.memory.kind === "hypaV3"
+                                                ? language.contextUsage.memoryBudget(memoryName)
+                                                : language.contextUsage.budgetReducedFields.memory}</span
+                                        >
                                         <span class="tabular-nums"
                                             >{fmt(report.memory.tokens)} / {fmt(report.memory.budget)}</span
                                         >
                                     </div>
                                 {:else}
                                     <span
-                                        >{language.contextUsage.memoryLine(memoryName, fmt(report.memory.tokens))}</span
+                                        >{report.memory.kind === "structuredMemory"
+                                            ? language.structuredMemory.meter.tokensSent(fmt(report.memory.tokens))
+                                            : language.contextUsage.memoryLine(
+                                                  memoryName,
+                                                  fmt(report.memory.tokens),
+                                              )}</span
                                     >
                                 {/if}
                                 {#if budgetReduced.length > 0}
@@ -1058,6 +1108,9 @@
                                           ? language.contextUsage.coverageGap
                                           : language.contextUsage.coverageUnknown}</span
                                 >
+                            {/if}
+                            {#if report.memory.kind === "structuredMemory"}
+                                <MemoryManifest memory={report.memory} titles={memoryTitles} />
                             {/if}
                         </div>
                     {/if}

@@ -353,7 +353,7 @@ describe("the prompt golden (the browser capture)", () => {
                 const s = await startServer();
                 const { terminal } = await previewJob(s, fixtureOf(name), "preview");
                 expect(terminal.type, JSON.stringify(terminal)).toBe("done");
-                expect(terminal.result).toEqual(expectedOf(name));
+                expect(terminal.result.messages).toEqual(expectedOf(name));
                 expect(terminal.stopped).toBeUndefined();
             },
             SLOW,
@@ -366,7 +366,7 @@ describe("the prompt golden (the browser capture)", () => {
             const s = await startServer();
             const { events, terminal, presets } = await previewJob(s, fixtureOf("presetChain"), "preview");
             expect(terminal.type, JSON.stringify(terminal)).toBe("done");
-            expect(terminal.result).toEqual(expectedOf("presetChain"));
+            expect(terminal.result.messages).toEqual(expectedOf("presetChain"));
             const picked = events.filter((event) => event.type === "preset");
             expect(picked).toHaveLength(1);
             expect(presets.find((preset) => preset.id === picked[0].presetId)?.name).toBe(
@@ -992,6 +992,52 @@ describe("the context report", () => {
                 expect(result.report.memory).toMatchObject({ kind: "structuredMemory", coverage: "covered" });
                 expect(assembly.confirmGap).not.toHaveBeenCalled();
             }
+        });
+
+        it("reports an empty card as a gap only when its dropped covered history has text or media, without asking", async () => {
+            for (const [data, coverage] of [
+                ["A remembered promise", "gap"],
+                ["{{inlayeddata::pic}}", "gap"],
+                ["   ", "covered"],
+            ] as const) {
+                const assembly = structuredAssembly({
+                    greeting: "",
+                    messages: [
+                        { chatId: "old", role: "user", data },
+                        { chatId: "a0", role: "char", data: "Old reply" },
+                        { chatId: "u1", role: "user", data: "Recent user" },
+                        { chatId: "a1", role: "char", data: "Recent reply" },
+                        { chatId: "now", role: "user", data: "Now" },
+                    ],
+                    records: stored([event("past", ["old"])]),
+                    settings: { flowEvents: 0, laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } },
+                    maxContext: 6000,
+                    gapConfirmTokens: 0,
+                    readInlay: async () => ({ type: "image", data: "data:image/png;base64,AA==", width: 1, height: 1 }),
+                });
+                const { report, formated } = await assembly.run();
+                expect(rawIds(formated)).not.toContain("old");
+                expect(rawIds(formated)).toEqual(["a0", "u1", "a1", "now"]);
+                expect(report.memory, data).toMatchObject({ kind: "structuredMemory", coverage, tokens: 0, items: [] });
+                expect(report.memory!.stages).toContainEqual({ stage: "card", reason: "empty" });
+                expect(report.memory!.stages!.some(({ stage }) => stage === "gap")).toBe(false);
+                expect(assembly.confirmGap).not.toHaveBeenCalled();
+                expect(assembly.recordGap).not.toHaveBeenCalled();
+            }
+        });
+
+        it("reports only the memory budget reduction for Structured Memory", async () => {
+            const assembly = structuredAssembly({ messages: fiveMessages, maxContext: 1000 });
+            Object.assign(assembly.host.db.hypaV3Presets[0].settings, {
+                budgetMode: "tokens",
+                memoryBudgetTokens: 900,
+                lookaheadHeadroomTokens: 800,
+                extraSummarizationTokens: 700,
+            });
+            const { report } = await assembly.run();
+            // The prompt budget is 1000 - 10; memory is capped at half of it.
+            expect(report.memory!.budget).toBe(495);
+            expect(report.memory!.budgetReduced).toEqual([{ field: "memory", configured: 900, applied: 495 }]);
         });
 
         it("trims uncovered history oldest first, without charging examples or the marker to the gap or emitting an empty card", async () => {

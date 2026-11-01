@@ -20,6 +20,7 @@ vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globa
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import { language } from "src/lang";
+import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { alertConfirm, alertInput } from "src/ts/alert";
 import type { TogglePreset } from "../../../shared/togglePresets.ts";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
@@ -804,4 +805,39 @@ describe("toggle preset panel", () => {
         expect(chatWritten).not.toHaveBeenCalled();
         expect(recordsWritten).not.toHaveBeenCalled();
     });
+});
+
+it("shows the Structured Memory toggle with legacy flags off and counts each turn-on", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    settings.memoryTranslateMedia.supaModelType = "none";
+    const { chara, checkbox } = render();
+    const toggle = checkbox(language.structuredMemory.toggle);
+    expect(toggle).not.toBeNull();
+    expect(toggle!.checked).toBe(false);
+    toggle!.click();
+    flushSync();
+    expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 1]);
+    toggle!.click();
+    flushSync();
+    expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([false, 1]);
+    toggle!.click();
+    flushSync();
+    expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 2]);
+    settings.memoryTranslateMedia.hypaV3 = true;
+    flushSync();
+    expect(checkbox(language.structuredMemory.toggle)?.checked).toBe(true);
+});
+
+it("selecting a character applies Structured Memory's alwaysToggleOn and counts only an actual turn-on", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    settings.memoryTranslateMedia.supaModelType = "none";
+    const preset = createHypaV3Preset("Automatic", { alwaysToggleOn: true });
+    settings.hypaV3Presets.items = [preset];
+    settings.hypaV3Presets.selectedId = preset.id;
+    selectCharacter(null);
+    selectCharacter("c");
+    expect(selectedCharacter()).toMatchObject({ supaMemory: true, supaMemoryOnCount: 1 });
+    selectCharacter(null);
+    selectCharacter("c");
+    expect(selectedCharacter()).toMatchObject({ supaMemory: true, supaMemoryOnCount: 1 });
 });

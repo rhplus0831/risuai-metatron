@@ -199,6 +199,115 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
+describe("Structured Memory in the context meter", () => {
+    it("shows memory tokens and gives uncovered history priority over writer state, falling back to memory-on without a writer", () => {
+        install([reply("m1", { context: report() })]);
+        render();
+        for (const coverage of ["gap", "unknown", "covered"] as const) {
+            for (const state of ["recorded", "pending", "failed", "paused", "notAutomatic", undefined] as const) {
+                patchMessage(ref, "m1", {
+                    generationInfo: {
+                        context: report({
+                            memory: {
+                                kind: "structuredMemory",
+                                tokens: 137,
+                                coverage,
+                                ...(state ? { writer: { state } } : {}),
+                            },
+                        }),
+                    },
+                });
+                flushSync();
+                const word =
+                    coverage === "gap"
+                        ? language.contextUsage.gap
+                        : coverage === "unknown"
+                          ? language.structuredMemory.meter.status.unknown
+                          : state
+                            ? language.structuredMemory.meter.status[state]
+                            : language.contextUsage.memoryOn;
+                expect(chipText(), `${coverage}/${state}`).toBe(
+                    `3 turns · ${language.contextUsage.tokens("137")} · ${word} · 75%`,
+                );
+            }
+        }
+    });
+
+    it("reads titles once per structured popover opening and lists included, unverified and left-out items with lane spend and budget", async () => {
+        const memory: NonNullable<ContextReport["memory"]> = {
+            kind: "structuredMemory",
+            coverage: "covered",
+            tokens: 137,
+            budget: 500,
+            items: [
+                { id: "same", kind: "event", lane: "flow", tokens: 100, reason: "recent", verified: true },
+                { id: "same", kind: "thread", lane: "threads", tokens: 37, reason: "open", verified: false },
+            ],
+            excluded: [{ id: "omitted", kind: "event", lane: "events", reason: "budget" }],
+            excludedTotal: 1,
+            lanes: [
+                { lane: "flow", spent: 100, target: Number.MAX_SAFE_INTEGER },
+                { lane: "threads", spent: 37, target: 80 },
+            ],
+        };
+        mocks.authFetch
+            .mockReset()
+            .mockResolvedValueOnce(
+                Response.json({
+                    revision: "r1",
+                    pages: [],
+                    events: [
+                        { id: "same", title: "A promise" },
+                        { id: "omitted", title: "Left behind" },
+                    ],
+                    threads: [{ id: "same", title: "Find the key" }],
+                    runs: [],
+                }),
+            )
+            .mockResolvedValueOnce(new Response("unavailable", { status: 503 }));
+        install([reply("m1", { context: report({ memory }) })]);
+        render();
+        await settle();
+        expect(mocks.authFetch).not.toHaveBeenCalled();
+        const opened = await openPanel();
+        expect(mocks.authFetch.mock.calls.map(([url]) => url)).toEqual(["/api/memory/structured/c/k"]);
+        const rows = () => [...panel()!.querySelectorAll<HTMLElement>("[data-memory-manifest-item]")];
+        expect(
+            rows().map((row) => [
+                row.dataset.memoryManifestItem,
+                row.querySelector("[title]")?.getAttribute("title"),
+                row.querySelector("[data-memory-manifest-verified]")?.getAttribute("data-memory-manifest-verified"),
+            ]),
+        ).toEqual([
+            ["flow", "A promise", "true"],
+            ["threads", "Find the key", "false"],
+        ]);
+        expect(opened.querySelector('[data-memory-manifest-excluded="budget"]')?.textContent).toContain("Left behind");
+        expect(opened.querySelector('[data-memory-manifest-lane="flow"]')?.textContent).toContain("100");
+        expect(opened.querySelector('[data-memory-manifest-lane="threads"]')?.textContent).toContain("37 / 80");
+        expect(opened.querySelector("[data-context-meter-memory]")?.textContent).toContain("137 / 500");
+        patchMessage(ref, "m1", { generationInfo: { context: report({ memory: { ...memory, tokens: 138 } }) } });
+        await settle();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+        keydown(opened, "Escape");
+        patchMessage(ref, "m1", { generationInfo: { context: report({ memory }) } });
+        await settle();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+        await openPanel();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(2);
+        expect(rows()).toHaveLength(2);
+        expect(rows().every((row) => row.querySelector("span")?.textContent === "")).toBe(true);
+        expect(panel()!.textContent).not.toContain("A promise");
+        keydown(panel()!, "Escape");
+        patchMessage(ref, "m1", {
+            generationInfo: { context: report({ memory: { kind: "hypaV3", tokens: 137, coverage: "covered" } }) },
+        });
+        await openPanel();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(2);
+        expect(panel()!.querySelector("[data-memory-manifest]")).toBeNull();
+    });
+});
+
 describe("the chip", () => {
     it("shows the kept count and the share of the prompt budget while all eligible history was kept", () => {
         install([reply("m1", { inputTokens: 600, maxContext: 1000, context: report() })]);
@@ -1352,6 +1461,27 @@ describe("the displacement estimate", () => {
                     }
                 }),
         );
+    });
+
+    it("stands down the displacement estimate when Structured Memory is selected even with every legacy flag off", async () => {
+        autoCount = byLength;
+        installEstimate(QUEUE);
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const props = render({ draft: "d".repeat(10) });
+        await vi.advanceTimersByTimeAsync(400);
+        await settle();
+        expect(texts()).toEqual([]);
+        expect(suffix()).toBeNull();
+        await openPanel();
+        expect(block()).toBeNull();
+        props.draft = "changed draft";
+        await vi.advanceTimersByTimeAsync(400);
+        expect(texts()).toEqual([]);
+        // The same report is otherwise eligible; changing the algorithm releases the estimate.
+        settings.ui.memoryAlgorithmType = "none";
+        await settle();
+        expect(texts()).toEqual([REPLY, "changed draft"]);
+        expect(suffix()).not.toBeNull();
     });
 
     it("counts the reply and the draft at once in the job scope, then only the draft after 400 ms of quiet", async () => {

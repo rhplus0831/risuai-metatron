@@ -76,6 +76,7 @@ import {
 import { MEMORY_TASK_LIMITS } from "./memory/memoryTasks.ts";
 import { itemTag } from "./memory/structured/card.ts";
 import {
+    blankEntry,
     type MemoryRecords,
     type MemorySelected,
     type MemorySendManifest,
@@ -1910,7 +1911,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     memoryReceipt = step.receipt;
                     memoryRun = {
                         kind: "structuredMemory",
-                        coverage: selected.gapTokens > 0 ? "gap" : "covered",
+                        coverage: selected.coverage,
                         budget: selected.budget.maximum,
                         budgetReduced: selected.budget.reduced,
                         manifest: step.manifest,
@@ -2556,7 +2557,7 @@ type ContextSource = {
 
 /** `empty` for a history entry as built, by the rule formatting drops entries with. */
 function emptySource(chat: OpenAIChat): { empty?: true } {
-    return chat.content.trim() === "" && !(chat.multimodals && chat.multimodals.length > 0) ? { empty: true } : {};
+    return blankEntry(chat) ? { empty: true } : {};
 }
 
 /** The memory branch that ran, for the context report. */

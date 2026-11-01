@@ -1,4 +1,5 @@
 import {
+    itemTag,
     MEMORY_MANIFEST_LANES,
     type MemoryEvent,
     type MemoryManifestItem,
@@ -15,6 +16,8 @@ import {
     type ReadEntry,
     spendLanes,
 } from "./lanes.ts";
+
+export { itemTag } from "../../../../../shared/structuredMemory.ts";
 
 /**
  * The memory card: a stable part and a volatile part, in that order, each one text the prompt can place
@@ -53,22 +56,7 @@ const CARD_LANES: Record<MemoryManifestLane, { part: keyof CardParts; heading: s
     threads: { part: "volatile", heading: "Open threads:" },
 };
 
-/**
- * `String.prototype.toWellFormed`, which the server's `es2023` lib does not declare: under `u` a pair
- * reads as one code point, so only a lone surrogate matches.
- */
-const wellFormed = (text: string) => text.replace(/\p{Cs}/gu, "�");
-
 const flattened = (text: string) => text.replace(/\s+/g, " ").trim();
-
-/**
- * An item's tag. A valid resource id can hold spaces, brackets, and lone surrogates, on which
- * `encodeURIComponent` would throw, so the tag holds the id encoded; a UUID is unchanged.
- */
-export function itemTag({ lane, id }: Pick<LaneItem, "lane" | "id">): string {
-    const encoded = encodeURIComponent(wellFormed(id));
-    return lane === "flow" ? `[m:flow:${encoded}]` : `[m:${encoded}]`;
-}
 
 /** `body` flattened to one line behind the tag, added after so an id is never altered. */
 const taggedLine = (item: Pick<LaneItem, "lane" | "id">, body: string) => `${itemTag(item)} ${flattened(body)}`;

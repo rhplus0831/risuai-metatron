@@ -1,4 +1,4 @@
-import type { Chat } from "./database.ts";
+import type { Chat, MessageGenerationInfo } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
 import type { ChatPatchBody } from "./resources.ts";
@@ -284,6 +284,9 @@ export type ReplyResyncRequest = { type: "resyncReply" };
 /** A generation socket's liveness reply, echoing the server ping's timestamp. */
 export type GenerationPong = { type: "pong"; ts: number };
 
+/** A `preview` job's `done.result`: the final prompt, and the report a send of it stores on its reply. */
+export type GenerationPreviewResult = { messages: OpenAIChat[]; context: MessageGenerationInfo["context"] };
+
 export type GenerationTerminalEvent =
     | {
           type: "done";
@@ -291,7 +294,7 @@ export type GenerationTerminalEvent =
           revision: string | null;
           messageId?: string;
           alternatives?: string[];
-          /** A preview's result (`preview`: the assembled messages; `previewPrompt`: the provider body). */
+          /** A preview's result (`preview`: a `GenerationPreviewResult`; `previewPrompt`: the provider body). */
           result?: unknown;
           /**
            * A send that ended without counting as sent (a trigger's stop, an error written into the

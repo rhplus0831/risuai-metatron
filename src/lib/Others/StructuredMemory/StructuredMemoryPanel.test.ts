@@ -1,11 +1,20 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
-import { get } from "svelte/store";
+import { fromStore, get, writable } from "svelte/store";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ContextReport } from "../../../../shared/contextReport.ts";
+import { previewChat, previewChatReport } from "src/ts/process/index.svelte";
 import type { Message } from "../../../../shared/database.ts";
 import { language } from "src/lang";
 import { characterList } from "src/ts/storage/characterStore.svelte";
-import { findChat, hydrateChat, seedChats, selectChat, setMessageText } from "src/ts/storage/chatStore.svelte";
+import {
+    findChat,
+    hydrateChat,
+    seedChats,
+    selectChat,
+    setMessageText,
+    patchMessage,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -15,10 +24,16 @@ import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
+import PreviewTab from "./PreviewTab.svelte";
 
 const io = vi.hoisted(() => ({
+    runServerJob: vi.fn<typeof import("src/ts/process/serverCommands").runServerJob>(),
     authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
     downloadFile: vi.fn<typeof import("src/ts/globalApi.svelte").downloadFile>(),
+}));
+vi.mock("src/ts/process/serverCommands", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/process/serverCommands")>()),
+    runServerJob: io.runServerJob,
 }));
 vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: io.authFetch }),
@@ -114,6 +129,7 @@ beforeEach(() => {
         if (url.includes("/runs")) return Response.json(logRound());
         throw new Error(`Unexpected request: ${url}`);
     });
+    io.runServerJob.mockReset();
     io.downloadFile.mockReset().mockResolvedValue(undefined);
     resetMemoryTasks();
     followedJobs.set(new Map());
@@ -126,6 +142,7 @@ afterEach(async () => {
     if (instance) await unmount(instance);
     instance = undefined;
     for (const release of releases.splice(0)) release();
+    await settle();
     resetMemoryTasks();
     followedJobs.set(new Map());
     hypaV3ModalOpen.set(false);
@@ -141,7 +158,7 @@ it("switches Coverage and Log with SegmentedControl and refreshes after each cha
     );
     await open();
     expect(query('[data-memory-panel="coverage"]')).not.toBeNull();
-    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(2);
+    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(3);
     expect(query('[data-segment-btn][aria-pressed="true"]')?.textContent).toBe(
         language.structuredMemory.panel.coverage,
     );
@@ -438,4 +455,208 @@ it("App mounts the structured panel only for structuredMemory and keeps the lega
     await settle();
     expect(query("[data-memory-panel]")).toBeNull();
     expect(query("[data-risu-memory-task]")).not.toBeNull();
+});
+
+const context = (memory: ContextReport["memory"]): ContextReport => ({
+    v: 1,
+    maxContext: 1000,
+    maxResponse: 100,
+    input: 300,
+    sections: [],
+    adjustment: 300,
+    attributionExact: true,
+    history: { total: 8, kept: 4, totalUser: 4, keptUser: 2, droppedTokens: 100 },
+    lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+    tokenScope: "scope",
+    historyDigest: "digest",
+    memory,
+});
+const included = (id: string, verified = true) => ({
+    id,
+    kind: "event" as const,
+    lane: "flow" as const,
+    tokens: 20,
+    reason: "recent",
+    verified,
+});
+const memoryReport = (items: NonNullable<ContextReport["memory"]>["items"] = [included("used")]) =>
+    context({ kind: "structuredMemory", tokens: 80, coverage: "covered", items });
+
+it("badges only verified events from the newest valid report on Coverage rows, closed groups and committed Log runs", async () => {
+    const ids = ["used", "unverified", "page", "older"];
+    install([
+        ...ids.flatMap((id) => [message(`${id}-u`, "user"), message(`${id}-a`, "char")]),
+        {
+            ...message("latest", "char"),
+            generationInfo: {
+                context: memoryReport([
+                    included("used"),
+                    included("unverified", false),
+                    { ...included("page"), kind: "page" },
+                ] as NonNullable<ContextReport["memory"]>["items"]),
+            },
+        } as Message,
+        { ...message("malformed", "char"), generationInfo: { context: { v: 99 } } } as unknown as Message,
+    ]);
+    patchMessage(ref, "older-a", { generationInfo: { context: memoryReport([included("older")]) } });
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url.includes("/coverage"))
+            return Promise.resolve(
+                Response.json({
+                    revision: "r1",
+                    runs: [],
+                    next: null,
+                    events: ids.map((id) => ({ id, title: id, status: "active", messageIds: [`${id}-u`, `${id}-a`] })),
+                }),
+            );
+        if (url.includes("/runs"))
+            return Promise.resolve(
+                Response.json({
+                    revision: "r1",
+                    total: 4,
+                    next: null,
+                    runs: ids.map((eventId) => ({
+                        id: `run-${eventId}`,
+                        eventId,
+                        model: eventId,
+                        result: "recorded",
+                        window: [],
+                        analysis: { event: { id: "different-extracted-id", title: "Extraction" } },
+                    })),
+                }),
+            );
+        return fetch(url, init, options);
+    });
+    await open();
+    const group = query('[data-memory-coverage-group="covered"]')!;
+    expect(group.querySelectorAll("[data-memory-used]")).toHaveLength(1);
+    click('[data-memory-coverage-group="covered"]');
+    expect(group.querySelector("[data-memory-used]")).toBeNull();
+    const badgedRows = () =>
+        [...target.querySelectorAll("[data-memory-coverage-row]")].filter((row) =>
+            row.querySelector("[data-memory-used]"),
+        );
+    expect(badgedRows()).toHaveLength(2);
+    expect(badgedRows().map((row) => row.textContent)).toEqual([
+        expect.stringContaining("used-u"),
+        expect.stringContaining("used-a"),
+    ]);
+    click("[data-segment-btn]:last-child");
+    await settle();
+    const runs = [...target.querySelectorAll("[data-memory-run]")];
+    expect(runs.map((row) => !!row.querySelector("[data-memory-used]"))).toEqual([true, false, false, false]);
+    // A newer valid report of another kind stops the search; the older structured reports remain stored.
+    patchMessage(ref, "malformed", {
+        generationInfo: { context: context({ kind: "hypaV3", tokens: 20, coverage: "covered" }) },
+    });
+    await settle();
+    expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
+    click("[data-segment-btn]:first-of-type");
+    await settle();
+    expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
+    click('[data-memory-coverage-group="covered"]');
+    expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
+});
+
+const previewAnswer = (result: unknown): Awaited<ReturnType<typeof io.runServerJob>> => ({
+    outcome: "started",
+    terminal: { type: "done", epoch: "e", revision: null, result },
+});
+
+it("runs Preview only on its button and keeps the final tagged block and manifest across its own fence refresh", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
+    releases.push(() => pending.resolve(previewAnswer({ messages: [], context: memoryReport() })));
+    io.runServerJob.mockReturnValueOnce(pending.promise);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url === "/api/memory/structured/c/k"
+            ? Promise.resolve(
+                  Response.json({
+                      revision: "r1",
+                      pages: [],
+                      threads: [],
+                      runs: [],
+                      events: [{ id: "used", title: "Remembered promise" }],
+                  }),
+              )
+            : fetch(url, init, options),
+    );
+    await open();
+    click("[data-segment-btn]:nth-of-type(2)");
+    await settle();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    click("[data-memory-preview-run]");
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledTimes(1);
+    expect(io.runServerJob.mock.calls[0][1]).toEqual(ref);
+    expect(io.runServerJob.mock.calls[0][2]).toMatchObject({ kind: "preview", context: { input: "" } });
+    expect(query("[data-memory-panel-read-only]")).not.toBeNull();
+    const messages = [
+        { role: "system", content: "[m:flow:used] <b>A promise</b>" },
+        { role: "system", content: "An unrelated old memory", memo: "supaMemory" },
+        { role: "user", content: "Next question" },
+    ];
+    pending.resolve(previewAnswer({ messages, context: memoryReport() }));
+    await settle();
+    expect(query("[data-memory-panel-read-only]")).toBeNull();
+    expect([...target.querySelectorAll("[data-memory-preview-entry]")].map((row) => row.textContent?.trim())).toEqual([
+        "[m:flow:used] <b>A promise</b>",
+    ]);
+    expect(query("[data-memory-preview-block] b")).toBeNull();
+    expect(query("[data-memory-manifest-item]")?.textContent).toContain("Remembered promise");
+    expect(query('[data-memory-manifest-verified="true"]')).not.toBeNull();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledTimes(1);
+    expect(query("[data-memory-preview-entry]")).not.toBeNull();
+    // Both public preview consumers still unpack the server's new result envelope.
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: memoryReport() }));
+    expect(await previewChat("preview", ref)).toEqual(messages);
+    expect(await previewChatReport(ref)).toEqual({ messages, report: memoryReport() });
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: { v: 99 } }));
+    expect(await previewChatReport(ref)).toEqual({ messages, report: null });
+});
+
+it("never displays a pending preview's answer after the user switches chats", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
+    releases.push(() => pending.resolve(previewAnswer({ messages: [], context: memoryReport() })));
+    io.runServerJob.mockReturnValueOnce(pending.promise);
+    io.authFetch.mockImplementation(async (url) => {
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({ revision: "r1", pages: [], events: [], threads: [], runs: [] });
+        throw new Error(`Unexpected request: ${url}`);
+    });
+    const selectedRef = writable(ref);
+    const state = fromStore(selectedRef);
+    instance = mount(PreviewTab, {
+        target,
+        props: {
+            get chatRef() {
+                return state.current;
+            },
+            readOnly: false,
+            refresh: 0,
+        },
+    });
+    flushSync();
+    click("[data-memory-preview-run]");
+    await settle();
+    selectedRef.set({ chaId: "c", chatId: "other" });
+    selectChat("c", "other");
+    await settle();
+    pending.resolve(
+        previewAnswer({
+            messages: [{ role: "system", content: "[m:flow:used] Foreign memory" }],
+            context: memoryReport(),
+        }),
+    );
+    await settle();
+    expect(query("[data-memory-preview]")).not.toBeNull();
+    expect(query("[data-memory-preview-block]")).toBeNull();
+    expect(query("[data-memory-manifest]")).toBeNull();
+    expect(target.textContent).not.toContain("Foreign memory");
+    expect(io.runServerJob).toHaveBeenCalledTimes(1);
 });

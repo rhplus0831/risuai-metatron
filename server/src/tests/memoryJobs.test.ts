@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
+import { parseContextReport } from "../../../shared/contextReport.ts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
     type GenerationTerminalEvent,
@@ -20,7 +21,7 @@ import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from ".
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { writeMemory } from "./memoryFixtures.ts";
+import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
@@ -803,7 +804,7 @@ describe("HypaV3", () => {
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
             expect(summaries().length).toBeGreaterThan(0);
             expect(mains()).toHaveLength(0);
-            const card = memoryCard((terminal as any).result);
+            const card = memoryCard((terminal as any).result.messages);
             expect(card?.content).toContain("Summary 1: events happened.");
             expect((await readChat(chaId)).data.hypaV3Data.summaries).toHaveLength(summaries().length);
         },
@@ -1454,7 +1455,7 @@ describe("the no-memory trim question", () => {
             expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
             expect(questions(preview.events)).toHaveLength(0);
             expect(summaries()).toHaveLength(0);
-            const result = (preview.terminal as any).result as { content: string }[];
+            const result = (preview.terminal as any).result.messages as { content: string }[];
             expect(JSON.stringify(result)).not.toContain("Message number 0:");
             expect(memoryCard(result)).toBeUndefined();
             expect((await readCharacter(chaId)).data.supaMemory).toBe(false);
@@ -1553,7 +1554,7 @@ describe("credentials and the other consumers", () => {
             const { terminal } = await job("preview", chaId);
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
             // The description follows the main prompt in the first system message.
-            const first = ((terminal as any).result as { content: string }[])[0];
+            const first = ((terminal as any).result.messages as { content: string }[])[0];
             expect(first.content).toBe("Main prompt.\n\nDesc of Mira.\n\nnear\n\nmid\n\nlow");
             // The paragraphs as documents, then the first four messages (each under its speaker) as the query.
             expect(embedCalls[0].input).toEqual(["far", "low", "near", "mid"]);
@@ -1899,7 +1900,7 @@ describe("HypaV3 with a memory task service", () => {
                     expect(terminal?.type, `${kind}: ${JSON.stringify(terminal)}`).toBe("done");
                     expect(questions(events)).toHaveLength(0);
                     if (kind === "preview") {
-                        const result = (terminal as any).result as { content: string }[];
+                        const result = (terminal as any).result.messages as { content: string }[];
                         expect(memoryCard(result)?.content).toContain(seededSummary.text);
                         expect(JSON.stringify(result)).not.toContain("Message number 2:");
                         expect(JSON.stringify(result)).toContain("Message number 23:");
@@ -2685,6 +2686,45 @@ describe("structured memory job hand-offs", () => {
                 file: path.join(rootDir, "save", "data", "resources.sqlite"),
                 kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
             });
+
+        it("both preview kinds return the selected memory without questions, writer hand-offs, receipts or stored changes", async () => {
+            const chaId = await seedCharacter();
+            const store = openStore();
+            try {
+                const records = memoryRecords(["promise"], "Remember the promise");
+                records.events[0].sources = ["m0", "m1"].map((messageId, index) => ({
+                    messageId,
+                    index,
+                    hash: "a".repeat(64),
+                }));
+                writeMemory(store, chaId, "k", { events: records.events });
+                const contents = store.memory.readContents(chaId, "k");
+                const chat = await readChat(chaId);
+                fake.setPendingManual(true);
+                for (const kind of ["preview", "previewPrompt"]) {
+                    const result = await job(kind, chaId, {}, { answer: () => "generate" });
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    expect(questions(result.events)).toEqual([]);
+                    expect(fake.handOffs).toEqual([]);
+                    expect(summaries()).toEqual([]);
+                    expect(store.memory.readContents(chaId, "k")).toEqual(contents);
+                    expect(await readChat(chaId)).toEqual(chat);
+                    if (result.terminal?.type === "done" && kind === "preview") {
+                        const value = result.terminal.result as { messages: { content: string }[]; context: unknown };
+                        expect(Object.keys(value).sort()).toEqual(["context", "messages"]);
+                        expect(value.messages.some(({ content }) => content.includes("[m:flow:promise]"))).toBe(true);
+                        const report = parseContextReport(value.context);
+                        expect(report?.memory).toMatchObject({
+                            kind: "structuredMemory",
+                            coverage: "gap",
+                            items: [{ id: "promise", kind: "event", lane: "flow", verified: true }],
+                        });
+                    }
+                }
+            } finally {
+                store.close();
+            }
+        });
 
         it("records an approved gap before replying, restores reply temperature and selects the committed records", async () => {
             const chaId = await seedCharacter();

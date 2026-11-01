@@ -9,10 +9,9 @@
   `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](structured-memory-writer.md)),
   `src/ts/process/structuredMemory.svelte.ts`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`,
   `src/lib/Others/StructuredMemory/`.
-- The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
-  tests, so its receipt line and panel show only there. Production has its [writer](structured-memory-writer.md), and
-  `assemblePrompt` runs the read path, which has no required or pages lane yet. Its design and remaining work are in
-  [Active Plans](../plan/README.md).
+- The Memory settings page selects it, ahead of the flags. Production has its [writer](structured-memory-writer.md), and
+  `assemblePrompt` runs the read path, which has no required or pages lane yet, so the page exposes only the preset
+  fields something reads. Its design and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The writer's settings, windows, task kind, runs, analysis prompt, admission, and record now →
     [structured memory writer](structured-memory-writer.md).
@@ -45,19 +44,25 @@
   `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; the pure `renderMemoryPage`,
   `renderMemoryTimeline`, `memoryPagePath`, `joinMemoryCoverage`, `groupMemoryCoverage`, `memoryMessageExcerpt`, and
   `memoryRunView`.
-- `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `LogTab.svelte`, and
-  `memoryText.ts`, the stored codes as text. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares
-  with the modal.
+- The same file, pure, for what a send reported: `memoryStatusWord`, `memoryEventsUsed`, `usedMemoryCoverageGroups`,
+  `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`.
+- `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `LogTab.svelte`,
+  `PreviewTab.svelte`, `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared with
+  `ContextMeter`), and `memoryText.ts`, the stored codes as text. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the
+  status line it shares with the modal.
+- `previewChatReport` in `src/ts/process/index.svelte.ts`: a preview's messages and report. `GenerationPreviewResult` in
+  `shared/jobs.ts` is that job's `done.result`.
 - `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
   `newestAssistantMessageId` in `structuredMemory.svelte.ts` are its pure part.
 - `server/src/prompt/memory/structured/lanes.ts`: the pure read rules: `readBudget`, `spendLanes`, `LaneItem`,
   `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`, and the raw window re-exported from `shared/`.
 - `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
   `eventVectorTexts`, `lexicalTerms`.
-- `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard`, `itemTag`, and the line builders.
+- `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard` and the line builders. `itemTag` is in `shared/`,
+  because the tab finds a block by it, and `card.ts` re-exports it.
 - `server/src/prompt/memory/structured/step.ts`: a send's read: `readMemoryRecords`, `MemoryRecords`, `readEntries`,
-  `selectMemory`, `writerState`, `sendManifest`. `structuredMemoryStep` in `assemble.ts` drives it; the job's part is in
-  [the writer guide](structured-memory-writer.md#the-writer-task).
+  `blankEntry`, `selectMemory`, `writerState`, `sendManifest`. `structuredMemoryStep` in `assemble.ts` drives it; the
+  job's part is in [the writer guide](structured-memory-writer.md#the-writer-task).
 - `shared/contextReport.ts`: the manifest's fields on `ContextReport.memory`, `reportedMemoryExclusions`,
   `CONTEXT_MEMORY_EXCLUDED`. `trimHistoryToContext` in `hypav3.ts` is the trim both algorithms share.
 
@@ -164,6 +169,14 @@ the held chat, and a feed patch moves it.
 menu row in `DefaultChatScreen` and the button in `CharConfig` open it ahead of any older memory flag. A tab is one
 component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while it shows. It writes nothing yet.
 
+- "Used in the last send" comes from `memoryEventsUsed`: the newest valid report, found as the meter finds its own, and
+  its `verified` event items. A newer report of another kind means none, and no older report is reached. Coverage badges
+  a row by `eventId` and a closed group by any of its rows; Log badges a run by the event it committed.
+- Preview runs only on its button. A preview is a local send, so it flips `readOnly`, which moves `refresh`: a run on
+  `refresh` would never stop. It answers the prompt with no next message, so it says the next send can differ.
+- `memoryBlockEntries` finds the block by `itemTag`, because `editRequest` can rebuild entries without their `memo`. A
+  stable part holding only the rule header has no tag and is not shown.
+
 - Read-only is the modal's `memoryWriteFence`: a local send, a generating chat key, or `memoryTaskFenced`, rechecked
   each second while the fence only waits for a held revision. `refresh` moves on the button and when read-only falls,
   which catches a task's end and a record-now job that ran inside a generation job and ended no task. A held message
@@ -203,8 +216,10 @@ which read as a send does. With no `memoryJob` the history stays raw and no repo
    message out puts it after the last memory entry, else at the end.
 4. Trim: `trimHistoryToContext`, as HypaV3's select-only path, with the window as its protected tail and an older
    continue target pinned. Both go into `protectedEntries`. A tail that does not fit ends the send with
-   `TOO_MUCH_TOKEN`. Dropped history is `coverage: "gap"`, and the gap question is
-   [the writer's](structured-memory-writer.md#the-writer-task).
+   `TOO_MUCH_TOKEN`. Trimmed history is `coverage: "gap"`, and the gap question is
+   [the writer's](structured-memory-writer.md#the-writer-task). So is covered history with something to send that left
+   behind an empty card, because the model saw neither. That one asks nothing and adds no `gap` stage: `gapTokens` alone
+   drives both, and `stages` says `card: empty`.
 
 The report (`ContextReport.memory`, kind `structuredMemory`):
 
@@ -212,7 +227,10 @@ The report (`ContextReport.memory`, kind `structuredMemory`):
   prompt, whichever entry holds it, so after scripts, `editRequest`, and the recheck. One not found makes `coverage`
   `unknown`, because the two parts can be lost apart.
 - `excluded` keeps `CONTEXT_MEMORY_EXCLUDED` rows, worst reason first, and `excludedTotal` the count: `retrieveLanes`
-  lists every not-relevant event. `lanes` holds each lane's target and spend.
+  lists every not-relevant event. `lanes` holds each lane's target and spend. `budgetReduced` holds only `memory`: the
+  preset's headroom and extra are the summarizer's, and this budget spends neither.
+- The meter's line shows `tokens` and `memoryStatusWord`, the worst of a `coverage` that is not `covered` and the
+  writer's state. Its popover reads titles from the contents as it opens, and a failed read leaves rows untitled.
 - `confirmedThrough` is the newest reply the writer's ceiling confirms. `writer.state` says, in order, `notAutomatic` or
   `paused` (`writerNotice`), `failed` (the newest run that recorded or failed did not record), `pending` (that reply is
   not recorded), else `recorded`.
@@ -363,8 +381,13 @@ group is refused, and a full one is checked and restored.
   should not happen fails the request. `structuredMemory.test.ts` drives the join and the restarts.
   `StructuredMemoryPanel.test.ts` mounts the real panel and `App.svelte` on fake timers with `authFetch` scripted, and
   the two openers are in `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
+- Selection and the meter: `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with the list
+  it may expose, so a new control fails it until something reads the field. `Toggles.test.ts` holds the toggle and
+  `alwaysToggleOn`, `ContextMeter.svelte.test.ts` the line and the popover's one read.
+- The preview: `memoryJobs.test.ts` and `promptRunner.test.ts` drive both kinds on a real stack, and
+  `StructuredMemoryPanel.test.ts` scripts `runServerJob` for the tab.
 - Focused command:
-  `pnpm --silent test:agent structuredMemory StructuredMemory memoryStore memory/structured MemoryReceiptLine Chat.interactions DefaultChatScreen.drafts CharConfig.emotions restoreStage backups memoryTasks memoryJobs`.
+  `pnpm --silent test:agent structuredMemory StructuredMemory memoryStore memory/structured MemoryReceiptLine ContextMeter Toggles Chat.interactions DefaultChatScreen.drafts CharConfig.emotions restoreStage backups memoryTasks memoryJobs promptRunner`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
@@ -382,8 +405,8 @@ group is refused, and a full one is checked and restored.
 - `verified` reads the prompt assembly returned. Plugin replacers and `request` triggers run after it, on every attempt,
   so a line they remove still reads as verified, and a provider that gathers system entries (Ooba mode) undoes the
   placement. A tag the model echoed into a kept message verifies a lost line too. Decision: D8, plan.
-- Covered history leaves even when the budget cannot hold the card's frame: the card is empty and `coverage` stays
-  `covered`, because an event covers it; `stages` says `card: empty`.
+- A preview marks no record and asks nothing, but it runs the start trigger, whose result can be committed, and counts
+  in `statics.messages`, so it is not free of side effects. Decision: Structured Memory slice 3c, plan.
 - A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.
 - `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
 - Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script

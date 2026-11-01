@@ -8,6 +8,7 @@ import {
     type AnyMemoryTaskInput,
     type CallbackPayloads,
     type CallbackResult,
+    type GenerationPreviewResult,
     type GenerationStage,
     MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
@@ -277,7 +278,8 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    effect count, each speaker's own bindings and request projection). A preview stops after the
  *    first; a speaker that fails ends the loop.
  * 5. Per speaker: a continue's message is locked first (`begin`, `accepted`); the prompt is assembled
- *    (`assemblePrompt`); `preview` ends with the messages, `previewPrompt` with the provider body.
+ *    (`assemblePrompt`); `preview` ends with the messages and their context report, `previewPrompt`
+ *    with the provider body.
  *    Otherwise the request runs, and the reply is appended (or the continued message extended) and
  *    streamed: `chunk` per provider chunk, a raw checkpoint every 3 s, and the final raw write at the
  *    end, after an abort (inside the grace), or after a read failure.
@@ -289,7 +291,7 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * 7. `done` with the last reply's id and the reroll alternatives: the reply is persisted.
  *
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
- * it the job ends with the error.
+ * it, and always in a preview, which writes no message, the job ends with the error.
  *
  * A failure names its stage: the site nearest it names one where it knows it (a script, a write, a
  * request, with the request's id and provider code), else the stage the run was in
@@ -998,10 +1000,10 @@ async function runSpeaker(arg: {
 
     /**
      * `throwError`: into the chat with `inlayErrorResponse` (the last reply or a new message), else the
-     * job's error, with `failure` (a failed request's id and provider code).
+     * job's error, with `failure` (a failed request's id and provider code). A preview writes no message.
      */
     function throwError(error: string, failure?: GenerationFailure, status = 500): SpeakerResult {
-        if (!db.inlayErrorResponse) {
+        if (!db.inlayErrorResponse || job.kind === "preview" || job.kind === "previewPrompt") {
             throw new SendError(error, failure, status);
         }
         const chat = chatNow();
@@ -1469,7 +1471,8 @@ async function runSpeaker(arg: {
         generationInfo = assembled.generationInfo;
         memoryTask = assembled.memoryTask;
         if (job.kind === "preview") {
-            return { type: "preview", result: formated };
+            const result: GenerationPreviewResult = { messages: formated, context: generationInfo.context };
+            return { type: "preview", result };
         }
 
         const stage3Start = Date.now();

@@ -3,6 +3,7 @@ import { v4 } from "uuid";
 import type { character, groupChat } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
 import { CharacterShapeError, normalizeCharacter, supaMemoryOnCount } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
@@ -379,13 +380,14 @@ export function selectedCharacter(): AnyClientCharacter | undefined {
     return chaId === null ? undefined : list().find((entry) => entry?.chaId === chaId);
 }
 
-// The HypaV3 preset that turns memory on for every chat does so when a character is selected (a
-// turn-on that counts, as the toggle's: `supaMemoryOnCount`).
+// The memory preset that turns memory on for every chat does so when a character is selected (a
+// turn-on that counts, as the toggle's: `supaMemoryOnCount`), under HypaV3 or Structured Memory, which
+// share the preset.
 onCharacterSelected((chaId) => {
     untrack(() => {
         const found = findCharacter(chaId);
         if (
-            settings.memoryTranslateMedia.hypaV3 &&
+            (settings.memoryTranslateMedia.hypaV3 || settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM) &&
             selectedHypaV3Preset({
                 hypaV3Presets: settings.hypaV3Presets.items,
                 hypaV3PresetId: settings.hypaV3Presets.selectedId,

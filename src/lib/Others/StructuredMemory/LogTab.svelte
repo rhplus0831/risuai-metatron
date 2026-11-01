@@ -6,11 +6,12 @@
     import { downloadFile } from "src/ts/globalApi.svelte";
     import {
         buildStructuredMemoryLog,
+        memoryEventsUsed,
         memoryRunView,
         readStructuredMemoryRuns,
         type MemoryRunView,
     } from "src/ts/process/structuredMemory.svelte";
-    import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import type { StructuredMemoryLogRun } from "../../../../shared/structuredMemory.ts";
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
@@ -47,6 +48,7 @@
     let readNumber = 0;
 
     const views = $derived(runs.map((run) => memoryRunView(run)));
+    const usedEvents = $derived(memoryEventsUsed(findChat(chatRef)?.message ?? []));
 
     /**
      * Reads the round at `cursor`, after the runs in `held`. An answer for another chat, or one a newer
@@ -259,6 +261,11 @@
                                     {codeText(text.results, view.result)}
                                 </span>
                                 <span>{rangeText(view)}</span>
+                                {#if view.eventId !== undefined && usedEvents.has(view.eventId)}
+                                    <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
+                                        >{panelText.usedInLastSend}</span
+                                    >
+                                {/if}
                             </span>
                             <span class="flex flex-wrap gap-x-2 text-textcolor2">
                                 <span>{view.model ?? text.noModel}</span>

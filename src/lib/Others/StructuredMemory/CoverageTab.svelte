@@ -7,8 +7,10 @@
         groupMemoryCoverage,
         joinMemoryCoverage,
         MEMORY_COVERAGE_STATES,
+        memoryEventsUsed,
         memoryMessageExcerpt,
         readStructuredMemoryCoverage,
+        usedMemoryCoverageGroups,
         type MemoryCoverageRow,
         type StructuredMemoryCoverage,
     } from "src/ts/process/structuredMemory.svelte";
@@ -76,6 +78,8 @@
     const coverage = $derived(facts ? joinMemoryCoverage(messages, facts, { windowTurns, memoryOn }) : null);
     const groups = $derived(coverage ? groupMemoryCoverage(coverage.rows) : []);
     const eventTitles = $derived(new Map<string, string>(facts?.events.map(({ id, title }) => [id, title])));
+    const usedEvents = $derived(memoryEventsUsed(messages));
+    const usedGroups = $derived(usedMemoryCoverageGroups(coverage?.rows ?? [], groups, usedEvents));
 
     let shownGroups = $state(ROWS_AT_ONCE);
     /** The expanded group, by its first row; one at a time keeps the rendered rows bounded. */
@@ -160,6 +164,10 @@
     }
 </script>
 
+{#snippet usedBadge()}
+    <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used>{panelText.usedInLastSend}</span>
+{/snippet}
+
 {#snippet messageRow(row: MemoryCoverageRow)}
     {@const title = row.eventId === undefined ? undefined : eventTitles.get(row.eventId)}
     <li class="flex flex-col min-w-0 py-1 break-words" data-memory-coverage-row={row.state}>
@@ -169,6 +177,9 @@
             <span class={stateClass(row.state)}>{text.states[row.state]}</span>
             {#if row.reason !== undefined}
                 <span class="min-w-0 text-textcolor2">{memoryReasonText(row.reason)}</span>
+            {/if}
+            {#if row.eventId !== undefined && usedEvents.has(row.eventId)}
+                {@render usedBadge()}
             {/if}
         </div>
         <span class="truncate text-textcolor2">{memoryMessageExcerpt(messages[row.index]?.data ?? "")}</span>
@@ -234,6 +245,9 @@
                                 {text.range(group.start, group.end - 1, group.end - group.start)}
                             </span>
                             <span class={stateClass(group.state)}>{text.states[group.state]}</span>
+                            {#if !open && usedGroups.has(group.start)}
+                                {@render usedBadge()}
+                            {/if}
                         </button>
                         {#if open}
                             {@const shown = Math.min(shownInGroup, group.end - group.start)}
