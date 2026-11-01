@@ -324,22 +324,25 @@ Paths are under `save/` ([Disk layout](self-host-server.md#disk-layout)). `backu
 
 ### Store tables
 
-`data/resources.sqlite` (plus its `-wal` and `-shm` files) is the resource store. `PRAGMA user_version` is the store
-version (3: settings sections and collections, no `root` record; the tables are those of version 2).
+`data/resources.sqlite` (plus `-wal` and `-shm`) is the resource store. `PRAGMA user_version` is the store version (3:
+settings sections and collections, no `root` record; tables as in version 2).
 
 - `resources` (`seq` autoincrement, `kind`, `id`, `revision`, `schemaVersion`, `data` JSON text, unique `(kind, id)`).
 - `meta` holds the random `epoch`, `summaryProjectionVersion`, and `normalizationStamp`.
 - `chats` (`seq`, `characterId`, `id`, `revision`, `schemaVersion`, `meta` JSON).
+- `data/chatStore.ts` `searchNextCharacterChat`, the per-character newest-first walk, must write `+characterId`, so
+  SQLite walks the rowid instead of sorting the `UNIQUE (characterId, id)` matches. `IF NOT EXISTS` can add a
+  `(characterId, seq)` index: the layout check reads only tables, by name.
 - `messages` (`chatSeq`, message `id`, integer `position`, `data` JSON, and the generation fence: `generationId`,
   `generationSeq`, `generationFinal`, `generationHistory` of up to 8 earlier ids).
-- The expression index `messages_role` on `(chatSeq, json_extract(data, '$.role'))` counts a chat's user turns without
-  reading a row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open;
-  it is outside the layout check, and it makes SQLite refuse a `data` that is not JSON.
+- The index `messages_role` on `(chatSeq, json_extract(data, '$.role'))` counts a chat's user turns without reading a
+  row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open; it makes
+  SQLite refuse a non-JSON `data`.
 - `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON).
 - `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`,
-  `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, so a version-3 file without
-  it gains it on open without a version change. It is not part of the snapshot layout check, a snapshot's copy of it is
-  not restored, and a restore leaves it empty (deleting the chats cascades).
+  `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, with no version change. It
+  is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats
+  cascades).
 
 ### Summary projection
 
@@ -347,22 +350,21 @@ version (3: settings sections and collections, no `root` record; the tables are 
   chat's summary projection (`summaryText`: the listed metadata fields as JSON, without `lastMessageAt` or the
   revision), created the same way and outside the layout check: `backupTo` copies it into every snapshot, validation
   ignores it, and a restore writes its own rows.
-- `writeChatMeta` is the only live code that writes `chats.meta` and stores the projection in the same transaction (a
+- `writeChatMeta` is the only live writer of `chats.meta` and stores the projection in the same transaction (a
   [restore's writers](#invariants) write both tables together); every other chat write moves the row's `revision` with a
   compare-and-set, so a row an older server left behind never turns fresh. A row is fresh when its `revision` equals the
   chat's.
 - `openChatSchema` runs in its own transaction after the normalization pass and before any chat statement is prepared:
   it rebuilds missing and stale rows, and every row when `summaryProjectionVersion` differs from
-  `SUMMARY_PROJECTION_VERSION` (bump it when the projection's shape changes). A metadata value that cannot be projected
-  rolls that transaction back and closes the store, so one unparsable `meta` stops the open.
-- A reader that still finds a stale or missing row computes it from `meta` and rewrites it outside a transaction,
-  best-effort, as neither a store write nor a feed event; inside a transaction it answers the computed text and writes
-  nothing.
+  `SUMMARY_PROJECTION_VERSION` (bump it when the shape changes). A `meta` that cannot be projected rolls that
+  transaction back and closes the store, stopping the open.
+- A reader that finds a stale or missing row computes it from `meta` and rewrites it outside a transaction, best-effort,
+  as neither a store write nor a feed event; inside a transaction it answers the computed text and writes nothing.
 
 ### Checkpoint tables
 
-The checkpoint tables are created the same way and are outside the required layout (a snapshot without them is valid),
-but a snapshot that has any of them is checked and restored with them (`walkCheckpointSnapshot`).
+The checkpoint tables are created the same way and outside the required layout (a snapshot without them is valid), but a
+snapshot with any of them has them checked and restored (`walkCheckpointSnapshot`).
 
 - `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind`
   (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview`
@@ -373,18 +375,18 @@ but a snapshot that has any of them is checked and restored with them (`walkChec
 - `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`,
   `autoKeep`, `lastAutoTurns`).
 - A checkpoint delete or prune removes the pages its own checkpoints freed, in the caller's transaction, and scans
-  nothing else; the table-wide sweep runs at open, and a restore keeps only the snapshot's referenced pages, so the
-  pages of a deleted chat or character wait for the next open.
+  nothing else; the table-wide sweep runs at open, and a restore keeps only the snapshot's referenced pages, so a
+  deleted chat's or character's pages wait for the next open.
 
 ### Store open and normalization
 
 - Opening the store runs the normalization pass in one transaction, unless it finds its own stamp: each record whose
-  normalized text or schema version differs from the stored one is rewritten with its revision counter advanced (same
-  `seq` and epoch), and each missing `materialize` singleton is created; a stored record its normalizer rejects, or one
-  of a newer schema version than its kind, stops the start.
+  normalized text or schema version differs is rewritten with its revision counter advanced (same `seq` and epoch), and
+  each missing `materialize` singleton is created; a stored record its normalizer rejects, or one of a newer schema
+  version than its kind, stops the start.
 - The pass writes `normalizationStamp` in that transaction ([Gotchas](#gotchas) has the skip). An [install](#install)
   runs no pass.
-- A version-1 file or version-2 file (settings in a `root` record) is refused at startup with a message naming it, and a
+- A version-1 or version-2 file (settings in a `root` record) is refused at startup with a message naming it, and a
   snapshot or archive of another version is refused on restore; there is no migration (formats of metatron's
   implementation phases, `persistence.md` compatibility rule).
 
@@ -392,18 +394,17 @@ but a snapshot that has any of them is checked and restored with them (`walkChec
 
 The connection runs with `journal_mode=WAL`, explicit `synchronous=FULL`, `busy_timeout=5000`, and `foreign_keys=ON`, so
 acknowledged resource writes do not depend on the SQLite build default. `RISU_SQLITE_SYNCHRONOUS=normal` (`full` is the
-default) replaces `FULL` on this connection only, for SD cards and other slow local volumes, not as support for network
-filesystems ([Limitations](#limitations)). Request history, the job receipts, and the vector cache keep
-`synchronous=NORMAL` whatever it says.
+default) replaces `FULL` on this connection only, for SD cards and slow local volumes, not network filesystems
+([Limitations](#limitations)). Request history, job receipts, and the vector cache keep `synchronous=NORMAL` regardless.
 
 ### Process memory
 
 - The resource store's epoch and committed-write counter, the snapshot lock, the maintenance gate, the restore queue,
   the backup import slot (the version-2 import and the upstream prepare and commit), the import slot the module, CharX,
-  and Realm imports share, the staged Realm imports (`realmStaging`), the prepared upstream imports (`upstreamStaging`),
-  and the prepared upstream exports (`upstreamExportStaging`).
+  and Realm imports share, the staged Realm imports (`realmStaging`), and the prepared upstream imports
+  (`upstreamStaging`) and exports (`upstreamExportStaging`).
 - The chat source generations and the `onChatInvalidated` listeners (one entry per chat deleted or replaced whole since
-  the store opened or the last restore; a restart starts them over).
+  the open or the last restore; a restart starts them over).
 
 ## Coupling
 

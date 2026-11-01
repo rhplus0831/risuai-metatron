@@ -20,7 +20,7 @@ run, not this map.
 
 ## Repository-Wide Invariants
 
-Tooling:
+### Tooling
 
 - T1. Use `pnpm` (`packageManager: pnpm@10.34.1`) and Node `>=24.0.0`. The server runs TypeScript through Node type
   stripping.
@@ -38,7 +38,7 @@ Tooling:
   ("since chats became their own records", not "since slice 9"); history belongs in commits and
   [the archive](docs/archived-plan/README.md).
 
-Verification:
+### Verification
 
 - V1. Run `pnpm check` and `pnpm --silent test:agent` once per change, after the last source edit; while iterating, run
   only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A change also runs the slow
@@ -51,9 +51,9 @@ Verification:
 - V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real wall-clock time, CPU time, or the
   scheduler: no elapsed-time or throughput assertion, no sleep as synchronization, no real production deadline raced by
   test work. Control the clock (fake timers, an injected `now`, a deferred or latch, a test-only limit option) or tag
-  the test `slow`. A gate timeout is a hang guard, not a performance budget. Add tests only for code the task changes,
-  and keep a test only when a plausible wrong implementation would fail it. Timing policy and overload checks:
-  [test-harness](docs/structure/test-harness.md) `Tests`.
+  the test `slow`. A gate timeout is a hang guard, not a performance budget.
+  - Add tests only for code the task changes, and keep a test only when a plausible wrong implementation would fail it.
+  - Timing policy and overload checks: [test-harness](docs/structure/test-harness.md) `Tests`.
 - V4. Before committing, `rg` each changed product export and file name across `src`, `server`, `shared`, `public`,
   `util`, `e2e`, and `docs`, and update the consumers it finds (scripts that read source as text and guides that name it
   included).
@@ -70,18 +70,19 @@ Verification:
 - V9. A test reads product source through `node:fs`, never a Vite `?raw` import (which pulls the file into the module
   graph and coverage as text).
 
-Data and persistence:
+### Data and persistence
 
 - D1. The client holds resource records, not a whole `Database`: settings views, character records, and the chat module
   are its live state. Legacy snapshots are detached copies. All chat writes go through `chatStore.svelte.ts`, addressed
   by chat id and message id (`Message.chatId`), never an index after an await. Bind chat fields through getter/setter
   functions or a synced editing copy.
 - D2. A persisted field needs its shared type, ownership in `shared/sections.ts`, and server defaults/migration in
-  `server/src/data/normalize/`. Boot installs the server's records without client normalization. Chat/message fields are
-  stored largely as sent; default missing values at their readers. Settings views follow the open chat's bound records
-  when available, then tab selection; a send requires all three chat bindings and never uses that fallback. Model ids
-  are derived from slots/profiles and are written synchronously. Details: [persistence](docs/structure/persistence.md)
-  and [LLM requests](docs/structure/llm-requests.md).
+  `server/src/data/normalize/`. Boot installs the server's records without client normalization. Details:
+  [persistence](docs/structure/persistence.md) and [LLM requests](docs/structure/llm-requests.md).
+  - Chat/message fields are stored largely as sent; default missing values at their readers.
+  - Settings views follow the open chat's bound records when available, then tab selection; a send requires all three
+    chat bindings and never uses that fallback.
+  - Model ids are derived from slots/profiles and are written synchronously.
 - D3. Preserve persisted spellings, including `seperateModels`, `seperateParameters`, `moduleIntergration`, and
   `PresensePenalty`.
 - D4. Resource writes carry revision and epoch. Stale writes merge independent units; same-unit conflicts reload,
@@ -96,7 +97,7 @@ Data and persistence:
   [characters/modules](docs/structure/characters-modules.md) `Invariants`. Never renumber `LLMFlags`, `LLMFormat`,
   `LLMProvider`, `LLMTokenizer`, or rename persisted discriminator values.
 
-Platform and network:
+### Platform and network
 
 - P1. Only `src/main.ts` gates on `isNodeServer` (`globalThis.__NODE__`, injected by Hono or Vite). It imports `boot.ts`
   only with the server present; otherwise it mounts `NodeServerRequired`. Code past that gate assumes the server exists.
@@ -106,14 +107,14 @@ Platform and network:
   `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy, local-network policy, and logs. See
   [global-api](docs/structure/global-api.md).
 
-Security:
+### Security
 
 - S1. Untrusted user/model/card/module/plugin HTML passes through `ParseMarkdown` and `trimMarkdown` (DOMPurify) before
   `{@html}`. Keep CSS scoped to `.chattext` and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML.
 - S2. Server Lua network/LLM calls and low-level trigger effects require the relevant character/module/trigger
   `lowLevelAccess` gates. Do not widen them.
 
-UI:
+### UI
 
 - U1. Use theme tokens from `src/styles.css` (`bg-bgcolor`, `bg-darkbg`, `bg-darkbutton`, `bg-selected`,
   `text-textcolor`, `text-textcolor2`, `border-borderc`, `border-darkborderc`, `text-draculared`, and the
@@ -127,7 +128,7 @@ UI:
   `selectCharacter(chaId)`; `null` is home. Never retain a list index as an asynchronous address. See
   [app-shell](docs/structure/app-shell.md).
 
-Release:
+### Release
 
 - R1. `version.json` and `appVer` (`APP_VERSION_POINT`) in `src/ts/storage/database.svelte.ts` are the compatibility
   version: the upstream RisuAI release the ledger has triaged through
@@ -143,7 +144,7 @@ completed plans and retrieval commands.
 | Task                                                                                     | Guide                                                          |
 | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | Boot, screen selection, URL/history, stores, flags, hotkeys                              | [app-shell](docs/structure/app-shell.md)                       |
-| Network/proxy transport, assets/thumbnails, notifications, alerts, utility helpers       | [global-api](docs/structure/global-api.md)                     |
+| Network/proxy, tab job client/channel, assets/thumbnails, notifications, alerts, utils   | [global-api](docs/structure/global-api.md)                     |
 | Request history, checked failures, diagnostics, reports, support shares                  | [diagnostics](docs/structure/diagnostics.md)                   |
 | Persisted fields, records, settings views, normalization, chat bindings                  | [persistence](docs/structure/persistence.md)                   |
 | Boot load and cache, save loop, conflicts, credential writes, live updates               | [resource-sync](docs/structure/resource-sync.md)               |
@@ -186,7 +187,7 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`, `src/ts/{tokenizer,tokenCountField}.ts`,
   `shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`,
   `src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte`,
-  `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`, `src/lib/Setting/Pages/ApiKeysSettings.svelte`,
+  `src/lib/Setting/Pages/{Advanced/CustomModelsSettings,ApiKeysSettings}.svelte`,
   `src/lib/UI/GUI/CredentialSelect.svelte`.
 - **plugins-mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`, `src/ts/process/dynamicutils/pdf.ts`,
   `shared/plugins.ts`, `src/ts/storage/pluginStorageStore.svelte.ts`, `src/ts/plugins/`, `plugins.md`,
@@ -221,9 +222,9 @@ guide's `Files` section has identifiers. These are starting points: for behavior
 - **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
   `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`,
   `src/lib/Others/MonacoEditor.svelte`, `src/etc/airisu.cbs`, `src/etc/docs/`.
-- **backup-sync-hub**: `src/ts/drive/`, `src/ts/realmBlocking.ts`, `src/ts/storage/realmImportClient.ts`,
-  `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `server/src/data/upstream/`,
-  `shared/{upstreamBackup,upstreamExportReport}.ts`.
+- **backup-sync-hub**: `src/ts/drive/`, `src/ts/{realmBlocking,realmTerms}.ts`, `src/ts/storage/realmImportClient.ts`,
+  `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `server/src/data/upstream/` (its
+  workers and staging: **server-resources**), `shared/{upstreamBackup,upstreamExportReport}.ts`.
 - **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
   `src/ts/{alert,alertQueue}.ts`, `shared/{assetBatch,localNetwork,notifications}.ts`,
   `src/ts/storage/{assetClient,assetQueue}.ts`, remaining `src/ts/network/`,
@@ -232,12 +233,12 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.
 - **app-shell**: `index.html`, `src/{main,boot,startApp}.ts`, `src/App.svelte`,
   `src/lib/Others/NodeServerRequired.svelte`,
-  `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex}.ts`,
+  `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,ime,defaulthotkeys,observer.svelte,popupEditorSession.svelte,mutex}.ts`,
   `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
 - **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`.
 - **server-resources**:
   `server/src/data/{resourceStore,chatStore,chats,kinds,snapshots,archive,checkpointStore,checkpointService}.ts`,
-  `server/src/data/{databaseProjection,recordPatchText}.ts`, `server/src/data/{normalize,restore,upstream}/`,
+  `server/src/data/{databaseProjection,recordPatchText}.ts`, `server/src/data/{normalize,restore}/`,
   `server/src/http/{spool,fileImport,contentAsset,recordStream}.ts`,
   `server/src/routes/{resources,resourceBoot,llmSecrets,messageSearch,chatCheckpoints}.ts`,
   `server/src/routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`.
@@ -248,7 +249,8 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `util/agentTestReporter.ts`, `util/agentTestResults.mjs`, `util/agentE2e.mjs`, `util/requireHuman.mjs`,
   `util/overloadTest.mjs`, `util/testInventory.mjs`.
 - **build-test-platforms**: `package.json`, `vite.config.ts`, `tsconfig*.json`, remaining `util/`, `public/sw.js`,
-  `public/manifest.json`, `version.json`, root dotfiles.
+  `public/manifest.json`, `version.json`, `src/ts/buildInfo.ts`, `shared/buildInfo.ts`, `server/src/buildInfo.ts`, root
+  dotfiles.
 - Tests follow the code they exercise; browser harness ownership stays with test-harness.
 
 Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`, `src/etc/docs/`,

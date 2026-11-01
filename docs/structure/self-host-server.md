@@ -183,21 +183,21 @@ after authentication.
 `routes/storage.ts`: `checkAuth` (JWT), storage limiter.
 
 - `GET /api/read`, `/api/remove`, `/api/list`: storage. The `file-path` header is the hex UTF-8 key; `remove` takes
-  `$$`-joined hex keys.
+  `$$`-joined hex keys and validates every segment before deleting; no client calls it.
 - `GET`/`HEAD /api/asset/*`: stored asset bytes; the path suffix is the hex UTF-8 key; extension-based MIME, single byte
-  range (206/416), conditional ETag (304), and no body for HEAD; 401 for a missing or rejected JWT, 404 for a missing or
-  unsupported key. `?w=256` or `?w=512` selects a WebP thumbnail of the same asset, or a 307 to the original; any other
-  `w`, an empty one, or a repeated one is 400.
+  range (206/416), conditional ETag (304), no body for HEAD; 401 for a missing or rejected JWT, 404 for a missing or
+  unsupported key. `?w=256` or `?w=512` selects the asset's WebP thumbnail, or a 307 to the original; any other, empty,
+  or repeated `w` is 400.
 - `POST /api/write`: storage write, raw body bytes.
-- `POST /api/assets/write`: batch storage write (`shared/assetBatch.ts`): raw body of archive-framed records named by
-  logical key, each staged, then renamed into place under the gate (overwrites); `{ success: true, written }`; 400
+- `POST /api/assets/write`: batch write (`shared/assetBatch.ts`): raw body of archive-framed records named by logical
+  key, each staged, then renamed into place under the gate (overwrites); `{ success: true, written }`; 400
   `Invaild Path` + `index` or `Invalid asset batch`, 503, 500, each after the body is read.
-- `POST /api/assets/read`: batch storage read: body `{ keys }` (1-2000 keys); a chunked `no-store` octet stream of one
-  record per key, in order, duplicates kept (zero-length for a missing file, a symlink, a non-regular file, or a key
-  with no storage location); 400.
-- `POST /api/assets/missing`: `checkAuth` before body read. Verified presence check: body `{ names }` (1-512 names, 64
-  KiB cap); `{ missing }` contains each unverified name once in first-asked order; non-canonical, unresolvable, absent,
-  empty, corrupt, or over-budget files count as missing; `no-store`; 400/413.
+- `POST /api/assets/read`: batch read: body `{ keys }` (1-2000); a chunked `no-store` octet stream of one record per
+  key, in order, duplicates kept (zero-length for a missing file, symlink, non-regular file, or key with no storage
+  location); 400.
+- `POST /api/assets/missing`: `checkAuth` before body read. Verified presence: body `{ names }` (1-512, 64 KiB cap);
+  `{ missing }` holds each unverified name once in first-asked order; non-canonical, unresolvable, absent, empty,
+  corrupt, or over-budget files count as missing; `no-store`; 400/413.
 
 ### Asset responses
 

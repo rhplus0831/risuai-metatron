@@ -26,15 +26,16 @@
 - `shared/scripts/regex.ts`: the regex engine (the server's workers run it).
   - `runRegexScripts(data, scripts, { mode, chatID, parse, repeatBackSource, applyEffect? })` returns
     `{ data, effects }`: flags, `<order n>` and the other `<...>` actions, the `@@` directives, and the script loop (a
-    script that throws is skipped). It writes nothing itself: `@@emo` and `@@inject` go to `applyEffect` where their
-    script matched, inside that script's `try` (so a later script's CBS reads the write, and a throwing sink skips the
-    rest of that script only), and are also returned as the ordered `effects` (`{ kind: "emotion", name }`,
-    `{ kind: "inject", text }`). `parse` is the run's CBS; ordinary replacements skip it only when the result is
-    unchanged (`replaced === data`, so a match replacing with the same string counts too) and `isCbsPlainText` in
-    `shared/cbs/evaluator.ts` finds no CBS constructs (`{{`, `{#`, or case-insensitive `<user>`/`<char>`/`<bot>`).
-    Skipping that host parse also skips its CBS budget check; changed text and moved results still pass through CBS.
-    This examines the current text, including constructs introduced by an earlier script. `repeatBackSource` answers
-    `@@repeat_back`'s previous message.
+    script that throws is skipped).
+    - It writes nothing itself: `@@emo` and `@@inject` go to `applyEffect` where their script matched, inside that
+      script's `try` (so a later script's CBS reads the write, and a throwing sink skips the rest of that script only),
+      and are also returned as the ordered `effects` (`{ kind: "emotion", name }`, `{ kind: "inject", text }`).
+    - `parse` is the run's CBS; ordinary replacements skip it only when the result is unchanged (`replaced === data`, so
+      a match replacing with the same string counts too) and `isCbsPlainText` in `shared/cbs/evaluator.ts` finds no CBS
+      constructs (`{{`, `{#`, or case-insensitive `<user>`/`<char>`/`<bot>`). Skipping that host parse also skips its
+      CBS budget check; changed text and moved results still pass through CBS. This examines the current text, including
+      constructs introduced by an earlier script.
+    - `repeatBackSource` answers `@@repeat_back`'s previous message.
   - `RegexScriptMode` = `editinput|editoutput|editprocess|editdisplay`.
   - `regexScriptCacheKey` and `createScriptCache` (the final output, 1,000 entries).
 - `regexFiles.ts`: `exportRegex`/`importRegex` (the regex file export and import of the editors).
@@ -46,9 +47,10 @@
 - `serverCommands.ts`: the tab's side of a server command job (`runServerButton`, `runServerManualTrigger`, both
   returning the outcome) and of a send job (`runServerJob`), and the job follow (`followJobToEnd`, `resumeServerJobs`,
   and `readChatAgain`/`refreshChatAfterPush`, the chat read again for a viewed lost chat or a completion push).
-  `followedJobs` is the reactive registry of those follows by job id, with a chat key once known;
-  `followedJobsOf(jobs, ref)` returns that chat's job ids. A Lua button's or manual trigger's command job on the
-  selected chat shows Stop, which aborts it from the chat screen.
+  - `followedJobs` is the reactive registry of those follows by job id, with a chat key once known;
+    `followedJobsOf(jobs, ref)` returns that chat's job ids.
+  - A Lua button's or manual trigger's command job on the selected chat shows Stop, which aborts it from the chat
+    screen.
 - `SideBars/Scripts/RegexData.svelte`, `RegexList.svelte`: the regex editor. Flags are native `g/i/m/u/s` plus
   `<move_top>`, `<move_bottom>`, `<repeat_back>`, `<cbs>`, `<no_end_nl>`, `<order n>`.
 - `SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua). Any other non-empty list (legacy v1 data,
@@ -100,10 +102,11 @@ v2 layout:
   display/request allowlists; the runtime copies the character for each run and shares its asset lists read-only.
 - Send scripts (`server-generation.md`): `server/src/prompt/scripts.ts:createScriptProcessor` handles `editinput`,
   `editprocess`, and `editoutput`. It runs Lua edit hooks where defined, the plugin hook, CBS, then regex scripts.
-  `runScriptTail` filters preset, character, and module regex scripts by `script.type === mode` before worker dispatch;
-  with none left it starts no regex worker task but still applies dynamic assets and caches the final output. Dynamic
-  assets can run without regex scripts for `editoutput` and configured `editdisplay`; regex effects are applied at the
-  match and returned in order, while the cache stores final output.
+  - `runScriptTail` filters preset, character, and module regex scripts by `script.type === mode` before worker
+    dispatch; with none left it starts no regex worker task but still applies dynamic assets and caches the final
+    output.
+  - Dynamic assets can run without regex scripts for `editoutput` and configured `editdisplay`; regex effects are
+    applied at the match and returned in order, while the cache stores final output.
 - Display transform (`cbs-rendering.md`): `ParseMarkdown` and the translator call `/api/transform` for server-side
   `editdisplay`; a missing chat, server record, preset, or persona skips the request. The transform does not persist
   chat variables; `@@emo` effects are applied by the tab.
@@ -221,9 +224,11 @@ v2 layout:
 - `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
 - Job setters for `scriptstate` and `note` share a pending metadata write until a microtask or explicit flush; a yielded
   trigger or awaited command can split one run across writes. Another chat write flushes that batch first, so a refused
-  message write cannot discard an earlier setter. The final `applyTriggerChat` write reconciles the map fields
-  (`CHAT_META_MERGE_KEYS`: `scriptstate`, `GLGlobalVariables`, `toolCalls`, `bookmarkNames`) entry by entry against the
-  trigger's baseline (`meta.merge`/`mergeUnset`), so a variable another command or tab saved during the run survives and
-  the trigger's final value wins only for keys it changed; a key the trigger changed and then restored to its baseline
-  value is not written, so a concurrent value of that key stays. The metadata write also advances the revision, so that
-  trigger's reorder may be dropped. `server/src/tests/chatMetadataCoalescing.test.ts` pins the batching boundary.
+  message write cannot discard an earlier setter.
+  - The final `applyTriggerChat` write reconciles the map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`,
+    `GLGlobalVariables`, `toolCalls`, `bookmarkNames`) entry by entry against the trigger's baseline
+    (`meta.merge`/`mergeUnset`), so a variable another command or tab saved during the run survives and the trigger's
+    final value wins only for keys it changed; a key the trigger changed and then restored to its baseline value is not
+    written, so a concurrent value of that key stays.
+  - The metadata write also advances the revision, so that trigger's reorder may be dropped.
+  - `server/src/tests/chatMetadataCoalescing.test.ts` pins the batching boundary.
