@@ -107,6 +107,7 @@ it is not a current architecture guide.
 | Boot Bytes                               | `2a8f7b93a`: `docs/plan/boot-bytes.md`                                    | [persistence](../structure/persistence.md), [server](../structure/self-host-server.md), [app shell](../structure/app-shell.md), [plugins/MCP](../structure/plugins-mcp.md), [build/test/platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                     |
 | Per-Event Server Work                    | `aff71b423`: `docs/plan/per-event-server-work.md`                         | [persistence](../structure/persistence.md), [server](../structure/server-generation.md), [chat pipeline](../structure/chat-pipeline.md)                                                                                                                                                                                                                                                                                                                                                      |
 | Server Byte Budgets                      | `0009c22f3`: `docs/plan/server-byte-budgets.md`                           | [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [diagnostics](../structure/diagnostics.md), [backup sync hub](../structure/backup-sync-hub.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                         |
+| Guide Budgets                            | `9a1bf0afe`: `docs/plan/guide-budgets.md`                                 | [STRUCTURE](../../STRUCTURE.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                                                                                                |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -999,6 +1000,21 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `checkpoints.sweep`, the login that appends a known key hash again, the "every start"
     normalizer comments, `discardRefusedChat` without a deadline, and the unseeded
     `terminalNotice` e2e case.
+- Guide Budgets:
+  - All slices landed on 2026-11-01. Guides went from 17 files and 1,156,344 bytes to 23 files
+    and 864,053 bytes, and the largest leaf from 116,767 to 6,950 bytes; the numbers are in the
+    archived Verification section. `pnpm check:docs` fails on 40,000 bytes per guide, 8,000 per
+    leaf, and 600 characters per item.
+  - `persistence.md` became `persistence`, `resource-sync`, `chat-store`, and `draft-recovery`;
+    `self-host-server.md` became `self-host-server`, `server-resources`, and `server-generation`;
+    `build-test-platforms.md` gave its test rules to `test-harness.md`.
+  - The slices ran no test suite and no `pnpm check`, at the owner's request; only
+    `util/docsBudget.test.ts` ran. `util/testInventory.test.ts` had its fixture keys changed
+    and was not run.
+  - Not planned (the plan's Later list): a per-plan docs budget compared through `--report`, and
+    a second reader pass over the smallest guides for the prose rules.
+  - Found by the run: 33 entries in `docs/research/found-issues.md`, under Client and plugins,
+    Build, drivers, and e2e, and Guides, among others.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
