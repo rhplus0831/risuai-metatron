@@ -4,10 +4,11 @@
 
 - Owns:
   - regex find/replace scripts (the shared engine and the editors),
-  - triggers v2 and Lua (the data model and the editors; the runtime is the server's),
+  - triggers v2 and Lua (data model, editors, runtime semantics, and the regex worker),
   - the server's script entry points as the tab reaches them (Lua buttons, manual triggers, the script transform).
 - Paths:
   - `shared/scripts/regex.ts`, `shared/triggers.ts`
+  - `server/src/lua/*`, `server/src/scripts/*` (Lua runtime and regex worker)
   - `src/ts/process/regexFiles.ts`
   - `src/ts/process/serverCommands.ts`
   - `public/lua/json.lua` (read by the server's script workers)
@@ -15,8 +16,7 @@
   - `src/lib/Playground/{PlaygroundSyntax,PlaygroundParser}.svelte`
   - `src/etc/docs/regex.cbs` (example script documentation)
 - Not here:
-  - The runtime itself: `server/src/prompt/{scripts,triggers,commands}.ts`, `server/src/lua/*`, `server/src/scripts/*` →
-    `server-generation.md`.
+  - Prompt adapters and job orchestration: `server/src/prompt/{scripts,triggers,commands}.ts` → `server-generation.md`.
   - `edittrans` regex application → `media-aux.md` (`translator.ts:applyEdittransRegex`, the one regex the tab still
     runs: plain `RegExp` replacement on translation text, no Lua or trigger).
   - Module-provided scripts are collected by `process/modules.ts` → `characters-modules.md`.
@@ -38,7 +38,8 @@
     - `repeatBackSource` answers `@@repeat_back`'s previous message.
   - `RegexScriptMode` = `editinput|editoutput|editprocess|editdisplay`.
   - `regexScriptCacheKey` and `createScriptCache` (the final output, 1,000 entries).
-- `regexFiles.ts`: `exportRegex`/`importRegex` (the regex file export and import of the editors).
+- `regexFiles.ts`: `exportRegex`/`importRegex` for the regex editors; export without an explicit list falls back to the
+  legacy `settings.globalscript` record.
 - `shared/triggers.ts`: the trigger model (`triggerscript`, `triggerEffect` = `triggerCode | triggerEffectV2`, the
   `triggerV2*` effect types) and the allowlists `displayAllowList`/`requestAllowList` (with their side-effect-free
   subset; the server runtime and `TriggerV2List.svelte` both read them).
@@ -55,7 +56,7 @@
   `<move_top>`, `<move_bottom>`, `<repeat_back>`, `<cbs>`, `<no_end_nl>`, `<order n>`.
 - `SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua). Any other non-empty list (legacy v1 data,
   `triggercode`) shows `triggerLegacyUnsupported` and is replaced when switching mode.
-- `TriggerV2List.svelte`: the v2 editor, about 4100 lines.
+- `TriggerV2List.svelte`: the v2 editor.
   - `effectCategories`, `checkSupported`, `makeDefaultEditType`.
   - Block edit helpers: `deleteEffect`, `copyEffect`, `getInsertIndent`, `getBlockRange`.
   - Save-time `v2EndIndent` generation.
@@ -84,34 +85,20 @@ v2 layout:
 
 ## State
 
-- `customscript` = `{comment, in, out, type, flag?, ableFlag?}` (declared in `shared/database.ts`). `type` is a free
-  string. The UI also offers `edittrans` and `disabled`.
-- Sources:
-  - DB: `presetRegex` (active) and `globalscript` (unused; no UI edits it).
-  - Character: `customscript`, `triggerscript`, `lowLevelAccess`.
-  - Module: `regex`, `trigger`, `lowLevelAccess`.
-- Runtime variables are strings. They persist as `chat.scriptstate['$'+key]`. Display-mode triggers use temp variables
+- Persisted shapes: `customscript` is `{comment, in, out, type, flag?, ableFlag?}` (`shared/database.ts`); `type` is a
+  free string. The UI also offers `edittrans` and `disabled`. Presets store active `presetRegex`; the legacy
+  `globalscript` record is not an execution source or edited in the UI, though `regexFiles.ts` uses it as the default
+  export list. Characters store `customscript`, `triggerscript`, and `lowLevelAccess`; modules store `regex`, `trigger`,
+  and `lowLevelAccess`.
+- Runtime variables are strings persisted as `chat.scriptstate['$'+key]`; display-mode triggers use temporary variables
   only.
-- Command jobs (`server-generation.md`): `runServerButton` handles `risu-btn`, `runServerManualTrigger` handles
-  `risu-trigger` and `/trigger`, and the chat row routes `risu-form` submits through `runServerJob`. The client captures
-  the chat before awaiting its save flush. Chat-row forms always prevent navigation, send string values (repeated names
-  become arrays), and are capped at 64 KiB of JSON by the server. Job lifecycle and Lua host behavior belong to
-  `server-generation.md`.
-- Runtime boundary (`server-generation.md`): `server/src/prompt/triggers.ts:createTriggerRuntime` runs v2 effects and
-  `triggerlua` with the job's chat and abort signal. `shared/triggers.ts` owns the serialized effect types and
-  display/request allowlists; the runtime copies the character for each run and shares its asset lists read-only.
-- Send scripts (`server-generation.md`): `server/src/prompt/scripts.ts:createScriptProcessor` handles `editinput`,
-  `editprocess`, and `editoutput`. It runs Lua edit hooks where defined, the plugin hook, CBS, then regex scripts.
-  - `runScriptTail` filters preset, character, and module regex scripts by `script.type === mode` before worker
-    dispatch; with none left it starts no regex worker task but still applies dynamic assets and caches the final
-    output.
-  - Dynamic assets can run without regex scripts for `editoutput` and configured `editdisplay`; regex effects are
-    applied at the match and returned in order, while the cache stores final output.
-- Display transform (`cbs-rendering.md`): `ParseMarkdown` and the translator call `/api/transform` for server-side
-  `editdisplay`; a missing chat, server record, preset, or persona skips the request. The transform does not persist
-  chat variables; `@@emo` effects are applied by the tab.
-- The request trigger runs before each provider attempt of a server job. Tab-only LLM requests do not run it. Request
-  construction and job boundaries are covered by `llm-requests.md` and `server-generation.md`.
+- The tab starts command jobs and `/api/transform`; the server owns Lua, triggers, send-script stages, and request
+  triggers. See [server-generation](server-generation.md) for job and host semantics, [cbs-rendering](cbs-rendering.md)
+  for display transforms, and [LLM requests](llm-requests.md) for request timing.
+- `runScriptTail` filters preset, character, and module scripts by `script.type === mode` before dispatch. With no
+  matching regex scripts, it skips the regex worker but still applies dynamic assets and caches final output.
+- The tab captures the target chat before flushing a command job. Chat-row forms prevent navigation, send string values
+  (repeated names become arrays), and are capped at 64 KiB of JSON by the server.
 
 ## Coupling
 

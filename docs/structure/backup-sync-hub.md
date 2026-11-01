@@ -5,13 +5,15 @@
 - Owns:
   - local `.bin` backup export and import (full and partial) and the server snapshot restore button, as client UI over
     the server backup routes,
-  - Realm hub browse and download (upload, report, and remove were removed),
+  - Realm hub browse, terms acceptance, creator blocking, and staged card download,
   - the settings report export.
 - Paths:
-  - `src/ts/drive/*` (the folder name is historical; Google Drive sync, Risu Account sync, and Kei auto-backup were
-    removed)
+  - `src/ts/drive/*` (local backup UI and RisuAI-compatible import/export)
   - `src/ts/realmBlocking.ts` (creator block-list rules used by the Realm UI and card entry points)
   - `src/ts/realmTerms.ts` (the RisuRealm terms acceptance every Realm entry point awaits)
+  - `src/ts/storage/realmImportClient.ts` (the staged Realm import client)
+  - `server/src/data/upstream/` (upstream `.bin` conversion; workers and staging → `server-resources.md`)
+  - `shared/{upstreamBackup,upstreamExportReport}.ts` (import/export contracts and reports)
   - `src/lib/UI/Realm/*`
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
 - Not here:
@@ -125,44 +127,38 @@
     connection keeps it registered and reports that the restore may have happened.
   - A prepared import not committed (cancelled, refused, or failed) is cancelled on the server. Other tabs see the
     maintenance 503 retries, then the new epoch, and reload.
-- PeerJS multiuser chat (rooms, peer sync, and the `peerjs` dependency) was removed.
 - Realm: `MainMenu` (the Explore card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` →
   `downloadRisuHub`. There is no upload path. The popup block button confirms the creator, writes
   `settings.ui.blockedRealmCreators`, closes, and shows a notice. `getRisuHub` filters both listing response shapes;
   `RealmMain` also filters reactively so a block from either popup host or another tab hides cards immediately. The
   menu’s blocked creators list removes an entry and refetches after unblocking. Cards without creator metadata stay
   visible.
-- RisuRealm terms:
-  - RisuRealm is RisuAI's service, so using it needs RisuAI's Terms of Service and Privacy Policy accepted once; the app
-    itself asks for no terms (the startup terms dialog and the legal notice page were removed).
-  - `RealmMain` awaits `ensureRealmTerms` before its first listing and leaves the Realm screen (`OpenRealmStore` false)
-    on decline; `getRisuHub` (answering `[]`), `getRealmInfo` (after consuming the `?realm=` parameter), and
-    `downloadRisuHub` (before the creator lookup, the wait alert, and `prepareRealmImport`) await it too and send
-    nothing when it is declined.
-  - The acceptance is the version string in the `ui` settings, so every device of this server shares it; raising
-    `REALM_TERMS_VERSION` asks again. The previous browser-local `tos4` acceptance (upstream RisuAI's, for the whole
-    app) is not carried over, and `bootstrap.ts` `cleanLegacyAccountData` still removes it.
-- Realm access: client-side guards refuse blocked creators with a notice for URL/id downloads, the popup’s Chat button,
-  and `?realm=` detail links. Downloads check before any wait alert or `prepareRealmImport`; a non-empty block list and
-  no supplied creator require an info lookup, whose failure alerts and stops the import. The current list is re-read
-  after the lookup; absent creator metadata is allowed. An empty list adds no lookup. Deep links consume the parameter
-  with `replaceState` and do not open a blocked card. The server route is unchanged and stages nothing for a
+
+### RisuRealm terms
+
+- Only RisuRealm's Terms of Service and Privacy Policy gate hub use; the versioned acceptance is stored in shared `ui`
+  settings.
+- `RealmMain` gates its first listing and leaves the Realm screen on decline. `getRisuHub`, `getRealmInfo`, and
+  `downloadRisuHub` also gate requests; raising `REALM_TERMS_VERSION` asks again.
+
+### Realm access
+
+- Client guards refuse blocked creators for URL/id downloads, the popup's Chat button, and `?realm=` details. With a
+  non-empty block list and missing creator metadata, downloads look up the creator before preparing; lookup failure
+  stops the import, and the current block list is re-read after lookup. Missing metadata is otherwise allowed.
+- Deep links consume `?realm=` and do not open blocked cards. The server route is unchanged and stages nothing for a
   client-refused card.
-- Realm download: `downloadRisuHub(id)` asks the server to download and stage the card (`prepareRealmImport`,
-  `POST /api/import/realm`, `storage/realmImportClient.ts`, `server-resources.md`); the tab never fetches
-  realm.risuai.net or holds the file.
-  - The server validates a CharX or PNG card, writes nothing, and answers its card text (a CharX file's embedded
-    `module.risum` too) and a token.
-  - The tab then reads the card and asks its questions (`commitRealmCard` in `characterCards.ts`): an `rcc` card's
-    password (decrypted in the tab, `readPngCard`) and the `lowLevelAccess` confirmation (`confirmCardLowLevelAccess`).
-  - A card that is declined, has a wrong password, or fails to read is cancelled (`cancelRealmImport`,
-    `POST /api/import/realm/cancel`), so nothing is stored; otherwise the tab commits (`commitRealmImport`,
-    `POST /api/import/realm/commit`), the server stores the assets and the image and answers their keys, and the tab
-    builds the character (`importCharxCard`/`importPngCharacter`, the question not asked again).
-  - A commit that fails is cancelled too (404 `Import expired` after 10 minutes is `realmImportExpired`; a prepare
-    refused while 4 imports wait is `realmImportTooManyWaiting`).
-  - A legacy JSON answer is passed through and imported in hub mode as before (its portrait and hub-mode assets fetched
-    through `/hub-proxy`).
+
+### Realm download
+
+- `downloadRisuHub(id)` asks the server to download and stage a card (`prepareRealmImport`, `POST /api/import/realm`);
+  the tab never fetches Realm or holds the file. The server validates PNG/CharX and answers card text and a token; for
+  CharX only, it also returns the embedded `module.risum`.
+- The tab reads the card and asks for an `rcc` password and `lowLevelAccess` confirmation. Decline or read failure
+  cancels the stage. Otherwise the client commits; the server stores assets and image and returns keys for the tab's
+  standard character importer. A failed commit is cancelled; a prepare expires after 10 minutes or is refused when four
+  imports wait.
+- Legacy JSON is passed through and imported in hub mode; its portrait and assets are fetched through `/hub-proxy`.
 
 ### Upstream database import
 
@@ -321,7 +317,7 @@ converter.
     `archive.ts` `readColdRecord`), and when both name forms of one key exist, character and chat restores read the last
     `data` record while plugin storage reads the last `plugin` one, as upstream's restore does.
   - With an index, inline copies override index values, which override `_coldplugin` (used only for keys no index entry
-    claims, a failed one included); without one, `_coldplugin` overrides an inline copy as before.
+    claims, a failed one included); without one, `_coldplugin` takes precedence over inline values.
   - Index entries are decided before their values are read: `l` beats `s`, and a later entry of a key replaces an
     earlier one even when it then fails.
   - Problems are listed in the report and the rest imports: a missing or unreadable index record (`cold-missing`,
@@ -357,38 +353,22 @@ converter.
 
 ## Tests
 
-- `src/ts/drive/backuplocal.test.ts`: the backup functions over a fake `authFetch` and a fake `LocalWriter`, with
-  `flushResources` stubbed: each test sets the routes' answers and the writer's failures. `LoadLocalBackup` routes by
-  `readFirstRecordName`; its upstream path runs `restoreUpstreamBackup` over fake prepare/commit/cancel answers and a
-  fake `beforeRestoreReload` whose hook the test fires itself. `SaveUpstreamLocalBackup` runs over fake export answers.
-- `src/ts/alertUpstreamImportReport.test.ts`: the report dialog's answer is its own: Restore through the dialog's
-  `answer(true)` resolves true, Cancel false, a generic "yes" close false (another confirmation opened meanwhile waits
-  behind it in the alert queue and answers only itself), a cancelled dialog false; `changedWrites` reaches the dialog.
-- `src/ts/storage/tests/selection.test.ts` `persistSelection`: both storages written with the lorebook page reset, the
-  live selection untouched until `loadSelection`, throwing storages survived.
-  `src/ts/storage/tests/resourceSync.test.ts` "restore (412) and errors": `beforeRestoreReload` runs synchronously after
-  saving halts and before the restore notice, once; a later hook replaces an earlier one, an unregistered one is
-  forgotten, a throwing one is logged and does not block the notice.
-- `src/ts/drive/backuplocalSnapshot.test.ts`: `SavePartialLocalBackup` against the real export route (node environment,
-  the flush stubbed): an image another writer commits while the client waits for its flush is in the archive and its
-  resource snapshot, and a referenced image the server lacks is reported under the character's label.
-  `shared/tests/backups.test.ts`: the selector's categories, deduplication, and what it ignores.
-- `src/ts/characterCardsRealmImport.test.ts`: the real records with the server's Realm import answered by the test on
-  the fake server's `fetch`. "Realm creator blocking" covers the listing, download, and deep-link refusals; "RisuRealm
-  terms" answers a fake `alertRealmTerms` (the other cases start accepted). `src/ts/realmBlocking.test.ts`: block and
-  unblock by id. The upstream mapping of the list: `server/src/tests/upstreamImportSettings.test.ts`.
-- Adjacent: `src/ts/network/localNetwork.test.ts`.
-- `util/upstream/checkBinCompat.mjs` (manual, not in `pnpm test`; `build-test-platforms.md`): the RisuAI-compatible
-  export read by upstream RisuAI's own decoder and boot defaults against either pinned target (`--target legacy`, the
-  default, or `--target current`); the current target also runs upstream's plugin storage migration. `--bin` checks an
-  existing export; target pins and harness details: [build/test platforms](build-test-platforms.md#files).
-- Not tested: the terms dialog's rendering and `RealmMain` leaving the Realm screen on decline (component level).
-- Not tested: `LocalWriter` itself (streamSaver; a manual check downloaded both RisuAI-compatible exports through it,
-  with its helper page served locally), the Realm components (the listing filter, the download and deep-link refusals,
-  and the import of the block list are tested: `characterCardsRealmImport.test.ts`, `upstreamImportSettings.test.ts`),
-  settings redaction.
-- Not tested: a RisuAI-compatible export restored in upstream RisuAI's own app. `checkBinCompat.mjs` runs upstream's
-  decoder and boot defaults, plus plugin storage migration for the current target, without its `LoadLocalBackup` or UI.
+- Client/Realm tests:
+  `pnpm --silent test:agent src/ts/drive src/ts/alertUpstreamImportReport.test.ts src/ts/characterCardsRealmImport.test.ts src/ts/realmBlocking.test.ts shared/tests/backups.test.ts`.
+- Upstream conversion tests:
+  `pnpm --silent test:agent server/src/tests/{upstreamArchive,upstreamRisuSave,upstreamImportReport,upstreamImportSettings,upstreamImportCharacters,upstreamImportRoute,upstreamExport,upstreamExportRoute}.test.ts`.
+- `slow`:
+  `pnpm --silent test:agent --tags-filter=slow server/src/tests/{upstreamImportWorker,upstreamExportWorker}.test.ts`;
+  these exercise cold worker boots and heap limits.
+- Backup tests use fake `authFetch`/`LocalWriter` with stubbed resource flushes. The snapshot test exercises the real
+  export route; Realm tests use local server/Realm stand-ins; the report dialog and restore-selection hooks use alert
+  and storage fakes.
+- Manual compatibility check: `util/upstream/checkBinCompat.mjs` runs upstream's decoder/defaults against pinned
+  `legacy` or `current` targets; `--bin` checks an existing export. The `current` target also runs upstream's plugin
+  storage migration ([build/test platforms](build-test-platforms.md#files)).
+- Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, settings
+  report redaction, and a backup restored in upstream's own app. There is no dedicated e2e spec for this area; the
+  compatibility script does not run upstream's `LoadLocalBackup` UI.
 
 ## Known Hazards
 

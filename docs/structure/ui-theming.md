@@ -171,35 +171,19 @@
 
 ### Context meter
 
-- `src/lib/ChatScreens/ContextMeter.svelte` is the composer's context line, mounted above the composer row (which
-  anchors the composer menu) and keyed by the open chat, so a switch starts closed. It is not shown in a group chat or
-  while `settings.ui.contextMeter` is off.
-- Its source is the newest message whose `generationInfo.context` passes `parseContextReport`
-  (`shared/contextReport.ts`, [chat-pipeline](chat-pipeline.md)), scanning only the message list and each message's
-  `generationInfo`, so streaming text does not rerun it. With no valid report anywhere it falls back to the newest
-  `inputTokens / maxContext`, and with neither it renders nothing.
-- The line and the popover share one scale, the prompt budget (`maxContext − maxResponse`). The line's text truncates at
-  the end, so the "memory reduced" mark (`memory.budgetReduced`, no per-chat off switch) and the task mark sit outside
-  it.
-- A lore icon replaces the gauge when the lore budget rejected entries, unless the chat's `loreBudgetWarnOff` is set;
-  the popover's lore block sets or unsets it through `setChatMeta`.
-- While the chat's background HypaV3 summary task (`memoryTaskStatus`, `src/ts/process/memoryTasks.svelte.ts`) is queued
-  or runs, a mark with a spinner shows it. The mark needs a chip to sit beside, which holds since a task is handed off
-  only after a send wrote its reply's report.
-- The popover's task block says how the task ended: the failure with the redacted error and a memory settings link, or,
-  after a task this mount saw run ends `done` with `lastCommittedRevision`, that the new summaries are stored for later
-  sends (HypaV3 may defer them while the history fits). The done notice lasts until the meter's source changes, which
-  ends it for good.
-- The popover (`Portal` to the body) follows the line on resize, scroll, and composer growth, and also closes when its
-  source disappears, or when the line leaves view or the viewport is too short to show it.
-- While the composer has text (`draft`, passed with `generating` by `DefaultChatScreen`), the line adds a displacement
-  estimate ("if sent ≈ −2", "≈ −8+" past the saved trim queue) and the popover an estimate block: `displacement` over
-  the report's `trim` ledger with the draft and the last reply counted in `jobTokenScope()` as assembly counts them
-  (each without its `<Thoughts>` block, plus `trim.perMessage`; a continue's `replyPrefix` subtracted).
-- `estimateBasis` lists when the ledger still describes the next send; configured memory hides the estimate since it may
-  run instead of the trim loop. A continue whose overflow reaches the queue's last entry shows none. The reply count is
-  kept per basis, so typing recounts only the draft; a new basis or an emptied draft resets the count, and a failed
-  count hides the estimate.
+- `ContextMeter.svelte` is keyed by the open chat, above the composer row. It is hidden in group chats and when
+  `settings.ui.contextMeter` is off.
+- It reads the newest valid `generationInfo.context` report (`shared/contextReport.ts`,
+  [chat pipeline](chat-pipeline.md)); it falls back to the newest `inputTokens / maxContext`, then renders nothing. It
+  scans message metadata, not streaming text.
+- For report sources, the line and popover use the prompt budget (`maxContext − maxResponse`). Lore rejection replaces
+  the gauge unless `loreBudgetWarnOff` is set; memory/task marks sit outside the truncated line.
+- The popover is portaled and follows its line on resize, scroll, and composer growth. It closes if its source or anchor
+  disappears, leaves view, or cannot fit in the viewport. HypaV3 task outcomes and forecasts are owned by
+  [memory](memory.md).
+- With a composer draft, the meter estimates displacement from the report's trim ledger using the same token scope as
+  assembly. A continue subtracts `replyPrefix`; configured memory or a non-current/invalid ledger hides the estimate.
+  Token counts are asynchronous and a failed count clears it.
 
 ### Sidebar
 
@@ -238,79 +222,46 @@
 
 ### Dialogs, popovers, and portals
 
-- No shared popup component or dismissal helper exists: a new popup copies the nearest pattern, the
-  `ContextMeter.svelte` popover (anchored to a trigger), `PopupButton`/`PopupList` (a click menu), `openMenu` (inside
-  the composer row), or `MessageSearch.svelte` (a panel `App` mounts).
-- `Portal` (`src/lib/UI/GUI/Portal.svelte`) mounts its children on `document.body`, or `target`, keeping the caller's
-  contexts. The `isolate` in `ChatScreen.svelte` keeps anything mounted in the chat screen under the app's popups and
-  alerts, so a popup that must clear it uses `Portal` or an `App` mount.
-- Stacking is plain `z-*` classes: `z-30` the context meter popover, `MessageSearch`, `BookmarkList`, and the composer
-  menu; `z-40` `ChatBindingDialog` and `ChatCheckpointsDialog`; `z-[45]` `RecoveryDrafts`; `z-50` alerts, `PopupEditor`,
-  and `PopupList`; `z-[60]` `ReloadNotice`. Equal z-indices follow DOM order within one stacking context; body portals
-  follow `App`. `topBindingLayer` (`src/ts/gui/dialogLayers.ts`) follows `App`'s dialog/picker order.
-- Escape, as in `ContextMeter`, `MessageSearch`, and `BookmarkList`: `<svelte:document onkeydowncapture>`, so it runs
-  before the global hotkey listener. It ignores IME composition and returns while `doingAlert()`, `terminalNotice`, or
-  `topBindingLayer()` is above, then calls `stopPropagation()` and `preventDefault()` and closes.
-- Outside press and focus, in the `ContextMeter` popover: `onpointerdowncapture` outside, or focus leaving both it and
-  its trigger, closes it without moving focus; Escape and the Close button return focus to the trigger. `PopupList`
-  closes on the next document click.
-- `Others/RecoveryDrafts.svelte`: the recovery dialog over [`recoveryDrafts`](draft-recovery.md#recovery-drafts),
-  rendered by `ReloadNotice.svelte` while `recoveryDrafts.isOpen`. It stays under alerts so its `alertConfirm`
-  confirmations show above it, and keeps key events from reaching app shortcuts. One action runs at a time; Apply
-  reports skipped ops.
-- `Others/ChatCheckpointsDialog.svelte`: per-chat checkpoints UI. The checkpoint module owns its store and server
-  operations. Actions capture the chat and row revision before prompts; a load holds the modal and blocks hotkeys
-  through save, request, and refresh. See [checkpoints](chat-store.md#chat-checkpoints).
-- `MessageSearch.svelte`: search panel mounted by `App`. It displays snippets as text and opens a hit through
-  `openPinnedChat` before requesting the guarded message jump. Search state and shared request types belong to
-  [chat-pipeline](chat-pipeline.md); the route is in [server](server-resources.md).
-- `PopupEditor.svelte`: popup backed by `popUpEditorStore`, editing in Monaco or a plain textarea.
-  `src/ts/gui/popupEditorMode.ts` keeps the choice in this browser's `localStorage` (per device, not synced).
-- `openPopupEditorSession` assigns a fresh session id; `App.svelte` keys the mount by that id, resetting the editor,
-  preview, and language mode on every session. The popup captures its id once with `untrack`; its backdrop and close
-  button call `closePopupEditorSession` with that id.
-- The popup's opener owns polling and write-back and closes its own session when invalidated or destroyed; a stale
-  opener or popup cannot close a newer session. `open` remains the flag hotkeys use to block preset switching.
-- `HypaV3Progress.svelte`: selected-chat memory progress overlay. It shows the newest run belonging to the selected chat
-  and restores it after switching back; otherwise it shows the legacy progress notice.
-- `HypaV3Modal.svelte`: edits the selected chat's memory copy. It refuses memory edits while the chat is sending or its
-  task fence is active and rolls the local edit back. Lore writes are not fenced by background tasks. Fence state, task
-  status, and Summarize/Cancel come from `memoryTasks.svelte.ts`, which also feeds the sidebar badges; the protocol,
-  revision fences, and outcomes are owned by [memory](memory.md).
+- There is no shared popup/dismissal helper. Follow the nearest pattern: anchored popover (`ContextMeter`), click menu
+  (`PopupButton`/`PopupList`), composer menu, or an `App`-mounted panel (`MessageSearch`).
+- `Portal` mounts to `document.body` or a target while keeping caller contexts. `ChatScreen`'s `isolate` keeps local
+  content below app popups and alerts; use a portal or `App` mount when the popup must escape that stack.
+- Layering uses z-index and DOM order: context meter/search/bookmarks/composer menu at 30, binding/checkpoint dialogs at
+  40, recovery drafts at 45, alerts/editors/popup lists at 50, reload notice at 60. `topBindingLayer` follows `App`'s
+  dialog/picker order. See [app shell](app-shell.md#escape-order) for the full Escape order.
+- Capture-phase Escape handlers ignore IME composition (`isComposing` and key code 229), yield to alerts, terminal
+  notice, and `topBindingLayer()`, then stop propagation before the global hotkey listener. The context meter also
+  closes on outside press or focus leaving its trigger/panel; Escape and its Close button return focus to the trigger.
+  `PopupList` closes on the next document click.
+- `RecoveryDrafts.svelte` stays under alerts and keeps keys from reaching shortcuts; Apply reports skipped operations
+  ([draft recovery](draft-recovery.md#recovery-drafts)). `ChatCheckpointsDialog.svelte` captures the chat and row
+  revision before prompts and holds a load through save, request, and refresh
+  ([chat store](chat-store.md#chat-checkpoints)).
+- `MessageSearch.svelte` is mounted by `App`; it displays snippets as text and opens a hit through `openPinnedChat`
+  before requesting the guarded message jump. Search state belongs to [chat pipeline](chat-pipeline.md).
+- `PopupEditor.svelte` uses `src/ts/gui/popupEditorMode.ts` for a per-device Monaco/textarea preference.
+  `src/ts/popupEditorSession.svelte.ts` gives each open an id (`openPopupEditorSession`/`closePopupEditorSession`) and
+  keyed remount; the opener owns polling and write-back. A stale opener cannot close or write into a newer session. Its
+  `open` flag blocks preset switching.
+- HypaV3 modal/progress UI is chat-specific; its data and task fences belong to [memory](memory.md).
 
 ### GUI primitives
 
-- `src/lib/UI/GUI/*`: `SelectInput` carries `risu-select`; `SliderInput` takes `-1000` as disabled; `OptionalInput` is
-  nullable.
-- `SegmentedControl`: buttons carry `aria-pressed`; optional `label` makes the container a named `role="group"`;
-  `describedBy` sets `aria-describedby`.
-- `TextAreaInput`: textarea or contenteditable with CBS highlight and autocomplete. Both branches support the
-  popup-editor hotkey and contextmenu/long-press opening with `settings.ui.longPressToPopupEditor` at every field height
-  unless `popupEditor={false}`.
-- `TextAreaInput`'s `popupEditor` defaults to `"auto"`: the expand button and its right padding show for heights `"32"`,
-  `"36"`, or `"full"`, or `"default"` with `$textAreaSize >= -2`; `true` always shows them, and `false` disables all
-  popup access.
-- A normal popup close updates the `TextAreaInput` binding, calls `onInput()` and `onchange({ currentTarget })` after
-  the DOM binding flush, and refreshes contenteditable highlighting.
-- A changed bound value, `popupEditorContext`, or open run discards write-back and closes only the owned session; a
-  newer session or component destruction also prevents write-back. The context counts as changed only when its value
-  differs (a rerun with the same value, such as a refreshed record list, keeps the popup; away and back still discards).
-- A field bound to a record the selection resolves (`activePreset`, `activePersona`, the selected character or chat, the
-  HypaV3 preset, a plugin row) passes that record's id as `popupEditorContext`, because the value check alone cannot
-  tell two records with the same text apart, and hotkeys and synced lists change the selection under an open popup.
-- Wrappers that hold such fields forward `popupEditorContext`: `RegexList`/`RegexData`, `TriggerList`'s Lua editor,
-  `PromptDataItem`, `MultiLangInput`, and `SettingTextarea` through `SettingItem.popupEditorContext`.
-- `TextAreaResizable`: auto-growing textarea with opt-in `popupEditor` (default false). Popup write-back requires an
-  unchanged value and current run/session; destruction closes its owned session. `stableHeight` (default false) skips
-  auto-resize and uses a fixed scrollable height.
-- `LazyFileSrc`: holds a stored file's URL through `holdFileSrc` only once its wrapper nears the viewport and renders
-  its snippet with it. The loading effect releases its hold on a path change or unmount; a reused row waits to be seen
-  again. Unpinned fallback object URLs are revoked after the last hold and a short grace period (`global-api.md`). Asset
-  list rules belong to [characters](characters-modules.md).
-- `LazyCharImage`: defers `getCharImage` until its wrapper nears the viewport and restarts the read on a path change.
-  Its optional 256/512 `thumb` class requests server thumbnails through `getCharImage`; catalog, sidebar, pins, and
-  persona lists use 256, while chat avatars and active persona/character editors use 512. `cardboard` chat keeps the
-  original; editors and asset previews do too.
+- `SelectInput` carries `risu-select`; `SliderInput` uses `-1000` for disabled; `OptionalInput` is nullable.
+  `SegmentedControl` uses `aria-pressed` and can expose a named group with `label`/`describedBy`.
+- `TextAreaInput` supports textarea or contenteditable, CBS highlighting, autocomplete, and popup-editor access. The
+  hotkey and contextmenu/long-press work at every field height unless `popupEditor={false}`. `"auto"` shows the expand
+  button for heights `32`, `36`, `full`, or `default` when `$textAreaSize >= -2`; `true` always shows it.
+- Closing a popup writes the text to the binding, calls input/change callbacks after the DOM flush, and refreshes
+  contenteditable highlighting. A changed value, context, open run, session, or component lifetime drops stale
+  write-back. For a field tied to a selected record, pass its id as `popupEditorContext`; equal text alone cannot
+  identify the owner. Wrappers that forward it include `RegexList`, `TriggerList`, `PromptDataItem`, `MultiLangInput`,
+  and `SettingTextarea`.
+- `TextAreaResizable` is an auto-growing textarea with opt-in popup access and optional fixed `stableHeight`; writes
+  require the same value and session.
+- `LazyFileSrc` holds a stored URL only near the viewport and releases it on path change/unmount; object-URL ownership
+  is in [global API](global-api.md). `LazyCharImage` defers image reads and can request 256/512 server thumbnails;
+  editors and asset previews keep the original.
 
 ### Editor token counts
 
@@ -362,17 +313,13 @@
 
 ## State
 
-- Components mutate the settings through the record views (`settings.ui.*`, `settingsViews.svelte.ts`) and the
-  characters through the character module's records (`selectedCharacter()`, `characterList()`), and rely on the records'
-  write-through saves: each write queues the record it changed (`persistence.md`).
-- Invalidation signals:
-  - `ReloadGUIPointer`: structural changes.
-  - `ReloadChatPointer`: message re-render, by `reloadChatKey` (`m:` and the message id; the greeting `i:` and its
-    index), so a row keeps its counter when messages before it are added or removed. Mounted row effects subscribe
-    through the store; a changed entry remounts only its row.
-  - Reassigning an array after an in-place mutation, e.g. `chat.bookmarks = [...]`.
-- Theme DB fields: `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`,
-  `textAreaSize`, `sideBarSize`, `textAreaTextSize`.
+- Components write settings and character/chat data through their record views; writes queue persistence
+  ([persistence](persistence.md)). Chat fields use the chat module or a synced editing copy, never a direct binding.
+- `ReloadGUIPointer` signals structural UI changes; `ReloadChatPointer` remounts a row by `reloadChatKey` (message id or
+  greeting index), so adding/removing earlier messages does not reset that row's counter. Reassign arrays after in-place
+  mutations so Svelte observes them.
+- Theme settings are `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`,
+  `textAreaSize`, `sideBarSize`, and `textAreaTextSize`.
 
 ## Coupling
 
@@ -402,11 +349,11 @@
   - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`; so must the `customHTML`
     theme's GUI HTML (`Chat.svelte` renders the classic row instead).
-- A list of inputs over a list that can change while one of them has focus keys its rows by entry and binds each input
-  to the entry captured at mount (getter/setter functions that drop a write once the list no longer holds it), never
-  `bind:value={list[i]}` in an unkeyed `#each`: Chrome fires `change` on a focused, edited control while removing it,
-  and an index binding resolves `list[i]` at that moment. The lorebook and character asset editors follow this
-  ([characters](characters-modules.md) Invariants).
+- For new lists that can change while an input has focus, key rows by entry and bind through guarded getter/setters;
+  never bind `list[i]` in an unkeyed `#each`. Chrome fires `change` on a focused, edited control while removing it, and
+  an index binding then resolves the new row at that index. Existing exceptions: `LoreBookList` keys entry wrappers,
+  with a remote-replacement limitation, while `CharConfig.svelte` emotion and additional-asset tables remain unkeyed and
+  use index-checked rename helpers. See [characters and modules](characters-modules.md#lorebook-rows-and-writers).
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores,
   `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values,

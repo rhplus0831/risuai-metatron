@@ -29,11 +29,11 @@
 - `chats.ts`: the chat wire contract; a conflict's `reason` is `generating` (a generation lock) or `expired` (a possibly
   forgotten group id). `chatCheckpoints.ts`: `CHECKPOINT_CHAT_FIELDS` classifies every `ChatMeta` key as `capture`,
   `keep`, or `split`. `jobs.ts`: the generation job contract ([server](server-generation.md)).
-- `resources.ts`: kinds and wire types. `compareRevision` orders two tokens of one epoch by `(seq, revision)` for
-  hydration; `revisionDigest` is an order-independent fingerprint for accidental differences.
+- `resources.ts`: wire types. `compareRevision` orders two tokens of one epoch by `(seq, revision)` for hydration;
+  `revisionDigest` is an order-independent fingerprint. Resource ownership is in [Resources](#resources).
 - `sections.ts`: the [field-to-resource map](#invariants). `modelPresetRootValue` derives one model root for the server
-  and the views; `forwardPresetRoots` gives a job's or request's preset roots: the slots' model ids, the main profile's
-  fields, `maxContext` replaced by the prompt preset's override (`maxContextOverrideOf`).
+  and views; `forwardPresetRoots` gives a job's or request's preset roots (slot model ids, main-profile fields, and
+  prompt `maxContext` override from `maxContextOverrideOf`).
 - `presets.ts`: the schema of both preset records: `PRESET_DEFAULTS` (every field's fresh-boot default),
   `PRESET_FIELD_KINDS`, and the partition `MODEL_PRESET_FIELDS` (slots, toggle), `MODEL_PROFILE_FIELDS`,
   `PROMPT_PRESET_FIELDS`, `PRESET_RECORD_FIELDS` ([profiles and slots](llm-requests.md)).
@@ -284,22 +284,19 @@ the order.
 
 ### Database
 
-- `Database` covers characters, prompts and templates, provider and model settings, `botPresets`, `modules` +
-  `enabledModules`, `personas` + `selectedPersona`, `plugins` + `pluginCustomStorage`, `characterOrder`,
-  `globalChatVariables` (read-only legacy toggle fallback), `togglePresets`, `hotkeys`, `irisDialogue`,
-  `googleSearchCredentials`.
-- `character | groupChat`: groups have `type:'group'` and member `characters: string[]`. The shared shapes keep `chats`
-  and `chatPage` (the server's job projection, cards, plugin snapshots); the client's `ClientCharacter`/`ClientGroup`
-  has neither: the records hold no chats.
+- `Database` is the flat compatibility shape in `shared/database.ts`; its fields' stored kinds are mapped under
+  [Resources](#resources). `globalChatVariables` remains a read-only legacy toggle fallback.
+- Shared `character`/`groupChat` shapes retain `chats` and `chatPage` for server job projections, cards, and plugin
+  snapshots; `ClientCharacter`/`ClientGroup` omit them, so records hold no chats. A group has `type: 'group'` and member
+  ids in `characters`.
 - `pluginCustomStorage` holds at its top level the custom DB properties the plugin `setDatabase`/`setDatabaseLite` APIs
   route there (keys outside `allowedDbKeys`). Reserved: `_pluginStorage` (plugin `pluginStorage`, JSON-normalized on
   write) and `_safeLocalPluginStorage` (`getLocalPluginStorage()`, JSON values only).
 
 ### Chat fields
 
-- `message`, `note`, `localLore`, `scriptstate` (keys prefixed with `$`), `modules`, `fmIndex`, `id`, bookmarks,
-  `folderId`, `suggestMessages`, `lastMemory`, the memory fields `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, and the
-  translation list fields ([translation](media-aux.md)).
+- `ChatMeta` is defined in `shared/chats.ts`; fields are stored largely as sent, with defaults at their readers. The
+  translation lists are owned by [translation](media-aux.md). Non-obvious field rules:
 - `loreOverrides?` (`shared/lore/overrides.ts`) is not defaulted on write: readers use `?? []`. `normalizeChatMeta`
   refuses a present value that is not an array of `{ entry: { id: non-empty string, … }, off: boolean }`
   (`assertLoreOverrides`) and keeps only the first override per `entry.id`, the one the merge applies. The upstream
@@ -344,8 +341,7 @@ the order.
 
 ### Messages
 
-- `Message`: `role` (`'user' | 'char'`), `data`, `chatId` (the message id, unique in its chat, assigned by the module),
-  `time`, `saying`, `generationInfo`, `promptInfo`, `disabled`.
+- `Message` is defined in `shared/database.ts`; `chatId` is its stable per-chat id, assigned by the module.
 - `generationInfo.context` (`ContextReport`) is stored as the server wrote it: it travels in checkpoints, exports,
   backups, and every generation patch of its message, and a text edit keeps it. Its size is bounded by the section
   kinds, the 8-entry trim queue, the 8 named rejected lore entries, and at most three HypaV3 budget reductions. Readers
@@ -425,24 +421,20 @@ the order.
 ## Tests
 
 - Focused: `pnpm --silent test:agent records settingsViews presetViews characterStore collectionStore bootSnapshot`.
-- `installFlatDatabase.ts`: installs a flat fixture into the records (root preset fields moved into one preset) and
-  reconciles the selection; `installFlatDatabaseWithChats` also assembles legacy `chats` into the chat module.
-- `mutationStoresHarness.ts`: the mutation store tests' boot: [`StoreBackedServer`](resource-sync.md#tests) with two of
-  each preset kind, a plugin, and a character with two chats, through the real `installBootRecords` with the adapter
-  started.
-- `reactiveProbe.svelte.ts`: a `$derived` and `$effect` over a read and an `$effect` around a write, telling a tracked
-  read from an untracked write without a component. `derivedProbe.svelte.ts`: runs a function as a `$derived` body.
-- `bootSnapshot.test.ts`, the boot-snapshot comparison: a fresh boot over the real store against the hand-maintained
-  defaults in `fixtures/boot/boot-snapshot.json` ([fixture rule](../../src/ts/storage/tests/fixtures/boot/README.md)). A
-  deliberate default change updates the normalizer spec (or `PRESET_DEFAULTS`) and the fixture in one commit; the four
-  `llmSecrets` credential fields the server record omits stay pinned as `""`.
-- `presetIds.test.ts` pins the `.risup` contract: the decoded export equals the captured fixture strictly (explicit
-  `undefined` keys kept), over a second cycle, and the reader logic from before server normalization stores the same
-  preset.
-- `settingsViews.test.ts` derives its oracle from the shared partition tables. `characterOrderRepair.test.ts` stubs the
-  stores and defers `readRefs`.
-- `slow`: two real-time comparisons in `projectionBindings.test.ts`. `e2e`: `0-idleReload`, `settingsPages`,
-  `recordsCharacters`, `presetSelection`, `personaBinding`, `chatBinding`.
+- `src/ts/storage/tests/mutationStoresHarness.ts` boots mutation tests through `installBootRecords` against
+  [`StoreBackedServer`](resource-sync.md#tests), with two of each preset kind, a plugin, and a two-chat character.
+- `src/ts/storage/tests/installFlatDatabase.ts` and its `installFlatDatabaseWithChats` helper move root preset fields
+  into a preset, reconcile selection, and optionally assemble legacy chats.
+- `src/ts/storage/tests/reactiveProbe.svelte.ts` checks tracked reads and untracked writes with runes but no component;
+  `derivedProbe.svelte.ts` runs a callback as a `$derived` body.
+- `src/ts/storage/tests/bootSnapshot.test.ts` pins server-normalized defaults; intentional default changes update the
+  normalizer (or `PRESET_DEFAULTS`) and `fixtures/boot/boot-snapshot.json` together, including omitted `llmSecrets`
+  fields held as `""` ([fixture rule](../../src/ts/storage/tests/fixtures/boot/README.md)).
+- `src/ts/storage/tests/presetIds.test.ts` pins exact `.risup` export shape (including explicit `undefined` keys) and
+  the pre-normalization reader over a second cycle; `src/ts/storage/tests/settingsViews.test.ts` derives its oracle from
+  the shared partition tables, and `src/ts/storage/tests/characterOrderRepair.test.ts` defers `readRefs`.
+- `slow`: two real-time comparisons in `src/ts/storage/tests/projectionBindings.test.ts`. `e2e`:
+  `e2e/0-idleReload.spec.ts`, `settingsPages`, `recordsCharacters`, `presetSelection`, `personaBinding`, `chatBinding`.
 - Not tested: `maintainCharacters` beyond the trash pruning (its `checkCharOrderAtBoot` call is not driven).
 - Not tested: the records' cost beyond a loose bound: the benchmark asserts nested-write ratios under 10× and nothing
   about the lorebook drag or preset reorder; `measureRecords.mjs` and `measureCharacters.mjs` are manual.

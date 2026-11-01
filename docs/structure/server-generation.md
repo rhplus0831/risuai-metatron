@@ -14,11 +14,13 @@
 
 ### Runtime modules
 
-- `jobs/` owns job admission, message locks, and the client channel; `prompt/` assembles and runs prompts,
-  transformations, triggers, memory, and tokenization; `lua/` and `scripts/` provide the worker-backed script runtime.
+- `jobs/` owns admission, locks, and the client channel; `prompt/` contains the generation pipeline and helpers; `lua/`
+  and `scripts/` provide the worker-backed script runtime.
 - `llm/` adapts providers and credentials; `translation/runner.ts` stores server-side translations
   ([media and auxiliary work](media-aux.md)); `data/generationReceipts.ts` keeps the [job receipts](#job-receipts);
   `data/vectorCache.ts` stores embeddings ([memory](memory.md)).
+- Dispatch and assembly entrypoints: `jobs/commandRunner.ts` (`createGenerationRunner`, `runCommand`),
+  `prompt/runner.ts` (`runPromptJob`, `runPromptSend`), and `prompt/assemble.ts` (`assemblePrompt`, `AssemblyHost`).
 - `data/changeFeed.ts` and `routes/events.ts` carry the live-update feed.
 
 ### Generation routes
@@ -234,6 +236,18 @@ status carried by a failed WebLLM request.
   `chatBindingIncomplete` and `chatLoreOverrideOrphaned` keep the request uncertain, as do 412, 429, auth/body-limit
   errors and generic errors. This does not bypass the shared limiter or promise connectivity after the listener closes.
 
+### Prompt job execution
+
+- `createGenerationRunner` sends `command` jobs to `runCommand`; other kinds go to `runPromptJob`, which delegates one
+  send to `runPromptSend` and emits `done` after it returns. Command sequences call `runPromptSend` per part
+  ([Command sequences](#command-sequences)).
+- When input processing applies, it runs on the admitted preset before `presetChain`; `assemblePrompt` runs per speaker
+  after a continue message is locked. Its `AssemblyHost` supplies job-scoped reads and writes, callbacks, token
+  counting, and memory services. Assembly's prompt and lore behavior is owned by [chat pipeline](chat-pipeline.md);
+  memory algorithms are owned by [memory](memory.md).
+- After final chat writes, `runPromptSend` hands off translations and due memory input before returning. Both handoffs
+  are detached and cannot fail the send; `runPromptJob` emits `done` after it returns.
+
 ### Command sequences
 
 - `prompt/commands.ts` parses `/multisend`; `jobs/runSetup.ts` queues its clear flag and texts in server-local run state
@@ -343,7 +357,8 @@ status carried by a failed WebLLM request.
 - Table `receipts`, one row per job: `job_id` (primary key), `request_id` and `fingerprint` (null for older clients;
   unique `(epoch, request_id)`), `client_id`, `epoch`, `kind`, `character_id`, `chat_id`, `admitted_at`, `ended_at`
   (null while the job runs; indexed), `progress` (the sequence's `{ total, sent }` JSON, otherwise null), and `status`,
-  the kept `GenerationStatus` JSON with the same trim as the in-memory kept outcome.
+  the kept `GenerationStatus` JSON: no `result`, alternatives over 64 KiB of JSON dropped, error message cut to 4 KiB,
+  `sequence` intact.
 - `PRAGMA user_version` is 1; a file of another version is left untouched and the store runs degraded. WAL with
   `synchronous=NORMAL`.
 - A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty
@@ -373,22 +388,17 @@ status carried by a failed WebLLM request.
 
 ### Process memory
 
-- The generation jobs (registry, chat slots, sockets, current-epoch request-id index) and the generation lock. A restart
-  loses both ([Limitations](#limitations)).
-- An ended job stays readable for 60 s (`JOB_DONE_GRACE_MS`); once collected, its kept outcome (`GenerationStatus.kept`,
-  the terminal trimmed: no `result`, `alternatives` over 64 KiB of JSON dropped, an error message cut to 4 KiB,
-  `sequence` kept intact) answers the owner's status for 24 h (`KEPT_OUTCOME_MS`), at most 500 of them
-  (`MAX_KEPT_OUTCOMES`, the oldest dropped first). An epoch change clears them. Across a restart the owner reads the
-  same outcome from the job's receipt.
-- Request identity stays in the live index through the ended-job grace, then moves with its fingerprint to the kept
-  entry; kept expiry/count eviction falls back to disk. Cancellation tombstones have their own 72 h / 10,000-entry
-  memory cap. Epoch changes clear all three views, even with degraded receipts.
+- Generation registry, chat slots, sockets, lock, and request-id index are process-local and lost on restart. An ended
+  job is readable for 60 s (`JOB_DONE_GRACE_MS`), then its trimmed outcome stays in memory for 24 h/up to 500 entries
+  (`KEPT_OUTCOME_MS`, `MAX_KEPT_OUTCOMES`); status falls back to the [receipt](#job-receipts) after restart. Epoch
+  changes clear memory.
+- Request identity moves from live job through grace to the kept entry, then disk. Cancellation tombstones are kept in
+  memory 72 h/up to 10,000 entries; epoch changes clear both.
 - The transform service (`prompt/transform.ts`): its result LRU, pending two-call snapshots and pins, plus
   `prompt/displayScope.ts`'s `createDisplayScopeLoader` (raw configuration and transcript caches, shared read-only, with
   a fresh projection per request). Maintenance aborts renders and empties these caches; shutdown aborts renders and
   clears the loader ([CBS rendering](cbs-rendering.md), [chat pipeline](chat-pipeline.md)).
-- The change feed's listeners and the live-update sockets (nothing is buffered; a restart loses them, and every client
-  reconciles at its reconnect).
+- The change feed and live-update sockets are process-local and buffer no events; clients reconcile on reconnect.
 - The memory task registry (`createMemoryTasks`): per chat the running task, the queued input, the latest retained
   input, a waiting manual start, and the last terminal status (10 minutes), plus the held summary writer leases. A
   restart loses them: no task resumes.
@@ -414,10 +424,9 @@ status carried by a failed WebLLM request.
 
 ## Recipes
 
-- Change generation jobs: `shared/jobs.ts` (the contract), `server/src/jobs/generationJobs.ts` (the retained events an
-  attach replays: the job chat, the sent records, the `preset`, the running job's `stage`, the current reply, the
-  terminal), `server/src/routes/generations.ts`, the client transport `src/ts/network/generationJobs.ts`, and the client
-  primitives (`applyServerGeneration`, `hydrateChat`, `applyHydration`, `chat-store.md`).
+- Change the job contract across `shared/jobs.ts`, `server/src/jobs/generationJobs.ts`,
+  `server/src/routes/generations.ts`, and `src/ts/network/generationJobs.ts`; hydration belongs to
+  [chat store](chat-store.md).
 
 ## Tests
 
@@ -425,8 +434,8 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 - `chatMetadataCoalescingEvents.test.ts` identifies the job fixture's SQLite connection by its epoch and counts
   transactions on it, so background writes in other stores cannot alter the coalescing assertion.
-- The browser check `util/playwright/checkJobProtocol.mjs` drives request-id replay, a command sequence across a reload,
-  the chat-slot stop, owner absence, and a SIGKILL restart against the real server ([test-harness](test-harness.md)).
+- `util/playwright/checkJobProtocol.mjs` is the real-server browser check for the job protocol
+  ([test-harness](test-harness.md)).
 - Jobs:
   `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner}.test.ts`.
 - Feed: `pnpm --silent test:agent server/src/tests/{changeFeed,events,chatMetadataCoalescingEvents}.test.ts`.
@@ -453,40 +462,32 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
 
 ### Limitations
 
-- An older tab's generation socket without `liveness=1` is never dropped for silence. A frozen older tab can therefore
-  hold a provider callback until its own deadline (30 minutes) and keep the chat busy. Decision: Job Protocol D6,
+- An older socket without `liveness=1` never expires for silence; a frozen tab can hold a callback and chat slot until
+  its 30-minute deadline. Decision: Job Protocol D6, archive.
+- Without `hydration=patch`, each callback sends the whole job chat. Older tabs can reapply it only after local work
+  settles, so traffic scales with callbacks × chat size ([measured](../audit/server-measurements-2026-11-01.md)).
+  Decision: Per-Event Server Work D4, archive.
+- Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
+  is lost, and its message fence stays open until an ordinary write. Decision: Job Protocol D1, D8, and Q3, archive.
+- If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request
+  deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab
+  shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.
+- Lua stuck in native code cannot reach its abort hook; worker termination waits for abort grace, and queued work waits
+  for a replacement. Decision: Server-Owned Data script worker spike, archive; `server/src/lua/runtime.ts`.
+- The publication budget covers optional payloads only. Refs and lock lists are unbounded: ids may be 512 characters,
+  character deletion can publish every chat ref, and in-process writes have no op cap. Decision: Per-Event Server Work
+  D5, archive.
+- If refs alone exceed the socket budget, the socket closes; frames are not split. Clients reconnect and
+  [reconcile](#live-update-hello), taking chat locks from the same frame's chat ref and a ref-less lock release as
+  `null`. Decision: Per-Event Server Work D5, archive.
+- Measuring every candidate payload serializes it once, including rejected payloads, before the final frame
+  serialization. Decision: Per-Event Server Work D5, archive.
+- Feed payload construction runs on the serving thread: a rename reads/parses the last row via `messages_position` for
+  `lastMessageAt`; a message-op group does this before and after, inside its transaction. Decision: Per-Event Server
+  Work D6, archive; ST04 in the [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md).
+- Summary comparison uses stored projection text without parsing metadata. A metadata change past `MAX_FEED_PATCH_BYTES`
+  parses metadata before and after for the field diff. Decision: Server Byte Budgets D4 and Per-Event Server Work D7,
   archive.
-- An older tab's generation socket without `hydration=patch` still gets the job chat whole at every callback barrier
-  (`hydrateJobChat`), so its traffic is callbacks times chat size
-  ([measured](../audit/server-measurements-2026-11-01.md)), since an older tab can only apply a remembered whole copy
-  again once its local work settled. Decision: Per-Event Server Work D4, archive.
-- A restart does not resume a running generation: its job reads as ended by `shutdown`, the reply's text since its last
-  successful checkpoint (a 3 s target, `CHECKPOINT_INTERVAL_MS` in `prompt/runner.ts`) is lost, and that message's
-  generation fence stays open until the next ordinary write to the message. Decision: Job Protocol D1, D8, and Q3,
-  archive.
-- A degraded receipt store keeps outcomes in memory only, so a restart then forgets them (the tab shows
-  `serverJob.endedAway`). With degraded or absent receipts, request deduplication lasts only through live/kept memory
-  retention and the tombstone cap; it cannot survive a restart; WAL with `synchronous=NORMAL` can also lose the last
-  receipt writes on a power loss. Decision: Job Protocol D1, archive.
-- A Lua call stuck in native code cannot reach the abort hook; the worker is terminated after its abort grace and queued
-  work waits for a replacement. Decision: Server-Owned Data script worker spike, archive, and the
-  `server/src/lua/runtime.ts` header.
-- The publication budget bounds a `change` frame's optional payloads only (patches, deltas, and summaries); its refs and
-  lock lists are not bounded (an id can be 512 characters, a character delete records the deletion of every one of its
-  chats, and in-process writes have no op cap).
-- A frame whose refs alone cannot be admitted terminates the socket, and the client reconnects and
-  [reconciles](#live-update-hello). No frame is split: the client takes a chat's lock revision from the same frame's
-  chat ref and reads a lock release without refs as `null`. Decision: Per-Event Server Work D5, archive.
-- The budget also costs the write: every candidate payload is serialized once to be measured, rejected ones included, on
-  top of the final frame's serialization. Decision: Per-Event Server Work D5, archive.
-- A chat write pays for its feed entry on the serving thread. A metadata-only write that changes the summary (a rename)
-  reads and parses the chat's last row once for `lastMessageAt`, a `LIMIT 1` query through `messages_position`, and a
-  group with a message op does so before and after the group: all inside the write's transaction, so never from the
-  memo. Decision: Per-Event Server Work D6, archive, and ST04 in the
-  [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md).
-- The summary comparison compares stored projection texts and parses no metadata; past `MAX_FEED_PATCH_BYTES` a metadata
-  change parses the stored metadata before and after it, once, for the field form, so an over-cap metadata is parsed
-  where the whole form alone stopped at the cap. Decision: Server Byte Budgets D4 and Per-Event Server Work D7, archive.
 
 ### Gotchas
 

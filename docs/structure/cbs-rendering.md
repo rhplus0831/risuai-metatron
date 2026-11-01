@@ -2,10 +2,8 @@
 
 ## Scope
 
-- Owns CBS (`{{fn::arg}}`, `{{#if}}`/`{{#when}}`/`{{#each}}`/`{{#func}}` blocks: the function registry and the
-  evaluator), chat, global, and temp variables, markdown/HTML rendering and sanitization (DOMPurify), CSS scoping, asset
-  and inlay expansion at render time, ChatML parsing, partial edit of rendered messages, and CBS editor highlighting and
-  autocomplete.
+- Owns the shared CBS evaluator/registry and variables, Markdown/HTML rendering and sanitization, CSS scoping, rendered
+  asset/inlay expansion, ChatML, partial edits, and CBS editor highlighting/autocomplete.
 - Paths:
   - `shared/cbs/{registry,evaluator,types,calc,limits}.ts` (the runtime both the client and the server run)
   - `shared/prompt/toggles.ts` (toggle definitions and global-value resolution)
@@ -70,9 +68,10 @@
 - `risuChatParser(text, arg)`: the shared evaluator with the client host (the live database, the selected character,
   `CurrentTriggerIdStore`, `window`, `navigator`, `findCharacterbyId`, `CLIENT_CBS_LIMITS`).
 - A parse that reaches the budget throws `CbsLimitError` to its caller (the server's `cbs` callback fails its request on
-  purpose, `transport.ts`). `risuChatParserForDisplay` catches only that error and answers `language.cbsLimitReached`
-  with the reason, for the places that show the result: the chat row's pre-pass (`Chat.svelte` `displayPrePass`, also
-  the copy of a streaming row), `BackgroundDom.svelte`, and the `PopupEditor.svelte` preview.
+  purpose, `src/ts/process/request/transport.ts`). `risuChatParserForDisplay` catches only that error and answers
+  `language.cbsLimitReached` with the reason, for the places that show the result: the chat row's pre-pass
+  (`Chat.svelte` `displayPrePass`, also the copy of a streaming row), `BackgroundDom.svelte`, and the
+  `PopupEditor.svelte` preview.
 - `ParseMarkdown`, `renderMarkdown`/`renderHighlightableMarkdown` (markdown-it + KaTeX + highlight.js), `trimMarkdown`
   (DOMPurify plus scoped-style restore), `trimMarkdownSharingStyles`, `parseMarkdownSafe`.
 - Assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`, `syncAssetsCache`. `getClosestMatch`/`fuzzyIndexOf`
@@ -140,7 +139,8 @@
 
 `parser/chatVar.svelte.ts` holds the variable accessors.
 
-- Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A write
+- Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. Reads fall back to character
+  `defaultVariables`, then the prompt preset's `templateDefaultVariables`, then `"null"`. A write
   [merges that one entry](chat-store.md#map-merges) (`mergeChatMeta`, a `meta` op's `merge`), so the other variables
   keep what another tab or a job set meanwhile (the same variable is last writer wins).
 - A parse given `chatRef` (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and
@@ -291,11 +291,7 @@
 
 ### Variable storage
 
-- Chat vars (persisted): `Chat.scriptstate['$'+name]`, falling back to character `defaultVariables`, then
-  `db.templateDefaultVariables`, then `'null'`.
-- Globals (persisted): `Chat.GLGlobalVariables` (written per chat), then the read-only legacy `db.globalChatVariables`,
-  then a defined `toggle_<name>`'s [kind default](#variables), else `"null"`.
-- Temp vars and `#func` definitions: per `risuChatParser` call, not persisted.
+- See [Variables](#variables) for persisted values; temp vars and `#func` definitions are per-call.
 
 ### Caches
 
@@ -450,8 +446,12 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - `escapes.test.ts` documents a known broken `cbr` repetition case.
 - `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
-- Unconfirmed follow-ups, deferred and not reproduced since: a hang in the additional-asset passes and a duplicate
-  render after "Re-render" (`rerenderMessage` bypasses the transform cache). Both code paths remain.
+- Unconfirmed: a hang in the additional-asset passes has not been reproduced. The source-image test in
+  `src/ts/parser/tests/assetFuzzy.test.ts` pauses and releases `getFileSrc`, but does not test a lookup that never
+  settles.
+- Unconfirmed: the reported duplicate row render after Re-render is not established as a user-visible defect.
+  `e2e/serverTransform.spec.ts` observes two targets in one request: the first bypasses cache and the second reuses its
+  result.
 - A permanent display failure is not remembered: when another target of the same row fails transiently (a legacy
   rendered translation's paragraph beside an oversized original), that row's retry round rerenders it whole, so the
   permanent target is requested and its toast shown again every round. A fix would remember terminal outcomes per
@@ -462,6 +462,24 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - A request of the old source still in flight when its message is edited can fail after the edited source renders. The
   failure is recorded against the source shown then, so its retry round rerenders the edited row once (typed form input
   included). The capture carries no shown source to fence it.
+- The transform's invalidation guarantee does not cover inlay records or file existence read by Lua
+  `getCharacterImage`/`getPersonaImage`; those inputs are not keyed.
+- The tab's plugin handlers are opaque: their output is cached under the server key and handler-set identity, refreshed
+  by a chat change, a viewport change or Re-render, but not by plugin-private state or records outside the key. They can
+  still read `lastInteraction` through `getCharacter()`.
+- A `{{random}}` or clock row may change when it remounts after its chat changed. After eviction or Re-render elsewhere,
+  a random/clock/plugin row can be refilled with different text under the same key, and `same` can still confirm the
+  tab's older text: the key names inputs, not output.
+- Resize and rotation do not re-render rows; the new viewport takes effect on the next remount.
+- A [permanent display failure](#display-transform-failures) is not retried when only the stored data shrinks: a
+  transcript or character trimmed under the limit renders the row on its next mount or a Re-render, not on its own.
+- A script whose output size varies (`{{random}}`, a clock) can fail the head limit once and fit on the next run; it is
+  still marked permanent.
+- The server checks scope limits on the scope loaded for that request, so a target whose request also named a large
+  non-member source character fails permanently beside it; a chat's own members are always loaded, so its rows normally
+  load the same scope.
+- A screenshot taken while a provisional display awaits a replacing answer can capture the cached text:
+  `ChatBody.svelte`'s `whenRendered` waits for current parses and auto-translation, not the transform confirmation.
 
 ### Limitations
 
@@ -477,24 +495,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   channel messages do not propagate the context, and newly loaded plugin instances do not inherit it. General networking
   and consent bookkeeping also remain available. This boundary governs host data setters, not every possible side
   effect. Decision: the [read-only exclusions](../../plugins.md#read-only-transform-continuations).
-- The transform's invalidation guarantee does not cover inlay records or file existence read by Lua
-  `getCharacterImage`/`getPersonaImage`; those inputs are not keyed.
-- The tab's plugin handlers are opaque: their output is cached under the server key and handler-set identity, refreshed
-  by a chat change, a viewport change or Re-render, but not by plugin-private state or records outside the key. They can
-  still read `lastInteraction` through `getCharacter()`.
-- A `{{random}}` or clock row may change when it remounts after its chat changed. After eviction or Re-render elsewhere,
-  a random/clock/plugin row can be refilled with different text under the same key, and `same` can still confirm the
-  tab's older text: the key names inputs, not output.
-- Resize and rotation do not re-render rows; the new viewport takes effect on the next remount.
-- A [permanent display failure](#display-transform-failures) is not retried when only the stored data shrinks: a
-  transcript or character trimmed under the limit renders the row on its next mount or a Re-render, not on its own.
-- A script whose output size varies (`{{random}}`, a clock) can fail the head limit once and fit on the next run; it is
-  still marked permanent.
-- The server counts a scope over the limit as the request loaded it, so a target whose request also named a large
-  non-member source character fails permanently beside it; a chat's own members are always loaded, so its rows normally
-  load the same scope.
-- A screenshot taken while a provisional display awaits a replacing answer can capture the cached text:
-  `ChatBody.svelte`'s `whenRendered` waits for current parses and auto-translation, not the transform confirmation.
 - The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the
   limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content.
   A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails

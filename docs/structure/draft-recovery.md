@@ -2,10 +2,7 @@
 
 ## Scope
 
-- Owns the draft journal (the IndexedDB copy of this tab's unacknowledged work, and of the local version kept at a
-  conflict), journal eligibility, the composer rows' store API, boot recovery, and recovery drafts.
-- Paths: `src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts`, `chatJournal` in
-  `chatStore.svelte.ts`, the journal part of `resourceSync.svelte.ts`.
+- Owns journal durability and eligibility, composer-row storage, boot recovery, and recovery drafts.
 - Not here: save cycle and conflicts → [resource sync](resource-sync.md); chat module → [chat store](chat-store.md);
   composer timing, hand-off, and guarded restore → [chat pipeline](chat-pipeline.md#files); the dialog →
   [UI and theming](ui-theming.md); `sync` events → [diagnostics](diagnostics.md).
@@ -13,13 +10,16 @@
 
 ## Files
 
-- `draftJournal.ts`: the store alone. `createDraftJournal` takes injected dependencies; `pageDraftJournal` holds one
-  instance for the page, and unmount never closes it.
-- `journalRecovery.ts`: `recoverJournal` with its classifiers, `recoveryDraftDetails`, `applyRecoveryDraft`.
-- `chatStore.svelte.ts`: `chatJournal`, `captureChatConflict`, `installRecoveredChat`, `installRecoveredOrder`.
-- `resourceSync.svelte.ts`: `flushJournal`, `queueConflictDraft`, `captureRecordConflict`, `captureRestoreJournal`; for
-  recovery `heldRecordSnapshot`, `adoptRecoveredRecord`, `adoptRecoveredChat`.
-- `src/lib/Others/ReloadNotice.svelte`, `src/lib/Others/RecoveryDrafts.svelte`: the notice and the dialog.
+- `src/ts/storage/draftJournal.ts`: the store alone. `createDraftJournal` takes injected dependencies;
+  `pageDraftJournal` holds one instance for the page, and unmount never closes it.
+- `src/ts/storage/journalEligibility.ts` and `src/ts/storage/journalRecovery.ts`: eligibility plus `recoverJournal`, its
+  classifiers, `recoveryDraftDetails`, and `applyRecoveryDraft`.
+- `src/ts/storage/chatStore.svelte.ts`: `chatJournal`, `captureChatConflict`, `installRecoveredChat`,
+  `installRecoveredOrder`.
+- `src/ts/storage/resourceSync.svelte.ts`: `flushJournal`, `queueConflictDraft`, `captureRecordConflict`,
+  `captureRestoreJournal`; for recovery `heldRecordSnapshot`, `adoptRecoveredRecord`, `adoptRecoveredChat`.
+- `src/ts/storage/recoveryDrafts.svelte.ts`: the reactive draft view; `src/lib/Others/ReloadNotice.svelte` and
+  `src/lib/Others/RecoveryDrafts.svelte`: the notice and dialog.
 
 ## Flows
 
@@ -78,6 +78,8 @@
   journal: a mutation's layers, a recovery draft, an orphan adopted from a closed tab. Never the excluded `llmSecrets`,
   `secrets`, `authRefreshes`, `pluginStorage`, `plugins`, a character with `oaiTTSConfig.apiKey`, or a
   `providers`/`customModels` record naming a `header::` parameter.
+- Secret-looking text in prompts, lore, module scripts or URLs, and messages is still journaled like any other user
+  content, as the server already stores it. Decision: Durable Drafts D1, Q2, archive.
 - A record that fails is not journaled at all, never stripped of a field, so a recovered text is always one the tab
   would have sent. An ineligible layer's older stored value is removed, and an excluded kind loses its whole entry.
 - A character is parsed only when its text has a `"apiKey"` member with a non-empty string value or a real `\u` escape,
@@ -321,17 +323,13 @@
 
 ## State
 
-- The journal keeps in memory, per page: the version `counter`, the removal `fences`, and the `reserved` keys.
-- The adapter keeps plain maps on one serialized queue and timer. `journalRecords`: each record key's epoch, `desired`
-  and `written` layers with captured versions, `dispatched` mark, cached projection, and throttle and skip stamps.
-  `journalChatViews`: each chat or order key's epoch, `written` layers, and `splitFailures`. `journalPending` and
-  `journalChatPending` name the keys to flush, `journalWritingRecords` those in a transaction.
+- `draftJournal` keeps a page-local version counter, removal fences, and reservations. The adapter's `journalRecords`,
+  `journalChatViews`, and pending-key sets are described under [Journal writes](#journal-writes); the chat module's
+  `journalChats`, `journalOrders`, `createSnapshots`, and `beforeValues` under [Chat journal](#chat-journal).
 - `conflictDrafts` holds detached captures with stable ids until [their commit](#conflict-capture).
-- The chat module keeps per-layer caches (`journalChats`, `journalOrders`) and the `createSnapshots` and `beforeValues`
-  `WeakMap`s.
-- `recoveryDrafts` holds a reactive view of journal `DraftEntry` rows; `otherEpoch` is derived against the boot epoch.
-  The journal remains the durable source. Notice dismissal is page-local and independent of conflict dismissal; Discard
-  and a confirmed Apply remove the row from the journal and the view.
+- `recoveryDrafts` is the reactive view, tagging rows from another epoch as `otherEpoch`; the journal remains the
+  durable source. Notice dismissal is page-local and independent of conflict dismissal. Discard and confirmed Apply
+  remove rows from both.
 
 ## Coupling
 
@@ -343,13 +341,12 @@
 
 ## Invariants
 
-- Journaling never fails a save. Every journal method resolves, never rejects; failures are `sync` events, and events
-  about what a transaction did are reported once it committed. The adapter's queue catches everything else.
-- Inside a journal transaction only IndexedDB requests are awaited, so it never commits early.
-- Every path into the journal passes [`isJournalEligible`](#eligibility).
-- Versions do not order intent: layer roles do. Versions only fence storage, within one page.
-- A row replays only in its own epoch and only where a replay cannot do harm; anything else is a draft, and a draft is
-  never replayed on its own.
+- Journal failures never fail a save: methods resolve, and transaction outcomes are reported only after commit. An
+  IndexedDB transaction awaits only IndexedDB requests, so it cannot commit early.
+- [`isJournalEligible`](#eligibility) gates every incoming layer; a refusal excludes the layer wholesale rather than
+  stripping fields. Layer roles determine intent, while versions only fence writes and removals within a page.
+  [Boot recovery](#boot-recovery) replays only safe work from the same epoch; other eligible work becomes a draft, never
+  a direct replay.
 - Recovery never seeds the server baseline with local intent: `persisted` and the boot cache's captured texts stay
   unchanged.
 
@@ -362,18 +359,16 @@
 - Focused:
   `pnpm --silent test:agent draftJournal journalEligibility journalRecovery resourceSyncJournal RecoveryDrafts`. No
   `slow` or `e2e` membership.
-- `src/ts/storage/tests/fakeLockManager.ts`: a typed Web Locks fake: callbacks in a later task, `ifAvailable` answered
-  with null, `signal` only for a waiting request. `draftJournal.test.ts` runs the store on it over `fake-indexeddb`, an
-  injected clock, and fake timers for every deadline.
-- `resourceSyncJournal.test.ts` runs the adapter over `mutationStoresHarness.ts`, `fake-indexeddb` with a
-  transaction-completion barrier, the fake lock manager, fake timers, and captured lifecycle listeners.
-- `src/ts/storage/tests/recoveryBootServer.ts`: adds the real boot route to a `StoreBackedServer`, with a switch for the
-  fallback read. `bootstrap.journalRecovery.test.ts` runs `loadData` twice on it, on one `fake-indexeddb` factory, the
-  fake lock manager, and fake timers. A simulated reload calls `stopResourceSync`, closes the page journal, and removes
-  the page's listeners before `vi.resetModules()`.
-- `util/playwright/checkDurableDrafts.mjs`: manual browser drive on one persistent Chrome profile and dev stack. It
-  SIGKILLs the browser before a batch reaches the server, after its commit with the answer held, and with an uncommitted
-  journal transaction. Its header gives the checks and the usage.
+- `src/ts/storage/tests/fakeLockManager.ts` models callback turns, `ifAvailable`, and waiting-request signals;
+  `src/ts/storage/tests/draftJournal.test.ts` uses it with `fake-indexeddb`, an injected clock, and fake timers.
+- `src/ts/storage/tests/resourceSyncJournal.test.ts` uses `src/ts/storage/tests/mutationStoresHarness.ts`,
+  `fake-indexeddb`, the lock fake, fake timers, captured lifecycle listeners, and a transaction-completion barrier for
+  adapter journal writes.
+- `src/ts/storage/tests/recoveryBootServer.ts` adds the real boot route to [`StoreBackedServer`](resource-sync.md#tests)
+  and can switch the fallback read; `src/ts/bootstrap.journalRecovery.test.ts` loads twice on one IndexedDB factory and
+  simulates reload by stopping sync, closing the journal, removing listeners, and resetting the module graph.
+- Manual crash coverage: `util/playwright/checkDurableDrafts.mjs` uses a persistent Chrome profile to exercise a kill
+  before dispatch, after server commit with the answer held, and during an uncommitted journal transaction.
 - Not tested: pending writes across a back/forward cache return (`runBfcache` only reports the browser's evidence).
 
 ## Known Hazards
@@ -405,15 +400,15 @@
   after the create landed is created again by an Apply retried after a reload (the server keeps no tombstone of the
   deleted chat). Decision: DD3,
   [durable drafts audit](../audit/durable-drafts-2026-10-29.md#dd3--retrying-a-missing-chat-apply-creates-another-copy).
-- A split goes out with no durable record of it after two failed writes, with the journal off, or with its row skipped;
-  a row over `MAX_BATCH_OPERATIONS` becomes a draft rather than replaying a prefix and hiding its suffix. Decision:
-  Durable Drafts D7, archive.
-- A quarantined chat's retained intent protects page close and, when eligible and within budget, is journaled in its
-  `refused` layer; the next boot moves it to recovery drafts. Server backups omit that local intent and report the
-  omission. Decision: Durable Drafts D5, D8, archive.
-- A loaded chat's whole replacement uses its held revision: a stale Retry or edit takes normal conflict recovery,
-  accepting the server copy and keeping eligible abandoned work as a recovery draft. Decision: Durable Drafts D5, D8,
-  archive.
+- After two failed split-journal writes (or with the journal off or the row skipped), the prefix can dispatch without a
+  durable split record. Oversized pending batches become drafts instead of replaying a prefix; see
+  [Split confirmation](#split-confirmation). Decision: Durable Drafts D7, archive.
+- Quarantined chat intent stays local: eligible, in-budget refusals are journaled and become recovery drafts on the next
+  boot, while server backups omit it and report that omission. See [Chat journal](#chat-journal) and
+  [Boot recovery](#boot-recovery). Decision: Durable Drafts D5, D8, archive.
+- A stale Retry or edit of a loaded whole-chat replacement takes
+  [normal conflict recovery](resource-sync.md#chat-and-order-conflicts); eligible abandoned work is captured as a draft
+  ([Conflict capture](#conflict-capture)). Decision: Durable Drafts D5, D8, archive.
 - An `expired` answer to a recovered group enters durable refusal quarantine with its rejected and newer ops. Retry
   explicitly reapplies that intent from its ops under a fresh id, since recovered work never entered the mirror; Discard
   accepts the server; the next boot moves the refused layer to recovery drafts. Decision: the archive's Durable Drafts
@@ -433,14 +428,12 @@
   failed transactions can extend it. Decision: Durable Drafts D7, archive.
 - If a create's dispatched mark misses its 200 ms bound, and the create lands, its answer is lost, and another writer
   deletes it, recovery can recreate it once after a crash. Decision: Durable Drafts D7, Out of scope, archive.
-- A record whose entry, a `sent` + `latest` pair included, exceeds 16 MiB keeps only its unchanged layers, such as an
-  in-flight `sent` beside an oversized `latest`. The throttle adds a nominal 5 s to the uncommitted-edit loss window of
-  records over 256 KiB. Decision: Durable Drafts D3, D7, Q4, archive.
-- A secret typed into free text (a prompt, lore, a module script or URL, a message) is journaled like any text.
-  Decision: Durable Drafts D1, Q2, archive.
-- Conflict drafts are kept only where the journal runs (otherwise the conflict drops the work) and only for eligible
-  work (a credential section or a character with `oaiTTSConfig.apiKey` is lost with the notice). A draft over a budget
-  is skipped while the cleanup that replaces its layers still commits. Decision: Durable Drafts D1, D6, archive.
+- An entry over 16 MiB drops changed layers while retaining unchanged ones (for example, an in-flight `sent` beside an
+  oversized `latest`); the large-record throttle adds a nominal 5 s to the uncommitted-edit loss window. See
+  [Journal writes](#journal-writes). Decision: Durable Drafts D3, D7, Q4, archive.
+- Conflict-lost content survives only when the journal runs and the draft is eligible and within budget; otherwise the
+  cleanup commits without the draft. See [Eligibility](#eligibility) and [Conflict capture](#conflict-capture).
+  Decision: Durable Drafts D1, D6, archive.
 - A draft Apply that conflicts keeps its own draft and adds one of the abandoned applied text. A parked resend a server
   list supersedes is drafted even when it landed (the list cannot tell). Ops answered `missing` are kept as a draft of
   their text by `ackChatWork` ([By-id ops](chat-store.md#by-id-ops)). Decision: Durable Drafts D8, archive.

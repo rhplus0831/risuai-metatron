@@ -2,19 +2,12 @@
 
 ## Scope
 
-- Owns:
-  - package scripts,
-  - Vite and TypeScript config,
-  - the `dev:agent` / `dev:human` full-stack runner,
-  - the documentation check,
-  - the PWA service worker and manifest,
-  - the userscript bridge,
-  - the compatibility version and the build id,
-  - repo dotfiles.
+- Owns package/build config, the `dev:agent` / `dev:human` runner, documentation checks, the PWA worker and manifest,
+  the userscript bridge, release identifiers, and repo dotfiles.
 - Paths:
   - Root config: `package.json`, `vite.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
   - Build id: `shared/buildInfo.ts` (`BuildInfo`, `formatBuildId`), `server/src/buildInfo.ts` (`resolveBuildInfo`,
-    `readServerBuildInfo`), `src/ts/buildInfo.ts` (`buildInfo`, `buildId`)
+    `readServerBuildInfo`, `resolveNormalizationIdentity`), `src/ts/buildInfo.ts` (`buildInfo`, `buildId`)
   - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.prettierrc.json`, `.prettierignore`, `.vscode/`
   - PWA files: `public/sw.js`, `public/manifest.json`, `public/logo_{16,32,192,256,512}.png`
   - `util/risuUserscript.user.js`
@@ -25,34 +18,26 @@
   - `util/heap/` (V8 heap snapshot analysis)
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
 - Not here:
-  - The test wrapper, Vitest and Playwright config, test rules, and browser checks → `test-harness.md`.
-  - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
-  - The self-host server → `self-host-server.md`.
+  - Test commands, Vitest/Playwright, and browser checks → [test-harness](test-harness.md).
+  - `globalApi.svelte.ts` `fetchNative` → [global-api](global-api.md).
+  - Server process, routes, and Docker → [self-host-server](self-host-server.md).
 
 ## Files
 
 ### Relevant `package.json` scripts
 
-The test commands (`test*`, `check:tests`) are documented in [test-harness](test-harness.md).
+Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Test commands and `check:tests` belong to
+[test-harness](test-harness.md#recipes).
 
-| Script          | Command                                                                  | Use                                                                                                                                         |
-| --------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dev`           | `vite`                                                                   | dev server (needs `server`)                                                                                                                 |
-| `build`         | `vite build --sourcemap && node util/compressDist.mjs`                   | production build with Brotli/gzip siblings (served by `server`)                                                                             |
-| `check`         | `svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json` | type check (client + server)                                                                                                                |
-| `check:tests`   | `node util/testInventory.mjs`                                            | test inventory: runners, slow table, product imports (no test run)                                                                          |
-| `check:docs`    | `node util/docsBudget.mjs`                                               | documentation budgets and structure of `STRUCTURE.md` and the guides (no test run); `--report` prints the measurements                      |
-| `test`          | `vitest run --tags-filter=!slow`                                         | tests without the `slow` tag (the gate; people and CI)                                                                                      |
-| `test:agent`    | `node util/agentTest.mjs`                                                | `test` for agents: failures only, failed files rerun alone, cached (`--all` for every test; `--e2e` for the browser specs a change reaches) |
-| `test:overload` | `node util/overloadTest.mjs`                                             | `test:agent` under the reference overload, three runs (Linux)                                                                               |
-| `test:slow`     | `vitest run --tags-filter=slow`                                          | only the `slow` tests                                                                                                                       |
-| `test:all`      | `vitest run`                                                             | every test                                                                                                                                  |
-| `test:e2e`      | `node util/requireHuman.mjs "pnpm test:e2e" && playwright test`          | browser specs in `e2e/` (not in `test`; people and CI)                                                                                      |
-| `server`        | `node server/src/main.ts`                                                | self-host server                                                                                                                            |
-| `dev:agent`     | `node util/agentDev.mjs agent`                                           | server + Vite for agents: loopback, auth bypassed, `save-agent/` copy                                                                       |
-| `dev:human`     | `node util/agentDev.mjs human`                                           | server + Vite for people: loopback, normal login, `save/`                                                                                   |
-| `format`        | `prettier --write .`                                                     | formats the repository; use a targeted Prettier call for changed files                                                                      |
-| `format:check`  | `prettier --check .`                                                     | repository formatting gate                                                                                                                  |
+| Script                    | Use                                                                                                |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `dev`                     | Vite only; requires a running `server`.                                                            |
+| `build`                   | Vite with source maps, then `util/compressDist.mjs` for Brotli/gzip siblings.                      |
+| `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code.          |
+| `check:docs`              | `util/docsBudget.mjs`: guide budgets, outline, and Markdown links; no tests.                       |
+| `server`                  | Node runs `server/src/main.ts` with type stripping.                                                |
+| `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                   |
+| `format` / `format:check` | Repository-wide Prettier write/check; use targeted `pnpm exec prettier --write <files>` for edits. |
 
 ### Build compression
 
@@ -89,7 +74,9 @@ The test commands (`test*`, `check:tests`) are documented in [test-harness](test
     `self-link`: a link to its own file without an anchor.
   - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
     the labels).
-- `--report` prints the sizes and every finding and exits 0.
+- `--report` prints the sizes and every finding and exits 0; use plain `pnpm check:docs` as the gate.
+- Source paths and identifiers in code spans are not validated. Confirm them with targeted `rg` searches; the link rule
+  checks only relative Markdown destinations and heading anchors.
 
 ### Config files
 
@@ -101,7 +88,7 @@ The test commands (`test*`, `check:tests`) are documented in [test-harness](test
   - It injects `globalThis.__NODE__ = true` (plugin `risu-node-flag`, `apply: "serve"`, so `dist/index.html` never
     carries it) and proxies the server routes (`/api`, `/proxy`, `/proxy2`, `/hub-proxy`, with WS) to `RISU_DEV_SERVER`
     (default `http://localhost:6001`). See `self-host-server.md` for the dev caveats.
-  - `envPrefix` is Vite's default (`VITE_`). `build.minify` is `oxc`.
+  - `envPrefix` is Vite's default (`VITE_`); `build.target` is `baseline-widely-available` and `build.minify` is `oxc`.
   - Alias `src` → `/src`. Workers are built as `es`.
   - `define` sets only `__RISU_BUILD__` (the `BuildInfo` of `resolveBuildInfo`, read through `src/ts/buildInfo.ts`;
     Vitest leaves it undefined, so tests see an unknown build). The build-only plugin `risu-build-info` writes the same
@@ -111,8 +98,7 @@ The test commands (`test*`, `check:tests`) are documented in [test-harness](test
   imports of `shared/` use explicit `.ts` extensions.
 - `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
   `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types.
-- `tsconfig.node.json` (Vite config only) has a pre-existing `module: ESNext` / `moduleResolution: nodenext` mismatch
-  (TS5110 under `tsc -p`); `pnpm check` does not build it.
+- `tsconfig.node.json` covers the Vite config only and is outside `pnpm check`; see [Issues](#issues).
 
 ### Dev runner
 
@@ -206,9 +192,7 @@ the loader's `REAL`, `EXTRACT`, and `OVERRIDES` tiers in its own.
   agent, `FALSE` human), `RISU_AGENT_DATA_MODE` (`clone`, `keep`, `fresh`), `RISU_SAVE_DIR`, `RISU_VITE_CACHE_DIR`.
 - It sets the server's `PORT`, `RISU_HOST`, `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS` and Vite's
   `RISU_DEV_SERVER` and `RISU_VITE_CACHE_DIR`.
-- `CI`, `HUMAN`, `AGENT_TEST`: any one of them opens the human gate on the plain test commands
-  ([human gate](test-harness.md#human-gate)). `CI` comes from the CI service, `HUMAN` from a person's shell,
-  `AGENT_TEST` from `util/agentTest.mjs`.
+- Test command environment and agent restrictions: [human gate](test-harness.md#human-gate).
 
 ### Web
 
@@ -332,9 +316,13 @@ GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`.
   the upstream RisuAI release the [upstream ledger](../research/upstream-ledger.md) has triaged through. CBS
   `{{metadata::version}}` and `{{metadata::majorver}}`, card exports, the boot cache, and the server's
   `serverAppVersion` read it. `getVersionString` appends `appSubVer` when set.
-- Build id: `2026.10.26 · a9fa6f8c5` (committer date, nine hex digits of the commit, `-dirty` when `git status` lists a
-  change), or `unknown`. The home menu (`MainMenu.svelte`) shows it above the compatibility version and copies both with
-  the full commit on a click; the diagnostics report and `state.json` carry it.
+- Build id: committer date (`YYYY.MM.DD`), nine hex digits of the commit, and `-dirty` when `git status` lists a change;
+  `unknown` without a commit. `MainMenu.svelte` shows it above the compatibility version and copies both with the full
+  commit on a click; the diagnostics report and `state.json` carry it.
+- `readServerBuildInfo` reports the served client from `dist/build-info.json`, falling back to the checkout when the
+  file is missing. Resource normalization uses `resolveNormalizationIdentity`: the running server checkout first, then
+  the served build only without a checkout commit. A stale `dist/` must not label normalization as another server
+  version.
 
 ## Coupling
 
@@ -408,6 +396,11 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 
 ## Known Hazards
 
+### Issues
+
+- `tsconfig.node.json` pairs `module: ESNext` with `moduleResolution: nodenext`, producing TS5110 when checked directly.
+  `pnpm check` does not include this project.
+
 ### Gotchas
 
 - Playwright's bundled Firefox drops service worker control after a navigation the worker does not answer
@@ -415,7 +408,5 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   `navigator.serviceWorker.controller === null`, so the app runs in the blob fallback instead of direct asset mode.
   Chrome keeps control, and so does a real Firefox build
   ([observation](../audit/direct-assets-browser-control-2026-10-24.md)).
-- A Firefox browser check of direct asset mode under Playwright therefore reads as broken; check it in Chromium or a
-  real Firefox. `probeDirectAssets.mjs` reports the Playwright case as a failed check.
 - The compression step in `pnpm build` costs build time and image size. Quality 9 above 16 MiB exists because quality 11
   on the ONNX Runtime `.wasm` took too long ([numbers](../audit/build-compression-2026-10-29.md)).

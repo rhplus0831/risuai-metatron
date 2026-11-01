@@ -97,6 +97,8 @@
 
 - The emotion image table pages like the asset lists, without search; a rename writes nothing once the index is past the
   list's end.
+- `makeGroupImage` skips member images that fail to load, builds the grid from the images that load, and clears its
+  loading status after saving.
 - `customNotificationMessage` (a character's or a group's completion text, [Web Push](global-api.md)) is outside the
   card-license guard: it is local, and `createBaseV2`/`createBaseV3` and the card import never carry it.
 
@@ -231,14 +233,8 @@
 
 ### Realm download
 
-`downloadRisuHub` → `POST /api/import/realm`: the server reads the file, and the prepare answers before anything is
-stored.
-
-- PNG: the prepare answers the card text, the tab runs `readPngCard` and `confirmCardLowLevelAccess` (cancelling a
-  declined or failed card), and the commit answers the trimmed image's key and the asset keys for `importPngCharacter`.
-- CharX: the prepare answers the `card.json` text and the `module.risum` bytes, the tab runs `readCharxCard` and the
-  `lowLevelAccess` question (cancelling a declined card), and `importCharxCard` runs with the commit's keys and the
-  question already asked.
+Realm downloads use the standard PNG/CharX readers after the server stages a card. The prepare, confirmation, cancel,
+and commit contract is owned by [backup-sync-hub](backup-sync-hub.md#realm-download).
 
 ### Import results
 
@@ -261,8 +257,8 @@ stored.
 
 ### Card export
 
-`exportChar`; groups are not exportable. The written bytes are unchanged for the same inputs (STRUCTURE D5), so the
-existing card and module readers remain compatible.
+`exportChar`; groups are not exportable. Keep the V2/V3 formats compatible with the existing readers (see
+[card-format invariants](#card-formats)).
 
 - V3 PNG: `ccv3` plus `chara-ext-asset_*` chunks.
 - V3 JSON: assets as data URIs, capped at `JSON_EXPORT_ASSET_LIMIT` (64 MiB): the read bytes of the embedded assets, the
@@ -383,7 +379,9 @@ existing card and module readers remain compatible.
 - Rows stay unkeyed and read the live list by matched source index: inputs and deletes write the record, previews and
   prebuilt-exclude use its path, and sticker selection receives its live tuple.
 - Never mutate or render editor rows from the shared `moduleFieldPlain`/`characterFieldPlain` values; lowercase names
-  live in separate arrays. `characterData()` is reserved for the save loop.
+  live in separate arrays. `characterData()` exposes the raw list untracked: use it only for synchronous, read-only
+  lookups or projections, capture a stable `chaId` before awaiting, and write UI edits through record wrappers or
+  collection mutations.
 
 ### Effective modules
 
@@ -468,29 +466,17 @@ existing card and module readers remain compatible.
 
 ## Tests
 
-- Focused:
-  `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`
-  for the tab;
-  `pnpm --silent test:agent server/src/tests/{importCharx,importModule,importRealm,jobModules}.test.ts shared/tests/{rpack,personaModules}.test.ts`
-  for the server and shared code.
-- `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/{importPngCaps,importCharx}.test.ts`
-  ([test-harness](test-harness.md) `Slow-test table`).
-- `e2e`: `e2e/chatLoreOverrides.spec.ts`, `e2e/readersCharacters.spec.ts`, `e2e/recordsCharacters.spec.ts`,
-  `e2e/personaBinding.spec.ts`, `e2e/chatBinding.spec.ts` (an imported chat), `e2e/welcomeAndChatSettings.spec.ts` (a
-  module hiding the icons).
-- `StoreBackedServer` with `bootMutations` (`src/ts/storage/tests/`): the real save adapter over the real server store,
-  also answering both file import routes, for the card, module, persona, and lore import tests. Some mock `rpack_js`
-  from `rpack_map.bin`.
-- `importFixtures.ts`: PNG cards, CharX zips, and V2/V3 cards. The image is a placeholder `IHDR`: readers never decode
-  pixels.
-- `createResourceTestClient`: the real routes for the server readers; `routeLimits.charxEntryBytes` lowers the entry
-  limit for the fast cases.
-- `importRealm.test.ts`: `startRealm`, a local stand-in for Realm; expected PNG bytes are built without the server
-  reader.
-- `importCharx.test.ts` `descriptorArchive`: the `CharXWriter` shape with embedded signatures.
-- `LoreOverrideList.test.ts`: over the real records, chat module, and drafts (`installFlatDatabaseWithChats`); rows are
-  found by their `stateFor(name)` group name.
-- `LoreBookList.test.ts`: a fake `Sortable` records each instance's `disabled` option and destruction.
+- Focused tab tests:
+  `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`.
+- Focused server/shared tests:
+  `pnpm --silent test:agent server/src/tests/{importCharx,importModule,importRealm,jobModules}.test.ts shared/tests/{rpack,personaModules}.test.ts`.
+- `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/{importPngCaps,importCharx}.test.ts`; `e2e`:
+  `e2e/chatLoreOverrides.spec.ts`, `e2e/readersCharacters.spec.ts`, `e2e/recordsCharacters.spec.ts`,
+  `e2e/personaBinding.spec.ts`, `e2e/chatBinding.spec.ts`, and `e2e/welcomeAndChatSettings.spec.ts`.
+- Import harnesses: `StoreBackedServer` connects the client save adapter and server store; `createResourceTestClient`
+  exercises real import routes with lowered limits. `importFixtures.ts` supplies PNG, CharX, and V2/V3 cards;
+  `importRealm.test.ts` uses a local Realm stand-in. Some module tests mock the ignored `rpack_map.bin` payload.
+- Lore editor tests use real records/chat drafts; `LoreBookList` uses a fake SortableJS instance.
 - Not tested: the `charxJpeg` export variant and the performance cost of lorebook drag sorting.
 
 ## Known Hazards

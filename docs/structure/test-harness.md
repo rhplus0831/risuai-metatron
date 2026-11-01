@@ -14,8 +14,8 @@
   - `util/testInventory.mjs` (`check:tests`)
   - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
 - Not here:
-  - Package scripts, Vite, TypeScript, CI, the `dev:agent` runner, and the service worker's harness →
-    `build-test-platforms.md`.
+  - Build scripts, Vite, TypeScript, CI, the `dev:agent` runner, and the service worker's harness →
+    [build-test-platforms](build-test-platforms.md).
   - A domain's focused tests and browser gaps → the guide for the code under test.
 
 ## Files
@@ -236,7 +236,7 @@ runs the gated tests under the reference overload. Its header has the setup, the
 - `util/testInventory.mjs` `SLOW_TABLE_DOC` names this file and `readSlowTable` reads the
   [slow-test table](#slow-test-table).
 - `settle` reads `resourceSyncIdle` ([resource-sync](resource-sync.md)). `checkJobProtocol.mjs` rewrites
-  `OWNER_ABSENT_MS` by its text ([self-host-server](self-host-server.md)).
+  `OWNER_ABSENT_MS` in `server/src/jobs/generationJobs.ts` by its text ([server-generation](server-generation.md)).
 - Domain guides hold their focused test paths and browser gaps: use
   [STRUCTURE's task router](../../STRUCTURE.md#choose-by-task).
 
@@ -250,6 +250,18 @@ runs the gated tests under the reference overload. Its header has the setup, the
   that does not start with `|`.
 
 ## Recipes
+
+| Need                                 | Agent command                                                                                            |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Default gate / focused files         | `pnpm --silent test:agent [files or directories]`                                                        |
+| Affected slow tests                  | `pnpm --silent test:agent --tags-filter=slow <files>`                                                    |
+| Fast and slow tests together         | `pnpm --silent test:agent --all [files]`                                                                 |
+| Browser specs                        | `pnpm --silent test:agent --e2e [e2e/<name>.spec.ts]`; selection rules: [Browser specs](#browser-specs). |
+| Reproduce under CPU load             | `pnpm --silent test:overload <files>` (Linux).                                                           |
+| Runner, slow-table, and import rules | `pnpm check:tests` (static inventory).                                                                   |
+
+People and CI use `pnpm test`, `pnpm test:slow`, `pnpm test:all`, and `pnpm test:e2e`; agents use the wrapper above
+([Human gate](#human-gate)). `--force` bypasses the result cache; `--verbose` includes held stderr.
 
 - Add a slow test: first try to make it fast (a test-only option for the limit, as `createScriptWorkerPool`'s
   `syncHostTimeoutMs` and `sleepCaps`). Tag it `slow` only when the cost is the subject: a real wall-clock limit, a real
@@ -269,15 +281,14 @@ runs the gated tests under the reference overload. Its header has the setup, the
 
 ## Tests
 
-Agents run `pnpm --silent test:agent` for the default fast suite. Use `pnpm --silent test:agent --tags-filter=slow` for
-affected slow coverage or `pnpm --silent test:agent --all` for both. Passing output is a current run result, not a
-permanent property of this guide. A `FLAKY` block in a passing run names tests that failed in the full run and passed
-when their file ran alone: a warning, not a failure, and not something to fix in an unrelated change. A test that keeps
-showing up in `flaky.jsonl` is a candidate for its own V3 fix, checked with `pnpm --silent test:overload <file>`.
+Use the [Recipes](#recipes) commands. A `FLAKY` block means a test failed in the full run and passed when its file ran
+alone; the wrapper counts it as passed and records it in `flaky.jsonl`. Recurring entries warrant a separate V3 fix,
+checked under the overload runner. Report warnings with the current run rather than treating a passing exit as proof of
+stability.
 
 Focused tests belong to the guide for the code under test: use
 [STRUCTURE's task router](../../STRUCTURE.md#choose-by-task) instead of copying those inventories here. Domain guides
-retain their specific assertions and browser gaps. Discover current files with:
+retain their harnesses and browser gaps. Discover current files with:
 
 ```sh
 rg --files src server/src shared | rg '\.test\.ts$'
@@ -285,66 +296,42 @@ rg --files e2e | rg '\.spec\.ts$'
 rg --files util/playwright
 ```
 
-- The harness's own tests: `vitest.setup.test.ts`, `vitest.lucideImports.test.ts`, `vitest.testNetwork.test.ts`
-  (happy-dom) and `vitest.testNetwork.node.test.ts` (node), `util/agentE2e.test.ts`, `util/agentTestResults.test.ts`,
-  `util/testInventory.test.ts`.
-- Not tested: `util/agentTest.mjs` and `util/overloadTest.mjs` have no test file of their own.
+- Setup, icon rewriting, and the network guard: `vitest.setup.test.ts`, `vitest.lucideImports.test.ts`,
+  `vitest.testNetwork.test.ts` (happy-dom), and `vitest.testNetwork.node.test.ts` (Node). The guard suites use
+  registered loopback listeners and controlled global stubs.
+- Wrapper helpers and inventory: `util/{agentE2e,agentTestResults,testInventory}.test.ts` exercise pure result/selection
+  logic and temporary repository fixtures; no full app stack.
+- Focused command:
+  `pnpm --silent test:agent vitest.setup.test.ts vitest.lucideImports.test.ts vitest.testNetwork util/agentE2e.test.ts util/agentTestResults.test.ts util/testInventory.test.ts`.
+  These files have no slow tags or e2e membership.
+- Not tested directly: the `util/agentTest.mjs` CLI and `util/overloadTest.mjs` supervisor. Their helper tests do not
+  replace a manual end-to-end run when those entrypoints change.
 
 ### Test rules
 
-Two gates decide whether a test belongs in the default suite. Both are checked from the test's code, not from a guess
-about how likely the code is to regress.
+The root [verification rules](../../STRUCTURE.md#verification) apply. Keep tests that reject plausible wrong behavior
+and survive behavior-preserving refactors; add them only for code the task changes.
 
-- Determinism (mechanical). A gated test must not depend on real wall-clock time, CPU time, or the scheduler.
-  - That rules out elapsed-time and throughput assertions (`toBeLessThan` on a duration, "N items in under M ms"), a
-    sleep used to let other work finish before an assertion, a poll with a real-time cap over real socket or file I/O, a
-    real production deadline that test work must beat (a staging TTL, an echo delay, a regex or Lua budget, a worker's
-    boot cap), and a cold worker, child process, tokenizer, or module graph booted under such a deadline. The gate's
-    Vitest timeout is not such a deadline ([Timeouts](#timeouts)).
-  - Fix by controlling the clock: `vi.useFakeTimers` (add `"Date"` to `toFake` when the code reads `Date.now`), an
-    injected `now`, a deferred or latch that holds the provider or the slot, a call-through `setTimeout` spy, or a
-    test-only limit option.
-  - Boot the module graph once in a `beforeAll` (as `characterCardsPngImport.test.ts` does) so each case does not pay
-    for it, and warm worker pools before a region a real deadline covers.
-  - A test whose subject is the real limit itself goes to the `slow` tier instead ([Recipes](#recipes)).
-- Contract over implementation (judgment). A test earns its place when a plausible wrong implementation would fail it. A
-  test that only pins call order, private state, a mock's return value, or fixed data the task did not touch protects
-  nothing and breaks on refactors; do not add it, and prune it when it starts costing time. Add tests only for code the
-  task changes.
-
-Past those gates, a test is judged by what its failure would tell a reader, not by how many assertions it holds. The
-suite's size says nothing about what it protects: the defects it has missed were two layers each correct and wrong
-together (a stored metadata object whose key order changed so a value-identical edit diffed as a change, an
-acknowledgement that never installs the server's copy so duplicates survive, a write that moves a chat revision that
-keys a cache), and a test over a mocked store cannot see any of them. The questions to ask of a test are "does it go red
-when this line is wrong" and "does it stay green when behavior is preserved":
-
-- Shown to fail. Every new test, not only a regression test, runs once with the line it guards broken (STRUCTURE V6); a
-  bug fix's test reproduces the bug before the fix. A test that stays green against the broken line is the one that
-  costs time without protecting anything.
-- Outcome, not mechanism. Assert what another layer or the user sees: the stored string or record, the server's
-  response, the op or event emitted, the rendered text, the returned value, against explicit expected data.
-  `server/src/tests/chats.test.ts` "keeps its key order when normalized again" asserts the stored string, because the
-  string is what the diff compares. Never assert the call list or order of the repository's own functions, an internal
-  state shape, or a mock's return value.
-- Real modules inside, typed fakes at the edge. The repository's own modules stay real; fakes stand only at process and
-  I/O boundaries (STRUCTURE V7).
-  - A hub module that a client test must stub because loading it pulls in the DOM, runes, or the server
-    (`globalApi.svelte`, `chatStore.svelte`, `parser.svelte`, `process/modules`, `serverAuth`) is stubbed through a
-    shared typed factory, never an inline partial object.
-  - A partial object hides every export it leaves out until a consumer imports one, and then dozens of unrelated tests
-    fail at run time and read as a regression, while a factory whose defaults `satisfies` the export type fails
-    `pnpm check` once.
-- A seam change gets a seam test. A change to a persisted shape, a normalizer, a sync or acknowledgement rule, or a key
-  that another layer derives (a revision, a cache key) gets one round trip rather than one unit test per side: a client
-  write through the server's normalizer and back into the store, a server test over the real app (`app.request`, as most
-  of `server/src/tests/` does), or an `e2e/` spec against the real stack. Two unit tests with the other side mocked each
-  pass while the pair is wrong.
-- Delete rather than repair. When a behavior-preserving change breaks a test, the test was coupled to the
-  implementation: delete it, or rewrite it against the outcome; do not patch its expectations to the new mechanism. An
-  intended behavior change updates the expectation and says so in the commit message.
-- Only for code the task changes. This is the budget, not a quality mark: a test the task did not need is time every
-  later run and every later refactor pays.
+- Determinism: no elapsed-time/throughput assertions, sleeps for synchronization, bounded real-time polls over I/O, or
+  real production deadlines raced by test work. Cold workers, child processes, tokenizers, and module graphs cannot race
+  those deadlines either. The Vitest timeout is only a [hang guard](#timeouts).
+- Control time with fake timers (include `"Date"` when code reads `Date.now`), an injected `now`, a deferred/latch, a
+  call-through timer spy, or a test-only limit option. Boot shared module graphs in `beforeAll`, as
+  `characterCardsPngImport.test.ts` does. Warm worker pools before a timed region; tests of real limits belong in the
+  slow tier.
+- Prove each new test fails with the guarded line broken; a regression test reproduces the bug before the fix (V6).
+- Assert observable outcomes against explicit expected data: stored strings/records, responses, emitted operations,
+  rendered text, or return values. Avoid internal call order, private state, and assertions that only repeat a mock's
+  return value. For example, `server/src/tests/chats.test.ts` checks serialized key order because the diff consumes that
+  string.
+- Keep repository modules real and fake process/I/O boundaries. Browser hub modules that must be stubbed because they
+  load DOM, runes, or server dependencies use [shared typed factories](#mock-factories), not partial inline objects.
+  Factory defaults must satisfy the module's exports so missing exports fail type checking.
+- Test cross-layer changes in one round trip: persisted shapes, normalizers, acknowledgement rules, revisions, and cache
+  keys need the client/server pair or real `app.request`/e2e stack. Separate unit tests that mock the opposite side can
+  both pass while the integration is wrong.
+- If a behavior-preserving refactor breaks a test, delete it or rewrite it against the outcome. An intended behavior
+  change updates the expectation and explains the change in the commit message.
 
 ### Mock factories
 

@@ -3,23 +3,25 @@
 ## Scope
 
 - Owns the boot load and boot cache, the save adapter, the resource transport, and the live-update client.
-- Paths: `src/ts/storage/{resourceSync.svelte,resourceClient,bootCache,recordMerge,readDeadline}.ts`,
-  `src/ts/network/{eventFeed,socketLiveness}.ts`, `loadData` in `src/ts/bootstrap.ts`.
 - Not here: [the chat module](chat-store.md), [the journal and recovery](draft-recovery.md),
   [records and shapes](persistence.md), [the server](server-resources.md).
 - A `Decision:` plan name resolves through [the archive](../archived-plan/README.md).
 
 ## Files
 
-- `resourceSync.svelte.ts`: the save adapter. Beyond Flows: `saving`, `heldRecordRevision` (the job channel's barrier),
-  `stopResourceSync` (terminal: fences writes, clears timers and listeners, aborts reads; it saves, alerts, and reloads
-  nothing, and the page journal closes separately).
+- `src/ts/storage/resourceSync.svelte.ts`: the save adapter. Beyond Flows: `saving`, `heldRecordRevision` (the job
+  channel's barrier), `stopResourceSync` (terminal: fences writes, clears timers and listeners, aborts reads; it saves,
+  alerts, and reloads nothing, and the page journal closes separately).
 - `setRemoteResourceOwner(kind, { apply, reconcile? })`: the owner of a kind outside the mirror; boot registers
   `noteRemoteInlay`/`reconcileInlays` and `refreshPluginPermissions` (three retries 5 s apart).
-- `resourceClient.ts`: transport for `/api/resources` and `/api/backups`; `prepareUnloadAuth` + `sendBatchOnUnload` send
-  a `keepalive` batch with a pre-signed token.
-- `eventFeed.ts`: the client of `/api/events/ws` (`shared/events.ts`); `socketLiveness.ts` holds its timers and resume
-  triggers.
+- `src/ts/storage/resourceClient.ts`: transport for `/api/resources` and `/api/backups`; `prepareUnloadAuth` +
+  `sendBatchOnUnload` send a `keepalive` batch with a pre-signed token.
+- `src/ts/storage/{bootCache.ts,recordMerge.ts,readDeadline.ts}`: cache validation, record merge policy, and read
+  deadlines.
+- `src/ts/network/eventFeed.ts`: the client of `/api/events/ws` (`shared/events.ts`); `src/ts/network/socketLiveness.ts`
+  holds its timers and resume triggers.
+- `src/ts/bootstrap.ts` `loadData`: boot ordering and the handoff from record installation through sync and feed
+  startup.
 
 ## Flows
 
@@ -111,15 +113,15 @@
 ### Batch composition
 
 - One `POST /api/resources/batch` carries records, then chat groups (`takeChatWork`; a group is never split inside a
-  request), then reorders, in one server transaction; it splits above 5,000 operations or 100 MiB of UTF-8, or to
-  isolate an unindexed refusal. A chat created with its character travels with or after it.
+  request), then reorders, in one server transaction; it splits above 5,000 operations or the client's 100 MiB body cap
+  minus a 64 KiB envelope margin, or to isolate an unindexed refusal. A chat created with its character travels with or
+  after it.
 - The `chaId` list is diffed against the saved characters. A character removed and re-added under one id before a cycle
   is a field update, its chats the [chat module's reconciliation](chat-store.md#character-lifecycle), never a
   delete-then-create: the server refuses two ops of one id, and a delete beside changes to its chats.
-- Over 5,000 unsent ops, a chat becomes a held resend prefix under its batch id and a suffix under a fresh id, neither
-  sent that cycle. `takeChatWork` skips an unconfirmed prefix; a committed journal write naming the split, an
-  affirmative skip, or a journal that is off confirms it, and two failed writes release it, so a broken journal stops
-  nothing. The suffix follows the prefix's acknowledgement.
+- Over 5,000 unsent ops, a chat becomes a held resend prefix under its batch id and a suffix under a fresh id; neither
+  is sent that cycle. `takeChatWork` withholds the prefix until
+  [split confirmation](draft-recovery.md#split-confirmation); the suffix follows its acknowledgement.
 - A same-id chat recreation sends the old delete alone on its held revision, then the create on a null base once the
   delete is acknowledged or confirmed absent. The delete keeps the old id, the create gets a fresh one, and the delete
   alone does not settle the recreation's flush sequence. Deleting the recreation before collection still sends the old
@@ -390,7 +392,8 @@
 - It resolves `{ discarded, refused }`. `discarded`: events since the call or `beginMutationScope()` (a conservative
   time window). `refused`: `refusedItems()` at resolution. Both use `chats/<chaId>/<chatId>`, `chats/<chaId>` for an
   order, `<kind>/<id>`. An empty discard list does not mean every change is durable.
-- A refused chat or order does not block it; a refused resource rejects at once (`quarantineReason()`), as does
+- A refused chat or order does not block it and remains in `refused` while quarantined; its discard event appears only
+  in the flush or scope of that refusal. A refused resource rejects at once (`quarantineReason()`), as does
   generation-blocked work (`GenerationBlockedError`; `generatingNoticeCount()` tells whether `chatGenerating` showed).
 - Send admission, `startMemoryTask`, `requestStoredTranslation`, and `readChatsDetached` (also on a refused character
   record) check the target chat and its order against the result, so none acts on the server's older copy of a draft
@@ -451,23 +454,24 @@
 ## Tests
 
 - Focused: `pnpm --silent test:agent src/ts/storage/tests/resourceSync*.test.ts src/ts/network/eventFeed.test.ts`.
-  `slow`: a long-chat case in `resourceSyncHydration.test.ts`. `e2e`: `e2e/terminalNotice.spec.ts`.
+  `slow`: a long-chat case in `src/ts/storage/tests/resourceSyncHydration.test.ts`. `e2e`: `e2e/terminalNotice.spec.ts`.
 - Adapter tests use the real Svelte module, a fresh module graph, and fake timers per test.
-- `fakeResourceServer.ts`: an in-memory `authFetch` stand-in for the resource routes, with hooks to hold a batch, drop
-  an acknowledgement, fail requests, or run something first. `serverKinds.ts` loads the server's kinds at run time;
-  `materialize(fake)` adds what the server materializes.
-- `storeBackedServer.ts`: an `authFetch` stand-in over the real store (`createResourceStore`, SQLite in memory);
-  `streamingForChat` gives whole reads a chosen lock list, none by default as from an older server.
+- `src/ts/storage/tests/fakeResourceServer.ts`: an in-memory `authFetch` resource-route fake with batch, lost-answer,
+  failure, and ordering hooks; `src/ts/storage/tests/serverKinds.ts` and `materialize(fake)` keep its record set aligned
+  with the server.
+- `src/ts/storage/tests/storeBackedServer.ts`: an `authFetch` stand-in over the real store (SQLite in memory);
+  `streamingForChat` selects whole-read lock lists, with no locks by default to model an older server.
 - `src/ts/network/tests/eventSocket.ts` (`FakeSocket`): the shared fake browser socket.
-- Not tested through summaries: most adapter tests and `mutationStoresHarness.ts` boot whole chats. Only
-  `resourceSyncLazyChats.test.ts` and `resourceSyncAbsentSingleton.test.ts` boot the adapter from summaries throughout.
+- Not tested through summaries: most adapter tests and `src/ts/storage/tests/mutationStoresHarness.ts` boot whole chats.
+  Only `src/ts/storage/tests/resourceSyncLazyChats.test.ts` and
+  `src/ts/storage/tests/resourceSyncAbsentSingleton.test.ts` boot the adapter from summaries throughout.
 
 ## Known Hazards
 
 ### Issues
 
-- A chat group over the server's 100 MiB limit is quarantined before any request and cannot be saved; an edit or Retry
-  still over it quarantines again silently.
+- A single oversized chat group is quarantined before dispatch and cannot be chunked; see
+  [Batch composition](#batch-composition) for the cap. An edit or Retry still over it quarantines again silently.
 - A tab can still edit a generating reply before the job's first write's frame arrives (`hello` cannot list a message
   before `begin`), or, with an older server, after an adopted newer read released the locks, until the next write
   (`CHECKPOINT_INTERVAL_MS` while streaming; longer while a job waits). The edit is [dropped](#generating-refusals), the
@@ -514,8 +518,6 @@
 
 ### Gotchas
 
-- A refused chat is a discard event only in the flush or scope of its refusal; every flush lists it in `refused` while
-  it lasts.
 - A quarantined chat a list shows deleted stays in the mirror, left out of reorders. A reorder queued before that list
   blocks the live update (`canApplyRemoteCollection`), conflicts on the order revision (never the permutation refusal),
   and settles with the notice and an order discard.

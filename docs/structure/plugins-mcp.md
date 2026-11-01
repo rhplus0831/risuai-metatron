@@ -218,7 +218,8 @@ key).
 - `plugins` (`setDatabase` only: the plugins the user confirmed) → `upsertPlugin` by name. `characters` keeps the
   mirror's order and appends new characters. `pluginCustomStorage` and unknown keys → the plugin storage module.
 - The model roots `maxContext`, `seperateModels`, and `seperateModelsForAxModels` go on to `writeModelRoot`
-  ([compatibility model-root write rules](llm-requests.md#invariants)): a refusal warns `[Settings] Refused ...`.
+  ([compatibility model-root write rules](llm-requests.md#compatibility-model-root-writes)): a refusal warns
+  `[Settings] Refused ...`.
 - `pluginKeyOrder` applies `characterOrder` and `selectedPersona` last, whatever the object's key order.
   `selectedPersona` (an index) selects on this client only.
 - `warnRefused` turns a `MutationValidationError` into a `[Plugin] Refused ...` console warning and keeps that key's old
@@ -453,37 +454,35 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 - The [deferred reload](#deferred-reload) never interrupts, so work that never ends defers it until this tab reloads or
   a local `loadPlugins` runs: a top-level script that never settles, a hook or guest callback that never answers, a
   stream bridged either way never finished (a host stream the guest never pulls expires at 60 s), or a job this tab
-  never releases. Work that starts while a reload unloads the old sandboxes is not fenced (as for any local reload): a
-  job created then lists the hooks registered then. Decision: RisuNest Small Wins D4,
-  [archive](../archived-plan/README.md).
+  never releases. Work that starts while a reload unloads the old sandboxes is not fenced: a job created then lists the
+  hooks registered at that time. Decision: RisuNest Small Wins D4, [archive](../archived-plan/README.md).
 - A cancelled hook that never settles keeps plugin `sendChat` refused (`channelCallbacksRunning`), and after the
   server's `CANCELLED_CALLBACK_DRAIN_MS` (60 s) a later job's root callbacks are refused on this tab, both until the
-  page reloads. A wait limit alone would let the hook write after the next job starts; a fix would terminate and reload
-  that plugin's sandbox (with a notice) before admitting another root. Decision: Per-Chat Send,
-  [archive](../archived-plan/README.md).
-- A server job's remote MCP requests leave from the server's host, not from the browser: a URL that only the browser
-  reaches (its own `localhost`, a userscript or cookie session) does not work for a job, and a module's MCP URL reaches
-  whatever the server's host reaches, loopback and private addresses included. Decision: STRUCTURE.md P2.
+  page reloads; admitting another root while the cancelled hook can still write would let it overlap later work.
+  Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+- A server job's remote MCP requests leave from the server host, so a browser-only URL or session is unavailable and the
+  module URL reaches addresses visible to that host, including loopback and private networks. See
+  [STRUCTURE platform/network invariant](../../STRUCTURE.md#platform-and-network). Decision: STRUCTURE P2.
 - `internal:fs` for a server job asks for the directory inside a callback, after the send's click: the browser may
-  refuse the picker without a user gesture. The OAuth page of a job's remote server is opened by an `openURL` notice,
-  which a popup blocker may stop. Decision: owner-tab work of the job (`server/src/mcp/jobTools.ts`).
-- The call context attributes by plugin instance, not by call: a plugin's own timers and UI callbacks see an ambient
-  context while one of its hooks is in flight. Exact attribution needs a correlation id in the sandbox RPC. Decision:
-  recorded limits (`pluginContext.ts`).
-- Callback parentage rides on that context (`channelCall`): an aux request (`runLLMModel`, `imggen`'s prompt request)
-  made with it ends with that callback; one without that context does not. The send guard accepts a context's job ids
-  only while its callback runs uncancelled here (`channelCallTargets`); a stale one is checked against the chat's
-  binding. Decision: Per-Chat Send, [archive](../archived-plan/README.md).
-- Inherited limits of that parentage: a plugin's ambient context carries its hook's callback; body interceptors run
-  without a context, a provider's context ends when it returns its stream (while the channel still reads it), and the
-  tab's `internal:aiaccess` captures a chat context without `channelCall`, so a request made from those is not ended
-  with the callback. Decision: Per-Chat Send, [archive](../archived-plan/README.md).
-- A plugin setter's non-null section value is not normalized on the client: the server normalizes its copy, but the
-  batch answer carries revisions only, so the writing tab keeps the value as written until a reread or a live update.
-  Decision: the accepted limit in [persistence](persistence.md).
+  refuse the picker without a user gesture. Decision: owner-tab work in
+  [`jobTools.ts`](../../server/src/mcp/jobTools.ts).
+- A remote server's OAuth page opens through an `openURL` notice, which a popup blocker may stop. Decision: owner-tab
+  work in [`jobTools.ts`](../../server/src/mcp/jobTools.ts).
+- A plugin's timers and UI callbacks share the instance's ambient `PluginCallContext`, so they may inherit an in-flight
+  hook's context. Exact per-call attribution needs an RPC correlation id. Decision:
+  [`pluginContext.ts`](../../src/ts/plugins/apiV3/pluginContext.ts).
+- Aux calls (`runLLMModel`, `imggen` prompt requests) made through `channelCall` end with their hook callback; calls
+  without that context do not. The send guard accepts its job ids only while the callback runs uncancelled and checks a
+  stale context against the chat binding. Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+- A plugin's ambient context carries its hook callback, but body interceptors have no context, a provider's context ends
+  when it returns its stream, and tab `internal:aiaccess` captures chat context without `channelCall`; requests from
+  those paths are not ended with the callback. Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+- A plugin setter's non-null section value is not normalized on the writing tab: the server normalizes its copy, but the
+  batch answer carries revisions only, so the tab keeps the value until reread or a live update. Decision: accepted
+  mirror-normalization limit in [persistence](persistence.md#known-hazards).
 - A plugin call that adds a character and also passes `characterOrder` without the new id: the order is written after
-  the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`.
-  Decision: `pluginKeyOrder` (`v3.svelte.ts`).
+  the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`
+  (`pluginKeyOrder` in `v3.svelte.ts`). Decision: [`pluginKeyOrder`](../../src/ts/plugins/apiV3/v3.svelte.ts).
 
 ### Gotchas
 

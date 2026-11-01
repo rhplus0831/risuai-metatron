@@ -2,11 +2,8 @@
 
 ## Scope
 
-- Owns: the chat module, server jobs as the store sees them (locks, stream buffer, hydration), the chat field drafts,
-  the checkpoint client, and the client half of the restore floor.
-- Paths:
-  `src/ts/storage/{chatStore.svelte,chatEdits,chatFieldDraft.svelte,localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`,
-  `src/ts/checkpoints/`, their tests; the hydration memory in `src/ts/network/jobChannel.ts`.
+- Owns the chat module and write protocol, its view of server jobs (locks, stream buffer, and hydration), chat field
+  drafts, checkpoints, and the client side of the restore floor.
 - Not here: save loop, conflicts, live updates → [resource sync](resource-sync.md); chat journal, recovery drafts →
   [draft recovery](draft-recovery.md); database model, records → [persistence](persistence.md); server chat store,
   checkpoint service, floor checks → [server resources](server-resources.md); the send →
@@ -15,18 +12,20 @@
 
 ## Files
 
-- `src/ts/storage/chatStore.svelte.ts`: the chat module, the chats' only writer. Per character it holds the chat ids in
-  order (the membership) and each chat loaded or as its summary, reactively. The initial resource snapshot carries
-  summaries only; plugins or a resumed job may load their targets during startup. Writers not named below: `createChat`,
-  `ensureChat`, `deleteChat`, `reorderChats`, `selectChat`, `loadSelectionPreference`, `setMessageText`,
-  `removeMessages`, `captureChatBaseline`, `forgetCharacterChats`.
+- `src/ts/storage/chatStore.svelte.ts`: the chat module. Per character it holds the chat ids in order (the membership)
+  and each chat loaded or as its summary, reactively. The initial resource snapshot carries summaries only; plugins or a
+  resumed job may load their targets during startup. Writers not named below: `createChat`, `ensureChat`, `deleteChat`,
+  `reorderChats`, `selectChat`, `loadSelectionPreference`, `setMessageText`, `removeMessages`, `captureChatBaseline`,
+  `forgetCharacterChats`.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
-  whole chat copy. The [field drafts](#whole-chat-writers): `chatFieldDraft.svelte.ts`, `localLoreDraft.svelte.ts`,
-  `loreOverridesDraft.svelte.ts`.
+  whole chat copy. The [field drafts](#whole-chat-writers):
+  `src/ts/storage/{chatFieldDraft.svelte.ts,localLoreDraft.svelte.ts,loreOverridesDraft.svelte.ts}`.
 - `src/ts/checkpoints/chatCheckpoints.svelte.ts`: the checkpoint client. `chatCheckpointsDialog` is a writable
   `ChatRef | null` here, outside `stores.svelte.ts`, opened from `SideChatList.svelte`. The read-only
   `checkpointLoadBusy` holds a load from before its flush until its refresh ends: the dialog disables its controls, and
   `hotkey.ts` swallows shortcuts behind it and keeps Escape from closing it.
+- `src/ts/network/jobChannel.ts`: remembers job record and streaming hydration for callback barriers; chat installation
+  remains in `chatStore.svelte.ts`.
 
 ### Readers
 
@@ -438,16 +437,16 @@
 ## Tests
 
 - Focused: `pnpm --silent test:agent chatStore resourceSyncChats chatCheckpoints`.
-- `StoreBackedServer` ([resource sync](resource-sync.md#tests)): `chatStore.test.ts` and `resourceSyncChats.test.ts` run
-  on it.
-- `CheckpointServer` (`src/ts/checkpoints/tests/checkpointServer.ts`) wraps it and serves checkpoint operations through
-  the real `createCheckpointService` on the same store, with latches before load admission or after commit and a
-  lost-answer switch; policy calls use the real service too.
-- `slow`: `resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
+- `src/ts/storage/tests/{chatStore.test.ts,resourceSyncChats.test.ts}` use
+  [`StoreBackedServer`](resource-sync.md#tests).
+- `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load
+  admission, commit, and lost answers; its policy routes use the real service too.
+- `slow`: `src/ts/storage/tests/resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
 - `e2e`: `e2e/lazyChats.spec.ts` (`pnpm test:e2e`), lazy loading in the whole stack.
-- Not tested: the client's two-round gone-anchor repair after a checkpoint load (`resourceSyncChats.test.ts` exercises
-  it for another cause); checkpoint preparation after a conflicting reorder is reported by `markOrderDiscarded`. The
-  dialog test mocks the client module.
+- Not tested: the client's two-round gone-anchor repair after a checkpoint load
+  (`src/ts/storage/tests/resourceSyncChats.test.ts` exercises it for another cause); checkpoint preparation after a
+  conflicting reorder is reported by `markOrderDiscarded`. `src/lib/Others/ChatCheckpointsDialog.test.ts` mocks the
+  client module.
 
 ## Known Hazards
 

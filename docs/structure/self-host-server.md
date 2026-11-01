@@ -79,21 +79,16 @@ changing a path or its admission policy. Routing is non-strict (a trailing slash
      `Connection: close` to every response.
    - Every request history, diagnostics, memory task, token, and chat checkpoint answer gets `Cache-Control: no-store`
      there, so a 429 or 413 carries it too.
-2. `limitedBody` (100 MiB, 413 `{error:"Request body too large"}`), skipped for routes that cap their own bodies; each
-   cap is on the route's bullet:
-   - Streamed to disk under their own cap: `POST /api/backups/import`, `POST /api/backups/import-upstream/prepare`,
-     `POST /api/import/module`, and `POST /api/import/charx`.
-   - Capped after authentication: `POST /api/transform` and `/continue`, `POST /api/translate/message`, `PUT` and
-     `DELETE /api/push/subscription`, `POST /api/diagnostics/report`, `PUT /api/request-history/share`,
-     `POST /api/import/realm` and its `/commit` and `/cancel`, `POST /api/resources/boot`, `POST /api/resources/read`,
-     `POST /api/chats/search`, `POST /api/memory/tasks`, `POST /api/chat-checkpoints/*`,
-     `PUT /api/chat-checkpoints/policy`, `POST /api/tokens/count`, `/api/tokens/encode`, and `POST /api/assets/missing`.
-   - `POST /api/login`, `/api/crypto`, and `/api/set_password` read their bodies before any authentication by design and
-     cap them at 16 KiB.
-   - The global cap and these routes use the shared helper in `server/src/routes/limitedBody.ts` (the chat checkpoint
-     routes keep their own copy over `hono/body-limit`, after authentication): a body over the cap answers 413, and a
-     request stream that fails under it answers 400, never the app's 500, even from a route that rethrows the failed
-     read ([Request bodies](#request-bodies)).
+2. `limitedBody` is the 100 MiB global cap (413 `{error:"Request body too large"}`); disk-spooled imports and routes
+   with their own caps skip it.
+   - Disk-spooled: backup import, upstream backup prepare, module import, and CharX import.
+   - Per-route cap owners: [resources](server-resources.md#files), [generation](server-generation.md#files),
+     [storage](#storage-routes), [auth](#auth-routes), [push](#push-routes), and
+     [diagnostics](#request-history-and-diagnostics-routes).
+   - Login, crypto, and password setup read before authentication and cap bodies at 16 KiB. The shared helper is
+     `server/src/routes/limitedBody.ts`; chat checkpoints keep a separate `hono/body-limit` wrapper after auth.
+   - Over-cap requests answer 413; a stream failure under the cap answers 400, never the app's 500
+     ([Request bodies](#request-bodies)).
 3. `GET /` and `GET /index.html` (no auth, no limiter; one shared handler, with `no-cache`, a weak size/mtime ETag,
    `Last-Modified`, and conditional 304 responses), then the same handler for the client's screen routes: a `GET *`
    handler serves it when `isClientRoutePath` (`shared/routes.ts`: first segment `chat`, `playground`, `realm`,
@@ -485,8 +480,7 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   limits, and services. `testRestoreRunner` stages a restore in process, so a gate test starts no worker.
 - `createServerContext`'s test seams include `generationRunner`, `scriptWorkerOptions`, `routeLimits`, `cbsTimeLimits`,
   `realmStagingTimer`, `memoryTaskOptions`, `thumbnailOptions`, and `restore`.
-- `assetVerification.test.ts` drives `verifyFiles` with injected hashers and latches: it preopens the file handles,
-  makes admission I/O immediately resolved, and drains fake timers to reach the held hashes without racing disk I/O.
+- `assetVerification.test.ts` uses injected hashers and latches to hold file reads while fake timers control the queue.
 - Boot, auth, limits, shutdown:
   `pnpm --silent test:agent server/src/tests/{app,listenConfig,shutdown,shutdownAdmission}.test.ts`.
 - Storage and HTTP:

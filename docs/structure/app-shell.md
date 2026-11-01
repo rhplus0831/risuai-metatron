@@ -20,9 +20,9 @@
 - `src/main.ts`: entry. Imports `./ts/polyfill` and `core-js`, registers the `vite:preloadError` alert, then branches on
   `isNodeServer`: true → dynamic `import("./boot")` and `boot()`; false → mounts `NodeServerRequired` and removes
   `#preloading`. The app graph (App, bootstrap, stores, DB) is never imported without the server.
-- `src/boot.ts` `boot`: starts the diagnostics collector (`src/ts/diagnostics/collector.ts`, `global-api.md`) before any
-  app module loads, then dynamically imports `src/startApp.ts`; a failure while the app's modules load is an unhandled
-  rejection the collector records.
+- `src/boot.ts` `boot`: starts the diagnostics collector (`src/ts/diagnostics/collector.ts`, `diagnostics.md`) before
+  any app module loads, then dynamically imports `src/startApp.ts`; a failure while the app's modules load is an
+  unhandled rejection the collector records.
 - `src/startApp.ts` `startApp`: imports the database side effects, `mount(App)`, `loadData()` (not awaited),
   `initHotkey()`, and removes `#preloading`.
 - `src/lib/Others/NodeServerRequired.svelte`: the notice shown when the client is opened without the self-host server
@@ -57,21 +57,13 @@
 ### Bootstrap
 
 - `src/ts/bootstrap.ts`:
-  - `loadData`: the [Boot](#boot) sequence. It reads through `loadBootSnapshot` (`readBoot` with an IndexedDB cache and
-    a plain `readKinds` fallback); cache rules and tests belong to [boot cache](resource-sync.md#boot-cache).
-  - `installBootRecords`: installs the resource records into the settings and character records and the chat module (see
-    [boot load](resource-sync.md#boot-load)); no whole-database object is built.
-  - `applyFirstBootDefaults`: on a store's first boot (`settings.ui.didFirstSetup` unset) the UI language follows the
-    browser's when the UI has it, then the flag is set. There is no first-run wizard: the app opens on the home screen,
-    and every other setting keeps the server's default until the settings pages change it.
-  - `maintainCharacters`: the boot's maintenance; no character default.
-  - The boot's error alert (`loadData`'s catch) carries a line with the safe-boot address (`bootErrorWithSafeBootHint`,
-    [Safe boot](#safe-boot)).
-  - `registerSw`: returns `ready`, `unavailable`, or `reloading`. Registration or initialization failure lets boot
-    continue without the worker. A non-2xx `/sw/init` reloads once per tab, guarded by the
-    `risu.serviceWorker.initReload` session marker; an existing marker or unavailable session storage skips the reload,
-    and a successful init clears the marker. Failures retain the existing service-worker diagnostics; a reload also
-    records the sync event and flushes diagnostics.
+  - `loadData`: boot ordering below. It reads via `loadBootSnapshot`; cache ownership and fallback rules belong to
+    [resource sync](resource-sync.md#boot-cache).
+  - `installBootRecords`: installs resource records directly into their owners, not a whole-database object
+    ([boot load](resource-sync.md#boot-load)). `applyFirstBootDefaults` chooses a supported browser UI language only on
+    first boot; there is no setup wizard or character default.
+  - `registerSw`: `ready` enables the worker, `unavailable` continues with object URLs, and a non-2xx `/sw/init` reloads
+    at most once per tab using a session marker; `reloading` returns from boot. Failures keep their diagnostics.
 - `src/ts/safeBoot.ts`: safe boot, plugins or custom CSS and GUI HTML off for this page load ([Safe boot](#safe-boot)).
   - `createSafeBoot(deps)` is the controller with its effects injected (the query, `localStorage`, the clock, the timer,
     `SafeModeStore`, the notice); the module's own instance does nothing until `beginSafeBoot()`.
@@ -140,55 +132,19 @@
 
 ### Boot
 
-1. `index.html` provides `#app` and a `#preloading` overlay, then loads `/src/main.ts`, which stops at the notice unless
-   `__NODE__` was injected, and otherwise loads `boot.ts`.
-2. `boot.ts:boot` starts the diagnostics collector, then `startApp.ts:startApp` mounts `App` before the DB is loaded.
-   `App` shows the loading branch while `$loadedStore` is false.
-3. `bootstrap.ts:loadData` first calls `beginSafeBoot()` (the `?safe` query, before anything navigates;
-   [Safe boot](#safe-boot)), then reads through `loadBootSnapshot`: `readBoot` claims the IndexedDB boot cache, with
-   `readKinds` as fallback. See [cache behavior and fallback rules](resource-sync.md#boot-cache). A failed server
-   snapshot read alerts and stops boot; there is no local snapshot fallback.
-   - `seedResources`/`seedChats`/`seedInlays` capture the returned snapshot before installation, and
-     `seedPluginPermissions` puts the boot answer's `pluginPermissions` record (its grants and revision; empty at no
-     revision when absent) into the permission store, so the boot makes no second permissions read.
-   - Then `loadSelection`, `installBootRecords`, `applyFirstBootDefaults`, awaited `journalRecovery.ts:recoverJournal`,
-     and `registerSw` run.
-   - Recovery starts the page journal, adopts orphaned rows, purges expired rows, and classifies this tab's record,
-     chat, and order intent against the server snapshot. It installs safe intent through local writers (characters
-     before their chats and chat orders) and reconciles selection and language before maintenance and chat
-     initialization.
-   - Recovery turns ambiguous current-epoch work into recovery drafts with Apply when supported; other-epoch drafts
-     offer Export and Discard only.
-   - Recovery's 5 s deadline covers recovery and hand-off; failure records `sync` `journalFailed` (`timeout` or
-     `readFailed`), disables the journal for this page, fences late installation, and closes it with at most a further 3
-     s drain, then boot continues. The server snapshot remains the save baseline and boot-cache input.
-   - Only a `ready` worker enables `setUsingSw`; `unavailable` continues boot with object URLs for assets. On
-     `reloading`, boot returns immediately with the loading screen up, preserving import hashes until navigation.
-4. Common tail of `loadData`:
-   1. `maintainCharacters` (the trash pruning through `removeCharacters`, then `checkCharOrderAtBoot` against the
-      complete inventory to drop dangling order ids, before saving and the event feed start), and `initializeChats`.
-   2. `markSafeBootContentStage()` (user content runs from here on: the attempt is counted, and a safe boot shows its
-      notice), then presentation setup: `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`,
-      `updateHeightMode`, `updateErrorHandling`, `updateGuisize`.
-   3. `startResourceSync()` (exactly once; starts the save adapter) and `watchRemoteRecords`: it drops the inlay caches
-      whenever the adapter brought another tab's records in (`onRemoteRecordApplied` → `invalidateInlayCaches`), and
-      after another writer's `characterOrder` it queues the add-only
-      [order repair](persistence.md#character-order-repair) (`queueRemoteCharOrderRepair`).
-      - Then `characterURLImport` (not awaited): after the start, so a link's or share's module import waits for its
-        save's acknowledgement (`addImportedModule`, [characters](characters-modules.md)); before the router, which
-        writes URLs without a query or hash.
-   4. `importBrowserLocalData` (moves old browser-only data to the server; its legacy permission migration reads the
-      grants again after its merge), install remote-record owners, start the event feed (the first `hello`'s reconcile
-      reads the grants again when another writer changed them after the boot read), then `loadPluginsForBoot` (nothing
-      while safe boot turned plugins off).
-      - Plugins load after normalization and ID assignment. A rejected plugin load is logged and fails the safe-boot
-        attempt; the boot goes on.
-   5. `loadedStore.set(true)`, `startSafeBootSettleWindow` (with the startup promises captured inside this boot's
-      serialized plugin load), and `startRouter()`: the URL picks the screen, so a reload keeps it, the selected
-      character included ([URL routes](#url-routes)).
-   6. Push notifications, chat visibility/status tracking, resuming this tab's server jobs, DOM observers,
-      `registerModelDynamic`, `moduleUpdate`, and `cleanLegacyAccountData`. There is no boot-time asset cleanup:
-      orphaned `assets/*` files (including inlay blobs) are never purged automatically.
+1. `index.html` loads `main.ts`; without the injected `__NODE__` flag it mounts only the server-required notice.
+   Otherwise `boot()` starts diagnostics and `startApp()` mounts `App` before data loads, leaving the loading branch up.
+2. `loadData()` reads `?safe` before navigation, reads the server snapshot, then installs selection and records, applies
+   first-boot defaults, awaits [draft recovery](draft-recovery.md#boot-recovery), and registers the service worker. A
+   failed snapshot read alerts and stops boot; there is no local snapshot fallback. Snapshot cache rules are in
+   [resource sync](resource-sync.md#boot-cache).
+3. Boot maintenance and chat initialization run before the safe-boot content stage and presentation setup. Then the save
+   adapter and remote-record watchers start, followed by URL/share imports, legacy-data migration, the event feed, and
+   plugin loading. The ordering matters: imports can await save acknowledgements and consume link query/hash data before
+   the router canonicalizes the URL.
+4. `loadedStore` is set only after records, maintenance, and theme setup. The safe-boot settle window and router start
+   next; notifications, job resume, observers, and remaining startup hooks follow. `startResourceSync()` and
+   `startRouter()` each run once.
 
 ### Safe boot
 
@@ -323,59 +279,24 @@ Escape's place among the other layers is in [Escape order](#escape-order).
 
 ## State
 
-All of these live in `src/ts/stores.svelte.ts`.
+`src/ts/stores.svelte.ts` exports most global UI stores; some are defined in `screenVisibility.ts`, and navigation
+selection lives in `src/ts/storage/selection.svelte.ts`.
 
-- `LoadingStatusState`.
-- Navigation:
-  - The selected character is not a store here: it is `selection.characterId` (`storage/selection.svelte.ts`: the
-    selected `chaId` per tab, never stored, `null` at home), set with `selectCharacter(chaId)` and read as
-    `selectedCharacter()`; `selectedIndex()` is its index in the list (a removed selected character selects home).
-  - Whether its chat is open: `selection.chatOpen` (per tab, never stored), set with `setChatOpen`. Selecting another
-    character (every entry point: the sidebar, the grid, the home cards, the hotkeys, imports) closes it, so a character
-    starts on its closed-chat screen.
-  - `changeChatTo` (the closed-chat button, the chat lists, a new chat, a JSONL chat import) opens it, `openPinnedChat`
-    opens a pinned chat across characters, and so does a bookmark jump; a JSON or HTML chat import only adds to the
-    list. The chat module's `selectChat` only selects.
-  - Auto Mode stops at the end of its current send when the chat closes. The selected chat is still selected and loaded
-    while closed, so readers of `selectedChat()` are unaffected; the playground chat ignores the flag.
-  - `settingsOpen`, `SettingsMenuIndex` (not reset on close; the router maps it to `/settings/:page`). `settingsOpen`
-    and `gridOpenStore` are defined in `src/ts/screenVisibility.ts` and re-exported here, so `chatStatus.svelte.ts`
-    reads them without importing this module. `src/ts/pageVisibility.svelte.ts` mirrors `document.visibilityState` into
-    a rune (`isPageVisible`) and counts visible-returns and `online` events (`pageRecoveryVersion`).
-  - `gridOpenStore`: the character grid (`GridChars`) in place of the sidebar and chat screen, opened by the sidebar and
-    the home screen, `/characters`.
-  - `sideBarStore`, `DynamicGUI`.
-  - `PlaygroundStore`, `OpenRealmStore`.
-  - `CharConfigSubMenu`, `botMakerMode`.
-- Reload signals:
-  - `ReloadGUIPointer`: its subscriber clears `ReloadChatPointer` and calls `resetTransformEffects` (the script
-    transform's applied emotions and its result cache's generation, `cbs-rendering.md`).
-  - `ReloadChatPointer`.
-- The message search panel's open state and scope (`messageSearchPanel`, `openMessageSearch`) and the pending jump to a
-  message live in `src/ts/messageSearch.svelte.ts`, not here ([UI](ui-theming.md) `MessageSearch.svelte`).
-  - A jump is dropped when another character is selected (`onCharacterSelectionChanged`), when the selected chat is
-    another one at any flush (so coming back never runs it again) or when its chat closes.
-  - Selecting the same chat again keeps a jump: closing the catalog over that chat makes the router re-apply its URL
-    with `selectChat`, which bumps `chatSelectionVersion` without a move. A move away and back inside one flush is not
-    seen.
-- The Checkpoints dialog and its busy state live in `src/ts/checkpoints/chatCheckpoints.svelte.ts`, not here; see
-  [UI](ui-theming.md).
-- Overlays: `alertStore`, `terminalNotice` (`TerminalNotice.svelte`, a modal dialog above every other overlay),
-  `popupStore`, `popUpEditorStore`, `irisStore`, `bookmarkListOpen`, `hypaV3ModalOpen`, `hypaV3ProgressStore`, the
-  picker lists `openPresetList`/`openModelPresetList`/`openPersonaList` (`PickerListState`: `true` for what the screen
-  shows, or `{ chatRef }` for one chat), and `chatBindingDialog` (the chat whose binding dialog is open, or null).
-  - `bookmarkListOpen` and `hypaV3ModalOpen` (with `settingsOpen` and `gridOpenStore`) are defined in
-    `src/ts/screenVisibility.ts`, and `popUpEditorStore` with its session helpers in
-    `src/ts/popupEditorSession.svelte.ts`, and re-exported here: `chatStatus.svelte.ts` reads them to tell whether the
-    transcript is shown without importing this module.
-- Plugin extension arrays (runes): `additionalSettingsMenu`, `additionalFloatingActionButtons`,
-  `additionalHamburgerMenu`, `additionalChatMenu`, `chatPanelStore`, `bodyIntercepterStore`. Types are `MenuDef` and
-  `ChatPanelDef`.
-- Misc: `CustomCSSStore` (its subscriber injects CSS with `innerHTML`), `SafeModeStore` (custom CSS and GUI HTML off:
-  the `toggleCSS` hotkey, or a safe boot's `css` category), `CharEmotion`, `ScrollToMessageStore`,
-  `ShowLatestMessageStore` (set by `openRoute` for a notification's chat; the chat screen consumes it), `hotReloading`,
-  `disableHighlight`.
-- Root `$effect`: reruns `moduleUpdate` when module, chat, or background dependencies change.
+- Navigation lives in `src/ts/storage/selection.svelte.ts`, not in these stores: `selection.characterId` is per-tab and
+  `null` means home; `selection.chatOpen` controls whether the selected character's chat is open. Read character
+  identity with `selectedCharacter()`/`selectCharacter()`, never a retained list index ([invariant](#invariants)).
+- `settingsOpen` and `gridOpenStore` are defined in `screenVisibility.ts`; `SettingsMenuIndex` persists across closing
+  settings and maps to `/settings/:page`. `PlaygroundStore` is re-exported from selection so chat status can avoid
+  importing this module's effects.
+- Other screen state includes `sideBarStore`, `DynamicGUI`, `OpenRealmStore`, and `CharConfigSubMenu`. Reload signals
+  are `ReloadGUIPointer` (also resets script transform effects) and `ReloadChatPointer`. `LoadingStatusState` drives the
+  loading branch; `botMakerMode` controls bot-maker UI.
+- Overlay stores include alerts/notices, popups, picker lists, bookmarks, HypaV3, and chat binding. Their mount and key
+  order belongs to [UI](ui-theming.md); checkpoint state belongs to [chat store](chat-store.md#chat-checkpoints).
+- Plugin extension stores are `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`,
+  `additionalChatMenu`, `chatPanelStore`, and `bodyIntercepterStore`.
+- `CustomCSSStore` injects CSS; `SafeModeStore` disables custom CSS and custom GUI HTML. The root effect reruns
+  `moduleUpdate` when module, chat, or background dependencies change.
 
 ## Coupling
 

@@ -4,19 +4,22 @@ Agent map for the RisuAI metatron fork: a Svelte 5 + TypeScript client served by
 installable as a PWA. The client requires that server; standalone static hosting, Tauri, and Capacitor are not
 supported.
 
-Paths and identifiers are lookup anchors; verify current code before changing it. Test results belong to the current
-run, not this map.
+Use this index to find the owning guide. Guides retain entrypoints, contracts, coupling, and hazards; current source and
+configuration remain authoritative. Paths and identifiers are lookup anchors, and test results belong to the current
+run.
 
 ## Agent Read Protocol
 
 1. Read **Repository-Wide Invariants** below.
 2. Choose one owner in **Choose By Task**, or use **Path Ownership** for a supplied path.
-3. List that guide's headings (`rg -n '^##' <guide>`), read `Scope` and `Invariants`, then only the subsection the task
-   names.
+3. List that guide's headings (`rg -n '^##' <guide>`), read `Scope` and `Invariants`, then the relevant subsection. For
+   an add/change task, check `Recipes` for the edit path and `Tests` for focused verification.
 4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
 5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
 6. Run V1's gates and the affected guide's focused checks.
-7. Update the owning guide when moving a named file or changing a documented contract.
+7. Update the owning guide when moving a named file or changing a documented contract. For guide edits, run targeted
+   Prettier and `pnpm check:docs`; if the slow-test table changes, also run `pnpm check:tests`. The documentation check
+   validates Markdown links, not source paths or identifiers.
 
 ## Repository-Wide Invariants
 
@@ -102,15 +105,18 @@ run, not this map.
 - P1. Only `src/main.ts` gates on `isNodeServer` (`globalThis.__NODE__`, injected by Hono or Vite). It imports `boot.ts`
   only with the server present; otherwise it mounts `NodeServerRequired`. Code past that gate assumes the server exists.
   Do not add browser-only storage/network branches. `isMobile` is user-agent based.
-- P2. Generation and provider requests run on the server; plugin providers and browser WebLLM are explicit exceptions.
-  The tab never reads LLM credential values (`llmSecrets` is write-only). Credentialed auxiliary operations use
-  `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy, local-network policy, and logs. See
-  [global-api](docs/structure/global-api.md).
+- P2. LLM generation and provider requests run on the server; plugin providers and browser WebLLM are explicit
+  exceptions. The tab never reads LLM credential values (`llmSecrets` is write-only). Credentialed LLM auxiliary
+  operations use `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy, local-network policy,
+  and logs. See [global-api](docs/structure/global-api.md).
+  - TTS and image providers have separate client/server routing and credential paths; see
+    [media-aux](docs/structure/media-aux.md). P2's LLM rule does not describe every media request.
 
 ### Security
 
-- S1. Untrusted user/model/card/module/plugin HTML passes through `ParseMarkdown` and `trimMarkdown` (DOMPurify) before
-  `{@html}`. Keep CSS scoped to `.chattext` and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML.
+- S1. Pass untrusted user/model/card/module/plugin HTML through `ParseMarkdown` and `trimMarkdown` (DOMPurify) before
+  `{@html}`. Keep CSS scoped to `.chattext` and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML. The
+  existing unsanitized Realm sink is tracked in [backup-sync-hub Issues](docs/structure/backup-sync-hub.md#issues).
 - S2. Server Lua network/LLM calls and low-level trigger effects require the relevant character/module/trigger
   `lowLevelAccess` gates. Do not widen them.
 
@@ -182,10 +188,10 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `shared/taskRateLimiter.ts`, `shared/{memory,hypaV3Presets}.ts`,
   `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`.
-- **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`, `shared/llm.ts`,
-  `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`, `server/src/prompt/tokens.ts`,
-  `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`, `src/ts/{tokenizer,tokenCountField}.ts`,
-  `shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`,
+- **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
+  `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
+  `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,
+  `src/ts/{tokenizer,tokenCountField}.ts`, `shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`,
   `src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte`,
   `src/lib/Setting/Pages/{Advanced/CustomModelsSettings,ApiKeysSettings}.svelte`,
   `src/lib/UI/GUI/CredentialSelect.svelte`.
@@ -217,14 +223,15 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `src/lib/UI/3DLoader.svelte`, `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`,
   `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`, remaining `src/lib/Playground/` tools.
   `src/lib/Playground/PlaygroundMenu.svelte` belongs to **ui-theming**.
-- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`, `shared/lore/`, remaining
-  `shared/prompt/` and `src/ts/process/`.
+- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/{messageSearch,contextReport}.ts`, `shared/lore/`,
+  remaining `shared/prompt/` and `src/ts/process/`.
 - **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
   `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`,
   `src/lib/Others/MonacoEditor.svelte`, `src/etc/airisu.cbs`, `src/etc/docs/`.
 - **backup-sync-hub**: `src/ts/drive/`, `src/ts/{realmBlocking,realmTerms}.ts`, `src/ts/storage/realmImportClient.ts`,
   `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `server/src/data/upstream/` (its
-  workers and staging: **server-resources**), `shared/{upstreamBackup,upstreamExportReport}.ts`.
+  workers and staging: **server-resources**), `shared/{upstreamBackup,upstreamExportReport}.ts`; Realm APIs such as
+  `getRisuHub` and `downloadRisuHub` in `src/ts/characterCards.ts`.
 - **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
   `src/ts/{alert,alertQueue}.ts`, `shared/{assetBatch,localNetwork,notifications}.ts`,
   `src/ts/storage/{assetClient,assetQueue}.ts`, remaining `src/ts/network/`,
@@ -235,7 +242,7 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `src/lib/Others/NodeServerRequired.svelte`,
   `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,ime,defaulthotkeys,observer.svelte,popupEditorSession.svelte,mutex}.ts`,
   `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
-- **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`.
+- **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`, `shared/greetings.ts`.
 - **server-resources**:
   `server/src/data/{resourceStore,chatStore,chats,kinds,snapshots,archive,checkpointStore,checkpointService}.ts`,
   `server/src/data/{databaseProjection,recordPatchText}.ts`, `server/src/data/{normalize,restore}/`,
@@ -244,7 +251,7 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `server/src/routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`.
 - **server-generation**: `server/src/jobs/`, `server/src/data/{changeFeed,generationReceipts}.ts`,
   `server/src/routes/{events,generations,transform,translate,memoryTasks,tokens}.ts`, remaining `server/src/prompt/`.
-- **self-host-server**: remaining `server/`, `Dockerfile`, `server.sh`, `server.bat`.
+- **self-host-server**: remaining `server/`, `shared/assetMime.ts`, `Dockerfile`, `server.sh`, `server.bat`.
 - **test-harness**: `vitest.*`, `playwright.config.ts`, `e2e/`, `util/playwright/`, `util/agentTest.mjs`,
   `util/agentTestReporter.ts`, `util/agentTestResults.mjs`, `util/agentE2e.mjs`, `util/requireHuman.mjs`,
   `util/overloadTest.mjs`, `util/testInventory.mjs`.
@@ -277,6 +284,9 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
 - Focused guides use `Scope`, `Files`, `Flows`, `State`, `Coupling`, `Invariants`, `Recipes`, `Tests`, `Known Hazards`,
   in that order. `###` headings are free within that order: a `##` section over 8,000 bytes is divided by them, each a
   topic an agent would look up, and a topic label is a heading, not a paragraph ending in a colon.
+- `Scope` routes the task; `Files` gives paths and lookup identifiers; `Flows` explains ordering; `State` names the
+  authoritative records and caches. Describe a contract once and link to it from other sections or guides. Preserve
+  heading anchors when moving a topic, or update all referring links.
 - Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
   (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
   for every guide and this file: `pnpm check:docs` fails on any of them, and
@@ -287,8 +297,8 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
 - A measurement (anything with a date, a browser or Node version, a median, or a byte or millisecond count tied to a
   run) lives in `docs/audit/<topic>-<date>.md`. The guide keeps one sentence with the conclusion that changes how to
   edit the code, and a link.
-- A plan's docs slice deletes as much as it adds: when a change makes a `Files` or `Flows` bullet describe what the code
-  now says plainly, the bullet goes.
+- Remove inventories and step-by-step paraphrases the source already makes clear. Keep the entrypoint and the
+  non-obvious constraint, ownership boundary, or failure behavior an agent needs before editing.
 - Keep only cross-cutting rules in this file. Put subsystem contracts and focused test anchors in their owner; link
   across domains instead of copying inventories.
 - `Known Hazards` records what can still catch someone working in the subsystem, under up to three subordinate headings,

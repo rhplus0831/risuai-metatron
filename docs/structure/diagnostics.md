@@ -3,7 +3,7 @@
 ## Scope
 
 Owns durable LLM request history, checked job failures, content-free server/browser diagnostics, combined reports, and
-user-selected support copies. The completed design is in the [plan archive](../archived-plan/README.md).
+user-selected support copies.
 
 Paths: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`, `server/src/data/requestHistory.ts`,
 `server/src/diagnostics/`, `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
@@ -104,8 +104,11 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
   - Its fetch wrapper dispatches the original first, once, preserving response/rejection and unhandled rejection
     behavior; only same-origin API/worker/proxy failures become checked route-template events. Runtime frames are
     origin/path checked. Plugin iframes are another realm and are not covered.
+- `bootCache` from `storage/bootCache.ts` reports `fallback`, `writeFailed`, and `cleared`, with checked reasons. The
+  cache owner is [resource-sync](resource-sync.md).
 - Hooks in `generationJobs.ts`, `serverCommands.ts`, `eventFeed.ts`, `resourceSync.svelte.ts`, and `bootstrap.ts` report
   job attachment/retry/loss, feed state, sync conflicts/reloads, and service-worker setup. They contain no content.
+  Phase and field allowlists live in `shared/diagnostics.ts`; change them with the projection and focused tests.
   - `jobLink` phases: `attach`, `detach`, `attachFailed`, `reattach`, `resume`; `lost` (the server stayed unreachable),
     `gone` (the server no longer knows the job), `kept` (the end came from the server's kept outcome of a collected
     job), and `recovered` (the chat read after a lost or gone follow took); `stale` (no frame for 45 s while visible),
@@ -193,9 +196,8 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
 - `state.json` is replaced atomically: checked version and build id (`app.build`, from `server/src/buildInfo.ts`
   `readServerBuildInfo`)/runtime, uptime, history settings/stats, journal bytes/failures/dropped, worker counters, live
   jobs, and last 20 non-abort failures. Writes occur at creation, every 10 minutes, on fatal fault, and last at
-  disposal, after admitted work drains and the queues settle. An error queues one within 5 s, and the promise is that
-  delay plus the publication's completion: 5.10 s from the event to the file at a 100 ms fsync
-  (`byte-budgets-probe.mjs`, `statePublication`).
+  disposal, after admitted work drains and the queues settle. The first error since the last state write schedules
+  publication after up to 5 s; later errors do not postpone it. `writeState()` resolves after publication completes.
 - `reports/<UTC stamp>-<8 hex>.txt`: newest 50 matching regular files retained; the new save survives a prune failure.
 - `shared/<UTC stamp>-job-<id>.json` or `-request-<id>.json`: explicit request-content snapshots, bounded at 32 MiB of
   stored bytes; leftover share temp files are removed at creation. `shared.files` is null when unreadable.
@@ -251,39 +253,22 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
 
 ## Tests
 
-- `server/src/tests/requestHistory.test.ts`: real store lifecycle, limits/pruning, truncation, content-off rows,
-  interrupted recovery, cursors, and inert schemas.
-- `server/src/tests/requestHistoryRoutes.test.ts`: authenticated filters/details, settings projection, deletion,
-  unavailable stores, and shutdown admission.
-- `server/src/tests/requestShare.test.ts`: stored-secret reads, redaction/cut tails, job/standalone snapshots,
-  replacement/withdraw ordering, partial failures, expired-row shares, byte caps, and folder boundary checks.
-- `server/src/tests/{providerCode,logEvent,requestCapture}.test.ts`: checked provider codes/failure fields, message-free
-  events, capture/stream completion. Runner/job suites exercise stage propagation; domain owners list them.
-- `shared/tests/{diagnostics,diagnosticsReport}.test.ts` and `server/src/tests/diagnostics.test.ts`: projection, journal
-  retention/state/report/share files, unsafe paths, canonical reports, and admission. The report-retention text
-  comparison stubs `process.uptime()` so its server state is deterministic.
-- `server/src/tests/push.test.ts` covers the server's `push` events. `src/ts/sw.share.test.ts` covers the worker's
-  records ([build-test](build-test-platforms.md)). `server/src/tests/orderedWriter.test.ts` covers the writer's order,
-  cap, and fairness.
-- `server/src/tests/diagnosticsCrash.test.ts` covers fatal faults in fresh Node processes and is slow; select it through
+- Server Vitest:
+  `pnpm --silent test:agent shared/tests/diagnostics{,Report}.test.ts server/src/tests/{requestHistory,requestHistoryRoutes,requestShare,diagnostics,logEvent,orderedWriter,push}.test.ts`.
+- Browser Vitest:
+  `pnpm --silent test:agent src/ts/diagnostics src/ts/network/{pushNotifications,generationJobs}.test.ts src/ts/process/serverCommands.test.ts src/ts/storage/tests/resourceSyncDiagnostics.test.ts`.
+- UI Vitest:
+  `pnpm --silent test:agent src/lib/Setting/Pages/Advanced/DiagnosticsPanel.test.ts src/lib/Others/RequestLogs/ServerRequestHistory.test.ts`.
+- Server fixtures: request history uses real SQLite; journal tests use temporary directories and injected
+  filesystem/writer behavior to control I/O failures and ordering.
+- Browser fixtures: worker reads use fake IndexedDB; `src/ts/diagnostics/tests/collectorMock.ts` is the typed collector
+  double. UI panels mount with mocked report/history clients. `src/ts/sw.share.test.ts` covers service-worker record
+  writes ([build-test](build-test-platforms.md)).
+- Slow: `server/src/tests/diagnosticsCrash.test.ts` starts fresh Node processes; select it through
   [test-harness](test-harness.md).
-- `src/ts/diagnostics/{collector,report,workerRecords}.test.ts`: ring/mirror/fetch-wrapper behavior, checked stacks,
-  server-unavailable reports, the worker-record read over `fake-indexeddb`, bounded reads/saves, ambiguous timeout.
-- `src/ts/network/pushNotifications.test.ts` covers `dismissedByPage`; `src/ts/process/serverCommands.test.ts` and
-  `src/ts/storage/tests/resourceSyncDiagnostics.test.ts` the `notice` events.
-- `src/ts/diagnostics/tests/collectorMock.ts` `createCollectorMock(overrides)`: every export of `collector.ts` as a
-  `vi.fn()` that records nothing, with defaults that `satisfies` the module's type, so a new or reshaped export fails
-  `pnpm check`. Every test that mocks the collector loads it inside its hoisted `vi.mock` factory and passes its own
-  handles as overrides (STRUCTURE V7).
-- `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.test.ts` and
-  `src/lib/Others/RequestLogs/ServerRequestHistory.test.ts`: mounted report controls, displayed-report actions, support
-  share/update/withdraw and retry state.
-- `src/ts/network/generationJobs.test.ts`: checked job-link events; `src/ts/diagnostics/jobDebugInfo.test.ts`: copied
-  metadata excludes the message.
-
-Manual follow-ups tracked in the [archive](../archived-plan/README.md): the full viewer/alert flow, production
-Docker+sftp isolation, pulling and withdrawing a shared job, and saving a phone browser report. The automated tests
-above do not cover these.
+- E2E: none.
+- Not tested: the full viewer/alert flow, production Docker+sftp isolation, pulling and withdrawing a shared job, and
+  saving a phone browser report. These manual checks are tracked in the [archive](../archived-plan/README.md).
 
 ## Known Hazards
 

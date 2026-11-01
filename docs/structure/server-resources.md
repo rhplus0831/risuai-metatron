@@ -387,8 +387,7 @@ snapshot with any of them has them checked and restored (`walkCheckpointSnapshot
 - The pass writes `normalizationStamp` in that transaction ([Gotchas](#gotchas) has the skip). An [install](#install)
   runs no pass.
 - A version-1 or version-2 file (settings in a `root` record) is refused at startup with a message naming it, and a
-  snapshot or archive of another version is refused on restore; there is no migration (formats of metatron's
-  implementation phases, `persistence.md` compatibility rule).
+  snapshot or archive of another version is refused on restore; this server does not migrate those database versions.
 
 ### Store connection
 
@@ -454,8 +453,8 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 The in-process harness and the slow table are in the [shell's Tests](self-host-server.md#tests).
 
 - `restore.runner` replaces what stages a restore, and `upstreamImport.runner` runs an upstream prepare in process.
-- `backups.test.ts` waits for an abandoned export's backup to enter the exclusive queue (`snapshots.exclusive`) before
-  aborting; directory visibility alone precedes that admission.
+- In `backups.test.ts`, export admission is `snapshots.exclusive`; staged-directory visibility alone does not prove it
+  has entered the queue.
 - Store, chats, and checkpoints:
   `pnpm --silent test:agent server/src/tests/{resourceStore,chatStore,chatCheckpoints,chatCheckpointRoutes,sqliteSynchronous}.test.ts`.
 - Routes:
@@ -516,21 +515,14 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 ### Gotchas
 
-- Backup, module, and CharX uploads share Node's four-hour whole-request timeout.
+- Large backup, module, CharX, and upstream backup uploads share Node's four-hour whole-request timeout.
 - Resource depth validation runs on parsed JSON after serialization; the HTTP body cap bounds uploads, but in-process
   callers can spend more work before rejection.
-- A run of the normalization pass normalizes every record, so its startup cost grows with the data, and an open skips
-  the record scan when `meta.normalizationStamp` equals this server's stamp: the JSON of a normalization identity's
-  commit, the hand-bumped `NORMALIZATION_VERSION` (`data/resourceStore.ts`), and every registered kind's name and
-  `schemaVersion`.
-- The identity is `resolveNormalizationIdentity` (`buildInfo.ts`): the checkout's commit (`RISU_BUILD_COMMIT` wins, as
-  it does for the build id, so an operator who sets it at run time vouches for the code), or, without one, the
-  `dist/build-info.json` commit, which in a built image is the server's commit too.
-- A skip still deletes the retired kinds, creates each missing `materialize` singleton (an existence query per kind),
-  and runs `openChatSchema`.
-- The skip is disabled when the identity is unknown or dirty, and for a store with no identity, which is what
-  `createServerContext` gives an injected kind registry and the upstream import gives its build store; such a run
-  removes the stored stamp, because the records it leaves were last written by code no stamp names.
+- A matching `meta.normalizationStamp` skips the record scan: it names the running-server commit,
+  `NORMALIZATION_VERSION` (`data/resourceStore.ts`), and each registered kind's name and schema version. Its identity is
+  `resolveNormalizationIdentity` ([build info](build-test-platforms.md)), not the served client's build id. Unknown or
+  dirty identity and injected kinds disable the skip and remove the old stamp. Every open still removes retired kinds,
+  creates missing materialized singletons, and runs `openChatSchema`.
 - A record its normalizer would now refuse stops startup, with its kind and id, only on a run of the pass.
 - Normalizers are assumed to depend on code and the registry only, not on configuration or the environment. Bump
   `NORMALIZATION_VERSION` for a change to what normalization produces that git cannot see; every commit already changes

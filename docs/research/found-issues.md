@@ -273,103 +273,12 @@ About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real
 
 ## Guides
 
-### app-shell cites global-api for the collector
-
-`docs/structure/app-shell.md:23` points at `global-api.md` for `src/ts/diagnostics/collector.ts`, which `diagnostics.md` owns.
-
-**Why it matters:** the link routes a reader to a guide that does not describe the collector.
-**Suggested handling:** retarget the word; `app-shell.md` has about 1,100 bytes of room.
-
 ### Archive README cites a gone emotion table hazard
 
 `docs/archived-plan/README.md:824` says the emotion table's `bind:value` throw is a Known Hazard in its guide. `characters-modules.md` has no such entry and the table no longer uses `bind:value`.
 
 **Why it matters:** the archive sends a reader to a hazard that is gone.
 **Suggested handling:** a one-clause correction, only when the archive is touched anyway.
-
-### backup-sync-hub keeps history wording
-
-`docs/structure/backup-sync-hub.md` keeps "were removed" and "as before" in Scope, Flows and Realm items (:8, :128, :137, :164), which Guide Budgets D3 turns into a current fact or deletes. Slice 6 only split items.
-
-**Why it matters:** small read cost, and it reads as if the old shape still matters.
-**Suggested handling:** one pass when the guide is next edited.
-
-### backup-sync-hub Scope omits the upstream paths
-
-`docs/structure/backup-sync-hub.md` Scope `Paths` omit `server/src/data/upstream/` and `shared/{upstreamBackup,upstreamExportReport}.ts`, though `STRUCTURE.md` Path Ownership routes them there and the guide's `### Upstream ...` sections describe them.
-
-**Why it matters:** a reader starting from the Scope cannot tell the guide owns the `.bin` converters.
-**Suggested handling:** add the paths to Scope.
-
-### cbs-rendering Limitations name no decision
-
-`docs/structure/cbs-rendering.md` `Limitations`: the entries on Lua `getCharacterImage`/`getPersonaImage` inputs, opaque plugin handlers, `{{random}}` and clock rows, resize, permanent display failures, and the screenshot during a provisional display name no decision. The originals held none either.
-
-**Why it matters:** Doc Maintenance makes `Issues` the default when no decision is recorded.
-**Suggested handling:** record a decision per entry or move it to `Issues`. The guide has 17 bytes of room, so a new clause needs a cut in the same edit.
-
-### cbs-rendering cites a bare transport.ts
-
-`docs/structure/cbs-rendering.md:73` cites `transport.ts` for the server `cbs` callback failing its request. Two files have that name; the one meant is `src/ts/process/request/transport.ts`.
-
-**Why it matters:** a reader or a rename check can land on the wrong file.
-**Suggested handling:** use the path, paying with a cut: it costs about 22 bytes against the guide's 17 of room.
-
-### characterData is called reserved for the save loop
-
-`docs/structure/characters-modules.md:386` says `characterData()` is reserved for the save loop, but `src/ts/storage/selection.svelte.ts:186` and `src/ts/storage/chatStore.svelte.ts` (:922, :3997) read it too.
-
-**Why it matters:** the rule is stated more strongly than the code keeps it, so an editor cannot tell which uses are legitimate.
-**Suggested handling:** read the call sites, then state the real rule in one line.
-
-### Agent Read Protocol does not name Recipes
-
-`STRUCTURE.md` Agent Read Protocol step 3 names `Scope` and `Invariants` but not `Recipes`, where "add a new X" answers live; a Guide Budgets slice 5c reader missed it from the heading list. Slice 6 left the protocol alone and fixed the `global-api` routing row.
-
-**Why it matters:** routing words decide what an agent reads first.
-**Suggested handling:** consider naming `Recipes` in step 3.
-
-### diagnostics State holds a run-tied measurement
-
-`docs/structure/diagnostics.md:197`, the `state.json` bullet, ends with "5.10 s from the event to the file at a 100 ms fsync (`byte-budgets-probe.mjs`, `statePublication`)". Doc Maintenance puts such numbers in `docs/audit/`.
-
-**Why it matters:** the number goes stale silently, and `check:docs` cannot catch it.
-**Suggested handling:** keep "an error queues one within 5 s" and move the number, or drop it if an audit file holds it.
-
-### plugins-mcp links the model-root rules to the wider heading
-
-`docs/structure/plugins-mcp.md:221` links the compatibility model-root write rules to `llm-requests.md#invariants`; the exact heading is `#compatibility-model-root-writes`. Found by Guide Budgets slice 5b, kept because `llm-requests.md` belonged to another slice.
-
-**Why it matters:** the anchor resolves but lands a screen away from the rules.
-**Suggested handling:** change the anchor, paying for the bytes: the guide has 93 of room.
-
-### scripts-triggers Not here disagrees with Path Ownership
-
-`docs/structure/scripts-triggers.md:18` sends `server/src/lua/*` and `server/src/scripts/*` to `server-generation.md`, while `STRUCTURE.md` Path Ownership keeps them under scripts-triggers, which also holds the Lua invariants and the "Add a Lua API" recipe.
-
-**Why it matters:** a reader following Not here lands on a guide with one line about those directories.
-**Suggested handling:** keep `server/src/prompt/{scripts,triggers,commands}.ts` with server-generation and say the Lua and script worker semantics are here.
-
-### scripts-triggers carries a line count
-
-`docs/structure/scripts-triggers.md:58` says `TriggerV2List.svelte` is "about 4100 lines"; it has 4,392, and Doc Maintenance rules out such counts.
-
-**Why it matters:** a small wrong fact in a guide.
-**Suggested handling:** drop the clause.
-
-### server-generation names no prompt job
-
-`docs/structure/chat-pipeline.md:20` points at `server-generation.md` for `runPromptJob` and `assemblePrompt`. Neither name appears in `server-generation.md` or `self-host-server.md`. `memory.md` documents the memory step of `assemblePrompt`.
-
-**Why it matters:** Prompt assembly's owner guide is a dead end for an agent routed by Scope, and `Choose By Task` has no other row for it.
-**Suggested handling:** give `server-generation.md` an assembly section, paying for the bytes, or retarget the pointer.
-
-### ui-theming says the asset editors follow the keyed-row rule
-
-`docs/structure/ui-theming.md:408` says the lorebook and character asset editors follow the keyed-row rule, but `CharConfig.svelte`'s emotion and additional-asset tables are unkeyed (`{#each emotionIndices as index}`, :712; `assetIndices`, :937). Guide Budgets slice 5b corrected the same claim in `characters-modules.md`.
-
-**Why it matters:** an editor could trust a guarantee those tables do not have.
-**Suggested handling:** fix the sentence.
 
 ## Test timing
 

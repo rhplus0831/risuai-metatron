@@ -79,8 +79,6 @@
     and every other provider ignores it.
   - Every success uses `deliverGeneratedImage`, which checks the signal before returning the image URI for `"inlay"` or
     updating `CharEmotion` from the store's value at write time and returning `returnSdData`.
-- `characters.ts` `makeGroupImage` skips member images that fail to load, builds the grid from those that loaded, and
-  clears its loading status after saving.
 
 ### Translator
 
@@ -351,31 +349,15 @@ The playground chat uses the special `§playground` character. `PlaygroundImageG
 
 ## Flows
 
-- TTS triggers:
-  - Manual: the `Chat.svelte` button → `sayTTS(null, msg)`.
-  - Automatic: `sendChat` when `db.ttsAutoSpeech`.
-  - Command: `command.ts` `speak`.
-- `sayTTS` steps:
-  1. Strip asterisks and optionally keep only quoted text.
-  2. Run the preprocessor hooks.
-  3. Call the provider.
-  4. `playAudio` runs the postprocessor hooks and plays. Web Speech and VITS bypass the postprocessors.
-- Image generation, emotion mode: the server job's `imggen` callback in `jobChannel.ts` → `stableDiff` →
-  `generateAIImage(..., "")` → `deliverGeneratedImage` updates the transient `CharEmotion`; the callback answers
-  `shown !== false`.
-- Image generation, inlay mode:
-  1. Callers: `inlayScreen.ts`, triggers, Lua `generateImage` (the server's `generateImage` callback, whose payload
-     carries the script's `orientation` when it gave one; the tab passes it on only when it is `landscape` or
-     `portrait`), the playground.
-  2. `generateAIImage(...,'inlay')` returns a data URI.
-  3. The caller must call `writeInlayImage` and insert `{{inlay::id}}`.
-- Display translation: on the rendered path `ChatBody.svelte:markParsing` switches on its chat's `autoTranslate` (the
-  `autoTranslate` prop from `Chat.svelte`; a change restarts the row), `autoTranslateCachedOnly`,
-  `translateBeforeHTMLFormatting`, and `legacyTranslation`, then calls `translateHTML`.
-- On the rendered path, while a row's message is streaming (`Chat.svelte` passes `streaming` from `isStreamingMessage`,
-  in every streaming mode), `markParsing` renders the original without the auto-translate decision or `translateHTML`,
-  and the translation runs once when streaming ends. On the stored path `Chat.svelte` swaps in the stored translation
-  and `ChatBody` renders it as text.
+- TTS entry points are the `Chat.svelte` button (`sayTTS(null, msg)`), `sendChat` when `db.ttsAutoSpeech`, and
+  `command.ts` `speak`. `sayTTS` preprocesses before the provider; playback postprocesses before audio decoding.
+- Emotion image generation runs from the server job's `imggen` callback through `stableDiff` and
+  `generateAIImage(..., "")`, which updates `CharEmotion`; the callback answers `shown !== false`.
+- Inlay generation callers (`inlayScreen.ts`, triggers, Lua `generateImage`, and the playground) persist the returned
+  data URI with `writeInlayImage` and insert `{{inlay::id}}`. Lua may pass `orientation`, but the tab forwards only
+  `landscape` or `portrait`.
+- `ChatBody.svelte` uses `translateHTML` on the rendered path when its chat settings allow it. Streaming rows show the
+  original until streaming ends; the stored path renders the saved translation as text.
 - Input translation: `DefaultChatScreen` through `src/ts/process/inputTranslation.svelte.ts` `createInputTranslation`
   ([chat-pipeline](chat-pipeline.md)), when `useAutoTranslateInput`.
 
@@ -434,8 +416,8 @@ The playground chat uses the special `§playground` character. `PlaygroundImageG
   503 for an expired queue wait. Other failed provider requests remain 502 with their redacted failure text.
 - Provider discriminators are literal and case-sensitive: `VOICEVOX`, `Imagen`, `openai-compat`, `comfy` vs `comfyui`.
   Saved `ttsMode: 'none'` is migrated to `''`.
-- TTS hooks apply only on paths through `playAudio`. The GPT-SoVITS gain path must still call
-  `runPostprocessorPipeline`.
+- TTS postprocessors run through `playAudio`; the GPT-SoVITS non-default-gain path calls `runPostprocessorPipeline`
+  before `playProcessedAudio`. Web Speech and VITS bypass postprocessors.
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.
 - Keep the `.risutl` format constants stable.
 - A translator preset always has 1 to 5 steps: the server normalizer (`normalizeTranslatorSteps` through
@@ -497,13 +479,11 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Media: `pnpm --silent test:agent src/ts/media`.
 - Chat row:
   `pnpm --silent test:agent src/lib/ChatScreens/Chat.test.ts src/lib/ChatScreens/PartialEditController.test.ts src/lib/SideBars/ChatTranslationPanel.test.ts`.
-- `src/ts/process/ttsPlayback.test.ts` and `src/ts/process/imageDelivery.test.ts` stand in for the network with hoisted
-  fakes of `fetch`, `globalFetch`, and the aux fetches; the TTS file also stubs `AudioContext`.
-- `server/src/tests/translate.test.ts`: the route tests use `Echo` and a temporary store; the runner tests use
-  `:memory:` and fake LLM requests and token counts.
-- Not directly tested: the mounted row's bilingual render, and the `auxFetchJson` abort path.
-- Not covered: remaining TTS provider request bodies, provider/network integration beyond those fakes, real audio
-  decoding, Stop-menu visibility, and playground flows.
+- `ttsPlayback.test.ts` and `imageDelivery.test.ts` replace network boundaries with `fetch`/`globalFetch`/aux-fetch
+  fakes; TTS also stubs `AudioContext`. Server translation uses `Echo`, a temporary store, and fake LLM requests and
+  token counts.
+- Not tested: mounted bilingual rendering, `auxFetchJson` abort, other provider request bodies/integration, real audio
+  decoding, Stop-menu visibility, and interactive playground flows.
 
 ## Known Hazards
 

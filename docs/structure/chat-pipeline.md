@@ -40,8 +40,6 @@ Bare paths are under `src/ts/process/`.
 - `localSends.ts`: the local send registry, this tab's sends, one per chat (`beginLocalSend`, `isLocalSend`). Admission
   reads the Map, not the derived `anyLocalSend`, which a subscriber may read one update late.
 - `jobStages.ts`: the latest presentation stage per followed job (`setJobStage`, `dropJobStage`, `chatStageOf`).
-- Both use `svelte/store`, no runes, and type-only imports, so hand-written mocks of `index.svelte` do not reach their
-  readers.
 - `chatStatus.svelte.ts`: per-tab generating, recovery, and unseen reply sources (State), `chatStatusKey`,
   `isChatBusy(ref)`, and the terminal hooks.
   - `isChatBusy` (a local send, a followed job, or a lock in that chat) is the busy check of `/multisend`, the DevTool
@@ -60,10 +58,6 @@ Bare paths are under `src/ts/process/`.
   `shared/prompt/templateCheck.ts`: prompt-template warnings.
 - `stringlize.ts`: serializers for other backends and stop strings. `stringlizeChatOba` is unreferenced;
   `multiChatReplacer` is empty.
-- `server/src/prompt/displayScope.ts` `createDisplayScopeLoader`: the transform's own `load`, beside generation's
-  `loadJobScope`. Raw configuration is keyed by the full non-character revision vector. Raw entries are shared
-  read-only; each request builds a fresh context projection, and each target gets its own writable overlay
-  ([CBS rendering](cbs-rendering.md)).
 
 ### Lore
 
@@ -237,24 +231,15 @@ stage.
 
 ### Replays and uncertain creates
 
-- A replay is classified before saving a job, setting its stage or holding it live. Unowned jobs are never saved or held
-  live.
-- An owned running replay is followed as this action (`outcome: "replayed"`), with `onStart` once.
-- An owned ended replay feeds its terminal into the shared follow lifecycle; a failed later read cannot turn that known
-  terminal into a lost follow.
-- Non-owned running replays refuse as busy and retain the job id in `foreignJobs`, as does a `chatBusy` refusal whose
-  owner status cannot be read.
-- Non-owned ended replays and missing status payloads reconcile the chat and expose whether that read succeeded, never
-  fabricating a successful terminal or starting success-driven loops.
-- A cancel naming an owned job follows it to its terminal; a foreign cancel reconciles its chat and remains uncertain
-  while still running.
-- After an unanswered create, a decoded answer resolves the exchange only when it fences a delayed copy of the original
-  POST: success, replay, or a `registryRefusal`, which stays true for the same frozen body.
-- Refusals the original could still pass later (both 503s, `chatBusy`, `chatBindingIncomplete`,
-  `chatLoreOverrideOrphaned`) show their usual message but keep the request uncertain. An uncertain `chatBusy` is not
-  followed, since a job of this request id would have been replayed.
-- Failures before lookup (auth, rate limit, body limit, epoch mismatch) and generic/undecodable errors also leave it
-  uncertain; the epoch notice still runs.
+- Classify a replay before saving or following it. Follow owned jobs; never attach to a foreign job. A known terminal
+  remains known if a later read fails. Foreign running jobs retain their id for the explicit chat Stop flow; other
+  foreign or malformed outcomes reconcile the chat and report whether that read succeeded.
+- After an unanswered create, keep the request uncertain until a decoded result fences a delayed copy of the POST:
+  success, replay, or a `registryRefusal` for the same frozen body. `503`, `chatBusy`, `chatBindingIncomplete`, and
+  `chatLoreOverrideOrphaned` may change on retry, so they do not fence it; pre-lookup and undecodable failures also
+  remain uncertain. An uncertain `chatBusy` is not followed, because a job with this request id would replay.
+- A cancel with an owned job id follows its terminal. A foreign cancel reconciles the chat and remains uncertain while
+  the job is running. Server receipt and replay rules: [generation](server-generation.md).
 
 ### Request id retention
 
@@ -285,14 +270,10 @@ stage.
 
 ### Reconnect and status reads
 
-`followJobToEnd` and `followOnce` (`serverCommands.ts`) state this cycle in their comments; `socketLiveness.ts` gives up
-and replaces attaches.
-
-- Only links that failed in a row spend `MAX_ATTACHES`: `closed` `resumed` and a close while the page is away (`jobLink`
-  `closedAway`) are not counted, and `closed` `received` starts the count again.
-- After every close without the terminal the follow reads the job's status. Its kept outcome (`GenerationStatus.kept`,
-  up to 24 h, across a server restart too through the job receipts) is the end. A job that was running when the server
-  stopped reads as a kept `shutdown` error.
+`followJobToEnd` and `followOnce` (`serverCommands.ts`) reconnect after socket loss and read status after a close
+without a terminal. Only consecutive failed attaches exhaust `MAX_ATTACHES`; a resumed connection or a close while the
+page is away does not count. Kept terminal receipts and shutdown outcomes are owned by
+[generation](server-generation.md#job-receipts).
 
 ### Recovery reads
 
@@ -333,36 +314,21 @@ and replaces attaches.
 - `anyLocalSend` is the tab-wide view for plugin reload deferral and translator cache-only mode; screen controls and
   suggestions follow the selected chat's own work.
 - `followedJobs` (`serverCommands.ts`): job id → chat key. `jobStages` entries leave with it at the follow's end.
-- The tab never mutates the chat in place: `src/ts/storage/chatStore.svelte.ts` holds the chats (`selectedChat()`,
-  `chatList()`), and every write goes through it (`chat-store.md`), addressed by chat and message id. Autosave does not
-  see chats.
+- `chatStore.svelte.ts` owns loaded chat records and all writes; every message write is addressed by chat and message
+  id. Autosave does not own chats. See [chat store](chat-store.md) for the mutation and read contract.
 - Chats load on demand. The chat screen renders nothing chat-dependent while the selected chat loads
   (`selectedChatLoad()`: a loading state, or the error with a retry).
-- A server job's target chat is pinned and loaded before the job is created (`runServerJob`; `followJobToEnd` for a
-  resumed or followed job, through every reconnect, sequence part, and the terminal's hydration). A send's chat stays
-  pinned until `sendChatOnServer` has read the reply's alternatives; a target that cannot be loaded runs nothing.
-- A typed command line (`processMultiCommand`), an auxiliary LLM request (`requestServer`: its chat and its parse chat,
-  until its event stream ends), `editChat`, and a group output listener's speaker (`chatOutput`: its chats, before each
-  listener) pin and load what they read.
+- Operations that await chat state pin and load their captured targets; an unavailable target runs nothing. The pin and
+  eviction rules, including send and follow lifetimes, are in [chat store](chat-store.md#pins-and-eviction).
 - The synchronous chat readers (`chatVar`, `getModules(ref)`, the CBS host, `transformClient`'s context, the MCP tool
   records) read loaded chats only; their chat is the selected one, a pinned job or request target, or a plugin context
   that awaited its load, and an unloaded chat reads as gone, never as another chat.
 - The bound persona (`checkPersonaBinded`, `capturePluginContext`) is read from the chat's list entry, so it holds while
   the chat is not loaded.
-- Streaming display: a server job's message is locked while it streams (`isMessageLocked`); `Chat.svelte` disables its
-  controls and renders it without the server transform until the lock ends.
-  - `applyServerGeneration` sets its chat's `streamingEntry(ref)` on the generation's first stream update with the
-    configured `streamingDisplayOptimizationMode`, and that generation's lock release clears only that entry
-    (`chat-store.md`).
-  - `Chats.svelte` keeps the streaming row mounted in every mode while it streams and mounts it again when it ends.
-  - The chat module writes the streamed text into the mirror at most once per frame (`chat-store.md`), so a streaming
-    row parses once per frame, not once per chunk.
-- After a job's own by-id write, `refreshChatAfterWrite` (`server/src/jobs/jobScope.ts`) adopts that write's stored
-  change ([generation](server-generation.md) "Own chat changes"), so a streaming checkpoint reads no transcript.
-  - Only while the scope held exactly the change's base revision, the group was not stale, and the stored revision is
-    still the change's when the write returns; any other case reads the chat whole.
-  - The chat object is always new, and so is its message list unless the change moved no message, so scripts holding the
-    previous copy see it unchanged.
+- A streamed reply stays locked until the server releases its generation; the mirror batches text updates once per
+  frame. See [chat store](chat-store.md#locks-and-streaming) for hydration, rendering, and edit rules.
+- `refreshChatAfterWrite` adopts an eligible server by-id write into the job scope; otherwise the server reloads the
+  chat. Its preconditions and immutable-copy contract are in [generation](server-generation.md#own-chat-changes).
 
 ## Coupling
 
@@ -475,7 +441,8 @@ In `shared/lore/activation.ts`.
 ### Issues
 
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
-  restored replies land while that job runs, like any other edit (see `refreshChat` below).
+  restored replies land while that job runs, like any other edit (see
+  [server generation's own chat changes](server-generation.md#own-chat-changes)).
 - Stop stays visible between a followed job's `done` and its socket close, when aborting the ended job does nothing.
 - A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
   lost.

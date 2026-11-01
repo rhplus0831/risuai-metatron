@@ -360,15 +360,10 @@ flag comments state enable, disable, the banner, and the flags' storage fallback
 
 ## Flows
 
-Asset sources:
-
-1. Each source call chooses direct mode with worker use enabled and a controlling worker that reported
-   `directAssets: true`.
-2. Otherwise it uses the fallback: no worker support, registration or `/sw/init` failure, an older worker or a
-   missing/false flag, the first load before the worker claims the page, or a lost controller.
-3. In direct mode, a missing key or failed signature makes the worker fetch unsigned. A 401 after its one retry or a
-   network error fails the element's load; neither switches modes or retries through `readAsset`. Worker details:
-   [build/test](build-test-platforms.md); asset route and HTTP cache behavior: [server](self-host-server.md).
+Asset sources use direct URLs only while the controlling worker reports `directAssets: true`; otherwise calls use the
+fallback in [Asset sources](#asset-sources). Direct-mode 401s and network failures do not retry through `readAsset`.
+Worker details: [build/test](build-test-platforms.md); asset route and HTTP cache behavior:
+[server](self-host-server.md).
 
 `globalFetch`:
 
@@ -416,7 +411,6 @@ Alerts:
 
 - `globalApi.svelte.ts` imports `database.svelte.ts`, `storage/resourceSync.svelte.ts`, `storage/resourceClient.ts`,
   `stores.svelte.ts`, alerts, `characterCards.ts` (`characterURLImport`), and the network helpers.
-- Its importers: nearly every process, storage, UI, and plugin module.
 - Assets go `globalApi` (`readImage`, `saveAsset`, `loadAsset`, `getFileSrc`) or `inlays.ts` → `assetClient.ts` →
   `/api/read|write`; its batch calls go to `/api/assets/write|read`, and a canonical `saveAsset` asks
   `/api/assets/missing` first.
@@ -471,30 +465,23 @@ Alerts:
 
 ## Tests
 
-- Focused:
-  `pnpm --silent test:agent src/ts/network src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/sourcemap.test.ts src/ts/util/koreanSearch.test.ts`
-  for the job client, Web Push, alerts, and the small modules;
-  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails,NativeFetch}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue}.test.ts shared/tests/assetBatch.test.ts`
-  for assets and fetch.
-- `slow`: none in these client tests. The batch record cap's `server/src/tests/assets.test.ts` case is in the
-  [test-harness](test-harness.md) `Slow-test table`.
-- `e2e`: `e2e/storedFileSrc.spec.ts`, `e2e/terminalNotice.spec.ts`, `e2e/welcomeAndChatSettings.spec.ts` (the Iris
-  notice follows the sub slot; a persisted `irisDialogue` shows after reopening), `e2e/personaBinding.spec.ts` (the real
-  `util.ts` persona accessors on a chat that is not loaded).
-- `src/ts/storage/tests/assetClientMock.ts` (`createAssetClientMock`): the shared typed asset client double. Its
-  `missingAssets` reports every name missing, so saves upload.
-- `src/ts/storage/tests/assetClient.test.ts`: the real asset client against a fake of the server's routes, reached
-  through a mocked `authFetch` that `answer.current` controls.
-- `src/ts/network/tests/generationJobsMock.ts`, `src/ts/tests/alertMock.ts`, and `src/ts/tests/globalApiMock.ts`: the
-  shared doubles of the job transport, alerts, and this facade ([test-harness](test-harness.md)).
-- `generationJobs.test.ts` declares its own `FakeSocket` and drives the follow with fake timers; `eventFeed.test.ts`
-  uses the shared one ([resource-sync](resource-sync.md)).
-- `src/ts/network/pushNotifications.test.ts`: `fakeSubscription` and `FakeNotification` stand in for the browser's push
-  and notification objects.
-- Browser checks: `util/playwright/measureFileSources.mjs`, `probeDirectAssets.mjs`, and `checkJobProtocol.mjs`
+- Network and alert Vitest:
+  `pnpm --silent test:agent src/ts/network src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/sourcemap.test.ts src/ts/util/koreanSearch.test.ts`.
+- Asset and fetch Vitest:
+  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails,NativeFetch}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue}.test.ts shared/tests/assetBatch.test.ts`.
+- Client test fakes: job-follow tests use `FakeSocket` and fake timers; push tests use
+  `fakeSubscription`/`FakeNotification`. Typed shared doubles: `src/ts/network/tests/generationJobsMock.ts`,
+  `src/ts/tests/alertMock.ts`, and `src/ts/tests/globalApiMock.ts`.
+- Asset fixture: `src/ts/storage/tests/assetClientMock.ts` (`createAssetClientMock`) reports every asset missing.
+  `src/ts/storage/tests/assetClient.test.ts` uses fake routes controlled through mocked `authFetch` and
+  `answer.current`.
+- Browser specs:
+  `pnpm --silent test:agent --e2e e2e/storedFileSrc.spec.ts e2e/terminalNotice.spec.ts e2e/welcomeAndChatSettings.spec.ts e2e/personaBinding.spec.ts`
+  ([test-harness](test-harness.md)). Probes: `util/playwright/measureFileSources.mjs`, `probeDirectAssets.mjs`, and
+  `checkJobProtocol.mjs`.
+- Slow: no client tests; the server asset batch cap in `server/src/tests/assets.test.ts` is `slow`
   ([test-harness](test-harness.md)).
-- Not tested: `globalFetch` routing beyond `fetchNative` method and body handling, the full alert protocol, and
-  `util.ts`.
+- Not tested: `globalFetch` routing beyond `fetchNative` method/body handling, the full alert protocol, and `util.ts`.
 
 ## Known Hazards
 

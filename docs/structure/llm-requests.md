@@ -81,17 +81,10 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 
 ### Credentials
 
-- `shared/llm/credentialSlots.ts` `credentialSlotOf(modelId, modelInfo)`: a model's credential slot,
-  `{ slot, accepts, defaultDescription }` or `null` (no named key). The binding itself is always the profile's
-  `credentialId`. Mancer, NovelList, Horde, Ooba/Kobold, local Ollama, plugin, WebLLM, and Echo have no slot.
-- `credentialSlotOf` precedence, by model: `xcustom:::` → `customModel` and `reverse_proxy` → `reverseProxy` (every type
-  but `vertex`; no flat default: with no named key they send none), a `keyIdentifier` model (DeepSeek, DeepInfra) →
-  `keyIdentifier` (`custom` only; default `OaiCompAPIKeys.<id>`), then by id `openrouter`, `nanogpt` (every NanoGPT
-  format), `ollama-cloud`.
-- `credentialSlotOf` precedence, then by provider: `OpenAI`, `Anthropic`, `AWS` (`bedrock` only, the composite
-  `accessKeyId:secretAccessKey:region`), `GoogleCloud`, `VertexAI` (`vertex` only), `Mistral`, `Cohere`, `NovelAI`, and
-  an as-is or keyless DeepSeek/DeepInfra OpenAI-format model (`openai`); a provider slot accepts its own type and
-  `custom`.
+- `shared/llm/credentialSlots.ts` `credentialSlotOf(modelId, modelInfo)` maps a model to its accepted named-key type, or
+  `null`. The binding is the profile's `credentialId`; the source table owns provider and model exceptions. Reverse
+  proxies and custom endpoints have no flat default. Key-identifier models use their own `OaiCompAPIKeys` entry unless a
+  `custom` credential is bound.
 - `shared/llm/credentialBinding.ts` `resolveCredentialBinding(modelId, modelInfo, profile, credentials, hasKey)`: the
   one binding decision the tab and the server share. It reads the profile's own `credentialId` (none, or no profile, is
   `default`) and answers `default`, `bound`, or `refused` with the first failing reason: `unsupportedModel` (a binding
@@ -106,10 +99,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `credentialStatusFor(profile, defaultPath)` (`model/credentials.ts`) supplies discovery key gates and a refresh
   identity containing the profile, binding path, refusal state, and that key's `secretVersion`, so switching between
   named keys or from default to bound refetches.
-- `model/{openrouter,nanogpt,ollama}.ts`: discovery/account fetches take the edited profile and pass its id to
-  `auxFetch` (Ollama cloud only). NanoGPT's personalized/public and subscription-list gates follow
-  `credentialStatusFor`; a refused binding does not fall back to a public or default account. The editor, OpenRouter
-  provider list, NanoGPT dashboard, and NanoGPT provider picker refresh on binding identity or key version changes.
+- `model/{openrouter,nanogpt,ollama}.ts`: supported discovery/account fetches take the edited profile through
+  `auxFetch`. A refused binding does not fall back to a public/default account; discovery refreshes on binding identity
+  or key-version changes.
 - `server/src/llm/credentials.ts` `resolveCredential(db, aiModel, modelInfo, profile)`: `resolveCredentialBinding` with
   the resolved profile and the plaintext keys, as `default`, `key`, `vertex` (`clientEmail`, `privateKey`,
   `projectId?`), or `refused` with an English message (`messages.ts` `errors.credential*`) naming the model and the
@@ -201,36 +193,17 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 
 ### Tab token counting
 
-- `tokenizer.ts`: on-screen counts and playground ids through the authenticated server routes; no tokenizer loads in the
-  tab.
-  - `tabTokenScope(presetScope?, mainModel?)`: captures the main model's tokenizer settings, shared with
-    `request/transport.ts`'s `context.tokenizer`; an already resolved model avoids another lookup.
-  - `tokenScopeKey(captured = tabTokenScope())` returns that scope's `tokenizerIdentityKey`; `countTokens` uses its own
-    captured scope for the cache key, including when given a preset scope.
-  - `jobTokenScope(presetScope?)` is that scope with `pluginTokenizer: "none"`, the scope a server job counts with
-    (`tokenScopeFor`); the context meter compares its key with a report's `tokenScope` and counts its estimate with it.
-  - `countTokens(text, scope?, signal?)`: `POST /api/tokens/count` with the scope captured at call time
-    (`countTokensInScope(text, captured, signal?)` takes an already captured scope and behaves the same).
-  - `countTokens` batching: signal-less calls in the same macrotask coalesce by the whole scope (`setTimeout(0)`);
-    batches split at 256 texts or 1 MiB of JSON-escaped UTF-8 text, with an oversized text sent alone. A signal owns its
-    request; an already-aborted signal sends nothing.
-  - `countTokens` cache and failures: the 1500-entry LRU caches counts by text and `tokenizerIdentityKey` only when the
-    captured caching flag is on. A `null` count refuses only that text; failed requests and malformed answers reject
-    their whole batch, without retries.
-  - `countTokens` abort: an aborted request also stops the server's work: it counts no further text of the batch and
-    aborts a Google `countTokens` call in flight unless another caller still waits on it.
-  - `tokenize`, `tokenizerChar`, and `tokenizeAccurate` use `countTokens`; `tokenizeAccurate` parses CBS synchronously
-    before queuing its count and accepts an optional signal. `ChatTokenizer` supplies `ChatTokenHost.count` with the
-    same main-model and image fields.
-  - `tokenCountInput(text)` reads the CBS-expanded text (the same expansion as `tokenizeAccurate`) and tokenizer
-    identity synchronously for delayed on-screen counts, or carries a preparation error. `LoreBookData` reads this input
-    in its effect, so a model or referenced CBS value changing recounts without a text change. Both `PromptSettings`
-    totals include `tokenScopeKey()` beside the template snapshot; their per-item CBS expansion stays inside the count.
-    A failed preparation (a CBS limit, no model preset) is a failed count: it supersedes older counts and keeps the last
-    shown number.
-  - `getChatToken`, `getCharToken`, and `process/prompt.ts` `tokenizePreset` start their eligible texts together in one
-    batch (subject to the split limits); preset parsing stays in item order. `shared/lore/activation.ts` starts counts
-    while parsing CBS in entry order, handles early rejections, then awaits all counts before the budget pass.
+- `tokenizer.ts` routes on-screen counts and playground ids through authenticated server routes; tokenizers do not load
+  in the tab. `tabTokenScope` captures the main model's tokenizer settings at call time and is shared with
+  `request/transport.ts`; `tokenScopeKey` derives its identity. `jobTokenScope` sets `pluginTokenizer: "none"`, which
+  the context meter compares with the report's `tokenScope`.
+- `countTokens` posts the captured scope to `/api/tokens/count`. Signal-less calls in one macrotask coalesce by scope;
+  batches split at 256 texts or 1 MiB of JSON-escaped UTF-8, with oversized texts sent alone. Its 1500-entry LRU is
+  keyed by text and tokenizer identity when caching is enabled. A `null` rejects one text; a failed or malformed batch
+  rejects as a whole. Aborts stop remaining server work and cancel a shared Google count only after its last waiter
+  leaves.
+- `tokenizeAccurate` expands CBS before counting; `ChatTokenizer` supplies the prompt counter. `tokenCountInput` also
+  captures expanded text and tokenizer identity so delayed UI counts are invalidated by relevant model or CBS changes.
 - `src/ts/tokenCountField.ts` `createTokenCountField`: reusable UI count lifecycle. The first input runs immediately or
   through a caller-provided scheduler; later inputs wait 400 ms by default, abort superseded work, ignore late results,
   and keep the last applied value after failure. It runs the count untracked so the caller's input is the reactive
@@ -252,42 +225,20 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 
 ## Flows
 
-0. Every provider call except a plugin provider and WebLLM runs on the server: the tab's `requestChatData` loop calls
-   `requestChatDataMain`, which hands the request to `requestServer`; the server reads the settings and credentials by
-   the ids it is sent, runs its `requestChatDataMain`, and streams the answer back. A server job calls the server's
-   outer loop directly (`outer.ts`). Both runtimes call `applyReverseProxyOverride` (`shared/llm/reverseProxy.ts`)
-   before dispatch. The steps below describe the server copy.
-1. The tab's callers invoke `requestChatData`: the translator (`'translate'`), the HypaV3 modal's summaries
-   (`'memory'`), `Suggestion.svelte`, MCP `aiaccess`, `IrisModal` (`'otherAx'`), image prompts (`stableDiff.ts`), and
-   the playground. Plugin v3 `runLLMModel` calls `requestChatDataMain` directly. A send, memory, emotion, triggers, and
-   Lua (`runLLM`) request from the server job.
-2. `requestChatDataMain` resolves the slot's profile (`resolveSlotProfile`):
-   1. `profileId` (`RequestArgs.profileId`, a per-call profile: a translator step's model, [translation](media-aux.md))
-      → that profile whatever the mode, `staticModel` included; a missing one refuses (`missingNamedProfile`), never
-      falling back to the slot. The route accepts it as a record id (`isRecordId`).
-   2. `staticModel` → the main slot's profile when its model id equals `staticModel`, else no profile (a definition that
-      needs a profile refuses).
-   3. Mode `model` → the main slot.
-   4. Modes `memory`, `translate`, `emotion`, `otherAx` with `seperateModelsForAxModels` on and that auxiliary slot set
-      → that slot; a bare slot (`{ modelId }`) is no profile.
-   5. Otherwise (`submodel` included) → the sub slot.
-   6. A slot naming a deleted profile, or a bare definition that needs a profile, returns
-      `{ type: "fail", noRetry: true }` before any upstream call.
-   7. Then the request-local `ctx` (the profile's fields over the roots), `getModelInfo` with that profile's flags, the
-      reverse-proxy and custom URL injection, the named key (`resolveCredential` with the profile: a bound key replaces
-      `targ.key`, a bound Vertex account sets `targ.vertexCredential`, a binding that cannot be honored refuses the same
-      way), and `reformater`.
-3. `reformater` is driven by the model's `LLMFlags`. It moves system prompts, merges same-role turns, and inserts a
-   starter user turn.
-4. Dispatch by format:
-   - `OpenAICompatible`/`Mistral`/`NanoGPT` → `requestOpenAI`.
-   - `OpenAIResponseAPI`/`NanoGPTResponses` → `requestOpenAIResponseAPI`.
-   - `Anthropic`/`NanoGPTMessages`/`AWSBedrockClaude` → `requestClaude`.
-   - `GoogleCloud`/`VertexAIGemini` → `requestGoogleCloudVertex`.
-   - Legacy instruct formats → `requestOpenAILegacyInstruct`.
-   - The rest go to their own handlers.
-5. Streams yield cumulative `StreamResponseChunk` snapshots (key `'0'`, plus metadata such as `__tool_calls`). Tool
-   calls go through `mcp.ts:callTool`, the results are appended, and the request recurses.
+- Every provider request except plugin providers and WebLLM runs on the server. Tab requests go through
+  `requestChatDataMain` → `requestServer`; jobs enter the server outer loop directly. Plugin v3 may call
+  `requestChatDataMain` itself. Both runtimes apply `applyReverseProxyOverride` before dispatch.
+- `resolveSlotProfile` selects a named `profileId` first, regardless of mode. A supplied `staticModel` short-circuits
+  slot routing: it uses the main profile only on an id match, otherwise it resolves as a bare static model with no
+  profile (and refuses if that definition needs one). With no `staticModel`, `model` uses main, configured auxiliary
+  modes use their slot, and other modes (including `submodel`) use sub. An unset auxiliary slot falls back to sub.
+  Dangling profiles refuse with `noRetry`; no alternate profile is tried. The [slot resolver](#model-preset-slots) owns
+  these rules.
+- The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
+  from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
+  replace `arg.key`. See [credential binding](#credentials).
+- Streams carry cumulative `StreamResponseChunk` snapshots (text at key `'0'` plus metadata). Tool calls go through
+  `mcp.ts:callTool`; results are appended before the request recurses.
 
 ## State
 
