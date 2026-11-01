@@ -71,9 +71,9 @@ changing a path or its admission policy. Routing is non-strict (a trailing slash
 1. `onError`: `HTTPException` responses pass through; maintenance and a closed resource store answer 503 with
    `Retry-After`; other errors are a 500 `Internal Server Error`. Shutdown admission middleware then runs before body
    parsing:
-   - It tracks resource handlers (`/api/resources`, `/api/llm-secrets`, `/api/chats/search`, `/api/memory/tasks`, and
-     `/api/chat-checkpoints`) and the auth and push writes (`POST /api/login`, `POST /api/set_password`, `PUT` and
-     `DELETE /api/push/subscription`).
+   - It tracks resource handlers (`/api/resources`, `/api/llm-secrets`, `/api/chats/search`, `/api/memory/tasks`,
+     `/api/memory/structured`, and `/api/chat-checkpoints`) and the auth and push writes (`POST /api/login`,
+     `POST /api/set_password`, `PUT` and `DELETE /api/push/subscription`).
    - During shutdown it refuses new resource, message search, credential, backup, module import, CharX import, Realm
      import, token, request history, and diagnostics requests and those auth and push writes with 503, and adds
      `Connection: close` to every response.
@@ -122,6 +122,7 @@ changing a path or its admission policy. Routing is non-strict (a trailing slash
      `/api/chat-checkpoints*`, `/api/backups*`, and `/api/import/*`.
    - [Server generation](server-generation.md#files): `/api/generations*`, `/api/transform*`, `/api/translate/message`,
      `/api/memory/tasks*`, `/api/llm/*`, `/api/tokens/*`, and `/api/events/ws`.
+   - [Structured memory](structured-memory.md#the-read-routes): `/api/memory/structured/*`.
 
 ### Rate limits
 

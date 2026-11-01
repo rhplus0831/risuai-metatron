@@ -2,12 +2,13 @@
 
 ## Scope
 
-- Owns the `structuredMemory` algorithm: its record shapes, record limits, its tables and store, writer settings, and
-  the HypaV3 compatibility projection.
-- Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`.
-- The algorithm is not reachable yet: the settings cannot select it, no server code calls the store, and production code
-  reads only the writer settings (filled by `createHypaV3Preset`, digested by `memorySettingsFingerprint`). Its design
-  and remaining work are in [Active Plans](../plan/README.md).
+- Owns the `structuredMemory` algorithm: its record shapes, record limits, its tables and store, read routes, the tab's
+  client and Markdown package, writer settings, and the HypaV3 compatibility projection.
+- Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
+  `src/ts/process/structuredMemory.svelte.ts`.
+- The algorithm is not reachable yet: the settings cannot select it, no server code writes the store, no screen calls
+  the tab's client, and otherwise production code reads only the writer settings (filled by `createHypaV3Preset`,
+  digested by `memorySettingsFingerprint`). Its design and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
@@ -32,8 +33,48 @@
   `MemoryChanges`, `MemoryContents`; `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`.
 - `server/src/data/chatStore.ts`: `MEMORY_TABLES_SQL`, part of `CHAT_OPEN_SCHEMA_SQL`.
 - `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`.
+- `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
+  `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`,
+  `StructuredMemoryPackageRound`.
+- `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
+  `buildStructuredMemoryPackage`, which answer a `StructuredMemoryResult`; the pure `renderMemoryPage`,
+  `renderMemoryTimeline`, and `memoryPagePath`.
 
 ## Flows
+
+### The read routes
+
+All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated, rate-limited, and epoch-checked (412
+`EpochMismatch`), with the check and every store read in one synchronous step. Ids are checked first (400).
+
+- The chat's path answers the table of contents; `/records/:kind/:id` answers one record of a `MEMORY_RECORD_KINDS` kind
+  as stored. A missing chat or record is 404 with `reason` `chatGone` or `recordGone`.
+- `/package?cursor=N&revision=R` answers one round of the chat's pages followed by its events, in contents order, whole
+  records as stored. It charges each record's `bytes` from the contents, so it reads no body it will not send. The
+  budget is `RouteLimits.memoryPackageRoundBytes`, default `MAX_READ_RESPONSE_BYTES`, and soft as
+  [the read budget](server-resources.md#read-budget) is: a round's first record is served whatever its size. `next` is
+  the position to continue from, null at the end.
+- `revision` is compared whole as an opaque token, and a different one is 409 naming the current one. A round is one
+  snapshot, and that comparison is what ties rounds into one.
+
+### The Markdown package
+
+`buildStructuredMemoryPackage` reads every round, renders in the tab, and answers `{ name, bytes }` for `downloadFile`.
+A 409 restarts the read with nothing kept, 3 attempts in all, then refused `changed`. A 412 calls `epochMismatch` and
+ends the read at once.
+
+- The zip holds `timeline.md` and `pages/<type>/<title part> [<id part>].md`, one per page.
+- Metadata is the authority and Markdown is display. A metadata line is `key: <JSON>`, which is valid YAML on one line;
+  `\u` escapes cover what YAML does not print.
+- A page's frontmatter has every field but `history`, and `sections` without bodies but with `bodyLines`. Each body
+  follows verbatim under a `##` line. `heading` in the frontmatter is the exact value; the `##` line collapses
+  whitespace.
+- `timeline.md` opens with `packageVersion` and `revision`. Each event is a `##` line, a `yaml` fence with every field
+  but `summary`, plus `summaryLines`; then the summary verbatim, then one quote line per key line.
+- `bodyLines` and `summaryLines` count `split("\n")` pieces. They are what splits a body holding `## x`, a fence, or
+  `---`, so a reader counts lines and never searches for a delimiter.
+- Events sort by their smallest anchored source `index`, which is the position when recorded, not the current one. An
+  event with no anchored source goes last, and ties keep contents order.
 
 ### A memory write
 
@@ -114,6 +155,10 @@ group is refused, and a full one is checked and restored.
 - The memory revision says nothing about the chat's messages. A whole-chat `replace` or a checkpoint load keeps
   `chats.seq`, so the rows and the revision survive it, and only the memory task's fence stops a writer working from the
   old messages ([memory](memory.md)).
+- The route answers are shared types because tab code never imports `server/`; each route answers with `satisfies`, so a
+  store type that drifts fails `pnpm check`.
+- `app.ts` admits the routes as resource handlers: tracked, refused during shutdown, and `no-store`. `ROUTE_TEMPLATES`
+  in `shared/diagnostics.ts` lists each route.
 
 ## Invariants
 
@@ -132,6 +177,8 @@ group is refused, and a full one is checked and restored.
 - Table-of-contents statements never select `data`; `octet_length(data)` takes the size from the row's header. Column
   values come from the serialized record, so `toJSON` cannot make a column disagree with `data`.
 - The store checks what its columns and rows need, not a record's whole shape: the callers own that.
+- A package path never holds a raw id: a resource id may hold `/`, so the id part is `encodeURIComponent` with `*` also
+  encoded. It alone makes a path unique; the title part is display.
 
 - `structuredMemory` and every value in the module's `const` lists are persisted: never rename one (repository invariant
   D5). A new value is added to its list.
@@ -180,8 +227,13 @@ group is refused, and a full one is checked and restored.
   to see the rows, a SQLite trigger to fail a write midway, and `installSnapshot` for restores.
 - `server/src/tests/restoreStage.test.ts` drives a crafted source through the real staging and install, and
   `backups.test.ts` drives the snapshot and archive routes. Both take their records from `tests/memoryFixtures.ts`.
+- `server/src/tests/structuredMemoryRoutes.test.ts` drives the routes on a real app, and seeds them through a second
+  store on the same file, because the app does not export its own. A frozen `Date` holds the rate limit window.
+- `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
+  metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
+  root `tsconfig.json`, where the server routes do not type-check.
 - Focused command:
-  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts restoreStage backups normalizeCollections memoryTaskHost upstreamExport`.
+  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts restoreStage backups normalizeCollections memoryTaskHost upstreamExport`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
@@ -191,6 +243,10 @@ group is refused, and a full one is checked and restored.
 
 - Every graded event projects as `isImportant`, so once the writer grades events the flag stops separating them. D11
   says "events with grade or pins" and names no threshold. Decision: Structured Memory D11, plan.
+- The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
+  plan.
+- A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
+  has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
 
 ### Gotchas
 

@@ -99,10 +99,17 @@ import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
+import { STRUCTURED_MEMORY_PATH, registerStructuredMemoryRoutes } from "./routes/structuredMemory.ts";
 import { registerResourceRoutes, RESOURCE_READ_PATH } from "./routes/resources.ts";
 import { ASSET_MISSING_PATH, registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
-import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID, revisionDigest } from "../../shared/resources.ts";
+import {
+    MAX_READ_RESPONSE_BYTES,
+    RESOURCE_BOOT_PATH,
+    RESOURCE_KIND,
+    SINGLETON_RESOURCE_ID,
+    revisionDigest,
+} from "../../shared/resources.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
 import { type BuildInfo, formatBuildId } from "../../shared/buildInfo.ts";
 import { readServerBuildInfo, resolveBuildInfo, resolveNormalizationIdentity } from "./buildInfo.ts";
@@ -128,6 +135,8 @@ export type RouteLimits = {
     bodyBytes?: number;
     /** The body cap of `POST /api/resources/read` (default `MAX_READ_BODY_BYTES`, 32 MiB). */
     readBodyBytes?: number;
+    /** The soft budget of one structured memory package round in stored bytes (default `MAX_READ_RESPONSE_BYTES`, 16 MiB). */
+    memoryPackageRoundBytes?: number;
 };
 
 /**
@@ -149,10 +158,11 @@ export type RouteLimits = {
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
  * defaults are the production ones). `generationOwnerAbsentMs` and `generationOwnerSilentMs` replace
  * the owner absence and negotiated socket silence allowances (tests shorten them). `routeLimits`
- * lowers the rate limits, the app's and the resource read's body caps, and the asset batch, backup
- * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
- * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
- * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
+ * lowers the rate limits, the app's and the resource read's body caps, the structured memory package
+ * round's budget, and the asset batch, backup archive, and CharX entry caps (`RouteLimits`; tests reach
+ * them quickly, the defaults are the production ones). `cbsTimeLimits` replaces the CBS wall times of
+ * every job, render, and translation (`serverCbsLimits`; tests lengthen them, the defaults are the
+ * production ones).
  * The default runner gets the context's own memory task service (`createMemoryTasks`, returned as
  * `memoryTasks`): HypaV3 then selects stored summaries in a send and hands its chat to the service,
  * and the manual start and cancel routes are open. The `memoryTasks` option replaces the runner's
@@ -643,13 +653,17 @@ export function createServerContext(options: {
         // The credential writes (`/api/llm-secrets`) are resource writes too, and the message search
         // reads the resource store between yields (shutdown waits for it before closing the store).
         // The memory task routes read the store and change the memory task registry; every answer of
-        // theirs is `no-store`, the limiter's 429 and the body limit's 413 included.
+        // theirs is `no-store`, the limiter's 429 and the body limit's 413 included. The structured
+        // memory reads are admitted and answered the same way.
         const memoryTask = c.req.path === MEMORY_TASKS_PATH || c.req.path.startsWith(`${MEMORY_TASKS_PATH}/`);
+        const structuredMemory =
+            c.req.path === STRUCTURED_MEMORY_PATH || c.req.path.startsWith(`${STRUCTURED_MEMORY_PATH}/`);
         const checkpoint = c.req.path === CHAT_CHECKPOINTS_PATH || c.req.path.startsWith(`${CHAT_CHECKPOINTS_PATH}/`);
         const resource =
             /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
             c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH ||
             memoryTask ||
+            structuredMemory ||
             checkpoint;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
@@ -691,7 +705,7 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history || memoryTask || tokenRoute || checkpoint) {
+            if (history || memoryTask || structuredMemory || tokenRoute || checkpoint) {
                 c.header("Cache-Control", "no-store");
             }
         }
@@ -816,6 +830,12 @@ export function createServerContext(options: {
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
+    });
+    registerStructuredMemoryRoutes(app, {
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        packageRoundBytes: options.routeLimits?.memoryPackageRoundBytes ?? MAX_READ_RESPONSE_BYTES,
     });
     registerPushRoutes(app, { push, auth, limiter: authenticatedRouteLimiter.middleware });
     registerLlmRoutes(app, {

@@ -15,6 +15,9 @@ import { isPlainObject } from "./valueKinds.ts";
 /** The value `memoryAlgorithmType` stores for this algorithm. Persisted: never rename it. */
 export const STRUCTURED_MEMORY_ALGORITHM = "structuredMemory" as const;
 
+/** The per-chat read routes (`server/src/routes/structuredMemory.ts`). */
+export const STRUCTURED_MEMORY_PATH = "/api/memory/structured";
+
 /** What a page describes. A chat has exactly one `scene` page, rewritten rather than appended to. */
 export const MEMORY_PAGE_TYPES = ["character", "location", "faction", "item", "concept", "scene", "note"] as const;
 export type MemoryPageType = (typeof MEMORY_PAGE_TYPES)[number];
@@ -407,6 +410,47 @@ export interface StructuredMemorySettings {
     /** The grade from which a listed `change` is highlighted, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax`. */
     highlightChangeGrade: number;
 }
+
+/** The kinds of record the read routes address by id. */
+export const MEMORY_RECORD_KINDS = ["pages", "events", "threads", "runs"] as const;
+export type StructuredMemoryRecordKind = (typeof MEMORY_RECORD_KINDS)[number];
+
+/** The record each kind addresses. */
+export type StructuredMemoryRecordOf = {
+    pages: MemoryPage;
+    events: MemoryEvent;
+    threads: MemoryThread;
+    runs: MemoryRun;
+};
+
+/** A table-of-contents row: the record's listed fields and the size of its stored text in bytes. */
+type StructuredMemoryContentsRow<T, Field extends keyof T> = Pick<T, Field> & { bytes: number };
+
+/** The contents route's answer: a chat's records without their bodies, each list in storage order. */
+export type StructuredMemoryContentsAnswer = {
+    revision: string;
+    pages: StructuredMemoryContentsRow<MemoryPage, "id" | "type" | "title">[];
+    events: StructuredMemoryContentsRow<MemoryEvent, "id" | "title" | "status">[];
+    threads: StructuredMemoryContentsRow<MemoryThread, "id" | "title" | "state">[];
+    runs: StructuredMemoryContentsRow<MemoryRun, "id" | "result">[];
+};
+
+/** The record route's answer: one record as stored. */
+export type StructuredMemoryRecordAnswer<K extends StructuredMemoryRecordKind = StructuredMemoryRecordKind> = {
+    revision: string;
+    data: StructuredMemoryRecordOf[K];
+};
+
+/**
+ * One round of the package route. `next` is the position to continue from in the list of the chat's
+ * pages followed by its events, or null when the list is done.
+ */
+export type StructuredMemoryPackageRound = {
+    revision: string;
+    pages: MemoryPage[];
+    events: MemoryEvent[];
+    next: number | null;
+};
 
 /** One record a send included. */
 export interface MemoryManifestItem {

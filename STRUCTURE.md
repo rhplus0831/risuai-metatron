@@ -177,8 +177,8 @@ completed plans and retrieval commands.
 ## Path Ownership
 
 Apply the specific ownership below before the fallback directories. Guide names refer to **Choose By Task**; each
-guide's `Files` section has identifiers. These are starting points: for behavior sharing a UI or transport file, use
-**Choose By Task** and the owner's coupling links (for example, send handlers inside a chat screen).
+guide's `Files` section has identifiers. For behavior sharing a UI or transport file, use **Choose By Task** and the
+owner's coupling links.
 
 - **diagnostics**: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`, `server/src/data/requestHistory.ts`,
   `server/src/diagnostics/`, `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
@@ -189,7 +189,8 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `shared/taskRateLimiter.ts`, `shared/{memory,hypaV3Presets}.ts`,
   `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`.
-- **structured-memory**: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`.
+- **structured-memory**: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`,
+  `server/src/routes/structuredMemory.ts`, `src/ts/process/structuredMemory.svelte.ts`.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,
