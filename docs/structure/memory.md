@@ -94,8 +94,8 @@
 - The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by
   `supaModelType`).
 - The result is written back to the current chat: `hypaV2Data`, `hypaV3Data`, or `supaMemoryData`.
-- `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory.md#the-writer-task) ahead of that
-  order; no other value is read.
+- `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory-writer.md#the-writer-task) ahead of
+  that order; no other value is read.
 
 ### V3 standard flow
 
@@ -194,7 +194,7 @@ attempted, and a background task ends `skipped` with `localSummarization`; a sen
 `server/src/prompt/memory/memoryTasks.ts` `createMemoryTasks`, on the detached host `memoryTaskHost.ts` (their doc
 comments hold the queue, start checks, ends, and the host's requests; `MEMORY_TASK_LIMITS` the caps). Wiring, routes,
 and the feed frame are in [server generation](server-generation.md); the second task kind is the
-[Structured Memory writer](structured-memory.md#the-writer-task).
+[Structured Memory writer](structured-memory-writer.md#the-writer-task).
 
 - Right before a job emits `done`, the runner hands the service the job's `MemoryTaskInput` (`shared/jobs.ts`) when a
   lookahead plan says summaries are due or a manual start waits (`pendingManual`).
@@ -394,8 +394,8 @@ it matches a removable entry), so a prompt still over the context with them ends
   - A memory-relevant setting the task reads also joins `memorySettingsFingerprint` (`server/src/jobs/jobScope.ts`).
   - The shared constructor defaults invalid settings (numbers must be finite; `maxChatsPerSummary` and `queryChatCount`
     must be integers >= 1, `gapConfirmTokens` and the three token amounts integers >= 0, `lookaheadHeadroomRatio` in [0,
-    1), `budgetMode` `"ratio"` or `"tokens"`; `structured` as [structured-memory](structured-memory.md) says), including
-    through the server normalizer.
+    1), `budgetMode` `"ratio"` or `"tokens"`; `structured` as [structured-memory-writer](structured-memory-writer.md)
+    says), including through the server normalizer.
   - A setting that sizes the budget goes through `resolveHypaV3Budget`, never a site's own formula.
   - Server host capabilities also need `MemoryHost`, the runner adapter, and the fixture's `hostOf`.
   - The server alone runs valid summary separators through `MemoryHost.regex`, sequentially with at most 1,000 ms per
