@@ -14,8 +14,14 @@ import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { GenerationContext, MemoryTokenPolicy } from "../../../shared/jobs.ts";
 import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
+import type { HypaV3Preset } from "../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
+import {
+    STRUCTURED_MEMORY_ALGORITHM,
+    structuredMemoryHighlightOverride,
+    structuredMemoryLanguageOverride,
+} from "../../../shared/structuredMemory.ts";
 import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import {
     characterShell,
@@ -368,17 +374,35 @@ export function memoryTokenPolicy(scope: JobScope, chatAdditionalTokens: number)
 }
 
 /**
+ * The selected HypaV3 preset as `memorySettingsFingerprint` hashes it: without `settings.structured`,
+ * which only the Structured Memory part of the digest reads, so a change to it leaves another
+ * algorithm's tasks current. The remaining keys keep their order.
+ */
+function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
+    if (!preset?.settings) {
+        return preset ?? null;
+    }
+    const { structured: _structured, ...settings } = preset.settings;
+    return { ...preset, settings };
+}
+
+/**
  * A digest of the memory-relevant settings of `scope` (`MemoryTaskInput.settingsFingerprint`): the
  * selected HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
  * which names a credential but holds none, the descriptor's format and wire id, a custom model's
- * definition, and the request's temperature and response size, or the refusal), and the embedding model with its custom endpoint and model (never its key). Equal for
- * two scopes read from the same settings.
+ * definition, and the request's temperature and response size, or the refusal), and the embedding
+ * model with its custom endpoint and model (never its key). Under the Structured Memory algorithm
+ * alone it also covers the writer: the preset's `structured` settings, the owner's and the chat's
+ * language overrides, the chat's highlight override, and `db.language`, which an empty language
+ * follows. The key is absent otherwise, so no other algorithm's digest depends on them. Equal for two
+ * scopes read from the same settings.
  */
 export function memorySettingsFingerprint(scope: JobScope): string {
     const db = scope.db;
     const memory = resolveJobRequestModel(scope.request.db, "memory");
+    const preset = selectedHypaV3Preset(db);
     const projection = {
-        hypaV3Preset: selectedHypaV3Preset(db) ?? null,
+        hypaV3Preset: fingerprintedHypaV3Preset(preset),
         memoryModel:
             memory.kind === "refused"
                 ? { refused: memory.result }
@@ -394,8 +418,24 @@ export function memorySettingsFingerprint(scope: JobScope): string {
                   },
         hypaModel: db.hypaModel ?? null,
         hypaCustom: { url: db.hypaCustomSettings?.url ?? "", model: db.hypaCustomSettings?.model ?? "" },
+        ...(db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM
+            ? { structuredMemory: structuredMemoryFingerprint(scope, preset) }
+            : {}),
     };
     return createHash("sha256").update(JSON.stringify(projection)).digest("base64url");
+}
+
+/** What Structured Memory's writer adds to `memorySettingsFingerprint`. */
+function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | undefined): unknown {
+    const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
+    const chat = scopeChat(scope);
+    return {
+        settings: preset?.settings?.structured ?? null,
+        ownerLanguage: structuredMemoryLanguageOverride(owner) ?? null,
+        chatLanguage: structuredMemoryLanguageOverride(chat) ?? null,
+        chatHighlight: structuredMemoryHighlightOverride(chat) ?? null,
+        uiLanguage: scope.db.language ?? null,
+    };
 }
 
 /** A projection character's chats (a group's are typed read-only; the projection is the job's own copy). */

@@ -1,5 +1,6 @@
 import { isRecordId, newId } from "./ids.ts";
 import type { HypaV3Preset, HypaV3Settings } from "./memory.ts";
+import { normalizeStructuredMemorySettings } from "./structuredMemory.ts";
 
 /** The settings that are token amounts: integers >= 0. */
 const TOKEN_AMOUNT_KEYS: ReadonlySet<string> = new Set([
@@ -15,8 +16,9 @@ const TOKEN_AMOUNT_KEYS: ReadonlySet<string> = new Set([
  * integers >= 1, `gapConfirmTokens`, `memoryBudgetTokens`, `lookaheadHeadroomTokens`, and
  * `extraSummarizationTokens` integers >= 0, `lookaheadHeadroomRatio` in [0, 1), and `budgetMode`
  * `"ratio"` or `"tokens"`. Invalid values take their defaults; `budgetMode`'s is `"ratio"`, so a
- * stored or imported preset without one keeps its ratios. `id` is kept when it is a valid record id,
- * otherwise a new one is assigned (a copy or an import passes none, so it gets a fresh id).
+ * stored or imported preset without one keeps its ratios. `structured` is filled field by field
+ * (`normalizeStructuredMemorySettings`). `id` is kept when it is a valid record id, otherwise a new
+ * one is assigned (a copy or an import passes none, so it gets a fresh id).
  */
 export function createHypaV3Preset(name = "New Preset", existingSettings = {}, id?: unknown): HypaV3Preset {
     const settings: HypaV3Settings = {
@@ -47,11 +49,17 @@ export function createHypaV3Preset(name = "New Preset", existingSettings = {}, i
         alwaysToggleOn: false,
         queryChatCount: 3,
         gapConfirmTokens: 10000,
+        structured: normalizeStructuredMemorySettings(undefined),
     };
 
     if (existingSettings && typeof existingSettings === "object" && !Array.isArray(existingSettings)) {
         const target = settings as unknown as Record<string, unknown>;
         for (const [key, value] of Object.entries(existingSettings)) {
+            // `typeof` would let null and arrays past the object default.
+            if (key === "structured") {
+                settings.structured = normalizeStructuredMemorySettings(value);
+                continue;
+            }
             // Own keys only: `in` also matches `__proto__`, whose assignment would swap the prototype.
             if (Object.hasOwn(target, key) && typeof value === typeof target[key]) {
                 if (typeof value === "number") {

@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultHotkeys } from "../../../shared/hotkeys.ts";
+import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
+import {
+    normalizeStructuredMemorySettings,
+    structuredMemoryHighlightOverride,
+    structuredMemoryLanguageOverride,
+} from "../../../shared/structuredMemory.ts";
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
@@ -474,6 +480,280 @@ describe("translatorPresets", () => {
         }
         for (const input of [{}, { items: {} }, { items: null }, { items: [1] }]) {
             rejects(normalizeTranslatorPresets, input, "translatorPresets.items must be an array of objects");
+        }
+    });
+});
+
+const structuredDefaults = {
+    cadence: "everyTurn",
+    cadenceTurns: 5,
+    cadenceTokens: 4000,
+    cadenceRatio: 0.1,
+    windowTurns: 3,
+    flowEvents: 8,
+    laneTargets: { pages: 2000, events: 1500, evidence: 700, threads: 300 },
+    requiredCap: 1500,
+    screening: { refusal: [], format: [] },
+    language: "",
+    instructions: "",
+    analysisPrompt: "",
+    patchPrompt: "",
+    fineTuning: false,
+    highlightMode: "important",
+    highlightKinds: ["create", "contradiction", "delete", "retract"],
+    highlightChangeGrade: 5,
+};
+
+const structuredCustom = {
+    cadence: "tokens",
+    cadenceTurns: 1,
+    cadenceTokens: 1,
+    cadenceRatio: 0.25,
+    windowTurns: 1,
+    flowEvents: 0,
+    laneTargets: { pages: 0, events: 21, evidence: 32, threads: 43 },
+    requiredCap: 1,
+    screening: { refusal: ["Cannot comply"], format: ["Bad format"] },
+    language: "ko",
+    instructions: "Keep names",
+    analysisPrompt: "Analyze this",
+    patchPrompt: "Patch this",
+    fineTuning: true,
+    highlightMode: "all",
+    highlightKinds: ["change", "create"],
+    highlightChangeGrade: 9,
+};
+
+describe("Structured Memory settings", () => {
+    it("fills absent fields and non-object settings with the writer defaults", () => {
+        for (const input of [undefined, null, [], "stored text", {}]) {
+            expect(normalizeStructuredMemorySettings(input)).toStrictEqual(structuredDefaults);
+        }
+    });
+
+    it("validates every scalar independently, preserves valid boundaries, and drops unknown keys", () => {
+        expect(normalizeStructuredMemorySettings({ ...structuredCustom, unknown: true })).toStrictEqual(
+            structuredCustom,
+        );
+        const invalid: Record<string, unknown[]> = {
+            cadence: ["sometimes", "", null, 1],
+            cadenceTurns: [0, -1, 1.5, "5", null, NaN, Infinity],
+            cadenceTokens: [0, -1, 1.5, "4000", null, NaN, Infinity],
+            cadenceRatio: [0, 1, -0.1, 1.1, "0.5", null, NaN, Infinity],
+            windowTurns: [0, -1, 1.5, "3", null, NaN, Infinity],
+            flowEvents: [-1, 0.5, "8", null, NaN, Infinity],
+            requiredCap: [0, -1, 1.5, "1500", null, NaN, Infinity],
+            language: [null, 1, [], {}],
+            instructions: [null, 1, [], {}],
+            analysisPrompt: [null, 1, [], {}],
+            patchPrompt: [null, 1, [], {}],
+            fineTuning: [null, 0, 1, "true"],
+            highlightMode: ["sometimes", "", null, 1],
+            highlightChangeGrade: [-1, 10, 0.5, "5", null, NaN, Infinity],
+        };
+        for (const [key, values] of Object.entries(invalid)) {
+            for (const value of [...values, undefined]) {
+                expect(
+                    normalizeStructuredMemorySettings({ ...structuredCustom, [key]: value }),
+                    `${key} = ${value}`,
+                ).toStrictEqual({
+                    ...structuredCustom,
+                    [key]: structuredDefaults[key as keyof typeof structuredDefaults],
+                });
+            }
+        }
+        for (const cadence of ["everyTurn", "everyK", "tokens", "manual"]) {
+            expect(normalizeStructuredMemorySettings({ ...structuredCustom, cadence })).toStrictEqual({
+                ...structuredCustom,
+                cadence,
+            });
+        }
+        for (const highlightMode of ["none", "important", "all"]) {
+            expect(normalizeStructuredMemorySettings({ ...structuredCustom, highlightMode })).toStrictEqual({
+                ...structuredCustom,
+                highlightMode,
+            });
+        }
+        expect(
+            normalizeStructuredMemorySettings({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 }),
+        ).toStrictEqual({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 });
+    });
+
+    it("validates each lane and screening list without resetting its siblings", () => {
+        const lanes = structuredCustom.laneTargets;
+        for (const key of ["pages", "events", "evidence", "threads"] as const) {
+            expect(
+                normalizeStructuredMemorySettings({
+                    ...structuredCustom,
+                    laneTargets: { ...lanes, [key]: 0, unknown: 1 },
+                }),
+            ).toStrictEqual({ ...structuredCustom, laneTargets: { ...lanes, [key]: 0 } });
+            for (const value of [undefined, null, -1, 0.5, "5", NaN, Infinity]) {
+                expect(
+                    normalizeStructuredMemorySettings({ ...structuredCustom, laneTargets: { ...lanes, [key]: value } }),
+                    `${key} = ${value}`,
+                ).toStrictEqual({
+                    ...structuredCustom,
+                    laneTargets: { ...lanes, [key]: structuredDefaults.laneTargets[key] },
+                });
+            }
+        }
+        for (const value of [undefined, null, [], "invalid"]) {
+            expect(normalizeStructuredMemorySettings({ ...structuredCustom, laneTargets: value })).toStrictEqual({
+                ...structuredCustom,
+                laneTargets: structuredDefaults.laneTargets,
+            });
+            expect(normalizeStructuredMemorySettings({ ...structuredCustom, screening: value })).toStrictEqual({
+                ...structuredCustom,
+                screening: { refusal: [], format: [] },
+            });
+            for (const key of ["refusal", "format"] as const) {
+                expect(
+                    normalizeStructuredMemorySettings({
+                        ...structuredCustom,
+                        screening: { ...structuredCustom.screening, [key]: value },
+                    }),
+                ).toStrictEqual({ ...structuredCustom, screening: { ...structuredCustom.screening, [key]: [] } });
+            }
+        }
+        expect(
+            normalizeStructuredMemorySettings({
+                ...structuredCustom,
+                screening: {
+                    refusal: ["No", "", 0, null, "No"],
+                    format: [false, {}, [], "Wrong format"],
+                    unknown: ["drop"],
+                },
+            }),
+        ).toStrictEqual({ ...structuredCustom, screening: { refusal: ["No", "No"], format: ["Wrong format"] } });
+    });
+
+    it("keeps known highlight kinds once in their first-occurrence order and preserves an empty selection", () => {
+        for (const [input, expected] of [
+            [
+                ["change", "delete", "create", "change", null, "unknown", "retract", "contradiction", "delete"],
+                ["change", "delete", "create", "retract", "contradiction"],
+            ],
+            [[], []],
+            [["unknown", 1], []],
+            [undefined, ["create", "contradiction", "delete", "retract"]],
+            [null, ["create", "contradiction", "delete", "retract"]],
+            ["create", ["create", "contradiction", "delete", "retract"]],
+        ]) {
+            expect(normalizeStructuredMemorySettings({ ...structuredCustom, highlightKinds: input })).toStrictEqual({
+                ...structuredCustom,
+                highlightKinds: expected,
+            });
+        }
+    });
+
+    it("is idempotent and detaches every list from the input and other results", () => {
+        const input = structuredClone(structuredCustom);
+        const first = normalizeStructuredMemorySettings(input);
+        const second = normalizeStructuredMemorySettings(first);
+        expect(second).toStrictEqual(structuredCustom);
+        first.screening.refusal.push("New refusal");
+        first.screening.format.push("New format");
+        first.highlightKinds.push("delete");
+        expect(input).toStrictEqual(structuredCustom);
+        expect(second).toStrictEqual(structuredCustom);
+
+        const defaults = normalizeStructuredMemorySettings(undefined);
+        const otherDefaults = normalizeStructuredMemorySettings(undefined);
+        defaults.screening.refusal.push("Changed");
+        defaults.screening.format.push("Changed");
+        defaults.highlightKinds.length = 0;
+        expect(otherDefaults).toStrictEqual(structuredDefaults);
+        expect(normalizeStructuredMemorySettings(undefined)).toStrictEqual(structuredDefaults);
+    });
+
+    it("reads only non-empty language strings and known highlight overrides", () => {
+        for (const value of [undefined, null, "", 0, false, [], {}]) {
+            expect(structuredMemoryLanguageOverride({ structuredMemoryLanguage: value })).toBeUndefined();
+        }
+        expect(structuredMemoryLanguageOverride(undefined)).toBeUndefined();
+        expect(structuredMemoryLanguageOverride({})).toBeUndefined();
+        expect(structuredMemoryLanguageOverride({ structuredMemoryLanguage: "한국어" })).toBe("한국어");
+        for (const value of [undefined, null, "", "unknown", 0, false, [], {}]) {
+            expect(structuredMemoryHighlightOverride({ structuredMemoryHighlight: value })).toBeUndefined();
+        }
+        expect(structuredMemoryHighlightOverride(undefined)).toBeUndefined();
+        expect(structuredMemoryHighlightOverride({})).toBeUndefined();
+        for (const value of ["none", "important", "all"] as const) {
+            expect(structuredMemoryHighlightOverride({ structuredMemoryHighlight: value })).toBe(value);
+        }
+    });
+});
+
+describe.each([
+    ["createHypaV3Preset", (settings: object) => createHypaV3Preset("Stored", settings, "stored").settings],
+    [
+        "normalizeHypaV3Presets",
+        (settings: object) =>
+            normalizeHypaV3Presets({ items: [{ id: "stored", name: "Stored", settings }], selectedId: "stored" })
+                .items[0].settings,
+    ],
+] as const)("%s Structured Memory settings", (_, read) => {
+    const legacySettings = {
+        summarizationModel: "otherModel",
+        summarizationPrompt: "Summarize",
+        reSummarizationPrompt: "Resummarize",
+        memoryTokensRatio: 0.3,
+        extraSummarizationRatio: 0.1,
+        lookaheadHeadroomRatio: 0.2,
+        budgetMode: "tokens",
+        memoryBudgetTokens: 3000,
+        lookaheadHeadroomTokens: 2000,
+        extraSummarizationTokens: 1000,
+        maxChatsPerSummary: 4,
+        recentMemoryRatio: 0.5,
+        similarMemoryRatio: 0.6,
+        enableSimilarityCorrection: true,
+        preserveOrphanedMemory: true,
+        processRegexScript: true,
+        doNotSummarizeUserMessage: true,
+        summaryChunkSeparator: "---",
+        useExperimentalImpl: true,
+        summarizationRequestsPerMinute: 10,
+        summarizationMaxConcurrent: 2,
+        embeddingRequestsPerMinute: 50,
+        embeddingMaxConcurrent: 3,
+        alwaysToggleOn: true,
+        queryChatCount: 2,
+        gapConfirmTokens: 0,
+    };
+
+    it("fills missing writer settings while preserving every existing HypaV3 setting", () => {
+        expect(read(legacySettings)).toStrictEqual({ ...legacySettings, structured: structuredDefaults });
+    });
+
+    it("normalizes nested writer settings field by field", () => {
+        const structured = {
+            ...structuredCustom,
+            cadenceTurns: 0,
+            laneTargets: { pages: -1, events: 2, evidence: 0, threads: 4, unknown: 1 },
+            screening: { refusal: ["Refusal", "", false], format: "invalid" },
+            highlightKinds: ["change", "create", "change", "unknown"],
+            unknown: true,
+        };
+        const input = { ...legacySettings, structured, unknown: true };
+        const expected = {
+            ...legacySettings,
+            structured: {
+                ...structuredCustom,
+                cadenceTurns: 5,
+                laneTargets: { pages: 2000, events: 2, evidence: 0, threads: 4 },
+                screening: { refusal: ["Refusal"], format: [] },
+            },
+        };
+        const first = read(input);
+        expect(first).toStrictEqual(expected);
+        expect(read(JSON.parse(JSON.stringify(first)))).toStrictEqual(expected);
+        for (const value of [undefined, null, [], "invalid"]) {
+            expect(read({ ...legacySettings, structured: value })).toStrictEqual({
+                ...legacySettings,
+                structured: structuredDefaults,
+            });
         }
     });
 });

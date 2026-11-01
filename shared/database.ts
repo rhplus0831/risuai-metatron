@@ -27,6 +27,7 @@ import type {
     TranslatorPreset,
 } from "./settings.ts";
 import type { triggerscript } from "./triggers.ts";
+import type { StructuredMemoryHighlightMode } from "./structuredMemory.ts";
 import type { TogglePreset } from "./togglePresets.ts";
 
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
@@ -741,6 +742,11 @@ export interface character {
      * `memoryTrimAck` holds only while it equals this (`supaMemoryOnCount` in `shared/characters.ts`).
      */
     supaMemoryOnCount?: number;
+    /**
+     * The language Structured Memory records this owner's chats in, over the preset's; a chat's own
+     * value goes first. Read through `structuredMemoryLanguageOverride`; present only while set.
+     */
+    structuredMemoryLanguage?: string;
     additionalAssets?: readonly (readonly [string, string, string])[];
     ttsReadOnlyQuoted?: boolean;
     replaceGlobalNote: string;
@@ -846,6 +852,8 @@ export interface groupChat {
     supaMemory?: boolean;
     /** The group's `supaMemoryOnCount` (see `character`). */
     supaMemoryOnCount?: number;
+    /** The group's `structuredMemoryLanguage` (see `character`). */
+    structuredMemoryLanguage?: string;
     ttsMode?: string;
     suggestMessages?: string[];
     orderByOrder?: boolean;
@@ -1232,6 +1240,16 @@ export interface Chat {
      * (its popover still lists them). Present only while set (unset to warn again, never false).
      */
     loreBudgetWarnOff?: boolean;
+    /**
+     * The language Structured Memory records this chat in, over its owner's and the preset's. Read
+     * through `structuredMemoryLanguageOverride`; present only while set.
+     */
+    structuredMemoryLanguage?: string;
+    /**
+     * This chat's Structured Memory highlight mode, over the preset's. Read through
+     * `structuredMemoryHighlightOverride`; present only while set.
+     */
+    structuredMemoryHighlight?: StructuredMemoryHighlightMode;
     suggestMessages?: string[];
     isStreaming?: boolean;
     activeStreamingDisplayOptimizationMode?: StreamingDisplayOptimizationMode;

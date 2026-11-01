@@ -16,6 +16,7 @@ import {
     loadJobScope,
     memorySettingsFingerprint,
     memoryTokenPolicy,
+    scopeChat,
 } from "../jobs/jobScope.ts";
 import { createLlmRequests, type JobRequestSpec } from "../llm/requests.ts";
 import { mainModelOf, mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
@@ -459,6 +460,126 @@ async function expectCountsAsJob(
     }
     expect(await host.tokenize(TEXT)).toBe(await tokens.count(TEXT, tokenScopeFor(jobScope.request.db)));
 }
+
+describe("memorySettingsFingerprint Structured Memory settings", () => {
+    function freshScope(h: Store, ownerId: string, algorithm: string): JobScope {
+        const scope = loadJobScope(
+            h.store,
+            h.kinds,
+            h.context(ownerId, ownerId === "g" ? "gk" : "k", { speakerChaId: "s" }),
+        );
+        scope.db.memoryAlgorithmType = algorithm;
+        const original = scope.db.hypaV3Presets[0];
+        scope.db.hypaV3Presets = [
+            { ...original, id: "unselected" },
+            { ...original, id: "selected", settings: structuredClone(original.settings) },
+        ];
+        scope.db.hypaV3PresetId = "selected";
+        return scope;
+    }
+
+    const writerChanges = {
+        cadence: "manual",
+        cadenceTurns: 6,
+        cadenceTokens: 4001,
+        cadenceRatio: 0.2,
+        windowTurns: 4,
+        flowEvents: 9,
+        laneTargets: { pages: 2001, events: 1501, evidence: 701, threads: 301 },
+        requiredCap: 1501,
+        screening: { refusal: ["Refused"], format: ["Bad format"] },
+        language: "ko",
+        instructions: "Keep names",
+        analysisPrompt: "Analyze this",
+        patchPrompt: "Patch this",
+        fineTuning: true,
+        highlightMode: "none",
+        highlightKinds: [],
+        highlightChangeGrade: 6,
+    };
+    const changes: [string, (scope: JobScope) => void][] = [
+        ...Object.entries(writerChanges).map(([key, value]): [string, (scope: JobScope) => void] => [
+            `structured.${key}`,
+            (scope) => Object.assign(scope.db.hypaV3Presets[1].settings.structured, { [key]: value }),
+        ]),
+        [
+            "chat language",
+            (scope) => {
+                scopeChat(scope)!.structuredMemoryLanguage = "ko";
+            },
+        ],
+        [
+            "owner language",
+            (scope) => {
+                scope.db.characters.find((owner) => owner.chaId === scope.characterId)!.structuredMemoryLanguage = "ja";
+            },
+        ],
+        [
+            "chat highlight",
+            (scope) => {
+                scopeChat(scope)!.structuredMemoryHighlight = "all";
+            },
+        ],
+        [
+            "UI language",
+            (scope) => {
+                scope.db.language = scope.db.language === "en" ? "ko" : "en";
+            },
+        ],
+    ];
+
+    it("ignores writer settings, overrides, and UI language for other algorithms", () => {
+        const h = openStore();
+        cleanups.push(() => h.dispose());
+        for (const ownerId of ["c", "g"]) {
+            for (const algorithm of ["", "hypaV3", "otherAlgorithm"]) {
+                const baseline = memorySettingsFingerprint(freshScope(h, ownerId, algorithm));
+                for (const [name, change] of changes) {
+                    const scope = freshScope(h, ownerId, algorithm);
+                    change(scope);
+                    expect(memorySettingsFingerprint(scope), `${ownerId}/${algorithm}: ${name}`).toBe(baseline);
+                }
+            }
+        }
+    });
+
+    it("digests every writer setting, both owners' overrides, and UI language for structuredMemory", () => {
+        const h = openStore();
+        cleanups.push(() => h.dispose());
+        for (const ownerId of ["c", "g"]) {
+            const baseline = memorySettingsFingerprint(freshScope(h, ownerId, "structuredMemory"));
+            for (const [name, change] of changes) {
+                const scope = freshScope(h, ownerId, "structuredMemory");
+                change(scope);
+                expect(memorySettingsFingerprint(scope), `${ownerId}: ${name}`).not.toBe(baseline);
+            }
+        }
+    });
+
+    it("digests invalid stored language and highlight overrides as unset", () => {
+        const h = openStore();
+        cleanups.push(() => h.dispose());
+        for (const ownerId of ["c", "g"]) {
+            const baseline = memorySettingsFingerprint(freshScope(h, ownerId, "structuredMemory"));
+            for (const value of [undefined, null, "", 1, false, [], {}]) {
+                for (const target of ["owner", "chat"]) {
+                    const scope = freshScope(h, ownerId, "structuredMemory");
+                    const record =
+                        target === "owner"
+                            ? scope.db.characters.find((owner) => owner.chaId === scope.characterId)!
+                            : scopeChat(scope)!;
+                    Object.assign(record, { structuredMemoryLanguage: value });
+                    expect(memorySettingsFingerprint(scope), `${ownerId}/${target} language = ${value}`).toBe(baseline);
+                }
+            }
+            for (const value of [undefined, null, "", "unknown", 1, false, [], {}]) {
+                const scope = freshScope(h, ownerId, "structuredMemory");
+                Object.assign(scopeChat(scope)!, { structuredMemoryHighlight: value });
+                expect(memorySettingsFingerprint(scope), `${ownerId} highlight = ${value}`).toBe(baseline);
+            }
+        }
+    });
+});
 
 describe("the token counter", () => {
     it("counts as the job's counter with the profile's tokenizer, where the same text under another tokenizer counts differently", async () => {

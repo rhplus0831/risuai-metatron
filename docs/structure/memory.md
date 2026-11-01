@@ -392,7 +392,8 @@ it matches a removable entry), so a prompt still over the context with them ends
   - A memory-relevant setting the task reads also joins `memorySettingsFingerprint` (`server/src/jobs/jobScope.ts`).
   - The shared constructor defaults invalid settings (numbers must be finite; `maxChatsPerSummary` and `queryChatCount`
     must be integers >= 1, `gapConfirmTokens` and the three token amounts integers >= 0, `lookaheadHeadroomRatio` in [0,
-    1), `budgetMode` `"ratio"` or `"tokens"`), including through the server normalizer.
+    1), `budgetMode` `"ratio"` or `"tokens"`; `structured` as [structured-memory](structured-memory.md) says), including
+    through the server normalizer.
   - A setting that sizes the budget goes through `resolveHypaV3Budget`, never a site's own formula.
   - Server host capabilities also need `MemoryHost`, the runner adapter, and the fixture's `hostOf`.
   - The server alone runs valid summary separators through `MemoryHost.regex`, sequentially with at most 1,000 ms per

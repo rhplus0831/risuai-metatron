@@ -1,5 +1,7 @@
 // Long-term memory shapes persisted on chats (`hypaV2Data`, `hypaV3Data`) and in settings.
 
+import type { StructuredMemorySettings } from "./structuredMemory.ts";
+
 export const DISPLAY_MODE = {
     All: "All",
     Range: "Range",
@@ -137,6 +139,8 @@ export interface HypaV3Settings {
     queryChatCount: number;
     /** Uncovered history tokens a send may leave without summaries before it asks first; 0 asks on any gap. */
     gapConfirmTokens: number;
+    /** The Structured Memory writer's settings (`normalizeStructuredMemorySettings`). */
+    structured: StructuredMemorySettings;
 }
 
 export interface HypaV3Data {

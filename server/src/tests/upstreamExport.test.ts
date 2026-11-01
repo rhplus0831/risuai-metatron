@@ -637,7 +637,13 @@ describe("buildUpstreamDatabase: settings", () => {
 });
 
 describe("buildUpstreamDatabase: HypaV3 budgets", () => {
-    const newFields = ["budgetMode", "memoryBudgetTokens", "lookaheadHeadroomTokens", "extraSummarizationTokens"];
+    const newFields = [
+        "budgetMode",
+        "memoryBudgetTokens",
+        "lookaheadHeadroomTokens",
+        "extraSummarizationTokens",
+        "structured",
+    ];
     const ratios = { memoryTokensRatio: 0.25, lookaheadHeadroomRatio: 0.125, extraSummarizationRatio: 0.5 };
     const tokenPreset = (id: string, memory: number, headroom: number, extra: number) =>
         createHypaV3Preset(
@@ -739,6 +745,54 @@ describe("buildUpstreamDatabase: HypaV3 budgets", () => {
 });
 
 describe("buildUpstreamDatabase: characters and chats", () => {
+    it("omits writer settings from every preset and Structured Memory overrides from characters, groups, and their chats", async () => {
+        const snapshot = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(COLLECTION_KIND.hypaV3Presets, "main", {
+                items: [
+                    createHypaV3Preset(
+                        "Ratio",
+                        { structured: { language: "ko", instructions: "Writer only" } },
+                        "ratio",
+                    ),
+                    createHypaV3Preset("Tokens", { budgetMode: "tokens", structured: { language: "ja" } }, "tokens"),
+                ],
+                selectedId: "tokens",
+            });
+            for (const type of ["character", "group"]) {
+                w.put(RESOURCE_KIND.characters, type, {
+                    chaId: type,
+                    name: type,
+                    type,
+                    structuredMemoryLanguage: "ko",
+                });
+                for (const id of ["one", "two"]) {
+                    w.chat(type, id, {
+                        name: id,
+                        message: [{ role: "user", data: `${type} ${id}`, chatId: "m" }],
+                        structuredMemoryLanguage: "ja",
+                        structuredMemoryHighlight: id === "one" ? "none" : "all",
+                    });
+                }
+            }
+        });
+        const { db } = exportOf(snapshot);
+        const presets = db.hypaV3Presets as { name: string; settings: Root }[];
+        expect(presets.map((preset) => preset.name)).toEqual(["Ratio", "Tokens"]);
+        for (const preset of presets) expect(preset.settings).not.toHaveProperty("structured");
+        for (const type of ["character", "group"]) {
+            const owner = characterNamed(db, type);
+            expect(owner).not.toHaveProperty("structuredMemoryLanguage");
+            const chats = chatsOf(db, type);
+            expect(chats.map((chat) => chat.name)).toEqual(["one", "two"]);
+            for (const chat of chats) {
+                expect(chat).not.toHaveProperty("structuredMemoryLanguage");
+                expect(chat).not.toHaveProperty("structuredMemoryHighlight");
+                expect(chat.message).toEqual([{ role: "user", data: `${type} ${chat.name}`, chatId: "m" }]);
+            }
+        }
+    });
+
     it("strips lore overrides from every exported character and group chat", async () => {
         const snapshot = await snapshotOf((w) => {
             for (const type of ["character", "group"]) {

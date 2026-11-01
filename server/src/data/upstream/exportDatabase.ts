@@ -165,13 +165,15 @@ const ROOT_ONLY_PROFILE_FIELDS = new Set<string>([
 ]);
 
 /** Character fields upstream's `character` and `groupChat` lack. */
-const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCount"];
+const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCount", "structuredMemoryLanguage"];
 
 /** Chat fields upstream's `Chat` lacks. */
 const METATRON_CHAT_FIELDS = [
     "pinned",
     "memoryTrimAck",
     "loreBudgetWarnOff",
+    "structuredMemoryLanguage",
+    "structuredMemoryHighlight",
     "bindingReview",
     "toolCalls",
     "loreOverrides",
@@ -751,7 +753,8 @@ function upstreamTranslatorPresets(db: Root, report: UpstreamExportReport): Root
  * [0, 1 − memory], and headroom in [0, 0.99] (`createHypaV3Preset` replaces a headroom of 1). The
  * bound `1 − memory` is rounded too (`1 − 0.33` is 0.6699999999999999), so every exported ratio has at
  * most 2 decimals. Without a positive finite `C` the stored ratios stay. Every preset leaves out
- * `budgetMode` and the token amounts; the result shares no settings object with `value`.
+ * `budgetMode`, the token amounts, and `structured` (upstream has no Structured Memory); the result
+ * shares no settings object with `value`.
  */
 function upstreamHypaV3Presets(value: unknown, maxContext: unknown): unknown {
     if (!Array.isArray(value)) {
@@ -762,8 +765,14 @@ function upstreamHypaV3Presets(value: unknown, maxContext: unknown): unknown {
         if (!isPlainObject(preset) || !isPlainObject(preset.settings)) {
             return preset;
         }
-        const { budgetMode, memoryBudgetTokens, lookaheadHeadroomTokens, extraSummarizationTokens, ...settings } =
-            preset.settings;
+        const {
+            budgetMode,
+            memoryBudgetTokens,
+            lookaheadHeadroomTokens,
+            extraSummarizationTokens,
+            structured: _structured,
+            ...settings
+        } = preset.settings;
         if (budgetMode === "tokens" && context !== null) {
             const ratioOf = (tokens: unknown) =>
                 Math.round(((typeof tokens === "number" && tokens > 0 ? tokens : 0) / context) * 100) / 100;

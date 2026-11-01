@@ -197,6 +197,8 @@ const kept = {
     bilingualSentences: 2,
     memoryTrimAck: 3,
     loreBudgetWarnOff: true,
+    structuredMemoryLanguage: "language-old",
+    structuredMemoryHighlight: "none",
     modules: ["module-old"],
 } satisfies Partial<Chat>;
 const storyVariables = { bonus: "5", toggle: "story", Toggle_upper: "story too" };
@@ -701,6 +703,8 @@ describe("chat checkpoints", () => {
             bilingualEmphasis: "translation",
             bilingualSentences: 4,
             memoryTrimAck: 9,
+            structuredMemoryLanguage: "language-new",
+            structuredMemoryHighlight: "all",
             modules: ["module-new"],
         } satisfies Partial<Chat>;
         edit(store, [

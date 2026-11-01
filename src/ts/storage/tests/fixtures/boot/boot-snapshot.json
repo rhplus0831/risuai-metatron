@@ -496,7 +496,34 @@
         "embeddingMaxConcurrent": 1,
         "alwaysToggleOn": false,
         "queryChatCount": 3,
-        "gapConfirmTokens": 10000
+        "gapConfirmTokens": 10000,
+        "structured": {
+          "language": "",
+          "cadence": "everyTurn",
+          "cadenceTurns": 5,
+          "cadenceTokens": 4000,
+          "cadenceRatio": 0.1,
+          "windowTurns": 3,
+          "flowEvents": 8,
+          "laneTargets": {
+            "pages": 2000,
+            "events": 1500,
+            "evidence": 700,
+            "threads": 300
+          },
+          "requiredCap": 1500,
+          "screening": {
+            "refusal": [],
+            "format": []
+          },
+          "instructions": "",
+          "fineTuning": false,
+          "analysisPrompt": "",
+          "patchPrompt": "",
+          "highlightMode": "important",
+          "highlightKinds": ["create", "contradiction", "delete", "retract"],
+          "highlightChangeGrade": 5
+        }
       }
     }
   ],

@@ -1,4 +1,5 @@
 import type { SerializableHypaV3Data, SerializableSummary } from "./memory.ts";
+import { isPlainObject } from "./valueKinds.ts";
 
 /**
  * Structured memory's records, kept per chat beside the chat's messages: events (what happened, one
@@ -69,6 +70,27 @@ export type MemoryManifestLane = (typeof MEMORY_MANIFEST_LANES)[number];
 /** The kinds of record a send can include. */
 export const MEMORY_MANIFEST_ITEM_KINDS = ["page", "event", "thread", "evidence"] as const;
 export type MemoryManifestItemKind = (typeof MEMORY_MANIFEST_ITEM_KINDS)[number];
+
+/**
+ * When the writer records: after every confirmed turn, every `cadenceTurns` confirmed turns, once the
+ * uncovered raw history reaches a token threshold, or only when the user asks.
+ */
+export const STRUCTURED_MEMORY_CADENCES = ["everyTurn", "everyK", "tokens", "manual"] as const;
+export type StructuredMemoryCadence = (typeof STRUCTURED_MEMORY_CADENCES)[number];
+
+/** Which recorded changes are highlighted: none, the kinds the preset lists, or every one. */
+export const STRUCTURED_MEMORY_HIGHLIGHT_MODES = ["none", "important", "all"] as const;
+export type StructuredMemoryHighlightMode = (typeof STRUCTURED_MEMORY_HIGHLIGHT_MODES)[number];
+
+/** The change kinds the `important` highlight mode can list; a `change` counts from a grade up. */
+export const STRUCTURED_MEMORY_HIGHLIGHT_KINDS = [
+    "create",
+    "contradiction",
+    "delete",
+    "retract",
+    "change",
+] as const satisfies readonly MemoryHistoryChangeKind[];
+export type StructuredMemoryHighlightKind = (typeof STRUCTURED_MEMORY_HIGHLIGHT_KINDS)[number];
 
 /**
  * The fixed slots of a character page, so retrieval and compaction can address them. On a character
@@ -346,6 +368,46 @@ export interface MemoryRun {
     customPrompt?: boolean;
 }
 
+/** The writer's settings, kept in the memory preset (`normalizeStructuredMemorySettings`). */
+export interface StructuredMemorySettings {
+    /** The language the writer records in; `""` follows the UI language. */
+    language: string;
+    cadence: StructuredMemoryCadence;
+    /** `everyK`: the confirmed turns between recordings; an integer >= 1. */
+    cadenceTurns: number;
+    /** `tokens` cadence under a `tokens` budget mode: the threshold; an integer >= 1. */
+    cadenceTokens: number;
+    /**
+     * `tokens` cadence under a `ratio` budget mode: the threshold as a share of the max context, in
+     * (0, 1). Each budget mode keeps the other's field, so switching back restores it.
+     */
+    cadenceRatio: number;
+    /** The assistant turns a send keeps raw; an integer >= 1. */
+    windowTurns: number;
+    /** The latest events a send lists in the flow lane; an integer >= 0. */
+    flowEvents: number;
+    /** Each lane's token target; integers >= 0. */
+    laneTargets: { pages: number; events: number; evidence: number; threads: number };
+    /** The tokens the required lane may take before the send fails; an integer >= 1. */
+    requiredCap: number;
+    /** Reply screening: the texts that mark a message `excluded`, as a refusal or as a format failure. */
+    screening: { refusal: string[]; format: string[] };
+    /** Free text added to the writer's default prompt. */
+    instructions: string;
+    /** `analysisPrompt` and `patchPrompt` replace the default prompts. */
+    fineTuning: boolean;
+    /** ChatML of the analysis call under `fineTuning`. */
+    analysisPrompt: string;
+    /** ChatML of the patch call under `fineTuning`. */
+    patchPrompt: string;
+    /** The highlight mode of a chat without its own `structuredMemoryHighlight`. */
+    highlightMode: StructuredMemoryHighlightMode;
+    /** What the `important` mode highlights; empty highlights nothing. */
+    highlightKinds: StructuredMemoryHighlightKind[];
+    /** The grade from which a listed `change` is highlighted, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax`. */
+    highlightChangeGrade: number;
+}
+
 /** One record a send included. */
 export interface MemoryManifestItem {
     id: string;
@@ -422,4 +484,76 @@ export function projectHypaV3Data(
             lastRandomSummaries: [],
         },
     };
+}
+
+/** `value` when it is a member of `list`, else `undefined`. */
+function memberOf<T extends string>(list: readonly T[], value: unknown): T | undefined {
+    return (list as readonly unknown[]).includes(value) ? (value as T) : undefined;
+}
+
+/** `value` when it is an integer in [`min`, `max`], else `fallback`. */
+function integerIn(value: unknown, fallback: number, min: number, max = Infinity): number {
+    return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
+}
+
+/** The non-empty strings of `value`; empty when it is not an array. */
+function textList(value: unknown): string[] {
+    return Array.isArray(value) ? value.filter((entry) => typeof entry === "string" && entry !== "") : [];
+}
+
+/**
+ * Writer settings with every field filled: each is checked on its own, an invalid one takes its
+ * default, and unknown keys are dropped. The result shares nothing with `input` or with another
+ * result.
+ */
+export function normalizeStructuredMemorySettings(input: unknown): StructuredMemorySettings {
+    const source = isPlainObject(input) ? input : {};
+    const laneTargets = isPlainObject(source.laneTargets) ? source.laneTargets : {};
+    const screening = isPlainObject(source.screening) ? source.screening : {};
+    const ratio = source.cadenceRatio;
+    return {
+        language: typeof source.language === "string" ? source.language : "",
+        cadence: memberOf(STRUCTURED_MEMORY_CADENCES, source.cadence) ?? "everyTurn",
+        cadenceTurns: integerIn(source.cadenceTurns, 5, 1),
+        cadenceTokens: integerIn(source.cadenceTokens, 4000, 1),
+        cadenceRatio: typeof ratio === "number" && ratio > 0 && ratio < 1 ? ratio : 0.1,
+        windowTurns: integerIn(source.windowTurns, 3, 1),
+        flowEvents: integerIn(source.flowEvents, 8, 0),
+        laneTargets: {
+            pages: integerIn(laneTargets.pages, 2000, 0),
+            events: integerIn(laneTargets.events, 1500, 0),
+            evidence: integerIn(laneTargets.evidence, 700, 0),
+            threads: integerIn(laneTargets.threads, 300, 0),
+        },
+        requiredCap: integerIn(source.requiredCap, 1500, 1),
+        screening: { refusal: textList(screening.refusal), format: textList(screening.format) },
+        instructions: typeof source.instructions === "string" ? source.instructions : "",
+        fineTuning: typeof source.fineTuning === "boolean" ? source.fineTuning : false,
+        analysisPrompt: typeof source.analysisPrompt === "string" ? source.analysisPrompt : "",
+        patchPrompt: typeof source.patchPrompt === "string" ? source.patchPrompt : "",
+        highlightMode: memberOf(STRUCTURED_MEMORY_HIGHLIGHT_MODES, source.highlightMode) ?? "important",
+        highlightKinds: Array.isArray(source.highlightKinds)
+            ? [
+                  ...new Set(
+                      source.highlightKinds.flatMap((kind) => memberOf(STRUCTURED_MEMORY_HIGHLIGHT_KINDS, kind) ?? []),
+                  ),
+              ]
+            : ["create", "contradiction", "delete", "retract"],
+        highlightChangeGrade: integerIn(source.highlightChangeGrade, 5, 0, STRUCTURED_MEMORY_LIMITS.gradeMax),
+    };
+}
+
+/** A chat's or its owner's writer language (`structuredMemoryLanguage`): a stored non-empty string, else none. */
+export function structuredMemoryLanguageOverride(
+    record: { structuredMemoryLanguage?: unknown } | undefined,
+): string | undefined {
+    const value = record?.structuredMemoryLanguage;
+    return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** A chat's highlight mode (`structuredMemoryHighlight`): a stored mode, else none. */
+export function structuredMemoryHighlightOverride(
+    chat: { structuredMemoryHighlight?: unknown } | undefined,
+): StructuredMemoryHighlightMode | undefined {
+    return memberOf(STRUCTURED_MEMORY_HIGHLIGHT_MODES, chat?.structuredMemoryHighlight);
 }
