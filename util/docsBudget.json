@@ -1,7 +1,6 @@
 {
   "ceilings": {
-    "docs/structure/llm-requests.md": 42338,
-    "docs/structure/settings-i18n.md": 41910
+    "docs/structure/llm-requests.md": 42338
   },
   "allow": []
 }

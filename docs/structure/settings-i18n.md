@@ -25,7 +25,9 @@
 
 ## Files
 
-Declarative settings (`src/ts/setting/`):
+### Registry and helpers
+
+These live in `src/ts/setting/`.
 
 - `types.ts`:
   - `SettingItem`: `id`, `type`, `bindKey` | `bindPath` (dotted) | `getValue(ctx)`/`setValue(value, ctx)`,
@@ -35,235 +37,260 @@ Declarative settings (`src/ts/setting/`):
   - `SettingContext`: `{settings, preset, modelPreset, modelProfile, persona, modelInfo, subModelInfo}`: the settings
     views, the selected preset (`activePreset`, by its own field names), and the selected persona (`activePersona`),
     from `src/ts/storage/settingsViews.svelte.ts`.
-  - `SettingType`.
-  - `SettingSection`: `id`, `labelKey`, `descriptionKey?`, `badgeKey?`, `collapsible?`, `items` (a named group on a
-    sectioned page; ids independent of item ids).
+  - `SettingSection`: a named group on a sectioned page; its id is independent of item ids.
   - `SettingCategory`: unused.
 - `sections.ts` `itemsById(source, ids)`: the items of a leaf array by id, in the order asked, the same objects; throws
   on an unknown or repeated id. Apart from `utils.ts`, which imports the data arrays that call it.
-- `settingRegistry.ts` `settingRegistry`: maps each `SettingType` to a wrapper component (`check`, `text`, `number`,
-  `textarea`, `slider`, `select`, `segmented`, `color`, `header`, `button`, `accordion`, `custom`).
+- `settingRegistry.ts` `settingRegistry`: maps each `SettingType` to a wrapper component.
 - `utils.ts`: `getSettingValue`, `setSettingValue` (a `bindKey`, or `bindPath`'s first segment, read and written through
-  `readSettingsRoot`/`writeSettingsRoot`), `checkCondition`, `getLabel` (over `languageText(key)`, a flat `language` key
-  or `""`), `settingContext` (the context both renderers build), `sectionHasVisibleItems`, `getFullSettingsData` (the
-  catalog: every page's leaf arrays, the Language and Translation ones included; its own label and keyword filter has no
-  UI, `searchIndex.ts` searches over it), `updateSettingValue` (the wrappers' write: skips an unchanged value, so
+  `readSettingsRoot`/`writeSettingsRoot`), `checkCondition`, `getLabel`, `settingContext` (the context both renderers
+  build), `sectionHasVisibleItems`, and `updateSettingValue` (the wrappers' write: skips an unchanged value, so
   `onChange` fires once per edit).
-- `searchIndex.ts` (pure): `SETTING_LOCATIONS` (and `settingLocation(id)`), every catalog item but `header`/`accordion`
-  placed once, read from the header arrays, sections, and leaf arrays the pages render: the menu (`SettingsMenuIndex`),
-  the tab (Display's tab id, the Prompt page's `submenu` 1 or 3), the `sectionId`, the handwritten accordion that must
-  start open (`opener`: `model.additionalParams`, `profile.chatFormat`; Connections is the chat-format items'
-  destination, not the Prompt page's Ooba block), and `available(ctx)` for a parent condition the registry lacks (only
-  `adv.remPunc`: `MemorySettings.svelte`'s whole Hanurai/HypaV2/HypaV3/SupaMemory chain; the Voice page's emotion method
-  gates nothing). `searchSettings(query, ctx)` ranks, with `koreanSearch.ts` `matchText`, the navigation pages and the
-  three Model tabs (labels listed beside `Settings.svelte`'s `navGroups` and `ModelMenuTabs`), the section titles, and
-  the items by label (current language and English), keywords and section title; any label match outranks a keyword or
-  section match, equal scores keep that order, at most `SETTING_HIT_LIMIT` (50). A `SettingHit` has a non-empty label
-  (an unlabelled item takes its section title), a breadcrumb, its `target`, and `available: false` with a `reason`
-  (`hidden`: its own, a parent's, or its section's condition fails; `noMainProfile`: a Connections item while the main
-  slot names no profile). A Connections item is checked against `activeMainProfile` and carries its `profileId`.
-- `settingJump.svelte.ts` (the in-app deep link; no URL form): `openSetting(hit)` takes a `SettingHit` (section and page
-  hits have no item location; the hit's `available` and `profileId` are `searchSettings`'), increments `jumpVersion()`
-  (reactive; only `openSetting` changes it), records the pending jump with that version, calls `requestDisplayTab` for a
-  Display tab, and opens the settings on the hit's menu. `currentJump()` answers the pending jump while its menu is
-  exactly `SettingsMenuIndex` (not reactive; the mount-time consumers read it once); `finishJump(version)` clears it
-  only when it is still that version and never changes `jumpVersion()`, so it never remounts the page it prepared.
-  `scrollToSetting(itemId, root?, isCurrent?)` waits a tick, checks `isCurrent`, and scrolls the row's first element
-  child with a box (`[data-setting-id]`; none with a box: nothing) into view with a `ring-2 ring-primary-500` that a
-  `SETTING_HIGHLIGHT_MS` (2 s) timer removes; `scrollToSection` does the same for a section hit's
-  `[data-settings-section]` wrapper.
+- `utils.ts` `getFullSettingsData`: the catalog, every page's leaf arrays, the Language and Translation ones included.
+  Its own label and keyword filter has no UI; `searchIndex.ts` searches over it.
 - `customComponents.ts` `customComponents`: maps component IDs to components for `type:'custom'`.
-- Data arrays:
-  - `accessibilitySettingsData.ts`: `accessibilitySettingsItems`, `accessibilitySettingsHeader` (`acc.header`), and
-    `accessibilitySettingsSections`: Scrolling (auto-scroll, with always scroll, the reply start after streaming, and
-    the new-message button under it) and Reachability (`acc.fixedChatTextarea`, `acc.hamburgerButtonBottom`); the page
-    ends with a link to Display's Layout & sizing tab. The other settings live on their owning pages: lorebook to
-    Memory, developer to Advanced, `acc.applyAdditionalParamsToAll` to Model, the interaction items to the Interaction
-    page
-  - `interactionSettingsData.ts`: `interactionSettingsItems` (the `acc.` items from Accessibility and
-    `adv.scrollToActive`/`adv.bookmark` from Advanced, ids kept, plus `interaction.header`; also `acc.newChatBinding`,
-    how a new chat starts, [chat bindings](persistence.md): a segmented choice whose `getValue` reads anything but
-    `empty` as `inherit`, as the creation does), `interactionSettingsHeader`, and `interactionSettingsSections`: Input,
-    Message editing, Chat & navigation, and Context usage meter (`interaction.contextMeter`:
-    `interaction.contextMeterEnabled` (`contextMeter`), then, while it is on, `interaction.contextMeterTurnUnit`
-    (`contextMeterTurnUnit`, a segmented choice that reads anything but `message` as `user`)
-    `interaction.contextMeterFixedWarn` (`contextMeterFixedWarn`, a slider over `CONTEXT_METER_FIXED_WARN`'s 10–95), and
-    `interaction.contextMeterLookahead` (`contextMeterLookahead`, the meter's background-summary line); `normalizeUi`
-    defaults them to `true`, `user`, 60, and `true`, replaces any other turn unit with `user`, and clamps the warning
-    level to 10–95)
-  - `advancedSettingsData.ts`: `advancedSettingsItems` (the leaf array; also `adv.requestHistoryContent` and
-    `adv.requestHistoryLimit`, the server request history's `providers` settings, 10–10,000,
-    [diagnostics](diagnostics.md), and `display.hideApiKey`, `display.useLegacyGUI`, moved from Display),
-    `advancedSettingsHeader` (`adv.header`, `adv.warn`), and `advancedSettingsSections`: Feature access (with
-    `display.hideApiKey`), Performance & media (with `adv.newImgBeta`, the chat's character asset image handling),
-    Requests & tools, then collapsible Developer & diagnostics (with `acc.requestInfoInsideChat` and
-    `acc.inlayErrorResponse`, moved from Accessibility), Experimental (`useExperimental` items) and Legacy
-    (`adv.plainFetch`, a `showUnrecommended` item, and `display.useLegacyGUI`)
-  - `botSettingsParamsData.ts` (`allBasicParameterItems`, sampling, penalty, model-specific)
-  - `chatFormatSettingsData.ts`
-  - `displaySettingsData.svelte.ts`: `displaySettingsItems` (the leaf array, in tab and section order; also
-    `adv.heightMode` and `adv.keepSessionAlive`, moved from Advanced), `displaySettingsTabs`
-    (`{ id, labelKey, sections }`: Theme (`theme`) with Interface style, Colors & typography and a collapsible Custom
-    CSS; Layout & sizing with Element sizes and Window & sidebar; Chat appearance with Messages and Media; Sound &
-    notifications with Sound and Notifications), and `displaySettingsSections` (every tab's sections in tab order)
-  - `languageSettingsData.svelte.ts` (`langState`, `languageSettingsItems`: the Language page, `lang.header`,
-    `lang.uiLanguage`, `lang.restartWarn`)
-  - The items moved off Advanced, one data file per receiving page (each item keeps its `adv.` id):
-    `modelSettingsData.ts` (`modelSettingsItems`, `modelSettingsSections`: collapsible Advanced model behavior, the
-    request and provider `providers` fields, and collapsible Custom Models, `CustomModelsSettings` with `noAccordion`;
-    both say they apply to every model preset; rendered after the Preset tab's Additional Params; and
-    `modelAdditionalParamsItems`, `acc.applyAdditionalParamsToAll` from Accessibility, rendered inside the Additional
-    Params accordion under its table, which now says it is shared by every model preset), `promptSettingsData.ts`
-    (`promptSettingsItems`, `promptSettingsSections`: collapsible Advanced prompt behavior, which says it applies to
-    every prompt preset, with `display.showPromptComparison` and `BanCharacterSetSettings` with `noAccordion`; at the
-    end of the Prompt page's Others tab), `memorySettingsData.ts` (`adv.lbDepth`, `adv.lbToken`, and from Accessibility
-    `acc.localActivationInGlobalLorebook`, `acc.bulkEnabling`, in the Memory page's Lorebook section at its end, and
-    `memorySupaMemoryItems`, `adv.remPunc`, rendered inside the SupaMemory block, its only reader),
-    `voiceSettingsData.ts` (`adv.emoPrompt`, under the emotion method). `adv.personaNote` went to the Persona page and
-    was later removed: the persona note field always shows (its popup editor opens as `plaintext`, so it has no Preview
-    and never counts the note's tokens), and the persisted `personaNote` flag is no longer read.
-    `adv.localNetworkMode`/`adv.localNetworkTimeout` left the UI: the Connections editor's Local Network Mode accordion
-    edits the same profile fields.
-  - `translationSettingsData.ts`: `translationSettingsItems` (the leaf array: `translation.header`, the translator items
-    with their `lang.` ids, the cache buttons and their handlers, and `adv.noWaitTrans`, `acc.showTranslationLoading`,
-    `adv.exp.googleTrans`, moved from Advanced and Accessibility), `translationSettingsHeader`, and
-    `translationSettingsSections`: Translator (`lang.translatorLang` first and unconditional, the only way to turn
-    translation on; the rest reads `translator`/`translatorType`), Behavior, collapsible Experimental
-    (`adv.exp.googleTrans`, `useExperimental`), Cache. With no translator language set, only the select, the two
-    Behavior items without a condition, and (while experimental features are on) Experimental show
 
-Components (`src/lib/Setting/`):
+### Settings search and jumps
+
+These live in `src/ts/setting/`.
+
+- An item in a page's leaf array and its section's `itemsById` list is indexed with no further edit, since
+  `searchIndex.ts` reads the same sections (`## Recipes`, "Add a setting to a sectioned page"). A new leaf array or page
+  also needs its `placeItems`/`placeSections` call; `searchIndex.test.ts` fails on a catalog item with no location.
+- `searchIndex.ts` (pure) `SETTING_LOCATIONS` (and `settingLocation(id)`): every catalog item but `header`/`accordion`
+  placed once, read from the header arrays, sections, and leaf arrays the pages render. A location names the menu
+  (`SettingsMenuIndex`), the tab (Display's tab id, the Prompt page's `submenu` 1 or 3), and the `sectionId`.
+- A location's `opener` is the handwritten accordion that must start open: `model.additionalParams` or
+  `profile.chatFormat`. Connections is the chat-format items' destination, not the Prompt page's Ooba block.
+- An item needs an `opener` only when it renders inside a handwritten accordion; a `collapsible` section opens for its
+  jump by itself. To add one, extend `SettingOpener`, pass it in the item's `placeItems` call, and have the page read
+  `currentJump()` at mount and pass `startOpen` while `jump.available` (`ModelSettings.svelte` `openAdditionalParams`).
+- A location's `available(ctx)` is a parent condition the registry lacks. Only `adv.remPunc` has one:
+  `MemorySettings.svelte`'s whole Hanurai/HypaV2/HypaV3/SupaMemory chain. The Voice page's emotion method gates nothing.
+- `searchSettings(query, ctx)` ranks, with `koreanSearch.ts` `matchText`, the navigation pages and the three Model tabs
+  (labels listed beside `Settings.svelte`'s `navGroups` and `ModelMenuTabs`), the section titles, and the items by label
+  (current language and English), keywords and section title. Any label match outranks a keyword or section match, equal
+  scores keep that order, and it returns at most `SETTING_HIT_LIMIT` (50).
+- A `SettingHit` has a non-empty label (an unlabelled item takes its section title), a breadcrumb, its `target`, and
+  `available: false` with a `reason` (`hidden`: its own, a parent's, or its section's condition fails; `noMainProfile`:
+  a Connections item while the main slot names no profile). A Connections item is checked against `activeMainProfile`
+  and carries its `profileId`.
+- `settingJump.svelte.ts` `openSetting(hit)` (the in-app deep link; no URL form) takes a `SettingHit`, since section and
+  page hits have no item location and the hit's `available` and `profileId` are `searchSettings`'. It increments
+  `jumpVersion()` (reactive; only `openSetting` changes it), records the pending jump with that version, calls
+  `requestDisplayTab` for a Display tab, and opens the settings on the hit's menu.
+- `settingJump.svelte.ts` `currentJump()` answers the pending jump while its menu is exactly `SettingsMenuIndex` (not
+  reactive; the mount-time consumers read it once). `finishJump(version)` clears it only when it is still that version
+  and never changes `jumpVersion()`, so it never remounts the page it prepared.
+- `settingJump.svelte.ts` `scrollToSetting` and `scrollToSection` wait a tick, check `isCurrent`, and scroll into view
+  with a ring that `SETTING_HIGHLIGHT_MS` (2 s) removes: a row's first element child with a box (none with a box:
+  nothing), or a section hit's `[data-settings-section]` wrapper.
+
+### Data arrays
+
+These live in `src/ts/setting/`.
+
+- An item's id prefix names the page it came from, not the page it sits on: `rg` the id in `src/ts/setting/` before
+  assuming its page (`acc.`, `adv.`, and `display.` ids sit on several pages).
+- `accessibilitySettingsData.ts`, `interactionSettingsData.ts`, `advancedSettingsData.ts`, and
+  `translationSettingsData.ts` each export the page's leaf array (`<page>SettingsItems`), `<page>SettingsHeader`, and
+  `<page>SettingsSections`.
+- `interactionSettingsData.ts` `acc.newChatBinding`: how a new chat starts ([chat bindings](persistence.md)), a
+  segmented choice whose `getValue` reads anything but `empty` as `inherit`, as the creation does.
+- `interactionSettingsData.ts` Context usage meter section: `interaction.contextMeterEnabled` (`contextMeter`), then,
+  while it is on, the turn unit (a segmented choice that reads anything but `message` as `user`), the fixed warning, and
+  the lookahead. `normalizeUi` defaults them to `true`, `user`, 60, and `true`, replaces any other turn unit with
+  `user`, and clamps the warning level to `CONTEXT_METER_FIXED_WARN`'s 10–95.
+- `advancedSettingsData.ts`: `adv.requestHistoryContent` and `adv.requestHistoryLimit` are the server request history's
+  `providers` settings, 10–10,000 ([diagnostics](diagnostics.md)). `adv.newImgBeta` is the chat's character asset image
+  handling. Developer & diagnostics, Experimental (`useExperimental` items), and Legacy (`adv.plainFetch`, a
+  `showUnrecommended` item, and `display.useLegacyGUI`) are collapsible.
+- `botSettingsParamsData.ts` (`allBasicParameterItems`, sampling, penalty, model-specific)
+- `chatFormatSettingsData.ts`
+- `displaySettingsData.svelte.ts`: `displaySettingsItems` (the leaf array, in tab and section order),
+  `displaySettingsTabs` (`{ id, labelKey, sections }`), and `displaySettingsSections` (every tab's sections in tab
+  order).
+- `languageSettingsData.svelte.ts` (`langState`, `languageSettingsItems`: the Language page, `lang.header`,
+  `lang.uiLanguage`, `lang.restartWarn`)
+- `modelSettingsData.ts`: `modelSettingsItems` and `modelSettingsSections`: collapsible Advanced model behavior, the
+  request and provider `providers` fields, and collapsible Custom Models, `CustomModelsSettings` with `noAccordion`.
+  Both say they apply to every model preset, and they render after the Preset tab's Additional Params.
+- `modelSettingsData.ts` `modelAdditionalParamsItems`: `acc.applyAdditionalParamsToAll`, rendered inside the Additional
+  Params accordion under its table, which says it is shared by every model preset.
+- `promptSettingsData.ts`: `promptSettingsItems` and `promptSettingsSections`: collapsible Advanced prompt behavior,
+  which says it applies to every prompt preset, with `display.showPromptComparison` and `BanCharacterSetSettings` with
+  `noAccordion`, at the end of the Prompt page's Others tab.
+- `memorySettingsData.ts`: `adv.lbDepth`, `adv.lbToken`, `acc.localActivationInGlobalLorebook`, and `acc.bulkEnabling`,
+  in the Memory page's Lorebook section at its end, and `memorySupaMemoryItems`, `adv.remPunc`, rendered inside the
+  SupaMemory block, its only reader.
+- `voiceSettingsData.ts`: `adv.emoPrompt`, under the emotion method.
+- `translationSettingsData.ts` `translationSettingsItems`: `translation.header`, the translator items with their `lang.`
+  ids, the cache buttons and their handlers, and `adv.noWaitTrans`, `acc.showTranslationLoading`, `adv.exp.googleTrans`.
+- `translationSettingsData.ts` `translationSettingsSections`: Translator (`lang.translatorLang` first and unconditional,
+  the only way to turn translation on; the rest reads `translator`/`translatorType`), Behavior, collapsible Experimental
+  (`adv.exp.googleTrans`, `useExperimental`), Cache. With no translator language set, only the select, the two Behavior
+  items without a condition, and (while experimental features are on) Experimental show.
+
+### Renderers and credential links
+
+These live in `src/lib/Setting/`.
 
 - `SettingRenderer.svelte`: derives the context (`settingContext`: the views and the selected preset's
   `aiModel`/`subModel` model info), filters by `checkCondition`, and renders `settingRegistry[item.type]` keyed by
   `item.id`, each inside a `<div class="contents" data-setting-id={item.id}>` (the search jump's anchor, no box of its
   own).
-- `CredentialStatusLink.svelte` and `src/ts/setting/credentialLinks.ts` (a shared credential has one editing place):
-  `CREDENTIAL_OWNERS` maps `openAIKey` and `google` to the API Keys tab, `NAIApiKey` to Image Generation's NovelAI
-  block, `supaMemoryKey` to Memory. Elsewhere the link shows the status `SecretInput` shows (or `maskedLeaf` of the
-  plain `secrets.NAIApiKey`) and an "Edit in …" button. `openCredentialOwner` opens the settings at the owner and leaves
-  a one-shot request, `takeCredentialRequest`, which the owner reads once at mount. It then shows the field even where
-  its condition would hide it, and `scrollToCredential` scrolls to the field's `data-credential` wrapper and focuses its
-  first input. The links are on Voice & Emotion (OpenAI, NovelAI), Image Generation (DALL-E's OpenAI, Imagen's Google)
-  and the Playground embedding tool (`supaMemoryKey`).
-- `SettingsSections.svelte` (`sections: SettingSection[]`): per section, a `<section aria-labelledby>` with an `h3`, the
-  description, an optional badge pill, and `SettingRenderer`; a `collapsible` one is a closed `styled` `UI/Accordion`
-  (title and badge on its button, description inside). Each wrapper carries `data-settings-section={id}`. A section
+- `SettingsSections.svelte` (`sections: SettingSection[]`): per section, a `<section>` with `SettingRenderer`; a
+  `collapsible` one is a closed `styled` `UI/Accordion`. Each wrapper carries `data-settings-section={id}`. A section
   whose items all fail their conditions (`sectionHasVisibleItems`, over the same context) renders nothing. A collapsible
   section that an available search jump names (`currentJump()`, read at mount) starts open.
 - `Wrappers/Setting*.svelte`: a function binding
   (`bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`), so an edit is written synchronously, into
   the preset selected at that moment. No local copy and no write-back effect. `SettingSegmented` binds the same way.
-- `Settings.svelte`: navigation. The sidebar is `navGroups`: Chat setup (Model, Prompt, Persona), Features (Memory,
-  Image Generation, Voice & Emotion, Translation, Modules, Plugins), Interface (Display & Audio, Interaction,
-  Accessibility, Language, Hotkeys), Data (Backups, menu 0, `UserSettings`), Advanced & about (Advanced, Supporters,
-  then the plugin-added menus); each group is a `role="group"` labelled by its `h3`, and an entry is highlighted on any
-  of its menu indexes. `SettingsMenuIndex` selects the page: `MODEL_SETTINGS_MENU` (1, the Model menu's Preset tab),
-  `MODEL_PROFILES_SETTINGS_MENU` (18, its Connections tab), `API_KEYS_SETTINGS_MENU` (17, its API Keys tab; both in
-  `llm-requests.md`): one sidebar entry, Model, covers the three, and `Pages/Model/ModelMenuTabs.svelte` (the heading
-  and the tab bar each of the three pages renders) switches between them by setting the index, `PROMPT_SETTINGS_MENU`
-  (16, the Prompt page), 13 (its prompt template editor), `TRANSLATION_SETTINGS_MENU` (21, the Translation page),
-  `INTERACTION_SETTINGS_MENU` (22, the Interaction page, `/settings/interaction`), `MEMORY_SETTINGS_MENU` (2, the Memory
-  page, `/settings/memory`, the old `/settings/bot` an alias; the HypaV3 modal's settings link opens it),
-  `IMAGE_GENERATION_SETTINGS_MENU` (19) and `VOICE_SETTINGS_MENU` (20, Voice & Emotion), and the others by number (the
-  named values live in `src/ts/settingsMenu.ts`, re-exported by `src/ts/stores.svelte.ts`; the URL slugs in
-  `src/ts/router/routes.ts`). The page is keyed by the menu and `jumpVersion()`, so a search jump remounts its page even
-  when it is the page shown. The settings search is a field at the top of the navigation (`language.settingsSearch`):
-  while its query is non-empty the navigation lists `searchSettings` hits (label, breadcrumb, a line for an unavailable
-  hit) instead of the groups; Enter opens the first hit (not during an IME composition), a click opens that hit, Escape
-  clears the field. The query lives in the component, so it survives a phone's page round trip and is gone when the
-  settings close. An attachment on the keyed page runs the jump after each mount: an available item or section hit is
-  scrolled to and ringed within that page, an unavailable one shows a one-line note at the top of the page
-  (`hiddenNote`, or `noMainProfileNote`) with no section or row opened; then `finishJump`.
+- `src/ts/setting/credentialLinks.ts` `CREDENTIAL_OWNERS` (a shared credential has one editing place): `openAIKey` and
+  `google` belong to the API Keys tab, `NAIApiKey` to Image Generation's NovelAI block, `supaMemoryKey` to Memory.
+- `CredentialStatusLink.svelte`: elsewhere, the status `SecretInput` shows (or `maskedLeaf` of the plain
+  `secrets.NAIApiKey`) and an "Edit in …" button. The links are on Voice & Emotion (OpenAI, NovelAI), Image Generation
+  (DALL-E's OpenAI, Imagen's Google) and the Playground embedding tool (`supaMemoryKey`).
+- `credentialLinks.ts` `openCredentialOwner` opens the settings at the owner and leaves a one-shot request,
+  `takeCredentialRequest`, which the owner reads once at mount. It then shows the field even where its condition would
+  hide it, and `scrollToCredential` scrolls to the field's `data-credential` wrapper and focuses its first input.
 
-Pages, by kind:
+### Settings navigation
 
-- **Declarative**: `AccessibilitySettings` (sectioned: `accessibilitySettingsHeader`, then `SettingsSections` over
-  `accessibilitySettingsSections`, then a handwritten link button that opens Display, 3, on its Layout & sizing tab
-  through `requestDisplayTab`), `InteractionSettings` (sectioned: `interactionSettingsHeader`, then `SettingsSections`
-  over `interactionSettingsSections`), `AdvancedSettings` (sectioned: `advancedSettingsHeader`, then `SettingsSections`
-  over `advancedSettingsSections`), `ChatFormatSettings`, `DisplaySettings` (sectioned per tab: a handwritten heading
-  and tab bar, then `SettingsSections` over the selected tab's sections; it opens on Theme, or once on the tab another
-  page asked for with `requestDisplayTab` (`displaySettingsData.svelte.ts`, read by `takeRequestedDisplayTab` at mount);
-  with `settings.ui.useLegacyGUI`, read at mount, no tab bar and every tab's sections stacked in tab order,
-  `displaySettingsSections`; the labels never wrap and a narrow row scrolls sideways), `LanguageSettings` (the UI
-  language only), `TranslationSettings` (sectioned: `translationSettingsHeader`, then `SettingsSections` over
-  `translationSettingsSections`).
-- **Hybrid**: `ModelSettings` (the model preset: the main and sub slot pickers (`Model/ProfileSlotSelect`), the aux
-  models (`Model/AuxModelSelectors`), the Vertex region, the global request toggles such as response streaming, and
-  additional parameters); `ModelProfilesSettings` (the model profiles, shown as Connections,
-  `MODEL_PROFILES_SETTINGS_MENU`; the selected profile is module state, so it survives a tab switch's remount (the first
-  profile when it is gone); a search jump with a `profileId` selects that profile at mount; `Model/ModelProfileEditor`
-  edits the selected profile by id: model, `CredentialSelect`, and the model's blocks: reverse proxy, OpenRouter
-  (`OpenrouterSettings`), local URLs, Ollama and NanoGPT, chat format, system replacement, custom flags, tools,
-  `maxContext`, image output; [model profiles and slots](llm-requests.md)); `PromptPresetSettings` (the prompt preset:
-  parameters tab renders `allBasicParameterItems`, prompt and others tabs handwritten; it opens on a search jump's tab,
-  except in the legacy GUI). The handwritten accordions a location names as `opener` (Model's Additional Params,
-  `Model/ModelProfileEditor`'s Chat Formatting) start open for an available jump.
-- **Handwritten**: `MemorySettings` (the memory type, Hanurai, HypaV2, HypaV3 presets, SupaMemory, the embedding model,
-  and below it the one `supaMemoryKey` input, shown while summarization (HypaV2's or SupaMemory's OpenAI 3.5 Instruct)
-  or the embedding model uses OpenAI, or when a link asked for it; `SettingRenderer`/`SettingsSections` over
-  `memorySettingsData.ts` for its registered settings items; under the HypaV3 summarization model a warning,
-  `hypaV3Settings.localSummarizationWarning` for a preset model other than `subModel` (the server cannot run it), else
-  `pluginMemoryModelWarning` while the `memory` slot resolves (`getModelInfoForMode`) to an `LLMFormat.Plugin` or
-  `pluginmodel:::` model (the tab must stay connected), then the always-shown `requestTriggerNote`; the preset's
-  `gapConfirmTokens` input, an integer >= 0 that `createHypaV3Preset` defaults to 10000, sits after Query Chat Count; a
-  Budget mode control (`SegmentedControl`, Ratio / Tokens) on the preset's `budgetMode` sits above the three budget
-  values: ratio mode shows the estimated maximum ratio and the `memoryTokensRatio`, `extraSummarizationRatio`, and
-  `lookaheadHeadroomRatio` sliders (the last in [0, 1) with a default of 0.15), then, while the page's max context `C`
-  (the prompt preset's override, else the main profile's, the source the server uses) is positive, a button that
-  converts the preset at that `C` (`memoryBudgetTokens = floor(C × r)`, the headroom and the extra rounded, `budgetMode`
-  set to `"tokens"`, the ratios kept so switching back restores them); token mode shows the estimated maximum in tokens
-  (`C` less the template, the character, its lore budget, and three replies) and integer inputs (>= 0) for
-  `memoryBudgetTokens`, `lookaheadHeadroomTokens`, and `extraSummarizationTokens`, with one danger line under them per
-  amount `resolveHypaV3Budget` reduces at `C` and the prompt preset's `maxResponse` (shown as soon as a value is typed);
-  the + button creates a token-mode preset, while import keeps a file's own fields), `ImageGenerationSettings` (the
-  provider and every provider block; it owns `NAIApiKey`, which a link also shows under the provider select while
-  another provider is selected; the WaveSpeed LoRA rows are an editing copy saved only by an edit or the reset for a
-  model without LoRA support, never by an effect or on mount: a copy without unsaved edits follows the saved value, and
-  one whose edits are not yet acknowledged (a later save cycle ended with the `secrets` revision changed) keeps its rows
-  when another value arrives, saves nothing, and shows `wavespeedLoraConflict` with `wavespeedLoraUseSaved`; the next
-  edit saves the rows over that change), `VoiceSettings` (sections TTS and Emotion Images; each has its own page),
-  `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `HotkeySettings`, `UserSettings`, `ThanksPage` (a failed
-  supporter-list fetch shows `supporterListLoadFailed`), `Display/*`, `Translation/TranslatorPresetSettings`,
-  `Model/AuxModelSelectors`.
+- `Settings.svelte` `navGroups`: the sidebar, in groups (Chat setup, Features, Interface, Data, Advanced & about), then
+  the plugin-added menus. An entry is highlighted on any of its menu indexes.
+- `SettingsMenuIndex` selects the page. The named values live in `src/ts/settingsMenu.ts`, re-exported by
+  `src/ts/stores.svelte.ts`, and the URL slugs in `src/ts/router/routes.ts` (`/settings/bot` is an alias of
+  `/settings/memory`). The other pages go by number, such as 13, the prompt template editor.
+- The Model menu is one sidebar entry over three indexes (Preset, and Connections and API Keys, both in
+  `llm-requests.md`): `Pages/Model/ModelMenuTabs.svelte`, the heading and the tab bar each of the three pages renders,
+  switches between them by setting the index.
+- `Settings.svelte` keys the page by the menu and `jumpVersion()`, so a search jump remounts its page even when it is
+  the page shown.
+- The settings search is a field at the top of the navigation (`language.settingsSearch`): while its query is non-empty
+  the navigation lists `searchSettings` hits (label, breadcrumb, a line for an unavailable hit) instead of the groups.
+  Enter opens the first hit (not during an IME composition), a click opens that hit, and Escape clears the field. The
+  query lives in the component, so it survives a phone's page round trip and is gone when the settings close.
+- An attachment on the keyed page runs the jump after each mount: an available item or section hit is scrolled to and
+  ringed within that page, an unavailable one shows a one-line note at the top of the page (`hiddenNote`, or
+  `noMainProfileNote`) with no section or row opened; then `finishJump`.
 
-- `botpreset.svelte`: the preset list, by `kind`. A pick acts on what the screen shows
-  ([chat bindings](persistence.md)): through `pickBinding`, with a chat open it binds that chat (a list opened from a
-  binding row, `{ chatRef }`, binds that row's chat and closes when the chat is gone), at home it selects for the tab;
-  in chat mode the list marks the chat's bound record (`pickedId`) and names the chat, and a deletion's confirmation
-  counts the chats bound to the preset (`chatsBoundTo`) and moves only the tab's selection. `prompt` (`openPresetList`):
-  pick, reorder, copy, add from the OAI2 template, rename, delete, import (`importPreset`), export (`downloadPreset`),
-  diff (`PromptDiffModal`), archive, and the Ctrl+1..9 numbers. Archive (`archived`, list metadata): the header's view
-  toggle switches between the active presets (the default) and the archived ones, each with an empty-state line; a row's
-  archive or restore control writes only `archived` by id (no pick, the list stays open) and moves the focus to the
-  toggle; an archived preset can still be picked from the archived view, and archiving leaves the tab's selection and
-  the chats bound to it as they are. The archived view hides add, import, the numbers, and the Ctrl hint. The rows are
-  the shown ones (`visibleEntries`, each with its position in `settings.presets`): the drop slots and numbers count
-  shown rows, a drag carries the preset's id, a drop inserts before the shown row under it (past the last, just after
-  it), and the diff picks go by id, resolved to positions when `PromptDiffModal` opens. `model` (`openModelPresetList`):
-  pick, reorder, copy (`copyModelPreset`, the slots naming the same profiles), add (`addModelPreset`), rename, and
-  delete (`removeModelPreset`, never the last one). `App.svelte` mounts one per store. Each page's header names its
-  selected preset and opens its list; `BindingScopeNote.svelte` marks it "This chat" or "Not set for this chat" while a
-  chat is open, and shows nothing at home.
-- `src/ts/storage/presets.svelte.ts` `importPreset`: returns the new preset ID after a successful import, or no value
-  when the picker is cancelled. The share receiver uses this result to consume a cached preset only after success.
+### Declarative pages
+
+Pages live in `src/lib/Setting/Pages/`.
+
+- `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, and `TranslationSettings` are sectioned: the
+  page's header array, then `SettingsSections` over its sections. `AccessibilitySettings` then adds a handwritten link
+  button that opens Display, 3, on its Layout & sizing tab through `requestDisplayTab`.
+- `DisplaySettings` is sectioned per tab: a handwritten heading and tab bar, then `SettingsSections` over the selected
+  tab's sections. It opens on Theme, or once on the tab another page asked for with `requestDisplayTab`
+  (`displaySettingsData.svelte.ts`, read by `takeRequestedDisplayTab` at mount). With `settings.ui.useLegacyGUI`, read
+  at mount, it has no tab bar and stacks every tab's sections in tab order (`displaySettingsSections`).
+- `ChatFormatSettings` and `LanguageSettings` (the UI language only).
+
+### Model and Prompt pages
+
+These are hybrids of handwritten controls and registry items.
+
+- `ModelSettings`: the model preset: the main and sub slot pickers (`Model/ProfileSlotSelect`), the aux models
+  (`Model/AuxModelSelectors`), the Vertex region, the global request toggles such as response streaming, and additional
+  parameters.
+- `ModelProfilesSettings`: the model profiles, shown as Connections, `MODEL_PROFILES_SETTINGS_MENU`. The selected
+  profile is module state, so it survives a tab switch's remount (the first profile when it is gone), and a search jump
+  with a `profileId` selects that profile at mount.
+- `Model/ModelProfileEditor` edits the selected profile by id: model, `CredentialSelect`, and the model's blocks:
+  reverse proxy, OpenRouter (`OpenrouterSettings`), local URLs, Ollama and NanoGPT, chat format, system replacement,
+  custom flags, tools, `maxContext`, image output ([model profiles and slots](llm-requests.md)).
+- `PromptPresetSettings`: the prompt preset. Its parameters tab renders `allBasicParameterItems`, and its prompt and
+  others tabs are handwritten. It opens on a search jump's tab, except in the legacy GUI.
+- The handwritten accordions a location names as `opener` (Model's Additional Params, `Model/ModelProfileEditor`'s Chat
+  Formatting) start open for an available jump.
+
+### Memory page
+
+- `MemorySettings` is handwritten: the memory type, Hanurai, HypaV2, HypaV3 presets, SupaMemory, and the embedding
+  model, with `SettingRenderer`/`SettingsSections` over `memorySettingsData.ts` for its registered settings items.
+- `MemorySettings` has one `supaMemoryKey` input, below the embedding model, shown while summarization (HypaV2's or
+  SupaMemory's OpenAI 3.5 Instruct) or the embedding model uses OpenAI, or when a link asked for it.
+- Under the HypaV3 summarization model sits a warning: `hypaV3Settings.localSummarizationWarning` for a preset model
+  other than `subModel` (the server cannot run it), else `pluginMemoryModelWarning` while the `memory` slot resolves
+  (`getModelInfoForMode`) to an `LLMFormat.Plugin` or `pluginmodel:::` model (the tab must stay connected). The
+  always-shown `requestTriggerNote` follows.
+- The HypaV3 preset's `gapConfirmTokens` input, an integer >= 0 that `createHypaV3Preset` defaults to 10000, sits after
+  Query Chat Count.
+- A Budget mode control (`SegmentedControl`, Ratio / Tokens) on the preset's `budgetMode` sits above the three budget
+  values. The + button creates a token-mode preset, while import keeps a file's own fields.
+- HypaV3 ratio mode shows the estimated maximum ratio and the `memoryTokensRatio`, `extraSummarizationRatio`, and
+  `lookaheadHeadroomRatio` sliders (the last in [0, 1) with a default of 0.15).
+- Under the ratio sliders, while the page's max context `C` (the prompt preset's override, else the main profile's, the
+  source the server uses) is positive, a button converts the preset at that `C`: `memoryBudgetTokens = floor(C × r)`,
+  the headroom and the extra rounded, `budgetMode` set to `"tokens"`, the ratios kept so switching back restores them.
+- HypaV3 token mode shows the estimated maximum in tokens (`C` less the template, the character, its lore budget, and
+  three replies) and integer inputs (>= 0) for `memoryBudgetTokens`, `lookaheadHeadroomTokens`, and
+  `extraSummarizationTokens`, with one danger line under them per amount `resolveHypaV3Budget` reduces at `C` and the
+  prompt preset's `maxResponse` (shown as soon as a value is typed).
+
+### Other handwritten pages
+
+- `ImageGenerationSettings`: the provider and every provider block. It owns `NAIApiKey`, which a link also shows under
+  the provider select while another provider is selected.
+- `ImageGenerationSettings`'s WaveSpeed LoRA rows are an editing copy, saved only by an edit or the reset for a model
+  without LoRA support, never by an effect or on mount. A copy without unsaved edits follows the saved value.
+- A WaveSpeed LoRA copy whose edits are not yet acknowledged (a later save cycle ended with the `secrets` revision
+  changed) keeps its rows when another value arrives, saves nothing, and shows `wavespeedLoraConflict` with
+  `wavespeedLoraUseSaved`; the next edit saves the rows over that change.
+- `VoiceSettings`: sections TTS and Emotion Images; each has its own page.
+- `ThanksPage`: a failed supporter-list fetch shows `supporterListLoadFailed`.
+- `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, and `Display/*`.
 - `Pages/HotkeySettings.svelte`: Settings menu index 15 renders this page at every width; below 768 px it shows
   `language.screenTooSmall` instead of the table. The table lists `activeHotkeys` (`hotkey.ts`), which hides
-  `quickSettings`: Ctrl+Q only shows `language.quickSettingsRemoved` (with a Korean override) since the quick settings
-  panel was removed ([app-shell](app-shell.md)).
+  `quickSettings`: Ctrl+Q only shows `language.quickSettingsRemoved`, with a Korean override
+  ([app-shell](app-shell.md)).
 
-Prompt and parameter editors:
+### Preset lists
+
+`botpreset.svelte` and `BindingScopeNote.svelte` live in `src/lib/Setting/`.
+
+- `botpreset.svelte`: the preset list, by `kind`. A pick acts on what the screen shows
+  ([chat bindings](persistence.md)): with a chat open it binds that chat (a list opened from a binding row,
+  `{ chatRef }`, binds that row's chat and closes when the chat is gone), at home it selects for the tab.
+- `pickBinding` (`src/ts/storage/chatBindingPick.ts`) is that pick. Its other callers are the Ctrl+1..9 hotkey
+  (`hotkey.ts` `changeToPreset`, prompt presets) and the persona pickers (`persona.ts` `changeUserPersona`).
+- `botpreset.svelte` in chat mode marks the chat's bound record (`pickedId`) and names the chat, and a deletion's
+  confirmation counts the chats bound to the preset (`chatsBoundTo`) and moves only the tab's selection.
+- The `prompt` list (`openPresetList`): pick, reorder, copy, add from the OAI2 template, rename, delete, import
+  (`importPreset`), export (`downloadPreset`), diff (`PromptDiffModal`), archive, and the Ctrl+1..9 numbers.
+- Prompt preset archive (`archived`, list metadata): the header's view toggle switches between the active presets (the
+  default) and the archived ones, each with an empty-state line. A row's archive or restore control writes only
+  `archived` by id (no pick, the list stays open) and moves the focus to the toggle.
+- An archived preset can still be picked from the archived view, and archiving leaves the tab's selection and the chats
+  bound to it as they are. The archived view hides add, import, the numbers, and the Ctrl hint.
+- The prompt list's rows are the shown ones (`visibleEntries`, each with its position in `settings.presets`): the drop
+  slots and numbers count shown rows, a drag carries the preset's id, a drop inserts before the shown row under it (past
+  the last, just after it), and the diff picks go by id, resolved to positions when `PromptDiffModal` opens.
+- The `model` list (`openModelPresetList`): pick, reorder, copy (`copyModelPreset`, the slots naming the same profiles),
+  add (`addModelPreset`), rename, and delete (`removeModelPreset`, never the last one).
+- `App.svelte` mounts one list per store. Each page's header names its selected preset and opens its list;
+  `BindingScopeNote.svelte` marks it "This chat" or "Not set for this chat" while a chat is open, and shows nothing at
+  home.
+- `src/ts/storage/presets.svelte.ts` `importPreset`: returns the new preset ID after a successful import, or no value
+  when the picker is cancelled. The share receiver uses this result to consume a cached preset only after success.
+
+### Prompt and parameter editors
 
 - `UI/PromptDataItem.svelte`: edits one `PromptItem`.
 - `Others/PromptDiffModal.svelte`: diffs the prompt templates of saved presets. Preferences are stored in
   `db.promptDiffPrefs`.
 
-Languages (`src/lang/`):
+### Languages
+
+These live in `src/lang/`.
 
 - `index.ts`: `language` (a mutable export) and `changeLanguage(code)`, which merges the locale over a clone of English.
 - `en.ts` `languageEnglish`: the source of truth and the type.
 - `de`, `es`, `ko`, `vi`, `cn`, `zh-Hant`: `DeepPartial` overrides.
+- Manual selection needs the locale file, a `changeLanguage` branch, and the picker option. `BROWSER_UI_LANGUAGES` only
+  affects first-boot matching of the browser's base code (`## Recipes`).
 - `serverAuth` supplies the self-host authentication failure fallbacks as functions taking the HTTP status, with Korean
   overrides and English fallback for other locales. Server-provided error text takes precedence.
 - `help.keepSessionAlive` describes the continuously looping inaudible 20 Hz tone used by Via Sound, Android's media
@@ -280,15 +307,16 @@ Languages (`src/lang/`):
   unavailable note → `finishJump`.
 - Preset switch: `changeToPreset(id)` → `selectPreset(id)` (prompt preset) and `changeToModelPreset(id)` →
   `selectModelPreset(id)` (model preset, [preset records](persistence.md)). Every preset field lives in its own preset,
-  so a switch copies nothing. These are the tab's selection only. The lists, `hotkey.ts` (Ctrl+1..9, the index counting
-  the active presets only, mapped to the id), and the persona pickers go through `pickBinding` instead
-  (`src/ts/storage/chatBindingPick.ts`), which binds the open chat (`chatBindingPatch`) and selects for the tab only at
-  home. `presetChain` re-scopes only its own job and changes neither ([chat bindings](persistence.md)).
-- Language change (`languageSettingsData` `onChange`):
-  1. Optionally download a translation.
+  so a switch copies nothing. These are the tab's selection only.
+- Preset pick: the lists, `hotkey.ts` (Ctrl+1..9, the index counting the active presets only, mapped to the id), and the
+  persona pickers go through `pickBinding` (`src/ts/storage/chatBindingPick.ts`), which binds the open chat
+  (`chatBindingPatch`) and selects for the tab only at home. `presetChain` re-scopes only its own job and changes
+  neither ([chat bindings](persistence.md)).
+- Language change (`languageSettingsData` `onChange`, after the `bindKey` write sets `settings.ui.language`):
+  1. For the `translang` entry only, download a locale as `lang.json` for a translator and set `settings.ui.language`
+     back to `en` (the item's `ctx.settings`).
   2. `changeLanguage`.
-  3. Set `settings.ui.language` (the item's `ctx.settings`).
-  4. Set `langState.changed`, which shows a restart warning.
+  3. Set `langState.changed`, which shows a restart warning.
 - The Prompt page's preset image: the preset id is captured before the image dialog opens; a cancel changes nothing, and
   the image is applied only if that preset still exists.
 - An imported SillyTavern preset computes `PresensePenalty` from `presence_penalty`; a missing value gives `NaN`, which
@@ -297,16 +325,17 @@ Languages (`src/lang/`):
 ## State
 
 - The settings records hold every setting (`persistence.md`). The pages and the registry read and write them through the
-  views of `src/ts/storage/settingsViews.svelte.ts`; the whole-database object they replaced is gone:
+  views of `src/ts/storage/settingsViews.svelte.ts`:
   - `settings.<section>.<field>` (a section record's field), `settings.<collection>` (a collection's wrapper; an
     assignment replaces the record; the two selectable collections are `{ items, selectedId }`),
     `settings.presets`/`modules`/`plugins`/`pluginStorage`;
   - `activePreset.<field>`: the selected prompt preset under its own field names (`name`, `image`, and
     `PROMPT_PRESET_FIELDS`: `NAISettings`, `reasonEffort`, `regex`, ...); `activeModelPreset.<field>`: the selected
-    model preset (`name`, `MODEL_PRESET_FIELDS`). Both with the [selection rules](persistence.md#settings-records): a
-    read resolves the selection (the first preset when it names none) and a missing value reads as a fresh copy of its
-    default, so a change inside that copy saves nothing; a write goes to the preset selected now or is dropped.
-    `activePersona.<field>` likewise (`name`, `icon`, `note`, `personaPrompt`, `largePortrait`). Both follow the
+    model preset (`name`, `MODEL_PRESET_FIELDS`);
+  - both with the [selection rules](persistence.md#settings-records): a read resolves the selection (the first preset
+    when it names none) and a missing value reads as a fresh copy of its default, so a change inside that copy saves
+    nothing; a write goes to the preset selected now or is dropped;
+  - `activePersona.<field>` likewise (`name`, `icon`, `note`, `personaPrompt`, `largePortrait`). Both follow the
     selection: a handler that awaits captures `activePreset.id` first, and
     `currentPresetRecord()`/`currentPersonaRecord()` return the record itself (or `undefined`);
   - `selectedLoreBookPage()` with `selectLoreBookPage` (the page this client shows),
@@ -314,15 +343,17 @@ Languages (`src/lang/`):
 - Every other settings reader and writer in the tab (the chat screens, sidebars, playground, the client process helpers,
   the plugin host's setting getters, `characterStore`'s HypaV3 toggle, and the mutation modules
   `collectionStore`/`pluginStorageStore`) uses the same views. A reader that falls back to the selection
-  (`activePreset.id`, `activePersona.id`) keeps a captured context's ids first. The parser's CBS hosts, the plugin
-  host's database API, `collectionStore`'s `updateSettings`, the snapshot consumers (`snapshots.svelte.ts`), the boot
-  installation, the preset functions (`presets.svelte.ts`), and resource sync read the records too.
+  (`activePreset.id`, `activePersona.id`) keeps a captured context's ids first.
+- The parser's CBS hosts, the plugin host's database API, `collectionStore`'s `updateSettings`, the snapshot consumers
+  (`snapshots.svelte.ts`), the boot installation, the preset functions (`presets.svelte.ts`), and resource sync read the
+  records too.
 - The prompt preset (`botPreset`) captures prompts, `promptTemplate`, `promptSettings`, sampling and reasoning
   parameters; the model preset (`ModelPreset`) and its profiles capture model/provider, endpoints, compatibility flags,
-  chat format, tools, `maxContext`, and auxiliary models. The prompt preset's
-  `maxContextOverride`/`maxContextOverrideSize` (0 is unset; ticking the box seeds it from the main profile) replace the
-  main slot's `maxContext` on the server (`forwardPresetRoots`, the main-slot request in `requestChatDataMain`) and in
-  the tab's CBS database; the settings root `maxContext` and the plugin roots stay the profile's.
+  chat format, tools, `maxContext`, and auxiliary models.
+- The prompt preset's `maxContextOverride`/`maxContextOverrideSize` (0 is unset; ticking the box seeds it from the main
+  profile) replace the main slot's `maxContext` on the server (`forwardPresetRoots`, the main-slot request in
+  `requestChatDataMain`) and in the tab's CBS database; the settings root `maxContext` and the plugin roots stay the
+  profile's.
 - `language` is replaced on switch, so components that read it at module initialization keep stale strings.
 - The views follow the open chat: while a chat is open, `activePreset`, `activeModelPreset`, and `activePersona` (and
   every root name they serve) resolve that chat's bound record when it exists, else the tab's selection
@@ -355,24 +386,28 @@ Languages (`src/lang/`):
   untracked, so a preset switch that leaves the options as they are does not reset it: a preset holding a hidden option
   (for example `thinkingType: "adaptive"` under a budget-only Claude model) keeps it. Both track only the visible option
   values (`JSON.stringify`), so a context rebuilt with the same options (a fresh model info after a chat's prompt
-  binding changes) does not run the reset. `SettingSelect` keeps its last-visible-option fallback. `SettingSegmented`
-  takes the same value sources as the other wrappers.
+  binding changes) does not run the reset.
+- `SettingSelect` keeps its last-visible-option fallback. `SettingSegmented` takes the same value sources as the other
+  wrappers.
 - A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list
   `normalizePreset` uses; a field of how a model is reached or what it accepts goes to `MODEL_PROFILE_FIELDS` and the
   `ModelProfile` type instead, a slot choice to `MODEL_PRESET_FIELDS` and the `ModelPreset` type), edited on its owner's
-  page (`ModelProfilesSettings`, `ModelSettings`, or `PromptPresetSettings`), and never be a secret: credentials belong
-  in the `llmSecrets` section (a named key in its `credentials` map, bound by a profile's `credentialId`), and
-  `downloadPreset` blanks the endpoint fields. A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte`
-  (`path` a `shared/llmSecrets.ts` `SecretPath`): it shows the stored key's status (set with its last four characters,
-  not set, saving), replaces it on Enter or the button (once; the field empties), and clears it; the draft is dropped
-  when the path changes. Never `bind:` an LLM credential field (an `llmSecrets` credential): it reads `""`. A profile
-  field is bound through `profileForSlot({ profileId })` (or `activeMainProfile`), never through its root name, so
-  editing a profile that is not in the main slot works. The auxiliary credentials of the `secrets` section are ordinary
-  readable fields, bound like any other (`settings.secrets.<field>`).
+  page (`ModelProfilesSettings`, `ModelSettings`, or `PromptPresetSettings`), and never be a secret.
+- Credentials belong in the `llmSecrets` section (a named key in its `credentials` map, bound by a profile's
+  `credentialId`), and `downloadPreset` blanks the endpoint fields.
+- A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (`path` a `shared/llmSecrets.ts` `SecretPath`):
+  it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the
+  button (once; the field empties), and clears it; the draft is dropped when the path changes.
+- Never `bind:` an LLM credential field (an `llmSecrets` credential): it reads `""`. The auxiliary credentials of the
+  `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).
+- A profile field is bound through `profileForSlot({ profileId })` (or `activeMainProfile`), never through its root
+  name, so editing a profile that is not in the main slot works.
+- A popup editor on a record the selection resolves (`activePreset`, `activePersona`, a `SettingItem` textarea through
+  its `popupEditorContext`) passes that record's id as `popupEditorContext`, so a popup opened on one record is
+  discarded instead of written into another ([ui-theming](ui-theming.md)).
 - Preserve misspelled keys: `PresensePenalty`, `seperateParameters`, `seperateModels`, `JinjaTemplate`.
-- `seperateParametersEnabled` and `seperateParameters` (the removed per-role parameters, with `overrides`, the per-model
-  parameters of the removed Easy Panel) stay in the preset and `providers` shape for saved data and preset files;
-  nothing reads or edits them.
+- `seperateParametersEnabled` and `seperateParameters` (per-role parameters, with `overrides`, per-model parameters)
+  stay in the preset and `providers` shape for saved data and preset files; nothing reads or edits them.
 - Prompt edits must keep the `PromptItem` discriminated shape and reassign arrays after splicing.
   `normalizePromptTemplate` (`shared/presets.ts`) handles imports.
 - `select` option `labelKey` has no fallback label. Missing locale keys fall back to English only because
@@ -395,7 +430,7 @@ Languages (`src/lang/`):
 
 - Add a declarative setting:
   1. `Database`, its place in `shared/sections.ts`, and its default in the server normalizer.
-  2. A `SettingItem` in `*SettingsData.ts`.
+  2. A `SettingItem` in the page's data file (`src/ts/setting/*Data.ts` or `*Data.svelte.ts`).
   3. The English key in `src/lang/en.ts`, plus optional locale keys.
   4. Verify `pnpm check`, loading an old DB, language switching, and settings search.
 - Add a setting to a sectioned page: add the `SettingItem` to the page's leaf array as above, then its id to the
@@ -413,30 +448,27 @@ Languages (`src/lang/`):
   2. Add a `changeLanguage` branch.
   3. Add the option in `languageSettingsData.svelte.ts` and in `BROWSER_UI_LANGUAGES` (`src/ts/bootstrap.ts`, the first
      boot's browser-language match).
+  4. No download step: locales are bundled. The download in `Flows` is the `translang` entry's export for translators;
+     add the code to that handler's `langs` list only to offer the language for continued translation.
 
 ## Tests
 
-- Registry, views, and wrappers: `src/ts/storage/tests/settingsViews.test.ts`,
-  `src/ts/storage/tests/settingWrappers.test.ts`, `src/lib/UI/GUI/guiRendering.test.ts`, and
-  `src/lib/Setting/Pages/PersonaSettings.test.ts` (the editor through `activePersona`; its note and description popups
-  carry the shown persona's id as `popupEditorContext`, so a persona switch while one is open discards the popup's text
-  instead of writing it to the persona shown then, also between personas whose text is the same), and
-  `src/lib/Setting/Pages/presetPages.test.ts` for the same guard on the prompt preset page through `activePreset.id`
-  (the Home hotkey's chat close moves `activePreset` to the tab's preset; a refresh of the preset list that keeps the id
-  keeps the popup).
-- Preset and page behavior: `src/lib/Setting/botpreset.test.ts`, `src/lib/Setting/botpresetArchive.test.ts`,
-  `src/lib/Setting/Pages/presetPages.test.ts`, `src/ts/setting/botSettingsParamsData.test.ts`,
-  `src/lib/Setting/Settings.hotkeys.test.ts`, and `e2e/settingsPages.spec.ts` (page mounting and first-visit defaults).
-- Section and condition integrity: `src/ts/setting/settingsPageSections.test.ts`,
-  `src/lib/Setting/SettingsSections.test.ts`, and `src/ts/setting/translationSettingsData.test.ts`.
-- Search and deep links: `src/ts/setting/searchIndex.test.ts`, `src/ts/setting/settingJump.test.ts`, and
-  `src/lib/Setting/Settings.search.test.ts`.
-- Focused page helpers: `src/lib/Setting/Pages/MemorySettings.hypaV3Warnings.test.ts` (the HypaV3 model warnings, the
-  gap threshold, and the token budget: the reduction lines at the effective max context while typing, the conversion,
-  the mode switch, a new preset in token mode), `src/lib/Setting/Pages/MemorySettings.maxMemoryEstimate.test.ts` (the
-  ratio-mode estimate with no character selected, as from home, and with one), `src/ts/setting/credentialLinks.test.ts`,
-  and `src/lib/Setting/Pages/ThanksPage.test.ts`.
-- `changeLanguage` and prompt editing have no focused tests.
+- Focused:
+  `pnpm --silent test:agent src/ts/setting src/lib/Setting src/ts/storage/tests/settingsViews.test.ts src/ts/storage/tests/settingWrappers.test.ts src/lib/UI/GUI/guiRendering.test.ts`.
+- `slow`: none in this area.
+- `e2e`: `e2e/settingsPages.spec.ts` (page mounting and first-visit defaults), `e2e/presetSelection.spec.ts` (an edit in
+  the real settings UI followed by a hotkey switch; the selection per client and per tab), `e2e/chatBinding.spec.ts`
+  (the real Model Presets and Prompt Presets pickers bind the chat, show its name, close, and leave the tab's selection
+  alone).
+- `installFlatDatabase` (`src/ts/storage/tests/`) installs a fixture into the records, so wrapper and page tests run
+  over the real views.
+- `src/ts/storage/tests/settingWrappers.test.ts` mounts the wrappers and `SettingRenderer` over the production
+  forwarding layer, with the global API, alerts, modules, and the parser mocked.
+- `src/lib/Setting/Settings.search.test.ts` mounts the real `Settings.svelte` shell with the Model, Connections, Prompt,
+  and Display pages real (the jump's consumers) and the other pages mocked.
+- `src/ts/setting/settingsPageSections.test.ts` `PAGES`: the sectioned-page inventory that the placement check runs
+  over.
+- Not tested: `changeLanguage` and prompt editing have no focused tests.
 
 ## Known Hazards
 
@@ -449,20 +481,20 @@ Languages (`src/lang/`):
   they were until the next local change of that setting or a reload.
 - Some settings pages fill missing values with control defaults when they first mount (`bindPath` creating missing
   containers), so the first visit can save; a second visit writes nothing (`e2e/settingsPages.spec.ts`). Which pages
-  write on a first visit is not pinned (the former Bot Settings page, Display, Accessibility, and Advanced were seen).
-  Items in a collapsible section mount, and can write, only when it is opened (the spec opens every accordion).
+  write on a first visit is not pinned (Display, Accessibility, and Advanced were seen). Items in a collapsible section
+  mount, and can write, only when it is opened (the spec opens every accordion).
 
 ### Gotchas
 
 - The setting conditions read `ctx.preset` (prompt preset) or `ctx.modelPreset` (model preset): a condition on a model
   field must read `ctx.modelPreset`.
-- The preset list (`botpreset.svelte`) reads every row through its record wrapper, so a 50-preset reorder re-renders
-  through the wrappers: 17.9 ms against a 15.9–16.0 ms baseline (`measureRecords.mjs`, commit `5b47b2b3` against
-  `35678fd4`), about 2% outside the 10% target; at commit `2f658598` it measures 17.9–18.2 ms (17.5–17.8 ms at
-  `6fa405d1`). Keyed rows were slower (18.4–20.1 ms at `5b47b2b3`, not re-measured); a plain-row projection (each row's
-  id, name, and image read once) was not tried.
-- `pluginDevelopMode`, `forceProxyAsOpenAI`, and `moveInsteadOfCopyOnCMPConvert` are persisted `ui` toggles with no
-  reader and no settings item (removed from the UI); their fields, defaults, and `shared/sections.ts` places stay for
-  saved data. `globalscript` (`settings.globalscript`) and the global lore-book pages (`settings.loreBook`,
-  `selectedLoreBookPage()`) have no settings page either: menu indexes 7–9 (Communities, global lore book, global regex)
-  were unreachable and are gone.
+- The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
+  outside its target; keyed rows made it slower, and a plain-row projection is untried
+  ([preset reorder audit](../audit/preset-reorder-2026-10-05.md)).
+- `pluginDevelopMode`, `forceProxyAsOpenAI`, `moveInsteadOfCopyOnCMPConvert`, and `personaNote` are persisted `ui`
+  toggles with no reader and no settings item; their fields, defaults, and `shared/sections.ts` places stay for saved
+  data.
+- The persona note field always shows, with no `personaNote` toggle: its popup editor opens as `plaintext`, so it has no
+  Preview and never counts the note's tokens.
+- `globalscript` (`settings.globalscript`) and the global lore-book pages (`settings.loreBook`,
+  `selectedLoreBookPage()`) have no settings page.
