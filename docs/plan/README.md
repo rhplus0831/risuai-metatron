@@ -7,7 +7,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
 - [Structured Memory](structured-memory.md): initial design for a memory system of events,
   entity pages, and a scene page with per-send manifests and per-turn receipts, to answer
   HypaV3's verifiability and multi-character weaknesses; Q1–Q9 answered, sliced into 28
-  slices; 1a–1d, 2a, 2b landed.
+  slices; 1a–1d, 2a–2c landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
