@@ -1,6 +1,6 @@
 # Structured Memory Plan (initial design)
 
-Status: design drafted 2026-11-01 from the owner's request, sliced the same day. Landed: 1a (e6f734303), 2a (19820d111), 1b (89cf98299), 1c (61e93aa7e). All nine open
+Status: design drafted 2026-11-01 from the owner's request, sliced the same day. Landed: 1a (e6f734303), 2a (19820d111), 1b (89cf98299), 1c (61e93aa7e), 1d (e979f105d). All nine open
 questions were answered by the owner (see **Answered questions**). The persisted discriminator is `structuredMemory`;
 "Structured memory" stays the settings label until the owner renames it.
 
