@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) on 2026-11-01; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,12 +8,14 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Display transform](#display-transform) (1)
-- [Chat screen and input](#chat-screen-and-input) (1)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (3)
+- [Chat screen and input](#chat-screen-and-input) (2)
+- [Client and plugins](#client-and-plugins) (8)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
+- [Guides](#guides) (14)
 - [Test timing](#test-timing) (1)
 
 ## Chat store, sync, and change feeds
@@ -40,6 +42,20 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a stalled link leaves that discard waiting without a bound.
 **Suggested handling:** wrap both reads in the chat module's deadline helper.
 
+### characterStore header still lists Lua and triggers as writers
+
+The header comment of the character mutations in `src/ts/storage/characterStore.svelte.ts:40` names `plugins, MCP, Lua, triggers, imports` as external contracts. Scripting moved to the server, so no browser Lua or trigger caller remains. Found by Guide Budgets slice 2; re-checked 2026-11-01.
+
+**Why it matters:** it misleads a reader about who writes characters.
+**Suggested handling:** fix the comment's list; check each name against the callers first.
+
+### No guide states the restore floor's check order
+
+`docs/structure/chat-store.md` `### Restore floor` links to `server-resources.md#chat-writes-and-checkpoints` for the check, and `server-resources.md:424` sends floor details back to `chat-store.md#restore-floor`. Neither states the order of the checks, and `reason: "generating"` handling has no rule in any guide. Found by Guide Budgets slice 2.
+
+**Why it matters:** a reader changing the floor finds a circular pointer instead of the rule.
+**Suggested handling:** read the checks in `server/src/data/chatStore.ts`, state the order once in `chat-store.md` `### Restore floor`, paying for the bytes in the same edit, and keep the link one way.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -48,6 +64,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
+
+### memoryTasks header says the hand-off comes after done
+
+`server/src/prompt/memory/memoryTasks.ts:146` says a job hands the memory input "after `done`", but `server/src/prompt/runner.ts` hands off right before it emits `done`; `docs/structure/memory.md` `Background memory task` says "Right before". Found by Guide Budgets slice 5a.
+
+**Why it matters:** the guide sends readers to this header for the task's rules, so the wrong word reads as the ordering contract.
+**Suggested handling:** change the word to "before".
 
 ## Server routes and resource store
 
@@ -111,6 +134,64 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Why it matters:** a few lines of a correction typed on one device vanish without a notice when another device writes the same message.
 **Suggested handling:** register open editor drafts as refresh holds (the read waits until the editor closes, as pending work does), or keep drafts by chat and message id across the remount and show the changed base explicitly.
 
+## Client and plugins
+
+### Chinese browsers never match the first-boot language list
+
+`src/ts/bootstrap.ts:274` compares `navigator.language?.split("-")[0]` with `BROWSER_UI_LANGUAGES` (`["de", "en", "ko", "cn", "vi", "zh-Hant"]`, :263). A `zh-CN` or `zh-TW` browser yields `zh`, so `cn` and `zh-Hant` cannot match at first boot. Read in source by Guide Budgets slice 5c, not run.
+
+**Why it matters:** those users start in the default language although the list advertises their language.
+**Suggested handling:** map `zh-*` to `cn` or `zh-Hant` before the lookup, with a bootstrap test.
+
+### Plugin tests cite a skip no guide records
+
+`src/ts/plugins/apiV3/pluginContext.test.ts:1285` and `src/ts/plugins/apiV3/permissions.test.ts:314` say the skipped-instance bug of `loadV3Plugins` is recorded in `plugins-mcp.md`. The guide did not record it even before Guide Budgets slice 5b, and `src/ts/plugins/apiV3/v3.svelte.ts:2412` now unloads a snapshot of the instances.
+
+**Why it matters:** the comments send a reader to a hazard that does not exist and may justify a repeat-until-gone test workaround that is no longer needed.
+**Suggested handling:** confirm the snapshot makes the skip impossible, then drop the citation and the workaround.
+
+### mcplib test calls settled behavior a recorded hazard
+
+`src/ts/process/mcp/tests/mcplib.test.ts:13` calls a stream ending without an answer a recorded hazard in `plugins-mcp.md`. The guide records it as settled behavior (JSON-RPC error -32000), and `mcplibStreams.test.ts` covers it. Found by Guide Budgets slice 5b.
+
+**Why it matters:** a reader of the test looks for an open hazard that was closed.
+**Suggested handling:** reword the header comment.
+
+### RPack mocks rest on a byte map fetch that is gone
+
+About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real RPack fetches its byte map as a Vite asset (`src/ts/translator/presetsCodec.test.ts:33`, `src/ts/characterCardsImport.test.ts:59`, `src/ts/storage/tests/presetIds.test.ts:46`). `rpack_js.js` now re-exports `shared/rpack.ts`, whose map is inlined and which is synchronous. Found by Guide Budgets slice 5b.
+
+**Why it matters:** the mocks look like unneeded boundary mocks (V7), and the tests could run the real codec.
+**Suggested handling:** drop the mocks where the real codec works, or fix the comments.
+
+### plugins.md omits two parsed headers
+
+`plugins.md` documents neither `//@allowed-ipc` nor `//@risu-arg`, though `importPlugin` in `src/ts/plugins/plugins.svelte.ts` parses both and the runtime's IPC warnings tell authors to use `//@allowed-ipc`. Found by Guide Budgets slice 5b.
+
+**Why it matters:** an author told to use a header cannot find it in the author guide.
+**Suggested handling:** add both headers to `plugins.md` with their parsing rules.
+
+### socketLiveness says tests replace livenessClock
+
+`src/ts/network/socketLiveness.ts:8` says stamps read `livenessClock.now()` "(tests replace it)". No test does: `socketLiveness.test.ts` fakes `Date`. Found by Guide Budgets slice 5c, which dropped the same claim from `global-api.md`.
+
+**Why it matters:** it sends a test writer to a seam nobody uses.
+**Suggested handling:** fix the comment.
+
+### Setting keywords are called a future feature
+
+`src/ts/setting/types.ts:172` says "Search keywords for future search feature", but settings search already reads `keywords`. Found by Guide Budgets slice 5c.
+
+**Why it matters:** a reader may treat the field as unused and drop it.
+**Suggested handling:** fix the comment.
+
+### safeBoot header cites the wider Boot section
+
+`src/ts/safeBoot.ts:2` cites `app-shell.md` Boot; since Guide Budgets slice 5d the guide has `### Safe boot` under `Flows`. The old citation still resolves.
+
+**Why it matters:** the header sends a reader to the wider section first.
+**Suggested handling:** change the word when `safeBoot.ts` is next touched.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -133,6 +214,162 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a red spec unrelated to the change under test reads like a regression of that change, and the terminal notice's Enter handling is no longer guarded.
 **Suggested handling:** seed the chat with its three bindings the way `chatBinding.spec.ts` does and check the spec passes.
+
+### Guide-budget reflow is not in the blame ignore list
+
+`.git-blame-ignore-revs` lists whole-repository format commits, but not `e0624f671` (`docs(structure): wrap STRUCTURE.md and the guides at 120 columns`, Guide Budgets slice 1), which rewrapped 18 Markdown files.
+
+**Why it matters:** `git blame` on a guide lands on the reflow for most lines.
+**Suggested handling:** add the hash with a comment line.
+
+### requireHuman notice names the old guide
+
+`util/requireHuman.mjs:19` prints `see docs/structure/build-test-platforms.md` for `test:agent`'s flags, which moved to `docs/structure/test-harness.md` in Guide Budgets slice 4.
+
+**Why it matters:** an agent stopped by the human gate reads this notice first, and it takes one extra hop.
+**Suggested handling:** change the path; check whether a test pins the notice text first.
+
+### Delegate profile test policy names the old guide
+
+`.claude/delegate-implementation.local.md:11` (untracked, main checkout) points the `<test policy>` slot at `docs/structure/build-test-platforms.md`. Guide Budgets slice 4 moved `### Test rules` to `docs/structure/test-harness.md`.
+
+**Why it matters:** the slot is pasted into test-writer prompts, so a writer is sent to a guide that no longer holds the rules.
+**Suggested handling:** change the slot to `docs/structure/test-harness.md`.
+
+### check:docs does not measure blockquoted items
+
+`util/docsBudget.mjs` `parseGuide`: `LIST_MARKER` (:54) does not see a list item behind `> `, so `> - <601 characters>` becomes a paragraph, and the length rule skips paragraphs. Found by the Guide Budgets slice 7 challenger.
+
+**Why it matters:** low: no guide uses a blockquoted list today, but one could hold an over-long item with a passing check. The leaf and file budgets still bound it.
+**Suggested handling:** strip a leading `> ` before the marker test if blockquotes appear in the guides.
+
+### check:docs collapses spaces inside a row's code spans
+
+`util/docsBudget.mjs:168` runs `line.replace(/\s+/g, " ")` over a whole table row to drop column padding, which also collapses spaces inside code spans, though Doc Maintenance counts code spans toward the item budget. A row with 601 spaces in a code span measures 9 characters and survives Prettier. Found by the Guide Budgets slice 7 challenger.
+
+**Why it matters:** low: it needs an unrealistic code span.
+**Suggested handling:** collapse padding outside code spans only (`replaceCodeSpans` is in the same file) if a row ever hits it.
+
+### checkMcpFixes and the guide disagree on the repeated call
+
+`util/playwright/checkMcpFixes.mjs:476` says the hazard recorded in `plugins-mcp.md` is "that call fails". The Gotcha on 404 and 401 records that the session resets and the request repeats once, and says nothing of a failure. Found by Guide Budgets slice 5b.
+
+**Why it matters:** the comment and the guide disagree on what the browser check expects.
+**Suggested handling:** run the check's scenario to see which holds, then fix the comment or add the failure to the Gotcha.
+
+### personaBinding spec comment reads as plugin coverage
+
+`e2e/personaBinding.spec.ts:250` describes a plugin's `setDatabase({ selectedPersona })`, but the test calls `selectPersona` directly. Found by Guide Budgets slice 5b.
+
+**Why it matters:** the comment reads as e2e coverage of the plugin host's index-to-id resolution, which the spec does not drive.
+**Suggested handling:** reword the comment; add a plugin-driven case only if that path needs a browser check.
+
+### settingsPages spec header overstates first visits
+
+`e2e/settingsPages.spec.ts:7` says each page mounts without writing anything, while the spec's own comment and the `settings-i18n.md` Issue say a first visit may save defaults. Found by Guide Budgets slice 5c.
+
+**Why it matters:** the header overstates what the e2e proves about first-visit writes.
+**Suggested handling:** fix the comment.
+
+## Guides
+
+### app-shell cites global-api for the collector
+
+`docs/structure/app-shell.md:23` points at `global-api.md` for `src/ts/diagnostics/collector.ts`, which `diagnostics.md` owns.
+
+**Why it matters:** the link routes a reader to a guide that does not describe the collector.
+**Suggested handling:** retarget the word; `app-shell.md` has about 1,100 bytes of room.
+
+### Archive README cites a gone emotion table hazard
+
+`docs/archived-plan/README.md:824` says the emotion table's `bind:value` throw is a Known Hazard in its guide. `characters-modules.md` has no such entry and the table no longer uses `bind:value`.
+
+**Why it matters:** the archive sends a reader to a hazard that is gone.
+**Suggested handling:** a one-clause correction, only when the archive is touched anyway.
+
+### backup-sync-hub keeps history wording
+
+`docs/structure/backup-sync-hub.md` keeps "were removed" and "as before" in Scope, Flows and Realm items (:8, :128, :137, :164), which Guide Budgets D3 turns into a current fact or deletes. Slice 6 only split items.
+
+**Why it matters:** small read cost, and it reads as if the old shape still matters.
+**Suggested handling:** one pass when the guide is next edited.
+
+### backup-sync-hub Scope omits the upstream paths
+
+`docs/structure/backup-sync-hub.md` Scope `Paths` omit `server/src/data/upstream/` and `shared/{upstreamBackup,upstreamExportReport}.ts`, though `STRUCTURE.md` Path Ownership routes them there and the guide's `### Upstream ...` sections describe them.
+
+**Why it matters:** a reader starting from the Scope cannot tell the guide owns the `.bin` converters.
+**Suggested handling:** add the paths to Scope.
+
+### cbs-rendering Limitations name no decision
+
+`docs/structure/cbs-rendering.md` `Limitations`: the entries on Lua `getCharacterImage`/`getPersonaImage` inputs, opaque plugin handlers, `{{random}}` and clock rows, resize, permanent display failures, and the screenshot during a provisional display name no decision. The originals held none either.
+
+**Why it matters:** Doc Maintenance makes `Issues` the default when no decision is recorded.
+**Suggested handling:** record a decision per entry or move it to `Issues`. The guide has 17 bytes of room, so a new clause needs a cut in the same edit.
+
+### cbs-rendering cites a bare transport.ts
+
+`docs/structure/cbs-rendering.md:73` cites `transport.ts` for the server `cbs` callback failing its request. Two files have that name; the one meant is `src/ts/process/request/transport.ts`.
+
+**Why it matters:** a reader or a rename check can land on the wrong file.
+**Suggested handling:** use the path, paying with a cut: it costs about 22 bytes against the guide's 17 of room.
+
+### characterData is called reserved for the save loop
+
+`docs/structure/characters-modules.md:386` says `characterData()` is reserved for the save loop, but `src/ts/storage/selection.svelte.ts:186` and `src/ts/storage/chatStore.svelte.ts` (:922, :3997) read it too.
+
+**Why it matters:** the rule is stated more strongly than the code keeps it, so an editor cannot tell which uses are legitimate.
+**Suggested handling:** read the call sites, then state the real rule in one line.
+
+### Agent Read Protocol does not name Recipes
+
+`STRUCTURE.md` Agent Read Protocol step 3 names `Scope` and `Invariants` but not `Recipes`, where "add a new X" answers live; a Guide Budgets slice 5c reader missed it from the heading list. Slice 6 left the protocol alone and fixed the `global-api` routing row.
+
+**Why it matters:** routing words decide what an agent reads first.
+**Suggested handling:** consider naming `Recipes` in step 3.
+
+### diagnostics State holds a run-tied measurement
+
+`docs/structure/diagnostics.md:197`, the `state.json` bullet, ends with "5.10 s from the event to the file at a 100 ms fsync (`byte-budgets-probe.mjs`, `statePublication`)". Doc Maintenance puts such numbers in `docs/audit/`.
+
+**Why it matters:** the number goes stale silently, and `check:docs` cannot catch it.
+**Suggested handling:** keep "an error queues one within 5 s" and move the number, or drop it if an audit file holds it.
+
+### plugins-mcp links the model-root rules to the wider heading
+
+`docs/structure/plugins-mcp.md:221` links the compatibility model-root write rules to `llm-requests.md#invariants`; the exact heading is `#compatibility-model-root-writes`. Found by Guide Budgets slice 5b, kept because `llm-requests.md` belonged to another slice.
+
+**Why it matters:** the anchor resolves but lands a screen away from the rules.
+**Suggested handling:** change the anchor, paying for the bytes: the guide has 93 of room.
+
+### scripts-triggers Not here disagrees with Path Ownership
+
+`docs/structure/scripts-triggers.md:18` sends `server/src/lua/*` and `server/src/scripts/*` to `server-generation.md`, while `STRUCTURE.md` Path Ownership keeps them under scripts-triggers, which also holds the Lua invariants and the "Add a Lua API" recipe.
+
+**Why it matters:** a reader following Not here lands on a guide with one line about those directories.
+**Suggested handling:** keep `server/src/prompt/{scripts,triggers,commands}.ts` with server-generation and say the Lua and script worker semantics are here.
+
+### scripts-triggers carries a line count
+
+`docs/structure/scripts-triggers.md:58` says `TriggerV2List.svelte` is "about 4100 lines"; it has 4,392, and Doc Maintenance rules out such counts.
+
+**Why it matters:** a small wrong fact in a guide.
+**Suggested handling:** drop the clause.
+
+### server-generation names no prompt job
+
+`docs/structure/chat-pipeline.md:20` points at `server-generation.md` for `runPromptJob` and `assemblePrompt`. Neither name appears in `server-generation.md` or `self-host-server.md`. `memory.md` documents the memory step of `assemblePrompt`.
+
+**Why it matters:** Prompt assembly's owner guide is a dead end for an agent routed by Scope, and `Choose By Task` has no other row for it.
+**Suggested handling:** give `server-generation.md` an assembly section, paying for the bytes, or retarget the pointer.
+
+### ui-theming says the asset editors follow the keyed-row rule
+
+`docs/structure/ui-theming.md:408` says the lorebook and character asset editors follow the keyed-row rule, but `CharConfig.svelte`'s emotion and additional-asset tables are unkeyed (`{#each emotionIndices as index}`, :712; `assetIndices`, :937). Guide Budgets slice 5b corrected the same claim in `characters-modules.md`.
+
+**Why it matters:** an editor could trust a guarantee those tables do not have.
+**Suggested handling:** fix the sentence.
 
 ## Test timing
 
