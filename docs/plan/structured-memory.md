@@ -1,8 +1,8 @@
 # Structured Memory Plan (initial design)
 
-Status: initial design, drafted 2026-11-01 from the owner's request; no slice is scheduled. All nine open questions
-were answered by the owner the same day (see **Answered questions**); slicing can start. The persisted discriminator
-is `structuredMemory`; "Structured memory" stays the settings label until the owner renames it.
+Status: design drafted 2026-11-01 from the owner's request, sliced the same day; no slice has landed. All nine open
+questions were answered by the owner (see **Answered questions**). The persisted discriminator is `structuredMemory`;
+"Structured memory" stays the settings label until the owner renames it.
 
 Sources: the owner's request (2026-11-01: HypaV3 compresses well but the user cannot verify it on long chats and it is
 weak for world-setting bots with many characters); the [memory guide](../structure/memory.md) at `43d7e4a07`; the
@@ -13,11 +13,11 @@ sub-agents: [HypaPlus](../research/memory-systems/hypaplus.md),
 [Archive Center](../research/memory-systems/archive-center.md), and
 [Dusk Atelier](../research/memory-systems/dusk-atelier.md).
 
-Owning guides when sliced: [memory](../structure/memory.md) (algorithms, modal, tasks), with
-[server-generation](../structure/server-generation.md) for the job step and task wiring,
-[chat-pipeline](../structure/chat-pipeline.md) for the context report, [persistence](../structure/persistence.md) and
-[server-resources](../structure/server-resources.md) for the new records, [chat-store](../structure/chat-store.md) for
-the write fences, and [ui-theming](../structure/ui-theming.md) for the meter and the panel.
+Owning guide: a new `docs/structure/structured-memory.md`, created by slice 1a, because
+[memory](../structure/memory.md), [server-generation](../structure/server-generation.md),
+[chat-pipeline](../structure/chat-pipeline.md), [persistence](../structure/persistence.md),
+[server-resources](../structure/server-resources.md), [chat-store](../structure/chat-store.md), and
+[ui-theming](../structure/ui-theming.md) have too little room left under the guide budget.
 
 ## Goal
 
@@ -395,7 +395,7 @@ candidates are never written. A write never blocks the send that triggered it (D
 
 ### D5. Storage: server tables beside the chat tables
 
-- New tables keyed by `(characterId, chatId)`: `memory_pages`, `memory_sections` (or sections embedded per page row if
+- New tables keyed by the chat's incarnation `chats.seq`, dropped with it by cascade: `memory_state`, `memory_pages`, `memory_sections` (or sections embedded per page row if
   the row stays small), `memory_events`, `memory_threads`, `memory_runs` (writer log: window, model, tokens, result,
   receipt), `memory_manifests` (optional, if the per-send manifest outgrows `generationInfo`). One revision per chat's
   memory, checked on every write; a stale write is refused and retried from a fresh read, never merged by field.
@@ -551,24 +551,331 @@ the maximum plus the raw window; an embedding of the query and of new records. B
 per-turn writing can cost as much as the transcript it saves, so the batch cadence (D3) and the small analysis input
 (D10) are not optional extras, and the ledger (D14) is part of the first slice that writes anything.
 
-## Proposed slice order (not scheduled)
+## Slices
 
-1. **Store and types**: tables, shared types, revision rules, routes, the `hypaV3Data` projection, Markdown export.
-2. **Writer, events only**: the task kind, confirm-on-next, analysis call without page candidates, the slot-assembled
-   default prompt with the language setting and the plain instructions text, receipts, the coverage view, the writer
-   log, pause on failures, the token ledger.
-3. **Read path and manifest**: lanes for events and evidence, the window rule, the card, `ContextReport.memory.items`,
-   the meter popover, the preview.
-4. **Pages and scene**: candidates and patches, the pages lane, knowledge and "does not know", the Pages and Timeline
-   tabs, locks and history.
-5. **Reconciliation**: anchors at read time, retraction on delete, re-record on edit, copies and branches, checkpoints
-   and exports.
-6. **Migration and rebuild**: adopt HypaV3 data, the resumable rebuild.
-7. **Growth and review**: compaction, change highlighting with revert, prompt fine-tuning with its guide and test
-   run, lorebook export, aliases merge and split.
-8. **Evaluation**: fixtures, probes, the A/B recipe, and the numbers in the docs.
+Each slice lands alone as one commit. The numbers keep the order of the first design (1 store, 2 writer, 3 read path, 4
+pages, 5 reconciliation, 6 migration, 7 growth and review, 8 evaluation); slices 2 and 3 together answer the first
+complaint, slice 4 the second.
 
-Slices 2 and 3 together already answer the first complaint for the new algorithm; slice 4 answers the second.
+Code layout: `shared/structuredMemory.ts` (types and pure rules), `server/src/data/memoryStore.ts` (the tables),
+`server/src/prompt/memory/structured/` (writer and read path), `server/src/routes/structuredMemory.ts` (routes under
+`/api/memory/structured/...`), `src/ts/process/structuredMemory.svelte.ts` (the tab's client and state),
+`src/lib/Others/StructuredMemory/` (the panel).
+
+Rules for every slice:
+
+- **Checks.** `pnpm format:check`, `pnpm check`, `pnpm check:docs`, `pnpm --silent test:agent` once after the last source
+  edit; the affected `slow` and `e2e` sets, with `pnpm check:tests` when the slow-test table changes; V4 (`rg` each changed export and wire field) and V6 (each new test shown
+  failing once with its line broken).
+- **Guide.** The owning guide is the new `docs/structure/structured-memory.md`. The seven guides this design touches have
+  between 500 and 5,300 bytes free under the 40,000-byte budget (`pnpm check:docs` fails over it), which does not hold
+  28 slices of contracts, so contracts go to the new guide, which later slices extend, and an existing guide gets only
+  a link or a swap that deletes as much as it adds.
+- **Strings.** User-visible text goes in `src/lang/en.ts` under `structuredMemory`; two slices that add strings do not
+  run at the same time.
+- **Reachability.** Nothing is selectable before slice 3c. Until then `db.memoryAlgorithmType === "structuredMemory"`
+  exists only in tests, and every existing algorithm behaves exactly as before.
+- **Fence.** Server code writes the tables only through `memoryStore.ts`, synchronously, after the task's or route's
+  fence check. Panel writes carry the memory revision (D5).
+- **Device checks.** Real browser and device checks go to the owner as a checklist in the slice report.
+
+Refinements the slicing added to the design, found against the code:
+
+- D5's key is the chat's incarnation `chats.seq` with `ON DELETE CASCADE`, as `chatGroups` and `chatSummaries` do, so a
+  deleted and recreated chat never inherits rows. Routes still address a chat by `(characterId, chatId)`.
+- The tables are raw SQLite tables behind `memoryStore.ts`, not a registered `ResourceKind`: the panel reads a table of
+  contents and bodies on demand, and the change feed stays the chat's.
+- Restores copy only what the snapshot walk emits, so the tables would be silently lost on a restore or an archive
+  import. Slice 1c closes that before any record exists.
+- `memoryAlgorithmType` is written by the settings page and read by nothing today, and the selection runs on the flags.
+  Slice 2b makes it the selector for this one value, ahead of the existing chain; old saves whose value disagrees with
+  the flags cannot hold `structuredMemory`.
+- The source hash covers the message's role and `data` only. `generationInfo` lives in `messages.data`'s JSON, so a
+  receipt write must not change a hash; it does bump the chat revision and send a change frame, one per recorded turn.
+- A restart loses the queue. The writer's window comes from stored coverage, not from the hand-off, so the next send
+  picks up every uncovered confirmed turn; no startup scan exists.
+- Copy and branch reach the server as plain `create` groups with no origin, so the tab calls an idempotent inherit route
+  after the create (slice 5c).
+- `searchMatch` in `shared/lore/activation.ts` is private; slice 4b exports it rather than copying the rules.
+- Slice 8 runs on scripted model output and adds the A/B recipe. A measured recall figure needs a real model run, which
+  the owner starts; until then the settings and docs quote none (D14).
+
+### Slice 1a: types, pure rules, and the guide (D1, D4, D11; needs nothing) — _small_
+
+Files: new `shared/structuredMemory.ts` and its test; new `docs/structure/structured-memory.md`; `STRUCTURE.md` (Choose By
+Task and Path Ownership rows); `docs/structure/memory.md` (a swap: one link in `Scope`).
+
+- The discriminator constant `"structuredMemory"` (Q1); event, page, section, thread, run, receipt, and source types as
+  D1 and D4 give them, including the page history entry with change kind, `highlighted`, and `revertedBy` (Q8) and the
+  scored axes and grade (Q7); the fixed character section slots; the record limits.
+- `projectHypaV3Data(events, manifest)`: the pure D11 projection. Tests: `chatMemos` equal source ids, retracted events
+  are left out.
+
+### Slice 1b: tables and the memory store (D5; needs 1a) — _hard_
+
+Files: new `server/src/data/memoryStore.ts` and `server/src/tests/memoryStore.test.ts`; `server/src/data/chatStore.ts`
+(the DDL joins `CHAT_OPEN_SCHEMA_SQL`, not `CHAT_TABLE_COLUMNS`); `server/src/data/resourceStore.ts` (exposes the store).
+
+- `memory_state` (one revision per chat), `memory_pages`, `memory_events`, `memory_threads`, `memory_runs`, each with
+  `chatSeq` and the cascade. Sections embed in the page row unless a test shows the row growing past the read budget.
+- Synchronous writes inside one transaction with an expected revision and the epoch; a stale write is a typed refusal,
+  never a field merge. Table-of-contents reads carry ids, titles, status, and sizes; bodies are read by id.
+- `messageSourceHash(message)`: SHA-256 of role and `data`. Test: a `generationInfo` change keeps the hash.
+
+### Slice 1c: snapshots and restores carry the tables (D5; needs 1b) — _hard_
+
+Files: `server/src/data/chatStore.ts` (the snapshot walk, the staging sink, `copyStagedChats`),
+`server/src/data/resourceStore.ts`, `server/src/data/restore/stageValidatedSnapshot.ts`, `server/src/data/memoryStore.ts`, tests in
+`server/src/tests/restoreStage.test.ts` and `backups.test.ts`.
+
+- An optional all-or-none table group, like the checkpoint tables: a snapshot from before the tables restores with none;
+  a partial group is refused. Rows are remapped through the staged-to-live chat seq map.
+- Test: rows survive a snapshot restore and an archive import; an old snapshot restores; `replaceAll` leaves no rows of
+  the replaced chats.
+
+### Slice 1d: read routes, the tab client, Markdown export (D5; needs 1b) — _small_
+
+Files: new `server/src/routes/structuredMemory.ts` and its test; `server/src/app.ts`; new
+`src/ts/process/structuredMemory.svelte.ts` and its test.
+
+- Table of contents, record by id, and a per-chat Markdown package (pages with YAML frontmatter, events as a timeline),
+  under the read budgets of server-resources, with the epoch and `authFetch` as the task routes use them. Import is
+  slice 7d.
+
+### Slice 2a: writer settings (D3, Q3, Q5, Q8; needs 1a) — _small_
+
+Files: `shared/memory.ts` (`HypaV3Settings`), `shared/hypaV3Presets.ts`, `server/src/jobs/jobScope.ts`
+(`memorySettingsFingerprint`), `shared/database.ts` (the chat and character language override and the chat highlight
+mode), `shared/chatCheckpoints.ts` (their field classes), the chat and character normalizers under
+`server/src/data/normalize/` and `server/src/data/chats.ts`, tests beside them.
+
+- A nested `structured` object in the memory preset: cadence (`everyTurn`, `everyK`, `tokens`, `manual`) with K and the
+  token threshold, window R, flow F, lane targets, required cap, screening lists, instructions, the fine-tuning switch
+  and prompts, highlight mode and kinds. Invalid values take defaults (`createHypaV3Preset`'s rule). No UI.
+
+### Slice 2b: the writer task kind and hand-off (D2, D3, Q6; needs 1b, 2a) — _hard_
+
+Files: `shared/jobs.ts` (`MemoryTaskInput` by kind, `kind` on the status), `server/src/prompt/memory/memoryTasks.ts`,
+`server/src/prompt/assemble.ts` (the selection, the `memoryConfigured` gate, a step that keeps raw history and returns
+the hand-off), `server/src/prompt/runner.ts`, new `server/src/prompt/memory/structured/window.ts`,
+`src/ts/process/memoryTasks.svelte.ts`, tests in `server/src/tests/memoryTasks.test.ts`, `memoryJobs.test.ts`.
+
+- HypaV3's checks and work move behind the kind unchanged (its tests stay green unedited). The writer's work is an
+  injected function, filled in 2c.
+- `window.ts`: the confirmed window from stored coverage and the cadence; the newest assistant reply, a generating one,
+  and swipe candidates are never in it. Start checks refuse a `Plugin` slot or an applicable `request` trigger with
+  `pluginModel` and `requestTrigger`, and a local summarizer with `localSummarization` (Q6).
+
+### Slice 2c: analysis call, events, threads, failure rules (D1, D3, Q5, Q7; needs 2b) — _hard_
+
+Files: new `server/src/prompt/memory/structured/{prompts,analysis,writer}.ts` and tests; `memoryTasks.ts` (the wiring
+only); `shared/structuredMemory.ts`; `memoryStore.ts`.
+
+- Plain-mode slot assembly through the task host's ChatML parser and CBS, with the language setting. Temperature 0;
+  output validated and clamped; no page candidates yet (participants only name existing pages).
+- Code checks quotes against the window's messages; an unverified item is listed, never dropped. Deduplication, caps,
+  threads closed by id only, grades from axes.
+- `memory_runs` keeps the exact input snapshot, tokens, and result. A failed run retries the same window from that
+  snapshot; after 5 consecutive failures auto-recording pauses; output after the deadline is discarded; event vectors are
+  warmed as `warmHypaV3Vectors` does, into the existing cache.
+
+### Slice 2d: receipts and record now (D2, D3, D8, Q6; needs 2c) — _hard_
+
+Files: `shared/database.ts` (`MessageGenerationInfo.memory`), `structured/writer.ts`, `routes/structuredMemory.ts`,
+`src/lib/ChatScreens/Chat.svelte` (`genInfo`), new `src/lib/ChatScreens/MemoryReceiptLine.svelte`,
+`src/ts/process/structuredMemory.svelte.ts`, `src/lang/en.ts`.
+
+- The receipt is written with `patchMessage` under the task fence; the collapsible line shows recorded, pending, failed,
+  or "not recording automatically" with the slot or trigger that needs the tab. "Record now" and the resume button run
+  through the service; for a tab-bound slot it runs as a job on the owner's channel, as blocking HypaV3 does (Q6).
+
+### Slice 2e: panel shell, Coverage, and Log (D8, D9; needs 1d, 2d) — _hard_
+
+Files: new `src/lib/Others/StructuredMemory/{StructuredMemoryPanel,CoverageTab,LogTab}.svelte` and tests;
+`src/App.svelte` (the mount picks the panel by algorithm); `routes/structuredMemory.ts`;
+`src/ts/process/structuredMemory.svelte.ts`; `src/lang/en.ts`.
+
+- `SegmentedControl` tabs; the task fence from `memoryTasks.svelte.ts` makes the panel read-only. Coverage: each
+  message's state, the gap in tokens, what the next send drops raw. Log: one row per run with the extracted event next
+  to its quotes, exportable.
+
+### Slice 3a: lanes and retrieval (D6, D7; needs 2c) — _hard_
+
+Files: new `server/src/prompt/memory/structured/{lanes,retrieve,card}.ts` and tests.
+
+- Pure pieces: the window rule in assistant turns, the budget through `resolveHypaV3Budget`, targets then a core round
+  then lending, recent flow, the events lane (past or causal reading, similarity, participant overlap), the evidence
+  lane, the threads lane, and the card's stable and volatile parts with `[m:<id>]` tags. Similarity goes through
+  `MemoryHost` embeddings.
+
+### Slice 3b: the step, the card, and the manifest (D6–D8; needs 2b, 3a) — _hard_
+
+Files: `server/src/prompt/assemble.ts` (the step, the report, verification), new
+`server/src/prompt/memory/structured/step.ts`, `shared/contextReport.ts` (`items`, the kind, parsing),
+`server/src/prompt/memory/hypav3.ts` (the gap trim extracted, HypaV3 unchanged), tests.
+
+- `memo: "supaMemory"` stays; uncovered history trims as `trimUncovered` does, with `coverage: "gap"` and the gap
+  question; the protected tail goes into `protectedEntries`; the cache-friendly placement option.
+- `verified` is set by finding each tag in the final prompt after scripts and `editRequest`, in `buildContextReport`.
+  The manifest holds included and excluded items with reasons, lane spend, the confirmed-through id, the writer state,
+  and the stage ledger.
+
+### Slice 3c: meter, preview, and the settings option (D8, D11; needs 2e, 3b) — _hard_
+
+Files: `src/lib/ChatScreens/ContextMeter.svelte`, `src/lib/Setting/Pages/MemorySettings.svelte`,
+`src/ts/setting/memorySettingsData.ts`, `routes/structuredMemory.ts` (preview), the panel's badges, `src/lang/en.ts`.
+
+- The meter's status word and item list; "used in the last send" badges; the preview on the job's `preview` path, marking
+  nothing. The option writes `memoryAlgorithmType` and clears the other flags, and exposes the preset fields of 2a except
+  the fine-tuning ones. Selecting it leaves `hypaV3Data` untouched; such a chat starts with a coverage gap until 6a.
+
+### Slice 4a: page candidates and patches (D1, D3, D10; needs 2c) — _hard_
+
+Files: new `server/src/prompt/memory/structured/{patches,pages}.ts` and tests; `structured/{prompts,analysis,writer}.ts`;
+`memoryStore.ts`.
+
+- The analysis input gains the cast slice (pages matched in the window plus `always` pages); candidates and creates under
+  the confidence threshold; "unresolved mentions"; alias seeds from lore entry names and group members. The patch call:
+  section `upsert|delete`, refusals for locked, unseen, and emptying patches; partial failure keeps saved pages. Scene
+  page rewrite, conflict classes with `was:`, disputed values, history entries, section vectors.
+
+### Slice 4b: required lane, pages lane, knowledge (D6, D10, Q4, Q9; needs 3b, 4a) — _hard_
+
+Files: `shared/lore/activation.ts` (`searchMatch` exported, behavior unchanged), `structured/{lanes,retrieve,card,step}.ts`,
+tests.
+
+- Required pages whole under the cap; over it the send ends with a `SendError` listing the pages. Candidates by scene
+  participants, name and alias match, one link hop, and similarity; whole-or-nothing; knowledge items on stage with
+  private labels; "does not know" lines; `never` pages hidden.
+
+### Slice 4c: Pages, Timeline, and Threads tabs (D9; needs 2e, 4a) — _hard_
+
+Files: new `src/lib/Others/StructuredMemory/{PagesTab,TimelineTab,ThreadsTab}.svelte` and tests;
+`StructuredMemoryPanel.svelte`; `routes/structuredMemory.ts` (revision-checked edits); `memoryStore.ts`;
+`src/ts/process/structuredMemory.svelte.ts`; `src/lang/en.ts`.
+
+- The page tree with the scene on top, section editing, locks, provenance jumps, history with diffs, context mode, grade;
+  events in message order with sources; thread lifecycle. A refused edit is undone in the copy, as the modal does.
+
+### Slice 5a: anchors at read time and repair (D4; needs 4b, 4c) — _hard_
+
+Files: new `server/src/prompt/memory/structured/reconcile.ts` and tests; `structured/{retrieve,step}.ts`;
+`TimelineTab.svelte`; `routes/structuredMemory.ts`; `src/lang/en.ts`.
+
+- Reconciliation on a copy: a changed, missing, inserted, or moved source makes the event `stale` for that send, with the
+  reason in the manifest and a badge. Repairs per event: re-record, retract, keep. Reconciliation deletes nothing.
+
+### Slice 5b: retraction on delete, re-record on edit (D4; needs 5a) — _hard_
+
+Files: `server/src/data/chatStore.ts` (`applyGroup` reports removed and rewritten message ids), `structured/reconcile.ts`,
+`memoryTasks.ts`, `src/ts/storage/chatStore.svelte.ts` (`removeMessages`' confirmation), `src/lang/en.ts`, tests.
+
+- Deleting cited messages asks, then retracts; sections left with only retracted provenance are flagged "unsupported",
+  never reverted. An edit queues a re-record and the old event stays until the new one commits. A `generationInfo` or
+  translation write triggers nothing.
+
+### Slice 5c: copies and branches (D4; needs 4a) — _hard_
+
+Files: new `server/src/prompt/memory/structured/inherit.ts` and tests; `routes/structuredMemory.ts`;
+`memoryStore.ts`; `src/ts/process/structuredMemory.svelte.ts`; `src/lib/SideBars/SideChatList.svelte`,
+`src/lib/Others/ChatList.svelte`, and the branch path in `src/lib/ChatScreens/Chat.svelte`.
+
+- After its `create`, the tab calls an idempotent inherit route. Sources map by id, else by position with identical role
+  and text; events with any unmapped source do not cross; pages keep sections with surviving provenance, flagged
+  otherwise. A failed call leaves a chat with a coverage gap and a notice, never a wrong record.
+
+### Slice 5d: checkpoints and chat files (D4; needs 4a) — _hard_
+
+Files: `shared/chatCheckpoints.ts`, `server/src/data/checkpointStore.ts`, `server/src/data/checkpointService.ts`,
+`src/ts/characters.ts` (chat export and import), `memoryStore.ts`, tests.
+
+- A checkpoint carries the chat's memory records and loading it restores them under a new memory revision. Exported
+  chat JSON carries them and `importChat` restores them on the new chat.
+
+### Slice 5e: the `hypaV3Data` projection for plugins and upstream (D11; needs 4a) — _hard_
+
+Files: `server/src/data/upstream/exportDatabase.ts`, the full-chat read in `server/src/data/chatStore.ts`,
+`src/ts/storage/chatStore.svelte.ts` (`applyChatResult`), `src/ts/plugins/apiV3/v3.svelte.ts`, `src/lang/en.ts`, tests.
+
+- A structured chat's full read overlays the projection, so every plugin reader gets it unchanged. `applyChatResult` and
+  the new-chat path drop a changed value with a `warnRefused` notice; the stored field stays absent. The upstream export
+  writes the same projection.
+
+### Slice 6a: adopt HypaV3 data (D11, D12; needs 3c, 5a) — _small_
+
+Files: new `server/src/prompt/memory/structured/adopt.ts` and tests; `routes/structuredMemory.ts`; the panel;
+`src/lang/en.ts`.
+
+- A chat with summaries and no records is offered adoption: each summary becomes an event (`sources` from `chatMemos`,
+  title from the first sentence, hashes from the messages as stored; a missing message makes it `stale`). `hypaV3Data`
+  stays as it was until the user resets it.
+
+### Slice 6b: rebuild and backfill (D3, D12; needs 6a) — _hard_
+
+Files: new `server/src/prompt/memory/structured/rebuild.ts` and tests; `memoryTasks.ts`; `memoryStore.ts` (staging rows and
+the atomic swap); `routes/structuredMemory.ts`; the panel; `src/lang/en.ts`.
+
+- A chained, resumable task under the per-task deadline, with persisted progress, a cost preview, generation locked for
+  the chat, and an atomic swap at the end. Backfill is the same run limited to uncovered turns. A language change offers
+  a rebuild.
+
+### Slice 7a: compaction (D13; needs 4a) — _hard_
+
+Files: new `server/src/prompt/memory/structured/compact.ts` and tests; `structured/writer.ts`; `shared/structuredMemory.ts`.
+
+- Section budgets per page type; a section over budget gets one compaction call; a result that is not smaller is
+  discarded; history keeps the old body and the receipt the diff. Events are never compacted.
+
+### Slice 7b: change highlighting and revert (Q8; needs 4c) — _hard_
+
+Files: `structured/pages.ts`, `routes/structuredMemory.ts`, `PagesTab.svelte`, `MemoryReceiptLine.svelte`,
+`MemorySettings.svelte`, `src/lang/en.ts`, tests.
+
+- The three modes, per chat with a global default, and the kinds as checkboxes; importance comes from the change kind in
+  code. Revert from the receipt and the history, recorded as `revertedBy: user`, which the writer's input then carries so
+  the change is not proposed again; the notice counts the items added after it that stay.
+
+### Slice 7c: prompt fine-tuning (D3, Q5; needs 2e, 3c) — _hard_
+
+Files: `structured/prompts.ts`, `routes/structuredMemory.ts` (test run), `MemorySettings.svelte`, new
+`src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, the panel and receipt's "custom prompt" state, `src/lang/en.ts`.
+
+- The ChatML replaces each call's default and quotes `{{slot::…}}`; validation is the same in both modes. The default
+  prompt is viewable, the guide text is stored, checking the box warns, and a test run replays the last window without
+  saving and shows the parsed output and errors.
+
+### Slice 7d: page tools and Markdown import (D5, D9, D10; needs 4c) — _hard_
+
+Files: `structured/pages.ts`, `routes/structuredMemory.ts`, `PagesTab.svelte`, new
+`server/src/prompt/memory/structured/importPackage.ts`, `src/lang/en.ts`, tests.
+
+- Merge and split (aliases move, provenance follows), delete to trash, export to the lorebook as an inactive entry, and
+  import of the 1d package with a per-file refusal list. No round trip is promised for hand edits.
+
+### Slice 7e: health badge and screening (D8, D9; needs 5a, 7a) — _hard_
+
+Files: `src/lib/SideBars/ChatStatusBadge.svelte`, `src/lib/SideBars/chatStatus.ts`, the chat header, `structured/window.ts`,
+`routes/structuredMemory.ts`, `MemorySettings.svelte`, `src/lang/en.ts`, tests.
+
+- The worst of writer paused, gap over a threshold, stale events, unsupported sections, required lane over cap, page over
+  budget, and custom prompt. Screening lists mark a message `excluded` in Coverage; per-chat overrides join the panel's
+  Settings tab.
+
+### Slice 8: evaluation (D14; needs all) — _hard_
+
+Files: new fixtures under `server/src/tests/fixtures/memory/structured/`, new `util/memoryEval.mjs`, a test beside the
+fixtures, new `docs/audit/structured-memory-<date>.md`.
+
+- Korean and English chats of 100 and 1,000 turns with a cast of ten and labelled probes; scripted writer output; a capture
+  and exclusion rate tool over the manifest; the token ledger beside HypaV3 on the same fixture; the A/B recipe for a
+  real model. Guide text states no recall figure.
+
+## Recommended order
+
+1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5e, 6a,
+6b, 7b, 7c, 7d, 7e, and 8 one at a time. The later run is serial because each adds strings or shares the panel's route
+file. `memoryTasks.ts`, `assemble.ts`, `memoryStore.ts`, `routes/structuredMemory.ts`, and `structured/writer.ts` each have
+one writer at a time through this order; the guide is shared by all, and a conflict there is docs only.
 
 ## Out of scope
 
