@@ -323,7 +323,7 @@ HypaV3's flat summaries map onto events with `sources` = `chatMemos` and no part
 A reply becomes evidence when the user sends the next message (the job for turn N confirms the last assistant reply
 before it, as Dusk's `confirmedAiIndex` and BardWiki's `projectConfirmedMemoryTurn` do), or when the user presses
 "record now" on a message. The newest assistant message, a reply being streamed, rerolled, or continued, and swipe
-candidates are never written. A write never blocks the send that triggered it (D3); the manifest of that send says
+candidates are never written. A write never blocks the send that triggered it (D3), except when the user answers the gap question with "summarize now" (owner, 2026-11-02), which runs the writer in the job once, as HypaV3 does; the manifest of that send says
 "turn N−1 not yet recorded" so the user knows the reply was made without it.
 
 ### D3. Writer: a background task on the memory task service
@@ -729,6 +729,8 @@ Files: `src/lib/ChatScreens/ContextMeter.svelte`, `src/lib/Setting/Pages/MemoryS
 - The meter's status word and item list; "used in the last send" badges; the preview on the job's `preview` path, marking
   nothing. The option writes `memoryAlgorithmType` and clears the other flags, and exposes the preset fields of 2a except
   the fine-tuning ones. Selecting it leaves `hypaV3Data` untouched; such a chat starts with a coverage gap until 6a.
+- An empty card whose events still dropped covered history reports `coverage: "gap"` (owner, 2026-11-02): the model did not
+  see that history. The guide's Limitations entry on it goes. The meter's guard on the kind goes with its string.
 
 ### Slice 4a: page candidates and patches (D1, D3, D10; needs 2c) — _hard_
 
