@@ -343,6 +343,7 @@ settings sections and collections, no `root` record; tables as in version 2).
   `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, with no version change. It
   is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats
   cascades).
+- The `memory_*` tables are created and restored the same way ([structured memory](structured-memory.md#memory-tables)).
 
 ### Summary projection
 

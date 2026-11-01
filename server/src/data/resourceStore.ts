@@ -78,6 +78,7 @@ import {
 } from "./chatStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import type { ResourceKind, ResourceKindRegistry } from "./kinds.ts";
+import { createMemoryTables, type MemoryChanges, type MemoryRecordKind } from "./memoryStore.ts";
 
 /**
  * Version of the resource database, kept in `PRAGMA user_version`. Version 2 added the chat tables;
@@ -1177,6 +1178,7 @@ export function createResourceStore(options: {
     }
 
     const checkpointTables = createCheckpointTables(db, { token, parse: parseToken });
+    const memoryTables = createMemoryTables(db, { token, parse: parseToken });
     const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
     if (checkpointTables.sweep() > 0) {
         countWrite();
@@ -1762,6 +1764,42 @@ export function createResourceStore(options: {
                     }
                     return removed;
                 });
+            },
+        },
+
+        /**
+         * Cold structured memory data: writes count toward snapshots without publishing chat changes;
+         * the chat's own revision and the change feed do not move.
+         */
+        memory: {
+            /**
+             * Commits `changes` whole (`memoryTables.write`, which owns the revision check) and returns
+             * the memory revision token; another epoch, or none, is a `ResourceEpochError`. Anything
+             * that escapes rolls the whole write back.
+             */
+            write(
+                characterId: string,
+                chatId: string,
+                options: { epoch: string | undefined; baseRevision: string },
+                changes: MemoryChanges,
+            ): string {
+                assertWritable();
+                assertEpochNow(options.epoch);
+                return transactionInScope(() => {
+                    const { revision, wrote } = memoryTables.write(characterId, chatId, options.baseRevision, changes);
+                    if (wrote) {
+                        countWrite();
+                    }
+                    return revision;
+                });
+            },
+            readContents(...args: Parameters<typeof memoryTables.readContents>) {
+                assertOpen();
+                return memoryTables.readContents(...args);
+            },
+            readRecord<K extends MemoryRecordKind>(characterId: string, chatId: string, kind: K, id: string) {
+                assertOpen();
+                return memoryTables.readRecord(characterId, chatId, kind, id);
             },
         },
 
@@ -2395,8 +2433,8 @@ export function createResourceStore(options: {
             let committed = false;
             try {
                 db.exec("BEGIN IMMEDIATE");
-                // Deleting the chats cascades to messages, receipts, floors, projections, checkpoints,
-                // their refs, and policies. Pages have no foreign key.
+                // Deleting the chats cascades to messages, receipts, floors, projections, memory records,
+                // checkpoints, their refs, and policies. Pages have no foreign key.
                 db.exec(`
                     DELETE FROM main.resources;
                     DELETE FROM main.chatOrders;

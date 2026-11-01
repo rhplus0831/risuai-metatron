@@ -140,6 +140,59 @@ export const CHAT_SUMMARY_TABLE_SQL = `
 `;
 
 /**
+ * Each chat's structured memory (`memoryStore.ts`): a table each for pages, events, threads, and writer
+ * runs, one row per record with the whole record as stored JSON in `data`, and `memory_state`, the one
+ * revision over all of them, which a chat has no row in until its first memory write. `seq` is storage
+ * order, not message order. `data` is the last column, so a table-of-contents read stops before it.
+ * Keyed by the chat's incarnation (`chats.seq`): deleting the chat drops its rows by cascade, and the
+ * prefix of `UNIQUE (chatSeq, id)` keeps that cascade from scanning a table. Created when missing; not
+ * part of the snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot's copy is not restored and a
+ * restore starts with none.
+ */
+export const MEMORY_TABLES_SQL = `
+    CREATE TABLE IF NOT EXISTS memory_state (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        revision INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_pages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        createdRevision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_threads (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        state TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_runs (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        result TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+`;
+
+/**
  * A message's role as `messages_role` indexes it. A query reaches that index only through this exact
  * expression, so every statement that counts by role builds on this text.
  */
@@ -155,7 +208,7 @@ const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON mess
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MESSAGE_ROLE_INDEX_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MESSAGE_ROLE_INDEX_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
@@ -934,9 +987,9 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 
 /**
  * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
- * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries` and the `messages_role`
- * index when missing (on a fresh and an existing file alike; building the index parses every message
- * row once) and rebuilds the stored projections. Every chat's when the `meta` table's
+ * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory tables, and the
+ * `messages_role` index when missing (on a fresh and an existing file alike; building the index parses
+ * every message row once) and rebuilds the stored projections. Every chat's when the `meta` table's
  * `summaryProjectionVersion` is missing or differs from `SUMMARY_PROJECTION_VERSION`, otherwise only
  * the chats with no row or a row at another revision, so an open with nothing to create or rebuild
  * writes nothing. The seqs come first and each chat's metadata is read alone, so a store with a large
