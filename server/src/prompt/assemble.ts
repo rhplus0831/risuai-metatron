@@ -75,6 +75,7 @@ import {
 } from "./memory/hypav3.ts";
 import { MEMORY_TASK_LIMITS } from "./memory/memoryTasks.ts";
 import { itemTag } from "./memory/structured/card.ts";
+import { automaticRerecords } from "./memory/structured/reconcile.ts";
 import {
     blankEntry,
     type MemoryRecords,
@@ -532,7 +533,9 @@ type StructuredMemoryStepResult =
  * since a waiting manual start takes one that is not, and the receipt its reply carries when recording
  * will not reach it (`writerNotice`). Nothing here refuses a tab-bound `memory` slot or a `request`
  * trigger as `hypaV3Step` does: the task ends `skipped` with the reason, and a person starts the
- * recording, which runs in a job of its own or on the gap's yes.
+ * recording, which runs in a job of its own or on the gap's yes. An event an edit marked for a re-record
+ * counts as due (`automaticRerecords`), or a send with nothing else due would never hand it off; the gap
+ * asks about the history a send lost, so its count and its run take no marks.
  *
  * `messages` and `sourceGeneration` are the snapshot the job's history was built from, and `ms` the
  * eligible messages that built `chats`.
@@ -632,6 +635,7 @@ async function structuredMemoryStep(
             maxContext: input.maxContext,
             tokenizer,
             limit: 1,
+            rerecord: automaticRerecords(records.events, messages, cadence),
         });
         memoryTask = { input, due: (windows?.length ?? 0) > 0 };
     }

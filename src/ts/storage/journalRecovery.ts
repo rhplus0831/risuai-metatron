@@ -35,7 +35,7 @@ import {
     mergeChatMeta,
     patchMessage,
     pinChat,
-    removeMessages,
+    removeMessagesUnasked,
     reorderChats,
     replaceMessage,
     setChatMeta,
@@ -217,7 +217,7 @@ function validRecoveryOp(value: unknown, chatId: string): value is ChatOp {
         case "setTranslation":
             return recoveryId(value.id) && (value.translation === null || isMessageTranslation(value.translation));
         case "remove":
-            return ids(value.ids) && value.ids.length > 0;
+            return ids(value.ids) && value.ids.length > 0 && (value.retract === undefined || value.retract === true);
         case "append": {
             const anchor = value.anchor;
             return (
@@ -761,7 +761,7 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
             const ids = op.ids.filter((id) => present.has(id));
             const missing = op.ids.filter((id) => !present.has(id));
             if (missing.length > 0) skipped.push(`${op.op}: ${missing.join(", ")}`);
-            if (ids.length > 0) removeMessages(ref, ids);
+            if (ids.length > 0) removeMessagesUnasked(ref, ids, op.retract ? { retract: true } : {});
         } else if (op.op === "meta") {
             setChatMeta(ref, op.set ?? {}, op.unset ?? []);
             const fields = new Set([...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})]);

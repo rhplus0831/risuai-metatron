@@ -335,7 +335,7 @@ export interface MemoryEvent extends Omit<MemoryEventDraft, "knowledge">, Memory
      * only while that state does, so a later change of its sources shows again.
      */
     keptState?: string;
-    /** A person asked for a re-record that has not committed yet. */
+    /** A person's repair or an edit of a cited message asked for a re-record that has not committed yet. */
     rerecord?: boolean;
     /** The id of the run that wrote it. */
     writerRun: string;

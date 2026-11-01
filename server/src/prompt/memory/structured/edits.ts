@@ -32,6 +32,9 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   brings it back. Keep accepts what the person saw (`keptState`), and only that: a chat that moved on
  *   since then is refused, and a later change shows again. Re-record only marks the event, because the
  *   old one stays until the new one commits, so it changes neither its `sources` nor its `status`.
+ * - A section left with only retracted events behind it is flagged for review, never reverted, because
+ *   the page may still be right. The flag says nothing of the body, so like a lock it takes no history
+ *   entry and no `updatedAt`.
  */
 
 /** A page edit, which every kind but `thread` and `event` is. */
@@ -237,4 +240,31 @@ export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "di
         throw new MemoryEditRefusal("invalid", "This event has no reply left to record from");
     }
     return rerecord ? null : { ...event, rerecord: true };
+}
+
+/**
+ * The pages of `pages` that change when `events` are the chat's events: a section with `provenance`
+ * whose every id names a `retracted` event gains `unsupported`. An empty `provenance` does not count, an
+ * id naming no event is not retracted, and a section already flagged changes nothing. Only the flag is
+ * added.
+ */
+export function flagUnsupportedSections(
+    pages: readonly MemoryPage[],
+    events: readonly Pick<MemoryEvent, "id" | "status">[],
+): MemoryPage[] {
+    const retracted = new Set(events.flatMap(({ id, status }) => (status === "retracted" ? [id] : [])));
+    const unsupported = ({ provenance, unsupported: flagged }: MemorySection) =>
+        !flagged && provenance.length > 0 && provenance.every((id) => retracted.has(id));
+    return pages.flatMap((page) =>
+        page.sections.some(unsupported)
+            ? [
+                  {
+                      ...page,
+                      sections: page.sections.map((section) =>
+                          unsupported(section) ? { ...section, unsupported: true } : section,
+                      ),
+                  },
+              ]
+            : [],
+    );
 }

@@ -50,8 +50,9 @@
   `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`,
   `StructuredMemoryInheritAnswer`.
 - `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
-  `applyThreadEdit`, `applyEventRepair`, `MemoryEditRefusal`.
-- `server/src/prompt/memory/structured/reconcile.ts`: the server's side: `reconcileEvents` and `retireRerecorded`.
+  `applyThreadEdit`, `applyEventRepair`, `flagUnsupportedSections`, `MemoryEditRefusal`.
+- `server/src/prompt/memory/structured/reconcile.ts`: the server's side: `reconcileEvents`, `retireRerecorded`,
+  `withUnsupportedSections`, `automaticRerecords`, and `reconcileMessageChanges`.
 - `server/src/prompt/memory/structured/inherit.ts`: what a copied or branched chat starts with, pure:
   `inheritedRecords`, `MemoryInheritance`.
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
@@ -157,8 +158,8 @@ one source moved. A retracted event and one stored `stale` stay as they are.
 
 An event's repairs go through [the edit route](#the-edit-route) as `{ kind: "event", eventId, repair }`:
 
-- `retract`: `status: "retracted"`. It can be applied to any event but a retracted one, and takes the mark with it. D4's
-  flag on sections belongs to slice 5b.
+- `retract`: `status: "retracted"`. It can be applied to any event but a retracted one, takes the mark with it, and
+  flags the sections it leaves unsupported ([Retraction and edits](#retraction-and-edits)).
 - `keep`: `keptState` holds `memoryAnchorState`, a string of each source's id, hash now, and position relative to the
   first present, and the event reads active while that state holds. `sources` stay as recorded, because a message that
   disappeared has no anchor to move to. The request names the state the person saw, because the memory revision says
@@ -167,9 +168,44 @@ An event's repairs go through [the edit route](#the-edit-route) as `{ kind: "eve
   when `memoryRerecordTarget` is null: the newest message of the event a send reads is not a reply. The tab then presses
   record now, and [the writer's windows](structured-memory-writer.md#the-writers-windows) do the rest.
 
-`keptState` and `rerecord` are fields of the stored record, so a checkpoint keeps them with its exact row text, and only
-a person's press reads a mark: loading a checkpoint starts nothing. A restored `keptState` holds while the messages it
-named are back.
+`keptState` and `rerecord` are fields of the stored record, so a checkpoint keeps them with its exact row text. Loading
+one starts nothing: a restored mark is read as any other, by a press or
+[the next automatic task](structured-memory-writer.md#the-writers-windows). A restored `keptState` holds while the
+messages it named are back.
+
+### Retraction and edits
+
+A chat write reaches the records through a notice, not through the write itself, so a send never waits for it.
+
+- `applyGroup` reports `ChatMessageChanges` of a by-id group: `retracted`, the ids a `remove` with `retract` deleted,
+  and `rewritten`, the ids a write gave another `role` or `data`, which is what a source's hash reads. A job's write, a
+  generation, a `generationInfo` or translation write, a replayed group, and a group with `create`, `replace`, or
+  `delete` report nothing, and neither does an id the group inserted, or removed unmarked.
+- `onMessagesChanged` delivers it after the commit through the queue of `onChatInvalidated`, never for a rollback. It is
+  not one transaction with the write: a crash in between leaves the event reading `missing` or `changed`, which a repair
+  answers.
+- `reconcileMessageChanges` (subscribed in `app.ts`, with or without a task service) answers in one synchronous step at
+  the revision it read. An event citing a `retracted` id is retracted by `applyEventRepair`, the panel's write. Any
+  other event citing a `rewritten` id gains `rerecord` and nothing else, so it stays until
+  [a re-record commits](structured-memory-writer.md#the-writer-task). It writes nothing when nothing is affected.
+- It checks no fence, unlike the edit route: a running writer gets `revisionConflict` and admits from fresh records, or
+  `windowChanged` when its source moved, and a re-record whose event no longer wants it is refused at its commit.
+
+`withUnsupportedSections` is what every retraction's write passes through: the event route, `retireRerecorded`, and the
+reaction. Over the events and pages as the change set leaves them, `flagUnsupportedSections` sets `unsupported` on a
+section with `provenance` whose every id names a retracted event. An empty `provenance` does not count, and an id naming
+no event is not retracted. The flag takes no history entry and no `updatedAt`, reverts nothing, and goes when the writer
+changes the section, because that adds an active event to its `provenance`.
+
+In the tab, `removeMessages` is a person's delete. Its checks throw at once, and under any other algorithm it removes at
+once. With `structuredMemory` selected it pins the chat, reads the coverage, and asks with
+`language.structuredMemory.removeRetracts` when an event that is not retracted cites a message. A no removes nothing,
+and a yes puts `retract` on the `remove`. A failed read removes without the mark. After the wait it checks the chat's
+owner and the locks again, and a message locked meanwhile refuses the delete.
+
+`removeMessagesUnasked` asks nothing and carries no mark of its own: `/cut`, `/del`, and `runMultisend`. A recovered
+draft passes the mark it holds. `applyChatResult` (a reroll, a script) and a server trigger's `remove` are unmarked too,
+so what cites those messages reads `missing` and waits for the panel.
 
 ### A memory write
 
@@ -253,9 +289,10 @@ What `inheritedRecords` decides:
   source never maps.
 - A mapped source keeps `hash` and `index`, and only `messageId` changes: reconciliation compares stored gaps, so a
   current position would make an `inserted` event read whole.
-- An event with sources that all map crosses, with every field as stored but `createdRevision`, which the store stamps.
-  That takes in `retracted` and `stale`: `recordedMessages` counts any status, so a retracted event left out would be
-  recorded again. A remapped `keptState` only reads stale, which asks a person.
+- An event with sources that all map crosses, with every field as stored but `createdRevision`, which the store stamps,
+  and `rerecord`, a request about the source chat: on a copy it would spend a call nobody asked for, and the event still
+  reads `changed` for the panel. That takes in `retracted` and `stale`: `recordedMessages` counts any status, so a
+  retracted event left out would be recorded again. A remapped `keptState` only reads stale, which asks a person.
 - An event that does not cross is behind when a source that did not map names a message the source chat holds and the
   new chat does not: what lies after the branch point. Any other stays out and undoes nothing, so a plain copy only
   loses dead evidence: with no behind event no page is rewound and no thread moves.
@@ -338,8 +375,9 @@ group is refused, and a full one is checked and restored.
 ## Invariants
 
 - Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check. The
-  exceptions are a restore's staged writer and install copy, and a checkpoint load's `tx.restoreMemory`, in the load's
-  transaction under its writer lease.
+  exceptions are a restore's staged writer and install copy, a checkpoint load's `tx.restoreMemory`, in the load's
+  transaction under its writer lease, and `reconcileMessageChanges`, which holds no fence
+  ([Retraction and edits](#retraction-and-edits)).
 - A route writes only a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
   [the inherit route](#copies-and-branches) the records the server builds from the source chat, never a record the tab
   sent.
@@ -404,6 +442,9 @@ group is refused, and a full one is checked and restored.
   `src/ts/process/structuredMemory.test.ts` pins the tab's hash to a literal from `messageSourceHash`.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
   fence on a real app, holding a task on a tokenizer read and a job on its runner.
+- Retraction runs on real stores: `structuredMemoryRoutes.test.ts` through the batch and edit routes,
+  `memoryStore.test.ts` the notice, `memoryTasks.test.ts` and `memoryJobs.test.ts` the re-records. `chatStore.test.ts`,
+  `command.test.ts`, and `RecoveryDrafts.test.ts` drive the question and the mark in the tab.
 - `chatCheckpoints.test.ts` and `chatCheckpointRoutes.test.ts` drive a checkpoint's memory through the checkpoint
   service; `restoreStage.test.ts` forges its manifests and chunks.
 - `structured/inherit.test.ts` drives the build with plain records and an injected `hashOf`,
@@ -426,6 +467,13 @@ group is refused, and a full one is checked and restored.
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
+- A confirmed delete lands after the coverage read and the question, so a send can start in that gap. Only a lock taken
+  meanwhile refuses it; otherwise the reply can be built on the deleted message and the event retracted during the job.
+  The read has no deadline of its own, so a hung read holds the delete with no question shown. Decision: Structured
+  Memory slice 5b, plan.
+- A mark outlives an edit that was put back: the event reads active, spends no call, and shows as waiting until a press,
+  keep, or retract. A chat under a save refusal sends a whole `replace`, which loses `retract` and any `rewritten`, so
+  the event reads `missing` or `changed` for the panel. Decision: Structured Memory slice 5b, plan.
 - A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, and runs are
   never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
   automatic checkpoint and every load's safety checkpoint: about 660 ms for 64 MB of runs on tmpfs. A load parses every

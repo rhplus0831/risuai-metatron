@@ -405,8 +405,8 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
   the backup import slot (the version-2 import and the upstream prepare and commit), the import slot the module, CharX,
   and Realm imports share, the staged Realm imports (`realmStaging`), and the prepared upstream imports
   (`upstreamStaging`) and exports (`upstreamExportStaging`).
-- The chat source generations and the `onChatInvalidated` listeners (one entry per chat deleted or replaced whole since
-  the open or the last restore; a restart starts them over).
+- The chat source generations, the `onChatInvalidated` listeners (one entry per chat deleted or replaced whole since the
+  open or the last restore; a restart starts them over), and the `onMessagesChanged` listeners.
 
 ## Coupling
 

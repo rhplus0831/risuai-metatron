@@ -49,6 +49,7 @@ import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
 import type { HypaV3SeparatorLimits } from "./prompt/memory/host.ts";
 import { createMemoryTasks, type MemoryTaskLimits, type MemoryTasks } from "./prompt/memory/memoryTasks.ts";
+import { reconcileMessageChanges } from "./prompt/memory/structured/reconcile.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
@@ -509,6 +510,8 @@ export function createServerContext(options: {
         ...(runnerMemoryTasks ? { memoryTasks: runnerMemoryTasks } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
+    // A chat's records follow its messages whether or not a service runs the writer.
+    resources.onMessagesChanged((notice) => reconcileMessageChanges(resources, notice));
     if (memoryTasks) {
         // After the live-update sockets' listener, so the clients get the `epoch` frame before any
         // status of the new registry. A superseded epoch (a newer one was published inside this

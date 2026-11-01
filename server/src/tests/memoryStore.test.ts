@@ -20,6 +20,8 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { installSnapshot } from "./stagedRestore.ts";
+import { createGenerationLock } from "../jobs/generationLock.ts";
+import { reconcileEvents, reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -41,14 +43,14 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
-function fileStore() {
+function fileStore(guard?: ReturnType<typeof createGenerationLock>) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-memory-store-"));
     dirs.push(dir);
     const file = path.join(dir, "resources.sqlite");
     const feed = createChangeFeed();
     const events: ChangeFeedEvent[] = [];
     feed.subscribe((event) => events.push(event));
-    const store = createResourceStore({ file, kinds, feed });
+    const store = createResourceStore({ file, kinds, feed, guard });
     stores.push(store);
     const db = new DatabaseSync(file, { readOnly: true });
     readers.push(db);
@@ -625,4 +627,58 @@ it("refuses losing or retyping an existing scene without partially writing the b
         { id: "ordinary", type: "location" },
         { id: "replacement", type: "scene" },
     ]);
+});
+
+it("delivers message changes only after commit, isolates failed reactions, and leaves a job's unasked deletion missing", () => {
+    const guard = createGenerationLock();
+    const { store, db } = fileStore(guard);
+    seed(store);
+    const original = {
+        ...records(["cited"]).events[0],
+        sources: [{ messageId: "m", index: 0, hash: messageSourceHash(chat.message[0]) }],
+    };
+    write(store, contents(store).revision, { events: [original] });
+    const saved = store.memory.readRecord("c", "k", "events", "cited")!.data;
+    const notices: unknown[] = [];
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    store.onMessagesChanged(() => {
+        throw new Error("Memory reaction failed");
+    });
+    store.onMessagesChanged((notice) => {
+        // A separate connection sees the committed message when the notice arrives.
+        expect((db.prepare("SELECT data FROM messages WHERE id = 'm'").get() as { data: string }).data).toContain(
+            "Edited",
+        );
+        notices.push(notice);
+        reconcileMessageChanges(store, notice);
+    });
+    const edit = { chats: [group(store.chatRevision("c", "k"), [{ op: "setText", id: "m", text: "Edited" }])] };
+    expect(() =>
+        store.applyChanges(edit, {
+            inTransaction: {
+                after: () => {
+                    throw new Error("Rollback");
+                },
+            },
+        }),
+    ).toThrow("Rollback");
+    expect(notices).toEqual([]);
+    expect(store.memory.readRecord("c", "k", "events", "cited")!.data).toEqual(saved);
+    expect(() => store.applyChanges(edit)).not.toThrow();
+    expect(notices).toEqual([{ epoch: store.epoch(), characterId: "c", id: "k", rewritten: ["m"], retracted: [] }]);
+    expect(error).toHaveBeenCalled();
+    expect(store.memory.readRecord("c", "k", "events", "cited")!.data).toEqual({ ...saved, rerecord: true });
+    guard.addToken("job");
+    const before = contents(store);
+    store.applyChanges(
+        { chats: [group(store.chatRevision("c", "k"), [{ op: "remove", ids: ["m"] }])] },
+        { jobToken: "job" },
+    );
+    expect((store.readChatSource("c", "k").data as Chat).message).toEqual([]);
+    expect(notices).toHaveLength(1);
+    expect(contents(store)).toEqual(before);
+    expect(reconcileEvents([store.memory.readRecord("c", "k", "events", "cited")!.data], [])[0]).toMatchObject({
+        status: "stale",
+        staleReason: "missing",
+    });
 });

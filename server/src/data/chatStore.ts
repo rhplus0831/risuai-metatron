@@ -265,11 +265,19 @@ type PreparedOp =
     | { op: "setMessage"; message: PreparedMessage; generation: Generation | null }
     | { op: "setText"; id: string; text: string; generation: Generation | null }
     | { op: "patchMessage"; id: string; set: Record<string, unknown>; unset: string[] }
-    | { op: "remove"; ids: string[] }
+    | { op: "remove"; ids: string[]; retract: boolean }
     | { op: "begin"; id: string; generationId: string }
     | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
 
 type PreparedMessage = { id: string; text: string };
+
+/**
+ * What a by-id group did to the text of a chat's messages, once it commits: `retracted`, the messages a
+ * `remove` with `retract` deleted, and `rewritten`, those a person's write gave another `role` or `data`,
+ * which is what a memory source's hash reads. A write of a job or a generation reports nothing, nor
+ * does a change of any other field, nor an id the group inserted or removed.
+ */
+export type ChatMessageChanges = { characterId: string; id: string; retracted: string[]; rewritten: string[] };
 
 export type PreparedChatGroup = {
     characterId: string;
@@ -772,7 +780,10 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             }
             return { op: "setText", id: raw.id, text: raw.text, generation: prepareGeneration(raw.generation) };
         case "remove":
-            return { op: "remove", ids: prepareIdList(raw.ids, "remove.ids") };
+            if (raw.retract !== undefined && raw.retract !== true) {
+                throw new ResourceValidationError("remove.retract must be true");
+            }
+            return { op: "remove", ids: prepareIdList(raw.ids, "remove.ids"), retract: raw.retract === true };
         case "begin":
             if (!isValidResourceId(raw.id) || !isValidResourceId(raw.generationId)) {
                 throw new ResourceValidationError("begin must be { id, generationId }");
@@ -1578,6 +1589,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         change?: ChatWriteChange;
         invalidated?: true;
         duplicate?: true;
+        messageChanges?: ChatMessageChanges;
     } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined, reason?: ChatConflict["reason"]): never => {
@@ -1654,6 +1666,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let timeBefore: { time: number | undefined } | undefined;
         const touched = new Set<string>();
         const removedIds = new Set<string>();
+        /** The messages a `remove` with `retract` deleted. */
+        const retractedIds = new Set<string>();
+        /** The messages a person's write gave another `role` or `data` (`ChatMessageChanges`). */
+        const rewrittenIds = new Set<string>();
         let reappended = false;
         let metaChanged = false;
         let applied = 0;
@@ -1837,6 +1853,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         closeFence(chatSeq, id, existing!);
                     }
                     let text: string;
+                    /** Whether the op changes what a memory source's hash reads of the message. */
+                    let rewrites: boolean;
                     if (op.op === "setMessage") {
                         // The whole row, also on a stale revision: fields the sender has not seen are
                         // replaced (`patchMessage` changes only the fields it names).
@@ -1844,6 +1862,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         // older copy, or none) never replaces or removes it.
                         const stored = JSON.parse(existing!.data) as Record<string, unknown>;
                         const message = JSON.parse(op.message.text) as Record<string, unknown>;
+                        rewrites = message.role !== stored.role || message.data !== stored.data;
                         if (Object.hasOwn(message, "translation") || Object.hasOwn(stored, "translation")) {
                             delete message.translation;
                             if (Object.hasOwn(stored, "translation")) {
@@ -1857,21 +1876,27 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         // Onto the row as stored: the fields it does not name (`data` another tab
                         // wrote, the stored translation) stay. Checked again as a whole message.
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
+                        const { role, data } = message;
                         for (const key of op.unset) {
                             delete message[key];
                         }
                         for (const key of Object.keys(op.set)) {
                             message[key] = op.set[key];
                         }
+                        rewrites = message.role !== role || message.data !== data;
                         text = serialize(normalizeMessage(message)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
+                        rewrites = message.data !== op.text;
                         message.data = op.text;
                         text = serialize(message).text;
                     }
                     setMessageData.run(text, chatSeq, id);
                     if (text !== existing!.data) {
                         touched.add(id);
+                    }
+                    if (rewrites && jobToken === undefined && (op.op === "patchMessage" || !op.generation)) {
+                        rewrittenIds.add(id);
                     }
                     applied += 1;
                     break;
@@ -1884,6 +1909,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     for (const id of op.ids) {
                         if (deleteMessage.run(chatSeq, id).changes > 0) {
                             removedIds.add(id);
+                            if (op.retract) {
+                                retractedIds.add(id);
+                            }
                             touched.delete(id);
                             removed += 1;
                         } else if (op.ids.length > 1) {
@@ -2057,7 +2085,21 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 feed.summaryBase = patchBase;
             }
         }
-        return { result, applied, change, feed, ...(invalidated ? { invalidated } : {}) };
+        // By-id groups only: a whole-chat write says nothing of its messages one by one.
+        const retracted = patchBase ? [...retractedIds].filter((id) => !insertedHere.has(id)) : [];
+        const rewritten = patchBase
+            ? [...rewrittenIds].filter((id) => !insertedHere.has(id) && !removedIds.has(id))
+            : [];
+        return {
+            result,
+            applied,
+            change,
+            feed,
+            ...(invalidated ? { invalidated } : {}),
+            ...(retracted.length > 0 || rewritten.length > 0
+                ? { messageChanges: { characterId, id: chatId, retracted, rewritten } }
+                : {}),
+        };
     }
 
     return {
@@ -2278,9 +2320,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * anything conflicted (`priorConflicts`: a resource op did), since the batch rolls back and a
          * conflicting change is missing from the list. Returns every conflict found (the caller rolls
          * back when there is one), the results, the applied count, each applied by-id group's feed
-         * payloads (`feed`, by result), and the chats a `delete` or `replace` applied to
-         * (`invalidated`, once each, in group order). With `changes`, also each group's own change
-         * (`changes`, aligned with the results; undefined for a group without one).
+         * payloads (`feed`, by result), the chats a `delete` or `replace` applied to (`invalidated`,
+         * once each, in group order), and what the groups did to messages (`messageChanges`, a group
+         * with nothing to report left out). With `changes`, also each group's own change (`changes`,
+         * aligned with the results; undefined for a group without one).
          */
         apply(
             groups: readonly PreparedChatGroup[],
@@ -2299,6 +2342,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             const written: (ChatWriteChange | undefined)[] | undefined = changes ? [] : undefined;
             const changedOrders = new Set<string>();
             const invalidated: { characterId: string; id: string }[] = [];
+            const messageChanges: ChatMessageChanges[] = [];
             let applied = 0;
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
@@ -2314,6 +2358,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     }
                     if (outcome.invalidated) {
                         invalidated.push({ characterId: group.characterId, id: group.chatId });
+                    }
+                    if (outcome.messageChanges) {
+                        messageChanges.push(outcome.messageChanges);
                     }
                     applied += outcome.applied;
                 } catch (error) {
@@ -2376,6 +2423,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 feed,
                 duplicates,
                 invalidated,
+                messageChanges,
                 changes: written,
             };
         },

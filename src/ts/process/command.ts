@@ -6,7 +6,7 @@ import {
     ensureChatLoaded,
     findChat,
     pinChat,
-    removeMessages,
+    removeMessagesUnasked,
     setMessageText,
 } from "../storage/chatStore.svelte";
 import { setChatVarOf } from "../parser/chatVar.svelte";
@@ -35,7 +35,7 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
             return false;
         }
         if (clearMode) {
-            removeMessages(
+            removeMessagesUnasked(
                 ref,
                 chat.message.map((message) => message.chatId),
             );
@@ -190,7 +190,7 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
                 // Keeps the messages of the range (as `Array.slice` does), removes the rest.
                 const [start, end] = arg.split("-");
                 const kept = new Set(currentChat.message.slice(parseInt(start), parseInt(end)));
-                removeMessages(
+                removeMessagesUnasked(
                     ref,
                     currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
                 );
@@ -198,11 +198,11 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
                 // Removes the one message at the index (a negative one takes the range branch above, as upstream).
                 const target = currentChat.message.at(parseInt(arg));
                 if (target) {
-                    removeMessages(ref, [target.chatId]);
+                    removeMessagesUnasked(ref, [target.chatId]);
                 }
             } else {
                 //For risu, doesn'ts work for STScript
-                removeMessages(ref, [arg]);
+                removeMessagesUnasked(ref, [arg]);
             }
             return pipe;
         }
@@ -211,7 +211,7 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             const size = parseInt(arg);
             if (!isNaN(size)) {
                 const kept = new Set(currentChat.message.slice(currentChat.message.length - size));
-                removeMessages(
+                removeMessagesUnasked(
                     ref,
                     currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
                 );

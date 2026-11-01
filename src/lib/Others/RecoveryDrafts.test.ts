@@ -383,6 +383,31 @@ describe("recovery drafts", () => {
         expect(target.querySelector("li")).toBeNull();
     });
 
+    it("replays recovered deletions without asking and preserves only a recorded retraction mark", async () => {
+        h.settings.ui.memoryAlgorithmType = "structuredMemory";
+        await h.sync.flushResources();
+        for (const retract of [undefined, true] as const) {
+            const id = retract ? "b" : "a";
+            const op = { op: "remove" as const, ids: [id], ...(retract ? { retract } : {}) };
+            const entry = await put(chatInput([op]));
+            const fetch = vi.spyOn(h.fake, "fetch");
+            const before = h.fake.batchBodies().length;
+            expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: [] });
+            expect(
+                h.fake
+                    .batchBodies()
+                    .slice(before)
+                    .flatMap((body) => body.chats ?? [])
+                    .flatMap((group) => group.ops),
+            ).toEqual([op]);
+            expect(h.fake.chat("c", "k")!.data.message.some((message) => message.chatId === id)).toBe(false);
+            expect(fetch.mock.calls.some(([path]) => path.includes("/coverage"))).toBe(false);
+            expect(io.confirm).not.toHaveBeenCalled();
+            expect(await journal.listDrafts()).toEqual([]);
+            fetch.mockRestore();
+        }
+    });
+
     it("restores a gone chat's snapshot under a new id", async () => {
         const input = chatInput([], "gone");
         input.layers.pending!.createSnapshot = snapshot();

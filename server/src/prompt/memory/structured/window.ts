@@ -32,9 +32,11 @@ import type { MemoryTokenizer } from "../host.ts";
  *   only an active event counts.
  * - Windows close in order over the turns left. A trailing partial one stays open unless a manual
  *   start closes it.
- * - A person can ask for what is recorded to be recorded again, one event at a time (`rerecord` on the
- *   event). That asks nothing of `recorded`: a person's start reads the marks, gives each marked event
- *   one window of its own ahead of the rest, and the ordinary windows stay exactly as they were.
+ * - What is recorded can be asked to be recorded again, one event at a time (`rerecord` on the event): a
+ *   person's repair marks it, and so does an edit of a message it cites. That asks nothing of `recorded`:
+ *   each event a start re-records gets one window of its own ahead of the rest, and the ordinary windows
+ *   stay exactly as they were. A person's start takes every mark, an automatic task only the marks an
+ *   edit explains (`automaticRerecords`).
  */
 
 /**
@@ -109,7 +111,7 @@ export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId
     );
 }
 
-/** The chat's events a person asked to re-record: marked, and not retracted. Empty for a missing chat. */
+/** The chat's events waiting for a re-record: marked, and not retracted. Empty for a missing chat. */
 export function readRerecordEvents(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): MemoryEvent[] {
     const stored = store.memory.readContents(chaId, chatId)?.events ?? [];
     return stored.flatMap(({ id, status }) => {
@@ -214,8 +216,9 @@ function rerecordWindows(
  * disabled, or cut off by an `allBefore`). A turn whose assistant message is recorded drops out; any
  * other lists its unrecorded messages.
  *
- * `rerecord` are the events a person's start re-records (`readRerecordEvents`): their windows
- * (`rerecordWindows`) come first and count toward `limit`.
+ * `rerecord` are the events this start re-records, every mark on a person's start
+ * (`readRerecordEvents`) and what an edit explains on an automatic one (`automaticRerecords`): their
+ * windows (`rerecordWindows`) come first and count toward `limit`.
  *
  * `tokenizer` counts a stored message as `role` and `data` alone, so the job's step and its task decide
  * alike; `maxContext` is the input's in both. Only the `tokens` cadence counts: there the turns

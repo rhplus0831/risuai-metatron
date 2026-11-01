@@ -30,6 +30,7 @@ import {
     STRUCTURED_MEMORY_LIMITS as LIMITS,
 } from "../../../shared/structuredMemory.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
+import { reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
 import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
@@ -2545,6 +2546,166 @@ describe("structured memory tasks", () => {
         const patchRequest = await nextPatch(t, request.index + 1, terminal);
         return { request, terminal, patchRequest, analysisAnswer };
     };
+
+    it("automatically re-records an edited confirmed event at hand-off and retires it only with the replacement", async () => {
+        const arrival = deferred<WriterCall>();
+        const release = deferred<{ outcome: "recorded" }>();
+        const t = structuredHarness({
+            structuredWriter: async (call) => {
+                arrival.resolve(call);
+                return release.promise;
+            },
+        });
+        t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+        const sources = t
+            .chat("k1")!
+            .message.slice(0, 2)
+            .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) }));
+        const page = memoryRecords(["facts"], "Section A before the rewrite").pages[0];
+        page.sections[0].heading = "A";
+        page.sections[0].provenance = ["old"];
+        page.sections[0].sources = sources;
+        page.sections.push({ ...page.sections[0], heading: "B", body: "Section B stays unchanged" });
+        writeMemory(t.store, "c", "k1", { events: [event("old", sources)], pages: [page] });
+        const old = eventRecord(t);
+        t.write("k1", [{ op: "setText", id: "m2", text: "Edited reply" }]);
+        expect(eventRecord(t)).toEqual({ ...old, rerecord: true });
+        const terminal = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        try {
+            const call = await arriveOrEnd(arrival, terminal);
+            expect(ids(call)).toEqual(["m1", "m2"]);
+            expect(call.window.rerecords).toBe("old");
+            expect(call.window.messages[1].data).toBe("Edited reply");
+            expect(eventRecord(t)).toEqual({ ...old, rerecord: true });
+            expect(pageRecords(t)).toEqual([page]);
+            const updatedPage: MemoryPage = {
+                ...page,
+                sections: [
+                    {
+                        ...page.sections[0],
+                        body: "The writer's new body for A",
+                        provenance: ["old", "new"],
+                        sources: call.window.sources,
+                    },
+                    page.sections[1],
+                ],
+            };
+            expect(
+                call.commit(contents(t).revision, {
+                    events: [event("new", call.window.sources)],
+                    pages: [updatedPage],
+                }).outcome,
+            ).toBe("committed");
+            expect(t.store.memory.readRecord("c", "k1", "events", "old")!.data).toEqual({
+                ...old,
+                status: "retracted",
+            });
+            expect(contents(t).events.map(({ id, status }) => ({ id, status }))).toEqual([
+                { id: "old", status: "retracted" },
+                { id: "new", status: "active" },
+            ]);
+            expect(pageRecords(t)).toStrictEqual([
+                {
+                    ...updatedPage,
+                    sections: [updatedPage.sections[0], { ...page.sections[1], unsupported: true }],
+                },
+            ]);
+        } finally {
+            release.resolve({ outcome: "recorded" });
+        }
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+    });
+
+    it("spends no automatic writer call on manual cadence, restored text, or missing sources, and keeps their marks", async () => {
+        for (const condition of ["manual", "restored", "missing"] as const) {
+            const calls: WriterCall[] = [];
+            const t = structuredHarness({
+                hypaSettings: { structured: { cadence: condition === "manual" ? "manual" : "everyTurn" } },
+                limits: { maxWriterWindows: 1 },
+                structuredWriter: async (call) => {
+                    calls.push(call);
+                    return record(t, call);
+                },
+            });
+            t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+            const messages = t.chat("k1")!.message;
+            const sources = messages
+                .slice(0, 2)
+                .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) }));
+            writeMemory(t.store, "c", "k1", { events: [event("old", sources)] });
+            t.write("k1", [{ op: "setText", id: "m2", text: "Edited reply" }]);
+            if (condition === "restored") t.write("k1", [{ op: "setText", id: "m2", text: messages[1].data }]);
+            if (condition === "missing") t.write("k1", [{ op: "remove", ids: ["m1"] }]);
+            const before = eventRecord(t);
+            expect(before.rerecord).toBe(true);
+            const terminal = t.nextTerminal("k1");
+            t.service.handOff(writerInput(t, "m3"));
+            expect((await terminal).status, condition).toMatchObject({ state: "done", done: 0, total: 0 });
+            await t.service.drain();
+            expect(calls, condition).toEqual([]);
+            expect(eventRecord(t), condition).toEqual(before);
+            if (condition === "manual") {
+                const pressed = t.nextTerminal("k1");
+                expect(t.service.record(writerInput(t, "m3"), { through: "m2" }).outcome).toBe("queued");
+                expect((await pressed).status).toMatchObject({ state: "done", done: 1, total: 1 });
+                expect(calls.map(({ window }) => window.rerecords)).toEqual(["old"]);
+            }
+        }
+    });
+
+    it("refuses a re-record's final commit when its old event was retracted, unmarked, or removed", async () => {
+        for (const change of ["retracted", "unmarked", "removed"] as const) {
+            const arrival = deferred<WriterCall>();
+            const release = deferred<{ outcome: "skipped"; reason: string }>();
+            const t = structuredHarness({
+                structuredWriter: async (call) => {
+                    arrival.resolve(call);
+                    return release.promise;
+                },
+            });
+            const sources = t
+                .chat("k1")!
+                .message.slice(0, 2)
+                .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) }));
+            writeMemory(t.store, "c", "k1", { events: [{ ...event("old", sources), rerecord: true }] });
+            const terminal = t.nextTerminal("k1");
+            expect(t.service.record(writerInput(t, "m3"), { through: "m2" }).outcome).toBe("queued");
+            try {
+                const call = await arriveOrEnd(arrival, terminal);
+                expect(call.window.rerecords).toBe("old");
+                const { rerecord, ...old } = eventRecord(t);
+                writeMemory(
+                    t.store,
+                    "c",
+                    "k1",
+                    change === "removed"
+                        ? { remove: { events: ["old"] } }
+                        : {
+                              events: [
+                                  {
+                                      ...old,
+                                      ...(change === "retracted"
+                                          ? { status: "retracted" as const, rerecord: true }
+                                          : {}),
+                                  },
+                              ],
+                          },
+                );
+                const before = contents(t);
+                // Use the current revision: a generic revision conflict must not hide the lost intent.
+                expect(
+                    call.commit(before.revision, { events: [event("second", call.window.sources)] }),
+                    change,
+                ).toMatchObject({ outcome: "refused" });
+                expect(contents(t), change).toEqual(before);
+                expect(t.store.memory.readRecord("c", "k1", "events", "second")).toBeNull();
+            } finally {
+                release.resolve({ outcome: "skipped", reason: "finished" });
+            }
+            await terminal;
+        }
+    });
 
     it("compacts each overflowing section in the recording commit and warms only its final body", async () => {
         const t = structuredHarness();

@@ -84,7 +84,11 @@ export type ChatOp =
           set?: Partial<Omit<Message, "chatId" | "translation">>;
           unset?: Exclude<keyof Message, "chatId" | "translation" | "role" | "data">[];
       }
-    | { op: "remove"; ids: string[] }
+    /**
+     * `retract`: a person confirmed that what cites these messages is retracted. Without it what cites
+     * them stays as it is and reads as missing its source.
+     */
+    | { op: "remove"; ids: string[]; retract?: true }
     | { op: "begin"; id: string; generationId: string }
     /**
      * Sets or clears a message's stored translation. A translation lands only while its

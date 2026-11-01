@@ -24,7 +24,10 @@ import type { MemoryChanges, MemoryEventWrite } from "../../../data/memoryStore.
  *   the stored gaps are what show an insertion, so a current position would make such an event read whole.
  * - An event crosses when it has sources and every one maps. It crosses as stored, marks and `status`
  *   included: `recordedMessages` counts a retracted event, so leaving one out would let the writer record
- *   again what a person retracted, and a remapped `keptState` only reads stale, which asks a person.
+ *   again what a person retracted, and a remapped `keptState` only reads stale, which asks a person. Only
+ *   `rerecord` stays behind: it is a request about the source chat, and on a copy the next automatic
+ *   hand-off would spend a model call nobody asked for. The event still reads `changed`, so the panel
+ *   offers the repair.
  * - An event that does not cross is behind when a source that did not map names a message the source chat
  *   holds and the new chat does not: that is what lies after the branch point. Any other just stays out,
  *   so a plain copy, whose messages are all there, drops dead evidence and undoes nothing.
@@ -108,7 +111,7 @@ function sortEvents(
         const sources = storedMemorySources(event.sources);
         const mapped = sources.flatMap((source) => map.mapped(source) ?? []);
         if (sources.length > 0 && mapped.length === sources.length) {
-            const { createdRevision, ...stored } = event;
+            const { createdRevision, rerecord, ...stored } = event;
             crossing.push({ ...stored, sources: mapped });
         } else if (sources.some((source) => map.mapped(source) === null && map.leftBehind(source))) {
             behind.add(event.id);

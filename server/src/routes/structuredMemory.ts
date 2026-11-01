@@ -36,6 +36,7 @@ import {
     parseMemoryEdit,
 } from "../prompt/memory/structured/edits.ts";
 import { inheritedRecords } from "../prompt/memory/structured/inherit.ts";
+import { withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody } from "./limitedBody.ts";
@@ -422,7 +423,12 @@ export function registerStructuredMemoryRoutes(
                     messages = chat.message;
                 }
                 const edited = applyEventRepair(stored.data, edit, messages, messageSourceHash);
-                const written = store.memory.write(characterId, chatId, options, edited ? { events: [edited] } : {});
+                const written = store.memory.write(
+                    characterId,
+                    chatId,
+                    options,
+                    edited ? withUnsupportedSections(store, { chaId: characterId, chatId }, { events: [edited] }) : {},
+                );
                 return compressedJson(c, {
                     revision: written,
                     kind: "events",

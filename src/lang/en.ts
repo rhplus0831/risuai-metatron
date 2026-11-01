@@ -2394,6 +2394,10 @@ export const languageEnglish = {
         toggle: "Toggle Structured memory",
         requiredOverCap: (tokens: number, limit: number, pages: string) =>
             `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`,
+        removeRetracts: (events: number) =>
+            events === 1
+                ? "1 memory event cites this. Removing it also retracts that event, and nothing can bring it back. Remove anyway?"
+                : `${events} memory events cite this. Removing it also retracts them, and nothing can bring them back. Remove anyway?`,
         meter: {
             status: {
                 unknown: "unknown",

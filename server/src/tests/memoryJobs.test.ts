@@ -3045,6 +3045,61 @@ describe("structured memory job hand-offs", () => {
         });
     });
 
+    it("hands off an edited event on a send with no ordinary window due, but leaves manual cadence waiting", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            for (const cadence of ["everyK", "manual"]) {
+                fake.reset();
+                await patchHypaV3({ structured: { cadence, cadenceTurns: 99 } });
+                const chaId = await seedCharacter({ messages });
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                try {
+                    const event = memoryRecords(["old"]).events[0];
+                    event.sources = messages
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) }));
+                    writeMemory(store, chaId, "k", { events: [event] });
+                    expect(
+                        (
+                            await batch({
+                                chats: [
+                                    {
+                                        characterId: chaId,
+                                        chatId: "k",
+                                        baseRevision: (await readChat(chaId)).revision,
+                                        ops: [{ op: "setText", id: "a1", text: "Edited first reply" }],
+                                    },
+                                ],
+                            })
+                        ).status,
+                    ).toBe(200);
+                    expect(store.memory.readRecord(chaId, "k", "events", "old")!.data.rerecord).toBe(true);
+                    const result = await job("send", chaId, { input: "Continue", userMessageId: "u3" });
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    expect(fake.handOffs, cadence).toHaveLength(cadence === "manual" ? 0 : 1);
+                    if (cadence !== "manual")
+                        expect(fake.handOffs[0]).toMatchObject({
+                            kind: "structuredMemory",
+                            confirmedBefore: "u3",
+                            chatRef: { chaId, chatId: "k" },
+                        });
+                    expect(questions(result.events)).toEqual([]);
+                    expect(summaries()).toEqual([]);
+                    expect(
+                        store.memory.readContents(chaId, "k")!.events.map(({ id, status }) => ({ id, status })),
+                    ).toEqual([{ id: "old", status: "active" }]);
+                } finally {
+                    store.close();
+                }
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("hands off due input jobs and pending manual starts, but no idle, preview or service-free job", async () => {
         for (const row of [
             { kind: "send", cadence: "everyTurn", manual: false, count: 1 },
@@ -3373,6 +3428,67 @@ describe("structured memory job hand-offs", () => {
                 { command: { type: "memoryRecord", messageId: "a2" } },
             );
             expect(full.terminal).toMatchObject({ type: "error", message: expect.stringContaining("Too many chats") });
+        });
+
+        it("refuses a job's replacement when the old event loses its re-record intent during the provider call", async () => {
+            await pluginSlot(true);
+            for (const change of ["retracted", "unmarked", "removed"] as const) {
+                const chaId = await seedCharacter({ messages: messages.slice(0, 2) });
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                try {
+                    const event = { ...memoryRecords(["old"]).events[0], rerecord: true };
+                    event.sources = messages
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) }));
+                    writeMemory(store, chaId, "k", { events: [event] });
+                    let calls = 0;
+                    const result = await job(
+                        "command",
+                        chaId,
+                        { mode: "manual" },
+                        {
+                            command: { type: "memoryRecord", messageId: "a1" },
+                            hooks: pluginHooks,
+                            answerCallback: () => {
+                                calls += 1;
+                                const { rerecord, ...old } = store.memory.readRecord(chaId, "k", "events", "old")!.data;
+                                writeMemory(
+                                    store,
+                                    chaId,
+                                    "k",
+                                    change === "removed"
+                                        ? { remove: { events: ["old"] } }
+                                        : {
+                                              events: [
+                                                  {
+                                                      ...old,
+                                                      ...(change === "retracted"
+                                                          ? { status: "retracted" as const, rerecord: true }
+                                                          : {}),
+                                                  },
+                                              ],
+                                          },
+                                );
+                                return { outcome: "answered", value: { success: true, content: analysis(0) } };
+                            },
+                        },
+                    );
+                    expect(calls, JSON.stringify(result)).toBe(1);
+                    expect(
+                        store.memory.readContents(chaId, "k")!.events.map(({ id, status }) => ({ id, status })),
+                        change,
+                    ).toEqual(
+                        change === "removed"
+                            ? []
+                            : [{ id: "old", status: change === "retracted" ? "retracted" : "active" }],
+                    );
+                } finally {
+                    store.close();
+                }
+            }
         });
 
         it("records tab-bound windows in order on the owner's job channel through the newest reply", async () => {

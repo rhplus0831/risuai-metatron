@@ -57,6 +57,7 @@ import {
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
     type ChatFeedPayloads,
+    type ChatMessageChanges,
     type ChatSnapshotRows,
     type ChatSnapshotSink,
     type ChatWriteChange,
@@ -347,6 +348,12 @@ export type ResourceStore = ReturnType<typeof createResourceStore>;
  * commit, so a later write never changes it.
  */
 export type ChatInvalidation = { epoch: string; characterId: string; id: string; sourceGeneration: number };
+
+/**
+ * The notice `onMessagesChanged` delivers once a write that retracted or rewrote messages of a chat
+ * committed (`ChatMessageChanges`), in the epoch of that commit.
+ */
+export type MessagesChanged = ChatMessageChanges & { epoch: string };
 
 /** A `readRefs` chat entry; a missing chat has revision and data null. */
 type ChatRead = ChatRecord | { characterId: string; id: string; revision: null; data: null };
@@ -943,6 +950,11 @@ export function createResourceStore(options: {
     const invalidationListeners = new Set<(notice: ChatInvalidation) => void>();
     /** Notices of committed writes not delivered yet, oldest first. */
     const pendingInvalidations: ChatInvalidation[] = [];
+    /** What the open SQL transaction did to messages, kept and dropped as `transactionInvalidations` are. */
+    let transactionMessageChanges: ChatMessageChanges[] | null = null;
+    const messageChangeListeners = new Set<(notice: MessagesChanged) => void>();
+    /** Notices of committed writes not delivered yet, oldest first. */
+    const pendingMessageChanges: MessagesChanged[] = [];
     let deliveringInvalidations = false;
     /**
      * Publishing scopes still running, their feed publication included (a feed listener's
@@ -965,36 +977,55 @@ export function createResourceStore(options: {
     function beginTransaction() {
         db.exec("BEGIN IMMEDIATE");
         transactionInvalidations = new Map();
+        transactionMessageChanges = [];
     }
 
     /**
      * Commits the open transaction and, in the same synchronous step, advances the source
-     * generation of every chat it invalidated and queues their notices (`deliverInvalidations`).
+     * generation of every chat it invalidated and queues their notices and its message changes
+     * (`deliverInvalidations`).
      */
     function commitTransaction() {
         db.exec("COMMIT");
         const invalidated = transactionInvalidations;
+        const messageChanges = transactionMessageChanges;
         transactionInvalidations = null;
+        transactionMessageChanges = null;
         for (const [key, { characterId, id }] of invalidated ?? []) {
             lastSourceGeneration += 1;
             sourceGenerations.set(key, lastSourceGeneration);
             pendingInvalidations.push({ epoch, characterId, id, sourceGeneration: lastSourceGeneration });
         }
+        for (const changes of messageChanges ?? []) {
+            pendingMessageChanges.push({ ...changes, epoch });
+        }
     }
 
-    /** Rolls back the open transaction, if any, with the invalidations it recorded. */
+    /** Rolls back the open transaction, if any, with the invalidations and message changes it recorded. */
     function rollbackTransaction() {
         transactionInvalidations = null;
+        transactionMessageChanges = null;
         if (db.isTransaction) {
             db.exec("ROLLBACK");
         }
     }
 
+    /** Hands `notice` to `listeners`: one that throws is logged and takes nothing from the others. */
+    function notifyListeners<T>(listeners: ReadonlySet<(notice: T) => void>, notice: T, label: string) {
+        for (const listener of [...listeners]) {
+            try {
+                listener(notice);
+            } catch (error) {
+                console.error(label, error);
+            }
+        }
+    }
+
     /**
-     * Delivers the queued notices in commit order, once no publishing scope is running. A listener's
-     * own write queues its notices behind the ones being delivered (no nested delivery); a listener
-     * that throws is logged and never fails the write that committed. A listener can see a state
-     * newer than its notice (a later write ran before it), so consumers compare the notice's
+     * Delivers the queued notices of each kind in commit order, once no publishing scope is running. A
+     * listener's own write queues its notices behind the ones being delivered (no nested delivery); a
+     * listener that throws is logged and never fails the write that committed. A listener can see a
+     * state newer than its notice (a later write ran before it), so consumers compare the notice's
      * generation with what they hold.
      */
     function deliverInvalidations() {
@@ -1003,14 +1034,12 @@ export function createResourceStore(options: {
         }
         deliveringInvalidations = true;
         try {
-            while (pendingInvalidations.length > 0) {
-                const notice = pendingInvalidations.shift()!;
-                for (const listener of [...invalidationListeners]) {
-                    try {
-                        listener(notice);
-                    } catch (error) {
-                        console.error("[ChatInvalidation]", error);
-                    }
+            while (pendingInvalidations.length > 0 || pendingMessageChanges.length > 0) {
+                const invalidation = pendingInvalidations.shift();
+                if (invalidation) {
+                    notifyListeners(invalidationListeners, invalidation, "[ChatInvalidation]");
+                } else {
+                    notifyListeners(messageChangeListeners, pendingMessageChanges.shift()!, "[MessagesChanged]");
                 }
             }
         } finally {
@@ -1622,6 +1651,7 @@ export function createResourceStore(options: {
             for (const chat of chatOutcome.invalidated) {
                 recordInvalidation(chat.characterId, chat.id);
             }
+            transactionMessageChanges?.push(...chatOutcome.messageChanges);
             const applied = { results, chats: chatOutcome.results, chatOrders: chatOutcome.orders };
             if (options.inTransaction?.after) {
                 runCheckpointCallback((tx) => options.inTransaction!.after!(applied, tx));
@@ -2127,6 +2157,20 @@ export function createResourceStore(options: {
             };
         },
 
+        /**
+         * Calls `listener` with a `MessagesChanged` for every chat a committed write retracted or rewrote
+         * messages of: once per chat and transaction, after the transaction committed and its change was
+         * published, never for a rolled-back one, and through the same queue as `onChatInvalidated`
+         * (`deliverInvalidations`). Returns the removal.
+         */
+        onMessagesChanged(listener: (notice: MessagesChanged) => void): () => void {
+            assertOpen();
+            messageChangeListeners.add(listener);
+            return () => {
+                messageChangeListeners.delete(listener);
+            };
+        },
+
         /** A chat's revision token, or null when it does not exist (its messages are not read). */
         chatRevision(characterId: string, id: string): string | null {
             assertOpen();
@@ -2536,6 +2580,7 @@ export function createResourceStore(options: {
             patchBases.clear();
             sourceGenerations.clear();
             invalidationListeners.clear();
+            messageChangeListeners.clear();
             db.close();
         },
     };

@@ -73,6 +73,40 @@ it("maps ids before positions, requires identical role and text, and never borro
     expect({ events, sourceMessages, messages }).toEqual(before);
 });
 
+it("leaves rerecord requests in the source chat while copies and branches preserve the rest of each crossing event", () => {
+    const sourceMessages = [message("early", "Edited wording"), message("late", "After the branch point")];
+    const { createdRevision, ...record } = event("marked", [anchor(message("early", "Recorded wording"), 12)]);
+    const preserved = {
+        ...record,
+        pinned: true,
+        suppressed: true,
+        userCorrected: true,
+        keptState: JSON.stringify([["early", '["char","Kept wording"]', 0]]),
+        status: "stale" as const,
+        staleReason: "changed" as const,
+    };
+    const sourceEvent: MemoryEvent = { ...preserved, createdRevision, rerecord: true };
+    const before = structuredClone(sourceEvent);
+
+    for (const messages of [sourceMessages, [message("branch-early", "Edited wording")]]) {
+        const result = inheritedRecords({
+            pages: [],
+            threads: [],
+            events: [sourceEvent],
+            sourceMessages,
+            messages,
+            hashOf,
+        });
+        expect(result.events).toStrictEqual([
+            {
+                ...preserved,
+                sources: [{ messageId: messages[0].chatId!, index: 12, hash: '["char","Recorded wording"]' }],
+            },
+        ]);
+        expect(sourceEvent).toStrictEqual(before);
+    }
+});
+
 it("keeps recorded gaps so an inserted event still reconciles stale after ids change", () => {
     const sourceMessages = [message("a", "Before"), message("inserted", "New turn"), message("b", "After")];
     const e = event("spanning", [anchor(sourceMessages[0], 0), anchor(sourceMessages[2], 1)]);

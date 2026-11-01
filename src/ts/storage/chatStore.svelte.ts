@@ -27,6 +27,7 @@ import {
 import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
 import type { ChatLoreOverride } from "../../../shared/database.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
     chatTranslationSummary,
@@ -35,7 +36,7 @@ import {
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
-import { alertError } from "../alert";
+import { alertConfirm, alertError } from "../alert";
 import type { character, Chat, groupChat, Message, MessageTranslation } from "./database.svelte";
 import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
@@ -3325,19 +3326,101 @@ export function setMessageTranslation(
     return true;
 }
 
-/** Removes messages by id. Removing several needs the chat's current revision on the server. */
-export function removeMessages(ref: ChatRef, ids: readonly string[]) {
+/** The chat of `ref` and which of `ids` it holds; throws for a chat not held or a message locked. */
+function removalTarget(ref: ChatRef, ids: readonly string[]): { chat: Chat; present: string[] } {
     const chat = requireChat(ref);
     const present = ids.filter((id) => indexOfMessage(chat, id) !== -1);
+    assertUnlocked(ref, present);
+    return { chat, present };
+}
+
+/**
+ * Removes messages by id: a person's delete. Removing several needs the chat's current revision on the
+ * server. The checks throw here, in every chat. Under Structured Memory the removal itself comes later,
+ * or not at all (`removeAfterAsking`), so the messages may still be there when this returns.
+ */
+export function removeMessages(ref: ChatRef, ids: readonly string[]) {
+    const { chat, present } = removalTarget(ref, ids);
     if (present.length === 0) {
         return;
     }
-    assertUnlocked(ref, present);
-    applyRemoval(ref, chat, present);
+    if (settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM) {
+        void removeAfterAsking(ref, present);
+    } else {
+        applyRemoval(ref, chat, present);
+    }
 }
 
-/** Removes messages already checked against the locks, as one op (several need the current revision). */
-function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
+/**
+ * Removes messages by id now, asking nothing: for what no person answers, a command or a recovered
+ * draft. Under Structured Memory what cites them reads as missing its source until someone repairs it,
+ * unless `retract` carries a person's earlier yes.
+ */
+export function removeMessagesUnasked(ref: ChatRef, ids: readonly string[], options: { retract?: true } = {}) {
+    const { chat, present } = removalTarget(ref, ids);
+    if (present.length > 0) {
+        applyRemoval(ref, chat, present, options);
+    }
+}
+
+/**
+ * How many of a chat's events that are not retracted cite any of `ids`. 0 when that cannot be read, so
+ * a memory read that failed never stands in the way of a delete. The reader stays out of this module's
+ * static graph.
+ */
+async function citingEvents(ref: ChatRef, ids: readonly string[]): Promise<number> {
+    try {
+        const { readStructuredMemoryCoverage } = await import("../process/structuredMemory.svelte");
+        const coverage = await readStructuredMemoryCoverage(ref);
+        if (coverage.outcome !== "ok") {
+            return 0;
+        }
+        const removing = new Set(ids);
+        return coverage.value.events.filter(
+            ({ status, messageIds }) => status !== "retracted" && messageIds.some((id) => removing.has(id)),
+        ).length;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * The rest of a person's delete in a Structured Memory chat: asks when events cite the messages, then
+ * removes them, marked so the server retracts those events. Declined removes nothing. The chat is
+ * pinned while it waits, and what it waited through is checked again: another owner of the ids or a
+ * chat no longer held removes nothing, messages already gone drop out, and a message a generation took
+ * meanwhile refuses the whole delete. Its callers discard the result, so it owns its errors.
+ */
+async function removeAfterAsking(ref: ChatRef, ids: readonly string[]): Promise<void> {
+    const owner = lifetimeOf(ref.chaId);
+    const release = pinChat(ref);
+    try {
+        const citing = await citingEvents(ref, ids);
+        if (citing > 0 && !(await alertConfirm(language.structuredMemory.removeRetracts(citing)))) {
+            return;
+        }
+        const chat = lifetimeOf(ref.chaId) === owner && findCharacter(ref.chaId) ? heldChat(ref) : undefined;
+        const present = chat ? ids.filter((id) => indexOfMessage(chat, id) !== -1) : [];
+        if (present.length === 0) {
+            return;
+        }
+        if (present.some((id) => isLockedKey(messageKeyOf(ref, id)))) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        applyRemoval(ref, chat, present, citing > 0 ? { retract: true } : {});
+    } catch (error) {
+        alertError(error instanceof Error ? error : String(error));
+    } finally {
+        release();
+    }
+}
+
+/**
+ * Removes messages already checked against the locks, as one op (several need the current revision).
+ * `mark` holds a person's yes to retracting what cites them.
+ */
+function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[], mark: { retract?: true } = {}) {
     const removing = new Set(present);
     const before =
         removing.size === 1
@@ -3346,7 +3429,7 @@ function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
     const kept = chat.message.filter((message) => !removing.has(message.chatId!));
     chat.message.splice(0, chat.message.length, ...kept);
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "remove", ids: [...removing] }, before);
+    enqueueLocalEdit(ref, { op: "remove", ids: [...removing], ...mark }, before);
 }
 
 /**

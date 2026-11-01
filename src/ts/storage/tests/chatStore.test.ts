@@ -2180,3 +2180,104 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         expect(chat.hasChatWork()).toBe(false);
     });
 });
+
+describe("deleting cited messages", () => {
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((done) => {
+            resolve = done;
+        });
+        return { promise, resolve };
+    }
+
+    it("asks before deleting cited messages, preserves a declined delete, and deletes unmarked when coverage fails", async () => {
+        for (const answer of ["confirmed", "declined", "failed read"] as const) {
+            const { server, chat, ref, take } = await boot();
+            const { settings } = await import("../settingsViews.svelte");
+            settings.ui.memoryAlgorithmType = "structuredMemory";
+            const { alertConfirm } = await import("../../alert");
+            const confirm = vi.mocked(alertConfirm).mockReset();
+            const question = deferred<void>();
+            const decision = deferred<boolean>();
+            confirm.mockImplementation(() => {
+                question.resolve();
+                return decision.promise;
+            });
+            const fetch = server.fetch.bind(server);
+            vi.spyOn(server, "fetch").mockImplementation((path, init) =>
+                path.includes("/coverage")
+                    ? Promise.resolve(
+                          new Response(
+                              JSON.stringify(
+                                  answer === "failed read"
+                                      ? { error: "Offline" }
+                                      : {
+                                            revision: "memory-revision",
+                                            next: null,
+                                            runs: [],
+                                            events: [
+                                                { id: "e", status: "active", messageIds: ["a"] },
+                                                { id: "retired", status: "retracted", messageIds: ["a"] },
+                                            ],
+                                        },
+                              ),
+                              { status: answer === "failed read" ? 503 : 200 },
+                          ),
+                      )
+                    : fetch(path, init),
+            );
+            expect(chat.removeMessages(ref, ["a"])).toBeUndefined();
+            expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+            if (answer !== "failed read") {
+                await question.promise;
+                const { language } = await import("src/lang");
+                expect(confirm).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.removeRetracts(1));
+                expect(take().groups).toEqual([]);
+                decision.resolve(answer === "confirmed");
+            }
+            // The read may still be running with no question to wait on; a decision leaves only microtasks.
+            if (answer === "failed read")
+                await vi.waitFor(() => expect(ids(chat.findChat(ref))).toEqual(["b", "c"]), { timeout: 10_000 });
+            await vi.dynamicImportSettled();
+            expect(ids(chat.findChat(ref)), answer).toEqual(answer === "declined" ? ["a", "b", "c"] : ["b", "c"]);
+            expect(
+                take().groups.map(({ ops }) => ops),
+                answer,
+            ).toEqual(
+                answer === "declined"
+                    ? []
+                    : [
+                          [
+                              {
+                                  op: "remove",
+                                  ids: ["a"],
+                                  ...(answer === "confirmed" ? { retract: true } : {}),
+                              },
+                          ],
+                      ],
+            );
+            if (answer === "failed read") expect(confirm).not.toHaveBeenCalled();
+            server.close();
+        }
+    });
+
+    it("keeps removals and locked-message errors synchronous for other memory algorithms", async () => {
+        for (const algorithm of [undefined, "supaMemory"] as const) {
+            const { server, chat, ref, take } = await boot();
+            const { settings } = await import("../settingsViews.svelte");
+            settings.ui.memoryAlgorithmType = algorithm;
+            const { alertConfirm } = await import("../../alert");
+            vi.mocked(alertConfirm).mockClear();
+            const fetch = vi.spyOn(server, "fetch");
+            chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "partial", seq: 0 });
+            expect(() => chat.removeMessages(ref, ["a"]), String(algorithm)).toThrow(/being generated/);
+            expect(chat.removeMessages(ref, ["b"]), String(algorithm)).toBeUndefined();
+            expect(ids(chat.findChat(ref)), String(algorithm)).toEqual(["a", "c"]);
+            expect(take().groups[0].ops).toEqual([{ op: "remove", ids: ["b"] }]);
+            expect(fetch).not.toHaveBeenCalled();
+            expect(alertConfirm).not.toHaveBeenCalled();
+            chat.endServerJob("J");
+            server.close();
+        }
+    });
+});

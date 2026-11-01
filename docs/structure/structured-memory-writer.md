@@ -77,11 +77,14 @@ restart that loses the task queue loses nothing: the next send finds the same wi
      cadence counts, over each stored message's role and `data`, in the step and in the task alike.
    - `manual`: closes none.
 6. A manual start also closes the trailing partial window; under the `manual` cadence it makes one window of each turn.
-7. A person's press also re-records the events marked `rerecord` (`readRerecordEvents`), ahead of the rest and counted
+7. A person's start also re-records the events marked `rerecord` (`readRerecordEvents`), ahead of the rest and counted
    against the limit: each gives one window of exactly its sources a send still reads, in chat order, with fresh anchors
    and `rerecords` naming the event. It asks nothing of step 4, so what is recorded stays recorded and a second repair
    of the same messages still runs. An event runs only when all those messages lie under the ceiling and
-   `memoryRerecordTarget` names a reply; any other keeps its mark. A task's own hand-off and a gap run take none.
+   `memoryRerecordTarget` names a reply; any other keeps its mark. A gap run takes none.
+8. An automatic task, and the step's `due`, take only `automaticRerecords`: marked events read `changed`, none under the
+   `manual` cadence. So an edit runs at the next hand-off, and a mark on a text put back or a message gone waits for a
+   person.
 
 A window is `{ sources, messages }`, with `rerecords` on a repair: `sources[i]` anchors `messages[i]`, with `index` the
 place in the stored list, not the eligible one, and `hash` from `messageSourceHash`.
@@ -118,8 +121,10 @@ throws once ended), the gate is open, the service is open with the input's epoch
 with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one of its messages (`messagesLocked`, else
 `windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal writes nothing. Around it,
 `retireRerecorded` turns a repair's closing write into the swap: the new event takes the old one's `pinned`,
-`suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set. `recordJob.ts` wraps
-its commit the same way, so a failed run leaves the old event and its mark, and each retry works it out again.
+`suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set, with
+[its sections flagged](structured-memory.md#retraction-and-edits). An old event gone, unmarked, or retracted refuses the
+commit `windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit the same
+way, so a failed run leaves the old event and its mark, and each retry works it out again.
 
 ### A writer run
 
@@ -421,6 +426,8 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
   plan.
 - An interrupted run never counts toward the pause, so a model that only ever overruns the task deadline does not pause
   recording. Decision: Structured Memory D3, plan.
+- An edit during a reply is picked up by the send after it: `due` is read before the reply, and the marks wait.
+  Decision: Structured Memory slice 5b, plan.
 - A failed patch call costs the retry its analysis call again: the window replays from the start, because one page
   refresh must not close a window. Decision: Structured Memory D3, plan.
 - A page locked or changed in a way a patch cannot apply is refused whole, so one bad patch delays that page's other

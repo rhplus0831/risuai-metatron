@@ -67,7 +67,7 @@ vi.mock("./serverCommands", async () =>
 );
 
 import { processMultiCommand, runMultisend } from "./command";
-import { alertError } from "../alert";
+import { alertConfirm, alertError } from "../alert";
 import { sendChat } from "./index.svelte";
 import { beginLocalSend, localSends } from "./localSends";
 import { followedJobs } from "./serverCommands";
@@ -75,6 +75,7 @@ import * as chat from "../storage/chatStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
 import { selectCharacterAt } from "../storage/selection.svelte";
+import { settings } from "../storage/settingsViews.svelte";
 
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const texts = (ref: chat.ChatRef) => chat.findChat(ref)!.message.map((message) => message.data);
@@ -170,6 +171,44 @@ afterEach(() => {
 });
 
 describe("/cut and /del", () => {
+    it("removes immediately without a retraction question or mark for cut, del, and multisend under structured memory", async () => {
+        const previous = settings.ui.memoryAlgorithmType;
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const auth = await import("../storage/serverAuth");
+        const fetch = vi.spyOn(auth, "authFetch").mockResolvedValue(new Response("{}", { status: 503 }));
+        vi.mocked(alertConfirm).mockClear();
+        try {
+            for (const command of ["/cut 1", "/cut 1-3", "/cut c", "/del 2", "multisend"]) {
+                const ref = freshChat();
+                if (command === "multisend") expect(await runMultisend(ref, true, ["New turn"])).toBe(true);
+                else expect(await processMultiCommand(command, ref)).toBe("");
+                const expected =
+                    command === "multisend"
+                        ? ["a", "b", "c", "d"]
+                        : command === "/cut 1"
+                          ? ["b"]
+                          : command === "/cut 1-3"
+                            ? ["a", "d"]
+                            : command === "/cut c"
+                              ? ["c"]
+                              : ["a", "b"];
+                const { work } = commit();
+                expect(
+                    work.groups.flatMap(({ ops }) => ops).filter(({ op }) => op === "remove"),
+                    command,
+                ).toEqual([{ op: "remove", ids: expected }]);
+                expect(
+                    server.chat("c", ref.chatId)!.data.message.every((message) => !expected.includes(message.chatId!)),
+                    command,
+                ).toBe(true);
+            }
+            expect(fetch).not.toHaveBeenCalled();
+            expect(alertConfirm).not.toHaveBeenCalled();
+        } finally {
+            settings.ui.memoryAlgorithmType = previous;
+        }
+    });
+
     it("/cut with one index removes that message by id (it used to assign the spliced-out message as the whole list)", async () => {
         const ref = freshChat();
         expect(await processMultiCommand("/cut 1")).toBe("");

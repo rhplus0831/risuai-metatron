@@ -12,6 +12,8 @@ import type { RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope, memorySettingsFingerprint, memoryTokenPolicy } from "../jobs/jobScope.ts";
 import type { StructuredMemoryTaskInput } from "../../../shared/jobs.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
+import type { ChatOp } from "../../../shared/chats.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
@@ -977,6 +979,134 @@ it("repairs events through revisioned edits and refuses abandoned keep states an
         revision: retired.revision,
         data: retired.data,
     });
+});
+
+it("retracts cited events on a confirmed delete or panel repair and only flags sections with exclusively retracted provenance", async () => {
+    for (const action of ["delete", "repair"] as const) {
+        const s = await server();
+        bindChat(s);
+        const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+        const cited = {
+            ...event("cited"),
+            rerecord: true,
+            sources: messages
+                .slice(0, 2)
+                .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+        };
+        const p = page("facts", "The user's current body");
+        p.history = [
+            {
+                id: "earlier",
+                heading: "Fact 0",
+                kind: "change",
+                highlighted: false,
+                at: 0,
+                eventId: "cited",
+                before: { body: "The previous body must not return", provenance: [], sources: [] },
+            },
+        ];
+        p.sections = [["cited"], ["cited", "active"], [], ["cited", "unknown"]].map((provenance, index) => ({
+            ...p.sections[0],
+            heading: `Fact ${index}`,
+            provenance,
+            sources: cited.sources,
+            locked: true,
+            userCorrected: true,
+        }));
+        const revision = s.write({ events: [cited, event("active")], pages: [p] });
+        if (action === "delete") {
+            await answer(
+                await s.json("/api/resources/batch", {
+                    chats: [
+                        {
+                            characterId,
+                            chatId,
+                            baseRevision: s.store.chatRevision(characterId, chatId),
+                            ops: [{ op: "remove", ids: ["a"], retract: true }],
+                        },
+                    ],
+                }),
+            );
+            expect(
+                (s.store.readChatSource(characterId, chatId).data as Chat).message.map(({ chatId }) => chatId),
+            ).toEqual(["u", "next"]);
+        } else {
+            await answer(
+                await s.json(`${base}/edits`, {
+                    revision,
+                    edit: { kind: "event", eventId: "cited", repair: "retract" },
+                }),
+            );
+        }
+        const { rerecord, ...retired } = cited;
+        expect((await answer(await s.request(`${base}/records/events/cited`))).data, action).toEqual({
+            ...retired,
+            status: "retracted",
+        });
+        expect((await answer(await s.request(`${base}/records/pages/facts`))).data, action).toEqual({
+            ...p,
+            sections: [{ ...p.sections[0], unsupported: true }, ...p.sections.slice(1)],
+        });
+    }
+});
+
+it("marks text and role edits for re-recording, ignores generation info and translations, and leaves unasked deletes missing", async () => {
+    const s = await server();
+    bindChat(s);
+    const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+    const original = {
+        ...event("cited"),
+        sources: [{ messageId: "a", index: 1, hash: messageSourceHash(messages[1]) }],
+    };
+    const batch = async (ops: ChatOp[]) =>
+        answer(
+            await s.json("/api/resources/batch", {
+                chats: [{ characterId, chatId, baseRevision: s.store.chatRevision(characterId, chatId), ops }],
+            }),
+        );
+    for (const op of [
+        { op: "setText", id: "a", text: "Edited text" },
+        { op: "setMessage", message: { ...messages[1], data: "Replaced text" } },
+        { op: "patchMessage", id: "a", set: { role: "user" } },
+    ] satisfies ChatOp[]) {
+        await batch([{ op: "setMessage", message: messages[1] }]);
+        const revision = s.write({ events: [original] });
+        await batch([
+            { op: "patchMessage", id: "a", set: { generationInfo: { model: "writer" } } },
+            {
+                op: "setTranslation",
+                id: "a",
+                translation: {
+                    text: "문이 열린다",
+                    sourceHash: translationSourceHash(messages[1].data),
+                    targetLanguage: "ko",
+                    translatedAt: 1,
+                },
+            },
+        ]);
+        expect((s.store.readChatSource(characterId, chatId).data as Chat).message[1]).toMatchObject({
+            generationInfo: { model: "writer" },
+            translation: { text: "문이 열린다" },
+        });
+        expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)).toEqual({
+            revision,
+            data: original,
+        });
+        await batch([op]);
+        expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)!.data).toEqual({
+            ...original,
+            rerecord: true,
+        });
+    }
+    s.write({ events: [original] });
+    const before = s.store.memory.readContents(characterId, chatId);
+    await batch([{ op: "remove", ids: ["a"] }]);
+    expect(s.store.memory.readContents(characterId, chatId)).toEqual(before);
+    const stored = s.store.memory.readRecord(characterId, chatId, "events", original.id)!.data;
+    expect(stored).toEqual(original);
+    expect(
+        reconcileEvents([stored], (s.store.readChatSource(characterId, chatId).data as Chat).message)[0],
+    ).toMatchObject({ status: "stale", staleReason: "missing" });
 });
 
 it("fences every event repair behind an admitted job without changing memory", async () => {
