@@ -5,12 +5,12 @@
 - Owns: the summarization and retrieval memory algorithms (SupaMemory, HypaMemory V2, HypaMemory V3, Hanurai), the
   embedding processors, the rate limiter, local Transformers.js models, the HypaV3 editor modal, the progress overlay,
   and the embedding playground.
-- Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3Modal.svelte`,
-  `src/lib/Others/HypaV3Modal/*`, `src/lib/Others/HypaV3Progress.svelte`,
+- Paths: `src/ts/process/memory/*`, `src/ts/process/transformers.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`; the server copies in `server/src/prompt/memory/*`,
   `server/src/prompt/embeddings.ts`, `server/src/prompt/transformers.ts`, `server/src/prompt/transformersWorker.ts`,
   `server/src/data/vectorCache.ts`; `shared/taskRateLimiter.ts`.
 - Not here:
+  - The `structuredMemory` algorithm → [structured-memory](structured-memory.md).
   - The job around the memory step (`server/src/prompt/runner.ts`) → `server-generation.md`.
   - Settings UI placement → `settings-i18n.md` (`MemorySettings.svelte`, menu 2, `/settings/memory`).
 

@@ -158,6 +158,7 @@ completed plans and retrieval commands.
 | Draft journal, composer rows, boot recovery, recovery drafts                             | [draft-recovery](docs/structure/draft-recovery.md)             |
 | Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search | [chat-pipeline](docs/structure/chat-pipeline.md)               |
 | SupaMemory, HypaV2/V3, Hanurai, embeddings                                               | [memory](docs/structure/memory.md)                             |
+| Structured memory: events, pages, threads, receipts, the HypaV3 projection               | [structured-memory](docs/structure/structured-memory.md)       |
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                 |
 | CBS, markdown/sanitization, chat variables, partial edit, highlighting                   | [cbs-rendering](docs/structure/cbs-rendering.md)               |
 | Regex, triggers v2, Lua editors/shared engines                                           | [scripts-triggers](docs/structure/scripts-triggers.md)         |
@@ -188,6 +189,7 @@ guide's `Files` section has identifiers. These are starting points: for behavior
   `shared/taskRateLimiter.ts`, `shared/{memory,hypaV3Presets}.ts`,
   `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`.
+- **structured-memory**: `shared/structuredMemory.ts`.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,
