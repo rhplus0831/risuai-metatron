@@ -1,3 +1,4 @@
+import type { Message } from "./database.ts";
 import type { SerializableHypaV3Data, SerializableSummary } from "./memory.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
@@ -491,6 +492,47 @@ export type StructuredMemoryPackageRound = {
     next: number | null;
 };
 
+/** An event as the coverage route lists it: what it says of its messages, with no text but its title. */
+export type StructuredMemoryCoverageEvent = Pick<
+    MemoryEvent,
+    "id" | "title" | "status" | "staleReason" | "suppressed"
+> & { messageIds: string[] };
+
+/**
+ * A run that is not `recorded` as the coverage route lists it. `reason` is the run's own, else its
+ * receipt's: a failed run keeps its code only on the receipt.
+ */
+export type StructuredMemoryCoverageRun = Pick<MemoryRun, "id" | "result" | "reason"> & { messageIds: string[] };
+
+/**
+ * One round of the coverage route: record facts, never a message's text or a run's error. `next` is the
+ * position to continue from in the list of the chat's events followed by its runs that are not
+ * `recorded`, or null when the list is done.
+ */
+export type StructuredMemoryCoverageRound = {
+    revision: string;
+    events: StructuredMemoryCoverageEvent[];
+    runs: StructuredMemoryCoverageRun[];
+    next: number | null;
+};
+
+/** The most runs one round of the runs route holds, however small they are. */
+export const MEMORY_RUNS_ROUND_ROWS = 50;
+
+/** A run as the runs route answers it: the record without what only a retry reads. */
+export type StructuredMemoryLogRun = Omit<MemoryRun, "input" | "settingsFingerprint">;
+
+/**
+ * One round of the runs route. `total` counts the chat's runs, and `next` is the position to continue
+ * from in that list, newest first, or null when the list is done.
+ */
+export type StructuredMemoryRunsRound = {
+    revision: string;
+    total: number;
+    runs: StructuredMemoryLogRun[];
+    next: number | null;
+};
+
 /** One record a send included. */
 export interface MemoryManifestItem {
     id: string;
@@ -580,6 +622,71 @@ export function memoryGrade(axes: MemoryAxes | undefined): number | undefined {
 /** Whether a thread in `state` is over: it takes no more transitions. */
 export function memoryThreadEnded(state: MemoryThreadState): boolean {
     return state === "done" || state === "cancelled";
+}
+
+/**
+ * One prompt history entry; a send lists them oldest first, from the greeting on, so no example or
+ * new-chat marker is among them, and results address them by index.
+ *
+ * `role` is the stored message's, because assembly rewrites a prompt entry's role in a group chat and
+ * under `sendName`; undefined means no stored message stands behind the entry. `messageId` is the
+ * message's `chatId`, undefined on the greeting too. `text` is the entry's processed content, so
+ * evidence quotes what the prompt would have shown, with a user's scripts applied.
+ *
+ * A stored message absent from the list (disabled, or before an `allBefore`) is just not in this send.
+ */
+export type ReadEntry = { messageId: string | undefined; role: Message["role"] | undefined; text: string };
+
+/** The entries from `start` on stay raw; `dropped` holds the indices before it that an event covers. */
+export type RawWindow = { start: number; dropped: ReadonlySet<number> };
+
+/** Whether an event stands in for the messages it cites: a retracted, stale, or suppressed one never does. */
+export function memoryEventCovers({ status, suppressed }: Pick<MemoryEvent, "status" | "suppressed">): boolean {
+    return status === "active" && !suppressed;
+}
+
+/**
+ * The ids of the messages that may leave the prompt: cited by an event that is active and not
+ * suppressed, so a retracted or stale event never stands in for its messages.
+ */
+export function coveredMessages(events: readonly MemoryEvent[]): Set<string> {
+    const covered = new Set<string>();
+    for (const event of events) {
+        if (memoryEventCovers(event)) {
+            for (const source of event.sources) {
+                covered.add(source.messageId);
+            }
+        }
+    }
+    return covered;
+}
+
+/**
+ * The raw window over `entries`. Walking back, the assistant message past the last `windowTurns` closes
+ * the window at the entry after it; with no such message, every entry stays. A `char` entry counts only
+ * with text, and the role is the stored message's.
+ */
+export function rawWindow(
+    entries: readonly ReadEntry[],
+    { windowTurns, covered }: Pick<StructuredMemorySettings, "windowTurns"> & { covered: ReadonlySet<string> },
+): RawWindow {
+    let start = 0;
+    let turns = 0;
+    for (let index = entries.length - 1; index >= 0; index--) {
+        const { role, text } = entries[index];
+        if (role === "char" && text.trim() !== "" && ++turns > windowTurns) {
+            start = index + 1;
+            break;
+        }
+    }
+    const dropped = new Set<number>();
+    for (let index = 0; index < start; index++) {
+        const { messageId } = entries[index];
+        if (messageId !== undefined && covered.has(messageId)) {
+            dropped.add(index);
+        }
+    }
+    return { start, dropped };
 }
 
 /** `value` when it is a member of `list`, else `undefined`. */

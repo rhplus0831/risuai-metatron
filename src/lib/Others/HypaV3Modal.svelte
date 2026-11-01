@@ -8,6 +8,7 @@
     import { language } from "src/lang";
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirmTwice } from "./HypaV3Modal/utils";
+    import { memoryTaskStatusLine } from "./HypaV3Modal/taskStatusLine";
     import ModalHeader from "./HypaV3Modal/modal-header.svelte";
     import ModalSummaryItem from "./HypaV3Modal/modal-summary-item.svelte";
     import ModalFooter from "./HypaV3Modal/modal-footer.svelte";
@@ -174,35 +175,7 @@
         return taskRef !== null && memoryTaskAwaitingSync(taskRef);
     });
 
-    function taskReasonText(reason: string | undefined): string {
-        return reason === undefined ? "" : (language.memoryTasks.reasons[reason] ?? reason);
-    }
-
-    /** The status line of the chat's task: running or queued, else its last notable end. */
-    const taskStatusLine = $derived.by((): string | null => {
-        const status = taskStatus;
-        if (!status) {
-            return null;
-        }
-        switch (status.state) {
-            case "queued":
-                return language.memoryTasks.queued;
-            case "running":
-                return language.memoryTasks.running(status.done, status.total);
-            case "done":
-                return status.reason || status.error
-                    ? language.memoryTasks.done(status.error ?? taskReasonText(status.reason))
-                    : null;
-            case "failed":
-                return language.memoryTasks.failed(status.error ?? taskReasonText(status.reason));
-            case "skipped":
-                return language.memoryTasks.skipped(taskReasonText(status.reason));
-            case "cancelled":
-                return status.reason && status.reason !== "cancelled"
-                    ? language.memoryTasks.cancelled(taskReasonText(status.reason))
-                    : null;
-        }
-    });
+    const taskStatusLine = $derived(memoryTaskStatusLine(taskStatus));
 
     /** Shows the notice of a start or cancel that did not simply run. */
     function showMemoryTaskResult(result: MemoryTaskActionResult, action: "start" | "cancel") {

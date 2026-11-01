@@ -47,7 +47,8 @@ import { alertError } from "src/ts/alert";
 import { countTokens } from "src/ts/tokenizer";
 import { assembleChats, currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
 import { ASSET_LIST_PAGE } from "src/ts/util";
-import { CharConfigSubMenu } from "src/ts/stores.svelte";
+import { get } from "svelte/store";
+import { CharConfigSubMenu, hypaV3ModalOpen } from "src/ts/stores.svelte";
 import { activeMainProfile, settings } from "src/ts/storage/settingsViews.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
@@ -588,4 +589,52 @@ describe("CharConfig additional assets", () => {
         flushSync();
         expect(rowNames()).toEqual(["Asset 0", "Meanwhile", "picked.png", "clip.mp4"]);
     });
+});
+
+it("opens structured memory ahead of older flags and retains the legacy memory buttons otherwise", async () => {
+    vi.useFakeTimers();
+    installCharacters([], []);
+    selectCharacter("c1");
+    // The advanced tab uses the character's stored greeting list.
+    Object.assign(record("c1"), {
+        alternateGreetings: [],
+        bias: [],
+        supaMemory: true,
+        personality: "",
+        scenario: "",
+        additionalData: { creator: "", character_version: "" },
+        depth_prompt: { depth: 0, prompt: "" },
+    });
+    instance = mount(CharConfig, { target });
+    flushSync();
+    CharConfigSubMenu.set(2);
+    flushSync();
+    try {
+        for (const [algorithm, v2, v3, label] of [
+            ["structuredMemory", true, true, language.structuredMemory.panel.title],
+            ["structuredMemory", false, false, language.structuredMemory.panel.title],
+            ["hypaV2", true, true, language.hypaMemoryV2Modal],
+            ["hypaV3", false, true, language.hypaMemoryV3Modal],
+        ] as const) {
+            settings.ui.memoryAlgorithmType = algorithm;
+            settings.memoryTranslateMedia.supaModelType = "subModel";
+            settings.memoryTranslateMedia.hypav2 = v2;
+            settings.memoryTranslateMedia.hypaV3 = v3;
+            hypaV3ModalOpen.set(false);
+            flushSync();
+            const opener = button(label);
+            expect(opener, algorithm).toBeDefined();
+            if (algorithm === "structuredMemory") {
+                expect(button(language.hypaMemoryV2Modal)).toBeUndefined();
+                expect(button(language.hypaMemoryV3Modal)).toBeUndefined();
+            } else expect(button(language.structuredMemory.panel.title)).toBeUndefined();
+            opener!.click();
+            flushSync();
+            expect(get(hypaV3ModalOpen)).toBe(algorithm !== "hypaV2");
+        }
+    } finally {
+        hypaV3ModalOpen.set(false);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    }
 });

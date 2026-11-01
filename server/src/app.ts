@@ -135,7 +135,7 @@ export type RouteLimits = {
     bodyBytes?: number;
     /** The body cap of `POST /api/resources/read` (default `MAX_READ_BODY_BYTES`, 32 MiB). */
     readBodyBytes?: number;
-    /** The soft budget of one structured memory package round in stored bytes (default `MAX_READ_RESPONSE_BYTES`, 16 MiB). */
+    /** The soft budget of one `/package`, `/coverage`, or `/runs` round of structured memory in stored bytes (default `MAX_READ_RESPONSE_BYTES`, 16 MiB). */
     memoryPackageRoundBytes?: number;
 };
 
@@ -158,8 +158,8 @@ export type RouteLimits = {
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
  * defaults are the production ones). `generationOwnerAbsentMs` and `generationOwnerSilentMs` replace
  * the owner absence and negotiated socket silence allowances (tests shorten them). `routeLimits`
- * lowers the rate limits, the app's and the resource read's body caps, the structured memory package
- * round's budget, and the asset batch, backup archive, and CharX entry caps (`RouteLimits`; tests reach
+ * lowers the rate limits, the app's and the resource read's body caps, the structured memory rounds'
+ * budget, and the asset batch, backup archive, and CharX entry caps (`RouteLimits`; tests reach
  * them quickly, the defaults are the production ones). `cbsTimeLimits` replaces the CBS wall times of
  * every job, render, and translation (`serverCbsLimits`; tests lengthen them, the defaults are the
  * production ones).

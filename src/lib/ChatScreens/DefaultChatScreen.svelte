@@ -46,6 +46,7 @@
         previousGreetingIndex,
     } from "../../../shared/greetings.ts";
     import { GENERATION_STAGES } from "../../../shared/jobs.ts";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import { ChatStyleRegistry, setChatStyleRegistry } from "../../ts/parser/chatStyles";
     import { type Message } from "../../ts/storage/database.svelte";
     import {
@@ -128,6 +129,8 @@
     import { SCREENSHOT_CAPTURE_OPTIONS } from "./screenshotCapture";
 
     const subModel = $derived(getModelInfoForMode("submodel").id);
+    /** The memory menu row opens the panel, whatever older flags the settings still hold. */
+    const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
 
     const loadPlaygroundMenu = () => import("../Playground/PlaygroundMenu.svelte").then((m) => m.default);
 
@@ -1335,11 +1338,13 @@
                             {/each}
 
                             {#if settings.ui.showMenuHypaMemoryModal}
-                                {#if (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
+                                {#if structuredMemorySelected || (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
                                     <div
                                         class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                                         onclick={() => {
-                                            if (settings.memoryTranslateMedia.hypav2) {
+                                            if (structuredMemorySelected) {
+                                                $hypaV3ModalOpen = true;
+                                            } else if (settings.memoryTranslateMedia.hypav2) {
                                                 const ref = currentChatRef();
                                                 if (ref && !findChat(ref)?.hypaV2Data) {
                                                     setChatMeta(ref, {
@@ -1356,9 +1361,11 @@
                                     >
                                         <BrainIcon />
                                         <span class="ml-2">
-                                            {settings.memoryTranslateMedia.hypav2
-                                                ? language.hypaMemoryV2Modal
-                                                : language.hypaMemoryV3Modal}
+                                            {structuredMemorySelected
+                                                ? language.structuredMemory.panel.title
+                                                : settings.memoryTranslateMedia.hypav2
+                                                  ? language.hypaMemoryV2Modal
+                                                  : language.hypaMemoryV3Modal}
                                         </span>
                                     </div>
                                 {/if}

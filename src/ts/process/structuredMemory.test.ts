@@ -1,5 +1,6 @@
 // @vitest-environment node
 import path from "node:path";
+import type { Message } from "../../../shared/database.ts";
 import { strFromU8, unzipSync } from "fflate";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
@@ -7,6 +8,10 @@ import type { MemoryEvent, MemoryPage, MemorySource } from "../../../shared/stru
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import {
     buildStructuredMemoryPackage,
+    buildStructuredMemoryLog,
+    readStructuredMemoryCoverage,
+    joinMemoryCoverage,
+    memoryRunView,
     memoryPagePath,
     memoryReceiptView,
     newestAssistantMessageId,
@@ -348,5 +353,211 @@ it("shows missing receipts only on the newest eligible assistant and distinguish
         [{ state: "skipped", reason: "writerPaused" }, "paused", "resume"],
     ] as const) {
         expect(memoryReceiptView(receipt, { newest: false, taskLive: false })).toMatchObject({ kind, action });
+    }
+});
+
+it.each(["coverage", "log"])(
+    "restarts the %s read from nothing and exports only the successful revision",
+    async (kind) => {
+        const response = (revision: string, id: string, next: number | null) =>
+            Response.json({ revision, events: [{ id }], runs: [{ id }], total: 2, next });
+        authFetch
+            .mockResolvedValueOnce(response("r1", "discarded-first", 1))
+            .mockResolvedValueOnce(Response.json({ revision: "r2" }, { status: 409 }))
+            .mockResolvedValueOnce(response("r2", "discarded-second", 1))
+            .mockResolvedValueOnce(Response.json({ revision: "r3" }, { status: 409 }))
+            .mockResolvedValueOnce(response("r3", "current-first", 1))
+            .mockResolvedValueOnce(response("r3", "current-last", null));
+        const result =
+            kind === "coverage" ? await readStructuredMemoryCoverage(ref) : await buildStructuredMemoryLog(ref);
+        expect(result.outcome).toBe("ok");
+        if (result.outcome !== "ok") throw new Error(JSON.stringify(result));
+        const value = "bytes" in result.value ? JSON.parse(strFromU8(result.value.bytes)) : result.value;
+        expect(value).toEqual(
+            kind === "coverage"
+                ? {
+                      revision: "r3",
+                      events: [{ id: "current-first" }, { id: "current-last" }],
+                      runs: [{ id: "current-first" }, { id: "current-last" }],
+                  }
+                : {
+                      logVersion: expect.any(Number),
+                      revision: "r3",
+                      runs: [{ id: "current-first" }, { id: "current-last" }],
+                  },
+        );
+        if ("name" in result.value) expect(result.value.name).toMatch(/\.json$/);
+        const route = kind === "coverage" ? "coverage" : "runs";
+        expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
+            `${base}/${route}`,
+            `${base}/${route}?cursor=1&revision=r1`,
+            `${base}/${route}`,
+            `${base}/${route}?cursor=1&revision=r2`,
+            `${base}/${route}`,
+            `${base}/${route}?cursor=1&revision=r3`,
+        ]);
+        for (const [, init] of authFetch.mock.calls)
+            expect(new Headers(init?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
+    },
+);
+
+it.each(["coverage", "log"])(
+    "refuses the %s read after three revision changes and returns I/O failures",
+    async (kind) => {
+        const read = kind === "coverage" ? readStructuredMemoryCoverage : buildStructuredMemoryLog;
+        authFetch.mockResolvedValue(Response.json({ revision: "new" }, { status: 409 }));
+        expect(await read(ref)).toEqual({ outcome: "refused", reason: "changed" });
+        expect(authFetch).toHaveBeenCalledTimes(3);
+        authFetch.mockReset().mockRejectedValue(new Error("offline"));
+        expect(await read(ref)).toEqual({ outcome: "failed", error: "offline" });
+        expect(authFetch).toHaveBeenCalledTimes(1);
+    },
+);
+
+it("joins coverage by eligibility, event precedence, newest run and receipt notices, never missing receipts", () => {
+    const ids = [
+        "before",
+        "reset",
+        "disabled",
+        "covered",
+        "stale",
+        "suppressed",
+        "retracted",
+        "failed",
+        "skipped",
+        "running",
+        "notice",
+        "paused",
+        "receipt-only",
+        "missing",
+    ];
+    const messages: Message[] = ids.map((chatId) => ({
+        chatId,
+        role: "char" as const,
+        data: chatId,
+        ...(chatId === "reset" ? { disabled: "allBefore" as const } : chatId === "disabled" ? { disabled: true } : {}),
+        generationInfo: {
+            memory: {
+                pages: [],
+                refused: [],
+                unverified: [],
+                warnings: [],
+                ...(chatId === "notice"
+                    ? { state: "notAutomatic" as const, reason: "pluginModel" }
+                    : chatId === "paused"
+                      ? { state: "skipped" as const, reason: "writerPaused" }
+                      : { state: "recorded" as const, eventId: "receipt-is-not-proof" }),
+            },
+        },
+    }));
+    delete messages.at(-1)!.generationInfo;
+    const facts = {
+        events: [
+            { id: "active", title: "Active", status: "active" as const, messageIds: ["before", "disabled", "covered"] },
+            {
+                id: "stale-event",
+                title: "Stale",
+                status: "stale" as const,
+                staleReason: "changed" as const,
+                messageIds: ["covered", "stale"],
+            },
+            {
+                id: "suppressed-event",
+                title: "Suppressed",
+                status: "active" as const,
+                suppressed: true,
+                messageIds: ["covered", "stale", "suppressed"],
+            },
+            {
+                id: "retracted-event",
+                title: "Retracted",
+                status: "retracted" as const,
+                messageIds: ["covered", "stale", "suppressed", "retracted"],
+            },
+        ],
+        runs: [
+            // The notice and no-receipt rows are named by no run.
+            { id: "older", result: "skipped" as const, reason: "writerPaused", messageIds: ids.slice(0, 10) },
+            {
+                id: "failed-run",
+                result: "failed" as const,
+                reason: "requestFailed",
+                messageIds: ["covered", "stale", "suppressed", "retracted", "failed"],
+            },
+            { id: "skipped-run", result: "skipped" as const, reason: "emptyWindow", messageIds: ["skipped"] },
+            { id: "pending-run", result: "pending" as const, messageIds: ["running"] },
+        ],
+    };
+    const joined = joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true });
+    expect(joined.rows.map(({ state, reason }) => [state, reason])).toEqual([
+        ["excluded", "disabled"],
+        ["excluded", "disabled"],
+        ["excluded", "disabled"],
+        ["covered", undefined],
+        ["stale", "changed"],
+        ["excluded", "suppressed"],
+        ["excluded", "retracted"],
+        ["failed", "requestFailed"],
+        ["skipped", "emptyWindow"],
+        ["pending", undefined],
+        ["skipped", "pluginModel"],
+        ["skipped", "writerPaused"],
+        ["pending", undefined],
+        ["pending", undefined],
+    ]);
+    expect(joined.counts).toEqual({ covered: 1, stale: 1, excluded: 5, failed: 1, skipped: 3, pending: 3 });
+});
+
+it("counts the raw window in assistant turns and leaves only covered eligible history when memory is on", () => {
+    const messages = [
+        { chatId: "disabled", role: "char" as const, data: "disabled", disabled: true },
+        { chatId: "u0", role: "user" as const, data: "old question" },
+        { chatId: "a0", role: "char" as const, data: "old answer" },
+        { chatId: "u1", role: "user" as const, data: "new question" },
+        { chatId: "blank", role: "char" as const, data: "  " },
+        { chatId: "a1", role: "char" as const, data: "new answer" },
+        { chatId: "tail", role: "user" as const, data: "next question" },
+    ];
+    const facts = {
+        events: [{ id: "event", title: "Event", status: "active" as const, messageIds: ["disabled", "u0", "a1"] }],
+        runs: [],
+    };
+    expect(joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true })).toMatchObject({
+        gap: [2],
+        leaving: [1],
+    });
+    expect(joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: false })).toMatchObject({
+        gap: [2],
+        leaving: [],
+    });
+    expect(joinMemoryCoverage(messages, facts, { windowTurns: 2, memoryOn: true })).toMatchObject({
+        gap: [],
+        leaving: [],
+    });
+});
+
+it("reads malformed stored runs without throwing or inventing an extraction", () => {
+    for (const run of [
+        null,
+        [],
+        "broken",
+        {
+            id: "wrong",
+            window: [null, 3, { index: "2" }],
+            model: {},
+            inputTokens: {},
+            analysis: { event: [] },
+            receipt: { unverified: "wrong" },
+        },
+    ]) {
+        expect(memoryRunView(run)).toMatchObject({
+            range: null,
+            event: null,
+            candidates: [],
+            unverified: [],
+            warnings: [],
+        });
+        expect(memoryRunView(run)).not.toHaveProperty("inputTokens");
+        expect(memoryRunView(run)).not.toHaveProperty("model");
     }
 });

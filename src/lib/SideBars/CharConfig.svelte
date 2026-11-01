@@ -10,6 +10,7 @@
     import { onDestroy, untrack } from "svelte";
     import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
     import { CharConfigSubMenu, hypaV3ModalOpen } from "../../ts/stores.svelte";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import {
         PlusIcon,
         SmileIcon,
@@ -1716,7 +1717,16 @@
             <Check bind:check={currentCharacter.escapeOutput} name={language.escapeOutput} />
         </div>
 
-        {#if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
+        {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM}
+            <Button
+                onclick={() => {
+                    $hypaV3ModalOpen = true;
+                }}
+                className="mt-4"
+            >
+                {language.structuredMemory.panel.title}
+            </Button>
+        {:else if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
             <Button
                 onclick={() => {
                     const chat = selectedChat();

@@ -56,6 +56,8 @@
         memoryProgressStore,
     } from "./ts/stores.svelte";
     import HypaV3Modal from "./lib/Others/HypaV3Modal.svelte";
+    import StructuredMemoryPanel from "./lib/Others/StructuredMemory/StructuredMemoryPanel.svelte";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../shared/structuredMemory.ts";
     import { currentChatRef, selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
@@ -338,9 +340,13 @@
     {#if $loadedStore}
         <MessageSearch />
     {/if}
-    <!-- It edits the selected chat's memory: shown once that chat is loaded. -->
+    <!-- The selected chat's memory: shown once that chat is loaded. -->
     {#if $hypaV3ModalOpen && selectedChat()}
-        <HypaV3Modal />
+        {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM}
+            <StructuredMemoryPanel />
+        {:else}
+            <HypaV3Modal />
+        {/if}
     {/if}
     <SavePopupIconComp />
     <!-- The selected chat's own memory run, else the legacy overlay. -->

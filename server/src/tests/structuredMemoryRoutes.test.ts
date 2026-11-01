@@ -1,5 +1,7 @@
 // @vitest-environment node
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { MEMORY_RUNS_ROUND_ROWS } from "../../../shared/structuredMemory.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
@@ -234,3 +236,175 @@ it("refuses all structured memory reads with no-store and 503 during shutdown", 
         await answer(await s.request(url), 503);
     }
 });
+
+/** What a budget test reads of a `/coverage` or `/runs` round. */
+type RoundIds = { events: { id: string }[]; runs: { id: string }[]; next: number | null };
+
+const run = (id: string, result: MemoryRun["result"] = "failed"): MemoryRun => ({
+    id,
+    result,
+    window: [{ messageId: `message-${id}`, hash: "hash", index: 2 }],
+    model: "writer",
+    inputTokens: 11,
+    outputTokens: 7,
+    durationMs: 123,
+    input: "Private message text",
+    settingsFingerprint: "Private settings",
+    error: "Private error text",
+});
+
+it("serves coverage facts in storage order without reading recorded runs or disclosing bodies", async () => {
+    const s = await server();
+    const active = { ...event("z"), sources: [{ messageId: "m1", hash: "h", index: 0 }] };
+    const stale = {
+        ...event("a"),
+        status: "stale" as const,
+        staleReason: "changed" as const,
+        suppressed: true,
+        sources: active.sources,
+    };
+    const failed = {
+        ...run("z"),
+        receipt: {
+            state: "failed" as const,
+            reason: "requestFailed",
+            pages: [],
+            refused: [],
+            unverified: [],
+            warnings: [],
+        },
+    };
+    const skipped = {
+        ...run("a", "skipped"),
+        reason: "writerPaused",
+        receipt: { ...failed.receipt, reason: "receiptFallback" },
+    };
+    const revision = s.write({
+        events: [active, stale],
+        runs: [run("recorded", "recorded"), failed, skipped, run("pending", "pending")],
+    });
+    // Poison a body the route must never read. The contents remain readable on the real database.
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    try {
+        db.prepare("UPDATE memory_runs SET data = ? WHERE id = ?").run("invalid JSON", "recorded");
+        expect(await answer(await s.request(`${base}/coverage`))).toEqual({
+            revision,
+            events: [
+                { id: "z", title: "Event z", status: "active", messageIds: ["m1"] },
+                {
+                    id: "a",
+                    title: "Event a",
+                    status: "stale",
+                    staleReason: "changed",
+                    suppressed: true,
+                    messageIds: ["m1"],
+                },
+            ],
+            runs: [
+                { id: "z", result: "failed", reason: "requestFailed", messageIds: ["message-z"] },
+                { id: "a", result: "skipped", reason: "writerPaused", messageIds: ["message-a"] },
+                { id: "pending", result: "pending", messageIds: ["message-pending"] },
+            ],
+            next: null,
+        });
+    } finally {
+        db.close();
+    }
+});
+
+it.each(["coverage", "runs"])(
+    "budgets %s before reading bodies and serves the first oversized record",
+    async (route) => {
+        const s = await server({ routeLimits: { memoryPackageRoundBytes: 1 } });
+        const revision = s.write({ events: [event("first")], runs: [run("older"), run("newer")] });
+        const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+        try {
+            // This is the next round's body for both routes. Reading ahead would fail the current request.
+            db.prepare("UPDATE memory_runs SET data = ? WHERE id = ?").run("invalid JSON", "older");
+            const first = (await answer(await s.request(`${base}/${route}`))) as RoundIds;
+            expect(first).toMatchObject({ revision, next: 1 });
+            expect(route === "coverage" ? first.events.map(({ id }) => id) : first.runs.map(({ id }) => id)).toEqual([
+                route === "coverage" ? "first" : "newer",
+            ]);
+            db.prepare("UPDATE memory_runs SET data = ? WHERE id = ?").run(JSON.stringify(run("older")), "older");
+            const second = (await answer(
+                await s.request(`${base}/${route}?${new URLSearchParams({ cursor: "1", revision })}`),
+            )) as RoundIds;
+            expect(second.runs.map(({ id }) => id)).toEqual(["older"]);
+            expect(second.next).toBe(route === "coverage" ? 2 : null);
+            if (route === "coverage") {
+                expect(
+                    await answer(await s.request(`${base}/coverage?${new URLSearchParams({ cursor: "2", revision })}`)),
+                ).toMatchObject({ runs: [{ id: "newer" }], next: null });
+            }
+        } finally {
+            db.close();
+        }
+
+        // A projected fact can fit even though its stored UTF-8 body cannot. Charge the latter.
+        const largeEvent = event("first", "문😀".repeat(80));
+        const largeRun = (id: string) => ({ ...run(id), input: "문😀".repeat(80) });
+        const limit = bytes(route === "coverage" ? largeEvent : largeRun("newer")) + bytes(largeRun("older")) - 1;
+        const bounded = await server({ routeLimits: { memoryPackageRoundBytes: limit } });
+        const boundedRevision = bounded.write({ events: [largeEvent], runs: [largeRun("older"), largeRun("newer")] });
+        const boundaryDb = new DatabaseSync(path.join(bounded.savePath, "data", "resources.sqlite"));
+        try {
+            // Same stored byte size, unreadable body: a read before budgeting is observable.
+            boundaryDb
+                .prepare("UPDATE memory_runs SET data = ? WHERE id = ?")
+                .run("x".repeat(bytes(largeRun("older"))), "older");
+            const first = (await answer(await bounded.request(`${base}/${route}`))) as RoundIds;
+            expect(first).toMatchObject({ revision: boundedRevision, next: 1 });
+            expect(route === "coverage" ? first.events.map(({ id }) => id) : first.runs.map(({ id }) => id)).toEqual([
+                route === "coverage" ? "first" : "newer",
+            ]);
+        } finally {
+            boundaryDb.close();
+        }
+    },
+);
+
+it("pages runs newest first with a row cap, total, and no input or settings fingerprint", async () => {
+    const s = await server();
+    const runs = Array.from({ length: MEMORY_RUNS_ROUND_ROWS + 2 }, (_, i) => run(`run-${i}`, "recorded"));
+    const revision = s.write({ runs });
+    const publicRuns = runs.map(({ input, settingsFingerprint, ...logged }) => logged).reverse();
+    expect(await answer(await s.request(`${base}/runs`))).toEqual({
+        revision,
+        total: runs.length,
+        runs: publicRuns.slice(0, MEMORY_RUNS_ROUND_ROWS),
+        next: MEMORY_RUNS_ROUND_ROWS,
+    });
+    expect(
+        await answer(
+            await s.request(
+                `${base}/runs?${new URLSearchParams({ cursor: String(MEMORY_RUNS_ROUND_ROWS), revision })}`,
+            ),
+        ),
+    ).toEqual({ revision, total: runs.length, runs: publicRuns.slice(MEMORY_RUNS_ROUND_ROWS), next: null });
+});
+
+it.each(["coverage", "runs"])(
+    "refuses invalid cursors, missing chats, stale revisions and epochs on %s",
+    async (route) => {
+        const s = await server();
+        const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+        const revision = s.write({ runs: [run("r")] });
+        for (const cursor of ["", "-1", "1.5", "NaN", "9007199254740992"]) {
+            await answer(await s.request(`${base}/${route}?${new URLSearchParams({ cursor })}`), 400);
+        }
+        expect(
+            await answer(
+                await s.request(`${base}/${route}?${new URLSearchParams({ cursor: "1", revision: initial })}`),
+                409,
+            ),
+        ).toEqual({ error: expect.any(String), revision });
+        expect(
+            await answer(await s.request(`${base.replace(encodeURIComponent(chatId), "gone")}/${route}`), 404),
+        ).toMatchObject({ reason: "chatGone" });
+        expect(await answer(await s.request(`${base}/${route}`, {}, "old-epoch"), 412)).toEqual({
+            error: "EpochMismatch",
+            epoch: s.epoch,
+        });
+    },
+);

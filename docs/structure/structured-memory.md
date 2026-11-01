@@ -3,14 +3,16 @@
 ## Scope
 
 - Owns the `structuredMemory` algorithm's records: their shapes and limits, the tables and store, read routes, the tab's
-  client and Markdown package, the HypaV3 compatibility projection, the read path, and the receipts in the tab.
+  client and Markdown package, the HypaV3 compatibility projection, the read path, and the receipts and memory panel in
+  the tab.
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
   `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](structured-memory-writer.md)),
-  `src/ts/process/structuredMemory.svelte.ts`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`.
+  `src/ts/process/structuredMemory.svelte.ts`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`,
+  `src/lib/Others/StructuredMemory/`.
 - The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
-  tests, and no screen calls the tab's reads, so its receipt line shows only there. Production has its
-  [writer](structured-memory-writer.md), and `assemblePrompt` runs the read path, which has no required or pages lane
-  yet. Its design and remaining work are in [Active Plans](../plan/README.md).
+  tests, so its receipt line and panel show only there. Production has its [writer](structured-memory-writer.md), and
+  `assemblePrompt` runs the read path, which has no required or pages lane yet. Its design and remaining work are in
+  [Active Plans](../plan/README.md).
 - Not here:
   - The writer's settings, windows, task kind, runs, analysis prompt, admission, and record now →
     [structured memory writer](structured-memory-writer.md).
@@ -29,20 +31,27 @@
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
   - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events.
   - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`.
+  - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
 - `server/src/data/memoryStore.ts`: `createMemoryTables`, the synchronous reads and the write over the tables;
   `MemoryChanges`, `MemoryContents`; `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`.
 - `server/src/data/chatStore.ts`: `MEMORY_TABLES_SQL`, part of `CHAT_OPEN_SCHEMA_SQL`.
 - `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`.
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
-  `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`,
-  `StructuredMemoryPackageRound`.
+  `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
+  `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
+  `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`.
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
-  `buildStructuredMemoryPackage`, which answer a `StructuredMemoryResult`; the pure `renderMemoryPage`,
-  `renderMemoryTimeline`, and `memoryPagePath`.
+  `readStructuredMemoryCoverage`, `readStructuredMemoryRuns`, `buildStructuredMemoryPackage`,
+  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; the pure `renderMemoryPage`,
+  `renderMemoryTimeline`, `memoryPagePath`, `joinMemoryCoverage`, `groupMemoryCoverage`, `memoryMessageExcerpt`, and
+  `memoryRunView`.
+- `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `LogTab.svelte`, and
+  `memoryText.ts`, the stored codes as text. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares
+  with the modal.
 - `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
   `newestAssistantMessageId` in `structuredMemory.svelte.ts` are its pure part.
-- `server/src/prompt/memory/structured/lanes.ts`: the pure read rules: `ReadEntry`, `rawWindow`, `coveredMessages`,
-  `readBudget`, `spendLanes`, `LaneItem`, `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`.
+- `server/src/prompt/memory/structured/lanes.ts`: the pure read rules: `readBudget`, `spendLanes`, `LaneItem`,
+  `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`, and the raw window re-exported from `shared/`.
 - `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
   `eventVectorTexts`, `lexicalTerms`.
 - `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard`, `itemTag`, and the line builders.
@@ -66,6 +75,14 @@ All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated
   budget is `RouteLimits.memoryPackageRoundBytes`, default `MAX_READ_RESPONSE_BYTES`, and soft as
   [the read budget](server-resources.md#read-budget) is: a round's first record is served whatever its size. `next` is
   the position to continue from, null at the end.
+- `/coverage?cursor=N&revision=R` answers one round of the chat's events followed by its runs that are not `recorded`:
+  what each says of its messages (`messageIds`), an event's title, and a run's `reason`, or its receipt's, which is
+  where a failed run keeps its code. No error and no message text. The list comes from the contents, so a recorded run's
+  `input` is never parsed.
+- `/runs?cursor=N&revision=R` answers one round of the chat's runs, newest first, without `input` and
+  `settingsFingerprint`, and `total`. A round also stops at `MEMORY_RUNS_ROUND_ROWS`, however small the runs are.
+- Both charge and budget as `/package` does, before any record is read: a round's first record is served whatever its
+  size.
 - `revision` is compared whole as an opaque token, and a different one is 409 naming the current one. A round is one
   snapshot, and that comparison is what ties rounds into one.
 
@@ -139,6 +156,33 @@ like a checkpoint write.
 
 The row list mounts `Chat` once per text, so `messageGenerationInfo` keeps what the row was mounted with: the line reads
 the held chat, and a feed patch moves it.
+
+### The memory panel
+
+`StructuredMemoryPanel` replaces `HypaV3Modal` when `memoryAlgorithmType` selects the algorithm, under the same
+`hypaV3ModalOpen` store, so `chatStatus.svelte.ts` still counts the transcript as hidden. `App.svelte` picks it, and the
+menu row in `DefaultChatScreen` and the button in `CharConfig` open it ahead of any older memory flag. A tab is one
+component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while it shows. It writes nothing yet.
+
+- Read-only is the modal's `memoryWriteFence`: a local send, a generating chat key, or `memoryTaskFenced`, rechecked
+  each second while the fence only waits for a held revision. `refresh` moves on the button and when read-only falls,
+  which catches a task's end and a record-now job that ran inside a generation job and ended no task. A held message
+  that changes needs no request: the join is derived.
+- Coverage joins the held messages with the coverage route's facts in the tab, because the tab holds the selected chat
+  whole and a route has no job scope. The newest reply reads `pending` too: "confirmed" is the job's to say.
+- `joinMemoryCoverage` takes a row's state from the first that holds: not in `eligibleHistory`, `excluded` (`disabled`);
+  an event that covers it, `covered`; a stale event, `stale`; a suppressed one, `excluded` (`suppressed`); a retracted
+  one, `excluded` (`retracted`); the newest unrecorded run naming it, by result; its own receipt when that is a notice
+  no run stands behind (`notAutomatic`, `writerPaused`), `skipped`; else `pending`.
+- The gap is the eligible messages older than `rawWindow`'s start that no covering event cites, and leaving is its
+  `dropped`, emptied when the owner's `supaMemory` is off. Tokens are counted on those rows alone, and only when their
+  texts change, so a reply streaming into the window starts no count.
+- Coverage groups consecutive rows of one state and renders 200 rows at a time. One group opens at a time.
+- The Log reads a round at a time, and a 409 on a later round restarts the list. A row expands to `MemoryRun.analysis`,
+  each item next to its quote, with what the receipt's `unverified` names marked. That list names an item by kind and
+  text, so of two equal quotes both are marked.
+- A stored run is data of any shape (`memoryRunView`), and all model and message text renders as plain text. The export
+  is `{ logVersion, revision, runs }` as JSON, read whole at one revision and restarted on a 409 as the package is.
 
 ### The read path
 
@@ -315,8 +359,12 @@ group is refused, and a full one is checked and restored.
 - Receipts: `memoryTasks.test.ts` for the patches; `memoryJobs.test.ts` for the reply's notice on a real stack;
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.
+- The panel: `structuredMemoryRoutes.test.ts` poisons a run's stored `data` through a second connection, so a read that
+  should not happen fails the request. `structuredMemory.test.ts` drives the join and the restarts.
+  `StructuredMemoryPanel.test.ts` mounts the real panel and `App.svelte` on fake timers with `authFetch` scripted, and
+  the two openers are in `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
 - Focused command:
-  `pnpm --silent test:agent shared/structuredMemory.test.ts server/src/tests/memoryStore.test.ts server/src/tests/structuredMemoryRoutes.test.ts src/ts/process/structuredMemory.test.ts server/src/prompt/memory/structured/lanes.test.ts server/src/prompt/memory/structured/card.test.ts server/src/prompt/memory/structured/retrieve.test.ts src/lib/ChatScreens/MemoryReceiptLine.svelte.test.ts src/lib/ChatScreens/Chat.interactions.svelte.test.ts restoreStage backups memoryTasks memoryJobs`.
+  `pnpm --silent test:agent structuredMemory StructuredMemory memoryStore memory/structured MemoryReceiptLine Chat.interactions DefaultChatScreen.drafts CharConfig.emotions restoreStage backups memoryTasks memoryJobs`.
   No `slow` or `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
@@ -338,6 +386,13 @@ group is refused, and a full one is checked and restored.
   `covered`, because an event covers it; `stages` says `card: empty`.
 - A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.
 - `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
+- Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
+  blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,
+  and a preview is the exact form. Decision: Structured Memory D8, plan.
+- A `covered` row trusts the event's stored status until reconciliation compares hashes, so an edited message still
+  reads `covered`. Decision: Structured Memory D4, plan.
+- Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
+  refresh with unchanged texts does not recount after a tokenizer change.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
 

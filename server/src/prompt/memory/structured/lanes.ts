@@ -1,14 +1,14 @@
-import type { Message } from "../../../../../shared/database.ts";
 import { resolveHypaV3Budget } from "../../../../../shared/hypaV3Presets.ts";
 import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import {
     MEMORY_MANIFEST_LANES,
-    type MemoryEvent,
     type MemoryManifestItemKind,
     type MemoryManifestLane,
     normalizeStructuredMemorySettings,
-    type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
+
+export { coveredMessages, rawWindow } from "../../../../../shared/structuredMemory.ts";
+export type { RawWindow, ReadEntry } from "../../../../../shared/structuredMemory.ts";
 
 /**
  * The read path's pure rules: what stays raw in a send, what memory may spend, and how the lanes share it.
@@ -23,22 +23,6 @@ import {
  *   lent by score. Relevance is decided before spending, and spending adds no item that does not exist,
  *   so a quiet scene leaves room empty: the lanes are a cap, not a quota.
  */
-
-/**
- * One prompt history entry; a send lists them oldest first, from the greeting on, so no example or
- * new-chat marker is among them, and results address them by index.
- *
- * `role` is the stored message's, because assembly rewrites a prompt entry's role in a group chat and
- * under `sendName`; undefined means no stored message stands behind the entry. `messageId` is the
- * message's `chatId`, undefined on the greeting too. `text` is the entry's processed content, so
- * evidence quotes what the prompt would have shown, with a user's scripts applied.
- *
- * A stored message absent from the list (disabled, or before an `allBefore`) is just not in this send.
- */
-export type ReadEntry = { messageId: string | undefined; role: Message["role"] | undefined; text: string };
-
-/** The entries from `start` on stay raw; `dropped` holds the indices before it that an event covers. */
-export type RawWindow = { start: number; dropped: ReadonlySet<number> };
 
 /**
  * One record's line in a lane. `score` decides lending, on one scale across lanes. `order` is the item's
@@ -75,50 +59,6 @@ export type ExcludedItem = Pick<LaneItem, "id" | "kind" | "lane"> & {
 
 /** What a lane may spend and what it spent. */
 export type LaneSpend = { lane: MemoryManifestLane; target: number; spent: number };
-
-/**
- * The ids of the messages that may leave the prompt: cited by an event that is active and not
- * suppressed, so a retracted or stale event never stands in for its messages.
- */
-export function coveredMessages(events: readonly MemoryEvent[]): Set<string> {
-    const covered = new Set<string>();
-    for (const event of events) {
-        if (event.status === "active" && !event.suppressed) {
-            for (const source of event.sources) {
-                covered.add(source.messageId);
-            }
-        }
-    }
-    return covered;
-}
-
-/**
- * The raw window over `entries`. Walking back, the assistant message past the last `windowTurns` closes
- * the window at the entry after it; with no such message, every entry stays. A `char` entry counts only
- * with text, and the role is the stored message's.
- */
-export function rawWindow(
-    entries: readonly ReadEntry[],
-    { windowTurns, covered }: Pick<StructuredMemorySettings, "windowTurns"> & { covered: ReadonlySet<string> },
-): RawWindow {
-    let start = 0;
-    let turns = 0;
-    for (let index = entries.length - 1; index >= 0; index--) {
-        const { role, text } = entries[index];
-        if (role === "char" && text.trim() !== "" && ++turns > windowTurns) {
-            start = index + 1;
-            break;
-        }
-    }
-    const dropped = new Set<number>();
-    for (let index = 0; index < start; index++) {
-        const { messageId } = entries[index];
-        if (messageId !== undefined && covered.has(messageId)) {
-            dropped.add(index);
-        }
-    }
-    return { start, dropped };
-}
 
 /**
  * What a send may spend on memory, in either budget mode, what fitting the context reduced of the

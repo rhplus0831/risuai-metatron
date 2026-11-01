@@ -765,3 +765,33 @@ it("journals Continue's text and message id without a request id, including afte
         userMessageId: post.context.userMessageId,
     });
 });
+
+it("opens structured memory from the menu ahead of older flags and preserves the other algorithms", async () => {
+    const { target, menu, click } = await mountComposer();
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { hypaV3ModalOpen } = await import("src/ts/stores.svelte");
+    const { get } = await import("svelte/store");
+    settings.ui.showMenuHypaMemoryModal = true;
+    for (const [algorithm, v2, v3, label] of [
+        ["structuredMemory", true, true, language.structuredMemory.panel.title],
+        ["structuredMemory", false, false, language.structuredMemory.panel.title],
+        ["hypaV2", true, true, language.hypaMemoryV2Modal],
+        ["hypaV3", false, true, language.hypaMemoryV3Modal],
+    ] as const) {
+        settings.ui.memoryAlgorithmType = algorithm;
+        settings.memoryTranslateMedia.supaModelType = "subModel";
+        settings.memoryTranslateMedia.hypav2 = v2;
+        settings.memoryTranslateMedia.hypaV3 = v3;
+        hypaV3ModalOpen.set(false);
+        flushSync();
+        menu();
+        expect(target.textContent).toContain(label);
+        if (algorithm === "structuredMemory") {
+            expect(target.textContent).not.toContain(language.hypaMemoryV2Modal);
+            expect(target.textContent).not.toContain(language.hypaMemoryV3Modal);
+        } else expect(target.textContent).not.toContain(language.structuredMemory.panel.title);
+        click([...target.querySelectorAll("span")].find((node) => node.textContent.trim() === label)!.parentElement);
+        expect(get(hypaV3ModalOpen)).toBe(algorithm !== "hypaV2");
+    }
+    hypaV3ModalOpen.set(false);
+});

@@ -1,15 +1,23 @@
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Context, Hono, MiddlewareHandler } from "hono";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     MEMORY_RECORD_KINDS,
+    MEMORY_RUNS_ROUND_ROWS,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
     type MemoryPage,
     type StructuredMemoryContentsAnswer,
+    type StructuredMemoryCoverageEvent,
+    type StructuredMemoryCoverageRound,
+    type StructuredMemoryCoverageRun,
+    type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
+    type StructuredMemoryRecordOf,
+    type StructuredMemoryRunsRound,
 } from "../../../shared/structuredMemory.ts";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { compressedJson } from "../http/compressedJson.ts";
 import type { AppEnv } from "../types.ts";
@@ -37,6 +45,45 @@ function parseCursor(value: string | undefined): number | null {
 }
 
 /**
+ * The rows of one round over `listed` from position `cursor`, each charged its stored `bytes` before
+ * anything reads its record: the first is served whatever its size, and the round stops before the row
+ * that would pass `budget` or `rowCap`. `next` is the position to continue from, null at the list's end.
+ */
+function roundOf<Row extends { bytes: number }>(
+    listed: readonly Row[],
+    cursor: number,
+    budget: number,
+    rowCap = Infinity,
+): { rows: Row[]; next: number | null } {
+    let charged = 0;
+    let index = cursor;
+    for (; index < listed.length; index += 1) {
+        const { bytes } = listed[index];
+        if (index > cursor && (index - cursor >= rowCap || charged + bytes > budget)) {
+            break;
+        }
+        charged += bytes;
+    }
+    return { rows: listed.slice(cursor, index), next: index < listed.length ? index : null };
+}
+
+/** The message ids of a stored source list, which the store does not check the shape of. */
+function sourceIds(sources: unknown): string[] {
+    return Array.isArray(sources)
+        ? sources.flatMap((source) =>
+              isPlainObject(source) && typeof source.messageId === "string" ? [source.messageId] : [],
+          )
+        : [];
+}
+
+/** What a round's answer reads: the chat's contents, the position it starts at, and a record that is listed. */
+type RoundRead = {
+    contents: StructuredMemoryContentsAnswer;
+    cursor: number;
+    read: <K extends StructuredMemoryRecordKind>(kind: K, id: string) => StructuredMemoryRecordOf[K];
+};
+
+/**
  * The per-chat structured memory reads (`shared/structuredMemory.ts`):
  *
  * - `GET /api/memory/structured/:characterId/:chatId`: the table of contents, answered
@@ -51,12 +98,20 @@ function parseCursor(value: string | undefined): number | null {
  *   end answers empty lists. 400 for a cursor that is not a non-negative safe integer, 404 `chatGone`,
  *   and 409 `{ error, revision }` when `revision` is given and is not the current token, compared
  *   whole.
+ * - `GET /api/memory/structured/:characterId/:chatId/coverage?cursor=N&revision=R`: one round of the
+ *   list of the chat's events followed by its runs that are not `recorded`, in contents order, answered
+ *   `StructuredMemoryCoverageRound`: what each says of its messages, with no error or message text. The
+ *   list comes from the contents, so a recorded run's body is never read. Bytes, `cursor`, `revision`,
+ *   and the refusals work as in the package round.
+ * - `GET /api/memory/structured/:characterId/:chatId/runs?cursor=N&revision=R`: one round of the chat's
+ *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
+ *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Bytes, `cursor`,
+ *   `revision`, and the refusals work as in the package round.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
- * synchronous step, so a package round is one snapshot; separate rounds are tied together only by
- * `revision`.
+ * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -122,7 +177,11 @@ export function registerStructuredMemoryRoutes(
         }
     });
 
-    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/package`, limiter, authenticated, async (c) => {
+    /**
+     * Answers one round of a budgeted read: the checks every such route shares, then `answer`, in one
+     * synchronous step.
+     */
+    const answerRound = async (c: Context<AppEnv>, answer: (round: RoundRead) => object) => {
         const characterId = c.req.param("characterId");
         const chatId = c.req.param("chatId");
         if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
@@ -144,11 +203,7 @@ export function registerStructuredMemoryRoutes(
             if (revision !== undefined && revision !== contents.revision) {
                 return c.json({ error: "The chat's memory changed", revision: contents.revision }, 409);
             }
-            const listed = [
-                ...contents.pages.map(({ id, bytes }) => ({ kind: "pages", id, bytes }) as const),
-                ...contents.events.map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
-            ];
-            const read = <K extends "pages" | "events">(kind: K, id: string) => {
+            const read: RoundRead["read"] = (kind, id) => {
                 const record = store.memory.readRecord(characterId, chatId, kind, id);
                 if (!record) {
                     // The listing and this read share one synchronous step, so nothing can remove it.
@@ -156,31 +211,70 @@ export function registerStructuredMemoryRoutes(
                 }
                 return record.data;
             };
+            return compressedJson(c, answer({ contents, cursor, read }));
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    };
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/package`, limiter, authenticated, (c) =>
+        answerRound(c, ({ contents, cursor, read }) => {
+            const listed = [
+                ...contents.pages.map(({ id, bytes }) => ({ kind: "pages", id, bytes }) as const),
+                ...contents.events.map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
+            ];
+            const { rows, next } = roundOf(listed, cursor, packageRoundBytes);
             const pages: MemoryPage[] = [];
             const events: MemoryEvent[] = [];
-            let charged = 0;
-            let index = cursor;
-            for (; index < listed.length; index += 1) {
-                const { kind, id, bytes } = listed[index];
-                if (index > cursor && charged + bytes > packageRoundBytes) {
-                    break;
-                }
-                charged += bytes;
+            for (const { kind, id } of rows) {
                 if (kind === "pages") {
                     pages.push(read(kind, id));
                 } else {
                     events.push(read(kind, id));
                 }
             }
-            const round = {
+            return { revision: contents.revision, pages, events, next } satisfies StructuredMemoryPackageRound;
+        }),
+    );
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/coverage`, limiter, authenticated, (c) =>
+        answerRound(c, ({ contents, cursor, read }) => {
+            const listed = [
+                ...contents.events.map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
+                ...contents.runs
+                    .filter(({ result }) => result !== "recorded")
+                    .map(({ id, bytes }) => ({ kind: "runs", id, bytes }) as const),
+            ];
+            const { rows, next } = roundOf(listed, cursor, packageRoundBytes);
+            const events: StructuredMemoryCoverageEvent[] = [];
+            const runs: StructuredMemoryCoverageRun[] = [];
+            for (const { kind, id } of rows) {
+                if (kind === "events") {
+                    const { title, status, staleReason, suppressed, sources } = read(kind, id);
+                    events.push({ id, title, status, staleReason, suppressed, messageIds: sourceIds(sources) });
+                } else {
+                    const { result, reason, receipt, window } = read(kind, id);
+                    runs.push({ id, result, reason: reason ?? receipt?.reason, messageIds: sourceIds(window) });
+                }
+            }
+            return { revision: contents.revision, events, runs, next } satisfies StructuredMemoryCoverageRound;
+        }),
+    );
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/runs`, limiter, authenticated, (c) =>
+        answerRound(c, ({ contents, cursor, read }) => {
+            const newestFirst = [...contents.runs].reverse();
+            const { rows, next } = roundOf(newestFirst, cursor, packageRoundBytes, MEMORY_RUNS_ROUND_ROWS);
+            const runs = rows.map(({ id }): StructuredMemoryLogRun => {
+                const { input, settingsFingerprint, ...logged } = read("runs", id);
+                return logged;
+            });
+            return {
                 revision: contents.revision,
-                pages,
-                events,
-                next: index < listed.length ? index : null,
-            } satisfies StructuredMemoryPackageRound;
-            return compressedJson(c, round);
-        } catch (error) {
-            return storeErrorResponse(c, error);
-        }
-    });
+                total: contents.runs.length,
+                runs,
+                next,
+            } satisfies StructuredMemoryRunsRound;
+        }),
+    );
 }

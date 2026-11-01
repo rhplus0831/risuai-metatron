@@ -189,8 +189,8 @@ coupling links.
   `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
   `src/lib/Playground/PlaygroundEmbedding.svelte`.
 - **structured-memory**: `shared/structuredMemory.ts`,
-  `server/src/{data/memoryStore.ts,routes/structuredMemory.ts,prompt/memory/structured/}` (the writer's files below),
-  `src/ts/process/structuredMemory.svelte.ts`.
+  `server/src/{data/memoryStore.ts,routes/structuredMemory.ts,prompt/memory/structured/}`,
+  `src/{ts/process/structuredMemory.svelte.ts,lib/Others/StructuredMemory/}`.
 - **structured-memory-writer**: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,recordJob}.ts`.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
@@ -207,8 +207,8 @@ coupling links.
 - **draft-recovery**: `src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts`,
   `chatJournal` in `chatStore.svelte.ts`, the journal part of `resourceSync.svelte.ts`.
 - **persistence**: remaining `src/ts/storage/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,
-  `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted shapes. Runtime semantics in `shared/` stay with
-  their domain guide.
+  `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted shapes. `shared/` runtime semantics stay with their
+  domain guide.
 - **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/{messageSearch,contextReport}.ts`, `shared/lore/`,
   remaining `shared/prompt/` and `src/ts/process/`.
 - **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
