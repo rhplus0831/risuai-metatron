@@ -2,8 +2,7 @@
   "ceilings": {
     "docs/structure/global-api.md": 54009,
     "docs/structure/llm-requests.md": 42338,
-    "docs/structure/settings-i18n.md": 41910,
-    "docs/structure/ui-theming.md": 53001
+    "docs/structure/settings-i18n.md": 41910
   },
   "allow": [
     {
