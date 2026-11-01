@@ -176,9 +176,9 @@ completed plans and retrieval commands.
 
 ## Path Ownership
 
-Apply the specific ownership below before the fallback directories. Guide names refer to **Choose By Task**; each
-guide's `Files` section has identifiers. For behavior sharing a UI or transport file, use **Choose By Task** and the
-owner's coupling links.
+Apply the specific ownership before the fallback directories. Guide names refer to **Choose By Task**; each guide's
+`Files` section has identifiers. For behavior sharing a UI or transport file, use **Choose By Task** and the owner's
+coupling links.
 
 - **diagnostics**: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`, `server/src/data/requestHistory.ts`,
   `server/src/diagnostics/`, `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
