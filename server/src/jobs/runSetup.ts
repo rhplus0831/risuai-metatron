@@ -115,12 +115,17 @@ export type JobRunState = {
      */
     memoryTrim?: "memory" | "trim";
     /**
-     * The HypaV3 gap question's outcome for the job (asked at most once a job): the user's choice
+     * The memory gap question's outcome for the job (asked at most once a job): the user's choice
      * (a dismissed, timed-out, or disconnected question is `continue`), serving every later speaker
      * and round, or `stopped` once the owner stopped an initial summarization run (later speakers
      * and rounds select only).
      */
     memoryGap?: MemoryGapChoice | "stopped";
+    /**
+     * Structured Memory's writer already ran for an approved gap: a `generate` answer serves every
+     * later speaker and round, but only the first of them records.
+     */
+    memoryGapRecorded?: boolean;
     /** The CBS evaluation time of the job, across its runs (`serverCbsLimits`). */
     cbsUsage: CbsUsage;
     effects: { count: number };

@@ -24,13 +24,15 @@
 - `HypaV3Settings.structured` (`shared/memory.ts`), filled by `createHypaV3Preset` (`shared/hypaV3Presets.ts`).
 - `memorySettingsFingerprint` (`server/src/jobs/jobScope.ts`) digests the settings a writer task reads.
 - `server/src/prompt/memory/structured/window.ts`: the writer's windows: `confirmedWindows`, `WriterWindow`,
-  `writerCeiling`, `writerCadence`, `readRecordedMessages`, `windowStillConfirmed`.
+  `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `confirmedThrough`,
+  `windowStillConfirmed`.
 - `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`.
 - `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
 - `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `commitWindow`, a
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
   `writerPaused`.
-- `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command.
+- `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command; `recordGapInJob`, a
+  send's approved gap.
 - `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
   (`structuredWriter` replaces `createStructuredWriter`, in tests), `StructuredMemoryWriterResult`,
   `StructuredMemoryCommit`, `MemoryTaskLimits.maxWriterWindows`.
@@ -72,10 +74,14 @@ the eligible one, and `hash` from `messageSourceHash`.
 ### The writer task
 
 1. Selection: `db.memoryAlgorithmType === "structuredMemory"` runs `structuredMemoryStep` ahead of the flag chain. The
-   step leaves the history raw, so what does not fit falls to the final token recheck, adds no protected entries and no
-   memory run, and returns the hand-off with `due` from `confirmedWindows` at `limit: 1`.
+   step reads ([the read path](structured-memory.md#the-read-path)), then returns the hand-off with `due` from
+   `confirmedWindows` at `limit: 1`.
 2. Hand-off: for an input job with a service and a chat snapshot read with its source generation, due or not, since
    `handOffMemory` hands off a not-due input when a manual start waits. It asks no blocking reason, unlike HypaV3.
+   - Gap: an input job whose trim dropped more than `gapConfirmTokens` asks `memoryGap`, with the windows a manual start
+     would run as `plannedCalls`. It asks nothing with no such window, since history cited by a stale or retracted event
+     counts as recorded, or with a local summarizer. `generate` is [the gap run](#the-gap-run), then the step reads and
+     selects again without asking.
 3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
    `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
    or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`. What a
@@ -140,6 +146,22 @@ tell a slot that needs the tab. The tab calls `runServerJob` directly, because `
 `through` is an `inclusive` ceiling (`WriterCeiling`): the windows run through that message, newest reply included,
 because the press is its confirmation. They stay oldest first, so a press records the oldest open windows, never that
 message ahead of them.
+
+### The gap run
+
+`recordGapInJob` is the one write that holds up a send, because a person said yes to a question promising it before the
+reply. It shares `runWindows` with record now, inside the send's job.
+
+- Once a job (`JobRunState.memoryGapRecorded`): `confirmMemoryGap` answers `generate` again for every later speaker and
+  round, and only the first records.
+- `manual: true` on the chat's lease, with the `initial` run's stop control between windows, up to `maxWriterWindows`.
+  The ceiling is the input's, exclusive, and a manual start runs past a pause.
+- `scope.request` takes `writerRequestDb` around the run alone, so the reply keeps its temperature and schema.
+- A window that does not record ends the run quietly: its run and receipt are stored and the send goes on with the gap.
+  An abort or a latched failure still ends the job. It never calls `markStopped`, which would clear the `blockingReason`
+  a reply's receipt reads.
+- Assembly's chat snapshot stays. A receipt changes no source hash, and an edit during the run costs one send a slightly
+  stale prompt.
 
 ### The analysis prompt
 
@@ -262,5 +284,5 @@ surrogate pair, a malformed element is left out, and a list stops at its cap, ea
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
   owner decisions.
 - A character's language override does not travel in a card: the card exporters use explicit field lists.
-- `readRecordedMessages` reads every stored event of the chat once per send and once per task, because the store has no
-  bulk read, so its cost grows with the chat's events.
+- `readMemoryRecords` and `readRecordedMessages` read every stored event of the chat, once per send and once per task,
+  because the store has no bulk read, so their cost grows with the chat's events.

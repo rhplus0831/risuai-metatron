@@ -1473,6 +1473,47 @@ function isHistoryEntry(chat: OpenAIChat): boolean {
 }
 
 /**
+ * Uncovered history dropped oldest first, from `currentTokens`: entries of `raw` before `protectedStart`
+ * go while the count is over `maxContextTokens`. `pinned` entries before it are never dropped and do not
+ * stop the scan. `fits` is false when the count is still over with nothing left to drop. Only history
+ * counts toward `gap`: examples and the new-chat marker go without counting.
+ */
+export async function trimHistoryToContext(arg: {
+    raw: readonly OpenAIChat[];
+    protectedStart: number;
+    pinned?: ReadonlySet<OpenAIChat>;
+    maxContextTokens: number;
+    currentTokens: number;
+    tokenizer: MemoryTokenizer;
+}): Promise<{ fits: boolean; currentTokens: number; history: OpenAIChat[]; gap: HypaV3Trim["gap"] }> {
+    const { raw, protectedStart, pinned, maxContextTokens, tokenizer } = arg;
+    let { currentTokens } = arg;
+    let scanned = 0;
+    let gapTokens = 0;
+    const gapMemos: (string | undefined)[] = [];
+    while (currentTokens > maxContextTokens && scanned < protectedStart) {
+        const entry = raw[scanned];
+        scanned++;
+        if (pinned?.has(entry)) {
+            continue;
+        }
+        const entryTokens = await tokenizer.tokenizeChat(entry);
+        currentTokens -= entryTokens;
+        if (isHistoryEntry(entry)) {
+            gapTokens += entryTokens;
+            gapMemos.push(entry.memo);
+        }
+    }
+
+    return {
+        fits: currentTokens <= maxContextTokens,
+        currentTokens,
+        history: [...raw.slice(0, scanned).filter((entry) => pinned?.has(entry)), ...raw.slice(scanned)],
+        gap: { tokens: gapTokens, messages: gapMemos.length, memos: gapMemos },
+    };
+}
+
+/**
  * The trimming of a selection with `trimUncovered`, from `currentTokens` (the count with the actual
  * card, the reservation released): raw history from `cursor` dropped oldest first while over the
  * context, never the last `queryChatCount` history entries. `fits` is false when the count is still
@@ -1493,26 +1534,13 @@ async function trimUncoveredHistory(
         }
     }
 
-    let dropped = 0;
-    let gapTokens = 0;
-    const gapMemos: (string | undefined)[] = [];
-    while (currentTokens > maxContextTokens && dropped < protectedStart) {
-        const entry = raw[dropped];
-        const entryTokens = await tokenizer.tokenizeChat(entry);
-        currentTokens -= entryTokens;
-        if (isHistoryEntry(entry)) {
-            gapTokens += entryTokens;
-            gapMemos.push(entry.memo);
-        }
-        dropped++;
-    }
-
+    const trimmed = await trimHistoryToContext({ raw, protectedStart, maxContextTokens, currentTokens, tokenizer });
     return {
-        fits: currentTokens <= maxContextTokens,
-        currentTokens,
-        history: raw.slice(dropped),
+        fits: trimmed.fits,
+        currentTokens: trimmed.currentTokens,
+        history: trimmed.history,
         trim: {
-            gap: { tokens: gapTokens, messages: gapMemos.length, memos: gapMemos },
+            gap: trimmed.gap,
             protected: {
                 count: raw.length - protectedStart,
                 memos: raw.slice(protectedStart).map((chat) => chat.memo),

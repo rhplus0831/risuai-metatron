@@ -115,7 +115,11 @@
     const promptBudget = $derived(report ? report.maxContext - report.maxResponse : 0);
     const fixed = $derived(report ? fixedShare(report) * 100 : 0);
     const fixedOver = $derived(report !== null && fixed > warn);
-    const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
+    const memoryName = $derived(
+        report?.memory && report.memory.kind !== "structuredMemory"
+            ? language.contextUsage.memoryKinds[report.memory.kind]
+            : "",
+    );
     // The lore budget left entries out of the last request: the chip warns unless this chat turned
     // the warning off (the popover lists them either way).
     const loreWarnOff = $derived(findChat(chatRef)?.loreBudgetWarnOff === true);

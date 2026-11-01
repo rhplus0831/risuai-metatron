@@ -4,6 +4,7 @@ import { selectedHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import {
     type MemoryAnchoredSource,
+    type MemoryEvent,
     normalizeStructuredMemorySettings,
     type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
@@ -79,18 +80,25 @@ export function writerCeiling(messages: readonly Message[], continueMessageId?: 
 }
 
 /**
- * The ids cited by any event stored for the chat, retracted and stale ones included, so nothing
- * automatically brings back what the user retracted. A failed run writes no event, so its window stays
- * open and is retried. Empty for a missing chat.
+ * The ids cited by any of `events`, retracted and stale ones included, so nothing automatically brings
+ * back what the user retracted. A failed run writes no event, so its window stays open and is retried.
  */
-export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): Set<string> {
+export function recordedMessages(events: readonly Pick<MemoryEvent, "sources">[]): Set<string> {
     const recorded = new Set<string>();
-    for (const { id } of store.memory.readContents(chaId, chatId)?.events ?? []) {
-        for (const source of store.memory.readRecord(chaId, chatId, "events", id)?.data.sources ?? []) {
+    for (const { sources } of events) {
+        for (const source of sources) {
             recorded.add(source.messageId);
         }
     }
     return recorded;
+}
+
+/** `recordedMessages` of every event stored for the chat; empty for a missing chat. */
+export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): Set<string> {
+    const stored = store.memory.readContents(chaId, chatId)?.events ?? [];
+    return recordedMessages(
+        stored.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
+    );
 }
 
 /**
@@ -116,6 +124,17 @@ function confirmedMessages(
         }
     }
     return confirmed;
+}
+
+/**
+ * The id of the newest reply `confirmedBefore` confirms: the last eligible assistant message with a
+ * `chatId` before it. Undefined with no ceiling, no such reply, or a ceiling that is not eligible.
+ */
+export function confirmedThrough(messages: readonly Message[], confirmedBefore: string | null): string | undefined {
+    if (confirmedBefore === null) {
+        return undefined;
+    }
+    return confirmedMessages(messages, confirmedBefore, false)?.findLast(({ message }) => message.role === "char")?.id;
 }
 
 /** The turns of `confirmed`; user messages with no assistant message after them belong to none. */

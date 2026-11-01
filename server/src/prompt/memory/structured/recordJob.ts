@@ -7,7 +7,12 @@ import type {
 } from "../../../../../shared/jobs.ts";
 import { STRUCTURED_MEMORY_ALGORITHM } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges } from "../../../data/memoryStore.ts";
-import { GenerationRunnerError, markFailure, type RunningJob } from "../../../jobs/generationJobs.ts";
+import {
+    GenerationRunnerError,
+    markFailure,
+    type MemoryControl,
+    type RunningJob,
+} from "../../../jobs/generationJobs.ts";
 import {
     admitProviderModels,
     flushChatMetadata,
@@ -56,6 +61,10 @@ import { commitWindow, createStructuredWriter, writerRequestDb } from "./writer.
  *   policy, and the first that does not record ends the job; its run and receipt are already stored.
  *   Windows left past the cap are an ordinary `done`. No task fence applies: the job holds the chat's
  *   slot and the lease, and a panel write checks the memory revision.
+ *
+ * A send's approved gap (`recordGapInJob`) shares those windows, inside the send: the person who said
+ * yes to the question waits for it, so it takes their stop control, and a window that does not record
+ * only ends the run. Its run and receipt are stored, and the send goes on with the gap.
  */
 
 type RecordRefusal = Extract<MemoryTaskRecordAnswer, { outcome: "refused" }>["reason"];
@@ -95,14 +104,31 @@ function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, messageId: str
     }
 }
 
-/** The writer's windows through `ceiling`, on the job's lease, in order. */
+/**
+ * How `runWindows` ended, with the windows it recorded. `done` ran every window, or stopped between two
+ * when the owner asked; `gone` found the ceiling no longer an eligible message; the other two are the
+ * first window that did not record.
+ */
+type WindowsEnd = { recorded: number } & (
+    { outcome: "done" | "gone" } | { outcome: "failed"; error: string } | { outcome: "skipped"; reason: string }
+);
+
+/**
+ * The writer's windows through `ceiling`, on the job's lease, in order. Only an `initial` run takes the
+ * stop control, as the job's memory runs do. A throw is the job's own end, not a window's.
+ */
 async function runWindows(
     job: RunningJob,
     deps: GenerationRunnerDeps,
     setup: RunSetup,
     host: MemoryHost,
-    arg: { input: StructuredMemoryTaskInput; ceiling: WriterCeiling; reason: MemoryBlockingReason | null },
-): Promise<void> {
+    arg: {
+        input: StructuredMemoryTaskInput;
+        ceiling: WriterCeiling;
+        phase: "blocking" | "initial";
+        reason: MemoryBlockingReason | null;
+    },
+): Promise<WindowsEnd> {
     const { store } = deps;
     const { scope } = setup;
     const { input, ceiling } = arg;
@@ -145,10 +171,11 @@ async function runWindows(
             });
         };
 
-    job.emit({ type: "stage", stage: "memory" });
     const lease = await acquireJobWriter(job, deps, setup);
-    const run = openJobMemoryRun(job, setup, "blocking", arg.reason);
+    const run = openJobMemoryRun(job, setup, arg.phase, arg.reason);
+    let stop: MemoryControl | null = null;
     try {
+        stop = arg.phase === "initial" ? run.registerStop() : null;
         // A lease holder reads what the chat's task wrote before the lease.
         refreshed();
         const windows = await confirmedWindows({
@@ -164,10 +191,14 @@ async function runWindows(
         });
         setup.check();
         if (!windows) {
-            throw new GenerationRunnerError(409, "This message can no longer be recorded", { stage: "persist" });
+            return { outcome: "gone", recorded: 0 };
         }
         const writer = createStructuredWriter(store);
+        let recorded = 0;
         for (const [index, window] of windows.entries()) {
+            if (stop?.stopRequested()) {
+                break;
+            }
             run.update({ done: index, total: windows.length });
             refreshed();
             const result = await writer({
@@ -180,18 +211,21 @@ async function runWindows(
                 commit: commitFor(window),
             });
             setup.check();
-            if (result.outcome === "failed") {
-                throw new GenerationRunnerError(500, host.redact(result.error), { stage: "request" });
+            if (result.outcome !== "recorded") {
+                return { ...result, recorded };
             }
-            if (result.outcome === "skipped") {
-                throw new GenerationRunnerError(409, `The recording stopped: ${result.reason}`, { stage: "persist" });
-            }
+            recorded++;
         }
+        return { outcome: "done", recorded };
     } finally {
         try {
-            lease.release();
+            stop?.release();
         } finally {
-            run.close();
+            try {
+                lease.release();
+            } finally {
+                run.close();
+            }
         }
     }
 }
@@ -219,12 +253,50 @@ async function recordInJob(
         embeddingEnv: setup.bindings.services.embeddings(setup.nativeCtx),
     });
     try {
-        await runWindows(job, deps, setup, host, arg);
+        job.emit({ type: "stage", stage: "memory" });
+        const ended = await runWindows(job, deps, setup, host, { ...arg, phase: "blocking" });
+        if (ended.outcome === "gone") {
+            throw new GenerationRunnerError(409, "This message can no longer be recorded", { stage: "persist" });
+        }
+        if (ended.outcome === "failed") {
+            throw new GenerationRunnerError(500, host.redact(ended.error), { stage: "request" });
+        }
+        if (ended.outcome === "skipped") {
+            throw new GenerationRunnerError(409, `The recording stopped: ${ended.reason}`, { stage: "persist" });
+        }
     } catch (error) {
         // A latched failure is the job's own, whatever surfaced first.
         throw markFailure(setup.bindings.fatal() ?? error, { stage: "request" });
     }
     flushChatMetadata(job);
+}
+
+/**
+ * A send's approved gap: the windows open before the input's ceiling, up to `maxWriterWindows`, in the
+ * send, with the writer's request policy around them alone, so the reply's own request keeps its
+ * temperature and schema. Answers how many it recorded, whichever way the run ended.
+ */
+export async function recordGapInJob(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    setup: RunSetup,
+    host: MemoryHost,
+    input: StructuredMemoryTaskInput,
+): Promise<number> {
+    const { scope } = setup;
+    const request = scope.request;
+    scope.request = { ...request, db: writerRequestDb(request.db) };
+    try {
+        const { recorded } = await runWindows(job, deps, setup, host, {
+            input,
+            ceiling: { id: input.confirmedBefore, inclusive: false },
+            phase: "initial",
+            reason: "gap",
+        });
+        return recorded;
+    } finally {
+        scope.request = request;
+    }
 }
 
 /** The `memoryRecord` command, `messageId` its message: see the file's comment. */

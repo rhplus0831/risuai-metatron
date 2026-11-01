@@ -120,10 +120,15 @@ export function rawWindow(
     return { start, dropped };
 }
 
-/** What a send may spend on memory, in either budget mode, and the lanes' targets. */
+/**
+ * What a send may spend on memory, in either budget mode, what fitting the context reduced of the
+ * preset's amounts, and the lanes' targets.
+ */
 export function readBudget(settings: HypaV3Settings, maxContext: number, maxResponse: number) {
+    const { memoryTokens, reduced } = resolveHypaV3Budget(settings, maxContext, maxResponse);
     return {
-        maximum: resolveHypaV3Budget(settings, maxContext, maxResponse).memoryTokens,
+        maximum: memoryTokens,
+        reduced,
         targets: normalizeStructuredMemorySettings(settings.structured).laneTargets,
     };
 }

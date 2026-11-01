@@ -522,7 +522,8 @@
           "patchPrompt": "",
           "highlightMode": "important",
           "highlightKinds": ["create", "contradiction", "delete", "retract"],
-          "highlightChangeGrade": 5
+          "highlightChangeGrade": 5,
+          "volatileBeforeLastUser": false
         }
       }
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "./database.ts";
 import {
+    CONTEXT_MEMORY_EXCLUDED,
     type ContextReport,
     displacement,
     eligibleHistory,
@@ -71,6 +72,68 @@ const message = (chatId: string, role: Message["role"], data: string, disabled?:
 });
 
 describe("parseContextReport", () => {
+    it("accepts Structured Memory and legacy reports but refuses malformed manifest fields", () => {
+        const memory: NonNullable<ContextReport["memory"]> = {
+            kind: "structuredMemory",
+            tokens: 40,
+            budget: 200,
+            coverage: "covered",
+            items: [{ id: "event", kind: "event", lane: "flow", reason: "recent", tokens: 20, verified: true }],
+            excluded: [{ id: "old", kind: "event", lane: "events", reason: "stale" }],
+            excludedTotal: 1,
+            lanes: [{ lane: "flow", target: 100, spent: 20 }],
+            confirmedThrough: "a2",
+            writer: { state: "pending", reason: "due" },
+            stages: [{ stage: "card", reason: "verified" }],
+        };
+        const valid = changed((copy) => {
+            copy.memory = memory;
+        });
+        expect(parseContextReport(valid)).toEqual(valid);
+        for (const kind of ["hypaV3", "hypaV2", "supa", "hanurai"]) {
+            const legacy = changed((copy) => {
+                copy.memory = { kind, tokens: 40, coverage: "unknown" };
+            });
+            expect(parseContextReport(legacy)).toEqual(legacy);
+        }
+        const malformed: [string, unknown][] = [
+            ["items", {}],
+            ["items.0.id", 7],
+            ["items.0.kind", "summary"],
+            ["items.0.lane", "future"],
+            ["items.0.reason", null],
+            ["items.0.tokens", -1],
+            ["items.0.verified", "yes"],
+            ["items.0.verified", undefined],
+            ["excluded", {}],
+            ["excluded.0.id", 7],
+            ["excluded.0.kind", "summary"],
+            ["excluded.0.lane", "future"],
+            ["excluded.0.reason", "other"],
+            ["excluded", Array.from({ length: CONTEXT_MEMORY_EXCLUDED + 1 }, () => memory.excluded![0])],
+            ["excludedTotal", -1],
+            ["lanes", {}],
+            ["lanes.0.lane", "future"],
+            ["lanes.0.target", -1],
+            ["lanes.0.spent", "20"],
+            ["lanes", [memory.lanes![0], memory.lanes![0]]],
+            ["confirmedThrough", 2],
+            ["writer", null],
+            ["writer.state", "finished"],
+            ["writer.reason", 2],
+            ["stages", {}],
+            ["stages.0.stage", "finished"],
+            ["stages.0.reason", null],
+        ];
+        for (const [path, value] of malformed) {
+            const copy = structuredClone(valid) as Record<string, any>;
+            const keys = path.split(".");
+            const parent = keys.slice(0, -1).reduce((node, key) => node[key], copy.memory);
+            parent[keys.at(-1)!] = value;
+            expect(parseContextReport(copy), path).toBeNull();
+        }
+    });
+
     it("accepts a stored report as written, with or without its optional parts", () => {
         const stored = JSON.parse(JSON.stringify(report()));
         expect(parseContextReport(stored)).toBe(stored);

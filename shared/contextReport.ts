@@ -1,5 +1,12 @@
 import type { Message } from "./database.ts";
 import type { HypaV3BudgetReduction } from "./hypaV3Presets.ts";
+import {
+    MEMORY_MANIFEST_ITEM_KINDS,
+    MEMORY_MANIFEST_LANES,
+    type MemoryManifestItem,
+    type MemoryManifestItemKind,
+    type MemoryManifestLane,
+} from "./structuredMemory.ts";
 
 /**
  * How one request spent the model's context: written by the server's `assemblePrompt` into
@@ -48,6 +55,37 @@ export function reportedLoreRejections(rejected: readonly ContextLoreRejected[])
 
 export type ContextTrimEntry = { tokens: number; kind: "example" | "marker" | "message"; user: boolean };
 
+/** Why a send left a memory candidate out, worst first. */
+export const CONTEXT_MEMORY_EXCLUSIONS = ["stale", "never", "budget", "not-relevant"] as const;
+
+/** A memory candidate a send left out, and why. */
+export type ContextMemoryExcluded = {
+    id: string;
+    kind: MemoryManifestItemKind;
+    lane: MemoryManifestLane;
+    reason: (typeof CONTEXT_MEMORY_EXCLUSIONS)[number];
+};
+
+/** How many left-out memory candidates a report names; a chat's every event can be one on every reply. */
+export const CONTEXT_MEMORY_EXCLUDED = 32;
+
+/** The left-out candidates a report keeps: the first ones, worst reason first, ties in the given order. */
+export function reportedMemoryExclusions(excluded: readonly ContextMemoryExcluded[]): ContextMemoryExcluded[] {
+    const rank = ({ reason }: ContextMemoryExcluded) => CONTEXT_MEMORY_EXCLUSIONS.indexOf(reason);
+    return excluded.toSorted((a, b) => rank(a) - rank(b)).slice(0, CONTEXT_MEMORY_EXCLUDED);
+}
+
+/** What a lane may spend and what it spent; flow has no token target, so its own is the largest safe integer. */
+export type ContextMemoryLane = { lane: MemoryManifestLane; target: number; spent: number };
+
+/** The writer as a send saw it. */
+export const CONTEXT_MEMORY_WRITER_STATES = ["recorded", "pending", "failed", "paused", "notAutomatic"] as const;
+export type ContextMemoryWriter = { state: (typeof CONTEXT_MEMORY_WRITER_STATES)[number]; reason?: string };
+
+/** One step of a send's memory ledger: `reason` is a code, so a step that did nothing still says why. */
+export const CONTEXT_MEMORY_STAGES = ["window", "lanes", "gap", "card", "writer"] as const;
+export type ContextMemoryStage = { stage: (typeof CONTEXT_MEMORY_STAGES)[number]; reason: string };
+
 export type ContextReport = {
     v: 1;
     /** Effective context size and the response reservation the request used. */
@@ -92,21 +130,21 @@ export type ContextReport = {
         perMessage: number;
     };
     memory?: {
-        kind: "hypaV3" | "hypaV2" | "supa" | "hanurai";
+        kind: "hypaV3" | "hypaV2" | "supa" | "hanurai" | "structuredMemory";
         /** The memory entries as sent (inner format and wrappers included); 0 when none was sent. */
         tokens: number;
         /**
-         * HypaV3's memory budget as the step applied it (`resolveHypaV3Budget`): in ratio mode
-         * `floor(maxContext × memoryTokensRatio)`, in token mode the preset's amount reduced to fit.
+         * HypaV3's or Structured Memory's budget as the step applied it (`resolveHypaV3Budget`): in ratio
+         * mode `floor(maxContext × memoryTokensRatio)`, in token mode the preset's amount reduced to fit.
          */
         budget?: number;
         /**
-         * HypaV3 in token mode: each amount of the preset the step reduced to fit the max context
+         * In token mode: each amount of the preset the step reduced to fit the max context
          * (`resolveHypaV3Budget`), with its configured and applied value, in the order memory,
          * headroom, extra; absent when none was reduced.
          */
         budgetReduced?: readonly HypaV3BudgetReduction[];
-        /** "gap" when HypaV3 left uncovered history; "unknown" when it cannot tell. */
+        /** "gap" when the step left uncovered history out; "unknown" when it cannot tell. */
         coverage: "covered" | "gap" | "unknown";
         /**
          * HypaV3: how many of the history messages left out a stored summary covers (at most
@@ -131,6 +169,26 @@ export type ContextReport = {
          * as it is now; absent when no window has a message to summarize yet.
          */
         lookaheadIn?: number;
+        /**
+         * Structured Memory: every record the send included; `verified` says its tag was found in the
+         * final prompt. The memory budget bounds the list, so a reader caps nothing.
+         */
+        items?: readonly MemoryManifestItem[];
+        /** Structured Memory: the candidates left out that a report keeps (`reportedMemoryExclusions`). */
+        excluded?: readonly ContextMemoryExcluded[];
+        /** Structured Memory: how many candidates were left out, those not in `excluded` included. */
+        excludedTotal?: number;
+        /** Structured Memory: each lane's target and spend. */
+        lanes?: readonly ContextMemoryLane[];
+        /**
+         * Structured Memory: the newest reply the send's writer ceiling confirms (`confirmedThrough`);
+         * absent when none is.
+         */
+        confirmedThrough?: string;
+        /** Structured Memory: the writer's state at the send. */
+        writer?: ContextMemoryWriter;
+        /** Structured Memory: the send's memory ledger, in stage order. */
+        stages?: readonly ContextMemoryStage[];
     };
     lore: {
         /** The budget pass total, before @@inject_lore edits; not the emitted lore tokens. */
@@ -173,7 +231,13 @@ const SECTION_KINDS: readonly ContextSectionKind[] = [
     "history",
 ];
 const TRIM_KINDS: readonly ContextTrimEntry["kind"][] = ["example", "marker", "message"];
-const MEMORY_KINDS: readonly NonNullable<ContextReport["memory"]>["kind"][] = ["hypaV3", "hypaV2", "supa", "hanurai"];
+const MEMORY_KINDS: readonly NonNullable<ContextReport["memory"]>["kind"][] = [
+    "hypaV3",
+    "hypaV2",
+    "supa",
+    "hanurai",
+    "structuredMemory",
+];
 const COVERAGES: readonly NonNullable<ContextReport["memory"]>["coverage"][] = ["covered", "gap", "unknown"];
 const BUDGET_FIELDS: readonly HypaV3BudgetReduction["field"][] = ["memory", "headroom", "extra"];
 
@@ -291,7 +355,14 @@ export function parseContextReport(value: unknown): ContextReport | null {
                     memory.prepared > (history.kept as number))) ||
             (memory.reserved !== undefined && !isCount(memory.reserved)) ||
             (memory.summarizeIn !== undefined && !isCount(memory.summarizeIn)) ||
-            (memory.lookaheadIn !== undefined && !isCount(memory.lookaheadIn))
+            (memory.lookaheadIn !== undefined && !isCount(memory.lookaheadIn)) ||
+            (memory.items !== undefined && !isMemoryItems(memory.items)) ||
+            (memory.excluded !== undefined && !isMemoryExcluded(memory.excluded)) ||
+            (memory.excludedTotal !== undefined && !isCount(memory.excludedTotal)) ||
+            (memory.lanes !== undefined && !isMemoryLanes(memory.lanes)) ||
+            (memory.confirmedThrough !== undefined && typeof memory.confirmedThrough !== "string") ||
+            (memory.writer !== undefined && !isMemoryWriter(memory.writer)) ||
+            (memory.stages !== undefined && !isMemoryStages(memory.stages))
         ) {
             return null;
         }
@@ -319,6 +390,76 @@ function isBudgetReduced(value: unknown): boolean {
         fields.add(entry.field);
     }
     return true;
+}
+
+/** Whether `value` is a list with every slot set to a record that `row` accepts. */
+function everyRow(value: unknown, row: (entry: Fields) => boolean): boolean {
+    if (!Array.isArray(value)) {
+        return false;
+    }
+    for (let i = 0; i < value.length; i++) {
+        const entry: unknown = value[i];
+        if (!Object.hasOwn(value, i) || !isRecord(entry) || !row(entry)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** `memory.items`: any number of `MemoryManifestItem`s. */
+function isMemoryItems(value: unknown): boolean {
+    return everyRow(
+        value,
+        (item) =>
+            typeof item.id === "string" &&
+            oneOf(MEMORY_MANIFEST_ITEM_KINDS, item.kind) &&
+            oneOf(MEMORY_MANIFEST_LANES, item.lane) &&
+            typeof item.reason === "string" &&
+            isCount(item.tokens) &&
+            typeof item.verified === "boolean",
+    );
+}
+
+/** `memory.excluded`: at most `CONTEXT_MEMORY_EXCLUDED` rows, each with known kinds and a known reason. */
+function isMemoryExcluded(value: unknown): boolean {
+    return (
+        Array.isArray(value) &&
+        value.length <= CONTEXT_MEMORY_EXCLUDED &&
+        everyRow(
+            value,
+            (entry) =>
+                typeof entry.id === "string" &&
+                oneOf(MEMORY_MANIFEST_ITEM_KINDS, entry.kind) &&
+                oneOf(MEMORY_MANIFEST_LANES, entry.lane) &&
+                oneOf(CONTEXT_MEMORY_EXCLUSIONS, entry.reason),
+        )
+    );
+}
+
+/** `memory.lanes`: each known lane at most once, with two counts. */
+function isMemoryLanes(value: unknown): boolean {
+    const lanes = new Set<unknown>();
+    return everyRow(value, (row) => {
+        if (!oneOf(MEMORY_MANIFEST_LANES, row.lane) || lanes.has(row.lane) || !counts(row, ["target", "spent"])) {
+            return false;
+        }
+        lanes.add(row.lane);
+        return true;
+    });
+}
+
+/** `memory.writer`: a known state, with a reason code or none. */
+function isMemoryWriter(value: unknown): boolean {
+    return (
+        isRecord(value) &&
+        oneOf(CONTEXT_MEMORY_WRITER_STATES, value.state) &&
+        (value.reason === undefined || typeof value.reason === "string")
+    );
+}
+
+/** `memory.stages`: known stages, each with a reason code. */
+function isMemoryStages(value: unknown): boolean {
+    return everyRow(value, (row) => oneOf(CONTEXT_MEMORY_STAGES, row.stage) && typeof row.reason === "string");
 }
 
 type HistoryMessage = Pick<Message, "chatId" | "role" | "data" | "disabled">;

@@ -9,8 +9,8 @@
   `src/ts/process/structuredMemory.svelte.ts`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`.
 - The algorithm is not reachable yet: the settings cannot select it, so `db.memoryAlgorithmType` holds its value only in
   tests, and no screen calls the tab's reads, so its receipt line shows only there. Production has its
-  [writer](structured-memory-writer.md), which pages and the read path do not use yet. The read path's pieces exist, and
-  `assemblePrompt` does not call them yet. Its design and remaining work are in [Active Plans](../plan/README.md).
+  [writer](structured-memory-writer.md), and `assemblePrompt` runs the read path, which has no required or pages lane
+  yet. Its design and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The writer's settings, windows, task kind, runs, analysis prompt, admission, and record now →
     [structured memory writer](structured-memory-writer.md).
@@ -46,6 +46,11 @@
 - `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
   `eventVectorTexts`, `lexicalTerms`.
 - `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard`, `itemTag`, and the line builders.
+- `server/src/prompt/memory/structured/step.ts`: a send's read: `readMemoryRecords`, `MemoryRecords`, `readEntries`,
+  `selectMemory`, `writerState`, `sendManifest`. `structuredMemoryStep` in `assemble.ts` drives it; the job's part is in
+  [the writer guide](structured-memory-writer.md#the-writer-task).
+- `shared/contextReport.ts`: the manifest's fields on `ContextReport.memory`, `reportedMemoryExclusions`,
+  `CONTEXT_MEMORY_EXCLUDED`. `trimHistoryToContext` in `hypav3.ts` is the trim both algorithms share.
 
 ## Flows
 
@@ -137,12 +142,45 @@ the held chat, and a feed patch moves it.
 
 ### The read path
 
-Nothing here writes: `retrieveLanes` offers candidates, and `buildMemoryCard` spends the budget on them.
-`assemblePrompt` calls neither yet, and the required and pages lanes are not built. The modules' comments hold the lane
-rules.
+Nothing here writes: `retrieveLanes` offers candidates, and `buildMemoryCard` spends the budget on them. The required
+and pages lanes are not built. The modules' comments hold the lane rules.
+
+`selectMemory` runs once for every job with `memoryJob.structuredMemory`, a preview and a service-free send included,
+which read as a send does. With no `memoryJob` the history stays raw and no report says otherwise.
+
+1. Records: one synchronous read. `coveredMessages` (active, not suppressed) says what may leave, and `recordedMessages`
+   (any status) what the writer leaves alone, so history cited only by a stale or retracted event stays raw.
+2. Window: `rawWindow`, then the message a continue extends leaves `dropped` before retrieval, so an older one stays in
+   the prompt and out of the evidence.
+3. Card: one `memo: "supaMemory"` entry at the front of the history, with no entry when no item is included. Under
+   `volatileBeforeLastUser` the volatile part is its own entry, which never joins the history: a chat range could cut it
+   there, and a `memory` prompt card would pull it away. Assembly splices it into `formated` once the cards are
+   formatted, right before the entry holding the latest user message, found by provenance. A range that left that
+   message out puts it after the last memory entry, else at the end.
+4. Trim: `trimHistoryToContext`, as HypaV3's select-only path, with the window as its protected tail and an older
+   continue target pinned. Both go into `protectedEntries`. A tail that does not fit ends the send with
+   `TOO_MUCH_TOKEN`. Dropped history is `coverage: "gap"`, and the gap question is
+   [the writer's](structured-memory-writer.md#the-writer-task).
+
+The report (`ContextReport.memory`, kind `structuredMemory`):
+
+- `items` are the included records. `verified` is set in `buildContextReport` by finding `itemTag(item)` in the final
+  prompt, whichever entry holds it, so after scripts, `editRequest`, and the recheck. One not found makes `coverage`
+  `unknown`, because the two parts can be lost apart.
+- `excluded` keeps `CONTEXT_MEMORY_EXCLUDED` rows, worst reason first, and `excludedTotal` the count: `retrieveLanes`
+  lists every not-relevant event. `lanes` holds each lane's target and spend.
+- `confirmedThrough` is the newest reply the writer's ceiling confirms. `writer.state` says, in order, `notAutomatic` or
+  `paused` (`writerNotice`), `failed` (the newest run that recorded or failed did not record), `pending` (that reply is
+  not recorded), else `recorded`.
+- `stages` is the ledger, each a stage and a reason code: `window`, `lanes`, `gap` (only with a gap), `card`, and on an
+  input job with a service `writer`. `writer` says `due`, not queued: the hand-off comes after the reply and may be
+  skipped.
+
+Lane rules:
 
 - `ReadEntry.role` is the stored message's, because assembly rewrites a prompt role in a group chat and under
-  `sendName`. `text` is the processed content, so evidence quotes what the prompt would have shown.
+  `sendName`, undefined on the greeting. `text` is the processed content, so evidence quotes what the prompt would have
+  shown.
 - An event with no source among the entries has no place, which says nothing about staleness: a disabled message is just
   not in this send.
 - `rawWindow` leaves every uncovered entry raw for the caller's gap trim, and an event wholly inside the window with
@@ -239,6 +277,8 @@ group is refused, and a full one is checked and restored.
 - On a character page, a section's `heading` holds a `CHARACTER_SECTION_SLOTS` key, not display text. Other page types
   use free headings.
 - `MemoryManifest.items` holds included items only; excluded candidates never reach the projection.
+- A report never bounds `items`, which the memory budget does, and always bounds `excluded`.
+- History leaves the prompt only where `coveredMessages` says so; "recorded" never decides it.
 - Code owns grades: a draft carries scored axes, and only the stored `MemoryEvent` and `MemoryKnowledge` carry `grade`.
 - A receipt is a display copy: `memory_runs` is the record. A message with no receipt is no proof that nothing was
   recorded, since a checkpoint load restores older rows while the tables survive and a whole-row `setMessage` replaces
@@ -268,6 +308,10 @@ group is refused, and a full one is checked and restored.
   root `tsconfig.json`, where the server routes do not type-check.
 - `structured/lanes.test.ts` and `card.test.ts` drive the read rules with plain values and a fake tokenizer.
   `structured/retrieve.test.ts` runs real embeddings over a vector cache with a scripted provider.
+- The read step: `assemble.test.ts` drives `assemblePrompt` with a faked `memoryJob.structuredMemory` for the window,
+  trim, placement, gap question, and report; `memoryJobs.test.ts` drives the gap run on a real stack;
+  `contextReport.test.ts` the parser. Focused:
+  `pnpm --silent test:agent assemble memoryJobs shared/contextReport.test.ts`.
 - Receipts: `memoryTasks.test.ts` for the patches; `memoryJobs.test.ts` for the reply's notice on a real stack;
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.
@@ -287,6 +331,12 @@ group is refused, and a full one is checked and restored.
 
 - The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
   plan.
+- `verified` reads the prompt assembly returned. Plugin replacers and `request` triggers run after it, on every attempt,
+  so a line they remove still reads as verified, and a provider that gathers system entries (Ooba mode) undoes the
+  placement. A tag the model echoed into a kept message verifies a lost line too. Decision: D8, plan.
+- Covered history leaves even when the budget cannot hold the card's frame: the card is empty and `coverage` stays
+  `covered`, because an event covers it; `stages` says `card: empty`.
+- A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.
 - `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
@@ -298,6 +348,8 @@ group is refused, and a full one is checked and restored.
 - `eventVectorTexts` must stay `warmEvent`'s text rule; a retrieval that embeds other text pays for every event again.
 - Every number in `RETRIEVAL_LIMITS` is a starting value, and a cosine threshold does not mean the same on every model.
   An unknown stage is empty, so a named thread waits for a scene page.
+- A report stored on every reply grows with `items` and `excluded`, up to a few kilobytes a message. D5's
+  `memory_manifests` table is the way out if that matters.
 - A send's retrieval embeds every eligible event's texts. Warm, `addText` still compares every text with every vector
   synchronously, so the cost grows with the square of the chat's event texts. Cold (a model change, a cleared cache), it
   is one provider call per 50 texts, in sequence, inside the send.

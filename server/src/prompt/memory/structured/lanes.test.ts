@@ -69,12 +69,19 @@ describe("structured memory lanes", () => {
             "read-budget",
         ).settings;
         for (const row of [
-            { mode: "ratio" as const, context: 1003, response: 203, maximum: 250 },
-            { mode: "tokens" as const, context: 1003, response: 203, maximum: 400 },
-            { mode: "tokens" as const, context: 4000, response: 200, maximum: 900 },
+            { mode: "ratio" as const, context: 1003, response: 203, maximum: 250, reduced: [] },
+            {
+                mode: "tokens" as const,
+                context: 1003,
+                response: 203,
+                maximum: 400,
+                reduced: [expect.objectContaining({ field: "memory", configured: 900, applied: 400 })],
+            },
+            { mode: "tokens" as const, context: 4000, response: 200, maximum: 900, reduced: [] },
         ]) {
             expect(readBudget({ ...settings, budgetMode: row.mode }, row.context, row.response)).toEqual({
                 maximum: row.maximum,
+                reduced: expect.arrayContaining(row.reduced),
                 targets,
             });
         }

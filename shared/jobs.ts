@@ -401,10 +401,11 @@ export type GenerationQuestion =
      */
     | { kind: "memoryTrim"; payload: Record<string, never> }
     /**
-     * The HypaV3 gap question: a send that uses stored summaries only would leave out `gapTokens`
-     * tokens of history no summary covers (more than the preset's `gapConfirmTokens`). Summarizing
-     * them now takes about `plannedCalls` summary requests; `lastTaskError` is the chat's last
-     * background memory failure, when there is one. The tab answers a `MemoryGapChoice`.
+     * The memory gap question: a send that uses stored memory only would leave out `gapTokens`
+     * tokens of history no HypaV3 summary or Structured Memory event covers (more than the preset's
+     * `gapConfirmTokens`). Summarizing them now takes about `plannedCalls` requests; `lastTaskError`
+     * is the chat's last background memory failure, when there is one. The tab answers a
+     * `MemoryGapChoice`.
      */
     | { kind: "memoryGap"; payload: { gapTokens: number; plannedCalls: number; lastTaskError?: string } };
 

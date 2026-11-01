@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { type ContextReport, historyDigest, parseContextReport } from "../../../shared/contextReport.ts";
+import {
+    CONTEXT_MEMORY_EXCLUDED,
+    type ContextReport,
+    historyDigest,
+    parseContextReport,
+} from "../../../shared/contextReport.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { LoreActive } from "../../../shared/lore/activation.ts";
@@ -18,6 +23,9 @@ import { type RequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
 import type { CachedVector } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
+import type { MemoryEvent } from "../../../shared/structuredMemory.ts";
+import type { MemoryRecords } from "../prompt/memory/structured/step.ts";
+import { memoryRecords } from "./memoryFixtures.ts";
 import type { MemoryHost } from "../prompt/memory/host.ts";
 import {
     normalizePreset,
@@ -845,6 +853,348 @@ describe("the context report", () => {
     });
 
     describe("structured memory selection", () => {
+        /** Storage and job I/O only; the selector, card builder and report writer stay real. */
+        function structuredAssembly(
+            options: Options & {
+                records?: MemoryRecords;
+                settings?: Record<string, unknown>;
+                preview?: boolean;
+                gapConfirmTokens?: number;
+            },
+        ) {
+            const records = options.records ?? { events: [], threads: [], runs: [], paused: false };
+            const preset = createHypaV3Preset(
+                "Structured",
+                {
+                    budgetMode: "ratio",
+                    memoryTokensRatio: 0.5,
+                    gapConfirmTokens: options.gapConfirmTokens ?? 0,
+                    structured: {
+                        windowTurns: 1,
+                        laneTargets: { pages: 0, events: 0, evidence: 0, threads: 300 },
+                        ...options.settings,
+                    },
+                },
+                "structured-test",
+            );
+            const confirmGap = vi.fn(async () => "continue" as const);
+            const recordGap = vi.fn(async () => 0);
+            const job: AssemblyMemoryJob = {
+                ...selectOnlyJob,
+                preview: options.preview ?? false,
+                input: !options.preview,
+                sourceGeneration: () => 1,
+                confirmGap,
+                structuredMemory: {
+                    records: () => records,
+                    recordGap,
+                    taskInput: (sourceGeneration, confirmedBefore) => ({
+                        kind: "structuredMemory",
+                        confirmedBefore,
+                        sourceGeneration,
+                        chatRef: { chaId: "counter", chatId: "k" },
+                        epoch: "epoch",
+                        admittedRevision: "revision",
+                        speakerId: "counter",
+                        binding: { presetId: null, modelPresetId: null, personaId: null },
+                        effective: { presetId: "preset", modelPresetId: "model", fromChain: false },
+                        maxContext: options.maxContext ?? 400,
+                        maxResponse: 10,
+                        settingsFingerprint: "settings",
+                        tokenPolicy: {
+                            chatAdditionalTokens: 3,
+                            useName: "noName",
+                            mainModel: resolveModelInfo("gpt4o"),
+                            supportsInlayImage: false,
+                            tokenizer: {
+                                aiModel: "gpt4o",
+                                currentPluginProvider: "",
+                                model: resolveModelInfo("gpt4o"),
+                                pluginTokenizer: "",
+                                customTokenizer: "",
+                                googleClaudeTokenizing: false,
+                                useTokenizerCaching: false,
+                            },
+                        },
+                    }),
+                },
+            };
+            const assembly = contextAssembly({
+                ...options,
+                hypaV3: true,
+                memoryJob: job,
+                db: {
+                    ...options.db,
+                    memoryAlgorithmType: "structuredMemory",
+                    hypaV3Presets: [preset],
+                    hypaV3PresetId: preset.id,
+                },
+            });
+            return { ...assembly, confirmGap, recordGap, records };
+        }
+        const event = (id: string, ids: string[], patch: Partial<MemoryEvent> = {}): MemoryEvent => ({
+            ...memoryRecords([id], id).events[0],
+            createdRevision: 1,
+            sources: ids.map((messageId, index) => ({ messageId, index, hash: "stored-source-hash" })),
+            ...patch,
+        });
+        const stored = (events: MemoryEvent[], threads: MemoryRecords["threads"] = []): MemoryRecords => ({
+            events,
+            threads,
+            runs: [],
+            paused: false,
+        });
+        const rawIds = (formated: OpenAIChat[]) =>
+            formated.flatMap(({ memo }) => (memo && memo !== "supaMemory" ? [memo] : []));
+
+        it("drops only active unsuppressed coverage, retaining the assistant window and an older continue target", async () => {
+            const messages: Entry[] = Array.from({ length: 6 }, (_, i) => [
+                { chatId: `u${i + 1}`, data: `User ${i + 1}`, role: "user" as const },
+                { chatId: `a${i + 1}`, data: `Reply ${i + 1}`, role: "char" as const },
+            ]).flat();
+            messages.push({ chatId: "u7", data: "Now" });
+            const records = stored([
+                event("active", ["u1", "a1"]),
+                event("stale", ["u2", "a2"], { status: "stale" }),
+                event("retracted", ["u3", "a3"], { status: "retracted" }),
+                event("suppressed", ["u4", "a4"], { suppressed: true }),
+                event("recent", ["u5", "a5", "u6", "a6"]),
+            ]);
+            for (const { continued, preview } of [
+                { continued: false, preview: false },
+                { continued: true, preview: false },
+                { continued: false, preview: true },
+            ]) {
+                const assembly = structuredAssembly({
+                    messages,
+                    records,
+                    preview,
+                    maxContext: 6000,
+                    settings: { windowTurns: 2 },
+                });
+                const result = await assembly.run(continued ? { continue: true, continueMessageId: "a1" } : {});
+                expect(rawIds(result.formated)).toEqual([
+                    ...(continued ? ["a1"] : []),
+                    "u2",
+                    "a2",
+                    "u3",
+                    "a3",
+                    "u4",
+                    "a4",
+                    "u5",
+                    "a5",
+                    "u6",
+                    "a6",
+                    "u7",
+                ]);
+                expect(result.formated[0]).toMatchObject({ role: "system", memo: "supaMemory" });
+                expect(result.formated[0].content).toContain("[m:flow:active]");
+                expect(result.report.memory).toMatchObject({ kind: "structuredMemory", coverage: "covered" });
+                expect(assembly.confirmGap).not.toHaveBeenCalled();
+            }
+        });
+
+        it("trims uncovered history oldest first, without charging examples or the marker to the gap or emitting an empty card", async () => {
+            for (const maxContext of [175, 130]) {
+                const assembly = structuredAssembly({
+                    messages: fiveMessages,
+                    maxContext,
+                    examples: "<START>\nUser: Example user\nCounter: Example reply",
+                    promptSettings: { trimStartNewChat: false },
+                });
+                const result = await assembly.run();
+                // Allowance 50 + response 10 + greeting 6 + five messages at 23 = 181.
+                // The marker comes from the allowance. Dropping it frees 21; at 130 the greeting
+                // and oldest pair must also go: 6 + 23 + 23 = 52 gap tokens.
+                expect(result.texts).toEqual(
+                    maxContext === 175
+                        ? ["Hi!", ...fiveMessages.map((m) => m.data)]
+                        : fiveMessages.slice(2).map((m) => m.data),
+                );
+                expect(result.formated.some((m) => m.memo === "supaMemory")).toBe(false);
+                expect(result.report.memory).toMatchObject({
+                    kind: "structuredMemory",
+                    tokens: 0,
+                    items: [],
+                    coverage: maxContext === 175 ? "covered" : "gap",
+                });
+                expect(assembly.confirmGap.mock.calls).toEqual(
+                    maxContext === 175 ? [] : [[{ gapTokens: 52, plannedCalls: 2 }]],
+                );
+                expect(assembly.recordGap).not.toHaveBeenCalled();
+            }
+        });
+
+        it("offers a gap only above the threshold with recordable work, and previews select without asking or writing", async () => {
+            for (const row of [
+                { threshold: 51, preview: false, status: undefined, asks: true },
+                { threshold: 52, preview: false, status: undefined, asks: false },
+                { threshold: 51, preview: true, status: undefined, asks: false },
+                { threshold: 51, preview: false, status: "stale" as const, asks: false },
+                { threshold: 51, preview: false, status: "retracted" as const, asks: false },
+                { threshold: 51, preview: false, status: "suppressed" as const, asks: false },
+            ]) {
+                const records = stored(
+                    row.status
+                        ? [
+                              event(
+                                  "recorded",
+                                  ["m1", "m2", "m3", "m4"],
+                                  row.status === "suppressed" ? { suppressed: true } : { status: row.status },
+                              ),
+                          ]
+                        : [],
+                );
+                const before = structuredClone(records);
+                const assembly = structuredAssembly({
+                    messages: fiveMessages,
+                    maxContext: 150,
+                    records,
+                    preview: row.preview,
+                    gapConfirmTokens: row.threshold,
+                });
+                const result = await assembly.run();
+                expect(result.texts, JSON.stringify(row)).toEqual(fiveMessages.slice(2).map((m) => m.data));
+                expect(result.report.memory).toMatchObject({ coverage: "gap", confirmedThrough: "m4" });
+                expect(assembly.confirmGap).toHaveBeenCalledTimes(row.asks ? 1 : 0);
+                expect(assembly.recordGap).not.toHaveBeenCalled();
+                expect(records).toEqual(before);
+            }
+        });
+
+        it("fails instead of dropping the raw window or continue target at selection and after editRequest", async () => {
+            for (const row of [
+                { continued: false, late: false, maxContext: 128, padding: 0 },
+                { continued: true, late: false, maxContext: 140, padding: 0 },
+                { continued: false, late: true, maxContext: 400, padding: 330 },
+                { continued: true, late: true, maxContext: 400, padding: 310 },
+            ]) {
+                const assembly = structuredAssembly({
+                    messages: fiveMessages,
+                    maxContext: row.maxContext,
+                    editRequest: row.late
+                        ? (entries) => [
+                              ...entries.map((entry) => ({ ...entry, removable: true })),
+                              { role: "system", content: "x".repeat(row.padding), removable: true },
+                          ]
+                        : undefined,
+                });
+                const result = await assemblePrompt(assembly.host, {
+                    chatAdditonalTokens: 3,
+                    continue: row.continued,
+                    ...(row.continued ? { continueMessageId: "m2" } : {}),
+                    generationId: "protected-window",
+                    stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+                });
+                expect(result, JSON.stringify(row)).toMatchObject({
+                    type: "error",
+                    error: expect.stringContaining("The minimum required token is greater than the max context size"),
+                });
+                if (result.type === "error") expect(result.error.includes("At token rechecking")).toBe(row.late);
+                expect(assembly.recordGap).not.toHaveBeenCalled();
+            }
+        });
+
+        it("places volatile memory immediately before the latest user despite a chat range, keeping stable memory in its card", async () => {
+            for (const apart of [false, true]) {
+                const assembly = structuredAssembly({
+                    messages: fiveMessages,
+                    maxContext: 4000,
+                    records: stored(
+                        [event("past", ["m1", "m2"])],
+                        [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                    ),
+                    settings: { volatileBeforeLastUser: apart },
+                    template: [{ type: "memory" }, { type: "chat", rangeStart: -1, rangeEnd: "end" }],
+                });
+                const result = await assembly.run();
+                expect(result.texts.at(-1)).toBe(fiveMessages[4].data);
+                expect(result.formated[0].memo).toBe("supaMemory");
+                expect(result.texts[0]).toContain("[m:flow:past]");
+                expect(result.formated).toHaveLength(apart ? 3 : 2);
+                expect(result.texts[apart ? 1 : 0]).toContain("[m:open] Find the key");
+                if (apart) {
+                    expect(result.texts[0]).not.toContain("[m:open]");
+                    expect(result.texts[1]).not.toContain("[m:flow:past]");
+                }
+                expect(result.report.memory!.items).toEqual(
+                    expect.arrayContaining([
+                        expect.objectContaining({ id: "past", lane: "flow", verified: true }),
+                        expect.objectContaining({ id: "open", lane: "threads", verified: true }),
+                    ]),
+                );
+            }
+        });
+
+        it("verifies each manifest tag after editRequest and demotes coverage when only one item is lost", async () => {
+            for (const loseTag of [false, true]) {
+                const assembly = structuredAssembly({
+                    messages: fiveMessages,
+                    maxContext: 4000,
+                    records: stored(
+                        [event("past", ["m1", "m2"])],
+                        [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                    ),
+                    editRequest: (entries) =>
+                        entries.map((entry) => ({
+                            ...entry,
+                            content: entry.content.replace("[m:open]", loseTag ? "[removed]" : "[m:open]"),
+                        })),
+                });
+                const { report } = await assembly.run();
+                expect(report.memory).toMatchObject({
+                    kind: "structuredMemory",
+                    coverage: loseTag ? "unknown" : "covered",
+                    confirmedThrough: "m4",
+                    writer: { state: "pending" },
+                    items: [
+                        { id: "past", kind: "event", lane: "flow", verified: true },
+                        { id: "open", kind: "thread", lane: "threads", verified: !loseTag },
+                    ],
+                    lanes: [
+                        {
+                            lane: "flow",
+                            target: Number.MAX_SAFE_INTEGER,
+                            spent: "[m:flow:past] 2 turns ago: past".length + 3,
+                        },
+                        { lane: "events", target: 0, spent: 0 },
+                        { lane: "evidence", target: 0, spent: 0 },
+                        { lane: "threads", target: 300, spent: "[m:open] Find the key (open)".length + 3 },
+                    ],
+                    stages: [
+                        { stage: "window", reason: "chosen" },
+                        { stage: "lanes", reason: "filled" },
+                        { stage: "card", reason: loseTag ? "partial" : "verified" },
+                        { stage: "writer", reason: "due" },
+                    ],
+                });
+            }
+        });
+
+        it("caps excluded records with the worst reasons first and preserves the total", async () => {
+            const irrelevant = Array.from({ length: CONTEXT_MEMORY_EXCLUDED + 3 }, (_, i) =>
+                event(`irrelevant-${i}`, []),
+            );
+            const assembly = structuredAssembly({
+                messages: fiveMessages,
+                maxContext: 4000,
+                records: stored(
+                    [...irrelevant, event("never", [], { suppressed: true }), event("stale", [], { status: "stale" })],
+                    [{ id: "expensive", title: "x".repeat(3000), who: [], state: "open" }],
+                ),
+            });
+            const { report } = await assembly.run();
+            expect(report.memory!.excludedTotal).toBe(CONTEXT_MEMORY_EXCLUDED + 6);
+            expect(report.memory!.excluded).toEqual([
+                { id: "stale", kind: "event", lane: "events", reason: "stale" },
+                { id: "never", kind: "event", lane: "events", reason: "never" },
+                { id: "expensive", kind: "thread", lane: "threads", reason: "budget" },
+                ...irrelevant
+                    .slice(0, CONTEXT_MEMORY_EXCLUDED - 3)
+                    .map(({ id }) => ({ id, kind: "event", lane: "events", reason: "not-relevant" })),
+            ]);
+        });
+
         it("keeps raw history ahead of every legacy flag and is configured with all of them off", async () => {
             const messages = [
                 { chatId: "u1", data: "User one", role: "user" as const },

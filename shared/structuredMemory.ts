@@ -446,6 +446,8 @@ export interface StructuredMemorySettings {
     highlightKinds: StructuredMemoryHighlightKind[];
     /** The grade from which a listed `change` is highlighted, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax`. */
     highlightChangeGrade: number;
+    /** The memory card's volatile part goes right before the latest user message, the stable part stays. */
+    volatileBeforeLastUser: boolean;
 }
 
 /** The kinds of record the read routes address by id. */
@@ -634,6 +636,8 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
               ]
             : ["create", "contradiction", "delete", "retract"],
         highlightChangeGrade: integerIn(source.highlightChangeGrade, 5, 0, STRUCTURED_MEMORY_LIMITS.gradeMax),
+        volatileBeforeLastUser:
+            typeof source.volatileBeforeLastUser === "boolean" ? source.volatileBeforeLastUser : false,
     };
 }
 

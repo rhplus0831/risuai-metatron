@@ -78,8 +78,8 @@ import {
 } from "./assemble.ts";
 import { type EmbeddingEnv, postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
-import { readRecordedMessages } from "./memory/structured/window.ts";
-import { writerPaused } from "./memory/structured/writer.ts";
+import { recordGapInJob } from "./memory/structured/recordJob.ts";
+import { readMemoryRecords } from "./memory/structured/step.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
 import { localModelRefusal } from "./transformers.ts";
@@ -1299,7 +1299,7 @@ async function runSpeaker(arg: {
                 chatAdditionalTokens: arg.chatAdditonalTokens,
             });
         // The memory steps' side of the job: its kind, the task service, the gap question, the writer
-        // lease, the `memoryProgress` runs, the chat's sources, and the writer's stored coverage.
+        // lease, the `memoryProgress` runs, the chat's sources, and Structured Memory's records and gap run.
         const memoryJob: AssemblyMemoryJob = {
             preview: job.kind === "preview" || job.kind === "previewPrompt",
             input: INPUT_KINDS.has(job.kind),
@@ -1334,12 +1334,18 @@ async function runSpeaker(arg: {
             openRun: (phase, reason) => openJobMemoryRun(job, setup, phase, reason),
             taskInput: (part) => (deps.memoryTasks ? { ...part, ...memoryTaskBase(part.sourceGeneration) } : null),
             structuredMemory: {
-                recorded: () => readRecordedMessages(store, characterId, chatId),
+                records: () => readMemoryRecords(store, characterId, chatId),
                 taskInput: (sourceGeneration, confirmedBefore) =>
                     deps.memoryTasks
                         ? { ...memoryTaskBase(sourceGeneration), kind: "structuredMemory", confirmedBefore }
                         : null,
-                paused: () => writerPaused(store.memory.readContents(characterId, chatId)?.runs ?? []),
+                recordGap: async (input) => {
+                    if (state.memoryGapRecorded) {
+                        return null;
+                    }
+                    state.memoryGapRecorded = true;
+                    return recordGapInJob(job, deps, setup, memory, input);
+                },
             },
         };
         state.stage = "assembly";

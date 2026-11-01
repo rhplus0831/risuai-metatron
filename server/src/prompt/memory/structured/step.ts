@@ -1,0 +1,294 @@
+import {
+    type ContextMemoryExcluded,
+    type ContextMemoryStage,
+    type ContextMemoryWriter,
+    reportedMemoryExclusions,
+} from "../../../../../shared/contextReport.ts";
+import type { Message } from "../../../../../shared/database.ts";
+import type { HypaV3BudgetReduction } from "../../../../../shared/hypaV3Presets.ts";
+import type { HypaV3Settings } from "../../../../../shared/memory.ts";
+import type { OpenAIChat } from "../../../../../shared/openai.ts";
+import {
+    type MemoryEvent,
+    type MemoryManifestItem,
+    type MemoryReceipt,
+    type MemoryThread,
+    memoryThreadEnded,
+    normalizeStructuredMemorySettings,
+} from "../../../../../shared/structuredMemory.ts";
+import type { MemoryContents } from "../../../data/memoryStore.ts";
+import type { ResourceStore } from "../../../data/resourceStore.ts";
+import type { MemoryHost, MemoryTokenizer } from "../host.ts";
+import { trimHistoryToContext } from "../hypav3.ts";
+import { buildMemoryCard } from "./card.ts";
+import {
+    coveredMessages,
+    type ExcludedItem,
+    type LaneSpend,
+    rawWindow,
+    type RawWindow,
+    readBudget,
+    type ReadEntry,
+} from "./lanes.ts";
+import { retrieveLanes } from "./retrieve.ts";
+import { writerPaused } from "./writer.ts";
+
+/**
+ * A send's read of Structured Memory: which stored records it sees, what of its history leaves the
+ * prompt, and the memory card's entries. Nothing here writes, so a preview runs all of it;
+ * `structuredMemoryStep` in `assemble.ts` owns what concerns the job, the gap question and the hand-off.
+ *
+ * - Two sets come from the same events and answer different questions: `coveredMessages` (active and
+ *   not suppressed) says what may leave the prompt, `recordedMessages` (any status) what the writer must
+ *   not record again. History cited only by a stale or retracted event is recorded but not covered, so
+ *   it stays raw with no work left to offer.
+ * - History before the window leaves where an event covers it. The message a continue extends stays,
+ *   out of the evidence too. What remains trims oldest first as HypaV3's select-only path does. The
+ *   window and that message are never dropped, and the final recheck never removes them.
+ * - A card with no item adds no entry, so it costs nothing. The volatile part goes into the card's
+ *   entry, or under `volatileBeforeLastUser` stays out of the history altogether: there a chat range
+ *   could cut it, and a `memory` prompt card would pull it away from the latest user message.
+ */
+
+/** What a send reads of a chat's records. */
+export type MemoryRecords = {
+    /** Every event, in any status. */
+    events: MemoryEvent[];
+    /** The threads not ended. */
+    threads: MemoryThread[];
+    /** The run rows, never a run's body: that holds a whole prompt. */
+    runs: MemoryContents["runs"];
+    /** Whether automatic recording is paused (`writerPaused`). */
+    paused: boolean;
+};
+
+/** What a selection reads besides the records, which is the same on a second pass. */
+export type MemorySelectionInput = {
+    host: Pick<MemoryHost, "db" | "embeddings" | "fence">;
+    settings: HypaV3Settings;
+    tokenizer: MemoryTokenizer;
+    /** The prompt's history side before the step: examples, the new-chat marker, then the entries. */
+    chats: readonly OpenAIChat[];
+    /** Where the entries start in `chats`. */
+    historyStart: number;
+    /** One per entry of `chats` from `historyStart` on. */
+    entries: readonly ReadEntry[];
+    /** The count with `chats` in it, the response budget included. */
+    currentTokens: number;
+    maxContextTokens: number;
+    /** The message a continue extends. */
+    continueMessageId: string | undefined;
+    /** The text a protected tail over the context fails with. */
+    tooMuchToken: string;
+};
+
+/** A selection's prompt part and what its report says. */
+export type MemorySelected = {
+    type: "selected";
+    /** The card, when it has an item, then the entries left, by identity. */
+    chats: OpenAIChat[];
+    currentTokens: number;
+    /** The window and an older continue target: the final recheck removes neither. */
+    protectedEntries: OpenAIChat[];
+    /** The card's volatile part when it stays out of `chats`; assembly places it. */
+    volatile: OpenAIChat | null;
+    /** The tokens of the history the trim dropped. */
+    gapTokens: number;
+    budget: { maximum: number; reduced: readonly HypaV3BudgetReduction[] };
+    items: MemoryManifestItem[];
+    excluded: ExcludedItem[];
+    lanes: LaneSpend[];
+    lanesStage: "filled" | "empty" | "similarityFailed";
+};
+
+/** A selection that does not fit fails the send: `error` names the tokens it needs. */
+export type MemorySelection = MemorySelected | { type: "error"; error: string };
+
+/** A send's manifest as the step knows it. `buildContextReport` adds what only the final prompt can say. */
+export type MemorySendManifest = {
+    /** None verified yet. */
+    items: readonly MemoryManifestItem[];
+    excluded: readonly ContextMemoryExcluded[];
+    excludedTotal: number;
+    lanes: readonly LaneSpend[];
+    confirmedThrough?: string;
+    writer: ContextMemoryWriter;
+    /** The ledger's stages before the card's. */
+    stages: readonly ContextMemoryStage[];
+    /** The writer stage's reason, on an input job with a memory task service. */
+    writerStage?: string;
+};
+
+/**
+ * The chat's records in one synchronous read, so a send reads every event once. Empty for a missing
+ * chat.
+ */
+export function readMemoryRecords(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): MemoryRecords {
+    const contents = store.memory.readContents(chaId, chatId);
+    const runs = contents?.runs ?? [];
+    const events = contents?.events ?? [];
+    const threads = (contents?.threads ?? []).filter(({ state }) => !memoryThreadEnded(state));
+    return {
+        events: events.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
+        threads: threads.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "threads", id)?.data ?? []),
+        runs,
+        paused: writerPaused(runs),
+    };
+}
+
+/**
+ * One `ReadEntry` per entry of `history`, the greeting (when the send has one) and then one entry for
+ * each of `messages`, which built them. The greeting has no stored message behind it.
+ */
+export function readEntries(history: readonly OpenAIChat[], messages: readonly Message[]): ReadEntry[] {
+    const first = history.length - messages.length;
+    return history.map(({ content }, index) => {
+        const message = index < first ? undefined : messages[index - first];
+        return { messageId: message?.chatId, role: message?.role, text: content };
+    });
+}
+
+/** `rawWindow` without the entry at `continued` among what leaves the prompt. */
+function sendWindow(
+    entries: readonly ReadEntry[],
+    continued: number,
+    options: Parameters<typeof rawWindow>[1],
+): RawWindow {
+    const { start, dropped } = rawWindow(entries, options);
+    const left = new Set(dropped);
+    left.delete(continued);
+    return { start, dropped: left };
+}
+
+/** The card as prompt entries: `apart` keeps a volatile part out of the card's own. */
+function cardEntries(
+    { stable, volatile, items }: Awaited<ReturnType<typeof buildMemoryCard>>,
+    apart: boolean,
+): { card: OpenAIChat | null; volatile: OpenAIChat | null } {
+    if (items.length === 0) {
+        return { card: null, volatile: null };
+    }
+    const entry = (content: string): OpenAIChat => ({ role: "system", memo: "supaMemory", content });
+    if (volatile === "") {
+        return { card: entry(stable), volatile: null };
+    }
+    return apart
+        ? { card: entry(stable), volatile: entry(volatile) }
+        : { card: entry(`${stable}\n\n${volatile}`), volatile: null };
+}
+
+/**
+ * What `records` make of the send's history. Every step counts with the job's tokenizer: the entries
+ * that leave come off the count, the card's entries go on it, then the trim runs over what is left.
+ * `input` is not changed, and every entry `chats` keeps is the same object, so a second pass after the
+ * records changed starts over from it.
+ */
+export async function selectMemory(
+    input: MemorySelectionInput,
+    records: Pick<MemoryRecords, "events" | "threads">,
+): Promise<MemorySelection> {
+    const { host, settings, tokenizer, chats, historyStart, entries, maxContextTokens, continueMessageId } = input;
+    const structured = normalizeStructuredMemorySettings(settings.structured);
+    const continued =
+        continueMessageId === undefined ? -1 : entries.findIndex(({ messageId }) => messageId === continueMessageId);
+    const window = sendWindow(entries, continued, {
+        windowTurns: structured.windowTurns,
+        covered: coveredMessages(records.events),
+    });
+
+    const retrieved = await retrieveLanes(host, {
+        events: records.events,
+        threads: records.threads,
+        entries,
+        window,
+        stage: [],
+        settings: structured,
+    });
+    const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);
+    const card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes });
+    const placed = cardEntries(card, structured.volatileBeforeLastUser);
+
+    const history = chats.slice(historyStart);
+    let currentTokens = input.currentTokens;
+    for (const index of window.dropped) {
+        currentTokens -= await tokenizer.tokenizeChat(history[index]);
+    }
+    for (const entry of [placed.card, placed.volatile]) {
+        if (entry) {
+            currentTokens += await tokenizer.tokenizeChat(entry);
+        }
+    }
+
+    const raw = [...chats.slice(0, historyStart), ...history.filter((_, index) => !window.dropped.has(index))];
+    // Nothing from the window on left, so the tail is as long in `raw` as in `history`.
+    const protectedStart = raw.length - (history.length - window.start);
+    const pinned = new Set(continued !== -1 && continued < window.start ? [history[continued]] : []);
+    const trimmed = await trimHistoryToContext({
+        raw,
+        protectedStart,
+        pinned,
+        maxContextTokens,
+        currentTokens,
+        tokenizer,
+    });
+    if (!trimmed.fits) {
+        return { type: "error", error: `${input.tooMuchToken}\n\nRequired Tokens: ${trimmed.currentTokens}` };
+    }
+    return {
+        type: "selected",
+        chats: placed.card ? [placed.card, ...trimmed.history] : trimmed.history,
+        currentTokens: trimmed.currentTokens,
+        protectedEntries: [...raw.slice(protectedStart), ...pinned],
+        volatile: placed.volatile,
+        gapTokens: trimmed.gap.tokens,
+        budget: { maximum, reduced },
+        items: card.items,
+        excluded: [...retrieved.excluded, ...card.excluded],
+        lanes: card.spend,
+        lanesStage: retrieved.similarity === "failed" ? "similarityFailed" : card.items.length > 0 ? "filled" : "empty",
+    };
+}
+
+/**
+ * The writer's state at a send: what `notice` says, else whether its newest finished run failed, else
+ * whether the newest confirmed reply (`through`) is recorded. A skipped run says nothing about the writer.
+ */
+export function writerState(
+    notice: Pick<MemoryReceipt, "state" | "reason"> | undefined,
+    runs: MemoryRecords["runs"],
+    through: string | undefined,
+    recorded: ReadonlySet<string>,
+): ContextMemoryWriter {
+    if (notice) {
+        return {
+            state: notice.state === "notAutomatic" ? "notAutomatic" : "paused",
+            ...(notice.reason !== undefined ? { reason: notice.reason } : {}),
+        };
+    }
+    if (runs.findLast(({ result }) => result === "recorded" || result === "failed")?.result === "failed") {
+        return { state: "failed" };
+    }
+    return { state: through !== undefined && !recorded.has(through) ? "pending" : "recorded" };
+}
+
+/** The manifest of a send that ended up with `selected`: `gap` is the gap stage's reason when there was a gap. */
+export function sendManifest(
+    selected: MemorySelected,
+    arg: { confirmedThrough: string | undefined; writer: ContextMemoryWriter; gap?: string; writerStage?: string },
+): MemorySendManifest {
+    const { confirmedThrough, writer, gap, writerStage } = arg;
+    return {
+        items: selected.items,
+        excluded: reportedMemoryExclusions(selected.excluded),
+        excludedTotal: selected.excluded.length,
+        lanes: selected.lanes,
+        ...(confirmedThrough !== undefined ? { confirmedThrough } : {}),
+        writer,
+        stages: [
+            { stage: "window", reason: "chosen" },
+            { stage: "lanes", reason: selected.lanesStage },
+            ...(gap !== undefined ? [{ stage: "gap" as const, reason: gap }] : []),
+        ],
+        ...(writerStage !== undefined ? { writerStage } : {}),
+    };
+}

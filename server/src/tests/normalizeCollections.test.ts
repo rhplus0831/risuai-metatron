@@ -502,6 +502,7 @@ const structuredDefaults = {
     highlightMode: "important",
     highlightKinds: ["create", "contradiction", "delete", "retract"],
     highlightChangeGrade: 5,
+    volatileBeforeLastUser: false,
 };
 
 const structuredCustom = {
@@ -522,9 +523,27 @@ const structuredCustom = {
     highlightMode: "all",
     highlightKinds: ["change", "create"],
     highlightChangeGrade: 9,
+    volatileBeforeLastUser: true,
 };
 
 describe("Structured Memory settings", () => {
+    it("keeps volatile placement opt-in and normalizes it independently of other settings", () => {
+        for (const [value, expected] of [
+            [true, true],
+            [false, false],
+            [undefined, false],
+            [null, false],
+            [1, false],
+            ["true", false],
+        ] as const) {
+            expect(normalizeStructuredMemorySettings({ volatileBeforeLastUser: value, windowTurns: 2 })).toMatchObject({
+                volatileBeforeLastUser: expected,
+                windowTurns: 2,
+            });
+        }
+        expect(normalizeStructuredMemorySettings(undefined).volatileBeforeLastUser).toBe(false);
+    });
+
     it("fills absent fields and non-object settings with the writer defaults", () => {
         for (const input of [undefined, null, [], "stored text", {}]) {
             expect(normalizeStructuredMemorySettings(input)).toStrictEqual(structuredDefaults);

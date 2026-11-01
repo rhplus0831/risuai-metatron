@@ -2658,6 +2658,132 @@ describe("structured memory job hand-offs", () => {
         await closeStack(stack);
     });
 
+    describe("approved Structured Memory gaps", () => {
+        // Real network and storage, with the job's timers held still: no provider or tokenizer races
+        // a production deadline, and the socket terminal is the synchronization point.
+        beforeEach(async () => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            await patchPreset("modelProfiles", { maxContext: 900 });
+            await patchPreset("presets", { temperature: 73 });
+            await patchHypaV3({
+                gapConfirmTokens: 0,
+                structured: {
+                    cadence: "everyTurn",
+                    windowTurns: 1,
+                    laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+        });
+        afterEach(async () => {
+            vi.useRealTimers();
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchPreset("presets", { temperature: 80 });
+            await patchSettings({ autoContinueChat: false });
+        });
+        const openStore = () =>
+            createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+
+        it("records an approved gap before replying, restores reply temperature and selects the committed records", async () => {
+            const chaId = await seedCharacter();
+            state.summaries = Array.from({ length: 24 }, (_, i) =>
+                JSON.stringify({
+                    title: `Recorded promise ${i}`,
+                    summary: `Cara promised to return at dawn ${i}.`,
+                    participants: [],
+                    storyTime: { text: "" },
+                    keyLines: [],
+                    stateChanges: [],
+                    knowledge: [],
+                    relationshipShifts: [],
+                    openThreads: { add: [], close: [], transitions: [] },
+                }),
+            );
+            const store = openStore();
+            try {
+                state.onMain = async () => store.memory.readContents(chaId, "k");
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Go on", userMessageId: "latest" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events)).toEqual([
+                    expect.objectContaining({
+                        kind: "memoryGap",
+                        payload: {
+                            gapTokens: expect.any(Number),
+                            plannedCalls: expect.any(Number),
+                        },
+                    }),
+                ]);
+                expect(questions(result.events)[0].payload.gapTokens).toBeGreaterThan(0);
+                expect(summaries().length).toBeGreaterThan(0);
+                expect(summaries().every((request) => request.body.temperature === 0)).toBe(true);
+                expect(mains()).toHaveLength(1);
+                expect(mains()[0].body.temperature).toBe(0.73);
+                const contents = store.memory.readContents(chaId, "k")!;
+                expect(contents.events.length).toBeGreaterThan(0);
+                expect(contents.runs).toHaveLength(summaries().length);
+                expect(contents.runs.every((run) => run.result === "recorded")).toBe(true);
+                expect(mains()[0].chatAtRequest.events).toHaveLength(contents.events.length);
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                // The card must use ids that only exist after the writer commits.
+                expect(contents.events.some(({ id }) => prompt.includes(`[m:flow:${id}]`))).toBe(true);
+                expect(prompt).toContain("Recorded promise");
+                expect(prompt).not.toContain("Message number 0:");
+                expect(prompt).toContain("Message number 23:");
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                expect(reply.data).toBe("Main reply.");
+                expect(reply.generationInfo.context.memory).toMatchObject({
+                    kind: "structuredMemory",
+                    confirmedThrough: "m23",
+                    stages: expect.arrayContaining([{ stage: "gap", reason: "generated" }]),
+                });
+                expect(reply.generationInfo.context.memory.items.some((item: any) => item.verified)).toBe(true);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("ends an unrecorded window quietly and spends the writer start only once across auto-continue rounds", async () => {
+            await patchSettings({ autoContinueChat: true });
+            const chaId = await seedCharacter();
+            state.summaries = ["not valid writer JSON", "not valid writer JSON"];
+            state.mainTexts = ["Reply without a period", "Main reply."];
+            const result = await job(
+                "send",
+                chaId,
+                { input: "Go on", userMessageId: "latest" },
+                { answer: () => "generate" },
+            );
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(questions(result.events).map((question) => question.kind)).toEqual(["memoryGap"]);
+            expect(summaries()).toHaveLength(1);
+            expect(summaries()[0].body.temperature).toBe(0);
+            expect(mains().map((request) => request.body.temperature)).toEqual([0.73, 0.73]);
+            const store = openStore();
+            try {
+                const contents = store.memory.readContents(chaId, "k")!;
+                expect(contents.events).toEqual([]);
+                expect(contents.runs).toEqual([expect.objectContaining({ result: "failed" })]);
+            } finally {
+                store.close();
+            }
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply.data).toBe("Reply without a periodMain reply.");
+            expect(reply.generationInfo.context.memory).toMatchObject({
+                kind: "structuredMemory",
+                coverage: "gap",
+                items: [],
+                writer: { state: "failed" },
+            });
+        });
+    });
+
     it("hands off due input jobs and pending manual starts, but no idle, preview or service-free job", async () => {
         for (const row of [
             { kind: "send", cadence: "everyTurn", manual: false, count: 1 },
