@@ -9,11 +9,11 @@
   - this tab's in-memory request log,
   - writers,
   - chat-fold state.
-- Also owns: `src/ts/util.ts` helpers, the alert protocol (`src/ts/alert.ts` and `src/lib/Others/AlertComp.svelte`), the
-  network clients in `src/ts/network/` except `requestHistory.ts` ([diagnostics](diagnostics.md)) (`localNetwork.ts`,
-  `auxFetch.ts`, the generation job client and channel, the live-update feed), `src/ts/sourcemap.ts`,
-  `src/ts/dragTypes.ts`, `src/ts/licenses.ts`, `src/ts/util/inlayTokens.ts`, `src/ts/util/koreanSearch.ts`, and the Iris
-  assistant (`src/ts/iris.ts`, `src/lib/Others/IrisModal.svelte`).
+- Also owns: `src/ts/util.ts` helpers, the alert protocol (`src/ts/alert.ts`, `src/ts/alertQueue.ts`, and
+  `src/lib/Others/AlertComp.svelte`), the network clients in `src/ts/network/` except `requestHistory.ts`
+  ([diagnostics](diagnostics.md)) (`localNetwork.ts`, `auxFetch.ts`, the generation job client and channel, the
+  live-update feed), `src/ts/sourcemap.ts`, `src/ts/dragTypes.ts`, `src/ts/licenses.ts`, `src/ts/util/inlayTokens.ts`,
+  `src/ts/util/koreanSearch.ts`, and the Iris assistant (`src/ts/iris.ts`, `src/lib/Others/IrisModal.svelte`).
 - Also owns the asset transport: `src/ts/storage/assetClient.ts`, `src/ts/storage/assetQueue.ts`,
   `shared/assetBatch.ts`.
 - Not here:
@@ -26,436 +26,337 @@
 The request-log viewer, browser collector, reports, and support sharing are documented in [diagnostics](diagnostics.md).
 The transport below retains this tab's in-memory log.
 
-`src/ts/globalApi.svelte.ts` exports, grouped:
+### Asset sources
 
-- Storage and assets:
-  - `saveAsset`: stores the bytes as `assets/<sha256>.<ext>` by default, using the caller's custom id when supplied or a
-    UUID if hashing fails; the extension defaults to `png`. `assetKey(data, customId?, fileName?)` computes that key.
-    Canonical single saves first call `missingAssets` (`storage/assetClient.ts`, `POST /api/assets/missing`) and skip
-    uploading bytes already verified on the server. `saveAssetBatch(items, { signal? })` passes
-    `{ key, bytes, sha256? }` items to `writeAssets`, which checks unique canonical names only when their
-    caller-computed `sha256` matches the name. Custom ids and raw overwrites always upload; any such item prevents
-    skipping every item for its key in that call. A failed check, or one with no answer within 20 s, uploads everything;
-    `{ signal }` aborts the check, write, and retries and rejects with its reason (`AbortError` for a nullish reason),
-    including when all uploads could be skipped. Bulk imports use `saveAssets` (`storage/assetQueue.ts`, see
-    [queues](#asset-queues)), which supplies the already-computed digest only for items without custom ids.
-  - `loadAsset`, `readImage`; `loadAssets(keys, { signal? })` reads a batch in key order over `readAssets`, preserving
-    duplicates and returning `null` per missing or empty record. Exporters reach it through `loadAssetsInBatches`
-    (`storage/assetQueue.ts`, [queues](#asset-queues)).
-  - `getFileSrc`: with worker use enabled, a reported `directAssets: true` capability, and
-    `navigator.serviceWorker.controller` present at the call, immediately resolves `/api/asset/<hex(utf-8 key)>` (`""`
-    for an empty key). It reads no bytes, looks up no Cache Storage entry, registers nothing, and creates no shared file
-    source or pin; nothing needs revoking. The worker signs subresource loads and the browser HTTP cache holds the
-    bytes. A missing file is not detected here: its element receives a 404. Controller loss or a `controllerchange`
-    capability re-probe sends new calls through the fallback until direct mode is available again.
-  - `getFileSrc` fallback: returns `/sw/img/<hex>` when the service worker holds the file. When worker use is enabled, a
-    remembered path returns at once; other paths share one `caches.open("risuCache")` promise and directly call
-    `cache.match("/sw/img/<hex>")`. A hit remembers the path without a worker round trip; a miss reads the bytes and
-    posts to `/sw/register/<hex>` before remembering it. Missing Cache Storage or a failed lookup falls back to
-    `/sw/check/<hex>` for that read, with a later read able to retry opening the cache. Each worker request is bounded
-    at 10 s; a failed worker request falls back to an object URL (`blob:`, `image/png`) of its bytes pinned for the page
-    by this plain read (including when boot continues without a ready worker; a data URL would inflate the text a
-    display transform sends). Concurrent reads of a path share one load; a missing or empty file is never registered and
-    resolves `""`, as does a failed load, and either is dropped so the next read tries again.
-  - `holdFileSrc`: returns `{ src, release }` for previews. In direct mode it immediately resolves the same direct URL
-    as `getFileSrc`, with a no-op release and no read, pin, or revoke. Otherwise it shares the fallback cached load: the
-    last release revokes and drops an unpinned `blob:` URL after a 100 ms grace period, cancelled by a new hold or plain
-    read so shifted list rows can reuse it. A release before loading finishes is applied after resolution unless the
-    source was held or pinned again. Service-worker URLs are never revoked; plain fallback reads stay pinned. Switching
-    modes leaves existing fallback sources' pin/hold lifetimes intact.
-  - `getThumbSrc(loc, size: 256 | 512)`: in direct mode, immediately resolves `/api/asset/<hex>?w=<size>` (`""` for an
-    empty key), with no read, registration, shared file source, or pin. The server answers a WebP thumbnail or a 307
-    redirect to the query-free original, which the worker follows. Otherwise it returns `getFileSrc(loc)`'s own promise:
-    the full image, the same shared load and plain-read pin, never a thumbnail request. Pages without a worker,
-    uncontrolled pages, and fallback loads get no decoded-memory win; this is an accepted trade-off.
-  - `getDirectAssetSrc(loc)`: returns `/api/asset/<hex(utf-8 key)>` (`""` for an empty key) under the same direct-mode
-    check as `getFileSrc` at the call (worker use enabled, the `directAssets` capability, a controller present), else
-    `null`. The parser uses it for inlay audio and video ([CBS rendering](cbs-rendering.md)).
-  - `fetchFileSrc`: fetches a displayed URL for rich copy's message images and character/user icons. Same-origin
-    `/api/asset/<hex>` and legacy `/sw/img/<hex>` URLs whose hex decodes as UTF-8 to an `assets/` key receive a fresh
-    `risu-auth` token, for `GET`/`HEAD` without an existing auth header. Legacy worker URLs are mapped to
-    `/api/asset/<hex>` with the same hex and query, so already rendered rows remain fetchable after worker activation
-    clears their cache entries. Signed requests use `mode: "same-origin"` to prevent cross-origin redirects; `Request`
-    inputs retain their request options. Other requests pass through unchanged. The worker does not sign `fetch()`.
-  - `withFileSrcFetch`: runs a callback while global `fetch` signs the same requests as `fetchFileSrc`, calling the
-    captured original fetch directly. Screenshot capture uses it for images, computed-style URLs from shared chat styles
-    outside the rows, and fonts. It passes `SCREENSHOT_CAPTURE_OPTIONS` (`src/lib/ChatScreens/screenshotCapture.ts`,
-    `includeQueryParams: true`), so html-to-image's cache is keyed by the full URL: `?w=256`, `?w=512`, and the original
-    are three entries per asset, and a captured thumbnail never stands in for a later full-size image. Plugins can
-    already read any `assets/` key through v3 `readImage`, so this temporary signing grants no new asset access. Nested
-    and overlapping runs share a depth counter. The last run's `finally` disables signing (including a token still being
-    obtained) and restores fetch only if it is still this wrapper; a wrapper retained by another script stays inactive.
-  - `downloadFile`, `getBasename`.
-- Save:
-  - `saving`: indicator state (re-exported from the adapter).
-  - `loadInternalBackup`: lists the server's resource snapshots, restores the chosen one, reloads.
-  - `setUsingSw`: boot enables worker-backed asset URLs only after `registerSw` returns `ready`. Without it, new asset
-    loads go directly to the object-URL fallback without cache lookups or worker requests; existing shared file sources
-    keep their pin/hold lifetimes.
-  - `setDirectAssets`: boot records the `/sw/init` capability separately from worker availability. Non-JSON responses
-    (including older workers), missing/false flags, unavailable workers, and unsupported browsers leave it false. A
-    single guarded `controllerchange` listener clears the capability and probes the new controller; only the newest
-    probe can set it again. Each `getFileSrc`/`holdFileSrc` call also checks for a controller.
-- Network:
-  - `globalFetch(url, GlobalFetchArgs)`: buffered, returns `{ok,data,headers,status}`.
-  - `fetchNative(url, args)`: returns a `Response` or stream.
-  - `addFetchLog`, `appendFetchLog`, `getFetchLogs`: all writers (including `addFetchLogInGlobalFetch`) use
-    `writeFetchLog`, which trims the live array in place to `FETCH_LOG_MAX_ENTRIES` (20) and `FETCH_LOG_MAX_CHARS` (16
-    Mi UTF-16 code units of `body`, `header`, and `response`). The newest entry always survives whole, even alone over
-    budget.
-  - `openURL`.
+`src/ts/globalApi.svelte.ts` turns `assets/` keys into URLs. Each call picks direct mode or the fallback
+([Flows](#flows)).
+
+- Direct mode: `getFileSrc`, `holdFileSrc`, `getThumbSrc`, and `getDirectAssetSrc` resolve `/api/asset/<hex(utf-8 key)>`
+  at once (`""` for an empty key), with no read, Cache Storage lookup, registration, shared file source, or pin, so
+  nothing needs revoking. The worker signs subresource loads and the browser HTTP cache holds the bytes. A missing file
+  is not detected here: its element receives a 404.
+- Controller loss or a `controllerchange` capability re-probe sends new calls through the fallback until direct mode is
+  available again. Switching modes leaves existing fallback sources' pin and hold lifetimes intact.
+- `getFileSrc` fallback: returns `/sw/img/<hex>` when the worker holds the file. The page shares Cache Storage with the
+  worker, so a hit needs no worker round trip; a miss posts the bytes to `/sw/register/<hex>`, and `/sw/check/<hex>`
+  answers when Cache Storage is unavailable.
+- `getFileSrc` fallback failures: a worker request is bounded at `SW_REQUEST_TIMEOUT_MS` (10 s). A failed one (an
+  uncontrolled page, say) falls back to an object URL (`blob:`, `image/png`) pinned for the page by this plain read, as
+  does every load when boot continued without a ready worker. A data URL would inflate the text a display transform
+  sends.
+- `getFileSrc` fallback loads: concurrent reads of a path share one load. A missing or empty file is never registered
+  and resolves `""`, as does a failed load; either is dropped so the next read tries again.
+- `holdFileSrc`: returns `{ src, release }` for previews. In the fallback the last release revokes and drops an unpinned
+  `blob:` URL after `FILE_SOURCE_RELEASE_GRACE_MS` (100 ms), cancelled by a new hold or plain read so shifted list rows
+  can reuse it. Service-worker URLs are never revoked; plain fallback reads stay pinned.
+- `getThumbSrc(loc, size: 256 | 512)`: direct mode adds `?w=<size>`; the server answers a WebP thumbnail or a 307
+  redirect to the query-free original, which the worker follows. Otherwise it returns `getFileSrc(loc)`'s own promise,
+  the full image. Pages without a worker, uncontrolled pages, and fallback loads get no decoded-memory win; this is an
+  accepted trade-off.
+- `getDirectAssetSrc(loc)`: the direct URL, else `null`. The parser uses it for inlay audio and video
+  ([CBS rendering](cbs-rendering.md)).
+- `fetchFileSrc`: fetches a displayed URL for rich copy's message images and character/user icons, because the worker
+  does not sign `fetch()`. It gives same-origin asset URLs a fresh `risu-auth` token and maps legacy `/sw/img/<hex>`
+  URLs to `/api/asset/<hex>`, so already rendered rows remain fetchable after worker activation clears their cache
+  entries. Signed requests use `mode: "same-origin"` to prevent cross-origin redirects.
+- `withFileSrcFetch`: runs a callback while global `fetch` signs the same requests, for screenshot capture's images,
+  computed-style URLs from shared chat styles outside the rows, and fonts. The last of nested runs disables signing and
+  restores fetch only if it is still this wrapper; a wrapper retained by another script stays inactive.
+- `SCREENSHOT_CAPTURE_OPTIONS` (`src/lib/ChatScreens/screenshotCapture.ts`, `includeQueryParams: true`) keys
+  html-to-image's cache by the full URL, so a captured thumbnail never stands in for a later full-size image.
+- `setUsingSw`, `setDirectAssets`: boot records worker availability (`registerSw` returned `ready`) and the `/sw/init`
+  capability separately. Non-JSON responses (including older workers), missing or false flags, unavailable workers, and
+  unsupported browsers leave the capability false. `controllerchange` clears it and probes the new controller; only the
+  newest probe can set it again.
+
+### Asset client
+
+`src/ts/storage/assetClient.ts`: the asset files, which `globalApi.svelte.ts` reads and writes through it. Its header
+has the routes, the record framing ([batch codec](#batch-codec)), and the retry rule; each function's comment has its
+errors.
+
+- `saveAsset`: stores the bytes under `assetKey(data, customId?, fileName?)`, `assets/<sha256>.<ext>` by default. A
+  canonical single save first calls `missingAssets` and skips uploading bytes already verified on the server; a failed
+  or timed-out check writes anyway.
+- `saveAssetBatch(items, { signal? })` passes `{ key, bytes, sha256? }` items to `writeAssets`. Bulk imports use
+  `saveAssets` ([queues](#asset-queues)), which supplies the already-computed digest only for items without custom ids.
+- The skip rule: `writeAssets` checks the unique canonical names whose caller-computed `sha256`
+  (`AssetWriteItem.sha256`) matches the name with `missingAssets` and sends only the missing ones. Custom ids and raw
+  overwrites always upload, and any such item prevents skipping every item for its key in that call. A failed check, or
+  one with no answer within 20 s, uploads everything.
+- `saveAssetBatch`'s `{ signal }` aborts the check, write, and retries and rejects with its reason (`AbortError` for a
+  nullish reason), including when all uploads could be skipped.
+- `loadAsset`, `readImage`; `loadAssets(keys, { signal? })` reads a batch in key order over `readAssets`. Exporters
+  reach it through `loadAssetsInBatches` ([queues](#asset-queues)).
+- `missingAssets(names, { signal? })` answers the names the server does not hold verified (absent, empty, corrupt,
+  non-canonical, or over its verification budget: see `self-host-server.md`), asking at most 512 names and 64 KiB of
+  JSON per request. `MISSING_CHECK_DEADLINE_MS` (20 s) bounds one request, retries and body included, since the check
+  only saves an upload.
+- Writes go in batches of at most `ASSET_BATCH_CLIENT_RECORDS` (500) records and `ASSET_BATCH_CLIENT_BYTES` (64 MiB) of
+  record bytes, headers included (a larger single item goes alone); reads in batches of 500 keys. One batch goes at a
+  time, each request retried on its own.
+
+### Asset queues
+
+`src/ts/storage/assetQueue.ts`: the bounded save queues for bulk imports and the batched reads of exports. Its comments
+state admission, batching, settlement, and failure.
+
+- `saveAssets(items, { concurrency = 10, onProgress, signal })`: `concurrency` limits loads, not bytes. Admission pauses
+  while the queued records reach `ASSET_BATCH_CLIENT_RECORDS` or `ASSET_BATCH_CLIENT_BYTES`, but an async iterator pull
+  admitted earlier may still start its load. Other in-flight loads and the write batch add to it, and one item may
+  exceed the byte cap.
+- The loaded items are written one request at a time through `globalApi.saveAssetBatch`, each within the client caps,
+  while the next batch loads. Keys resolve in item order.
+- Each loaded item is keyed with `globalApi.assetKey`. An item without a `customId` carries that key's hash as its
+  `sha256`, so `writeAssets` skips it when the server holds it verified, while a custom id is always sent.
+- `savePickedFiles(files, fileName?)` feeds picked `File`s to it, each read when its slot comes, so a large selection is
+  not read up front. `AssetSaveQueue` saves one item per `saveAsset` for a producer whose items arrive over time (the
+  in-tab `CharXImporter`).
+- `loadAssetsInBatches(keys, { batchSize = 200, signal })` yields `{ index, key, bytes }` in key order over
+  `globalApi.loadAssets`. It holds one batch being consumed and one prefetched batch in flight; `batchSize` above
+  `ASSET_BATCH_CLIENT_RECORDS` is clamped, and retries are the asset client's.
+
+### Batch codec
+
+`shared/assetBatch.ts`: the batch asset routes' record framing, the backup archive's (`self-host-server.md`), with
+`encodeAssetRecordHeader` also the archive's encoder. It runs on both sides: `TextEncoder`/`TextDecoder` and `DataView`
+only, no `Buffer`.
+
+- `MAX_ASSET_BATCH_RECORDS` (2000 per request) is the server's cap; `MAX_ASSET_BATCH_NAME_BYTES` is 4096.
+- The incremental `AssetRecordParser`: `push` returns the records a chunk completes; `events` yields
+  `start`/`data`/`end` with `data` as views into the chunk, so the server streams a record without holding it. Every
+  refusal is an `AssetBatchFormatError`.
+
+### Other `globalApi` exports
+
+- Save: `saving` (indicator state, re-exported from the adapter); `loadInternalBackup`.
+- Network: `globalFetch(url, GlobalFetchArgs)` is buffered and returns `{ok,data,headers,status}`;
+  `fetchNative(url, args)` returns a `Response` or stream; `addFetchLog`, `appendFetchLog`, `getFetchLogs`
+  ([State](#state)); `openURL`.
 - Writers: `LocalWriter` (the backup record framing `writeBackup`, streamed through `streamsaver`), `VirtualWriter`,
-  `BlankWriter`, `AppendableBuffer`. `LocalWriter.abort(reason?)` drops a partial download through streamSaver's writer
-  and never throws: safe before `init`, after `close`, or when called twice. `VirtualWriter.abort()` is a no-op.
-- Chat and UI:
-  - `changeChatTo` (selects a chat of the selected character by id, or by its index in `chatList`, through the chat
-    module's `selectChat`, and opens it with `setChatOpen`; per tab), `openPinnedChat` (shared home/rail navigation by
-    `{ chaId, chatId }`: optional sidebar reset, ensure membership, select chat before character, clear Realm/set
-    playground mode, open and bump `ReloadGUIPointer`), `createChatCopyName` (unique against `chatList`'s names).
-  - `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`.
-  - `checkCharOrder`: re-exported from `storage/characterOrder.ts` (the character module calls it without importing this
-    file); the plugin-visible export is unchanged.
-  - `toggleFullscreen`.
-- Misc:
-  - `getVersionString`.
-  - `getLanguageCodes`.
-  - `aiLawApplies`: always true.
-  - `aiWatermarkingLawApplies`: always false.
-  - `PerformanceDebugger`, `toGetter`, `trimNonLatin`.
+  `BlankWriter`, `AppendableBuffer`.
+- Chat and UI: `changeChatTo` and `openPinnedChat` (shared home/rail navigation by `{ chaId, chatId }`) select per tab;
+  `createChatCopyName`, `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`, `toggleFullscreen`.
+- `checkCharOrder`: re-exported from `storage/characterOrder.ts` (the character module calls it without importing this
+  file) because plugins see this export.
 
-`src/ts/util.ts` exports, grouped:
+### `util.ts`
 
-- Messages and chars:
-  - `Messagec`.
-  - `messageForm`.
-  - `findCharacterbyId`, `findCharacterIndexbyId`, `getCharacterIndexObject`.
-  - `getEmotion`, `defaultEmotion`.
-  - Persona accessors, including `checkPersonaBinded`.
-- Files:
-  - `selectSingleFile`, `selectMultipleFile`, `selectFileByDom`, `selectSingleFileHandle` (the picked `File` itself,
-    unread, or `null` when none is picked: the module dialog's `.risum` and `.charx` imports upload it as it is, and the
-    VITS model import reads its zip by slices), and `selectMultipleFileHandles` (the picked `File`s, unread, `[]` when
-    none: the asset pickers save them with `savePickedFiles`). The selectors use the DOM picker.
-- Crypto: `encryptBuffer`/`decryptBuffer` (AES-GCM), `pickHashRand`, `sfc32`, `uuidtoNumber`.
-- Text:
-  - `BufferToText`.
-  - Multilingual encode/parse (`encodeMultilangString`).
-  - `languageCodes`.
-  - Punctuation trimming.
-  - `getNodetextToSentence`.
-  - `replaceAsync`.
-  - `jsonOutputTrimmer`.
-  - `asBuffer`.
-- UI data: `TagList`/`searchTagList`, `parseToggleSyntax` and the `sidebarToggle` union (re-exported from
-  `shared/prompt/toggles.ts`), `sortableOptions`, `getCustomBackground`.
-- Concurrency and storage:
-  - `sleep`.
-  - `openKeypairStoreDB`/`saveKeypairStore`/`getKeypairStore`: IndexedDB `DPoPDB` store `dpop`.
-  - `base64url`.
-  - `simplifySchema`.
-  - `prebuiltAssetCommand`.
+`src/ts/util.ts` is the inventory of small helpers: messages and characters, persona accessors, crypto, text, tag lists,
+and the rest. What a caller must know:
 
-Other files:
+- `selectSingleFile`, `selectMultipleFile`, and `selectFileByDom` use the DOM picker. `selectSingleFileHandle` gives the
+  picked `File` unread, or `null`: the module dialog's `.risum` and `.charx` imports upload it as it is, and the VITS
+  model import reads its zip by slices. `selectMultipleFileHandles` gives the `File`s unread, `[]` when none: the asset
+  pickers save them with `savePickedFiles`.
+- `openKeypairStoreDB`/`saveKeypairStore`/`getKeypairStore`: IndexedDB `DPoPDB` store `dpop`.
 
-- `src/ts/alertQueue.ts`: `createAlertQueue` (the store `stores.svelte.ts:alertStore` is one instance) and
-  `createDialogKeyGate` (for `hotkey.ts`). The alert slot holds one status (`wait`, `progress`, `toast`: the newest
-  replaces it) and a first-in, first-out queue of dialogs (every other type), shown one at a time; a dialog supersedes
-  the status set before it, not one set after it (that one shows once the dialogs close). `open(data)` queues a dialog
-  and returns its handle (`closed`, the `msg` it closes with; `cancel()`, which removes it shown or queued and closes it
-  with ""); `answer(msg, expected?)` closes the shown dialog (only while `expected` is the one shown);
-  `clearStatus(expected?)`, `status()`, `idle()`, `dialogVisible()`, `hasDialogs()`. `set` routes by type: a status
-  replaces the status, `none` closes the shown dialog (or, with none shown, clears the status), anything else queues a
-  dialog. After a dialog closes, the next one shows `NEXT_DIALOG_GAP_MS` (150 ms) later, also one opened after the
-  close; meanwhile the store reads `none` with `dialogPending`. An identical `normal`, `error`, `markdown` or `wait2`
-  right behind the last queued dialog folds into it (same handle; never an error with `jobFailure`). The key gate lets a
-  dialog take Enter or Escape only from a stroke that began after it appeared: never a repeat, the stroke held when it
-  appeared, or a composing key; a later non-repeated keydown counts as a new stroke even if its keyup was lost.
-- `src/ts/alert.ts`:
-  - `alertData` (discriminated `type`), with optional `chaId` for Branches and `chatRef` for HypaV2. Each target is
-    captured when requested, before the dialog waits in the queue.
-  - `alertNormal`, `alertError`, `alertConfirm`, `alertSelect`, `alertInput`.
-  - `alertRealmTerms`: the RisuRealm terms dialog (type `realmTerms`: RisuAI's Terms of Service and Privacy Policy
-    links, Accept and Do not Accept); true only for Accept. Enter does not accept it; Escape declines. Its caller is
-    `realmTerms.ts` `ensureRealmTerms` ([backups](backup-sync-hub.md)).
-  - `alertCardExport`: character export only (V3 or V2). An empty answer (including Escape) returns
-    `{ type: "cancel", type2: "" }`, matching the close button's cancel shape; callers ignore the format on
-    cancellation.
-  - `alertRequestData` (its dialog renders the generation info and the message copy it was opened with),
-    `alertRequestLogs`. `showHypaV2Alert` captures `currentChatRef`; its editor reads `findChat(ref)` and writes
-    `setChatMeta(ref, ...)`, showing no editor and writing nothing while that chat is unloaded or has no HypaV2 data.
-  - Each dialog helper queues its dialog; an awaited one resolves with its own dialog's answer, parsed as before
-    (`alertConfirm` true only for `"yes"`, `alertChatOptions` a number, `alertCardExport` the parsed object).
-    `waitAlert` waits until no dialog is shown or queued; `doingAlert` is true while a dialog is shown or queued, or a
-    progress overlay shows; `alertClear` clears the status only. `alertWait` and `alertToast` accept an optional
-    `onInstall` callback that captures the exact status object for identity-checked cleanup. `alertStore` (here) is a
-    `set` wrapper over the real store `stores.svelte.ts:alertStore`. `openAlertDialog(open)` (for `jobChannel.ts`) runs
-    one helper call and returns its result with the handle of the dialog it queued.
-  - `alertTerminal(msg)`, `terminalNotice` (read-only), `acknowledgeTerminalNotice`, `terminalNoticeShown()` (blocks
-    plugin key listeners from opening until reload, including the acknowledgement key release): the notice the page ends
-    on (the restore notice), outside `alertStore`. Single-flight; it resolves only when the user acknowledges it, so no
-    other alert (a toast, an error, `alertClear`, a `wait`) can replace or dismiss it.
-  - `alertReloadNotice(msg)`, `reloadNotice` (read-only), `dismissReloadNotice`: the save adapter's reload notice
-    (`resourceReloaded`: a conflict replaced a local change), outside `alertStore` beside the terminal notice. Latched
-    until dismissed: a call while one is shown keeps it (one notice per episode on screen), the first call after a
-    dismissal shows it again; no other alert replaces or hides it.
-- `src/lib/Others/AlertComp.svelte`: renders the head of `alertStore` (the shown dialog, else the status) and answers a
-  dialog with `alertStore.answer(msg)`. A toast's end clears the status only while it is still that toast. The error
-  alert's "Open in request history" closes the error before opening the history; the request history popup passes its
-  own close to `ServerRequestHistory.svelte`, which closes it before its delete confirmation (then opens it again) and
-  before a share error. The Branches view pins and loads the captured character's chats, even after the selection
-  changes. Translates stack traces with `sourcemap.ts:translateStackTrace`; a translation (or its failure) that ends
-  after the shown alert changed is dropped, so it never lands in a later error.
-- `src/lib/Others/TerminalNotice.svelte` (mounted unconditionally in `App.svelte`): the terminal notice as a native
-  modal `<dialog>` (`showModal()`: the top layer, above every z-index; focus on its OK; the page inert). Only its OK
-  acknowledges it: Escape is prevented (and a forced close shows it again), a held or composing Enter is ignored, no key
-  event leaves the dialog (a panel's own `window` listener behind it never sees one; a capture listener still does), and
-  `hotkey.ts` runs no shortcut while it is shown.
-- `src/lib/Others/ReloadNotice.svelte` (mounted unconditionally in `App.svelte`, before `TerminalNotice`): the reload
-  notice as a fixed, non-modal panel (`role="status"`) at the top, above the alert overlay (`z-[60]`), until its own OK
-  dismisses it. The page behind it stays live; a key event on its OK does not leave the panel (an Enter would otherwise
-  reach `hotkey.ts` and answer the alert underneath as yes). The terminal notice's dialog still covers it. While
-  recovery drafts exist and the recovery dialog is closed it also shows the drafts message with its own Dismiss and a
-  Review button that opens the [recovery dialog](draft-recovery.md#recovery-drafts) (`RecoveryDrafts.svelte`, rendered
-  here outside the notice so Settings can open it after a dismissal; [ui-theming](ui-theming.md)).
+### Alert queue
+
+`src/ts/alertQueue.ts`: `createAlertQueue` (the store `stores.svelte.ts:alertStore` is one instance) and
+`createDialogKeyGate` (built in `src/ts/hotkey.ts` `initHotkey`). The `AlertQueue` interface comments state each method.
+
+- The alert slot holds one status (`wait`, `progress`, `toast`: the newest replaces it) and a first-in, first-out queue
+  of dialogs (every other type), shown one at a time. A dialog supersedes the status set before it, not one set after
+  it, which shows once the dialogs close.
+- After a dialog closes, the next one shows `NEXT_DIALOG_GAP_MS` (150 ms) later, also one opened after the close;
+  meanwhile the store reads `none` with `dialogPending`.
+- An identical `normal`, `error`, `markdown` or `wait2` right behind the last queued dialog folds into it (same handle;
+  never an error with `jobFailure`).
+- The key gate lets a dialog take Enter or Escape only from a stroke that began after it appeared: never a repeat, the
+  stroke held when it appeared, or a composing key.
+- `hotkey.ts` owns dialog keys; `AlertComp.svelte` has no key handler. Escape answers every dialog with `""`. Enter
+  answers `ask`, `normal`, `error`, and an `input` dialog's value; a new accepting type extends that branch.
+
+### Alert helpers and `AlertComp`
+
+`src/ts/alert.ts`:
+
+- `alertData` (discriminated `type`), with optional `chaId` for Branches and `chatRef` for HypaV2. Each target is
+  captured when requested, before the dialog waits in the queue.
+- Each dialog helper queues its dialog; an awaited one resolves with its own dialog's answer.
+- `alertRealmTerms`: true only for Accept. Enter does not accept it; Escape declines.
+- `alertCardExport`, character export only: an empty answer (including Escape) returns `{ type: "cancel", type2: "" }`,
+  matching the close button's cancel shape; callers ignore the format on cancellation.
+- `alertRequestLogs` is the request logs popup.
+- `showHypaV2Alert` captures `currentChatRef`; its editor reads `findChat(ref)` and writes `setChatMeta(ref, ...)`,
+  showing no editor and writing nothing while that chat is unloaded or has no HypaV2 data.
+- `alertWait` and `alertToast` accept an optional `onInstall` callback that captures the exact status object for
+  identity-checked cleanup. `alertStore` (here) is a `set` wrapper over the real store `stores.svelte.ts:alertStore`.
+
+`src/lib/Others/AlertComp.svelte` renders the head of `alertStore` (the shown dialog, else the status) and answers a
+dialog with `alertStore.answer(msg)`.
+
+- The error alert's "Open in request history" closes the error before opening the history. The request history popup
+  passes its own close to `ServerRequestHistory.svelte`, which closes it before its delete confirmation (then opens it
+  again) and before a share error.
+- `sourcemap.ts:translateStackTrace` translates stack traces; a translation (or its failure) that ends after the shown
+  alert changed is dropped, so it never lands in a later error.
+
+### Terminal and reload notices
+
+Both notices live outside `alertStore`, and both components are mounted unconditionally in `App.svelte`, `ReloadNotice`
+before `TerminalNotice`. The comments in `alert.ts` and the components state the rest.
+
+- `alertTerminal(msg)`, `terminalNotice`, `acknowledgeTerminalNotice`: the notice the page ends on (the restore notice).
+  It resolves only when the user acknowledges it, so no other alert (a toast, an error, `alertClear`, a `wait`) can
+  replace or dismiss it. `terminalNoticeShown()` blocks plugin key listeners from opening until reload.
+- `src/lib/Others/TerminalNotice.svelte`: a native modal `<dialog>` (the top layer, above every z-index; the page
+  inert). Only its OK acknowledges it.
+- No key event leaves the terminal dialog: a panel's own `window` listener behind it never sees one, while a capture
+  listener still does. `hotkey.ts` runs no shortcut while it is shown.
+- `alertReloadNotice(msg)`, `reloadNotice`, `dismissReloadNotice`: the save adapter's reload notice (`resourceReloaded`:
+  a conflict replaced a local change). Latched until dismissed: one notice per episode on screen.
+- `src/lib/Others/ReloadNotice.svelte`: a fixed, non-modal panel (`role="status"`) above the alert overlay (`z-[60]`).
+  The page behind it stays live. The terminal notice covers it.
+- While recovery drafts exist and the recovery dialog is closed, `ReloadNotice` also shows the drafts message with its
+  own Dismiss and a Review button that opens the [recovery dialog](draft-recovery.md#recovery-drafts)
+  (`RecoveryDrafts.svelte`, rendered here outside the notice so Settings can open it after a dismissal;
+  [ui-theming](ui-theming.md)).
+
+### Network clients
+
 - `shared/localNetwork.ts` (re-exported by `src/ts/network/localNetwork.ts`; the server request layer uses it too):
   `isLocalNetworkHost`, `isLocalNetworkUrl`. Accepts private/loopback/link-local IPs, `.local`, and bare single-label
   hosts.
 - `src/ts/network/auxFetch.ts`: `auxFetch(op, url, { method, headers, body, signal, interceptor, chatId, profileId })`,
   a call that needs a stored LLM credential, sent to `/proxy2` with `risu-aux-op` (`self-host-server.md`): the server
-  adds the key, the tab never holds it. With `profileId`, it first awaits `flushResources()` so a changed binding, new
-  profile, or named-key record is stored before the server reads it, and sends `risu-aux-profile` for the supported
-  discovery/account rows. It then awaits `awaitSecretWrites()` (a key entered just before is used; a refused or unsaved
-  key fails the call; an abort settles the call at once while the save goes on, and no interceptor or request starts
-  after it; `authFetch`'s `beforeDispatch` checks the abort and the save admission after authentication and signing, so
-  nothing goes out once saving halted for a restore), runs the plugin body interceptors for `interceptor` as
-  `globalFetch` does, keeps the operation's method (a GET has no body), sends a `FormData` body serialized once with its
-  boundary, and logs the request (no credential in it). `auxFetchJson` answers in `globalFetch`'s `{ ok, data, status }`
-  shape. Callers: model discovery (`modellist.ts` `registerModelDynamic`, `openrouter.ts`, `ollama.ts` cloud tags),
-  NanoGPT (`nanogpt.ts`), OpenAI TTS (`tts.ts`, the official URL with a stored key; a custom URL with a stored key and
-  no own key alerts `ttsCustomUrlNeedsKey`), DALL-E and Imagen (`stableDiff.ts`), Whisper (`PlaygroundSubtitle.svelte`),
-  the memory embeddings (`hypamemory.ts`, `hypamemoryv2.ts`, unless the processor has its own key; the browser's memory
-  summarizers that made the completions calls were removed when memory summarization moved to the server, the server's
-  `openai-completions` operation stays).
+  adds the key, the tab never holds it. Its comment states the steps. `auxFetchJson` answers in `globalFetch`'s
+  `{ ok, data, status }` shape.
+- `auxFetch` order: with `profileId`, it first awaits `flushResources()` so a changed binding, new profile, or named-key
+  record is stored before the server reads it, and sends `risu-aux-profile` for the supported discovery/account rows. It
+  then awaits `awaitSecretWrites()`, so a key entered just before is used and a refused or unsaved key fails the call.
+  `authFetch`'s `beforeDispatch` checks the abort and the save admission after authentication and signing.
+- `auxFetch` callers: model discovery (`modellist.ts` `registerModelDynamic`, `openrouter.ts`, `ollama.ts` cloud tags),
+  NanoGPT (`nanogpt.ts`), OpenAI TTS (`tts.ts`; a custom URL with a stored key and no own key alerts
+  `ttsCustomUrlNeedsKey`), DALL-E and Imagen (`stableDiff.ts`), Whisper (`PlaygroundSubtitle.svelte`), and the memory
+  embeddings (`hypamemory.ts`, `hypamemoryv2.ts`, unless the processor has its own key). The tab makes no
+  `openai-completions` call; that server operation stays.
 - `src/ts/network/channelCallSource.ts`: `channelCallTargets(call)`, the targets of the job callback a plugin call
   context names (`PluginCallContext.channelCall`) while it runs in this tab and the server has not cancelled it, else
-  null (`jobChannel.ts` registers its `liveChannelCallTargets` when it loads; before that none runs). `request.ts`'s
-  send guard reads it; it never picks a callback for a request.
-- `src/ts/network/generationJobs.ts`: the client transport of server generation jobs (`shared/jobs.ts`; server in
-  `server-generation.md`). `generationClientId` (one per tab, `sessionStorage`; a page claims it before reading the id
-  or its saved jobs, marking `risu-generation-client-claim` held, and releases it on `pagehide`; a page that finds it
-  held by a live page (a window opened with an opener, a duplicated tab) mints a new id and drops the copied saved jobs,
-  while a reload, a same-tab navigation or a `document.wasDiscarded` page keeps it), the saved jobs per chat
-  (`savedGenerationJobs`, `rememberGenerationJob`, `forgetGenerationJob`), `createGenerationJob` (`GenerationBusyError`,
-  `GenerationStaleError`, `ChatBindingRefusedError` for 409 `chatBindingIncomplete`/`chatBindingMismatch`, the epoch
-  mismatch), `readGenerationJob`, `abortGenerationJob`, `followGenerationJob` (the owner socket with a fresh JWT; events
-  of another epoch dropped; `send` for the channel's answers; a newer follow of the same job cancels the older one (its
-  socket, even while connecting, its events, and its sends) and sends a higher `attach` stamp
-  (`performance.timeOrigin + performance.now()`, increasing across reloads); `closed` reports whether a terminal event
-  arrived, `resumed` when the follow gave up an opened socket because the page came back, and `received` when the socket
-  delivered a frame (pings included); the follow gives its socket up as its own `close()` would (the job is not
-  released, a terminal that arrived stands) when it has not opened within 10 s of the follow's start, authentication
-  included (`jobLink` `connectTimeout`), when it had no frame for 45 s while the page is visible (`stale`), and when the
-  page comes back (`resumeReconnect`), all through `socketLiveness.ts`; a 412 runs the resource client's restore halt),
-  `applyGenerationEvent(jobId, ref, event, transport?)` (into `applyServerGeneration`, `applyHydration`,
-  `applyPatchHydration` (a `chatPatch`; a `mismatch` sends one `{ type: "resync" }` per follow through `transport` until
-  a whole job chat arrives; a `busy` patch, or a whole job chat refused for local work, sends it after `flushResources`
-  while the chat is still stale and `chatHydrationHold` is `none`, one recovery per follow retried with a growing wait
-  until it asks or the follow ends (`done`/`error`, or its `closed`)), and `endServerJob`; channel events to
-  `jobChannel.ts` with the follow as their transport; the dispatcher loads on first use and runs on one chain in socket
-  order; creation and the first `accepted` seed `preparing` in `jobStages` only while the job has no known stage; a
+  null. `request.ts`'s send guard reads it; it never picks a callback for a request.
+- `src/ts/network/eventFeed.ts`: the client of the live-update socket `/api/events/ws`;
+  [documented with the save loop it feeds](resource-sync.md#feed-connection).
+- `src/ts/network/socketLiveness.ts`: liveness of the feed and job sockets (the server pings both every 15 s), stated in
+  its comments, its windows in `CONNECT_TIMEOUT_MS` (10 s), `STALE_AFTER_MS` (45 s), `WATCHDOG_INTERVAL_MS` (15 s),
+  `RESUME_AFTER_HIDDEN_MS` (30 s), and `RESUME_FOLD_MS` (250 ms). The caller abandons its socket on each callback.
+
+### Generation job client
+
+`src/ts/network/generationJobs.ts`: the client transport of server generation jobs (`shared/jobs.ts`; server in
+`server-generation.md`).
+
+- `generationClientId`: one per tab, in `sessionStorage`. A page claims it before reading the id or its saved jobs,
+  marking `risu-generation-client-claim` held, and releases it on `pagehide`.
+- A page that finds the claim held by a live page (a window opened with an opener, a duplicated tab) mints a new id and
+  drops the copied saved jobs, while a reload, a same-tab navigation or a `document.wasDiscarded` page keeps it.
+- The saved jobs per chat: `savedGenerationJobs`, `rememberGenerationJob`, `forgetGenerationJob`. Boot attaches again to
+  them through `serverCommands.ts` `resumeServerJobs` (`followJobToEnd`).
+- `createGenerationJob` sends `registeredHooks()` unless the caller passes a list. It refuses with
+  `GenerationBusyError`, `GenerationStaleError`, `ChatBindingRefusedError` for 409 `chatBindingIncomplete` or
+  `chatBindingMismatch`, `ChatLoreOverrideOrphanedError`, or the epoch mismatch.
+- `readGenerationJob`, `abortGenerationJob`, `followGenerationJob`: the follow is the owner socket with a fresh JWT.
+  Events of another epoch are dropped, `send` carries the channel's answers, and a 412 runs the resource client's
+  restore halt. Its comment states when it gives its socket up and what it resolves with.
+- A newer follow of the same job cancels the older one (its socket, even while connecting, its events, and its sends)
+  and sends a higher `attach` stamp, increasing across reloads.
+- `applyGenerationEvent(jobId, ref, event, transport?)` feeds `applyServerGeneration`, `applyHydration`,
+  `applyPatchHydration` (a `chatPatch`), and `endServerJob`. Channel events go to `jobChannel.ts` with the follow as
+  their transport; the dispatcher loads on first use and runs on one chain in socket order.
+- A `mismatch` patch sends one `{ type: "resync" }` per follow through `transport` until a whole job chat arrives. A
+  `busy` patch, or a whole job chat refused for local work, sends it after `flushResources` while the chat is still
+  stale and `chatHydrationHold` is `none`, one recovery per follow.
+- Stages: creation and the first `accepted` seed `preparing` in `jobStages` only while the job has no known stage. A
   `stage` event replaces it and is kept per job until `releaseGenerationJob`, which also drops the stage when a follow
-  is lost; a `preset` event, a send's `presetChain` pick, changes nothing: the pick is the job's own,
-  [chat bindings](persistence.md)). Boot attaches again to the saved jobs through `serverCommands.ts` `resumeServerJobs`
-  (`followJobToEnd`). `createGenerationJob` sends `registeredHooks()` unless the caller passes a list.
-- `src/ts/network/eventFeed.ts`: the client of the live-update socket `/api/events/ws` (`startEventFeed`,
-  `stopEventFeed`); [documented with the save loop it feeds](resource-sync.md#feed-connection).
-- `src/ts/network/socketLiveness.ts`: liveness of the feed and job sockets (the server pings both every 15 s).
-  `watchSocket({ onConnectTimeout, onStale })`, made when a connection starts: `onConnectTimeout` when `opened()` has
-  not come within `CONNECT_TIMEOUT_MS` (10 s); once open, `onStale` when no `frame()` came for `STALE_AFTER_MS` (45 s),
-  checked every `WATCHDOG_INTERVAL_MS` (15 s) only while the page is visible and no resume fold is pending (the resume
-  replaces the socket at the end of its window); each fires once and ends the watch, and a stopped watch stays stopped.
-  `watchResume(onResume)` (returns its unsubscribe) calls back when the page becomes visible after being hidden at least
-  `RESUME_AFTER_HIDDEN_MS` (30 s, tracked for the page, not per subscription), on the Page Lifecycle `resume`, and on
-  `online`; triggers within `RESUME_FOLD_MS` (250 ms) of the first are one call at the end of that window, to the
-  subscribers of its first trigger that are still subscribed. Stamps read `livenessClock.now()` (tests replace it). The
-  caller abandons its socket on each callback.
-- `src/ts/network/jobChannel.ts`: the client dispatcher of the job channel. Notices map to `alert.ts`,
-  `ReloadGUIPointer`/`ReloadChatPointer` (by `chaId`/`chatId`/`messageId` when that chat is shown), `CharEmotion`,
-  `hypaV3ProgressStore`, `sayTTS`, and `showCompletionNotification` (`pushNotifications.ts`: the server's title and
-  body, never a permission request). Its UI queue is one queue across jobs, so every job's notices and questions keep
-  their order: while a question or a modal notice is open, later alert notices (toasts too) and questions wait, and each
-  modal notice's own dialog is awaited (`openAlertDialog`), not every queued local dialog. The alert store queues the
-  dialogs themselves: a local alert never replaces a job's question, and a job's dialog may wait behind local ones. A
-  `cancel` (or the job's end) removes the question's own dialog, shown or still queued, and drops its result. A job's
-  end also drops its queued `alertWait`, `alertClear`, and `alertToast` notices and clears its installed status only
-  while that exact object still owns the status slot; its modal notices remain queued. A question is answered with the
-  alert's raw result (the alert API has no separate dismissal; `cancelled` is not produced). Callbacks run behind the
-  barrier (`flushResources()`, the newest remembered hydration of every listed receipt applied again, each held at least
-  as new and no listed chat refused locally, else `failed`/`barrier`), then the hook set by name under the job's targets
-  (`invokeHook`; plugin MCP listings and tool calls also receive the job targets; interceptors run without the hook
-  context), then `flushResources({ scope })` even when the hook threw (discarded keys or a rejection:
-  `failed`/`barrier`; the hook's throw: `failed`/`hook`). Replacers and edit hooks stop at the first throw; interceptors
-  log and continue. `chatOutput` runs the output listeners in order, each with a plain copy of the speaker and the chat
-  as they are then and indices looked up again, logs a listener's throw, and answers `true`; `imggen` runs `stableDiff`
-  and `generateImage` runs `generateAIImage` with the callback's `AbortSignal`, which the callback's cancel or the job's
-  end aborts; neither answers a result that arrives after the cancel; `provider` calls the plugin provider with the
-  server's argument and an `AbortSignal` the callback's cancel aborts: a text answers `{ success, content }`; a stream
-  is read here and sent as `chunk` messages with the text so far (the first at once, then at most every 50 ms and at the
-  end) before the answer `{ success: true, streamed: true }`, a failed stream is read whole into the answer, and either
-  reader is cancelled when the callback ends first (also when the provider returned the stream after the cancel); a text
-  over 4 MiB characters or a provider no longer loaded is a `hook` failure. `mcpList` and `mcpTool` answer the tools and
-  a tool's content of an MCP that lives in the tab: a `plugin:` MCP as it is registered now, or
+  is lost.
+- A `preset` event, a send's `presetChain` pick, changes nothing: the pick is the job's own
+  ([chat bindings](persistence.md)).
+
+### Job channel
+
+`src/ts/network/jobChannel.ts`: the client dispatcher of the job channel. Its header states event order, the UI queue,
+the barrier, request state, the root lane, and each hook's call context. A new call: [Recipes](#recipes).
+
+- Notices map to `alert.ts`, `ReloadGUIPointer`/`ReloadChatPointer` (by `chaId`/`chatId`/`messageId` when that chat is
+  shown), `CharEmotion`, `hypaV3ProgressStore`, `sayTTS`, and `showCompletionNotification` (the server's title and body,
+  never a permission request). The `openURL` notice opens an `http(s)` address (an MCP server's OAuth page). A job that
+  ends closes the HypaV3 progress overlay it left open.
+- The UI queue is one queue across jobs: while a question or a modal notice is open, later alert notices (toasts too)
+  and questions wait, and each modal notice's own dialog is awaited (`openAlertDialog`), not every queued local dialog.
+- A question is answered with the alert's raw result: the alert API has no separate dismissal, so `cancelled` is not
+  produced.
+- A job's end drops its queued `alertWait`, `alertClear`, and `alertToast` notices and clears its installed status only
+  while that exact object still owns the status slot; its modal notices remain queued.
+- Callback failures: a barrier miss, a discarded key, or a rejected flush is `failed`/`barrier`; the hook's own throw is
+  `failed`/`hook`, and the flush still runs. Plugin MCP listings and tool calls receive the job targets; interceptors
+  run without the hook context.
+- Replacers and edit hooks stop at the first throw; interceptors log and continue. `chatOutput` runs the output
+  listeners in order, each with a plain copy of the speaker and the chat as they are then and indices looked up again,
+  logs a listener's throw, and answers `true`.
+- `imggen` runs `stableDiff` and `generateImage` runs `generateAIImage` with the callback's `AbortSignal`, which the
+  callback's cancel or the job's end aborts; neither answers a result that arrives after the cancel.
+- `provider` calls the plugin provider with the server's argument and an `AbortSignal` the callback's cancel aborts. A
+  text answers `{ success, content }`. A text over `MAX_PROVIDER_TEXT_CHARS` (4 Mi characters) or a provider no longer
+  loaded is a `hook` failure.
+- A `provider` stream is read here and sent as `chunk` messages with the text so far, the first at once, then at most
+  every 50 ms (`PROVIDER_CHUNK_INTERVAL_MS`) and at the end, before the answer `{ success: true, streamed: true }`. A
+  failed stream is read whole into the answer. Either reader is cancelled when the callback ends first.
+- `mcpList` and `mcpTool` answer for an MCP that lives in the tab: a `plugin:` MCP as it is registered now, or
   `internal:fs`/`internal:googlesearch` through `readyTabClient` (`plugins-mcp.md`; the handshake may show a directory
-  picker or a credential prompt); a client's throw is a `hook` failure. The `openURL` notice opens an `http(s)` address
-  (an MCP server's OAuth page). `selectedChat` answers the id of the chat this tab has selected for a character (the
-  selection is per tab), or `null`. `recentEmotions(chaId)` gives the emotions the tab showed last for a chat's
-  character or group members, which `createGenerationJob` sends as `context.client.emotions`. A job that ends closes the
-  HypaV3 progress overlay it left open. Request state is kept in memory: a duplicate never runs twice (the cached answer
-  is resent), and a `replay` the page has no state for is refused. Each hook runs with the job's targets plus
-  `channelCall` (the job and callback ids) as its call context, so an aux request made from it names that callback as
-  its parent; nothing else the tab requests does. One root callback runs at a time: a `cancel` only marks a running
-  callback (its hook's `AbortSignal`, if any, aborts) and it stays outstanding until its hook settles, a root arriving
-  meanwhile is refused, and once it settles (or at once for a callback whose answer crossed the cancel) the tab reports
-  it drained (`reportCallbackDrained`, `POST /api/generations/:id/drained`), which frees the lane the server kept for
-  it. A replacement child of the top live parent waits while that parent's cancelled child hooks drain; only one live
-  child is admitted, and it never starts after its own deadline (the server owns timeout outcomes).
-  `liveChannelCallTargets(call)` answers a running, uncancelled callback's targets (registered with
-  `channelCallSource.ts`); `registeredHooks()` builds the hook list from the active registries (`createGenerationJob`
-  sends it).
-- `src/ts/network/pushNotifications.ts`: this browser's Web Push. `startPushNotifications` (after `startRouter` in
-  `bootstrap.ts`) reads the availability (`insecure` off HTTPS, `ios-home-screen` for iOS outside a Home Screen app,
-  `unsupported`, `server-off` when `/api/push/key` answers null), answers the service worker's `risu-open-route`
-  messages with `openRoute` (`router.svelte.ts`), hands the chat of its `risu-push-completion` messages (the payload's
-  checked chat route, `shared/notifications.ts` `parseChatRoutePath`; other paths are dropped) to `onCompletionPush`
-  (`bootstrap.ts` passes `serverCommands.ts` `refreshChatAfterPush`, [chat pipeline](chat-pipeline.md)), closes the
-  completion notifications of every chat whenever the page is shown (each chat has its own tag,
-  `shared/notifications.ts` `completionNotificationTag`, so a later notice of a chat replaces only that chat's; they are
-  picked by the tag's prefix; the server also sends the tag's hash as the push `topic`, so a push service replaces only
-  that chat's undelivered completion; when it closed any, a `push` `dismissedByPage` diagnostic event records the
-  count), and runs `reconcilePush`: with `settings.ui.notification` on, the permission granted, and this browser not
-  opted out, it registers the subscription (a new one when the browser has none or one for an older server key). Each
-  sync reads `/api/push/key` again (the boot's read serves its first sync), so an open tab follows a server key change,
-  and a `server-off` tab sees push turned on when the page is shown again; when the read fails, the sync goes on with
-  the last key read but replaces no subscription made for another key, and fails with the read's error. The
-  `risu-push-registered` localStorage stamp (`{ endpoint, p256dh, auth, serverKey, at }`) skips an identical
-  registration for 24 h (`PUSH_REGISTRATION_REFRESH_MS`); a new endpoint, changed keys, or a new server key always
-  registers. The stamp is read and written only inside the push lock with guarded storage calls, without the per-tab
-  flag overrides; invalid or unreadable evidence causes a PUT. A successful PUT stamps it; a failed PUT, disable, or
-  unsubscribe clears it, as does successful server removal of its endpoint. A click to enable always PUTs. The client
-  cannot inspect the server subscription list: an identical subscription dropped by a delivery 404/410 or the 50-entry
-  cap returns at the first sync after the stamp is 24 h old, or immediately by turning this browser off and on. A PUT
-  reaching a server-side miss always registers it. `enablePushOnThisBrowser` must run inside a click: the permission
-  request is its first step. `disablePushOnThisBrowser` opts this browser out (`risu-push-browser-off`) and
-  unsubscribes; a server removal that failed is retried at the next sync. An `unsubscribe()` that rejects or resolves
-  `false` is reported in `error` (the opt-out stays, and the settings' off button alerts it) and, while the browser
-  stays opted out, retried at the next sync (`risu-push-pending-unsubscribe`, dropped when the browser is turned on
-  again here or in another tab; the flags are read again just before the retried `unsubscribe()` and after it, and a
-  browser turned on meanwhile is subscribed again in the same sync); a subscription for an older server key that the
-  browser keeps fails the sync with that error, so the next sync retries it. Every failure detail is a
-  `language.pushNotifications.*` string; `NotificationToggle.svelte` shows `error` under this browser's status until a
-  sync clears it (a successful registration, or a sync that has nothing to register and no unsubscribe pending). Enable,
-  disable, and sync run one at a time through `navigator.locks.request("risu-push", ...)` across tabs when available,
-  otherwise through the in-tab chain; the enable permission request stays synchronous before the queue or lock, and the
-  disable opt-out write happens inside it. Contiguous reconciliations waiting for the in-tab queue or Web Lock share one
-  promise until the task starts inside the acquired lock; a reconciliation already running allows one further queued
-  run. Enqueueing enable or disable ends that fold, preserving action order. Fallback page `Notification` objects are
-  kept by tag, dropped on close, and closed with the worker notices when the page is shown. `showCompletionNotification`
-  shows the tab's notice unless this browser is subscribed (the push shows it) or the page is visible with the focus (so
-  it does not sound after the message sound, `playMessage`, when that is on; another app window's focus is not seen).
-  `pushBrowserState` (a store) feeds `NotificationToggle.svelte` (the synced switch, this browser's status, and its
-  on/off button) and `src/lib/Others/PushPrompt.svelte` (the one-time banner, mounted in `App.svelte` after loading;
-  either button sets `risu-push-prompt-dismissed`; a failed enable from either is alerted with
-  `pushNotifications.failed`). A flag whose storage write failed is kept in memory for the page and wins until a later
-  write of it succeeds; otherwise storage is read as it is.
+  picker or a credential prompt). A client's throw is a `hook` failure.
+- A duplicate or same-page `replay` resends the cached answer and never runs twice; a `replay` the page has no state
+  for, as after a reload, is refused (`failed`/`protocol`).
+- A cancelled callback that settled, or one whose answer crossed the cancel, is reported drained
+  (`reportCallbackDrained`, `POST /api/generations/:id/drained`), which frees the lane the server kept for it.
+- A replacement child of the top live parent waits while that parent's cancelled child hooks drain. Only one live child
+  is admitted, and it never starts after its own deadline; the server owns timeout outcomes.
+
+### Web Push
+
+`src/ts/network/pushNotifications.ts`: this browser's Web Push. The file header states the model, and the function and
+flag comments state enable, disable, the banner, and the flags' storage fallback.
+
+- `startPushNotifications` runs after `startRouter` in `bootstrap.ts`. `onCompletionPush` receives the chat of the
+  worker's `risu-push-completion` messages (a checked chat route, `shared/notifications.ts` `parseChatRoutePath`), and
+  `bootstrap.ts` passes `serverCommands.ts` `refreshChatAfterPush` ([chat pipeline](chat-pipeline.md)).
+- Each chat has its own tag (`completionNotificationTag`), so a later notice of a chat replaces only that chat's. The
+  server sends the tag's hash as the push `topic`, so a push service replaces only that chat's undelivered completion.
+- A shown page closes the completion notifications of every chat, picked by the tag's prefix; a `push` `dismissedByPage`
+  diagnostic event records the count.
+- `reconcilePush` reads `/api/push/key` on each sync (the boot's read serves its first), so an open tab follows a server
+  key change. When the read fails, the sync goes on with the last key read but replaces no subscription made for another
+  key, and fails with the read's error.
+- The `risu-push-registered` localStorage stamp (`{ endpoint, p256dh, auth, serverKey, at }`) skips an identical
+  registration for `PUSH_REGISTRATION_REFRESH_MS` (24 h); a new endpoint, changed keys, a new server key, or a click to
+  enable always registers.
+- The stamp is read and written only inside the push lock, and invalid evidence causes a PUT. A successful PUT stamps
+  it; a failed PUT, a disable, an unsubscribe, or a successful server removal of its endpoint clears it.
+- The client cannot inspect the server subscription list: an identical subscription dropped by a delivery 404/410 or the
+  50-entry cap returns at the first sync after the stamp is 24 h old, or immediately by turning this browser off and on.
+- `enablePushOnThisBrowser` must run inside a click: the permission request is its first step.
+- An `unsubscribe()` that rejects or resolves `false` is reported in `error`, the opt-out stays, and the settings' off
+  button alerts it. While the browser stays opted out it is retried at the next sync (`risu-push-pending-unsubscribe`).
+  A failed server removal is retried at the next sync as well.
+- Enable, disable, and sync run one at a time through `navigator.locks.request("risu-push", ...)` across tabs when
+  available, otherwise through the in-tab chain. The enable permission request stays synchronous before the queue or
+  lock.
+- Reconciliations waiting for the queue or lock share one promise until the task starts; one already running allows one
+  further queued run. Enqueueing enable or disable ends that fold, preserving action order.
+- `pushBrowserState` (a store) feeds `NotificationToggle.svelte` and `src/lib/Others/PushPrompt.svelte` (the one-time
+  banner, mounted in `App.svelte` after loading). A failed enable from either is alerted with
+  `pushNotifications.failed`.
+
+### Other modules
+
 - `src/ts/util/koreanSearch.ts` (client only, over `es-hangul`): the shared text matcher of list filters and settings
-  search. `prepareQuery(query)` NFC-normalizes, lowercases (ς folded to σ) and drops whitespace (`null` when nothing is
-  left) and precomputes the query's jamo, whether every character is an initial consonant, and, for an all-Latin query,
-  its Hangul as typed on a QWERTY layout (in the typed case, where Shift types ㄲ/ㅃ/ㅉ/ㄸ/ㅆ/ㅒ/ㅖ, and lowercased; a
-  form `es-hangul` cannot assemble, such as `jinja`, is skipped). `matchText(text, query)` answers 0 or a `MATCH_SCORE`
-  tier, best first: exact, prefix (both over the text without whitespace), substring, space-insensitive substring,
-  choseong (an all-choseong query in the text's initials, Hangul only; such a query takes no later tier), jamo (the
-  half-composed last syllable: 해저 finds 해적), QWERTY (`gowjr` finds 해적). Romanized queries are not matched.
-  `matchesAny(texts, query)` is the lists' boolean. Derived forms of a text are computed per call, never cached by text.
+  search, with `prepareQuery`, `matchText` (0 or a `MATCH_SCORE` tier), and `matchesAny` as the lists' boolean. An
+  all-choseong query takes no later tier, and romanized queries are not matched. Derived forms of a text are computed
+  per call, never cached by text.
 - `src/ts/dragTypes.ts`: `RISU_*_DRAG_TYPE` custom MIME types. They keep in-app drags from being treated as file
   imports.
 - `src/ts/iris.ts` `getIrisSystemPrompt`, and `IrisModal.svelte`: a visual-novel-style assistant. It calls
-  `requestChatData(..., 'otherAx')` and persists the dialogue in `irisDialogue` (a `ui` field) (saved on the server;
-  older browser copies are imported at boot).
-
-### Asset client
-
-`src/ts/storage/assetClient.ts`: the asset files. The asset reads and writes of `globalApi.svelte.ts` go through it.
-
-- `readAsset(key, { signal? })` (`GET /api/read`; `null` for a missing or empty file) and
-  `writeAsset(key, bytes, { signal? })` (`POST /api/write`), the key hex-encoded in `file-path`.
-- `missingAssets(names, { signal? })` (`POST /api/assets/missing`) answers the names the server does not hold verified
-  (absent, empty, corrupt, non-canonical, or over its verification budget: see `self-host-server.md`), asking at most
-  512 names and 64 KiB of JSON per request. It throws on a failed or malformed answer and on a request that has not
-  answered within `MISSING_CHECK_DEADLINE_MS` (20 s, retries and the answer's body included; the request is aborted, so
-  a late answer is never read), and an abort of the caller's signal throws that signal's reason.
-- `assetContentHash(key)` is the SHA-256 hex a canonical content name (`assets/<sha256>.<ext>`,
-  `assets/inlay_<sha256>.<ext>`) carries, else `null`.
-- These requests retry a 429, a 503, and a network failure (`fetch` throwing after dispatch, or a `TypeError`):
-  `Retry-After` seconds (capped at 60 s) when sent, else 1 s doubling to 30 s, at most 8 attempts, each through
-  `authFetch` again; then the old errors. Other non-2xx answers are not retried. The signal aborts the wait and the
-  request (its reason, else an `AbortError`).
-- `writeAssets(items, { signal? })` (`POST /api/assets/write`) and `readAssets(keys, { signal? })`
-  (`POST /api/assets/read`) move many assets per request in the backup archive's record framing
-  ([batch codec](#batch-codec)), each record named by its key; they retry each request the same way and send one batch
-  at a time. An empty list sends nothing.
-- Writes go in batches of at most `ASSET_BATCH_CLIENT_RECORDS` (500) records and `ASSET_BATCH_CLIENT_BYTES` (64 MiB) of
-  record bytes, headers included (a larger single item goes alone), as one `Uint8Array` body; reads in batches of 500
-  keys, the answer parsed as it streams in.
-- Before writing, `writeAssets` checks the canonical names of the items whose caller-computed `sha256`
-  (`AssetWriteItem.sha256`) matches the name with `missingAssets` and sends only the missing ones, under the rules of
-  `saveAssetBatch` above.
-- `writeAssets` throws `setItem Error` for a non-2xx answer and the answer's `error` for a refused one (earlier batches
-  stay written; the server always overwrites). `readAssets` answers one entry per key in the order asked, `null` for a
-  zero-length record (a missing or empty file, or a key with no storage location), and throws `getItem Error` for a
-  non-2xx answer or an answer that breaks off, is malformed, or is not exactly the asked records.
-- `saveAsset` writes one asset per request; a failed or timed-out `missingAssets` check writes as before.
-
-### Asset queues
-
-`src/ts/storage/assetQueue.ts`: the bounded save queues for bulk imports and the batched reads of exports.
-
-- `saveAssets(items, { concurrency = 10, onProgress, signal })` (the CharX-embedded `readModule`, PNG card chunks,
-  `importCharacterCardSpec`'s embedded assets, the asset pickers, `registerOnnxModel`) takes
-  `{ load, fileName?, customId? }` items (an array, iterable, or async iterable). An item is taken and its `load()`
-  called only when fewer than `concurrency` items are loading and the loaded, unwritten items are under one write
-  request's worth (`ASSET_BATCH_CLIENT_RECORDS` records or `ASSET_BATCH_CLIENT_BYTES` record bytes).
-- Each loaded item is keyed with `globalApi.assetKey` (the key `saveAsset` would give it); an item without a `customId`
-  carries that key's hash as its `sha256` (`assetKey` already hashed its bytes), so `writeAssets` skips it when the
-  server holds it verified, while a custom id is always sent.
-- The loaded items are written by `globalApi.saveAssetBatch`, one request at a time, each a batch that fits those caps
-  (a larger single item alone), while the next batch loads; a hash key (no `customId`) already batched in the call is
-  not sent again. Keys resolve in item order; `onProgress` runs per item when its batch is written or fails, or its
-  `load()` throws.
-- After a failed load or batch no further item starts and nothing more is written; the work in flight settles and it
-  rejects with `AssetSaveError` (`failed`: every item of a failed batch, `errors`, `cause`).
-- `savePickedFiles(files, fileName?)` feeds picked `File`s (`selectMultipleFileHandles`) to it, each read when its slot
-  is free. `AssetSaveQueue` (`add`, `whenReady`, `waiting`, `active`) saves one item per `saveAsset` for a producer
-  whose items arrive over time (the in-tab `CharXImporter`).
-- `loadAssetsInBatches(keys, { batchSize = 200, signal })` is an async generator over `globalApi.loadAssets`, yielding
-  `{ index, key, bytes }` in key order (duplicates kept; `bytes` is `Uint8Array | null`). It holds one batch being
-  consumed and one prefetched batch in flight; `batchSize` above `ASSET_BATCH_CLIENT_RECORDS` is clamped. The generator
-  has no retries of its own.
-- The prefetched promise's rejection is observed as soon as it starts and surfaced when that promise is next awaited,
-  without an unhandled rejection while the consumer writes. Closing the iterator (a consumer `break`/`throw` or
-  `return()`) or aborting through `signal` stops admission, aborts the pending read, and settles it before cleanup
-  returns, swallowing its cleanup rejection.
-
-### Batch codec
-
-`shared/assetBatch.ts`: the batch asset routes' record framing (the backup archive's `u32le nameLength`, UTF-8 name,
-`u32le dataLength`, bytes; `self-host-server.md`). `TextEncoder`/`TextDecoder` and `DataView` only, no `Buffer`.
-
-- `ASSET_BATCH_WRITE_PATH`/`ASSET_BATCH_READ_PATH`, `MAX_ASSET_BATCH_RECORDS` (2000 per request, the server's cap),
-  `MAX_ASSET_BATCH_NAME_BYTES` (4096), `encodeAssetRecordHeader` (also the archive's encoder).
-- The incremental `AssetRecordParser`: `push` returns the records a chunk completes; `events` yields
-  `start`/`data`/`end` with `data` as views into the chunk, so the server streams a record without holding it; `end`
-  refuses a trailing partial record. Every refusal is an `AssetBatchFormatError`: a zero-length name, one over the cap
-  or not strict UTF-8, a record past the cap.
+  `requestChatData(..., 'otherAx')` and persists the dialogue in `irisDialogue`, a `ui` field saved on the server; older
+  browser copies are imported at boot.
 
 ## Flows
 
@@ -480,17 +381,18 @@ Asset sources:
 `fetchNative`:
 
 1. The optional body is a string, `Uint8Array`, or `ArrayBuffer`. The internal method defaults to POST; only GET and
-   HEAD discard a body, while DELETE/PATCH keep it. The public plugin `nativeFetch` adapter defaults to GET and honors
-   only `method`, `headers`, `body`, and `signal`: record/pair headers are normalized before scanning/logging,
-   ArrayBufferView and Blob bodies become bytes, string/Blob content types default when absent, and GET/HEAD bodies are
-   refused. `Headers`, `FormData`, `URLSearchParams`, and streams cannot cross the sandbox RPC.
+   HEAD discard a body, while DELETE/PATCH keep it.
+   - The plugin `nativeFetch` adapter (`v3.svelte.ts`) adapts only `method`, `headers`, `body`, and `signal` and
+     defaults to GET. It normalizes record/pair headers, the sandbox-supported forms, before its sensitive-header scan,
+     takes string, ArrayBuffer, ArrayBufferView, and Blob bodies (any other throws), supplies string/Blob content types
+     when absent, and refuses GET/HEAD bodies.
 2. A qualifying local-network route goes through `/proxy2`.
 3. Otherwise userscript `userScriptFetch` when present, else a direct `fetch`.
 
 Alerts:
 
 1. The caller runs, e.g., `await alertConfirm(msg)`, which queues its dialog in `alertStore` (`open`).
-2. `AlertComp` renders it once the dialogs before it closed (150 ms after the previous one).
+2. `AlertComp` renders it once the dialogs before it closed (`NEXT_DIALOG_GAP_MS` after the previous one).
 3. A button, Enter (`ask`, `normal`, `error`: `"yes"`), or Escape (`""`) answers the shown dialog (`alertStore.answer`).
 4. The dialog's `closed` resolves the helper with that answer; the next dialog follows after the gap.
 
@@ -498,11 +400,13 @@ Alerts:
 
 - Asset logical keys (`storage/assetClient.ts`): `assets/*` only (the database is in the server resources).
 - `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live
-  array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed. Every insertion through
-  `writeFetchLog` keeps the newest entries within the count and text budgets above (the newest entry alone may exceed
-  the text budget), repairing an already oversized list too. `getFetchData` still finds an entry by `chatId`, and
-  `addFetchLog` still returns 0. `appendFetchLog(entry)` adds an entry the server built (the `log` events of
-  `/api/llm/request`, credentials redacted): the provider calls the server makes appear in the tab's request log.
+  array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed.
+- Every writer (including `addFetchLogInGlobalFetch`) uses `writeFetchLog`, which trims the live array in place to
+  `FETCH_LOG_MAX_ENTRIES` (20) and `FETCH_LOG_MAX_CHARS` (16 Mi UTF-16 code units of `body`, `header`, and `response`),
+  repairing an already oversized list too. The newest entry always survives whole, even alone over budget.
+- `getFetchData` finds an entry by `chatId`, and `addFetchLog` returns 0. `appendFetchLog(entry)` adds an entry the
+  server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes
+  appear in the tab's request log.
 - `chatFoldedState.data` is `{targetCharacterId, targetChatId, targetMessageId}` (`src/ts/chatFold.svelte.ts`,
   re-exported here). `chatFoldedStateMessageIndex.index` is derived synchronously: the target message's index while the
   fold targets the selected chat, else -1, so a reader that runs before the switch effect clears `data` never sees
@@ -516,11 +420,11 @@ Alerts:
 - Assets go `globalApi` (`readImage`, `saveAsset`, `loadAsset`, `getFileSrc`) or `inlays.ts` → `assetClient.ts` →
   `/api/read|write`; its batch calls go to `/api/assets/write|read`, and a canonical `saveAsset` asks
   `/api/assets/missing` first.
-- Bulk import writes go `saveAssets` (`storage/assetQueue.ts`) → `saveAssetBatch` (`globalApi.svelte.ts`) →
-  `writeAssets` (`assetClient.ts`) → `/api/assets/missing` for the digest-attested canonical items, then
-  `/api/assets/write` for the rest.
-- Card and module export reads go `loadAssetsInBatches` (`storage/assetQueue.ts`) → `loadAssets` (`globalApi.svelte.ts`)
-  → `readAssets` (`assetClient.ts`) → `/api/assets/read`.
+- Bulk import writes go `saveAssets` → `saveAssetBatch` → `writeAssets`; card and module export reads go
+  `loadAssetsInBatches` → `loadAssets` → `readAssets` ([Asset client](#asset-client)).
+- Job client and channel: `shared/jobs.ts` is the message contract. The server job, the channel, and call dispatch
+  (`server/src/jobs/channel.ts`) are in [server generation](server-generation.md#generation-channels); plugin hooks and
+  the API a plugin sees are in [plugins and MCP](plugins-mcp.md).
 
 ## Invariants
 
@@ -530,6 +434,11 @@ Alerts:
 - Do not bypass the proxy auth headers. On Node, the server's `sanitizeTargetUrl` is a second SSRF boundary for proxy
   jobs only.
 - Asset references are logical `assets/...` paths, never URLs or OS paths.
+- Bulk asset writes use `saveAssets`, or `AssetSaveQueue` for arriving items, never a `saveAsset` loop: each fresh
+  canonical asset makes a missing check and a write in the storage rate bucket (`server/src/app.ts`). Keep loads lazy
+  and producers under queue admission.
+- The job channel's rules (UI order, the barrier, one root callback) are in the `jobChannel.ts` header; its failure
+  classes are under [Job channel](#job-channel).
 - Each dialog close path must answer it (`alertStore.answer`; `set({ type: 'none' })` closes the shown dialog too), or
   the awaiting caller hangs forever. A status writer ends its status with `alertClear()`, never a `none` write, which
   would answer a dialog that appeared meanwhile.
@@ -549,37 +458,43 @@ Alerts:
 - Add an asset kind: `saveAsset`, `loadAsset`, `readImage`, `getFileSrc`, plus migrations. Verify Node storage and the
   service worker.
 - Add an alert:
-  1. Extend `alertData`.
-  2. Add a helper in `alert.ts`.
-  3. Add a render and resolve branch in `AlertComp.svelte`.
+  1. Extend `alertData` and add a helper in `alert.ts`.
+  2. Add a render and resolve branch in `AlertComp.svelte`; an outer branch must also be excluded from its first guard.
+  3. For a new Enter answer, extend the branch in `src/ts/hotkey.ts`. Escape needs no edit.
+- Add a job call (`shared/jobs.ts`; client `jobChannel.ts`; server `server/src/jobs/channel.ts`). A callback needs
+  `CallbackName`, `CallbackPayloads`, `runHook`, and `hasHook`; a plugin hook also needs `GenerationHooks`,
+  `NO_GENERATION_HOOKS`, `registeredHooks`, and `parseGenerationHooks`. A notice needs `GenerationNotice` and
+  `applyEffect`, or `showNotice` with `QUEUED_NOTICES`, and `MODAL_NOTICES` if modal. A question needs
+  `GenerationQuestion` and `ask`.
 - Change save behavior: [`storage/resourceSync.svelte.ts`](resource-sync.md#save-cycle) and the records
   (`storage/records.svelte.ts`). See `persistence.md`.
 
 ## Tests
 
-- `src/ts/sourcemap.test.ts` covers stack translation. `src/ts/network/localNetwork.test.ts`,
-  `src/ts/network/auxFetch.test.ts`, and `src/ts/network/eventFeed.test.ts` cover local-network matching, credentialed
-  auxiliary requests (including `auxFetchJson` rejecting with the signal reason during dispatch or after a deferred body
-  read), and live-update connection behavior.
-- Generation jobs and callbacks: `src/ts/network/generationJobs.test.ts`, `src/ts/network/generationJobsDelta.test.ts`,
-  `src/ts/network/generationJobsPluginWork.test.ts`, `src/ts/network/jobChannel.test.ts`, and
-  `src/ts/network/jobChannelBarrier.test.ts` cover job transport, event application, plugin work, and callback barriers.
-- Web Push: `src/ts/network/pushNotifications.test.ts` covers browser opt-out, subscription reconciliation, notification
-  navigation, the `dismissedByPage` count of the foreground cleanup, and the worker's `risu-push-completion` message.
-- Alerts: `src/ts/alertQueue.test.ts` covers the status/dialog queue and key gate; `src/ts/alertTerminal.test.ts` covers
-  the terminal notice.
-- Assets and request history: `src/ts/globalApiRetention.test.ts` covers fetch-log budgets, worker-backed and fallback
-  file sources, holds, and signed copy/screenshot reads. `src/ts/globalApiThumbnails.test.ts`,
-  `src/ts/screenshotCaptureCache.test.ts`, and `e2e/storedFileSrc.spec.ts` cover thumbnail URLs and screenshot cache
-  keys. `src/ts/storage/tests/assetClient.test.ts` "missing asset transport" and "saving content-addressed assets" cover
-  the check before uploads: the 512-name split, malformed answers, skipping only digest-attested canonical items, raw
-  overwrites of a skipped key, a failed check uploading everything, aborts, `saveAsset` with present, missing, failed,
-  and custom-id answers, and `saveAssets`/`savePickedFiles` keys in order. `src/ts/storage/tests/assetClientMock.ts`
-  (`createAssetClientMock`) is the shared typed asset client double; its `missingAssets` reports every name missing, so
-  saves upload.
-- `src/ts/globalApiNativeFetch.test.ts` covers `fetchNative` method and body handling. There are no direct tests for the
-  rest of `globalFetch` routing, the full alert protocol, or `util.ts`.
-- `src/ts/util/koreanSearch.test.ts` covers the shared Korean-aware matcher.
+- Focused:
+  `pnpm --silent test:agent src/ts/network src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/sourcemap.test.ts src/ts/util/koreanSearch.test.ts`
+  for the job client, Web Push, alerts, and the small modules;
+  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails,NativeFetch}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue}.test.ts shared/tests/assetBatch.test.ts`
+  for assets and fetch.
+- `slow`: none in these client tests. The batch record cap's `server/src/tests/assets.test.ts` case is in the
+  [test-harness](test-harness.md) `Slow-test table`.
+- `e2e`: `e2e/storedFileSrc.spec.ts`, `e2e/terminalNotice.spec.ts`, `e2e/welcomeAndChatSettings.spec.ts` (the Iris
+  notice follows the sub slot; a persisted `irisDialogue` shows after reopening), `e2e/personaBinding.spec.ts` (the real
+  `util.ts` persona accessors on a chat that is not loaded).
+- `src/ts/storage/tests/assetClientMock.ts` (`createAssetClientMock`): the shared typed asset client double. Its
+  `missingAssets` reports every name missing, so saves upload.
+- `src/ts/storage/tests/assetClient.test.ts`: the real asset client against a fake of the server's routes, reached
+  through a mocked `authFetch` that `answer.current` controls.
+- `src/ts/network/tests/generationJobsMock.ts`, `src/ts/tests/alertMock.ts`, and `src/ts/tests/globalApiMock.ts`: the
+  shared doubles of the job transport, alerts, and this facade ([test-harness](test-harness.md)).
+- `generationJobs.test.ts` declares its own `FakeSocket` and drives the follow with fake timers; `eventFeed.test.ts`
+  uses the shared one ([resource-sync](resource-sync.md)).
+- `src/ts/network/pushNotifications.test.ts`: `fakeSubscription` and `FakeNotification` stand in for the browser's push
+  and notification objects.
+- Browser checks: `util/playwright/measureFileSources.mjs`, `probeDirectAssets.mjs`, and `checkJobProtocol.mjs`
+  ([test-harness](test-harness.md)).
+- Not tested: `globalFetch` routing beyond `fetchNative` method and body handling, the full alert protocol, and
+  `util.ts`.
 
 ## Known Hazards
 
@@ -593,20 +508,19 @@ Alerts:
 ### Limitations
 
 - A plugin hook already inside `invokeHook` cannot be aborted: a cancellation skips the later hooks, but the running one
-  finishes, its writes flush, and it holds the callback lane until it settles. Decision: D4 (never interrupt) of
-  RisuNest Small Wins and the cancelled-hook behavior accepted by Per-Chat Send ([archive](../archived-plan/README.md)).
+  finishes, its writes flush, and it holds the callback lane until it settles. Decision: RisuNest Small Wins D4 and
+  Per-Chat Send D1, [archive](../archived-plan/README.md).
 - A `provider` callback (a plugin provider model of a server job) is the tab's outstanding callback for as long as its
-  stream is read; the server sends no other root callback of this tab meanwhile, and one that arrives anyway is refused
-  ("A callback may run only inside the outstanding one"). A cancelled hook that never settles keeps refusing roots (and
-  plugin `sendChat`) until the page reloads; the server stops holding its lane `CANCELLED_CALLBACK_DRAIN_MS` after the
-  cancel, so a later job's root callback is then refused rather than queued forever. Decision: the per-tab callback lane
-  (D1) and the cancelled-hook refusal accepted by Per-Chat Send ([archive](../archived-plan/README.md)).
-
+  stream is read. The server sends no other root callback of this tab meanwhile, and one that arrives anyway is refused
+  ("A callback may run only inside the outstanding one"). Decision: Per-Chat Send D1,
+  [archive](../archived-plan/README.md).
+- A cancelled hook that never settles keeps refusing roots (and plugin `sendChat`) until the page reloads. The server
+  stops holding its lane `CANCELLED_CALLBACK_DRAIN_MS` after the cancel, so a later job's root callback is then refused
+  rather than queued forever. Decision: Per-Chat Send D1, [archive](../archived-plan/README.md).
 - The job owner identity's claim marker is copied with `sessionStorage`, so it reflects the source page when copied, not
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
-  loses reload recovery of its jobs. Decision: a synchronous claim, because `generationClientId` is read synchronously
-  by several modules; recorded with U1 in the [audit](../audit/job-protocol-2026-10-29.md).
+  loses reload recovery of its jobs. Decision: U1, [audit](../audit/job-protocol-2026-10-29.md).
 
 ### Gotchas
 

@@ -1,14 +1,7 @@
 {
   "ceilings": {
-    "docs/structure/global-api.md": 54009,
     "docs/structure/llm-requests.md": 42338,
     "docs/structure/settings-i18n.md": 41910
   },
-  "allow": [
-    {
-      "guide": "docs/structure/global-api.md",
-      "rule": "paren-depth",
-      "count": 1
-    }
-  ]
+  "allow": []
 }
