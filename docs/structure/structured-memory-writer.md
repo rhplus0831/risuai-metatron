@@ -10,8 +10,9 @@
 - See [structured memory](structured-memory.md) for how the algorithm is selected, and [Active Plans](../plan/README.md)
   for the design and remaining work.
 - Not here:
-  - Record shapes and limits, the tables and store, read routes, the Markdown package, the HypaV3 projection, the read
-    path, and the receipts in the tab → [structured memory](structured-memory.md).
+  - Record shapes and limits, the tables and store, read routes, the Markdown package, and the HypaV3 projection →
+    [structured memory](structured-memory.md).
+  - The read path, and the receipts and panel in the tab → [structured memory read path](structured-memory-read.md).
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - The resource store's connection, epoch, and transactions → [server resources](server-resources.md).
 
@@ -79,7 +80,7 @@ the eligible one, and `hash` from `messageSourceHash`.
 ### The writer task
 
 1. Selection: `db.memoryAlgorithmType === "structuredMemory"` runs `structuredMemoryStep` ahead of the flag chain. The
-   step reads ([the read path](structured-memory.md#the-read-path)), then returns the hand-off with `due` from
+   step reads ([the read path](structured-memory-read.md#the-read-path)), then returns the hand-off with `due` from
    `confirmedWindows` at `limit: 1`.
 2. Hand-off: for an input job with a service and a chat snapshot read with its source generation, due or not, since
    `handOffMemory` hands off a not-due input when a manual start waits. It asks no blocking reason, unlike HypaV3.
@@ -90,7 +91,8 @@ the eligible one, and `hash` from `messageSourceHash`.
 3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
    `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
    or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`. What a
-   person reads of that is the reply's own [receipt](structured-memory.md#receipts), which does not wait for a task.
+   person reads of that is the reply's own [receipt](structured-memory-read.md#receipts), which does not wait for a
+   task.
 4. Work: the fresh scope's chat and the stored events give the windows, up to `maxWriterWindows`. The hand-off gives an
    automatic task only its ceiling. `total` counts the windows the task runs and `done` those the writer returned
    recorded. Nothing open is `done` with 0 of 0.

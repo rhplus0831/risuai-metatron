@@ -567,7 +567,7 @@ Rules for every slice:
 - **Checks.** `pnpm format:check`, `pnpm check`, `pnpm check:docs`, `pnpm --silent test:agent` once after the last source
   edit; the affected `slow` and `e2e` sets, with `pnpm check:tests` when the slow-test table changes; V4 (`rg` each changed export and wire field) and V6 (each new test shown
   failing once with its line broken).
-- **Guide.** The owning guides are `docs/structure/structured-memory.md` and, for the writer, `docs/structure/structured-memory-writer.md`, split on 2026-11-01 when the first passed its budget. The seven guides this design touches have
+- **Guide.** The owning guides are `docs/structure/structured-memory.md`; for the writer, `docs/structure/structured-memory-writer.md`, split on 2026-11-01 when the first passed its budget; and for the read path, receipts, and panel, `docs/structure/structured-memory-read.md`, split on 2026-11-02 ahead of slices 4b and 4c. The seven guides this design touches have
   between 500 and 5,300 bytes free under the 40,000-byte budget (`pnpm check:docs` fails over it), which does not hold
   28 slices of contracts, so contracts go to the new guide, which later slices extend, and an existing guide gets only
   a link or a swap that deletes as much as it adds.
