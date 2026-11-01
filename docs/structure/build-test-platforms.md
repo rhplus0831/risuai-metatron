@@ -20,7 +20,7 @@
   - `util/risuUserscript.user.js`
   - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack
     runner)
-  - `util/docsBudget.mjs` and `util/docsBudget.json` (the `check:docs` documentation check and its ratchet)
+  - `util/docsBudget.mjs` (the `check:docs` documentation check)
   - `util/ci/check.sh` and `.github/workflows/ci.yml` (the CI gate and its GitHub Actions workflow)
   - `util/heap/` (V8 heap snapshot analysis)
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
@@ -77,10 +77,11 @@ The test commands (`test*`, `check:tests`) are documented in [test-harness](test
 ### Documentation check
 
 - `pnpm check:docs` (`util/docsBudget.mjs`, plain Node over the Markdown, with a line-based parse) checks `STRUCTURE.md`
-  and every guide, printing one `path:line rule message` per finding. It reads `ceilings` and `allow` from
-  `util/docsBudget.json`. These fail:
-  - `ceiling`: a file over its entry in `ceilings`, or over 40,000 bytes without one. `stale-ceiling`: an entry for a
-    file that does not exist.
+  and every guide, printing one `path:line rule message` per finding. Every file has the same budgets. These fail:
+  - `ceiling`: a file over 40,000 bytes.
+  - `leaf`: over 8,000 bytes between a heading and the next heading of any level. Text before a file's first heading
+    counts only toward `ceiling`.
+  - `item`: a list item or table row over 600 characters, measured on the joined text with code spans included.
   - `paren-depth`: parentheses three deep outside code spans.
   - `sections`: a guide's `##` headings are not the nine of **Doc Maintenance** in order. `hazards`: a `Known Hazards`
     `###` other than `Issues`, `Limitations`, `Gotchas`, in that order.
@@ -88,9 +89,7 @@ The test commands (`test*`, `check:tests`) are documented in [test-harness](test
     `self-link`: a link to its own file without an anchor.
   - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
     the labels).
-- An `allow` entry `{ guide, rule, count }` accepts exactly that many findings of the rule in that guide: more are new
-  findings, fewer fail as `stale-allow`. The 8,000-byte leaf and 600-character item budgets are measured and reported
-  but do not fail yet. `--report` prints the sizes and every finding and exits 0.
+- `--report` prints the sizes and every finding and exits 0.
 
 ### Config files
 
@@ -399,8 +398,11 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   against the real auth store through `GET /api/asset/<hex>`.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
+- `util/docsBudget.test.ts` (node) runs the documentation check over small guide trees in a temporary directory, through
+  its exported functions.
 - Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
   display (icon, title and body fallbacks), and the userscript; verify those manually.
+- Not tested: the exit codes and output streams of the `util/docsBudget.mjs` command line.
 - Not tested: the dev runner's process handling (process groups, the lock, the readiness wait); verify it manually when
   changing that code.
 

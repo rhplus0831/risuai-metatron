@@ -278,9 +278,9 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
   in that order. `###` headings are free within that order: a `##` section over 8,000 bytes is divided by them, each a
   topic an agent would look up, and a topic label is a heading, not a paragraph ending in a colon.
 - Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
-  (continuation lines and code spans included), and parentheses at most two deep outside code spans. `pnpm check:docs`
-  measures them, and [build-test-platforms](docs/structure/build-test-platforms.md) `Files` says what fails. A guide
-  still over budget has its own ceiling in `util/docsBudget.json`, which only goes down.
+  (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
+  for every guide and this file: `pnpm check:docs` fails on any of them, and
+  [build-test-platforms](docs/structure/build-test-platforms.md) `Files` lists its rules.
 - A guide's `Tests` section names the harnesses, fakes, and fixtures (what they stand in for, what they control), the
   focused commands for the area, the `slow` and `e2e` memberships, and the gaps (`Not tested`), one bullet per harness.
   It does not list a test file's cases: the file is the inventory, and V4 finds it after a rename.

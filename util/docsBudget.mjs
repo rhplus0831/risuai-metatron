@@ -1,16 +1,17 @@
 // `pnpm check:docs`: the documentation check. Plain Node over the Markdown files (no Vitest or
 // Playwright run, no parser dependency). It measures every `*.md` under `docs/structure/` and
-// `STRUCTURE.md` and fails, printing one `path:line rule message` line per finding, on
-//   - `ceiling`: a file over its ceiling in `util/docsBudget.json`, or over the uniform guide budget without one;
-//   - `stale-ceiling`: a ceiling naming a file that does not exist;
+// `STRUCTURE.md`, all under one uniform budget, and fails, printing one `path:line rule message` line per
+// finding, on
+//   - `ceiling`: a file over the guide budget;
+//   - `leaf`: a heading of any level whose own text, up to the next heading, is over the leaf budget. Text before
+//     a file's first heading is in no leaf and counts only toward the guide budget;
+//   - `item`: a list item or table row over the item budget;
 //   - `paren-depth`: a heading, item, row, or paragraph with parentheses nested too deep outside code spans;
 //   - `sections` and `hazards`: a guide's `##` headings, or its `Known Hazards` `###` headings, off the fixed outline;
 //   - `unresolved-link`: a relative `.md` or `#anchor` link that does not resolve;
 //   - `self-link`: a link to the file it is in, with no anchor;
 //   - `label`: a work-tracking label, matched on joined segment text so a line wrap cannot split one. In a guide
 //     the whole text counts; in `STRUCTURE.md` only prose, because its rules quote the labels and link the plans.
-// The `allow` list in that file accepts `count` findings of one `rule` in one `guide`: more reports them all, fewer
-// reports `stale-allow`. The leaf and item budgets are measured and printed but do not fail.
 //
 // `--report` exits 0 whatever it finds and prints
 //   - a table of the guides: bytes, `###` headings, largest leaf, items over the length budget, parenthesis
@@ -32,7 +33,6 @@ export const PAREN_DEPTH_BUDGET = 2;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";
-export const BUDGET_FILE = "util/docsBudget.json";
 
 /** Every guide's `##` headings, in order. */
 export const GUIDE_SECTIONS = [
@@ -93,8 +93,8 @@ function fenceOpened(text) {
 /**
  * One Markdown file as `{ bytes, segments, sections }`. A segment is `{ kind, line, text }`, with
  * `level` on a heading: kinds `heading`, `item`, `row`, `paragraph`. A row's text has each run of
- * whitespace collapsed to one space, so column padding is not measured. A section is one heading of level
- * 2 or deeper: `{ level, heading, line, bytes, ownBytes }`, where `bytes` runs to the next heading of
+ * whitespace collapsed to one space, so column padding is not measured. A section is one heading of any
+ * level: `{ level, heading, line, bytes, ownBytes }`, where `bytes` runs to the next heading of
  * the same or a higher level and `ownBytes` to the next heading of any level. Fenced code is opaque.
  * A line starting with `|` is a row only in a table, so a wrapped item can continue on one.
  */
@@ -182,17 +182,15 @@ export function parseGuide(text) {
     }
     const bytes = Buffer.byteLength(text);
     const startOf = (entry) => entry?.start ?? bytes;
-    const sections = [];
-    headings.forEach((entry, i) => {
-        if (entry.level < 2) return;
+    const sections = headings.map((entry, i) => {
         const next = headings.slice(i + 1).find((other) => other.level <= entry.level);
-        sections.push({
+        return {
             level: entry.level,
             heading: entry.heading,
             line: entry.line,
             bytes: startOf(next) - entry.start,
             ownBytes: startOf(headings[i + 1]) - entry.start,
-        });
+        };
     });
     return { bytes, segments, sections };
 }
@@ -435,18 +433,20 @@ export function measureDocs(root) {
     };
 }
 
-/**
- * What fails for a `measureDocs` result under `ceilings` (path to bytes) and `allow` (`{ guide, rule, count }`
- * entries), as `{ path, line, rule, message }` findings, each file's in rule order. An entry drops the findings
- * of its rule and guide when there are at most `count`, and adds a `stale-allow` when there are fewer.
- */
-export function checkDocs(measure, { ceilings = {}, allow = [] } = {}) {
-    const files = [...measure.guides, measure.index];
+/** What fails for a `measureDocs` result, as `{ path, line, rule, message }` findings, each file's in rule order. */
+export function checkDocs(measure) {
     const findings = [];
     const add = (file, line, rule, message) => findings.push({ path: file, line, rule, message });
-    for (const file of files) {
-        const ceiling = ceilings[file.path] ?? GUIDE_BYTES_BUDGET;
-        if (file.bytes > ceiling) add(file.path, 1, "ceiling", `${file.bytes} bytes, ceiling ${ceiling}`);
+    for (const file of [...measure.guides, measure.index]) {
+        if (file.overBudget) add(file.path, 1, "ceiling", `${file.bytes} bytes, budget ${GUIDE_BYTES_BUDGET}`);
+        for (const { line, heading, ownBytes } of file.sections) {
+            if (ownBytes > LEAF_BYTES_BUDGET) {
+                add(file.path, line, "leaf", `"${heading}" ${ownBytes} bytes, budget ${LEAF_BYTES_BUDGET}`);
+            }
+        }
+        for (const { line, kind, length } of file.longItems) {
+            add(file.path, line, "item", `${kind} ${length} characters, budget ${ITEM_CHARS_BUDGET}`);
+        }
         for (const { line, kind, depth } of file.deepSegments) {
             add(file.path, line, "paren-depth", `${kind} depth ${depth}, budget ${PAREN_DEPTH_BUDGET}`);
         }
@@ -458,37 +458,16 @@ export function checkDocs(measure, { ceilings = {}, allow = [] } = {}) {
         for (const { line, target } of file.selfLinks) add(file.path, line, "self-link", target);
         for (const { line, kind, label } of file.labels) add(file.path, line, "label", `${kind} ${label}`);
     }
-    const known = new Set(files.map((file) => file.path));
-    for (const file of Object.keys(ceilings)) {
-        if (!known.has(file)) add(file, 1, "stale-ceiling", `no such file, but ${BUDGET_FILE} has a ceiling for it`);
-    }
-    const allowed = new Set();
-    const stale = [];
-    for (const { guide, rule, count } of allow) {
-        const matched = findings.filter((finding) => finding.path === guide && finding.rule === rule);
-        if (matched.length > count) continue;
-        matched.forEach((finding) => allowed.add(finding));
-        if (matched.length < count) {
-            const message = `${BUDGET_FILE} allows ${count} ${rule}, found ${matched.length}`;
-            stale.push({ path: guide, line: 1, rule: "stale-allow", message });
-        }
-    }
-    return [...findings.filter((finding) => !allowed.has(finding)), ...stale];
+    return findings;
 }
 
-/** What the check prints for `findings` of a `measureDocs` result. */
-export function formatCheck(measure, findings) {
+/** What the check prints for `checkDocs` findings. */
+export function formatCheck(findings) {
     if (findings.length > 0) {
         const lines = findings.map(({ path: file, line, rule, message }) => `${file}:${line} ${rule} ${message}`);
         return `${lines.join("\n")}\n[check:docs] FAIL: ${findings.length} finding(s)\n`;
     }
-    const files = [...measure.guides, measure.index];
-    const leaves = files.flatMap((file) => file.sections).filter((section) => section.ownBytes > LEAF_BYTES_BUDGET);
-    const items = files.flatMap((file) => file.longItems);
-    return (
-        `[check:docs] OK (reported, not failing: ${leaves.length} leaves over ${LEAF_BYTES_BUDGET} bytes, ` +
-        `${items.length} items over ${ITEM_CHARS_BUDGET} characters)\n`
-    );
+    return "[check:docs] OK\n";
 }
 
 /** Fixed-width lines for `rows` of cells: the first column left-aligned, the others right-aligned. */
@@ -549,7 +528,7 @@ export function formatReport(measure) {
     for (const file of files) {
         lines.push(`  ${file.path}`);
         const sections = file.sections
-            .filter((section) => section.level <= 3)
+            .filter((section) => section.level >= 2 && section.level <= 3)
             .map((section) => [
                 `${"#".repeat(section.level)} ${section.heading}`,
                 section.bytes,
@@ -632,8 +611,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     if (args.length > 0) {
         process.stdout.write(formatReport(measure));
     } else {
-        const findings = checkDocs(measure, JSON.parse(readFileSync(path.join(root, BUDGET_FILE), "utf8")));
-        (findings.length > 0 ? process.stderr : process.stdout).write(formatCheck(measure, findings));
+        const findings = checkDocs(measure);
+        (findings.length > 0 ? process.stderr : process.stdout).write(formatCheck(findings));
         if (findings.length > 0) process.exitCode = 1;
     }
 }

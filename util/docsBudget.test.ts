@@ -1,0 +1,223 @@
+// @vitest-environment node
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+    checkDocs,
+    formatCheck,
+    formatReport,
+    GUIDE_BYTES_BUDGET,
+    GUIDE_SECTIONS,
+    ITEM_CHARS_BUDGET,
+    LEAF_BYTES_BUDGET,
+    measureDocs,
+    PAREN_DEPTH_BUDGET,
+} from "./docsBudget.mjs";
+
+const GUIDE = "docs/structure/example.md";
+const SECTIONS = ["Scope", "Files", "Flows", "State", "Coupling", "Invariants", "Recipes", "Tests", "Known Hazards"];
+
+function guide(bodies: Record<string, string> = {}) {
+    return (
+        "# Guide\n\n" +
+        SECTIONS.map((section) => `## ${section}\n\n${bodies[section] ? `${bodies[section]}\n\n` : ""}`).join("")
+    );
+}
+
+function fillBytes(bytes: number) {
+    return "é".repeat(Math.floor(bytes / 2)) + "x".repeat(bytes % 2);
+}
+
+function headingAtSize(heading: string, bytes: number) {
+    const prefix = `${heading}\n\n`;
+    return prefix + fillBytes(bytes - Buffer.byteLength(prefix) - 2) + "\n\n";
+}
+
+function guideAtSize(bytes: number) {
+    const text = guide(Object.fromEntries(SECTIONS.map((section) => [section, "x".repeat(4_000)])));
+    // Spread the file across headings so only the file budget can fail.
+    return text.replace("# Guide\n\n", `# Guide\n\n${fillBytes(bytes - Buffer.byteLength(text) - 2)}\n\n`);
+}
+
+const roots: string[] = [];
+afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function tree(files: Record<string, string> = {}) {
+    const root = mkdtempSync(path.join(os.tmpdir(), "risu-docs-budget-"));
+    roots.push(root);
+    for (const [rel, text] of Object.entries({ "STRUCTURE.md": "# STRUCTURE\n", [GUIDE]: guide(), ...files })) {
+        const file = path.join(root, rel);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, text);
+    }
+    return root;
+}
+
+const finding = (file: string, line: number, rule: string) => expect.objectContaining({ path: file, line, rule });
+
+describe("documentation budgets", () => {
+    it("passes a clean tree with the required outline and OK output", () => {
+        expect(GUIDE_SECTIONS).toEqual(SECTIONS);
+        const measure = measureDocs(
+            tree({
+                [GUIDE]: guide({
+                    Scope: "[Files](#files) and [Index](../../STRUCTURE.md#structure).",
+                    "Known Hazards": "### Issues\n\n### Limitations\n\n### Gotchas",
+                }),
+            }),
+        );
+        const findings = checkDocs(measure);
+        expect(findings).toEqual([]);
+        expect(formatCheck(findings)).toBe("[check:docs] OK\n");
+    });
+
+    it("rejects a guide one byte above the uniform file budget", () => {
+        expect(GUIDE_BYTES_BUDGET).toBe(40_000);
+        const nested = "docs/structure/nested/guide.md";
+        for (const bytes of [40_000, 40_001]) {
+            const measure = measureDocs(tree({ [nested]: guideAtSize(bytes) }));
+            expect(measure.guides.find((file) => file.path === nested)).toMatchObject({
+                bytes,
+                overBudget: bytes > 40_000,
+            });
+            expect(checkDocs(measure)).toEqual(bytes === 40_000 ? [] : [finding(nested, 1, "ceiling")]);
+        }
+    });
+
+    it("rejects a leaf heading one byte above its budget", () => {
+        expect(LEAF_BYTES_BUDGET).toBe(8_000);
+        for (const bytes of [8_000, 8_001]) {
+            const text = guide({ Scope: headingAtSize("### Detail", bytes).slice(0, -2) });
+            const measure = measureDocs(tree({ [GUIDE]: text }));
+            expect(measure.guides[0].largestLeaf).toMatchObject({ bytes, line: 5 });
+            expect(checkDocs(measure)).toEqual(bytes === 8_000 ? [] : [finding(GUIDE, 5, "leaf")]);
+        }
+    });
+
+    it("measures wrapped items, unwrapped items and table rows with code spans included", () => {
+        expect(ITEM_CHARS_BUDGET).toBe(600);
+        for (const length of [600, 601]) {
+            const item = `${"a".repeat(300)} \`${"b".repeat(length - 303)}\``;
+            const body = [
+                `- ${item}`,
+                "",
+                `- ${item.replace(" ", "\n  ")}`,
+                "",
+                "| Value |",
+                "| --- |",
+                `| \`${"c".repeat(length - 6)}\` |`,
+            ].join("\n");
+            const measure = measureDocs(tree({ [GUIDE]: guide({ Scope: body }) }));
+            expect(checkDocs(measure)).toEqual(
+                length === 600 ? [] : [5, 7, 12].map((line) => finding(GUIDE, line, "item")),
+            );
+        }
+    });
+
+    it("rejects three nested parentheses while ignoring parentheses inside a code span", () => {
+        expect(PAREN_DEPTH_BUDGET).toBe(2);
+        for (const depth of [2, 3]) {
+            const body = `${"(".repeat(depth)}text \`((((code))))\`${")".repeat(depth)}`;
+            const measure = measureDocs(tree({ [GUIDE]: guide({ Scope: body }) }));
+            expect(measure.guides[0].maxParenDepth).toBe(depth);
+            expect(checkDocs(measure)).toEqual(depth === 2 ? [] : [finding(GUIDE, 5, "paren-depth")]);
+        }
+    });
+
+    it("rejects guide sections in the wrong order", () => {
+        const text = guide().replace("## Scope\n\n## Files", "## Files\n\n## Scope");
+        expect(checkDocs(measureDocs(tree({ [GUIDE]: text })))).toEqual([finding(GUIDE, 3, "sections")]);
+    });
+
+    it("rejects unknown or out-of-order Known Hazards subheadings", () => {
+        for (const [body, line] of [
+            ["### Risks", 21],
+            ["### Gotchas\n\n### Issues", 23],
+        ] as const) {
+            expect(checkDocs(measureDocs(tree({ [GUIDE]: guide({ "Known Hazards": body }) })))).toEqual([
+                finding(GUIDE, line, "hazards"),
+            ]);
+        }
+    });
+
+    it("rejects an unresolved relative Markdown link", () => {
+        const text = guide({ Scope: "[Missing](missing.md)" });
+        expect(checkDocs(measureDocs(tree({ [GUIDE]: text })))).toEqual([finding(GUIDE, 5, "unresolved-link")]);
+    });
+
+    it("rejects an unresolved anchor", () => {
+        const text = guide({ Scope: "[Present](#scope) and [Missing](#missing)" });
+        expect(checkDocs(measureDocs(tree({ [GUIDE]: text })))).toEqual([finding(GUIDE, 5, "unresolved-link")]);
+    });
+
+    it("rejects a link to its own file without an anchor", () => {
+        const text = guide({ Scope: "[Self](example.md) and [Section](example.md#scope)" });
+        expect(checkDocs(measureDocs(tree({ [GUIDE]: text })))).toEqual([finding(GUIDE, 5, "self-link")]);
+    });
+
+    it("rejects work-tracking labels, including a wrapped label", () => {
+        for (const label of ["Slice 1", "Phase\nA", "Stop 2", "docs/plan/pending.md"]) {
+            expect(checkDocs(measureDocs(tree({ [GUIDE]: guide({ Scope: label }) })))).toEqual([
+                finding(GUIDE, 5, "label"),
+            ]);
+        }
+    });
+
+    it("holds STRUCTURE.md to the same file and heading size budgets", () => {
+        for (const bytes of [40_000, 40_001]) {
+            const measure = measureDocs(tree({ "STRUCTURE.md": guideAtSize(bytes) }));
+            expect(measure.index).toMatchObject({ bytes, overBudget: bytes > 40_000 });
+            expect(checkDocs(measure)).toEqual(bytes === 40_000 ? [] : [finding("STRUCTURE.md", 1, "ceiling")]);
+        }
+        for (const bytes of [8_000, 8_001]) {
+            const measure = measureDocs(tree({ "STRUCTURE.md": headingAtSize("# STRUCTURE", bytes) }));
+            expect(checkDocs(measure)).toEqual(bytes === 8_000 ? [] : [finding("STRUCTURE.md", 1, "leaf")]);
+        }
+    });
+
+    it("checks a final level-one heading against the leaf budget", () => {
+        for (const bytes of [8_000, 8_001]) {
+            const text = guide() + headingAtSize("# Appendix", bytes);
+            const measure = measureDocs(tree({ [GUIDE]: text }));
+            expect(measure.guides[0].largestLeaf).toMatchObject({ bytes, line: 21 });
+            expect(checkDocs(measure)).toEqual(bytes === 8_000 ? [] : [finding(GUIDE, 21, "leaf")]);
+        }
+    });
+
+    it("prints each finding, and a report of the sizes and findings with the guide totals last", () => {
+        const text = guide({ Scope: `- ${"x".repeat(601)}\n\n[Missing](missing.md)` });
+        const index = headingAtSize("# STRUCTURE", 1_000);
+        const measure = measureDocs(tree({ [GUIDE]: text, "STRUCTURE.md": index }));
+        const findings = checkDocs(measure);
+        expect(findings).toEqual([finding(GUIDE, 5, "item"), finding(GUIDE, 7, "unresolved-link")]);
+        expect(
+            formatCheck(findings)
+                .trimEnd()
+                .split("\n")
+                .filter((line) => /^.+:\d+ \S+ .+/.test(line)),
+        ).toEqual([
+            expect.stringMatching(/^docs\/structure\/example\.md:5 item .+/),
+            expect.stringMatching(/^docs\/structure\/example\.md:7 unresolved-link .+/),
+        ]);
+
+        const report = formatReport(measure);
+        expect(report).toMatch(/^\[check:docs\] Guides\n/);
+        expect(report).toMatch(/^\s+guide\s+bytes\s+>40000\s+###\s+largestLeaf\s+items>600/m);
+        expect(report).toMatch(new RegExp(`^  docs/structure/example\\.md\\s+${Buffer.byteLength(text)}\\s`, "m"));
+        expect(report).toMatch(/^  STRUCTURE\.md\s+1000\s/m);
+        expect(report).toContain("[check:docs] Sections\n");
+        expect(report).toMatch(/^    ## Scope\s+\d+\s+\d+/m);
+        expect(report).toMatch(/^  docs\/structure\/example\.md:5 \S+ 601$/m);
+        expect(report).toMatch(/^  docs\/structure\/example\.md:7 missing\.md /m);
+        const totals = report.slice(report.indexOf("[check:docs] Totals"));
+        expect(totals).toMatch(/^\[check:docs\] Totals \(guides only, STRUCTURE\.md excluded\)\n/);
+        expect(totals).toContain("[check:docs] guides: 1\n");
+        expect(totals).toContain(`[check:docs] total bytes: ${Buffer.byteLength(text)}\n`);
+        expect(totals).toContain("[check:docs] list items over 600: 1\n");
+        expect(totals).toContain("[check:docs] unresolved links: 1\n");
+        expect(totals).toMatch(/\[check:docs\] labels: 0\n$/);
+    });
+});
