@@ -484,7 +484,7 @@ function captureBootGuests(plugins: RisuPlugin[]) {
 }
 
 /*
- * The reload after a remote `plugins` change (`plugins-mcp.md` Flows): another tab or device disabled,
+ * The reload after a remote `plugins` change (`plugins-mcp.md` Deferred reload): another tab or device disabled,
  * removed, or updated a plugin that runs here. It waits until no plugin work is in flight
  * (`pluginWorkIdle`; running work is never interrupted), checks again on the `pluginReload` chain
  * right before it clears anything, and loads the list as it is then. One at a time: changes while it

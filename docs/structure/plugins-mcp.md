@@ -26,355 +26,289 @@
 
 ## Files
 
-Plugins:
+### Plugin install and registries
 
-- `plugins/plugins.svelte.ts`: plugin install and loading.
-  - `RisuPlugin` (the persisted shape, declared in `shared/plugins.ts`). New imports store `version: '3.0'`; saved
-    entries with any other version (an upstream backup's `2`, `'2.1'`, or none) stay in the list but never load, and
-    `PluginSettings.svelte` marks their row "Unsupported API".
-  - `importPlugin`: parses the `//@name`, `//@api`, `//@display-name`, `//@arg`/`//@risu-arg`, `//@link`,
-    `//@update-url`, `//@version`, `//@allowed-ipc` headers, then transpiles TypeScript. Rejects any plugin whose
-    `//@api` tokens do not include `3.0` (`pluginApiVersionUnsupported`).
-  - `loadPlugins`: while safe boot turned plugins off for this page load (`safeBootOff("plugins")`,
-    [app-shell](app-shell.md) Safe boot) it returns at once: nothing loads, nothing is reported, the remote listener of
-    the deferred reload is never registered (and a queued deferred reload also checks the flag), so the settings toggle,
-    removal, and import save without loading. Otherwise it serializes `clearPluginHooks`, then `loadV3Plugins` with the
-    enabled `'3.0'` plugins; providers are reset again after all old sandboxes terminate. Its first call registers the
-    remote `plugins` listener of the deferred reload (Flows, Plugins step 6), and every call cancels a deferred reload
-    that is waiting. The enabled plugins of any other version are reported with one `alertError` listing them (console
-    only while a plugin hot-reloads), each identity (name, version, SHA-256 of the script) once per page load: a changed
-    script reports again.
-  - `allowedDbKeys` (the DB keys the plugin DB API reads and writes directly), `handlePluginInstallViaPlugin`.
-- `plugins/pluginHooks.ts`: `pluginHooks` (the provider, script-handler, replacer, and chat-output registries),
-  `clearPluginHooks`, `customProviderStore`, and the provider/hook types. `clearPluginHooks` calls
-  `clearPluginProviders` to clear both provider maps and the names store; v3 model metadata is cleared in place by
-  `loadV3Plugins`. A server job reaches them through the job channel (`src/ts/network/jobChannel.ts`, `global-api.md`):
+- `plugins/plugins.svelte.ts`: plugin install and [loading](#load-and-reset).
+  - `RisuPlugin` (`shared/plugins.ts`): new imports store `version: '3.0'`; saved entries with any other version (an
+    upstream backup's `2`, `'2.1'`, or none) stay in the list but never load, and `PluginSettings.svelte` marks their
+    row "Unsupported API".
+  - `importPlugin`: rejects any plugin whose `//@api` tokens do not include `3.0` (`pluginApiVersionUnsupported`).
+- `plugins/pluginHooks.ts`: the hook registries. A server job reaches them through the job channel (`global-api.md`):
   the client lists its registered hooks at job creation (`registeredHooks`), and the server calls back by hook name; a
   set's membership is read when the callback runs.
-- `plugins/pluginSafeClass.ts`: `SafeLocalStorage`, `SafeLocalPluginStorage` (delegates to the plugin storage module),
-  `isJsonValue`, `tagWhitelist`.
 - `storage/pluginStorageStore.svelte.ts`: the only runtime writer of `pluginCustomStorage` (the boot installs it as the
-  server holds it, before the adapter's start-up mark).
-  `setPluginStorageItem`/`removePluginStorageItem`/`clearPluginStorage` (the reserved `_pluginStorage` namespace,
-  `PLUGIN_STORAGE_KEY`), `setSafeLocalPluginValue`/`removeSafeLocalPluginValue`/`clearSafeLocalPluginStorage`
-  (`_safeLocalPluginStorage`, `SAFE_LOCAL_PLUGIN_STORAGE_KEY`; any key becomes an own key, `__proto__` included),
-  `setPluginCustomValue` and `replacePluginCustomStorage` (the top-level keys `setDatabase` writes), and the readers. An
-  array-shaped namespace is read as a copy of its entries and converted to a dictionary on its first write.
-- `plugins/apiV3/pluginContext.ts`: the per-plugin call context of a hook. `PluginCallContext` (`chatRef`, `presetId`,
-  `personaId`), `capturePluginContext(chatRef)`, `invokeHook(hook, context, ...args)` (the handoff slot the hook's
-  wrapper takes on its first line), `enterContext(owner, context)`/`currentContext(owner)` (a stack per loaded plugin
-  instance), `hasReadOnlyContext(owner)` (any active transform context on that instance), and `PluginTargetGoneError`.
-- `plugins/apiV3/permissionStore.ts`: the v3 permission grants in the server-owned `pluginPermissions` resource
-  (`seedPluginPermissions`, the boot initializer from the boot answer's record and revision; `loadPluginPermissions`,
-  the legacy migration's read after its merge; `hasPermissionGrant`, `getLastGrantTime`, `recordPermissionGrants`;
-  `refreshPluginPermissions`, the live-update read).
-- `plugins/apiV3/factory.ts` `SandboxHost`: sets the iframe sandbox and CSP, writes the RPC bridge `GUEST_BRIDGE_SCRIPT`
-  into the guest, and relays calls.
-  - Both sides check the message source before reading its data: the host accepts only its iframe's window, and the
-    guest only its parent.
-  - Message types: `CALL_ROOT`/`CALL_INSTANCE` → `RESPONSE`.
-  - Handles callbacks, remote references (`__classType='REMOTE_REQUIRED'`), abort signals, and MessagePort streams.
-  - A host stream bridged to the guest (`replaceStreamsWithPorts`: a `nativeFetch` body through `serialize`) that the
-    guest has not pulled from within `UNREAD_PLUGIN_STREAM_TIMEOUT_MS` (60 s) gets
-    `{ done: true, error: "Unread plugin response expired" }` and its reader is cancelled, ending the host fetch and its
-    `/proxy` upstream; the first pull clears the timer. The guest's `reconstruct` builds its stream with
-    `{ highWaterMark: 0 }`, so it pulls only for a pending read.
-  - `startup` (safe boot): a promise of how the guest's start ended, `ready` (`SCRIPT_SETTLED`), `failed`
-    (`SCRIPT_SETTLED` with `failed: true`, posted when the top-level script threw, and by the fallback script when it
-    never ran), or `stopped` (terminated before either). A failed start still counts as settled for `isIdle`.
-  - Activity: `isIdle()` is true once the guest's top-level script settled (`SCRIPT_SETTLED`, posted by the srcdoc after
-    the script settles or throws, and by a second script when the first never ran) while no guest-to-host call
-    (`pendingHostCalls`, a `nativeFetch` awaiting headers included), host-to-guest callback (`pendingCallbacks`), or
-    bridged stream either way (`activeStreamCleanups`) is open, or once terminated; `onActivityChanged` hears every
-    change toward idle. A callback that cannot be prepared or posted (including a missing guest window), or a callback
-    result whose stream reconstruction fails, leaves nothing pending; reconstruction rollback also cancels the guest
-    streams already built.
-  - `terminate` aborts every abort controller it holds (those of host calls the guest passed a `signal`, such as a
-    `nativeFetch` still awaiting headers; a call without one keeps running), then closes the bridged streams; a host
-    call that resolves after `terminate` posts nothing, builds no stream bridge, and cancels the streams of its result.
-- `plugins/apiV3/v3.svelte.ts`: the v3 host API.
-  - `makeRisuaiAPIV3`: the host implementation of the `risuai` global. Older API names (`getChar`/`setChar`,
-    `getArg`/`setArg`, `risuFetch`, `readImage`, `setDatabase`/`setDatabaseLite`, ...) are implemented by module-level
-    helpers in the same file.
-  - `applyPluginKey`: the routing of `setDatabase`/`setDatabaseLite`, one key at a time to the mutation that owns it
-    (`characters` → `applyPluginCharacters`, `personas` → `setPersonas`, `modules`/`enabledModules`/`characterOrder` →
-    the collection module, `plugins` (`setDatabase` only: the plugins the user confirmed) → `upsertPlugin` by name,
-    `pluginCustomStorage` and unknown keys → the plugin storage module, `selectedPersona` → `selectPersonaAt`, the other
-    `allowedDbKeys` → `updateSettings` with the hook's presets; the model roots `maxContext`, `seperateModels`, and
-    `seperateModelsForAxModels` go on to `writeModelRoot`, which applies the
-    [compatibility model-root write rules](llm-requests.md#invariants) (a value equal to the one read is no change; a
-    refusal warns `[Settings] Refused ...` and keeps the old value). `pluginKeyOrder` applies `characterOrder` and
-    `selectedPersona` last. `warnRefused` turns a `MutationValidationError` into a `[Plugin] Refused ...` console
-    warning and keeps the old value.
-  - Each API object wraps the hooks its plugin registers (script handlers, replacers, chat listeners, providers, MCP
-    listings and tool calls) so the hook's call context is on that instance's stack while the hook runs.
-  - `addProvider` replaces registrations by name (latest callback, options, and model metadata win), keeping one entry
-    in each provider list. A registered provider asks for the `provider` permission on every call (periodic
-    re-confirmation); a denied answer, prompted or cached, answers
-    `{ success: false, content: language.pluginProviderPermissionDenied }` without calling the plugin, and a request
-    aborted while the prompt was pending answers `pluginProviderRequestAborted` the same way. Both the job channel's
-    `provider` callback and the tab's `requestPlugin` show that content as the request's failure.
-  - `loadPlugins` serializes the complete hook reset and reload on a promise chain, capturing each caller's enabled list
-    before it waits; a failed reload does not block the next. `loadV3Plugins` unloads a snapshot of the instances, waits
-    for their callbacks and termination, resets all provider registries and removes every plugin event listener from the
-    target it was registered on, then starts the replacements with `executePluginV3`. `getV3PluginInstance` reads the
-    live registry.
-  - `loadPluginsForBoot()` (`plugins.svelte.ts`): uses the same reload chain as `loadPlugins` but captures that call's
-    startup promises immediately after `loadV3Plugins`, before another reload can replace the instances. It returns
-    `guestsStarted` and `stopFollowingGuests` to `loadData`; ordinary `loadPlugins` keeps `Promise<void>` and does not
-    inspect startup state. The captured guests must report `ready`; `failed` or a missing initial instance fails at
-    once. A `stopped` guest waits for the `pluginReload` chain and follows the instance with the same name, repeating
-    for replacements. When there is no replacement, that guest counts as started only if its name is no longer enabled
-    with API 3.0; otherwise it fails. Safe boot's settle window stops following replacements after 10 s and fails guests
-    still silent, without interrupting any plugin work.
-  - `pluginWorkIdle()`/`onPluginWorkChange(listener)`: the idle definition of the deferred reload (Flows, Plugins step
-    6), collected over `anyLocalSend` (`localSends.ts`), the jobs' plugin work (`generationJobs.ts`
-    `generationPluginWorkActive`), the host-side hook invocations still running (every wrapped hook, and a provider from
-    before its permission prompt), and each registered `SandboxHost.isIdle`.
-  - `nativeFetch` adapts only `method`, `headers`, `body`, and `signal` to `fetchNative`; it defaults to GET, normalizes
-    record/pair headers before the sensitive-header scan, and converts sandbox-supported bodies (string, ArrayBuffer,
-    ArrayBufferView, Blob). GET/HEAD bodies are refused; string/Blob content types are supplied when absent.
-  - `getCurrentLorebookEntries` returns a snapshot of the character's `globalLore` with the chat's `loreOverrides`
-    applied (`shared/lore/overrides.ts` `mergeOwnerLore`), the chat's `localLore`, and the chat's module lore; with no
-    chat, the selected character's raw `globalLore` and module lore.
-  - `customV3ProviderMetaStore`: `pluginmodel:::` models.
-  - `onStorageDiscarded(callback)`: a listener over the save adapter's `onPluginStorageDiscarded`, removed on unload
-    through `addPluginUnloadCallback`. Each discard calls it once with
-    `{ type: "storageDiscarded", pluginStorage, localPluginStorage, customStorage }` (the keys of `_pluginStorage` and
-    `_safeLocalPluginStorage` whose unsaved value a conflict replaced; `customStorage` only as a flag for any other
-    value lost, a custom key or a reserved name's own shape, since reading custom key names takes the `db` permission),
-    not awaited, with a rejection logged. It needs no permission and runs without a call context.
-  - Permissions, runtime `SafeElement`, unload callbacks.
-- `plugins/apiV3/risuai.d.ts`: the public v3 API declarations (`RisuaiPluginAPI`, `MCPToolDef`, ...).
-- `plugins/apiV3/developMode.ts` `hotReloadPluginFiles`: polls the File System Access API.
-- `plugins/apiV3/transpiler.ts` `pluginCodeTranspiler`: Sucrase.
+  server holds it, before the adapter's start-up mark). An array-shaped namespace is read as a copy of its entries and
+  converted to a dictionary on its first write.
+- `plugins/apiV3/pluginContext.ts`: a hook's call context, on a stack per loaded plugin instance (`currentContext`);
+  `invokeHook` is the handoff slot the hook's wrapper takes on its first line.
 
-MCP:
+### Sandbox host
 
-- `mcp/mcp.ts`: the client registry and tool dispatch.
-  - `initializeMCPs`: sets up internal, `plugin:`, and remote clients. A `stdio:` entry with `url` is treated as remote;
-    one with `command`/`args` is rejected (`stdio MCPs are not supported`).
-  - `readyTabClient(identifier)`: the `internal:fs` or `internal:googlesearch` client, one instance for this registry
-    and for a server job's callbacks, handshaken (concurrent first uses share one handshake, so one directory picker).
-    The registry's cleanup drops its own reference only.
-  - `MCPs`, `callOnlyMCPs`.
-  - `getMCPTools`, `getTools`, `callTool`, `callMCPTool`.
-  - `importMCPModule`.
-  - `encodeToolCall(call, chatRef?)`/`decodeToolCall(text, chatRef?)`: remembered calls. With the request's chat they
-    live in `chat.toolCalls` (written with `mergeChatMeta`, so two devices adding calls keep each other's; the server
-    reads and writes the same field for a job's request). A call without a chat, or whose chat is gone when it is
-    remembered, is not remembered (logged once); a marker remembered in the browser's former LocalForage store
-    `mcp-tool-calls` (by an older version, or without a chat) no longer resolves (the store was removed; alpha, no
-    migration). `transport.ts` passes the request's chat for both.
-- `mcp/mcplib.ts` `MCPClient`: remote JSON-RPC over streamable HTTP or SSE, OAuth, sessions, pagination. Protocol
-  versions `2025-03-26`/`2024-11-05`. Events are framed by `shared/mcp/sse.ts` (`SseFramer`: bytes in, each event's text
-  out, CRLF, LF, or CR line ends; `parseSseEvent`: `data:` and `event:` with or without the space, comments skipped), as
-  in the server's client. A session id is taken from an `initialize` answer in JSON or as an event stream. A stored
-  refresh token is used when the token endpoint answers 200 with a token, and a new `refresh_token` in that answer
-  replaces the stored one (`registerRefreshToken`); anything else goes on to a full login; the authorization endpoint a
-  server names must be `http:` or `https:` before it is opened. `addAuthRefresh` (`persistence.md`) keeps one entry per
-  server URL. `destroy()` retires the client (the registry dropped it): it starts no request, handshake, login step, or
-  stream reader afterwards, and an answer that completes later (a session id, server info, a tool or prompt list, a tool
-  result, a token or rotated refresh token) is refused with `The MCP client was closed`; the session reset after a 404
-  or 401 (`reset`) keeps the client usable. Pending SSE answers are registered by `waitFor` in `pending`; the answer,
-  its stream's EOF or failure, or `reset` settles them and removes their document listeners. An unanswered EOF on a
-  request's own response stream returns JSON-RPC error -32000 (`The MCP stream ended without an answer`), a read failure
-  its message, and a reset or EOF on the current legacy GET `The MCP session ended`; `destroy` uses reset and the
-  closed-client guard rejects the settled answer. `connectSSE` cancels and releases every reader and removes its `sses`
-  entry in `finally`; an answered streamable request aborts its stream even if the server keeps it open. A ping reply's
-  POST does not block the reader from observing EOF or failure. The legacy GET has an AbortController, its endpoint
-  waiter also settles, and only the current legacy stream may reset the session on ending. The handshake refuses an
-  ended session. A legacy waiter also settles while its POST is still out, and a failed POST removes its listener. Other
-  requests already sent when retired are not aborted (a refresh may still spend the stored token); the custom transport
-  (`customTransport`, no caller in the app) is not fenced.
-- `mcp/internalmcp.ts` `MCPClientLike`: base class for local clients.
-- Local clients:
-  - `filesystemclient.ts`: File System Access; `readFileAsPDF` uses
-    `src/ts/process/dynamicutils/pdf.ts:convertPdfToImages` to return PDF pages as image tool content.
-  - `googlesearchclient.ts`: `google_search`, `google_search_images`.
-  - `dice.ts`.
-  - `graphmem.ts`: chat variable `graphmem_graph` plus `HypaProcesser`. A request's call (`callToolForChat`) reads and
-    writes the request's chat by id (`getChatVarOf`/`setChatVarOf`, the preset default from the request's captured
-    preset when its context is for that chat, else the chat's display preset) and answers an `Error:` text for no chat
-    or one that is not loaded; `callTool` (no request: the Playground) uses the selected chat
-    (`getChatVar`/`setChatVar`). The tools and their logic are `shared/mcp/graphmem.ts` (`GRAPHMEM_TOOLS`,
-    `callGraphMemTool` over a `GraphMemHost`: the variable and a similarity search), shared with the server; this file
-    is the tab's host. A chat without the variable (it reads as `null`) or with a non-array value starts an empty graph,
-    and the search fills the processor with `addText` before ranking (both hosts); the ranking returns every entry by
-    similarity, without a threshold.
-  - `aiaccess.ts`: `runLLM` → `requestChatData`. Shared the same way: `shared/mcp/aiaccess.ts` (`AIACCESS_TOOLS`,
-    `callAiAccessTool` over an `AiAccessHost`).
-- `mcp/pluginmcp.ts`: `registerMCPModule`/`unregisterMCPModule` and `registeredCustomPluginMCPs`. IDs must start with
-  `plugin:`. `CustomPluginMCPClient.getToolList(context?)` and `callTool(name, args, context?)` hand the context
-  directly to their stored callbacks with `invokeHook`; `registerMCP` wraps those callbacks per instance with
-  `withContext` and installs unload cleanup guarded by client identity. Unregister also drops that client from the tab's
-  `MCPs`/`callOnlyMCPs`; `syncMCPs` resolves each `plugin:` client from the current registration on every call.
-  `MCPClientLike` accepts the optional trailing context, but dispatchers pass it only to plugin clients. Internal
-  clients whose tools act on a chat (`internal:graphmem`, `internal:risuai`, `internal:aiaccess`) have
+`plugins/apiV3/factory.ts` `SandboxHost` sets the iframe sandbox and CSP, writes the RPC bridge `GUEST_BRIDGE_SCRIPT`
+into the guest, and relays calls, callbacks, abort signals, and MessagePort streams.
+
+- Both sides check the message source before reading its data: the host accepts only its iframe's window, and the guest
+  only its parent.
+- A host stream bridged to the guest (a `nativeFetch` body) not pulled within `UNREAD_PLUGIN_STREAM_TIMEOUT_MS` (60 s)
+  gets the error `Unread plugin response expired` and its reader is cancelled, ending the host fetch and its `/proxy`
+  upstream. The guest's `reconstruct` builds its stream with `{ highWaterMark: 0 }`, so it pulls only for a pending
+  read.
+- `startup` (safe boot): `ready`, `failed` (the top-level script threw or never ran), or `stopped` (terminated before
+  either). A failed start still counts as settled for `isIdle`.
+- `isIdle()`: the guest's top-level script settled while no guest-to-host call (a `nativeFetch` awaiting headers
+  included), host-to-guest callback, or bridged stream either way is open, or once terminated. `onActivityChanged` hears
+  every change toward idle.
+- A callback that cannot be prepared or posted (including a missing guest window), or a callback result whose stream
+  reconstruction fails, leaves nothing pending; rollback also cancels the guest streams already built.
+- `terminate` aborts every controller it holds (host calls the guest passed a `signal`; a call without one keeps
+  running), then closes the bridged streams; a host call that resolves after `terminate` posts nothing, builds no stream
+  bridge, and cancels the streams of its result.
+
+### Host API
+
+`plugins/apiV3/v3.svelte.ts` `makeRisuaiAPIV3` implements the `risuai` global; `risuai.d.ts` declares it. Each API
+object wraps the hooks its plugin registers so the hook's call context is on that instance's stack while the hook runs.
+
+- `addProvider` replaces registrations by name (latest callback, options, and model metadata win), keeping one entry in
+  each provider list.
+- A registered provider asks for the `provider` permission on every call (periodic re-confirmation). A denied answer,
+  prompted or cached, answers `{ success: false, content }` without calling the plugin, as does a request aborted while
+  the prompt was pending; the job channel's `provider` callback and the tab's `requestPlugin` show that content as the
+  request's failure.
+- `onStorageDiscarded`: `customStorage` is only a flag for any other value lost (a custom key or a reserved name's own
+  shape), since reading custom key names takes the `db` permission. Not awaited, a rejection logged; it needs no
+  permission and has no call context.
+
+### MCP registry
+
+`mcp/mcp.ts` is the client registry and tool dispatch.
+
+- `initializeMCPs`: a `stdio:` entry with `url` is treated as remote; one with `command`/`args` is rejected.
+- `readyTabClient(identifier)`: the `internal:fs` or `internal:googlesearch` client, one instance for this registry and
+  for a server job's callbacks, handshaken (concurrent first uses share one handshake, so one directory picker). The
+  registry's cleanup drops its own reference only.
+- `encodeToolCall`/`decodeToolCall`: remembered calls, in `chat.toolCalls` of the request's chat, written with
+  `mergeChatMeta` so two devices adding calls keep each other's; the server uses the same field for a job's request. A
+  call without a chat, or whose chat is gone when it is remembered, is not remembered (logged once).
+- A browser's LocalForage store `mcp-tool-calls` (an older version's, chatless calls included) is never read, so a
+  marker remembered there does not resolve (no migration).
+
+### Remote MCP client
+
+`mcp/mcplib.ts` `MCPClient`: remote JSON-RPC over streamable HTTP or SSE, OAuth, sessions, pagination. Events are framed
+by `shared/mcp/sse.ts`, as in the server's client. A session id is taken from an `initialize` answer in JSON or as an
+event stream.
+
+- Refresh token: a stored one is used when the token endpoint answers 200 with a token, and a new `refresh_token` in
+  that answer replaces the stored one (`registerRefreshToken`); anything else goes on to a full login.
+- The authorization endpoint a server names must be `http:` or `https:` before it is opened.
+- Retirement: `destroy()` (the registry dropped the client) starts no request, handshake, login step, or stream reader
+  afterwards, and an answer that completes later (a session id, a list, a tool result, a token) is refused with
+  `The MCP client was closed`. The session reset after a 404 or 401 (`reset`) keeps the client usable.
+- Not fenced: other requests already sent when retired are not aborted (a refresh may still spend the stored token), and
+  the custom transport (`customTransport`, no caller in the app).
+- Pending SSE answers (`waitFor`, `pending`): the answer, its stream's EOF or failure, or `reset` settles them and
+  removes their document listeners. An unanswered EOF on a request's own response stream returns JSON-RPC error -32000
+  (`The MCP stream ended without an answer`), a read failure its message, and a reset or EOF on the current legacy GET
+  `The MCP session ended`; `destroy` uses reset and the closed-client guard rejects the settled answer.
+- `connectSSE` cancels and releases every reader and removes its `sses` entry in `finally`; an answered streamable
+  request aborts its stream even if the server keeps it open. A ping reply's POST does not block the reader from
+  observing EOF or failure.
+- The legacy GET has an AbortController, its endpoint waiter also settles, and only the current legacy stream may reset
+  the session on ending. The handshake refuses an ended session. A legacy waiter also settles while its POST is still
+  out, and a failed POST removes its listener.
+
+### Local MCP clients
+
+- `mcp/internalmcp.ts` `MCPClientLike`: the base class. It accepts the optional trailing context, but dispatchers pass
+  it only to plugin clients.
+- Chat clients (`internal:graphmem`, `internal:risuai`, `internal:aiaccess`) have
   `callToolForChat(chatRef, name, args, scope?)`: `callMCPTool` calls it whenever it was given a chat argument (`null`
-  included) and `callTool(name, args)` only when it was not (`undefined`). Other internal and remote clients keep
-  `callTool(name, args)`.
-- `mcp/risuaccess/`: `RisuAccessClient` with `CharacterHandler`, `ChatHandler`, and `ModuleHandler`. Tools that read and
-  write characters, lore, regex, Lua, and modules. The three handlers are
-  `shared/mcp/risuaccess/{characters,chats,modules}.ts` over a `RisuAccessHost` (`host.ts`: the records as they are now,
-  the two writes, the current chat's messages, the consent prompt; `index.ts` `createRisuAccess` is the list and
-  dispatch for a host), so a server job runs the same tools on its store (`server/src/mcp/internal.ts`). The classes
-  here are the shared handlers over `host.ts` `tabRisuAccessHost` (the mirror,
-  `updateCharacter`/`updateModule`/`setModuleEnabled`, `alertConfirm` with `language.mcpAccessPrompt`), which `callTool`
-  (no request: the Playground) uses; a request's call (`callToolForChat`) runs `createRisuAccess` over
-  `tabRisuAccessHostFor(chatRef)`, built per call: an empty character id names the request chat's character (`null`:
-  none), that character's history is the request's chat, and another character's history is its selected chat in this
-  tab, as a server job resolves them (failures stay the tab's: no selected chat reads as an empty history); `mcplib.ts`
-  re-exports `MCPTool` and `MCPToolHandler` from the shared host file.
-  - `utils.ts` `getCharacter(id)` (the first `chaId` or name match; the selected one for an empty id) and the collection
-    module's `findModule(id)` return the mirror records typed `DeepReadonly`.
-  - Every write goes through `writeConfirmed(id, tool, action, write)`: resolve, `promptAccess` confirmation, resolve
-    again by the captured id (never by name) and recheck the type (a group, an MCP module), then run the synchronous
-    `write` on that record. The write builds the one list or field set it changes and calls
-    `updateCharacter`/`updateModule`; a `MutationValidationError` answers an `Error:` text.
+  included) and `callTool(name, args)` only when it was not (`undefined`).
+- `googlesearchclient.ts`: `initializeCredentials` refuses a missing, cancelled, or blank API key or engine id before
+  anything is written, and trims accepted values before `googleSearchCredentials` is saved.
+- `graphmem.ts`, `aiaccess.ts`: the tab's hosts of `shared/mcp/`, whose tools and logic the server shares. For a request
+  the graph is the chat variable `graphmem_graph` of its chat by id (the preset default from the request's captured
+  preset when its context is for that chat, else the chat's display preset), and no chat or one that is not loaded
+  answers an `Error:` text.
+- `mcp/pluginmcp.ts`: `CustomPluginMCPClient` hands the context directly to its stored callbacks with `invokeHook`;
+  `registerMCP` wraps those callbacks per instance with `withContext` and installs unload cleanup guarded by client
+  identity. Unregister also drops that client from the tab's `MCPs`/`callOnlyMCPs`; `syncMCPs` resolves each `plugin:`
+  client from the current registration on every call.
+
+### RisuAccess
+
+- `mcp/risuaccess/`: the handlers are `shared/mcp/risuaccess/` over a `RisuAccessHost`, so a server job runs the same
+  tools on its store (`server/src/mcp/internal.ts`). `tabRisuAccessHost` serves `callTool` (no request: the Playground).
+- A request's call (`callToolForChat`) runs `createRisuAccess` over `tabRisuAccessHostFor(chatRef)`, built per call: an
+  empty character id names the request chat's character (`null`: none), that character's history is the request's chat,
+  and another character's history is its selected chat in this tab, as a server job resolves them. Failures stay the
+  tab's: no selected chat reads as an empty history.
+- Every write goes through `writeConfirmed`: `promptAccess` confirmation, then the [re-resolve](#invariants) (never by
+  name) and a type recheck (a group, an MCP module). A `MutationValidationError` answers an `Error:` text.
 
 ## Flows
 
-Plugins:
+### Load and reset
 
-1. `bootstrap.ts:loadData` → `loadPlugins` → `clearPluginHooks` → `loadV3Plugins`: unload and terminate all old
-   instances, reset both provider maps, `customProviderStore`, and `customV3ProviderMetaStore` (in place), then start
-   enabled plugins.
-2. `executePluginV3` builds a hidden iframe, then `new SandboxHost(makeRisuaiAPIV3(...))`, then `host.run(code)`.
-3. Hook entry points in the host. The runners of the hooks that have a chat capture the call context
-   (`capturePluginContext` of their chat) before their first await, or take the one they were given, and call each hook
-   through `invokeHook`:
-   - The `edit*` hooks: a render's `editdisplay` and `editprocess` handlers (`parser/transformClient.ts`) run between
-     the script transform's two calls: the server answers the texts before the handlers and keeps the rest; the tab runs
-     the mode's handlers in order on each text with the captured context and read-only `purpose: "transform"`
-     (`invokeHook`; the texts side by side), and sends the results, or a handler's error per target, to
-     `/api/transform/continue`; the handlers end 23 s after the first call (5 s before the chunk's 28 s, kept for the
-     second call): a handler still running then fails its own target, and the other texts go out in the second call (it
-     is not stopped, but no later handler of that text is started). The handler set's identity is per document (a nonce,
-     the mode, and a version that changes with the mode's ordered hook list), so a reload or a plugin change does not
-     reuse a cached result made with other handlers.
-   - `requestChatData` runs the before/after replacers, and `requestPlugin` for providers.
-   - `sendChat:runChatOutputListeners` (the send passes its context down to its scripts, requests, and recursions).
-   - MCP listing and tool callbacks: the job channel passes its targets to the plugin client; the tab's `request.ts`
-     passes `pluginContext` through `getTools`/`getMCPTools`, and `transport.ts` through `callTool`/`callMCPTool` for
-     both the ownership listing and the call. The plugin client invokes the wrapped callback synchronously with the
-     context, after registry awaits have finished.
+- `bootstrap.ts:loadData` calls `loadPluginsForBoot`, anything else `loadPlugins`; both run these steps.
+- Safe boot: while plugins are off for this page load (`safeBootOff("plugins")`, [app-shell](app-shell.md) Safe boot) a
+  load returns at once: nothing loads, nothing is reported, the remote listener of the
+  [deferred reload](#deferred-reload) is never registered (and a queued deferred reload also checks the flag), so the
+  settings toggle, removal, and import save without loading.
+- Chain: the complete hook reset and reload run on the `pluginReload` promise chain, with each caller's enabled list
+  captured before it waits; a failed reload does not block the next. The first load registers the remote `plugins`
+  listener, and every load cancels a deferred reload that is waiting.
+- Reset: `clearPluginHooks` (both provider maps, `customProviderStore`, the script-handler and chat-output registries),
+  then `loadV3Plugins` with the enabled `'3.0'` plugins: it unloads a snapshot of the instances, waits for their
+  callbacks and termination, resets the providers again and `customV3ProviderMetaStore` in place (discarding
+  registrations made during unload), removes every plugin event listener from its target, and starts the replacements.
+- Unload unregisters each instance's MCP clients (an identifier replaced by another client is kept), removes the
+  plugin's replacers and script handlers, and rejects its pending callbacks.
+- The enabled plugins of any other version are reported with one `alertError` (console only during hot reload), each
+  identity once per page load: a changed script reports again.
+- `loadPluginsForBoot` captures that call's startup promises immediately after `loadV3Plugins`, before another reload
+  can replace the instances; `loadPlugins` does not inspect startup state. A captured guest must report `ready`;
+  `failed` or a missing initial instance fails at once, and a `stopped` one follows its replacement
+  ([app-shell](app-shell.md) Safe boot).
 
-   Chat-bound HypaV3 summaries capture and pass their context; server callbacks, including image-view generation, run
-   under the job targets. A caller that intentionally supplies no chat context uses the selection fallback.
+### Hook entry points
 
-   Called directly, without a context (the tab's selection, or an ambient context of the same plugin, applies):
+The runners of the hooks that have a chat call each hook through `invokeHook` with the context they captured
+(`capturePluginContext`) or were given:
 
-   - `globalFetch` runs `bodyIntercepterStore`;
-   - TTS hooks via `ttsHooks.ts`;
+- `editdisplay` and `editprocess` handlers of a render (`parser/transformClient.ts`) run between the script transform's
+  two calls with read-only `purpose: "transform"`; the results, or a handler's error per target, go to
+  `/api/transform/continue`.
+  - The handlers end 23 s after the first call (5 s before the chunk's 28 s, kept for the second call): a handler still
+    running then fails its own target, and the other texts go out in the second call (it is not stopped, but no later
+    handler of that text is started).
+  - The handler set's identity is per document (a nonce, the mode, and a version that changes with the mode's ordered
+    hook list), so a reload or a plugin change does not reuse a cached result made with other handlers.
+- `requestChatData` runs the before/after replacers, and `requestPlugin` for providers.
+- `chatOutput` listeners: a server send's `runChatOutputListeners` (`server/src/prompt/runner.ts`) reaches them through
+  the job channel's `chatOutput` callback, with the job's targets.
+- MCP listing and tool callbacks: the job channel passes its targets; `request.ts` passes `pluginContext` through
+  `getTools`, and `transport.ts` through `callTool` for both the ownership listing and the call. The plugin client
+  invokes the wrapped callback synchronously with the context, after registry awaits have finished.
 
-4. Inside a hook, the selection-dependent host functions read `currentContext` of their plugin instance on their first
-   line: `getCharacter`/`setCharacter`, `getChar`/`setChar`, `getCurrentCharacterIndex`, `getCurrentChatIndex`,
-   `getCurrentLorebookEntries`, `parseRisuChat`, `sendChat`, `runLLMModel`, `getDatabase`, and
-   `setDatabase`/`setDatabaseLite`. They act on the hook's character, chat, and preset, and throw
-   `PluginTargetGoneError` when the target the call needs no longer exists (a gone preset fails only the preset keys of
-   `getDatabase`/`setDatabase`). `runLLMModel` uses the hook's chat for its parsing and for the provider hooks it
-   triggers; the model settings stay the current ones. `parseRisuChat` inside a hook parses with `risuChatParserScoped`
-   (the hook's preset fields and persona, `parser.svelte.ts`). With no context on the stack, the tab's selection
-   applies.
-5. UI extensions push into the rune arrays in `stores.svelte.ts` (`additionalSettingsMenu`, `additionalChatMenu`,
-   `chatPanelStore`, ...) and must register cleanup with `addPluginUnloadCallback`.
-6. A remote `plugins` change (another tab or device; `onRemoteRecordApplied` after a live record, a live patch, or a
-   conflict reload) reloads the plugins here once plugin work is idle. Only a change to the load signature counts: each
-   enabled `'3.0'` plugin's name, script, and `allowedIPC`, in list order (what the sandboxes capture at start;
-   arguments are read live), compared with the signature of the plugins running now (unset while a reload replaces them
-   or after a failed one). While a local load is queued or running, every remote change requests the deferred check; the
-   comparison inside the chain discards redundant work after the local loads settle. Idle (`pluginWorkIdle`) means all
-   of:
-   - no send of this tab (`anyLocalSend`);
-   - no job of this tab that may still call its hooks (`generationJobs.ts`): a job is held from before
-     `createGenerationJob` lists its hooks (also with caller-given `hooks`), from `followGenerationJob` (a resumed or a
-     busy job followed), and while it is saved for this tab (a reload resumes it), until `releaseGenerationJob`; each
-     busy attempt (`GenerationBusyError`) holds its own reservation until its status read answers or the job is
-     released, promoting only a running job of the current epoch that was not released since the reservation; a channel
-     event queued for the dispatcher; and a running channel callback (`jobChannel.ts` `outstanding`, reported by
-     `noteChannelCallbacks`). A job captured its hook inventory at creation and the server calls those hooks until it
-     ends, so a reload between two callbacks would fail the later one as an unregistered hook;
-   - no host-side hook invocation running, and every sandbox idle (`SandboxHost.isIdle`).
+Chat-bound HypaV3 summaries capture and pass their context; server callbacks, including image-view generation, run under
+the job targets.
 
-   Each source notifies on a change toward idle; the check runs once per microtask. When idle, one reload is queued on
-   the `pluginReload` chain; it checks idleness again right before it clears anything (synchronously up to
-   `clearPluginHooks`), and waits again when work started meanwhile. It loads the list as it is then, so changes while
-   it waits reload once with the newest list; a list whose signature matches what runs does nothing. There is no wait
-   limit or interruption. A local `loadPlugins` (a toggle, an import) reloads at once as before and cancels the waiting
-   one.
+Called directly, without a context, `globalFetch` runs `bodyIntercepterStore`, and `ttsHooks.ts` runs the TTS pre- and
+postprocessors: the tab's selection, or an ambient context of the same plugin, applies, not a hook target.
 
-MCP:
+### Hook targets
 
-1. `getTools` collects the schemas.
-2. Provider adapters (OpenAI Chat/Responses, Google, Anthropic) run model tool calls.
-3. `callTool` dispatches by tool name, first match wins, and the result is appended. A server job does not use this
-   registry (`server/src/mcp/`, `server-generation.md`): remote servers and `internal:dice` run on the server;
-   `internal:fs`, `internal:googlesearch`, and a `plugin:` MCP registered when the job was created run in the job's tab
-   through the `mcpList` and `mcpTool` callbacks (`src/ts/network/jobChannel.ts`); `internal:aiaccess`,
-   `internal:risuai`, and `internal:graphmem` run on the server over the job's data, with the same tools and logic as
-   here (`shared/mcp/`). The rest of this step is the tab's own requests (`/api/llm/request`). The tool loops run on the
-   server (`server/src/llm/`): a tool call becomes an `mcpTool` callback of `/api/llm/request`, which the tab answers
-   with `callTool` for the request's chat (its explicit chat, else the chat selected when it began): that chat picks the
-   module MCP servers, and `internal:graphmem` and `internal:risuai` act on it whatever is selected when the callback
-   arrives, and a remembered call (`rememberToolUsage`) is stored in the tab by `encodeToolCall` from the request's
-   `toolRecord` event; the tab sends the records a prompt's markers name with the request.
-4. The adapter recurses.
+- Inside a hook, the selection-dependent host functions read `currentContext` of their plugin instance on their first
+  line (the character, chat index, lorebook, and database getters and setters, `parseRisuChat`, `sendChat`,
+  `runLLMModel`). With no context on the stack, the tab's selection applies.
+- They act on the hook's character, chat, and preset, and throw `PluginTargetGoneError` when the target the call needs
+  no longer exists (a gone preset fails only a `getDatabase`/`setDatabase` call that names preset keys).
+- `runLLMModel` uses the hook's chat for its parsing and for the provider hooks it triggers; the model settings stay the
+  current ones. `parseRisuChat` inside a hook parses with `risuChatParserScoped` (the hook's preset fields and persona).
 
-- The v3 database setters apply key by key: a `MutationValidationError` warns and keeps that key's old value while the
-  later keys still run; a gone target and any unexpected error propagate to the plugin.
-- `GoogleSearchClient.initializeCredentials` refuses a missing, cancelled, or blank API key or engine id before anything
-  is written, and trims accepted values before `googleSearchCredentials` is saved.
-- Generation sockets negotiate owner liveness with `liveness=1`; the tab answers each server `ping` with `pong`, echoing
-  its `ts`. The registry drops a negotiated socket after 45 s without an incoming frame, using the server clock. MCP
-  owner checks exclude these silent sockets. A dispatched question or callback is bounded by its own deadline, 120 s of
-  job owner absence (from admission or the last effective socket's departure), and its parent's effective deadline. A
-  live tab answering pings can keep a long non-streaming provider call running without progress frames.
-- An attach first expires overdue requests while still absent, then replays those still open. Reconnecting within the
-  wait removes the absence cap without restarting the callback's own allowance; the same page's callback cache answers a
-  replay once, while a reloaded page refuses an unknown replay. Absence expiry settles `disconnected`, also settling
-  that client's eligible ownerless queued roots. A provider failure follows the existing partial-save and job-end path;
-  tail hooks that skip on `disconnected` can continue. Delivered callbacks retain their drain holds until reported
-  drained or their bound expires. See [generation channels](server-generation.md#generation-channels) for the registry
-  contract.
+### Database setters
+
+`setDatabase` and `setDatabaseLite` are async and apply key by key (`applyPluginKey`, to the mutation that owns the
+key).
+
+- They wait for the reconciled characters' chats to load before applying; `setDatabase` first preflights every plugin
+  and awaits the install prompt, before it assigns anything.
+- `plugins` (`setDatabase` only: the plugins the user confirmed) → `upsertPlugin` by name. `characters` keeps the
+  mirror's order and appends new characters. `pluginCustomStorage` and unknown keys → the plugin storage module.
+- The model roots `maxContext`, `seperateModels`, and `seperateModelsForAxModels` go on to `writeModelRoot`
+  ([compatibility model-root write rules](llm-requests.md#invariants)): a refusal warns `[Settings] Refused ...`.
+- `pluginKeyOrder` applies `characterOrder` and `selectedPersona` last, whatever the object's key order.
+  `selectedPersona` (an index) selects on this client only.
+- `warnRefused` turns a `MutationValidationError` into a `[Plugin] Refused ...` console warning and keeps that key's old
+  value while the later keys still run; a gone target and any unexpected error propagate to the plugin.
+- Preset fields land in the hook's preset, else this client's selected one. Outside a hook, that is the preset selected
+  when the wait ends, not at the call; the selection can change meanwhile, including its repair moving a gone preset
+  selection to the first preset .
+
+### Deferred reload
+
+A remote `plugins` change (another tab or device; `onRemoteRecordApplied` after a live record, a live patch, or a
+conflict reload) reloads the plugins here once plugin work is idle.
+
+- Only a change to the load signature counts: each enabled `'3.0'` plugin's name, script, and `allowedIPC`, in list
+  order (what the sandboxes capture at start; arguments are read live), compared with the signature of the plugins
+  running now (unset while a reload replaces them or after a failed one).
+- While a local load is queued or running, every remote change requests the deferred check; the comparison inside the
+  chain discards redundant work after the local loads settle.
+- Idle (`pluginWorkIdle`, `v3.svelte.ts`; `onPluginWorkChange` hears changes) means all of:
+  - no send of this tab (`anyLocalSend`);
+  - no job of this tab that may still call its hooks (`generationPluginWorkActive`);
+  - no host-side hook invocation running (every wrapped hook, and a provider from before its permission prompt);
+  - every sandbox idle (`SandboxHost.isIdle`).
+- A job counts from before `createGenerationJob` lists its hooks, or from `followGenerationJob`, and while it is saved
+  for this tab, until `releaseGenerationJob`; busy attempts, queued channel events, and running channel callbacks also
+  count (`generationJobs.ts`). A job captured its hook inventory at creation and the server calls those hooks until it
+  ends, so a reload between two callbacks would fail the later one as an unregistered hook.
+- Each source notifies on a change toward idle. When idle, one reload is queued on the `pluginReload` chain; it checks
+  idleness again right before it clears anything (synchronously up to `clearPluginHooks`), and waits again when work
+  started meanwhile.
+- It loads the list as it is then; a list whose signature matches what runs does nothing. There is no wait limit or
+  interruption.
+
+### Tool dispatch
+
+A server job does not use the tab's registry (`server/src/mcp/`, `server-generation.md`):
+
+- Remote servers and `internal:dice` run on the server.
+- `internal:fs`, `internal:googlesearch`, and a `plugin:` MCP registered when the job was created run in the job's tab
+  through the `mcpList` and `mcpTool` callbacks (`src/ts/network/jobChannel.ts`).
+- `internal:aiaccess`, `internal:risuai`, and `internal:graphmem` run on the server over the job's data (`shared/mcp/`).
+
+The tab's own requests (`/api/llm/request`) run their tool loops on the server too (`server/src/llm/`):
+
+- A tool call becomes an `mcpTool` callback, which the tab answers with `callTool` for the request's chat (its explicit
+  chat, else the chat selected when it began). That chat picks the module MCP servers, and `internal:graphmem` and
+  `internal:risuai` act on it whatever is selected when the callback arrives.
+- A remembered call (`rememberToolUsage`) is stored in the tab by `encodeToolCall` from the request's `toolRecord`
+  event; the tab sends the records a prompt's markers name with the request.
+
+### Job owner presence
+
+[Generation channels](server-generation.md#generation-channels) owns the contract a tab-side tool or hook answers inside
+(pings, the 45 s silent socket, the 120 s absence bound, attach replay).
+
+- MCP owner checks exclude silent sockets. A live tab answering pings can keep a long non-streaming provider call
+  running without progress frames.
+- A provider failure on absence expiry (`disconnected`) follows the partial-save and job-end path; tail hooks that skip
+  on `disconnected` can continue.
 
 ## State
 
-- `db.plugins: RisuPlugin[]`: name, script, version, arguments, `realArg`, `enabled`, `allowedIPC`, update URL. Saved as
-  the `plugins` resource.
+- `db.plugins: RisuPlugin[]`, saved as the `plugins` resource.
 - Plugin storage:
-  - `pluginStorage` is saved data in `db.pluginCustomStorage` (the `pluginStorage` resource), written only through
-    `pluginStorageStore.svelte.ts` (a settings record: each write queues its save once, `records.svelte.ts`). It uses
-    the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values (throws on BigInt). The top level
-    holds the non-`allowedDbKeys` properties written through `setDatabase`/`setDatabaseLite`.
+  - `pluginStorage` is saved data in `db.pluginCustomStorage` (the `pluginStorage` resource), a settings record: each
+    write queues its save once. It uses the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values
+    (throws on BigInt). The top level holds the non-`allowedDbKeys` properties written through
+    `setDatabase`/`setDatabaseLite`.
   - Every plugin shares the one record. The storage writes resolve when queued, not when saved. A conflict with another
-    tab's or device's write is [merged key by key](resource-sync.md#record-merge): writes of different keys both stay;
-    the same key written to two values discards this tab's unsaved values with the reload notice, and
-    `onStorageDiscarded` tells every listening plugin which keys lost a value.
+    tab's or device's write is [merged key by key](resource-sync.md#record-merge), and `onStorageDiscarded` tells every
+    listening plugin which keys lost a value.
   - `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved too, under the reserved `_safeLocalPluginStorage`
-    sub-object of `pluginCustomStorage` (legacy browser-local values are imported at boot). Values must be plain JSON
-    (`isJsonValue`); anything else throws `TypeError` and changes nothing. `setItem(key, undefined)` stores `null`. Any
-    string is a key, `__proto__` included (the module rebuilds the dictionary for it, and the save adapter serializes
-    `pluginStorage` straight from the proxy so the key reaches the server).
-  - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`), as documented for
-    plugin authors.
-- v3 permission grants live in the server-owned `pluginPermissions` resource, outside the settings records: `grants`
-  keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` keyed by `<plugin name>_<permission>_lastGrantTime`.
-  Only `getPluginPermission` (host consent) adds to it; no plugin API, `getDatabase` snapshot,
-  `setDatabase`/`setDatabaseLite`, or `pluginCustomStorage` write can reach it. The script hash is taken from the script
-  the plugin was loaded with, and answers are cached per plugin and permission for the page load (cleared on unload).
-  The permission names are `fetchLogs`, `db`, `mainDom`, `replacer`, `provider`, `sendChat`, `inlay`.
+    sub-object (legacy browser-local values are imported at boot). Values must be plain JSON (`isJsonValue`); anything
+    else throws `TypeError` and changes nothing.
+  - Any string is a `_safeLocalPluginStorage` key, `__proto__` included (the module rebuilds the dictionary for it, and
+    the save adapter serializes `pluginStorage` straight from the proxy so the key reaches the server).
+  - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
+- v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`), outside the
+  settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` by plugin name and
+  permission.
+  - Only `getPluginPermission` (host consent) adds to it; no plugin API, `getDatabase` snapshot,
+    `setDatabase`/`setDatabaseLite`, or `pluginCustomStorage` write can reach it.
+  - The script hash is taken from the script the plugin was loaded with, and answers are cached per plugin and
+    permission for the page load (cleared on unload).
 
 ## Coupling
 
-- Plugins depend on `database.svelte.ts`, `globalFetch`/`fetchNative`, assets, `transformClient.ts`, model types,
-  `ttsHooks`, theme functions, UI stores, alerts, `pluginmcp`.
 - Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `globalApi.svelte.ts`, `modellist.ts`
-  (`customV3ProviderMetaStore`). The deferred reload reads `resourceSync.svelte.ts` `onRemoteRecordApplied` and the job
-  leases of `generationJobs.ts` (`generationPluginWorkActive`, `onGenerationPluginWork`; `jobChannel.ts` reports its
-  running callbacks there). Hook-registry (`pluginHooks.ts`) consumers: `ModelSettings.svelte` (custom providers),
-  `request.ts`, `transformClient.ts`, `jobChannel.ts` (a job's callbacks), `generationJobs.ts` (`registeredHooks`),
-  `tokenizer.ts`.
+  (`customV3ProviderMetaStore`). Hook-registry consumers: `ModelSettings.svelte`, `request.ts`, `transformClient.ts`,
+  `jobChannel.ts`, `tokenizer.ts`.
 - MCP consumers: `request.ts` and the provider adapters, `PlaygroundMCP.svelte`, `IrisModal.svelte`/`iris.ts`.
 
 ## Invariants
@@ -383,12 +317,12 @@ MCP:
   storage, and arguments are keyed by it.
 - Only API 3.0 exists. Plugins run only inside the iframe; nothing executes plugin code in the main document.
 - v3 calls are async RPC. Nested classes and callbacks inside values are unsupported. Streams need MessagePort
-  credit/cancel, and `terminate` must close them. A host call's abort controllers live until every response stream
-  finishes (done, error, guest cancel, unread expiry, rollback, or termination). A guest callback's mirrored controllers
-  likewise live until every returned stream finishes, errors, is cancelled by the host, or is rolled back, so a host
-  abort still reaches the plugin and requests using its signal after the callback returns. Calls and callbacks that
-  throw or return no streams release their controllers immediately. `terminate` aborts the controllers it still holds,
-  and no host call bridges a stream after it.
+  credit/cancel, and `terminate` must close them.
+- A host call's abort controllers live until every response stream finishes (done, error, guest cancel, unread expiry,
+  rollback, or termination). A guest callback's mirrored controllers likewise live until every returned stream finishes,
+  errors, is cancelled by the host, or is rolled back, so a host abort still reaches the plugin and requests using its
+  signal after the callback returns. Calls and callbacks that throw or return no streams release their controllers
+  immediately.
 - The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
   (API keys) and bodies.
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
@@ -397,47 +331,42 @@ MCP:
 - A plugin or MCP write goes through a mutation module (`characterStore.svelte.ts`, `collectionStore.svelte.ts`,
   `pluginStorageStore.svelte.ts`, the chat module); a new host setter or tool never writes a record or a chat directly.
   A refused value warns (plugins) or answers an error (MCP) and changes nothing.
-- Transform continuations (`editdisplay` and `editprocess` in `transformClient.ts`) refuse durable-data writes at host
-  entry without throwing. `hasReadOnlyContext` checks every active context of the calling instance before any await;
-  `currentContext` still selects targets. `parseRisuChat` forces `runVar` off. Job-channel callbacks remain writable
-  unless a transform on the same instance overlaps. API returns and exclusions are in the
+- Transform continuations refuse durable-data writes at host entry without throwing. `hasReadOnlyContext` checks every
+  active context of the calling instance before any await; `currentContext` still selects targets. Job-channel callbacks
+  remain writable unless a transform on the same instance overlaps. API returns and exclusions are in the
   [plugin author contract](../../plugins.md#read-only-transform-continuations); the rendering
   [limitations](cbs-rendering.md#limitations) record attribution and indirect effects.
 - A hook runner captures the call context before its first await and passes it to every hook it calls; a new
   selection-dependent host function reads `currentContext` on its first line.
 - An MCP write tool re-resolves its record by the id captured before the consent prompt, and builds its patch
   synchronously after that lookup.
-- A request's tool call reaches `internal:graphmem`, `internal:risuai`, and `internal:aiaccess` with the request's chat
-  (`callToolForChat`): the graph, the implicit character's history, and nested LLM requests use that chat. AI access
-  also passes the request's captured prompt and model preset scope; null stays chatless. Only implicit targeting without
-  a chat argument (the Playground) uses the selection; another named character's history is still its selected chat in
-  this tab, and module discovery keeps its own fallback.
-- v3 plugin storage accepts JSON data only, at most 256 levels deep (`requireJsonData`); a refused value leaves the
-  stored one unchanged.
+- A request's tool call reaches the chat clients with the request's chat: the graph, the implicit character's history,
+  and nested LLM requests use that chat. AI access also passes the request's captured prompt and model preset scope;
+  null stays chatless. Only implicit targeting without a chat argument (the Playground) uses the selection; module
+  discovery keeps its own fallback.
+- v3 plugin storage accepts JSON data only, at most 256 levels deep (`requireJsonData`).
 - `changeColorScheme` with an unknown name changes nothing: neither the active scheme nor its stored name.
-- A `SafeElement` listener is registered on the element it wraps and hears only events that reach that element through
-  DOM propagation; the `SafeDocument` from `getRootDocument` registers on `document`. Each registration keeps its
-  target, type, and options, and removal by id and the reload teardown replay that record, whatever type or options the
-  caller passes to `removeEventListener`.
+- A `SafeElement` listener hears only events that reach its element through DOM propagation; the `SafeDocument` from
+  `getRootDocument` registers on `document`. Each registration keeps its target, type, and options, and removal by id
+  and the reload teardown replay that record, whatever the caller passes to `removeEventListener`.
 - Plugin key listeners (`keydown`/`keyup`/`keypress`, on any element or the document, capture phase included) receive
-  nothing from the terminal notice's opening until reload, including its acknowledgement key release
-  (`terminalNoticeShown`, read at the event): the notice stops only bubbling.
-- A plugin character applied over the same `chaId` (`applyPluginCharacter`: `setCharacter`, `setChar`,
-  `setCharacterToIndex`, a `characters` list) keeps the stored `supaMemoryOnCount` whatever its copy says, and bumps it
-  when it turns `supaMemory` on (`memory.md`).
-- The v3 `sendChat` targets the hook's chat (else the chat selected after permission resolves) and refuses ("A chat is
-  already in progress") without appending while that chat is busy (`isChatBusy`: a send of this tab, a followed job, or
-  a lock; a generation hook's chat in a job channel callback always is) or while a job channel callback runs in this tab
-  (`channelCallbacksRunning`: a hook or provider that waited for a new job of this tab would hold the lane that job's
-  callbacks need; a callback the server cancelled counts until its hook settles, as the tab refuses roots until then),
-  checked again after the chat load. A chat with orphaned lore overrides is refused after that, also before anything is
-  appended: the user sees the refusal alert and the call returns false. It returns whether the send ran (`sendChat`'s
-  result). The local busy/admission checks are per chat: with no job channel callback running, a send in idle chat B can
-  run while chat A sends in this tab; shared resource flush (`GenerationBlockedError`), binding, and server refusals
-  still apply.
+  nothing from the terminal notice's opening until reload, its acknowledgement key release included
+  (`terminalNoticeShown`): the notice stops only bubbling.
+- A plugin character applied over the same `chaId` (`applyPluginCharacter`) keeps the stored `supaMemoryOnCount`
+  whatever its copy says, and bumps it when it turns `supaMemory` on (`memory.md`).
+- The v3 `sendChat` targets the hook's chat (else the chat selected after permission resolves) and returns whether the
+  send ran. It refuses ("A chat is already in progress") without appending, checked again after the chat load:
+  - while that chat is busy (`isChatBusy`: a send of this tab, a followed job, or a lock; a generation hook's chat in a
+    job channel callback always is);
+  - while a job channel callback runs in this tab (`channelCallbacksRunning`: a hook or provider that waited for a new
+    job of this tab would hold the lane that job's callbacks need; a cancelled callback counts until its hook settles).
+- A chat with orphaned lore overrides is refused after that, also before anything is appended: the user sees the refusal
+  alert and the call returns false.
+- `sendChat`'s local checks are per chat: with no job channel callback running, a send in idle chat B can run while chat
+  A sends in this tab; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply.
 - A plugin changes the installed plugin list only through `setDatabase({ plugins })`, which asks the user to confirm
-  each new or changed plugin and upserts the confirmed ones by name. `setDatabaseLite` drops `plugins` before it applies
-  anything; the other keys of the call still apply.
+  each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the other keys of the call
+  still apply.
 - `risu-set-module-info` checks every recognized field's type before it writes any field or `enabledModules`.
 - `updateModule` validates a detached patched copy, then applies the patch to the live module in place, so a plugin's or
   an editor's retained module reference stays current.
@@ -462,31 +391,25 @@ MCP:
 
 ## Tests
 
-- Plugin loading and teardown: `src/ts/plugins/plugins.test.ts`, `pluginLifecycle.test.ts`, `pluginSafeBoot.test.ts`,
-  and `pluginDeferredReload.test.ts` cover API-version filtering, reload cleanup, safe boot, and deferred reload while
-  work is active.
-- Host API and saved writes:
-  `src/ts/plugins/apiV3/{hostApi,hostApiChats,hostApiRouting,pluginContext,pluginContextSaved,pluginStorage,permissions,permissionStore,v3RecordWrites,v3SavedWrites,v3SetDatabase,v3SetPersonas}.test.ts`
-  and `src/ts/plugins/pluginSafeClass.test.ts` cover routing, chat-bound context, permissions, JSON storage, and
-  resource writes.
-- Sandbox protocol:
-  `src/ts/plugins/apiV3/{sandboxStartup,sandboxActivity,guestBridge,nativeFetch,nativeFetchAbort,sandboxRpcLogging,pluginWorkIdle}.test.ts`
-  cover startup, call/stream lifetime, message-source checks, fetch aborts, logging, and idle reporting. Host
-  startup/activity tests need no log mute; the guest bridge still logs its property initialization. `mcpContext.test.ts`
-  covers plugin MCP callbacks with request context.
-- MCP clients and tools: `src/ts/process/mcp/tests/*.test.ts` covers the tab registry, streamable HTTP/SSE, chat
-  targets, client leases, remembered calls, graph memory, and OAuth/storage paths.
-  `src/ts/process/mcp/risuaccess/tests/{characters,modules,moduleWriters}.test.ts` covers read and write tools;
-  `src/ts/storage/tests/collectionStore.test.ts` pins refresh-token replacement.
-- Server MCP: `server/src/tests/mcp.test.ts` covers remote clients, registry/job integration, attach grace, and OAuth;
-  `mcpInternal.test.ts` covers server-side internal tools and mutation failures; `mcpSse.test.ts` covers SSE framing.
-- Plugin providers in server jobs: `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate) installs a
-  v3 plugin that registers a provider and answers its job-channel callbacks from the real sandbox, including a reload
-  between sequence parts and an owner page closed while its callback is unanswered ([test-harness](test-harness.md)).
-- Provider adapter tool loops are covered by `llm-requests.md`. The request transport's `mcpTool` case is in
-  `src/ts/process/request/tests/transport.test.ts`.
-- Gaps: filesystem MCP tools and PDF rendering, hot reload, and the remaining sandbox RPC surface are not directly
-  tested. Cancellation while the job channel's dynamic MCP module import is pending is also untested.
+- Focused:
+  `pnpm --silent test:agent src/ts/plugins src/ts/process/mcp src/ts/storage/tests/{pluginStorageStore,collectionStore}.test.ts src/ts/network/generationJobsPluginWork.test.ts src/ts/process/request/tests/transport.test.ts`
+  for the tab; `pnpm --silent test:agent server/src/tests/mcp{,Internal,Sse}.test.ts` for the server. Provider adapter
+  tool loops: [LLM requests](llm-requests.md).
+- `slow`: none. `e2e`: `e2e/transformGolden.spec.ts` (edit hooks), `e2e/lazyChats.spec.ts` (RisuAccess history),
+  `e2e/settingsPages.spec.ts` (the page).
+- `SandboxHost` stub (`vi.mock` of `./factory`, most of `apiV3/`): the real API object is driven directly.
+- `guestBridge.test.ts`: the srcdoc's guest half over a fake window; it still logs its property initialization.
+- `sandboxActivity.test.ts`: a real `SandboxHost`, the guest simulated by window messages.
+- `pluginDeferredReload.test.ts`, `pluginSafeBoot.test.ts`: a mocked v3 loader, the idle predicate and safe-boot flag
+  controlled. `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
+- `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes. `FakeResourceServer`:
+  `permissionStore.test.ts`.
+- `mcplib.test.ts`: a fake `fetchNative`. `mcpLeases.test.ts`: a fake `MCPClient` with gated calls.
+- `server/src/tests/mcp.test.ts`: injected `fetch`. `mcpInternal.test.ts`: the job tool set over a real store.
+- `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate): a real v3 plugin provider answers job
+  callbacks from the sandbox ([test-harness](test-harness.md)).
+- Not tested: filesystem MCP tools and PDF rendering, hot reload, and the remaining sandbox RPC surface; cancellation
+  while the job channel's dynamic MCP module import is pending.
 
 ## Known Hazards
 
@@ -497,32 +420,28 @@ MCP:
   - The arity of `saveSecretHeader` differs.
   - The `SafeDocument.createElement` declarations are synchronous.
 - `filesystemclient.ts` advertises `fs_watch_directory` but has no dispatch for it.
-- A rotated refresh token is stored as a whole-collection `authRefreshes` edit from the tab (and the server job's write
-  to the same collection is not hydrated into the tab): another tab or device writing the collection at the same time
-  can make the tab's write conflict and be discarded, and the next refresh then sends a token the server may have spent
-  (a full login follows).
-- The server MCP client fences a rotated-token write against the job and client signals. If the remote server spends the
-  old refresh token and rotates it before the answer arrives, an abort or client close in that window leaves the old
-  token stored while the new one is lost; the next refresh may fail and require a full login.
-  `server/src/tests/mcp.test.ts` pins the cancellation behavior, not the remote server's token state.
+- A rotated refresh token is a whole-collection `authRefreshes` edit from the tab (and the server job's write to the
+  same collection is not hydrated into the tab): another writer of the collection can make the tab's write conflict and
+  be discarded, and the next refresh then sends a token the server may have spent (a full login follows).
+- The server MCP client fences a rotated-token write against the job and client signals. If the remote server rotates
+  the old refresh token before the answer arrives, an abort or client close in that window leaves the old token stored
+  while the new one is lost; the next refresh may fail and require a full login. `server/src/tests/mcp.test.ts` pins the
+  cancellation behavior, not the remote server's token state.
 - The tab's `MCPClient` has no request timeout, and `request.ts` `getTools` does not propagate an abort signal to its
   tool listing. A stream that stays open without answering can still keep that caller waiting.
 - Consented capabilities reach further than their names suggest (never reviewed): `mainDom` lets a plugin listen on
   `document` through `getRootDocument` and forwards keys (except from the terminal notice's opening until reload), so a
   plugin could observe typing in the password or credential prompts; `mainDom` also allows document-wide queries and
-  mutation; `nativeFetch` lets a plugin choose its request headers; the RPC dispatcher in `factory.ts` looks callables
-  up without an explicit allowlist.
+  mutation; `nativeFetch` lets a plugin choose its headers; the RPC dispatcher in `factory.ts` looks callables up
+  without an allowlist.
 - A plugin event listener lives until the wrapper that registered it removes it by id or plugins reload: removing its
   element from the page keeps it (and the element), a `once` listener that fired stays in the teardown list, and a
   wrapper queried again for the same node does not know the id.
-- A plugin's whole-chat setter (`setChatToIndex`, and a character setter's `chats` through `reconcileCharacterChats`)
-  diffs the plugin's copy against the chat at call time: `captureChatBaseline` runs right before `applyChatResult`, not
-  when the plugin read the chat. Wherever the copy differs from the chat then, the copy wins, so a change another writer
-  made after the plugin's read is overwritten: a changed message field or chat field is set back to the copy's value (a
-  `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is removed. When that diff
-  would change or remove a message being generated (`assertUnlocked`), the whole chat update is skipped with a console
-  warning instead; a reorder of unchanged messages while the chat is generating drops only the order change (with a
-  warning), the rest applies.
+- A plugin's whole-chat setter (`setChatToIndex`, and a character setter's `chats`) diffs the plugin's copy against the
+  chat at call time: `captureChatBaseline` runs right before `applyChatResult`, not when the plugin read the chat. So a
+  change another writer made after the plugin's read is overwritten: a changed message field or chat field is set back
+  to the copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is
+  removed.
 - `unloadV3Plugin` waits up to one second after the unload callbacks before `SandboxHost.terminate`; a plugin's pending
   async work can still register a hook in that window. The post-unload reset removes providers registered then; other
   hooks still have this hazard.
@@ -531,86 +450,64 @@ MCP:
 
 ### Limitations
 
-- The deferred reload after a remote `plugins` change never interrupts, so plugin work that never ends defers it until
-  this tab reloads or a local `loadPlugins` runs: a guest whose top-level script never settles, a hook or guest callback
-  that never answers, a stream bridged either way that is never finished (a bridged host stream the guest never pulls
-  expires at 60 s), or a job this tab never releases. A cancelled hook that never settles also keeps plugin `sendChat`
-  refused (`channelCallbacksRunning`), and after the server's `CANCELLED_CALLBACK_DRAIN_MS` (60 s) a later job's root
-  callbacks are refused on this tab, both until the page reloads. A wait limit alone would let the hook write after the
-  next job starts; a fix would terminate and reload that plugin's sandbox (with a notice) before admitting another root.
-  Work that starts while a reload unloads the old sandboxes is not fenced (as for any local reload): a job created then
-  lists the hooks registered at that moment. Decision: D4 (never interrupt) of RisuNest Small Wins
-  ([archive](../archived-plan/README.md)).
+- The [deferred reload](#deferred-reload) never interrupts, so work that never ends defers it until this tab reloads or
+  a local `loadPlugins` runs: a top-level script that never settles, a hook or guest callback that never answers, a
+  stream bridged either way never finished (a host stream the guest never pulls expires at 60 s), or a job this tab
+  never releases. Work that starts while a reload unloads the old sandboxes is not fenced (as for any local reload): a
+  job created then lists the hooks registered then. Decision: RisuNest Small Wins D4,
+  [archive](../archived-plan/README.md).
+- A cancelled hook that never settles keeps plugin `sendChat` refused (`channelCallbacksRunning`), and after the
+  server's `CANCELLED_CALLBACK_DRAIN_MS` (60 s) a later job's root callbacks are refused on this tab, both until the
+  page reloads. A wait limit alone would let the hook write after the next job starts; a fix would terminate and reload
+  that plugin's sandbox (with a notice) before admitting another root. Decision: Per-Chat Send,
+  [archive](../archived-plan/README.md).
 - A server job's remote MCP requests leave from the server's host, not from the browser: a URL that only the browser
   reaches (its own `localhost`, a userscript or cookie session) does not work for a job, and a module's MCP URL reaches
-  whatever the server's host reaches, loopback and private addresses included. Decision: generation and provider
-  requests run on the server (STRUCTURE.md P2).
+  whatever the server's host reaches, loopback and private addresses included. Decision: STRUCTURE.md P2.
 - `internal:fs` for a server job asks for the directory inside a callback, after the send's click: the browser may
-  refuse the picker without a user gesture (the browser path calls it after awaits too). The OAuth page of a job's
-  remote server is opened by an `openURL` notice, which a popup blocker may stop. Decision: `internal:fs` and remote MCP
-  OAuth are owner-tab work of the job (`server/src/mcp/jobTools.ts`).
-- The call context attributes by plugin instance, not by call: two hooks of one plugin in flight resolve to the
-  innermost, a hook that never settles keeps its context, and a plugin's own timers and UI callbacks see an ambient
+  refuse the picker without a user gesture. The OAuth page of a job's remote server is opened by an `openURL` notice,
+  which a popup blocker may stop. Decision: owner-tab work of the job (`server/src/mcp/jobTools.ts`).
+- The call context attributes by plugin instance, not by call: a plugin's own timers and UI callbacks see an ambient
   context while one of its hooks is in flight. Exact attribution needs a correlation id in the sandbox RPC. Decision:
-  recorded limits (`src/ts/plugins/apiV3/pluginContext.ts`).
-- Callback parentage rides on that context (`PluginCallContext.channelCall`, set by `jobChannel.ts` for each hook it
-  runs as a job callback): an aux request (`runLLMModel`, `imggen`'s prompt request) made with it is that callback's
-  child on the server (`channelCall`), ending with it; a request with no such context, from the UI or another chat, is
-  not, whatever callback runs. The send guard accepts a context's job ids only while its callback runs uncancelled here
-  (`channelCallTargets`); a stale one is checked against the chat's binding. Inherited limits: a plugin's ambient
-  context (above) carries its hook's callback; body interceptors run without a context, a provider's context ends when
-  it returns its stream (while the channel still reads it), and the tab's `internal:aiaccess` captures a chat context
-  without `channelCall`, so a request made from those is not the callback's child (it is not ended with the callback).
-  Decision: accepted by Per-Chat Send ([archive](../archived-plan/README.md)).
+  recorded limits (`pluginContext.ts`).
+- Callback parentage rides on that context (`channelCall`): an aux request (`runLLMModel`, `imggen`'s prompt request)
+  made with it ends with that callback; one without that context does not. The send guard accepts a context's job ids
+  only while its callback runs uncancelled here (`channelCallTargets`); a stale one is checked against the chat's
+  binding. Decision: Per-Chat Send, [archive](../archived-plan/README.md).
+- Inherited limits of that parentage: a plugin's ambient context carries its hook's callback; body interceptors run
+  without a context, a provider's context ends when it returns its stream (while the channel still reads it), and the
+  tab's `internal:aiaccess` captures a chat context without `channelCall`, so a request made from those is not ended
+  with the callback. Decision: Per-Chat Send, [archive](../archived-plan/README.md).
 - A plugin setter's non-null section value is not normalized on the client: the server normalizes its copy, but the
-  batch answer carries revisions only, so the writing tab keeps the value as written until a reread or a live update
-  (`persistence.md`). Decision: the accepted limit in [persistence](persistence.md).
+  batch answer carries revisions only, so the writing tab keeps the value as written until a reread or a live update.
+  Decision: the accepted limit in [persistence](persistence.md).
 - A plugin call that adds a character and also passes `characterOrder` without the new id: the order is written after
   the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`.
-  Decision: the applied key order (`v3.svelte.ts`, the plugin database key order).
+  Decision: `pluginKeyOrder` (`v3.svelte.ts`).
 
 ### Gotchas
 
-- Plugin reload resets the registries in `clearPluginHooks` and unregisters each instance's MCP clients on unload (an
-  identifier replaced by another client is kept). After all old sandboxes terminate, it resets both provider maps and
-  both provider lists, discarding registrations made during unload; repeated names replace the previous registration.
-  (An unloaded plugin's replacers and script handlers are removed, and its pending callbacks reject.)
 - Remote MCP, in both clients (`mcplib.ts` and the server's port): a 404 with a session or a 401 with a token resets the
   session and repeats the request once without them (the call after that handshakes again).
 - A server MCP OAuth code question is tied to the MCP client's closing signal, while the caller's abort only rejects
-  that caller. Its UI question can stay open until the client closes, the job channel ends, or the question times out; a
-  queued question has no timeout until dispatch.
-- The plugin `setDatabase`/`setDatabaseLite` apply `personas` through `setPersonas` (`normalizePersonas`; a non-list is
-  refused) and apply `characterOrder` and `selectedPersona` last, whatever the object's key order. The preset fields
-  they set land in the hook's preset, else this client's selected one, and `selectedPersona` (an index) selects on this
-  client only. `setDatabase` preflights every plugin and awaits the install prompt before it assigns anything; a
-  `characters` list keeps the mirror's order and appends new characters.
-- The character records hold no chats: the plugin getters build the legacy shape at the boundary (`withChatsCopy`: the
-  character with its chats and `chatPage`). `getChar`/`getCharacter`, `getCharacterFromIndex`, and `getDatabase` with
-  `characters` pin the characters' chats, await `loadChats`, and copy from the chat module (this loads every chat a
-  getter copies, so `getDatabase` with `characters` reads every chat that is not loaded, the cost of a full boot read
-  per call; the chats are evicted again afterwards. It reads through the store, not detached: unsaved local changes are
-  in the copy and no save has to succeed first). Every target is checked again right before the copy, so a chat added
-  meanwhile is loaded too; `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by
-  id first and await `ensureChatLoaded`. The setters (`setChar`/`setCharacter`, `setCharacterToIndex`,
-  `setDatabase`/`setDatabaseLite` with `characters`) capture their targets, pin and load the chats, then apply
-  synchronously as before; they now return Promises (the bridge always awaited them).
+  that caller. It can stay open until the client closes, the job channel ends, or it times out; a queued question has no
+  timeout until dispatch.
+- The character records hold no chats: the plugin getters build the legacy shape at the boundary (`withChatsCopy`). The
+  getters pin the chats, await `loadChats`, and copy from the chat module, so `getDatabase` with `characters` loads
+  every chat that is not loaded, and idle chats can be evicted afterwards. It reads through the store, not detached:
+  unsaved local changes are in the copy.
+- `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
+  `ensureChatLoaded`. The character setters capture their targets, pin and load the chats, then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
-  `applyPluginCharacter`/`applyPluginCharacters` (`v3.svelte.ts`) write a character's own fields and pass its `chats` to
-  `reconcileCharacterChats`: a chat with a known id is diffed against the chat as it is at the call and applied
-  (`applyChatResult`; its stale-copy overwrite is under Issues), a chat without an id or with a new one is created, a
-  chat left out is deleted (never the last one), the list order becomes the chat order, and a supplied `chatPage`
-  selects that chat in this tab. `setChatToIndex` diffs the given chat against the current one the same way. A change
-  that touches a message being generated skips that chat with a console warning, a character that is generating is
-  neither replaced (another `chaId` at its index) nor removed (left out of a `characters` list), and a `characters` list
-  with duplicate `chaId` values is refused as a whole; `removeChar` refuses a permanent delete of it too. `sendChat`
-  appends through the module. New setters go through the same functions; never assign `chats` or `chatPage`.
-- The `bodyIntercepter` and the TTS pre- and postprocessors run without a captured plugin context; selection-dependent
-  host calls from them use the tab's current selection, not a hook target. A custom `tokenizerFunc` is never called: tab
-  token counts run on the server, which uses `cl100k_base` for a provider's `custom` tokenizer
-  ([LLM requests](llm-requests.md)).
-- The plugin `setDatabase` and `setDatabaseLite` are async: they wait for the reconciled characters' chats to load (and
-  `setDatabase` for the plugin install prompt) before applying, and outside a hook a forwarded preset field lands in the
-  preset selected at that point, not at the call. The selection can change meanwhile, including its repair moving a gone
-  preset selection to the first preset (`hostApiRouting.test.ts` selects `gone` again before its second call for that
-  reason).
+  `applyPluginCharacter`/`applyPluginCharacters` pass a character's `chats` to `reconcileCharacterChats`: a chat with a
+  known id is diffed against the chat as it is at the call and applied (`applyChatResult`), a chat without an id or with
+  a new one is created, a chat left out is deleted (never the last one), the list order becomes the chat order, and a
+  supplied `chatPage` selects that chat in this tab. New setters go through the same functions; never assign `chats` or
+  `chatPage`.
+- When a whole-chat diff would change or remove a message being generated (`assertUnlocked`), that chat's update is
+  skipped with a console warning; a reorder of unchanged messages while it generates drops only the order change.
+- A character that is generating is neither replaced (another `chaId` at its index) nor removed (left out of a
+  `characters` list), a `characters` list with duplicate `chaId` values is refused as a whole, and `removeChar` refuses
+  a permanent delete of it.
+- A custom `tokenizerFunc` is never called: tab token counts run on the server, which uses `cl100k_base` for a
+  provider's `custom` tokenizer ([LLM requests](llm-requests.md)).

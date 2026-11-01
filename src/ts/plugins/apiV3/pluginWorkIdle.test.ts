@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `pluginWorkIdle` / `onPluginWorkChange` (`plugins-mcp.md` Flows step 6): the idle definition a
+// `pluginWorkIdle` / `onPluginWorkChange` (`plugins-mcp.md` Deferred reload): the idle definition a
 // deferred reload waits for, collected over the tab's sends (`localSends`), the jobs' plugin work
 // (`generationJobs.ts`), the host-side hook invocations still running (a wrapped hook; a provider
 // from before its permission prompt), and each loaded sandbox's `isIdle`. The sandbox is mocked
