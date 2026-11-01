@@ -586,6 +586,20 @@
         )}
         {@render structuredCount(
             preset,
+            text.requiredCap,
+            1,
+            (read) => read.requiredCap,
+            (next, count) => (next.requiredCap = count),
+        )}
+        {@render structuredCount(
+            preset,
+            text.pagesTarget,
+            0,
+            (read) => read.laneTargets.pages,
+            (next, count) => (next.laneTargets.pages = count),
+        )}
+        {@render structuredCount(
+            preset,
             text.eventsTarget,
             0,
             (read) => read.laneTargets.events,

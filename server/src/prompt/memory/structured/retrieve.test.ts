@@ -6,6 +6,9 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import {
     normalizeStructuredMemorySettings,
     type MemoryEvent,
+    type MemoryKnowledge,
+    type MemoryPage,
+    type MemorySection,
     type MemoryThread,
 } from "../../../../../shared/structuredMemory.ts";
 import { createVectorCache } from "../../../data/vectorCache.ts";
@@ -28,6 +31,27 @@ const entry = (messageId: string, text = messageId, role: ReadEntry["role"] = "c
     role,
     text,
 });
+const section = (heading: string, body: string, updatedAt = 1): MemorySection => ({
+    heading,
+    body,
+    updatedAt,
+    provenance: [],
+    sources: [],
+    locked: false,
+});
+const page = (id: string, fields: Partial<MemoryPage> = {}): MemoryPage => ({
+    ...memoryRecords([id], id).pages[0],
+    sections: [section("currentState", `${id} state`)],
+    ...fields,
+});
+const fact = (pageId: string, text: string, fields: Partial<MemoryKnowledge> = {}): MemoryKnowledge => ({
+    pageId,
+    fact: text,
+    stance: "knows",
+    quote: text,
+    ...fields,
+});
+const pageSettings = () => settings({ laneTargets: { pages: 1000, events: 0, evidence: 0, threads: 0 } });
 type Input = Parameters<typeof retrieveLanes>[1];
 const settings = (fields: Partial<Input["settings"]> = {}) =>
     normalizeStructuredMemorySettings({
@@ -39,6 +63,7 @@ function input(fields: Partial<Input> = {}): Input {
     return {
         events: [event("memory")],
         threads: [],
+        pages: [],
         entries: [entry("old"), entry("query", "Continue.", "user"), entry("reply", "All right.")],
         window: { start: 1, dropped: new Set([0]) },
         stage: [],
@@ -48,6 +73,11 @@ function input(fields: Partial<Input> = {}): Input {
 }
 const items = (result: Awaited<ReturnType<typeof retrieveLanes>>, lane: string) =>
     result.lanes.find((row) => row.lane === lane)!.items;
+async function spentCard({ lanes }: Awaited<ReturnType<typeof retrieveLanes>>, maximum: number) {
+    const card = await buildMemoryCard({ tokenizeChat: async () => 1 }, { maximum, lanes });
+    if (card.type !== "card") throw new Error("The required lane refused");
+    return card;
+}
 
 /** Real embedding service and SQLite cache; only the provider and cancellation port are scripted. */
 function harness(vector: (text: string) => number[] = () => [1, 0]) {
@@ -96,6 +126,308 @@ function harness(vector: (text: string) => number[] = () => [1, 0]) {
 }
 
 describe("structured memory retrieval", () => {
+    it("keeps scene attendance and every required section stable while filtering character sections in related pages", async () => {
+        const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                events: [],
+                stage: ["Ada", "Archive"],
+                settings: pageSettings(),
+                pages: [
+                    page("scene", { type: "scene", participants: ["Ada", "Archive"], sections: [] }),
+                    page("Charter", {
+                        type: "character",
+                        contextMode: "always",
+                        sections: [
+                            section("identity", "The complete charter"),
+                            section("currentState", "Still binding"),
+                            { ...section("identity", "Suppressed charter"), suppressed: true },
+                        ],
+                    }),
+                    page("Ada", {
+                        type: "character",
+                        sections: [
+                            section("identity", "Never offered biography"),
+                            section("currentState", "Waiting at the gate"),
+                            section("relationships", "Trusts Ben"),
+                            { ...section("currentState", "Suppressed state"), suppressed: true },
+                        ],
+                    }),
+                    page("Archive", {
+                        sections: [section("History", "Every old volume"), section("Access", "Open at dawn")],
+                    }),
+                ],
+            }),
+        );
+        expect(items(result, "required").map(({ id }) => id)).toEqual(["scene", "Charter"]);
+        expect(items(result, "required")[0].line).toBe("[m:scene] scene | present: Ada, Archive");
+        const card = await spentCard(result, 10000);
+        expect(card.stable).toContain("identity: The complete charter | currentState: Still binding");
+        expect(card.stable).toContain("[m:scene]");
+        expect(card.volatile).toContain("[m:Ada] Ada | currentState: Waiting at the gate | relationships: Trusts Ben");
+        expect(card.volatile).toContain("History: Every old volume | Access: Open at dawn");
+        expect(card.volatile).not.toMatch(/\[m:scene\]|\[m:Charter\]/);
+        expect(card.stable + card.volatile).not.toMatch(/Never offered biography|Suppressed state|Suppressed charter/);
+    });
+
+    it("ranks participant, recent name or alias, one-hop and independent semantic page matches in that order", async () => {
+        const h = harness((text) =>
+            text === "Continue." || text.includes("semantic beacon")
+                ? [1, 0]
+                : text.includes("weak beacon")
+                  ? [3, 4]
+                  : [0, 1],
+        );
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                events: [],
+                stage: ["Ada"],
+                settings: pageSettings(),
+                entries: [
+                    entry("old", "Expired"),
+                    ...Array.from({ length: 8 }, (_, i) =>
+                        entry(
+                            `recent-${i}`,
+                            i === 0
+                                ? "BLUE BIRD visits the OldTower and Charter. {{// Ghost }} {{comment: Phantom}}"
+                                : "Continue.",
+                            "user",
+                        ),
+                    ),
+                ],
+                window: { start: 1, dropped: new Set([0]) },
+                pages: [
+                    page("Semantic", { sections: [section("Clue", "semantic beacon", 999)], links: ["SemanticChild"] }),
+                    page("OldTower", { sections: [section("State", "weak beacon", 10)] }),
+                    page("Bird", { aliases: ["Blue Bird"], sections: [section("State", "semantic beacon", 10)] }),
+                    page("Recent", {
+                        aliases: ["blue bird"],
+                        sections: [section("History", "old section", 1), section("State", "plain", 11)],
+                    }),
+                    page("Ada", { links: ["Bridge"] }),
+                    page("Bridge", { links: ["SecondHop"] }),
+                    page("SecondHop"),
+                    page("SemanticChild"),
+                    page("Expired"),
+                    page("Ghost"),
+                    page("Phantom"),
+                    page("Charter", { contextMode: "always", links: ["Annex"] }),
+                    page("Annex"),
+                ],
+            }),
+        );
+        expect(items(result, "pages").map(({ id, reason }) => [id, reason])).toEqual([
+            ["Ada", "onStage"],
+            ["Recent", "named"],
+            ["Bird", "named"],
+            ["OldTower", "named"],
+            ["Annex", "linked"],
+            ["Bridge", "linked"],
+            ["Semantic", "similarity"],
+        ]);
+        expect(items(result, "required").map(({ id }) => id)).toEqual(["Charter"]);
+        expect(h.calls.flat()).toContain("Semantic: Clue\nsemantic beacon");
+        expect(result.excluded).toEqual(
+            expect.arrayContaining(
+                ["SecondHop", "SemanticChild", "Expired", "Ghost", "Phantom"].map((id) => ({
+                    id,
+                    kind: "page",
+                    lane: "pages",
+                    reason: "not-relevant",
+                })),
+            ),
+        );
+    });
+
+    it("turns off the pages lane at target zero without embedding its sections or query", async () => {
+        const h = harness();
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                events: [],
+                stage: ["Ada"],
+                pages: [page("scene", { type: "scene", participants: ["Ada"] }), page("Ada")],
+                settings: settings({ laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } }),
+            }),
+        );
+        expect(items(result, "pages")).toEqual([]);
+        expect(h.calls).toEqual([]);
+        expect(items(result, "required").map(({ id }) => id)).toEqual(["scene"]);
+    });
+
+    it("keeps participant, name and link page matches when the embedding provider fails", async () => {
+        const h = harness();
+        h.control.error = new Error("Embedding unavailable");
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                events: [],
+                stage: ["Ada"],
+                settings: pageSettings(),
+                entries: [entry("query", "Visit Ben", "user")],
+                window: { start: 0, dropped: new Set() },
+                pages: [page("Ada", { links: ["Bridge"] }), page("Ben"), page("Bridge"), page("Unrelated")],
+            }),
+        );
+        expect(result.similarity).toBe("failed");
+        expect(items(result, "pages").map(({ id, reason }) => [id, reason])).toEqual([
+            ["Ada", "onStage"],
+            ["Ben", "named"],
+            ["Bridge", "linked"],
+        ]);
+        const card = await spentCard(result, 10000);
+        expect(card.volatile).toContain("[m:Bridge]");
+        expect(card.volatile).not.toContain("[m:Unrelated]");
+    });
+
+    it("shows on-stage knowledge once per fact with its stance and private holders from active unsuppressed events", async () => {
+        const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                stage: ["Ada", "Ben"],
+                settings: pageSettings(),
+                pages: [page("Ada", { type: "character" }), page("Ben", { type: "character" }), page("Offstage")],
+                events: [
+                    event("old", ["old"], { knowledge: [fact("Ada", "The gate opens", { stance: "believes" })] }),
+                    event("new", ["query"], {
+                        knowledge: [
+                            fact("Ada", " The  gate\nopens "),
+                            fact("Ada", "The key is copper", { stance: "believes", knowers: ["Ben"] }),
+                            fact("Ben", "Rain is coming"),
+                            fact("Offstage", "Unseen common fact"),
+                        ],
+                    }),
+                    event("stale", ["old"], { status: "stale", knowledge: [fact("Ada", "Stale claim")] }),
+                    event("retracted", ["old"], { status: "retracted", knowledge: [fact("Ada", "Retracted claim")] }),
+                    event("suppressed", ["old"], { suppressed: true, knowledge: [fact("Ada", "Suppressed claim")] }),
+                ],
+            }),
+        );
+        const ada = items(result, "pages").find(({ id }) => id === "Ada")!.line;
+        expect(ada).toContain('knows: "The gate opens"');
+        expect(ada.match(/The gate opens/g)).toHaveLength(1);
+        expect(ada).toContain('believes: "The key is copper" (private to Ada, also known to Ben)');
+        expect(ada).not.toContain("Rain is coming");
+        const text = items(result, "pages")
+            .map(({ line }) => line)
+            .join("\n");
+        expect(text).toContain('knows: "Rain is coming"');
+        expect(text).not.toMatch(/Stale claim|Retracted claim|Suppressed claim|Unseen common fact/);
+    });
+
+    it("unions knowers across whitespace-equivalent facts and never denies a fact with a public record", async () => {
+        const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                stage: ["Ada", "Ben"],
+                settings: pageSettings(),
+                pages: [page("Ada", { type: "character" }), page("Ben", { type: "character" }), page("Cara")],
+                events: [
+                    event("first", ["old"], {
+                        knowledge: [
+                            fact("Ben", "Hidden door", { knowers: [] }),
+                            fact("Ben", "Shared route", { knowers: [] }),
+                            fact("Ben", "Public news", { knowers: [] }),
+                            fact("Ben", "Still secret", { knowers: [] }),
+                        ],
+                    }),
+                    event("later", ["query"], {
+                        knowledge: [
+                            fact("Ada", " Hidden\n door ", { knowers: [] }),
+                            fact("Cara", "Shared   route", { knowers: ["Ada"] }),
+                            fact("Cara", "Public news"),
+                        ],
+                    }),
+                ],
+            }),
+        );
+        const ada = items(result, "pages").find(({ id }) => id === "Ada")!.line;
+        expect(ada).toContain('knows: "Hidden door" (private to Ada, also known to Ben)');
+        expect(ada.split("does not know: ")[1]).toBe('"Still secret"');
+        const ben = items(result, "pages").find(({ id }) => id === "Ben")!.line;
+        expect(ben).toContain('"Hidden door" (private to Ben, also known to Ada)');
+        expect(ben).not.toContain("does not know:");
+    });
+
+    it("caps unknown secrets with on-stage holders ahead of newer off-stage holders", async () => {
+        const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                stage: ["Ada", "Ben"],
+                settings: pageSettings(),
+                pages: [page("Ada", { type: "character" }), page("Ben", { type: "character" }), page("Remote")],
+                events: [
+                    event("onstage", ["old"], { knowledge: [fact("Ben", "Old stage secret", { knowers: [] })] }),
+                    event("remote", ["query"], {
+                        knowledge: Array.from({ length: RETRIEVAL_LIMITS.unawarePerCharacter + 2 }, (_, i) =>
+                            fact("Remote", `Remote secret ${i}`, { knowers: [] }),
+                        ),
+                    }),
+                ],
+            }),
+        );
+        const ada = items(result, "pages").find(({ id }) => id === "Ada")!.line;
+        const denied = ada.split("does not know: ")[1].split("; ");
+        expect(denied).toHaveLength(RETRIEVAL_LIMITS.unawarePerCharacter);
+        expect(denied[0]).toBe('"Old stage secret"');
+        expect(denied.slice(1)).toEqual(expect.arrayContaining(['"Remote secret 7"', '"Remote secret 6"']));
+        expect(items(result, "pages").some(({ id }) => id === "Remote")).toBe(false);
+    });
+
+    it("hides never pages from items, attendance, private labels, sole-holder secrets and link traversal", async () => {
+        const h = harness((text) => (text === "Veiled" ? [1, 0] : [0, 1]));
+        for (const hideScene of [false, true]) {
+            const result = await retrieveLanes(
+                h.host,
+                input({
+                    stage: ["Ada", "Veiled"],
+                    settings: pageSettings(),
+                    entries: [entry("query", "Veiled", "user")],
+                    window: { start: 0, dropped: new Set() },
+                    pages: [
+                        page("scene", {
+                            type: "scene",
+                            participants: ["Ada", "Veiled"],
+                            contextMode: hideScene ? "never" : "auto",
+                            sections: [],
+                        }),
+                        page("Ada", { type: "character", links: ["Veiled"] }),
+                        page("Veiled", { contextMode: "never", links: ["BehindVeil"] }),
+                        page("BehindVeil"),
+                    ],
+                    events: [
+                        event("knowledge", ["query"], {
+                            knowledge: [
+                                fact("Ada", "Shared secret", { knowers: ["Veiled"] }),
+                                fact("Veiled", "Only hidden holder", { knowers: [] }),
+                            ],
+                        }),
+                    ],
+                }),
+            );
+            const card = await spentCard(result, 10000);
+            const text = card.stable + card.volatile;
+            expect(text).toContain('knows: "Shared secret" (private to Ada)');
+            expect(text).not.toMatch(/Veiled|BehindVeil|Only hidden holder/);
+            if (hideScene) expect(text).not.toContain("[m:scene]");
+            else expect(text).toContain("present: Ada");
+            expect(result.excluded).toContainEqual({ id: "Veiled", kind: "page", lane: "pages", reason: "never" });
+            if (hideScene)
+                expect(result.excluded).toContainEqual({
+                    id: "scene",
+                    kind: "page",
+                    lane: "required",
+                    reason: "never",
+                });
+            expect(h.calls.flat().join("\n")).not.toContain("Veiled: currentState");
+        }
+    });
+
     it("opens events for user recollections in several languages or high similarity, retaining a relevance floor", async () => {
         const h = harness((text) => (text === "weak" ? [20, 99] : [1, 0]));
         // Cosine 5/13 is below the opening threshold but above the relevance floor.
@@ -225,7 +557,7 @@ describe("structured memory retrieval", () => {
             ]),
         );
         expect(items(result, "flow").map(({ id }) => id)).toEqual(["new", "middle"]);
-        const card = await buildMemoryCard({ tokenizeChat: async () => 1 }, { maximum: 100, lanes: result.lanes });
+        const card = await spentCard(result, 100);
         expect(card.stable).not.toMatch(/retracted|stale|suppressed/);
         expect(card.volatile).not.toMatch(/retracted|stale|suppressed|\[m:new\]/);
         expect(items(result, "flow").map(({ line }) => line)).toEqual([
@@ -292,7 +624,7 @@ describe("structured memory retrieval", () => {
                         !text.includes("Afterword"),
                 ),
             ).toBe(true);
-            const card = await buildMemoryCard({ tokenizeChat: async () => 1 }, { maximum: 1000, lanes: result.lanes });
+            const card = await spentCard(result, 1000);
             const admitted = card.items.filter(({ lane }) => lane === "evidence");
             expect(admitted).toHaveLength(RETRIEVAL_LIMITS.evidenceItems);
             if (open) expect(admitted.slice(0, 2).map(({ id }) => id)).toEqual(["source2", "source1"]);
@@ -393,7 +725,7 @@ describe("structured memory retrieval", () => {
         expect(result.failure).not.toContain(key);
         expect(result.failure).not.toContain(encodeURIComponent(key));
         expect(result.failure).not.toContain("memory-secret");
-        const card = await buildMemoryCard({ tokenizeChat: async () => 1 }, { maximum: 100, lanes: result.lanes });
+        const card = await spentCard(result, 100);
         expect(card.stable).toContain("[m:flow:memory]");
     });
 

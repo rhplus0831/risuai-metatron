@@ -2392,6 +2392,8 @@ export const languageEnglish = {
     structuredMemory: {
         name: "Structured memory",
         toggle: "Toggle Structured memory",
+        requiredOverCap: (tokens: number, limit: number, pages: string) =>
+            `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`,
         meter: {
             status: {
                 unknown: "unknown",
@@ -2618,6 +2620,8 @@ export const languageEnglish = {
             cadenceRatio: "Unrecorded share of the max context that starts a recording",
             windowTurns: "Turns kept as full messages",
             flowEvents: "Recent events listed",
+            requiredCap: "Most tokens for required pages",
+            pagesTarget: "Tokens for related pages",
             eventsTarget: "Tokens for earlier events",
             evidenceTarget: "Tokens for original messages",
             threadsTarget: "Tokens for open threads",

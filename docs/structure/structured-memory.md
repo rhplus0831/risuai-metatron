@@ -9,9 +9,8 @@
   path's: [the read path guide](structured-memory-read.md)), and `src/ts/process/structuredMemory.svelte.ts` (its
   receipt and panel parts: [the read path guide](structured-memory-read.md)).
 - The Memory settings page selects it, ahead of the flags. Production has its [writer](structured-memory-writer.md), and
-  `assemblePrompt` runs [the read path](structured-memory-read.md), which has no required or pages lane yet, so the page
-  exposes only the preset fields something reads. Its design and remaining work are in
-  [Active Plans](../plan/README.md).
+  `assemblePrompt` runs [the read path](structured-memory-read.md). The page exposes only the preset fields something
+  reads. Its design and remaining work are in [Active Plans](../plan/README.md).
 - Not here:
   - The writer's settings, windows, task kind, runs, analysis prompt, admission, and record now →
     [structured memory writer](structured-memory-writer.md).

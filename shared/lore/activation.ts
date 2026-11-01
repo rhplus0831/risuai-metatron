@@ -104,6 +104,187 @@ function loreEntryName(entry: loreBook, index: number): string {
     return comment || key || `lorebook ${index}`;
 }
 
+/** An activated entry's text, which later rounds scan. */
+type LoreRecursivePrompt = { prompt: string; source: string; data: string };
+
+/** What `searchMatch` reads of the search it serves. */
+export type LoreSearchScope = {
+    host: Pick<LoreHost, "findCharacterName" | "testRegex">;
+    userName: string;
+    /** The speaker of a message with neither a `name` nor a group member behind it. */
+    charName: string;
+    /** What activated entries added to the scan, as it stands at this search. */
+    recursivePrompt: readonly LoreRecursivePrompt[];
+    /** Takes every match. */
+    matchLog: LoreMatch[];
+};
+
+/**
+ * Whether `arg.keys` match the last `searchDepth` of `messages` and, unless `dontSearchWhenRecursive`,
+ * `recursivePrompt`. A plain key matches lower-cased text without `{{//...}}` and `{{comment:...}}`, as a
+ * whole word under `fullWordMatching`, else as a substring with spaces removed from both sides.
+ *
+ * Not `async`: the answer is a promise only when a regex test gives one, so a caller that awaits just
+ * that case does not yield on any other search. A `searchDepth` over the list's length counts back from
+ * the end of the list, so a caller that wants every row passes its length.
+ */
+export function searchMatch(
+    messages: readonly DeepReadonly<Pick<Message, "role" | "data" | "name" | "saying">>[],
+    arg: {
+        keys: string[];
+        searchDepth: number;
+        regex?: boolean;
+        fullWordMatching: boolean;
+        all?: boolean;
+        dontSearchWhenRecursive: boolean;
+    },
+    { host, userName, charName, recursivePrompt, matchLog }: LoreSearchScope,
+): boolean | Promise<boolean> {
+    const sliced = messages.slice(messages.length - arg.searchDepth, messages.length);
+    const newKeys = [];
+    for (const key of arg.keys) {
+        const trimmed = key.trim();
+        if (trimmed.length > 0) {
+            newKeys.push(trimmed);
+        }
+    }
+    arg.keys = newKeys;
+    let mList: {
+        source: string;
+        prompt: string;
+        data: string;
+    }[] = sliced
+        .map((msg, i) => {
+            if (msg.role === "user") {
+                return {
+                    source: `message ${i} by user`,
+                    prompt: `\x01{{${userName}}}:` + msg.data + "\x01",
+                    data: msg.data,
+                };
+            } else {
+                return {
+                    source: `message ${i} by char`,
+                    prompt:
+                        `\x01{{${msg.name ?? (msg.saying ? host.findCharacterName(msg.saying) : null) ?? charName}}}:` +
+                        msg.data +
+                        "\x01",
+                    data: msg.data,
+                };
+            }
+        })
+        .concat(
+            arg.dontSearchWhenRecursive
+                ? []
+                : recursivePrompt.map((msg) => {
+                      return {
+                          source: "lorebook " + msg.source,
+                          prompt: msg.prompt,
+                          data: msg.data,
+                      };
+                  }),
+        );
+
+    if (arg.regex) {
+        const keys = arg.keys;
+        // A generator, so the search stays synchronous while `testRegex` answers synchronously
+        // (the client) and suspends only on a promise (the server's worker).
+        return runSteps(
+            (function* (): Generator<boolean | Promise<boolean>, boolean, boolean> {
+                for (const mText of mList) {
+                    for (const regexString of keys) {
+                        if (!regexString.startsWith("/")) {
+                            return false;
+                        }
+                        // `/pattern/flags`: the last `/` ends the pattern, and the flags may be
+                        // empty. (In the browser-only version the key's first entry was
+                        // overwritten with the pattern, the leading `/` stayed in it, and empty
+                        // flags never matched.)
+                        const lastSlash = regexString.lastIndexOf("/");
+                        if (lastSlash === 0) {
+                            return false;
+                        }
+                        const pattern = regexString.substring(1, lastSlash);
+                        const flags = regexString.substring(lastSlash + 1);
+                        try {
+                            const d: boolean = yield host.testRegex(pattern, flags, mText.data);
+                            if (d) {
+                                matchLog.push({
+                                    prompt: mText.prompt,
+                                    source: mText.source,
+                                    activated: regexString,
+                                });
+                                return true;
+                            }
+                        } catch (error) {
+                            return false;
+                        }
+                    }
+                }
+                return false;
+            })(),
+        );
+    }
+
+    mList = mList.map((m) => {
+        return {
+            source: m.source,
+            prompt: m.prompt
+                .toLocaleLowerCase()
+                .replace(/\{\{\/\/(.+?)\}\}/g, "")
+                .replace(/\{\{comment:(.+?)\}\}/g, ""),
+            data: m.data
+                .toLocaleLowerCase()
+                .replace(/\{\{\/\/(.+?)\}\}/g, "")
+                .replace(/\{\{comment:(.+?)\}\}/g, ""),
+        };
+    });
+
+    let allMode = arg.all ?? false;
+    let allModeMatched = true;
+
+    for (const m of mList) {
+        let mText = m.data;
+        if (arg.fullWordMatching) {
+            const splited = mText.split(" ");
+            for (const key of arg.keys) {
+                if (splited.includes(key.toLocaleLowerCase())) {
+                    matchLog.push({
+                        prompt: m.prompt,
+                        source: m.source,
+                        activated: key,
+                    });
+                    if (!allMode) {
+                        return true;
+                    }
+                } else if (allMode) {
+                    allModeMatched = false;
+                }
+            }
+        } else {
+            mText = mText.replace(/ /g, "");
+            for (const key of arg.keys) {
+                const realKey = key.toLocaleLowerCase().replace(/ /g, "");
+                if (mText.includes(realKey)) {
+                    matchLog.push({
+                        prompt: m.prompt,
+                        source: m.source,
+                        activated: key,
+                    });
+                    if (!allMode) {
+                        return true;
+                    }
+                } else if (allMode) {
+                    allModeMatched = false;
+                }
+            }
+        }
+    }
+    if (allMode && allModeMatched) {
+        return true;
+    }
+    return false;
+}
+
 /**
  * The lore of `input.chat` that activates, and why: `loadLoreBookV3Prompt` on the client.
  * Applies chat overrides to owner lore, silently drops orphans, and keeps off child links inactive.
@@ -124,168 +305,8 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     const fullWordMatchingSetting = char.loreSettings?.fullWordMatching ?? false;
     const chatLength = currentChat.length + 1; //includes first message
     const recursiveScanning = char.loreSettings?.recursiveScanning ?? true;
-    let recursivePrompt: {
-        prompt: string;
-        source: string;
-        data: string;
-    }[] = [];
-    let matchLog: LoreMatch[] = [];
-
-    const searchMatch = (
-        messages: readonly DeepReadonly<Message>[],
-        arg: {
-            keys: string[];
-            searchDepth: number;
-            regex?: boolean;
-            fullWordMatching: boolean;
-            all?: boolean;
-            dontSearchWhenRecursive: boolean;
-        },
-    ) => {
-        const sliced = messages.slice(messages.length - arg.searchDepth, messages.length);
-        const newKeys = [];
-        for (const key of arg.keys) {
-            const trimmed = key.trim();
-            if (trimmed.length > 0) {
-                newKeys.push(trimmed);
-            }
-        }
-        arg.keys = newKeys;
-        let mList: {
-            source: string;
-            prompt: string;
-            data: string;
-        }[] = sliced
-            .map((msg, i) => {
-                if (msg.role === "user") {
-                    return {
-                        source: `message ${i} by user`,
-                        prompt: `\x01{{${input.userName}}}:` + msg.data + "\x01",
-                        data: msg.data,
-                    };
-                } else {
-                    return {
-                        source: `message ${i} by char`,
-                        prompt:
-                            `\x01{{${msg.name ?? (msg.saying ? host.findCharacterName(msg.saying) : null) ?? char.name}}}:` +
-                            msg.data +
-                            "\x01",
-                        data: msg.data,
-                    };
-                }
-            })
-            .concat(
-                arg.dontSearchWhenRecursive
-                    ? []
-                    : recursivePrompt.map((msg) => {
-                          return {
-                              source: "lorebook " + msg.source,
-                              prompt: msg.prompt,
-                              data: msg.data,
-                          };
-                      }),
-            );
-
-        if (arg.regex) {
-            const keys = arg.keys;
-            // A generator, so the search stays synchronous while `testRegex` answers synchronously
-            // (the client) and suspends only on a promise (the server's worker).
-            return runSteps(
-                (function* (): Generator<boolean | Promise<boolean>, boolean, boolean> {
-                    for (const mText of mList) {
-                        for (const regexString of keys) {
-                            if (!regexString.startsWith("/")) {
-                                return false;
-                            }
-                            // `/pattern/flags`: the last `/` ends the pattern, and the flags may be
-                            // empty. (In the browser-only version the key's first entry was
-                            // overwritten with the pattern, the leading `/` stayed in it, and empty
-                            // flags never matched.)
-                            const lastSlash = regexString.lastIndexOf("/");
-                            if (lastSlash === 0) {
-                                return false;
-                            }
-                            const pattern = regexString.substring(1, lastSlash);
-                            const flags = regexString.substring(lastSlash + 1);
-                            try {
-                                const d: boolean = yield host.testRegex(pattern, flags, mText.data);
-                                if (d) {
-                                    matchLog.push({
-                                        prompt: mText.prompt,
-                                        source: mText.source,
-                                        activated: regexString,
-                                    });
-                                    return true;
-                                }
-                            } catch (error) {
-                                return false;
-                            }
-                        }
-                    }
-                    return false;
-                })(),
-            );
-        }
-
-        mList = mList.map((m) => {
-            return {
-                source: m.source,
-                prompt: m.prompt
-                    .toLocaleLowerCase()
-                    .replace(/\{\{\/\/(.+?)\}\}/g, "")
-                    .replace(/\{\{comment:(.+?)\}\}/g, ""),
-                data: m.data
-                    .toLocaleLowerCase()
-                    .replace(/\{\{\/\/(.+?)\}\}/g, "")
-                    .replace(/\{\{comment:(.+?)\}\}/g, ""),
-            };
-        });
-
-        let allMode = arg.all ?? false;
-        let allModeMatched = true;
-
-        for (const m of mList) {
-            let mText = m.data;
-            if (arg.fullWordMatching) {
-                const splited = mText.split(" ");
-                for (const key of arg.keys) {
-                    if (splited.includes(key.toLocaleLowerCase())) {
-                        matchLog.push({
-                            prompt: m.prompt,
-                            source: m.source,
-                            activated: key,
-                        });
-                        if (!allMode) {
-                            return true;
-                        }
-                    } else if (allMode) {
-                        allModeMatched = false;
-                    }
-                }
-            } else {
-                mText = mText.replace(/ /g, "");
-                for (const key of arg.keys) {
-                    const realKey = key.toLocaleLowerCase().replace(/ /g, "");
-                    if (mText.includes(realKey)) {
-                        matchLog.push({
-                            prompt: m.prompt,
-                            source: m.source,
-                            activated: key,
-                        });
-                        if (!allMode) {
-                            return true;
-                        }
-                    } else if (allMode) {
-                        allModeMatched = false;
-                    }
-                }
-            }
-        }
-        if (allMode && allModeMatched) {
-            return true;
-        }
-        return false;
-    };
+    const recursivePrompt: LoreRecursivePrompt[] = [];
+    const matchLog: LoreMatch[] = [];
 
     let matching = true;
     let actives: LoreActive[] = [];
@@ -593,14 +614,18 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                 }
 
                 for (const query of searchQueries) {
-                    const searched = searchMatch(currentChat, {
-                        keys: query.keys,
-                        searchDepth: scanDepth,
-                        regex: fullLore[i].useRegex,
-                        fullWordMatching: fullWordMatching,
-                        all: query.all,
-                        dontSearchWhenRecursive: dontSearchWhenRecursive,
-                    });
+                    const searched = searchMatch(
+                        currentChat,
+                        {
+                            keys: query.keys,
+                            searchDepth: scanDepth,
+                            regex: fullLore[i].useRegex,
+                            fullWordMatching: fullWordMatching,
+                            all: query.all,
+                            dontSearchWhenRecursive: dontSearchWhenRecursive,
+                        },
+                        { host, userName: input.userName, charName: char.name, recursivePrompt, matchLog },
+                    );
                     // Awaited only when a regex test is asynchronous: a synchronous search does not
                     // yield, so nothing can change the chat between two entries' searches.
                     const result = typeof searched === "boolean" ? searched : await searched;

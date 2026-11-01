@@ -2687,6 +2687,117 @@ describe("structured memory job hand-offs", () => {
                 kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
             });
 
+        it("required overflow ends send and preview jobs without a chat write or provider request under inlay errors", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                (item: { id: string }) => item.id === presetRecord.selectedId,
+            ).settings;
+            await patchSettings({ inlayErrorResponse: true });
+            const chaId = await seedCharacter({
+                messages: [...messages, { chatId: "u3", role: "user", data: "Continue" }],
+            });
+            const store = openStore();
+            try {
+                const [scene, charter] = memoryRecords(["scene", "charter"]).pages;
+                Object.assign(scene, {
+                    type: "scene",
+                    title: "Gate scene",
+                    participants: [],
+                    sections: [{ ...scene.sections[0], body: "The gate remains closed. ".repeat(100) }],
+                });
+                Object.assign(charter, { title: "Binding charter", contextMode: "always" });
+                writeMemory(store, chaId, "k", { pages: [scene, charter] });
+                const before = await readChat(chaId);
+                const contents = store.memory.readContents(chaId, "k");
+                for (const requiredCap of [1, 10000]) {
+                    await patchHypaV3({
+                        budgetMode: "tokens",
+                        memoryBudgetTokens: 100,
+                        structured: {
+                            requiredCap,
+                            cadence: "manual",
+                            laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
+                        },
+                    });
+                    for (const kind of ["send", "preview", "previewPrompt"]) {
+                        const result = await job(kind, chaId);
+                        expect(result.terminal).toMatchObject({
+                            type: "error",
+                            message: expect.stringContaining("required memory pages"),
+                        });
+                        if (result.terminal?.type !== "error") throw new Error(JSON.stringify(result.terminal));
+                        expect(result.terminal.message).toContain("Gate scene (");
+                        expect(result.terminal.message).toContain("Binding charter (");
+                        expect(result.terminal.message).toContain(`over the limit of ${requiredCap === 1 ? 1 : 100}`);
+                        expect(await readChat(chaId)).toEqual(before);
+                        expect(store.memory.readContents(chaId, "k")).toEqual(contents);
+                        expect(upstream).toEqual([]);
+                        expect(questions(result.events)).toEqual([]);
+                        expect(fake.handOffs).toEqual([]);
+                    }
+                }
+            } finally {
+                store.close();
+                await patchHypaV3(priorSettings);
+            }
+        });
+
+        it("loads stored pages and scene participants into a successful send even when page embeddings fail", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                (item: { id: string }) => item.id === presetRecord.selectedId,
+            ).settings;
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 1500,
+                structured: {
+                    cadence: "manual",
+                    requiredCap: 1000,
+                    laneTargets: { pages: 500, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            const chaId = await seedCharacter({
+                messages: [...messages, { chatId: "u3", role: "user", data: "Continue" }],
+            });
+            const store = openStore();
+            try {
+                const [scene, ada, charter] = memoryRecords(["scene", "ada", "charter"]).pages;
+                Object.assign(scene, { type: "scene", title: "Gate scene", participants: ["ada"], sections: [] });
+                Object.assign(ada, {
+                    type: "character",
+                    title: "Ada",
+                    sections: [{ ...ada.sections[0], heading: "currentState", body: "Waiting at the gate" }],
+                });
+                Object.assign(charter, { contextMode: "always", title: "Charter" });
+                writeMemory(store, chaId, "k", { pages: [scene, ada, charter] });
+                state.embedMode = "leak";
+                const result = await job("send", chaId);
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(mains()).toHaveLength(1);
+                const prompt = mains()[0]
+                    .body.messages.map((message: { content: string }) => message.content)
+                    .join("\n");
+                expect(prompt).toContain("[m:scene] Gate scene | present: Ada");
+                expect(prompt).toContain("[m:ada] Ada | currentState: Waiting at the gate");
+                expect(prompt).toContain("[m:charter]");
+                expect(embedCalls.length).toBeGreaterThan(0);
+                expect(summaries()).toEqual([]);
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                expect(reply.data).toBe("Main reply.");
+                expect(reply.generationInfo.context.memory.items).toEqual(
+                    expect.arrayContaining([
+                        expect.objectContaining({ id: "scene", kind: "page", lane: "required", verified: true }),
+                        expect.objectContaining({ id: "charter", kind: "page", lane: "required", verified: true }),
+                        expect.objectContaining({ id: "ada", kind: "page", lane: "pages", verified: true }),
+                    ]),
+                );
+            } finally {
+                store.close();
+                await patchHypaV3(priorSettings);
+            }
+        });
+
         it("both preview kinds return the selected memory without questions, writer hand-offs, receipts or stored changes", async () => {
             const chaId = await seedCharacter();
             const store = openStore();

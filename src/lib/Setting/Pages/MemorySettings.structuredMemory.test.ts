@@ -123,6 +123,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             control(preset().budgetMode === "tokens" ? hypa.memoryBudgetTokensLabel : hypa.memoryTokensRatioLabel),
             control(text.windowTurns),
             control(text.flowEvents),
+            control(text.requiredCap),
+            control(text.pagesTarget),
             control(text.eventsTarget),
             control(text.evidenceTarget),
             control(text.threadsTarget),
@@ -147,6 +149,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
         [text.cadenceTurns, 4],
         [text.windowTurns, 3],
         [text.flowEvents, 2],
+        [text.requiredCap, 900],
+        [text.pagesTarget, 444],
         [text.eventsTarget, 111],
         [text.evidenceTarget, 222],
         [text.threadsTarget, 333],
@@ -162,7 +166,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
         cadenceTurns: 4,
         windowTurns: 3,
         flowEvents: 2,
-        laneTargets: { events: 111, evidence: 222, threads: 333 },
+        requiredCap: 900,
+        laneTargets: { pages: 444, events: 111, evidence: 222, threads: 333 },
         volatileBeforeLastUser: !wasChecked,
     });
     change(control(hypa.memoryBudgetTokensLabel) as HTMLInputElement, "3456");

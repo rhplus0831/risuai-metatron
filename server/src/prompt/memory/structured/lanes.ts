@@ -21,7 +21,8 @@ export type { RawWindow, ReadEntry } from "../../../../../shared/structuredMemor
  *   counts events of any status.
  * - The maximum is the only hard limit. Each lane first spends up to its target, then what is left is
  *   lent by score. Relevance is decided before spending, and spending adds no item that does not exist,
- *   so a quiet scene leaves room empty: the lanes are a cap, not a quota.
+ *   so a quiet scene leaves room empty: the lanes are a cap, not a quota. The required lane takes no part
+ *   in this: `buildMemoryCard` reserves it first.
  */
 
 /**

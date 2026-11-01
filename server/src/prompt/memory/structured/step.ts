@@ -11,6 +11,7 @@ import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
     type MemoryEvent,
     type MemoryManifestItem,
+    type MemoryPage,
     type MemoryReceipt,
     type MemoryThread,
     memoryThreadEnded,
@@ -20,7 +21,7 @@ import type { MemoryContents } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import type { MemoryHost, MemoryTokenizer } from "../host.ts";
 import { trimHistoryToContext } from "../hypav3.ts";
-import { buildMemoryCard } from "./card.ts";
+import { buildMemoryCard, type MemoryCard } from "./card.ts";
 import {
     coveredMessages,
     type ExcludedItem,
@@ -48,7 +49,14 @@ import { writerPaused } from "./writer.ts";
  * - A card with no item adds no entry, so it costs nothing. The volatile part goes into the card's
  *   entry, or under `volatileBeforeLastUser` stays out of the history altogether: there a chat range
  *   could cut it, and a `memory` prompt card would pull it away from the latest user message.
+ * - Required pages that do not fit end the send naming them, whatever `inlayErrorResponse` says: only a
+ *   person can shorten or demote a page, so no reply may stand in for that.
  */
+
+/** The English text of `language.structuredMemory.requiredOverCap`, which the server cannot import. */
+function requiredOverCap(tokens: number, limit: number, pages: string): string {
+    return `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`;
+}
 
 /** What a send reads of a chat's records. */
 export type MemoryRecords = {
@@ -56,6 +64,8 @@ export type MemoryRecords = {
     events: MemoryEvent[];
     /** The threads not ended. */
     threads: MemoryThread[];
+    /** Every page, in stored order. */
+    pages: MemoryPage[];
     /** The page ids the scene page has present; empty with no scene page. */
     stage: string[];
     /** The run rows, never a run's body: that holds a whole prompt. */
@@ -105,8 +115,11 @@ export type MemorySelected = {
     lanesStage: "filled" | "empty" | "similarityFailed";
 };
 
-/** A selection that does not fit fails the send: `error` names the tokens it needs. */
-export type MemorySelection = MemorySelected | { type: "error"; error: string };
+/**
+ * A selection that does not fit fails the send: `error` names the tokens it needs. `error` is what a send
+ * shows its own way, into the chat under `inlayErrorResponse`, and `alert` always ends it with a `SendError`.
+ */
+export type MemorySelection = MemorySelected | { type: "error"; error: string } | { type: "alert"; error: string };
 
 /** A send's manifest as the step knows it. `buildContextReport` adds what only the final prompt can say. */
 export type MemorySendManifest = {
@@ -124,19 +137,22 @@ export type MemorySendManifest = {
 };
 
 /**
- * The chat's records in one synchronous read, so a send reads every event once. Empty for a missing
- * chat.
+ * The chat's records in one synchronous read, so a send reads every event and page once. Empty for a
+ * missing chat.
  */
 export function readMemoryRecords(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): MemoryRecords {
     const contents = store.memory.readContents(chaId, chatId);
     const runs = contents?.runs ?? [];
     const events = contents?.events ?? [];
     const threads = (contents?.threads ?? []).filter(({ state }) => !memoryThreadEnded(state));
-    const scene = contents?.pages.find(({ type }) => type === "scene");
+    const pages = (contents?.pages ?? []).flatMap(
+        ({ id }) => store.memory.readRecord(chaId, chatId, "pages", id)?.data ?? [],
+    );
     return {
         events: events.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
         threads: threads.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "threads", id)?.data ?? []),
-        stage: (scene && store.memory.readRecord(chaId, chatId, "pages", scene.id)?.data.participants) ?? [],
+        pages,
+        stage: pages.find(({ type }) => type === "scene")?.participants ?? [],
         runs,
         paused: writerPaused(runs),
     };
@@ -173,7 +189,7 @@ function sendWindow(
 
 /** The card as prompt entries: `apart` keeps a volatile part out of the card's own. */
 function cardEntries(
-    { stable, volatile, items }: Awaited<ReturnType<typeof buildMemoryCard>>,
+    { stable, volatile, items }: MemoryCard,
     apart: boolean,
 ): { card: OpenAIChat | null; volatile: OpenAIChat | null } {
     if (items.length === 0) {
@@ -200,7 +216,7 @@ function cardEntries(
  */
 export async function selectMemory(
     input: MemorySelectionInput,
-    records: Pick<MemoryRecords, "events" | "threads" | "stage">,
+    records: Pick<MemoryRecords, "events" | "threads" | "pages" | "stage">,
 ): Promise<MemorySelection> {
     const { host, settings, tokenizer, chats, historyStart, entries, maxContextTokens, continueMessageId } = input;
     const structured = normalizeStructuredMemorySettings(settings.structured);
@@ -214,6 +230,7 @@ export async function selectMemory(
     const retrieved = await retrieveLanes(host, {
         events: records.events,
         threads: records.threads,
+        pages: records.pages,
         entries,
         window,
         stage: records.stage,
@@ -221,6 +238,11 @@ export async function selectMemory(
     });
     const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);
     const card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes });
+    if (card.type === "requiredOverLimit") {
+        const titles = new Map(records.pages.map(({ id, title }) => [id, title]));
+        const pages = card.pages.map(({ id, tokens }) => `${titles.get(id) ?? id} (${tokens})`);
+        return { type: "alert", error: requiredOverCap(card.tokens, card.limit, pages.join(", ")) };
+    }
     const placed = cardEntries(card, structured.volatileBeforeLastUser);
 
     const history = chats.slice(historyStart);

@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Chat, ChatLoreOverride, Message, loreBook } from "../../../shared/database.ts";
 import {
     activateLore,
+    searchMatch,
     type LoreActivation,
     type LoreActivationInput,
     type LoreHost,
@@ -97,6 +98,43 @@ afterEach(() => {
 });
 
 describe("chat lore overrides", () => {
+    it("exposes the same recent-message matching rules used by lore activation", async () => {
+        const cases = [
+            { text: "The BLUEBIRD arrives", key: "Blue Bird", depth: 1, matched: true },
+            { text: "{{// Blue Bird }} Nothing", key: "Blue Bird", depth: 1, matched: false },
+            { text: "{{comment:Blue Bird}} Nothing", key: "Blue Bird", depth: 1, matched: false },
+            { text: "Nothing", key: "Blue Bird", depth: 1, matched: false },
+            { text: "Nothing", key: "Blue Bird", depth: 2, matched: true },
+        ];
+        for (const { text, key, depth, matched } of cases) {
+            const messages = [user("Blue Bird was here"), char(text)];
+            const host = makeHost();
+            expect(
+                await searchMatch(
+                    messages,
+                    {
+                        keys: [key],
+                        searchDepth: depth,
+                        fullWordMatching: false,
+                        dontSearchWhenRecursive: true,
+                    },
+                    { host, userName: "User", charName: "Bot", recursivePrompt: [], matchLog: [] },
+                ),
+                text,
+            ).toBe(matched);
+            const activated = await activateLore(
+                makeInput([lore("bird", key, "Bird lore")], messages, {
+                    loreBookDepth: depth,
+                }),
+                host,
+            );
+            expect(
+                activated.actives.map(({ prompt }) => prompt),
+                text,
+            ).toEqual(matched ? ["Bird lore"] : []);
+        }
+    });
+
     it("replaces or removes only the first owner match, keeps the first override, and reports orphans without mutating inputs", () => {
         const owners = [
             lore("no id", "x", "unlinked"),

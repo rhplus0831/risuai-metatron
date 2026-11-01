@@ -1,20 +1,35 @@
 import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
+import { type LoreSearchScope, searchMatch } from "../../../../../shared/lore/activation.ts";
 import {
+    type CharacterSectionSlot,
     type MemoryEvent,
+    memoryEventCovers,
+    type MemoryKnowledge,
+    type MemoryPage,
+    type MemorySection,
     type MemoryThread,
     memoryThreadEnded,
     type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
 import { cosineSimilarity, HypaProcesser, type memoryVector, type VectorArray } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
-import { eventLine, evidenceLine, flowLine, threadLine } from "./card.ts";
+import { eventLine, evidenceLine, flattened, flowLine, type PageKnowledge, pageLine, threadLine } from "./card.ts";
 import { type ExcludedItem, itemKey, type Lane, type LaneCandidate, type RawWindow, type ReadEntry } from "./lanes.ts";
+import { sectionVectorText } from "./pages.ts";
 
 /**
  * What a send's lanes offer the card, from the records and the prompt's own entries.
  *
  * - Places: an event's place is the entry of its newest source. With no source among the entries it has
  *   no place, so neither flow nor the events lane lists it.
+ * - Required is the scene page in whatever mode, then the `always` pages in stored order, each with every
+ *   section not suppressed. The scene also says who is present, which no section holds. In this lane and
+ *   the next, a page with nothing to show gives no item.
+ * - Pages are found by four channels, in rank order: on stage, named in the last `pageNameMessages`
+ *   messages by lore's matching, linked from either of those by one hop, and near the query by a
+ *   section's similarity, which is a channel of its own and leads to no links. An `always` page finds
+ *   others like any page but stays out of the lane, being required. Within a channel the newest section
+ *   leads, then similarity. A character offers only its `currentState` and `relationships`, whole.
  * - Flow is the story's recent order, not retrieval: the last `flowEvents` events by place, never by
  *   storage order, since a backfill stores out of order, and whether or not they are inside the window.
  * - Retrieval leaves out an event whose every source is inside the window with text, since the prompt
@@ -28,13 +43,25 @@ import { type ExcludedItem, itemKey, type Lane, type LaneCandidate, type RawWind
  * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as a thread recorded
  *   before its chat had pages is; one naming someone needs them on stage, which is the scene page's
  *   attendance.
+ * - Knowledge is stored on events, so what a page knows comes from every event that covers its messages,
+ *   before any cap. Facts are one by their text with whitespace collapsed. A fact's knowers are every
+ *   record's page and `knowers` list, and a fact that any record states without `knowers` is no secret,
+ *   since a false "does not know" is worse than a missing one. A page on stage shows its own newest
+ *   facts, a secret labelled private, and a character on stage says which secrets of others it does not
+ *   know, those held on stage first, the holder not having to be on stage. Both belong to the page's one
+ *   line, so an `always` page counts them against the required cap.
+ * - `never` hides a page everywhere: it has no item, its title is in no attendance or private label, its
+ *   links are not followed, and a secret only it holds reaches nobody's line. A `never` scene still gives
+ *   the stage.
  * - A failed embedding never fails the send: the prompt stays valid without it and the answer says why.
- *   The events lane then opens by the reading alone, over events sharing someone with the stage. A
- *   cancelled job or a latched failure still escapes through `host.fence()`.
+ *   The events lane then opens by the reading alone, over events sharing someone with the stage, and the
+ *   pages lane goes on without its similarity channel. A cancelled job or a latched failure still
+ *   escapes through `host.fence()`.
  *
- * `excluded` holds every event and open thread that is no candidate, however many: what reaches a report
- * is its reader's choice. One past `eventCandidates` or `threadCandidates` is `budget`, since it passed
- * relevance and lost on rank. A retracted event and an ended thread are not listed.
+ * `excluded` holds every event, page, and open thread that is no candidate, however many: what reaches a
+ * report is its reader's choice. One past `eventCandidates`, `pageCandidates`, or `threadCandidates` is
+ * `budget`, since it passed relevance and lost on rank. A retracted event and an ended thread are not
+ * listed, and neither is an `always` page the required lane shows.
  */
 
 /** Bounds and thresholds of retrieval; similarities are cosines in [0, 1]. */
@@ -62,6 +89,15 @@ export const RETRIEVAL_LIMITS = {
     /** The lexical score a message needs, and how many go on to semantic scoring. */
     lexicalFloor: 0.2,
     lexicalCandidates: 16,
+    /** The newest messages with text a page's title or alias is looked for in. */
+    pageNameMessages: 8,
+    /** The similarity that finds a page by itself. */
+    pageSimilarity: 0.5,
+    /** What the pages lane offers at most, for the same reason as the events lane. */
+    pageCandidates: 24,
+    /** The facts a page on stage shows, and the ones a character on stage is said not to know. */
+    knowledgePerPage: 8,
+    unawarePerCharacter: 6,
 } as const;
 
 /** Flow has no token target, `flowEvents` bounds it; a number, because a target reaches a report as JSON. */
@@ -71,6 +107,16 @@ const FLOW_TARGET = Number.MAX_SAFE_INTEGER;
 const SOURCE_EXCERPT_WEIGHT = 0.9;
 /** The share of its match an older message keeps, since no event vouches for it. */
 const OLDER_MESSAGE_WEIGHT = 0.5;
+
+/** How a page was found, best first. */
+const PAGE_MATCHES = ["onStage", "named", "linked", "similarity"] as const;
+type PageMatch = (typeof PAGE_MATCHES)[number];
+
+/** A found page's score on the scale events use; a page found only by similarity scales under `linked`. */
+const PAGE_MATCH_SCORES = { onStage: 1, named: 0.9, linked: 0.7 } as const;
+
+/** The slots of a character page the pages lane offers. */
+const RELATED_SLOTS: ReadonlySet<string> = new Set<CharacterSectionSlot>(["currentState", "relationships"]);
 
 /** Cue words of a past, causal, or chronological reading: English by word, the others as parts of words. */
 const PAST_CUES = [
@@ -94,6 +140,8 @@ type RetrievalHost = Pick<MemoryHost, "db" | "embeddings" | "fence">;
 type RetrievalInput = {
     events: readonly MemoryEvent[];
     threads: readonly MemoryThread[];
+    /** Every page, in stored order. */
+    pages: readonly MemoryPage[];
     entries: readonly ReadEntry[];
     window: RawWindow;
     /** The on-stage page ids; empty when unknown. */
@@ -102,7 +150,7 @@ type RetrievalInput = {
 };
 
 type RetrievedLanes = {
-    /** In `MEMORY_MANIFEST_LANES` order: flow, events, evidence, threads. A lane with target 0 has no items. */
+    /** In `MEMORY_MANIFEST_LANES` order. A lane with target 0 has no items. */
     lanes: Lane<LaneCandidate>[];
     excluded: ExcludedItem[];
     similarity: "used" | "off" | "failed";
@@ -116,6 +164,31 @@ type PlacedEvent = { event: MemoryEvent; sources: number[]; place: number };
 type RankedEvent = PlacedEvent & { reason: string; score: number };
 
 type SendEmbeddings = ReturnType<typeof sendEmbeddings>;
+
+/** One stored knowledge item. `place` is its event's, -1 with none, and `stored` counts in storage order. */
+type FactRecord = { item: MemoryKnowledge; place: number; stored: number };
+
+/** What every record of one fact says together. `secret` is that each gave `knowers`; `records` are newest first. */
+type KnownFact = { text: string; knowers: Set<string>; secret: boolean; records: FactRecord[] };
+
+/** What both page lanes read of a send's pages. */
+type PageReading = {
+    /** Every page, in stored order. */
+    pages: readonly MemoryPage[];
+    scene: MemoryPage | undefined;
+    /** Every page but the scene and those `never` hides. */
+    visible: readonly MemoryPage[];
+    /** What a line may name, by page id: no page `never` hides is here. */
+    titles: ReadonlyMap<string, string>;
+    stage: ReadonlySet<string>;
+    facts: readonly KnownFact[];
+};
+
+/** A page the pages lane found, with what ranks it. */
+type RankedPage = { page: MemoryPage; match: PageMatch; updatedAt: number; similarity: number; line: string };
+
+/** A lane's candidates and the records it passes over. */
+type LaneOffer = { items: LaneCandidate[]; excluded: ExcludedItem[] };
 
 /**
  * Whether `texts` read as past, causal, or chronological. A caller passes user messages only: narrative
@@ -151,6 +224,10 @@ export function lexicalTerms(text: string): Set<string> {
 }
 
 const hasText = ({ text }: ReadEntry) => text.trim() !== "";
+
+const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+const newestRecord = (a: FactRecord, b: FactRecord) => b.place - a.place || b.stored - a.stored;
 
 /** The share of `ids` on `stage`; 0 with no ids, as on a record written before its chat had pages. */
 function stageShare(ids: readonly string[], stage: ReadonlySet<string>): number {
@@ -269,7 +346,6 @@ async function rankEvents(
         const relevant = failed ? overlap > 0 : placed.similarity >= RETRIEVAL_LIMITS.eventFloorSimilarity;
         return relevant ? [{ ...placed, reason, score: 0.8 * placed.similarity + 0.2 * overlap }] : [];
     });
-    const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
     ranked.sort((a, b) => b.score - a.score || b.place - a.place || byId(a.event.id, b.event.id));
     return { open: true, ranked };
 }
@@ -423,9 +499,239 @@ function threadItems(
     return { items: items.slice(0, RETRIEVAL_LIMITS.threadCandidates), excluded };
 }
 
+/**
+ * Every fact of the events that cover their messages, its records newest first: by place, an event with
+ * no place last, then storage order reversed.
+ */
+function knownFacts(events: readonly MemoryEvent[], positions: ReadonlyMap<string, number>): KnownFact[] {
+    const facts = new Map<string, KnownFact>();
+    let stored = 0;
+    for (const event of events.filter(memoryEventCovers)) {
+        const place = Math.max(-1, ...event.sources.map(({ messageId }) => positions.get(messageId) ?? -1));
+        for (const item of event.knowledge) {
+            const text = flattened(item.fact);
+            if (text === "") {
+                continue;
+            }
+            const fact: KnownFact = facts.get(text) ?? { text, knowers: new Set(), secret: true, records: [] };
+            facts.set(text, fact);
+            for (const id of [item.pageId, ...(item.knowers ?? [])]) {
+                fact.knowers.add(id);
+            }
+            fact.secret &&= item.knowers !== undefined;
+            fact.records.push({ item, place, stored: stored++ });
+        }
+    }
+    const listed = [...facts.values()];
+    for (const { records } of listed) {
+        records.sort(newestRecord);
+    }
+    return listed;
+}
+
+/**
+ * The newest facts of `page`, one each, with the stance of its own newest record of the fact. That
+ * record's `knowers` label the fact private even where another record leaves them out, which only keeps
+ * the fact out of denials.
+ */
+function pageKnowledge(page: MemoryPage, { facts, titles }: PageReading): PageKnowledge[] {
+    const own = facts.flatMap((fact) => {
+        const record = fact.records.find(({ item }) => item.pageId === page.id);
+        return record ? [{ fact, record }] : [];
+    });
+    own.sort((a, b) => newestRecord(a.record, b.record));
+    return own.slice(0, RETRIEVAL_LIMITS.knowledgePerPage).map(({ fact, record: { item } }) => {
+        const others = [...fact.knowers].flatMap((id) => (id === page.id ? [] : (titles.get(id) ?? [])));
+        return {
+            fact: fact.text,
+            stance: item.stance,
+            ...(item.knowers ? { privateTo: [page.title, ...others] } : {}),
+        };
+    });
+}
+
+/**
+ * The secrets `page` is no knower of, among those held by a page a line may name: held on stage first,
+ * then newest.
+ */
+function unawareFacts(page: MemoryPage, { facts, titles, stage }: PageReading): string[] {
+    const secrets = facts.flatMap((fact) => {
+        const holders = fact.records.map(({ item }) => item.pageId).filter((id) => titles.has(id));
+        return fact.secret && !fact.knowers.has(page.id) && holders.length > 0
+            ? [{ fact, onStage: holders.some((id) => stage.has(id)) }]
+            : [];
+    });
+    secrets.sort((a, b) => Number(b.onStage) - Number(a.onStage) || newestRecord(a.fact.records[0], b.fact.records[0]));
+    return secrets.slice(0, RETRIEVAL_LIMITS.unawarePerCharacter).map(({ fact }) => fact.text);
+}
+
+/** The sections of `page` that can show: a suppressed one never does, and a blank one has nothing to. */
+const shownSections = ({ sections }: Pick<MemoryPage, "sections">) =>
+    sections.filter(({ suppressed, body }) => !suppressed && body.trim() !== "");
+
+/** What the pages lane shows of `page`: all it can, or on a character the lane's slots. */
+function relatedSections(page: MemoryPage): MemorySection[] {
+    const sections = shownSections(page);
+    return page.type === "character" ? sections.filter(({ heading }) => RELATED_SLOTS.has(heading)) : sections;
+}
+
+/** The line of `page` showing `sections` and, on stage, what it knows; null when it would say nothing. */
+function shownLine(
+    reading: PageReading,
+    page: MemoryPage,
+    sections: readonly MemorySection[],
+    present: readonly string[] = [],
+): string | null {
+    const onStage = reading.stage.has(page.id);
+    const knowledge = onStage ? pageKnowledge(page, reading) : [];
+    const unaware = onStage && page.type === "character" ? unawareFacts(page, reading) : [];
+    return present.length + sections.length + knowledge.length + unaware.length > 0
+        ? pageLine(page, { present, sections, knowledge, unaware })
+        : null;
+}
+
+/** The required lane: the scene, then the `always` pages in stored order. */
+function requiredPages(reading: PageReading): LaneOffer {
+    const { pages, scene, titles } = reading;
+    const items: LaneCandidate[] = [];
+    const excluded: ExcludedItem[] = [];
+    const offer = (page: MemoryPage, reason: string, present?: readonly string[]) => {
+        const { id } = page;
+        const line = shownLine(reading, page, shownSections(page), present);
+        if (line === null) {
+            excluded.push({ id, kind: "page", lane: "required", reason: "not-relevant" });
+        } else {
+            items.push({ id, kind: "page", lane: "required", reason, score: 1, order: items.length, line });
+        }
+    };
+    if (scene?.contextMode === "never") {
+        excluded.push({ id: scene.id, kind: "page", lane: "required", reason: "never" });
+    } else if (scene) {
+        const present = [...new Set(scene.participants)].flatMap((id) => titles.get(id) ?? []);
+        offer(scene, "scene", present);
+    }
+    for (const page of pages) {
+        if (page !== scene && page.contextMode === "always") {
+            offer(page, "always");
+        }
+    }
+    return { items, excluded };
+}
+
+/** The pages found on stage or by name, and those one link from them, by id. */
+async function foundPages(
+    { visible, stage }: PageReading,
+    entries: readonly ReadEntry[],
+): Promise<Map<string, PageMatch>> {
+    // `searchMatch` counts its depth from the end of the list, so these are exactly the rows meant.
+    const rows = entries
+        .filter(hasText)
+        .slice(-RETRIEVAL_LIMITS.pageNameMessages)
+        .map(({ role, text }) => ({ role: role ?? ("char" as const), data: text }));
+    const scope: LoreSearchScope = {
+        host: { findCharacterName: () => undefined, testRegex: () => false },
+        userName: "",
+        charName: "",
+        recursivePrompt: [],
+        matchLog: [],
+    };
+    const named = ({ title, aliases }: MemoryPage) =>
+        searchMatch(
+            rows,
+            {
+                keys: [title, ...aliases],
+                searchDepth: rows.length,
+                fullWordMatching: false,
+                dontSearchWhenRecursive: true,
+            },
+            scope,
+        );
+
+    const found = new Map<string, PageMatch>();
+    for (const page of visible) {
+        if (stage.has(page.id)) {
+            found.set(page.id, "onStage");
+        } else if (await named(page)) {
+            found.set(page.id, "named");
+        }
+    }
+    const visibleIds = new Set(visible.map(({ id }) => id));
+    for (const { links } of visible.filter(({ id }) => found.has(id))) {
+        for (const link of links) {
+            if (visibleIds.has(link) && !found.has(link)) {
+                found.set(link, "linked");
+            }
+        }
+    }
+    return found;
+}
+
+/**
+ * The pages lane in rank order, and the pages it passes over. A target of 0 closes the lane with nothing
+ * embedded, as the writer warms nothing then either. `order` is the rank, so the card lists by it.
+ */
+async function relatedPages(
+    reading: PageReading,
+    entries: readonly ReadEntry[],
+    target: number,
+    embeddings: SendEmbeddings,
+): Promise<LaneOffer> {
+    const leaveOut = ({ id }: MemoryPage, reason: ExcludedItem["reason"]): ExcludedItem => {
+        return { id, kind: "page", lane: "pages", reason };
+    };
+    const { pages, scene, visible } = reading;
+    const excluded = pages.flatMap((page) =>
+        page !== scene && page.contextMode === "never" ? [leaveOut(page, "never")] : [],
+    );
+    const auto = visible.filter(({ contextMode }) => contextMode !== "always");
+    if (target === 0) {
+        return { items: [], excluded: [...excluded, ...auto.map((page) => leaveOut(page, "not-relevant"))] };
+    }
+
+    const found = await foundPages(reading, entries);
+    const best = await embeddings.best(
+        auto.flatMap((page) => shownSections(page).map((section) => sectionVectorText(page, section))),
+    );
+    const ranked: RankedPage[] = [];
+    for (const page of auto) {
+        const shown = shownSections(page);
+        const similarity = Math.max(0, ...shown.map((section) => best?.get(sectionVectorText(page, section)) ?? 0));
+        const match = found.get(page.id) ?? (similarity >= RETRIEVAL_LIMITS.pageSimilarity ? "similarity" : null);
+        const line = match && shownLine(reading, page, relatedSections(page));
+        if (match && line) {
+            const updatedAt = Math.max(0, ...shown.map((section) => section.updatedAt));
+            ranked.push({ page, match, updatedAt, similarity, line });
+        } else {
+            excluded.push(leaveOut(page, "not-relevant"));
+        }
+    }
+    ranked.sort(
+        (a, b) =>
+            PAGE_MATCHES.indexOf(a.match) - PAGE_MATCHES.indexOf(b.match) ||
+            b.updatedAt - a.updatedAt ||
+            b.similarity - a.similarity ||
+            byId(a.page.id, b.page.id),
+    );
+    for (const { page } of ranked.slice(RETRIEVAL_LIMITS.pageCandidates)) {
+        excluded.push(leaveOut(page, "budget"));
+    }
+    const items = ranked
+        .slice(0, RETRIEVAL_LIMITS.pageCandidates)
+        .map(({ page: { id }, match, similarity, line }, order): LaneCandidate => ({
+            id,
+            kind: "page",
+            lane: "pages",
+            reason: match,
+            score: match === "similarity" ? PAGE_MATCH_SCORES.linked * similarity : PAGE_MATCH_SCORES[match],
+            order,
+            line,
+        }));
+    return { items, excluded };
+}
+
 /** The lanes this send can offer, and every other record they reach, with why it is not offered. */
 export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput): Promise<RetrievedLanes> {
-    const { events, threads, entries, window, settings } = input;
+    const { events, threads, pages, entries, window, settings } = input;
     const targets = settings.laneTargets;
     const stage = new Set(input.stage);
     const positions = new Map<string, number>();
@@ -486,9 +792,23 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
     const evidence =
         targets.evidence > 0 ? await evidenceItems(candidates, query, { entries, window }, embeddings) : [];
     const openThreads = threadItems(threads, stage, targets.threads);
+
+    const scene = pages.find(({ type }) => type === "scene");
+    const reading: PageReading = {
+        pages,
+        scene,
+        visible: pages.filter((page) => page !== scene && page.contextMode !== "never"),
+        titles: new Map(pages.filter(({ contextMode }) => contextMode !== "never").map(({ id, title }) => [id, title])),
+        stage,
+        facts: knownFacts(events, positions),
+    };
+    const required = requiredPages(reading);
+    const related = await relatedPages(reading, entries, targets.pages, embeddings);
     return {
         lanes: [
+            { lane: "required", target: settings.requiredCap, items: required.items },
             { lane: "flow", target: FLOW_TARGET, items: flowItems(placed, entries, settings.flowEvents) },
+            { lane: "pages", target: targets.pages, items: related.items },
             {
                 lane: "events",
                 target: targets.events,
@@ -505,7 +825,7 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
             { lane: "evidence", target: targets.evidence, limit: RETRIEVAL_LIMITS.evidenceItems, items: evidence },
             { lane: "threads", target: targets.threads, items: openThreads.items },
         ],
-        excluded: [...excluded, ...openThreads.excluded],
+        excluded: [...excluded, ...openThreads.excluded, ...required.excluded, ...related.excluded],
         ...embeddings.state,
         eventsOpen: open,
     };

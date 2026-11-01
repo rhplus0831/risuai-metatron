@@ -507,6 +507,7 @@ type StructuredMemoryStepResult =
     /** No job's side to read from: the raw history stays, and no report says otherwise. */
     | { type: "raw" }
     | { type: "error"; error: string }
+    | { type: "alert"; error: string }
     | {
           type: "selected";
           selected: MemorySelected;
@@ -585,7 +586,7 @@ async function structuredMemoryStep(
 
     let records = writer.records();
     let selected = await select(records);
-    if (selected.type === "error") {
+    if (selected.type !== "selected") {
         return selected;
     }
     let gap: string | undefined = selected.gapTokens > 0 ? "unasked" : undefined;
@@ -609,7 +610,7 @@ async function structuredMemoryStep(
             if (recordedWindows !== null) {
                 records = writer.records();
                 selected = await select(records);
-                if (selected.type === "error") {
+                if (selected.type !== "selected") {
                     return selected;
                 }
                 gap = recordedWindows > 0 ? "generated" : "continued";
@@ -1898,6 +1899,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 host.fence();
                 if (step.type === "error") {
                     return { type: "error", error: step.error };
+                }
+                if (step.type === "alert") {
+                    return { type: "alert", error: step.error };
                 }
                 if (step.type === "selected") {
                     const { selected } = step;

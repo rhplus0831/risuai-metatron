@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
     CONTEXT_MEMORY_EXCLUDED,
     type ContextReport,
@@ -21,7 +21,7 @@ import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
 import { type RequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
-import type { CachedVector } from "../data/vectorCache.ts";
+import { createVectorCache, type CachedVector } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
 import type { MemoryEvent } from "../../../shared/structuredMemory.ts";
 import type { MemoryRecords } from "../prompt/memory/structured/step.ts";
@@ -862,7 +862,14 @@ describe("the context report", () => {
                 gapConfirmTokens?: number;
             },
         ) {
-            const records = options.records ?? { events: [], threads: [], stage: [], runs: [], paused: false };
+            const records = options.records ?? {
+                events: [],
+                threads: [],
+                pages: [],
+                stage: [],
+                runs: [],
+                paused: false,
+            };
             const preset = createHypaV3Preset(
                 "Structured",
                 {
@@ -941,12 +948,132 @@ describe("the context report", () => {
         const stored = (events: MemoryEvent[], threads: MemoryRecords["threads"] = []): MemoryRecords => ({
             events,
             threads,
+            pages: [],
             stage: [],
             runs: [],
             paused: false,
         });
         const rawIds = (formated: OpenAIChat[]) =>
             formated.flatMap(({ memo }) => (memo && memo !== "supaMemory" ? [memo] : []));
+
+        it("reports required and related pages in their lanes and verifies their tags in the final prompt", async () => {
+            const dir = mkdtempSync(path.join(os.tmpdir(), "page-manifest-"));
+            const cache = createVectorCache({ file: path.join(dir, "vectors.sqlite"), now: () => 1000 });
+            onTestFinished(() => {
+                cache.close();
+                rmSync(dir, { recursive: true, force: true });
+            });
+            const embeddings = createEmbeddings({
+                cache,
+                transformers: {
+                    runEmbedding: async (texts) => texts.map(() => new Float32Array([1, 0])),
+                    runSummarizer: async () => "",
+                    runImageCaption: async () => "",
+                    runTextGeneration: async () => "",
+                    dispose: async () => {},
+                },
+            }).forJob({
+                db: { hypaModel: "MiniLM" } as never,
+                supaMemoryKey: "",
+                signal: new AbortController().signal,
+            });
+            for (const removeTag of [false, true]) {
+                const [scene, charter, ada, hidden] = memoryRecords(["scene", "charter", "ada", "hidden"]).pages;
+                Object.assign(scene, { type: "scene", title: "At the gate", participants: ["ada"], sections: [] });
+                Object.assign(charter, { title: "Charter", contextMode: "always" });
+                Object.assign(ada, {
+                    type: "character",
+                    title: "Ada",
+                    sections: [{ ...ada.sections[0], heading: "currentState", body: "Waiting patiently" }],
+                });
+                hidden.contextMode = "never";
+                const records = { ...stored([]), pages: [scene, charter, ada, hidden], stage: ["ada"] };
+                const assembly = structuredAssembly({
+                    embeddings,
+                    db: { hypaModel: "MiniLM" },
+                    messages: fiveMessages,
+                    maxContext: 10000,
+                    records,
+                    settings: {
+                        flowEvents: 0,
+                        requiredCap: 1200,
+                        laneTargets: { pages: 600, events: 0, evidence: 0, threads: 0 },
+                        volatileBeforeLastUser: true,
+                    },
+                    template: [{ type: "memory" }, CHAT_CARD],
+                    editRequest: (entries) =>
+                        entries.map((entry) => ({
+                            ...entry,
+                            content: entry.content.replace("[m:ada]", removeTag ? "[removed]" : "[m:ada]"),
+                        })),
+                });
+                const result = await assembly.run();
+                const stable = result.formated.find(({ memo }) => memo === "supaMemory")!.content;
+                expect(stable).toContain("[m:scene] At the gate | present: Ada");
+                expect(stable).toContain("[m:charter]");
+                expect(stable).not.toContain("Waiting patiently");
+                expect(result.texts.at(-2)).toContain("Ada | currentState: Waiting patiently");
+                expect(result.texts.at(-1)).toBe(fiveMessages.at(-1)!.data);
+                expect(result.report.memory).toMatchObject({
+                    items: [
+                        { id: "scene", kind: "page", lane: "required", verified: true },
+                        { id: "charter", kind: "page", lane: "required", verified: true },
+                        { id: "ada", kind: "page", lane: "pages", verified: !removeTag },
+                    ],
+                    excluded: expect.arrayContaining([{ id: "hidden", kind: "page", lane: "pages", reason: "never" }]),
+                    lanes: expect.arrayContaining([
+                        { lane: "required", target: 1200, spent: expect.any(Number) },
+                        {
+                            lane: "pages",
+                            target: 600,
+                            spent: "[m:ada] Ada | currentState: Waiting patiently".length + 3,
+                        },
+                    ]),
+                });
+                expect(result.report.memory!.lanes!.find(({ lane }) => lane === "required")!.spent).toBeGreaterThan(0);
+                expect(result.texts.join("\n")).not.toContain("[m:hidden]");
+            }
+        });
+
+        it("returns a named alert for required overflow in sends and previews even with inlay errors enabled", async () => {
+            for (const preview of [false, true]) {
+                for (const requiredCap of [1, 10000]) {
+                    const [scene, charter] = memoryRecords(["scene", "charter"]).pages;
+                    Object.assign(scene, {
+                        type: "scene",
+                        title: "Gate scene",
+                        participants: [],
+                        sections: [{ ...scene.sections[0], body: "Whole scene ".repeat(100) }],
+                    });
+                    Object.assign(charter, { title: "Binding charter", contextMode: "always" });
+                    const assembly = structuredAssembly({
+                        messages: fiveMessages,
+                        maxContext: 1000,
+                        preview,
+                        db: { inlayErrorResponse: true },
+                        records: { ...stored([]), pages: [scene, charter] },
+                        settings: { requiredCap, flowEvents: 0 },
+                    });
+                    const before = structuredClone(assembly.chat);
+                    const result = await assemblePrompt(assembly.host, {
+                        chatAdditonalTokens: 3,
+                        continue: false,
+                        generationId: "required-overflow",
+                        stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+                    });
+                    expect(result).toMatchObject({
+                        type: "alert",
+                        error: expect.stringContaining("required memory pages"),
+                    });
+                    if (result.type !== "alert") throw new Error(JSON.stringify(result));
+                    expect(result.error).toContain("Gate scene (");
+                    expect(result.error).toContain("Binding charter (");
+                    expect(result.error).toContain(`over the limit of ${requiredCap === 1 ? 1 : 500}`);
+                    expect(assembly.chat).toEqual(before);
+                    expect(assembly.recordGap).not.toHaveBeenCalled();
+                }
+            }
+        });
 
         it("drops only active unsuppressed coverage, retaining the assistant window and an older continue target", async () => {
             const messages: Entry[] = Array.from({ length: 6 }, (_, i) => [
@@ -1199,11 +1326,13 @@ describe("the context report", () => {
                         { id: "open", kind: "thread", lane: "threads", verified: !loseTag },
                     ],
                     lanes: [
+                        { lane: "required", target: 1500, spent: 0 },
                         {
                             lane: "flow",
                             target: Number.MAX_SAFE_INTEGER,
                             spent: "[m:flow:past] 2 turns ago: past".length + 3,
                         },
+                        { lane: "pages", target: 0, spent: 0 },
                         { lane: "events", target: 0, spent: 0 },
                         { lane: "evidence", target: 0, spent: 0 },
                         { lane: "threads", target: 300, spent: "[m:open] Find the key (open)".length + 3 },

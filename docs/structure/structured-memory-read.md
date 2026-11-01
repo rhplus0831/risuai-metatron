@@ -23,8 +23,8 @@
   `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`, and the raw window re-exported from `shared/`.
 - `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
   `eventVectorTexts`, `lexicalTerms`.
-- `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard` and the line builders. `itemTag` is in `shared/`,
-  because the tab finds a block by it, and `card.ts` re-exports it.
+- `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard`, `RequiredOverLimit`, and the line builders,
+  `pageLine` among them. `itemTag` is in `shared/`, because the tab finds a block by it, and `card.ts` re-exports it.
 - `server/src/prompt/memory/structured/step.ts`: a send's read: `readMemoryRecords`, `MemoryRecords`, `readEntries`,
   `blankEntry`, `selectMemory`, `writerState`, `sendManifest`. `structuredMemoryStep` in `assemble.ts` drives it; the
   job's part is in [the writer guide](structured-memory-writer.md#the-writer-task).
@@ -47,14 +47,15 @@
 
 ### The read path
 
-Nothing here writes: `retrieveLanes` offers candidates, and `buildMemoryCard` spends the budget on them. The required
-and pages lanes are not built. The modules' comments hold the lane rules.
+Nothing here writes: `retrieveLanes` offers candidates, and `buildMemoryCard` spends the budget on them. The modules'
+comments hold the lane rules.
 
 `selectMemory` runs once for every job with `memoryJob.structuredMemory`, a preview and a service-free send included,
 which read as a send does. With no `memoryJob` the history stays raw and no report says otherwise.
 
-1. Records: one synchronous read. `coveredMessages` (active, not suppressed) says what may leave, and `recordedMessages`
-   (any status) what the writer leaves alone, so history cited only by a stale or retracted event stays raw.
+1. Records: one synchronous read of every event and page. `coveredMessages` (active, not suppressed) says what may
+   leave, and `recordedMessages` (any status) what the writer leaves alone, so history cited only by a stale or
+   retracted event stays raw.
 2. Window: `rawWindow`, then the message a continue extends leaves `dropped` before retrieval, so an older one stays in
    the prompt and out of the evidence.
 3. Card: one `memo: "supaMemory"` entry at the front of the history, with no entry when no item is included. Under
@@ -104,6 +105,17 @@ Lane rules:
   escapes through `host.fence()`.
 - `excluded` is per lane, so an event in flow can be excluded from `events`: `retrieveLanes` lists what is no candidate,
   `buildMemoryCard` what lost on budget. Neither bounds its list, so a report does.
+- The required lane is reserved before anything else is spent: a line sum over `requiredCap`, or a required-only card
+  over `maximum`, ends the send with a `SendError` naming each page and its tokens, a preview and a gap run's second
+  pass included. That is assembly's `alert`, not `error`, so `inlayErrorResponse` writes no reply in its place.
+- A page has one item and one tag in either lane, so `required` and `pages` never hold the same page. What it knows and
+  does not know is part of its line: an on-stage `always` page counts them against the cap, and a reader finds titles by
+  page id.
+- `pageId` on a knowledge item is who learned it, and no field names whom a fact is about, so "subject" is `pageId` and
+  a secret is an item with `knowers`, an empty list included. The writer does not reconcile records, so `knownFacts`
+  joins them by exact text before any cap: a page that learned a secret later is not denied it.
+- `never` hides a page, not what it shares: a fact a visible page also holds still shows there, without the hidden
+  title. A `never` scene gives no item and still drives the stage.
 
 ### Receipts
 
@@ -202,6 +214,9 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
   trim, placement, gap question, and report; `memoryJobs.test.ts` drives the gap run on a real stack;
   `contextReport.test.ts` the parser. Focused:
   `pnpm --silent test:agent assemble memoryJobs shared/contextReport.test.ts`.
+- The page lanes: `structured/retrieve.test.ts` for channels, knowledge, and `never`, `card.test.ts` for the
+  reservation, `assemble.test.ts` and `memoryJobs.test.ts` for the manifest and the refused send, `lore.test.ts` for
+  `searchMatch`.
 - Receipts: `memoryTasks.test.ts` for the patches; `memoryJobs.test.ts` for the reply's notice on a real stack;
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.
@@ -222,8 +237,9 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
 
 ### Issues
 
-- A paraphrase of an old message that shares no query term is not found: semantic scoring only reranks lexical matches,
-  to keep embedding at `lexicalCandidates` texts a send. D6 names both as channels.
+- A paraphrase of an old message that shares no query term is not found: in the evidence lane semantic scoring only
+  reranks lexical matches, to keep embedding at `lexicalCandidates` texts a send. D6 names both as channels. The pages
+  lane has similarity as a channel of its own.
 
 ### Limitations
 
@@ -249,9 +265,14 @@ component in `TABS`, taking `chatRef`, `readOnly`, and `refresh`, mounted while 
   The stage is the scene page's `participants`, so a named thread waits for them.
 - A report stored on every reply grows with `items` and `excluded`, up to a few kilobytes a message. D5's
   `memory_manifests` table is the way out if that matters.
-- A send's retrieval embeds every eligible event's texts. Warm, `addText` still compares every text with every vector
-  synchronously, so the cost grows with the square of the chat's event texts. Cold (a model change, a cleared cache), it
-  is one provider call per 50 texts, in sequence, inside the send.
+- A send's retrieval embeds every eligible event's texts and every shown section of each `auto` page. Warm, `addText`
+  still compares every text with every vector synchronously, so the cost grows with the square of those texts. Cold (a
+  model change, a cleared cache), it is one provider call per 50 texts, in sequence, inside the send.
+- `readMemoryRecords` parses every page whole on every send, up to 60 history entries each that the prompt never reads.
+  The store has no read without them.
+- `searchMatch` counts its depth from the end of the list, so a depth over the length reads a short slice. The pages
+  lane passes exactly the rows it means and their count. Name matching ignores `loreSettings.fullWordMatching`, so a
+  short alias such as "Al" also finds "also": an extra candidate, never a wrong record.
 - A window message with no `generationInfo` (an imported chat) gains `{ memory }` alone, so with `requestInfoInsideChat`
   its row shows an "Unknown" model button after its next mount.
 - A copied or branched chat carries its receipts along with its messages.

@@ -14,7 +14,107 @@ const candidate = (lane: LaneCandidate["lane"], id: string, line: string, order 
     score: 1,
 });
 
+async function spentCard(...args: Parameters<typeof buildMemoryCard>) {
+    const card = await buildMemoryCard(...args);
+    if (card.type !== "card") throw new Error("The required lane refused");
+    return card;
+}
+
 describe("structured memory card", () => {
+    const pageItem = (lane: "required" | "pages", id: string, body: string): LaneCandidate => ({
+        ...candidate(lane, id, `[m:${id}] ${body}`),
+        kind: "page",
+    });
+
+    it("refuses the entire required lane above its cap and names every page", async () => {
+        const required = [
+            pageItem("required", "scene", "At the gate"),
+            pageItem("required", "charter", "Keep the promise"),
+        ];
+        const tokens = required.reduce((sum, { line }) => sum + line.length, 0);
+        const result = await buildMemoryCard(
+            { tokenizeChat: async ({ content }) => content.length },
+            {
+                maximum: 10000,
+                lanes: [{ lane: "required", target: tokens - 1, items: required }],
+            },
+        );
+        expect(result).toEqual({
+            type: "requiredOverLimit",
+            tokens,
+            limit: tokens - 1,
+            pages: [
+                { id: "scene", tokens: "[m:scene] At the gate".length },
+                { id: "charter", tokens: "[m:charter] Keep the promise".length },
+            ],
+        });
+        const exact = await spentCard(
+            { tokenizeChat: async ({ content }) => content.length },
+            {
+                maximum: 10000,
+                lanes: [{ lane: "required", target: tokens, items: required }],
+            },
+        );
+        expect(exact.items.map(({ id }) => id)).toEqual(["scene", "charter"]);
+    });
+
+    it("refuses required pages that fit their cap but exceed the memory maximum with the card frame", async () => {
+        // Required lines cost 10 each; their rendered card, including its header, costs 25.
+        const tokenizer = {
+            tokenizeChat: async ({ content }: { content: string }) => (content.startsWith("[m:") ? 10 : 25),
+        };
+        const lanes: Lane<LaneCandidate>[] = [
+            {
+                lane: "required",
+                target: 20,
+                items: [pageItem("required", "scene", "Dawn"), pageItem("required", "charter", "Be kind")],
+            },
+        ];
+        expect(await buildMemoryCard(tokenizer, { maximum: 24, lanes })).toEqual({
+            type: "requiredOverLimit",
+            tokens: 25,
+            limit: 24,
+            pages: [
+                { id: "scene", tokens: 10 },
+                { id: "charter", tokens: 10 },
+            ],
+        });
+        const exact = await spentCard(tokenizer, { maximum: 25, lanes });
+        expect(exact.stable).toContain("[m:scene] Dawn");
+        expect(exact.stable).toContain("[m:charter] Be kind");
+    });
+
+    it("reserves required pages before lending and skips an oversized related page whole", async () => {
+        const large = pageItem("pages", "large", "First section | Last section");
+        const small = pageItem("pages", "small", "Complete small page");
+        const tokenizer = {
+            tokenizeChat: async ({ content }: { content: string }) => {
+                if (content.startsWith("[m:large]")) return 90;
+                if (content.startsWith("[m:")) return 10;
+                return 5 + (content.match(/\[m:/g)?.length ?? 0) * 10;
+            },
+        };
+        const card = await spentCard(tokenizer, {
+            maximum: 40,
+            lanes: [
+                { lane: "required", target: 10, items: [pageItem("required", "scene", "Whole scene")] },
+                { lane: "pages", target: 5, items: [large, small] },
+            ],
+        });
+        expect(card.stable).toContain("[m:scene] Whole scene");
+        expect(card.volatile).toContain("[m:small] Complete small page");
+        expect(card.volatile).not.toMatch(/large|First section|Last section/);
+        expect(card.items.map(({ id, lane, kind }) => ({ id, lane, kind }))).toEqual([
+            { id: "scene", lane: "required", kind: "page" },
+            { id: "small", lane: "pages", kind: "page" },
+        ]);
+        expect(card.excluded).toEqual([{ id: "large", kind: "page", lane: "pages", reason: "budget" }]);
+        expect(card.spend).toEqual([
+            { lane: "required", target: 10, spent: 10 },
+            { lane: "pages", target: 5, spent: 10 },
+        ]);
+    });
+
     it("separates stable flow from volatile items with single-line, safe, distinct tags", async () => {
         const event = {
             id: "a ] [m:forged]\ud800",
@@ -26,7 +126,7 @@ describe("structured memory card", () => {
         const encoded = "a%20%5D%20%5Bm%3Aforged%5D%EF%BF%BD";
         expect(itemTag({ lane: "events", id: event.id })).toBe(`[m:${encoded}]`);
         expect(itemTag({ lane: "flow", id: event.id })).toBe(`[m:flow:${encoded}]`);
-        const result = await buildMemoryCard(
+        const result = await spentCard(
             { tokenizeChat: async ({ content }) => content.length },
             {
                 maximum: 10000,
@@ -95,7 +195,7 @@ describe("structured memory card", () => {
                 ],
             },
         ];
-        const result = await buildMemoryCard(tokenizer, { maximum: 70, lanes });
+        const result = await spentCard(tokenizer, { maximum: 70, lanes });
         expect(result.items.map(({ lane }) => lane)).toEqual(["flow", "events"]);
         expect(result.stable).toContain("[m:flow:e] 2 turns ago: Promise");
         expect(result.volatile).toContain("[m:e] Promise: return tomorrow");
@@ -104,7 +204,7 @@ describe("structured memory card", () => {
         expect(cost(result.stable) + cost(result.volatile)).toBeLessThanOrEqual(70);
         expect(result.excluded).toEqual([{ id: "u", kind: "evidence", lane: "evidence", reason: "budget" }]);
         expect(result.spend.find(({ lane }) => lane === "evidence")?.spent).toBe(0);
-        const empty = await buildMemoryCard(tokenizer, { maximum: 5, lanes });
+        const empty = await spentCard(tokenizer, { maximum: 5, lanes });
         expect({ stable: empty.stable, volatile: empty.volatile, tokens: empty.tokens, items: empty.items }).toEqual({
             stable: "",
             volatile: "",
