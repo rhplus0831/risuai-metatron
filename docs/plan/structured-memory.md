@@ -593,7 +593,7 @@ Refinements the slicing added to the design, found against the code:
 - The source hash covers the message's role and `data` only. `generationInfo` lives in `messages.data`'s JSON, so a
   receipt write must not change a hash; it does bump the chat revision and send a change frame, one per recorded turn.
 - A restart loses the queue. The writer's window comes from stored coverage, not from the hand-off, so the next send
-  picks up every uncovered confirmed turn; no startup scan exists.
+  picks up the uncovered confirmed turns, at most `maxWriterWindows` (8, owner, 2026-11-01) windows per task, with the rest on later hand-offs; bulk catch-up is the previewed backfill (6b). No startup scan exists.
 - Copy and branch reach the server as plain `create` groups with no origin, so the tab calls an idempotent inherit route
   after the create (slice 5c).
 - `searchMatch` in `shared/lore/activation.ts` is private; slice 4b exports it rather than copying the rules.
