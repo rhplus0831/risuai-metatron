@@ -2,28 +2,42 @@
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { tick, untrack } from "svelte";
     import { language } from "src/lang";
+    import { alertConfirm, alertError } from "src/ts/alert";
     import {
+        editStructuredMemory,
         memoryEventView,
         memoryItemsUsed,
+        memoryMessageHasher,
         memoryMessageIndexes,
         memoryTimelineRows,
         readStructuredMemoryContents,
         readStructuredMemoryCoverage,
         readStructuredMemoryRecord,
+        reconcileMemoryCoverage,
         type MemoryPanelTabProps,
         type MemoryPanelTarget,
         type MemoryRunEventView,
         type MemoryTimelineRow,
         type StructuredMemoryCoverage,
     } from "src/ts/process/structuredMemory.svelte";
+    import { characterList } from "src/ts/storage/characterStore.svelte";
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import Button from "src/lib/UI/GUI/Button.svelte";
+    import {
+        memoryAnchorState,
+        memoryRerecordTarget,
+        type StructuredMemoryCoverageEvent,
+        type StructuredMemoryEdit,
+    } from "../../../../shared/structuredMemory.ts";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
+    import { pressMemoryRecord } from "./memoryRecordPress";
     import { memoryReadFailureText, memoryReasonText } from "./memoryText";
 
     // The Timeline tab: the chat's events in the order of its messages as they stand. The coverage route
     // already answers each event's messages, status, and title at one revision, so the list reads no
-    // record, and the rows follow the held messages with no request. Opening one reads its record, and
-    // the page titles the first time a row opens after a refresh. Everything shown is plain text.
+    // record, and the rows follow the held messages with no request: a source that changes turns its
+    // event stale here at once. Opening one reads its record, and the page titles the first time a row
+    // opens after a refresh, and a stale row opened offers its repairs. Everything shown is plain text.
 
     let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
 
@@ -34,10 +48,14 @@
     const logText = language.structuredMemory.log;
     const pagesText = language.structuredMemory.pages;
     const panelText = language.structuredMemory.panel;
+    const repairText = text.repairs;
 
+    /** The route's answer, whose `revision` the next repair names. */
     let facts = $state.raw<StructuredMemoryCoverage | null>(null);
     let failure = $state<string | null>(null);
     let readNumber = 0;
+    /** One repair at a time: while one is out the buttons are off. */
+    let sending = $state(false);
 
     let shown = $state(ROWS_AT_ONCE);
     /** The expanded event, one at a time, and its record once read. */
@@ -52,8 +70,12 @@
     let titlesNumber = 0;
     let list = $state<HTMLElement>();
 
-    const messages = $derived(findChat(chatRef)?.message ?? []);
-    const rows = $derived(facts ? memoryTimelineRows(facts.events, messages) : []);
+    const heldChat = $derived(findChat(chatRef));
+    const messages = $derived(heldChat?.message ?? []);
+    const hashOf = memoryMessageHasher();
+    // With no chat held there is nothing to compare, which says nothing of its events.
+    const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
+    const rows = $derived(reconciled ? memoryTimelineRows(reconciled.events, messages) : []);
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
 
@@ -128,6 +150,71 @@
         } else {
             openRow(id);
         }
+    }
+
+    /** Runs one repair's steps, none while the panel is read-only or another is out. */
+    async function repairing(steps: () => Promise<void>) {
+        if (sending || readOnly) {
+            return;
+        }
+        sending = true;
+        try {
+            await steps();
+        } finally {
+            sending = false;
+        }
+    }
+
+    /**
+     * Sends a repair, made on the copy read at `facts.revision`, and shows the notice for a refusal. Either
+     * way the facts are read again: the status a row shows comes from the held messages joined with
+     * them, so the answer's record alone says nothing, and the next repair needs their revision.
+     */
+    async function sendRepair(edit: Extract<StructuredMemoryEdit, { kind: "event" }>): Promise<boolean> {
+        if (!facts) {
+            return false;
+        }
+        const ref = chatRef;
+        const result = await editStructuredMemory(ref, facts.revision, edit);
+        if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
+            alertError(memoryReadFailureText(result));
+        }
+        if (sameChat(ref)) {
+            await read();
+        }
+        return result.outcome === "ok";
+    }
+
+    /** The old event stays until the new one commits, so a press that failed can simply be pressed again. */
+    function rerecord(event: StructuredMemoryCoverageEvent) {
+        return repairing(async () => {
+            const ref = chatRef;
+            const target = memoryRerecordTarget(event.sources, messages);
+            const owner = characterList().find((entry) => entry?.chaId === ref.chaId);
+            if (target === null || !owner) {
+                return;
+            }
+            if (event.rerecord || (await sendRepair({ kind: "event", eventId: event.id, repair: "rerecord" }))) {
+                await pressMemoryRecord(owner, ref, target);
+            }
+        });
+    }
+
+    /** Asks first, because no control takes it back. */
+    function retract({ id }: StructuredMemoryCoverageEvent) {
+        return repairing(async () => {
+            if (await alertConfirm(repairText.retractConfirm)) {
+                await sendRepair({ kind: "event", eventId: id, repair: "retract" });
+            }
+        });
+    }
+
+    /** Names the state the person is looking at, so the server keeps only that. */
+    function keep({ id, sources }: StructuredMemoryCoverageEvent) {
+        return repairing(async () => {
+            const state = memoryAnchorState(sources, messages, hashOf);
+            await sendRepair({ kind: "event", eventId: id, repair: "keep", state });
+        });
     }
 
     // The event a jump from another tab asked for: open, past "show more", and in view. The rows come
@@ -212,6 +299,25 @@
                 {/each}
             </div>
         {/if}
+        {#if event.status === "stale"}
+            {@const off = readOnly || sending}
+            <div class="flex flex-wrap gap-2 pt-1" data-memory-event-repairs>
+                <Button
+                    size="sm"
+                    styled="outlined"
+                    disabled={off || memoryRerecordTarget(event.sources, messages) === null}
+                    onclick={() => rerecord(event)}
+                >
+                    <span data-memory-repair="rerecord">{repairText.rerecord}</span>
+                </Button>
+                <Button size="sm" styled="outlined" disabled={off} onclick={() => retract(event)}>
+                    <span data-memory-repair="retract">{repairText.retract}</span>
+                </Button>
+                <Button size="sm" styled="outlined" disabled={off} onclick={() => keep(event)}>
+                    <span data-memory-repair="keep">{repairText.keep}</span>
+                </Button>
+            </div>
+        {/if}
     </div>
 {/snippet}
 
@@ -255,6 +361,9 @@
                                     <span class="text-draculared" data-memory-event-badge="stale">
                                         {text.stale(memoryReasonText(event.staleReason))}
                                     </span>
+                                {/if}
+                                {#if event.rerecord}
+                                    <span data-memory-event-badge="rerecord">{repairText.waiting}</span>
                                 {/if}
                                 {#if event.suppressed}
                                     <span data-memory-event-badge="suppressed">{text.suppressed}</span>

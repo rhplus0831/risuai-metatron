@@ -444,7 +444,8 @@ function repeatsEvent(
  *   last naming winning.
  * - A repeat of the last stored event (`repeatsEvent`) makes no new event: that event counts it and
  *   cites the window, or the window would stay open forever, and the thread changes name it. Everything
- *   else on it stays, pins included, and `speakerId` does not reach it.
+ *   else on it stays, pins included, and `speakerId` does not reach it. A window that re-records an event
+ *   is never a repeat: a repair must replace that event, not merge into it.
  */
 export function admitAnalysis(arg: {
     draft: MemoryEventDraft;
@@ -526,7 +527,12 @@ export function admitAnalysis(arg: {
         ? { ...arg.scene, participants: existingPages(arg.scene.participants, "scene.participants") }
         : null;
 
-    const repeated = lastEvent && repeatsEvent(lastEvent, draft.summary, participants, arg.messages) ? lastEvent : null;
+    const repeated =
+        lastEvent &&
+        window.rerecords === undefined &&
+        repeatsEvent(lastEvent, draft.summary, participants, arg.messages)
+            ? lastEvent
+            : null;
     const eventId = repeated ? repeated.id : newId();
 
     const added = draft.openThreads.add.map(({ title, who }) => ({

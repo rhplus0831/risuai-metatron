@@ -37,10 +37,10 @@
   `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared with `ContextMeter`),
   `memoryText.ts`, the stored codes as text, and `memoryRecordPress.ts`, the `memoryRecord` press the panel shares with
   the receipt line. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares with the modal.
-- `src/ts/process/structuredMemory.svelte.ts`, the pure parts the panel reads with: `joinMemoryCoverage`,
-  `groupMemoryCoverage`, `memoryMessageExcerpt`, `memoryRunView`, `memoryTimelineRows`, `memoryPageTree`,
-  `memoryPageHistoryView`, `memoryEventView`, `memoryWriterNotice`, `MemoryPanelTabProps`. `memoryTextDiff` loads `diff`
-  when the first history entry opens.
+- `src/ts/process/structuredMemory.svelte.ts`, the pure parts the panel reads with: `reconcileMemoryCoverage`,
+  `memoryMessageHash`, `memoryMessageHasher`, `joinMemoryCoverage`, `groupMemoryCoverage`, `memoryMessageExcerpt`,
+  `memoryRunView`, `memoryTimelineRows`, `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`,
+  `memoryWriterNotice`, `MemoryPanelTabProps`. `memoryTextDiff` loads `diff` when the first history entry opens.
 - The same file, pure, for what a send reported: `memoryStatusWord`, `memoryItemsUsed`, `usedMemoryCoverageGroups`,
   `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`.
 - `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
@@ -56,9 +56,10 @@ comments hold the lane rules.
 `selectMemory` runs once for every job with `memoryJob.structuredMemory`, a preview and a service-free send included,
 which read as a send does. With no `memoryJob` the history stays raw and no report says otherwise.
 
-1. Records: one synchronous read of every event and page. `coveredMessages` (active, not suppressed) says what may
-   leave, and `recordedMessages` (any status) what the writer leaves alone, so history cited only by a stale or
-   retracted event stays raw.
+1. Records: one synchronous read of every event and page, then `reconcileEvents` over the stored messages, on a copy
+   ([reconciliation](structured-memory.md#reconciliation-and-repairs)). `coveredMessages` (active, not suppressed) reads
+   the copy to say what may leave, and `recordedMessages` (any status) reads the events as stored to say what the writer
+   leaves alone, so history cited only by a stale or retracted event stays raw.
 2. Window: `rawWindow`, then the message a continue extends leaves `dropped` before retrieval, so an older one stays in
    the prompt and out of the evidence.
 3. Card: one `memo: "supaMemory"` entry at the front of the history, with no entry when no item is included. Under
@@ -79,8 +80,9 @@ The report (`ContextReport.memory`, kind `structuredMemory`):
   prompt, whichever entry holds it, so after scripts, `editRequest`, and the recheck. One not found makes `coverage`
   `unknown`, because the two parts can be lost apart.
 - `excluded` keeps `CONTEXT_MEMORY_EXCLUDED` rows, worst reason first, and `excludedTotal` the count: `retrieveLanes`
-  lists every not-relevant event. `lanes` holds each lane's target and spend. `budgetReduced` holds only `memory`: the
-  preset's headroom and extra are the summarizer's, and this budget spends neither.
+  lists every not-relevant event, and a stale one with its `staleReason`. `lanes` holds each lane's target and spend.
+  `budgetReduced` holds only `memory`: the preset's headroom and extra are the summarizer's, and this budget spends
+  neither.
 - The meter's line shows `tokens` and `memoryStatusWord`, the worst of a `coverage` that is not `covered` and the
   writer's state. Its popover reads titles from the contents as it opens, and a failed read leaves rows untitled.
 - `confirmedThrough` is the newest reply the writer's ceiling confirms. `writer.state` says, in order, `notAutomatic` or
@@ -145,7 +147,8 @@ the held chat, and a feed patch moves it.
 `StructuredMemoryPanel` replaces `HypaV3Modal` when `memoryAlgorithmType` selects the algorithm, under the same
 `hypaV3ModalOpen` store, so `chatStatus.svelte.ts` still counts the transcript as hidden. `App.svelte` picks it, and the
 menu row in `DefaultChatScreen` and the button in `CharConfig` open it ahead of any older memory flag. A tab is one
-component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages and Threads write; the rest read.
+component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages, Timeline, and Threads write; the rest
+read.
 
 - "Used in the last send" comes from `memoryItemsUsed`: the newest valid report, found as the meter finds its own, and
   its `verified` items of one kind. A newer report of another kind means none, and no older report is reached. Coverage
@@ -162,6 +165,11 @@ component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages
   that changes needs no request: the join is derived.
 - Coverage joins the held messages with the coverage route's facts in the tab, because the tab holds the selected chat
   whole and a route has no job scope. The newest reply reads `pending` too: "confirmed" is the job's to say.
+- Coverage and Timeline read those facts through `reconcileMemoryCoverage`, the send's rule over the held messages, so
+  an edit shows at once, before it reaches the server, with no request. The tab hashes with `memoryMessageHash`, pure
+  JavaScript because `crypto.subtle` needs a secure context, and each tab keeps `memoryMessageHasher`'s memo. An
+  unloaded chat is not found, and reconciling against no messages would call every event `missing`, so the facts then
+  stay as answered.
 - `joinMemoryCoverage` takes a row's state from the first that holds: not in `eligibleHistory`, `excluded` (`disabled`);
   an event that covers it, `covered`; a stale event, `stale`; a suppressed one, `excluded` (`suppressed`); a retracted
   one, `excluded` (`retracted`); the newest unrecorded run naming it, by result; its own receipt when that is a notice
@@ -188,7 +196,7 @@ component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages
   and `readContents` stays free of `data` because a send and every round call it. `memoryTimelineRows` sorts by an
   event's first message still present, else its stored `sourceIndex`, else last, and ages it from its newest message
   still present, as the flow lane does. `memory_events.seq` says nothing of message order. Opening a row reads its
-  record through `memoryEventView`.
+  record through `memoryEventView`, and a stale row holds the repairs ([Panel edits](#panel-edits)).
 - Threads lists the contents, with the state on each row, and opening one reads its `who`, `openedBy`, and `closedBy`.
 - A link between tabs is `open(target)`, which the panel turns into `focus` for the tab it shows. A message link is
   `jump(messageId)`: `setChatOpen`, `requestMessageJump`, then the panel closes. The panel can sit over a closed chat.
@@ -199,6 +207,12 @@ Each goes through [the edit route](structured-memory.md#the-edit-route), naming 
 one at a time per tab. A tab applies the edit to its copy, and a refusal restores the copy, shows the notice (none for
 `epoch`, which halts on its own), and reads again. A success keeps the answer and its revision. `readOnly` only turns
 the controls off first: the server's fence decides.
+
+A repair differs in one way: a stale row's status comes from the held messages, so the tab applies nothing to its copy
+and reads the round again either way. Keep names the anchor state computed from the held messages, so a chat that moved
+on is refused `changed`, and a local edit not yet on the server is too. Retract asks first, because no control takes it
+back. Re-record sends the mark, then presses `memoryRecord` through `memoryRerecordTarget`. An event already marked goes
+straight to the press, so a failed press can be pressed again.
 
 An open section editor keeps the body it opened on. A read that brings another body for that section closes it with the
 `changed` notice, so a draft written against old text cannot replace the writer's new text. Read-only keeps the draft
@@ -298,8 +312,8 @@ press is `pressMemoryRecord`, as on the receipt line, off while pressing, read-o
 - Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
   blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,
   and a preview is the exact form. Decision: Structured Memory D8, plan.
-- A `covered` row trusts the event's stored status until reconciliation compares hashes, so an edited message still
-  reads `covered`. Decision: Structured Memory D4, plan.
+- A press that re-records an event also records the ordinary windows open under its message, as any press does, with no
+  cost preview. Decision: Structured Memory D3, plan.
 - Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
   refresh with unchanged texts does not recount after a tokenizer change.
 
@@ -321,3 +335,5 @@ press is `pressMemoryRecord`, as on the receipt line, off while pressing, read-o
 - A window message with no `generationInfo` (an imported chat) gains `{ memory }` alone, so with `requestInfoInsideChat`
   its row shows an "Unknown" model button after its next mount.
 - A copied or branched chat carries its receipts along with its messages.
+- The tab hashes on the main thread: about 230 ms for 14 MiB of cited messages once per tab mount, in a VM. A streaming
+  reply costs nothing, because the memo hashes only what changed and an unrecorded reply is cited by nothing.

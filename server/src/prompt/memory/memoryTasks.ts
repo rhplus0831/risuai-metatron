@@ -51,9 +51,11 @@ import {
     warmHypaV3Vectors,
 } from "./hypav3.ts";
 import { createMemoryTaskHost, MemoryHostFailure, type MemoryTaskHostDeps } from "./memoryTaskHost.ts";
+import { retireRerecorded } from "./structured/reconcile.ts";
 import {
     confirmedWindows,
     readRecordedMessages,
+    readRerecordEvents,
     writerCadence,
     writerCeiling,
     type WriterCeiling,
@@ -247,12 +249,14 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   task's is `through`, inclusive, else `writerCeiling` of that chat, else the input's, since a
  *   person's start is the confirmation the captured one stands in for (a ceiling no longer eligible:
  *   `skipped staleInput`). Windows stay oldest first, so a press on a message records the oldest open
- *   ones, never that message ahead of them. `total` counts the windows the task runs, at most
- *   `maxWriterWindows`, and `done` those the writer returned recorded. The first window that ends
- *   otherwise ends the task. `commit` is the writer's only write path: refused when the service closed,
- *   the epoch or source generation moved, the window no longer reads from the chat as stored under that
- *   same ceiling (`windowStillConfirmed`), a generation job owns one of its messages, or the memory
- *   revision conflicts. A run's receipt then goes onto the window's assistant messages (`commitWindow`).
+ *   ones, never that message ahead of them. Only a manual task re-records the events a person marked:
+ *   their windows run first (`confirmedWindows`), and a commit retires what each replaces
+ *   (`retireRerecorded`). `total` counts the windows the task runs, at most `maxWriterWindows`, and
+ *   `done` those the writer returned recorded. The first window that ends otherwise ends the task.
+ *   `commit` is the writer's only write path: refused when the service closed, the epoch or source
+ *   generation moved, the window no longer reads from the chat as stored under that same ceiling
+ *   (`windowStillConfirmed`), a generation job owns one of its messages, or the memory revision
+ *   conflicts. A run's receipt then goes onto the window's assistant messages (`commitWindow`).
  * - Ends: `done` (`windowsLeft`: the cap stopped a task with windows left; `warmingFailed`: a warming
  *   failure kept what was written); `failed` (a provider failure, a writer's failure, a host failure,
  *   the deadline: errors redacted); `skipped` (a start check, `writeSkipped`, `sourceInvalid`, a
@@ -890,9 +894,10 @@ export function createMemoryTasks(deps: {
 
     /**
      * A writer's one write, for `window`, read under `ceiling` (synchronous): `commitWindow` behind the
-     * task's fence. The answer is a memory revision: it stays out of `lastCommittedRevision` and
-     * `terminalRevision`, the chat revisions the tab's fence compares. A receipt's chat revision goes
-     * in, so that fence waits for what the task wrote; it is no recorded window, so `done` stays.
+     * task's fence, retiring the event a re-record replaces. The answer is a memory revision: it stays
+     * out of `lastCommittedRevision` and `terminalRevision`, the chat revisions the tab's fence compares.
+     * A receipt's chat revision goes in, so that fence waits for what the task wrote; it is no recorded
+     * window, so `done` stays.
      */
     const commitOf =
         (task: Task, input: StructuredMemoryTaskInput, window: WriterWindow, ceiling: WriterCeiling) =>
@@ -907,7 +912,7 @@ export function createMemoryTasks(deps: {
                 window,
                 ceiling,
                 baseRevision,
-                changes,
+                changes: retireRerecorded(store, input.chatRef, window, changes),
                 writeReceipt: (group) => {
                     store.applyChanges(
                         { chats: [group] },
@@ -929,10 +934,10 @@ export function createMemoryTasks(deps: {
         };
 
     /**
-     * A Structured Memory task's work on its checked scope: the windows open in the chat as stored, each
-     * through the writer, in order. The first window that does not end `recorded` ends the task: a later
-     * one recorded ahead of it would put its events out of message order, and the windows stay open for
-     * the next hand-off.
+     * A Structured Memory task's work on its checked scope: the windows open in the chat as stored, after
+     * those of the events a person marked when a person started it, each through the writer, in order.
+     * The first window that does not end `recorded` ends the task: a later one recorded ahead of it would
+     * put its events out of message order, and the windows stay open for the next hand-off.
      */
     async function structuredWork(
         task: Task,
@@ -962,6 +967,7 @@ export function createMemoryTasks(deps: {
             // One past the cap tells a task that stopped at it from one that finished.
             limit: limits.maxWriterWindows + 1,
             manual: task.manual,
+            ...(task.manual ? { rerecord: readRerecordEvents(store, chaId, chatId) } : {}),
         });
         live(task);
         if (!windows) {

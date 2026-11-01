@@ -23,9 +23,15 @@ import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
-import { alertError } from "src/ts/alert";
+import { alertConfirm, alertError } from "src/ts/alert";
 import { pendingMessageJump } from "src/ts/messageSearch.svelte";
-import { STRUCTURED_MEMORY_LIMITS, type MemoryPage, type MemoryThread } from "../../../../shared/structuredMemory.ts";
+import { memoryMessageHash } from "src/ts/process/structuredMemory.svelte";
+import {
+    STRUCTURED_MEMORY_LIMITS,
+    type MemoryEvent,
+    type MemoryPage,
+    type MemoryThread,
+} from "../../../../shared/structuredMemory.ts";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
 import PreviewTab from "./PreviewTab.svelte";
 
@@ -1093,4 +1099,195 @@ it("derives the writer line from current state and dispatches record and resume 
     await settle();
     expect(line()?.dataset.memoryWriterLine).toBe("memoryOff");
     expect(action()).toBeNull();
+});
+
+/** Coverage, record and edit I/O for the real Timeline; anchors come from the initial held chat. */
+function serveAnchoredEvent() {
+    const messages = findChat(ref)!.message;
+    const event: MemoryEvent = {
+        id: "e",
+        title: "Gate opened",
+        summary: "The gate opened",
+        status: "active",
+        sources: messages.slice(0, 2).map((m, index) => ({ messageId: m.chatId!, index, hash: memoryMessageHash(m) })),
+        participants: [],
+        storyTime: { text: "" },
+        keyLines: [],
+        stateChanges: [],
+        knowledge: [],
+        relationshipShifts: [],
+        openThreads: { add: [], close: [], transitions: [] },
+        writerRun: "r",
+        createdRevision: 1,
+    };
+    const state = { event, revision: "seen-revision" };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: state.revision,
+                events: [{ ...state.event, messageIds: ["u0", "a0"], sourceIndex: 0 }],
+                runs: [],
+                next: null,
+            });
+        if (url.endsWith("/records/events/e")) return Response.json({ revision: state.revision, data: state.event });
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                events: [{ id: "e", title: state.event.title, status: state.event.status, bytes: 100 }],
+                pages: [],
+                threads: [],
+                runs: [],
+            });
+        return fetch(url, init, options);
+    });
+    return state;
+}
+
+it("moves edited held sources from covered to stale in Coverage and Timeline without rereading memory", async () => {
+    serveAnchoredEvent();
+    await open();
+    expect(query('[data-memory-coverage-count="covered"]')?.textContent).toContain("2");
+    const requests = reads().length;
+    setMessageText(ref, "a0", "Edited reply");
+    await settle();
+    expect(query('[data-memory-coverage-count="stale"]')?.textContent).toContain("2");
+    expect(query('[data-memory-coverage-count="covered"]')?.textContent).toContain("0");
+    click('[data-memory-coverage-group="stale"]');
+    expect(query('[data-memory-coverage-row="stale"]')?.textContent).toContain(
+        language.structuredMemory.coverage.reasons.changed,
+    );
+    expect(query("[data-memory-coverage-leaving]")?.textContent).toContain(
+        language.structuredMemory.coverage.leaving(1, 0, language.structuredMemory.coverage.aboutTokens(0)),
+    );
+    expect(reads()).toHaveLength(requests);
+    await chooseTab("timeline");
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
+    expect(query('[data-memory-event-badge="stale"]')?.textContent).toContain(
+        language.structuredMemory.coverage.reasons.changed,
+    );
+    const timelineReads = io.authFetch.mock.calls.length;
+    setMessageText(ref, "a0", "a0");
+    await settle();
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("active");
+    setMessageText(ref, "a0", "Another edit");
+    await settle();
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
+    expect(io.authFetch).toHaveBeenCalledTimes(timelineReads);
+});
+
+it("sends the seen keep state, explains a refusal, and confirms before retracting a stale event", async () => {
+    const state = serveAnchoredEvent();
+    setMessageText(ref, "a0", "Edited reply");
+    const fetch = io.authFetch.getMockImplementation()!;
+    let edits = 0;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        edits++;
+        if (edits === 1) {
+            state.revision = "fresh-revision";
+            return Response.json({ reason: "changed", error: "Chat moved on" }, { status: 409 });
+        }
+        state.event = { ...state.event, status: "retracted" };
+        state.revision = "retired-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const held = findChat(ref)!.message;
+    const expectedState = JSON.stringify([
+        ["u0", memoryMessageHash(held[0]), 0],
+        ["a0", memoryMessageHash(held[1]), 1],
+    ]);
+    press('[data-memory-repair="keep"]');
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "seen-revision", edit: { kind: "event", eventId: "e", repair: "keep", state: expectedState } },
+    ]);
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused.changed);
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press('[data-memory-repair="retract"]');
+    await settle();
+    expect(sentEdits()).toHaveLength(1);
+    const confirmation = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReturnValueOnce(confirmation.promise);
+    press('[data-memory-repair="retract"]');
+    await settle();
+    expect(sentEdits()).toHaveLength(1);
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.timeline.repairs.retractConfirm);
+    confirmation.resolve(true);
+    await settle();
+    expect(sentEdits()[1]).toEqual({
+        revision: "fresh-revision",
+        edit: { kind: "event", eventId: "e", repair: "retract" },
+    });
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("retracted");
+    expect(query("[data-memory-event-repairs]")).toBeNull();
+});
+
+it("marks before pressing rerecord, retries a marked event, and disables it when the last eligible source is a user", async () => {
+    const state = serveAnchoredEvent();
+    setMessageText(ref, "a0", "Edited reply");
+    const marked = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits") ? marked.promise : fetch(url, init, options),
+    );
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    press('[data-memory-repair="rerecord"]');
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "seen-revision", edit: { kind: "event", eventId: "e", repair: "rerecord" } },
+    ]);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    state.event = { ...state.event, rerecord: true };
+    state.revision = "marked-revision";
+    marked.resolve(Response.json({ revision: state.revision, kind: "events", data: state.event }));
+    await settle();
+    expect(io.runServerJob.mock.calls[0][2]).toMatchObject({
+        kind: "command",
+        command: { type: "memoryRecord", messageId: "a0" },
+    });
+    expect(query('[data-memory-event-badge="rerecord"]')).not.toBeNull();
+    press('[data-memory-repair="rerecord"]');
+    await settle();
+    expect(sentEdits()).toHaveLength(1);
+    expect(io.runServerJob).toHaveBeenCalledTimes(2);
+    patchMessage(ref, "a0", { disabled: true });
+    await settle();
+    const button = query('[data-memory-repair="rerecord"]')!.closest("button")!;
+    expect(button.disabled).toBe(true);
+    button.click();
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledTimes(2);
+});
+
+it("shows a send's stale reason in the panel manifest", async () => {
+    serveAnchoredEvent();
+    const context = memoryReport();
+    context.memory = {
+        kind: "structuredMemory",
+        tokens: 0,
+        coverage: "gap",
+        items: [],
+        excluded: [{ id: "e", kind: "event", lane: "events", reason: "stale", staleReason: "moved" }],
+        excludedTotal: 1,
+    };
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages: [], context }));
+    await open();
+    click("[data-segment-btn]:nth-of-type(2)");
+    await settle();
+    click("[data-memory-preview-run]");
+    await settle();
+    expect(query('[data-memory-manifest-excluded="stale"]')?.textContent).toContain("Gate opened");
+    expect(query('[data-memory-manifest-stale-reason="moved"]')?.textContent).toBe(
+        language.structuredMemory.coverage.reasons.moved,
+    );
 });

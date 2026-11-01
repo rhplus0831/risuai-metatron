@@ -1,4 +1,5 @@
 import type { Message } from "./database.ts";
+import { eligibleHistory } from "./eligibleHistory.ts";
 import type { SerializableHypaV3Data, SerializableSummary } from "./memory.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
@@ -329,6 +330,13 @@ export interface MemoryEvent extends Omit<MemoryEventDraft, "knowledge">, Memory
     status: MemoryEventStatus;
     /** Set while `status` is `stale`, for the badge and the repair choices. */
     staleReason?: MemoryStaleReason;
+    /**
+     * What a person accepted with "keep": the event's `memoryAnchorState` at that moment. The event stands
+     * only while that state does, so a later change of its sources shows again.
+     */
+    keptState?: string;
+    /** A person asked for a re-record that has not committed yet. */
+    rerecord?: boolean;
     /** The id of the run that wrote it. */
     writerRun: string;
     /** The chat's memory revision that committed it. */
@@ -570,11 +578,13 @@ export type StructuredMemoryPackageRound = {
 /** An event as the coverage route lists it: what it says of its messages, with no text but its title. */
 export type StructuredMemoryCoverageEvent = Pick<
     MemoryEvent,
-    "id" | "title" | "status" | "staleReason" | "suppressed"
+    "id" | "title" | "status" | "staleReason" | "suppressed" | "keptState" | "rerecord"
 > & {
     messageIds: string[];
     /** The smallest position its anchored sources stored, for an event none of whose messages is left. */
     sourceIndex: number | null;
+    /** Its sources as `storedMemorySources` reads them, for the tab's own reconciliation. */
+    sources: MemorySource[];
 };
 
 /**
@@ -598,17 +608,22 @@ export type StructuredMemoryCoverageRound = {
 /**
  * What a person can change of a chat's memory, one change per request. The tab never sends a record:
  * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be
- * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade.
+ * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade. An
+ * `event` edit is a repair of a stale event, and `keep` names the `memoryAnchorState` the person saw.
  */
 export type StructuredMemoryEdit =
     | { kind: "section"; pageId: string; heading: string; body: string }
     | { kind: "sectionLock"; pageId: string; heading: string; locked: boolean }
     | { kind: "page"; pageId: string; contextMode?: MemoryContextMode; grade?: number | null }
-    | { kind: "thread"; threadId: string; state: MemoryThreadState };
+    | { kind: "thread"; threadId: string; state: MemoryThreadState }
+    | { kind: "event"; eventId: string; repair: "rerecord" | "retract" }
+    | { kind: "event"; eventId: string; repair: "keep"; state: string };
 
 /** The edit route's answer: the record as it now stands, with the revision the next edit names. */
 export type StructuredMemoryEditAnswer = { revision: string } & (
-    { kind: "pages"; data: MemoryPage } | { kind: "threads"; data: MemoryThread }
+    | { kind: "pages"; data: MemoryPage }
+    | { kind: "threads"; data: MemoryThread }
+    | { kind: "events"; data: MemoryEvent }
 );
 
 /** The most runs one round of the runs route holds, however small they are. */
@@ -814,6 +829,167 @@ export function rawWindow(
         }
     }
     return { start, dropped };
+}
+
+/**
+ * A stored source list as sources, because the store does not check a record's shape. What is not an
+ * object with a string `messageId` is no source, as the coverage route reads it, and a source without
+ * a whole anchor reads as unanchored, so it forces its event `stale` rather than passing unchecked.
+ */
+export function storedMemorySources(stored: unknown): MemorySource[] {
+    if (!Array.isArray(stored)) {
+        return [];
+    }
+    return stored.flatMap((source): MemorySource[] => {
+        if (!isPlainObject(source) || typeof source.messageId !== "string") {
+            return [];
+        }
+        const { messageId, hash, index } = source;
+        return typeof hash === "string" && Number.isSafeInteger(index)
+            ? [{ messageId, hash, index: index as number }]
+            : [{ messageId, hash: null, index: null }];
+    });
+}
+
+/** What the anchor rules read of a chat: its messages, where each id sits, and the caller's hash. */
+type MessageAnchors<M> = {
+    messages: readonly M[];
+    positions: ReadonlyMap<string, number>;
+    hashOf: (message: M) => string;
+};
+
+/** Built once for a list of events, so a long chat's lookups stay cheap. */
+function messageAnchors<M extends Pick<Message, "chatId">>(
+    messages: readonly M[],
+    hashOf: (message: M) => string,
+): MessageAnchors<M> {
+    const positions = new Map<string, number>();
+    messages.forEach(({ chatId }, index) => {
+        if (chatId !== undefined) {
+            positions.set(chatId, index);
+        }
+    });
+    return { messages, positions, hashOf };
+}
+
+const isAnchored = (source: MemorySource): source is MemoryAnchoredSource => source.hash !== null;
+
+/**
+ * Why `sources` no longer read from `messages`, or null when they do. The two sides hash a message
+ * differently, so each passes its own `hashOf`.
+ *
+ * The first that holds: `missing`, a source is unanchored or its message is not in the list; `changed`,
+ * a source's hash is not its message's. Then the sources in list order, which is append order (a repeat
+ * appends sources captured at a later time, so a stored `index` says nothing of their order), each id
+ * once, each against the one before it: `moved`, its position is lower; `inserted`, the gap is larger
+ * than the stored gap, which counts only above 0.
+ *
+ * What moves every source alike is not stale: a message deleted or inserted before the event, or a
+ * whole block moved. Neither is a smaller gap, which a removed message between them leaves, a disabled
+ * source, which is still there with its hash, or a single source moved. The evidence is intact, and
+ * every view uses current positions.
+ */
+function staleReasonOf<M>(
+    sources: readonly MemorySource[],
+    { messages, positions, hashOf }: MessageAnchors<M>,
+): MemoryStaleReason | null {
+    const anchored = sources.filter(isAnchored);
+    if (anchored.length < sources.length || anchored.some(({ messageId }) => !positions.has(messageId))) {
+        return "missing";
+    }
+    if (anchored.some(({ messageId, hash }) => hashOf(messages[positions.get(messageId)!]) !== hash)) {
+        return "changed";
+    }
+    const seen = new Set<string>();
+    let previous: { position: number; index: number } | undefined;
+    for (const { messageId, index } of anchored) {
+        if (seen.has(messageId)) {
+            continue;
+        }
+        seen.add(messageId);
+        const position = positions.get(messageId)!;
+        if (previous) {
+            const storedGap = index - previous.index;
+            if (position < previous.position) {
+                return "moved";
+            }
+            if (storedGap > 0 && position - previous.position > storedGap) {
+                return "inserted";
+            }
+        }
+        previous = { position, index };
+    }
+    return null;
+}
+
+function anchorStateOf<M>(sources: readonly MemorySource[], anchors: MessageAnchors<M>): string {
+    let first: number | undefined;
+    const parts = sources.map(({ messageId }) => {
+        const position = anchors.positions.get(messageId);
+        if (position === undefined) {
+            return [messageId];
+        }
+        first ??= position;
+        return [messageId, anchors.hashOf(anchors.messages[position]), position - first];
+    });
+    return JSON.stringify(parts);
+}
+
+/**
+ * What a person looks at when they keep an event, as one string: for each source in order, its id, its
+ * message's hash when the message is there, and its position relative to the first source present.
+ * Hashes never read `generationInfo` and the position is relative, so a receipt or a shift of the whole
+ * event leaves it alone.
+ */
+export function memoryAnchorState<M extends Pick<Message, "chatId">>(
+    sources: unknown,
+    messages: readonly M[],
+    hashOf: (message: M) => string,
+): string {
+    return anchorStateOf(storedMemorySources(sources), messageAnchors(messages, hashOf));
+}
+
+/**
+ * `events` as `messages` leave them, on a copy: nothing is stored, and neither list is changed. An active
+ * event with a stale reason (`staleReasonOf`) becomes a copy with `status: "stale"` and `staleReason`,
+ * unless a person kept it in exactly the state it is in now (`keptState`). A retracted event, and one
+ * stored `stale`, stay as they are, and so does every unaffected event: the same object.
+ */
+export function reconcileMemoryEvents<
+    E extends Pick<MemoryEvent, "status" | "sources" | "keptState">,
+    M extends Pick<Message, "chatId">,
+>(events: readonly E[], messages: readonly M[], hashOf: (message: M) => string): E[] {
+    const anchors = messageAnchors(messages, hashOf);
+    return events.map((event) => {
+        if (event.status !== "active") {
+            return event;
+        }
+        const sources = storedMemorySources(event.sources);
+        const staleReason = staleReasonOf(sources, anchors);
+        if (
+            staleReason === null ||
+            (event.keptState !== undefined && event.keptState === anchorStateOf(sources, anchors))
+        ) {
+            return event;
+        }
+        return { ...event, status: "stale", staleReason };
+    });
+}
+
+/**
+ * The message a re-record of `sources` is confirmed through: the id of the newest of them, by current
+ * position, that a send reads (`eligibleHistory`), when that message is `char`. Null otherwise, also with
+ * none left, so an event with nothing to record from cannot offer it.
+ */
+export function memoryRerecordTarget(
+    sources: unknown,
+    messages: readonly Pick<Message, "chatId" | "role" | "disabled">[],
+): string | null {
+    const cited = new Set(storedMemorySources(sources).map(({ messageId }) => messageId));
+    const newest = eligibleHistory(messages).messages.findLast(
+        ({ chatId }) => chatId !== undefined && cited.has(chatId),
+    );
+    return newest?.role === "char" ? newest.chatId! : null;
 }
 
 /** `value` when it is a member of `list`, else `undefined`. */

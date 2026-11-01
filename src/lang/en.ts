@@ -2674,6 +2674,13 @@ export const languageEnglish = {
             stale: (reason: string) => (reason ? `Stale: ${reason}` : "Stale"),
             suppressed: "Suppressed",
             sources: "Messages",
+            repairs: {
+                rerecord: "Re-record",
+                retract: "Retract",
+                keep: "Keep as it is",
+                retractConfirm: "Retract this event? It stops being used, and nothing here can bring it back.",
+                waiting: "Waiting to be re-recorded",
+            },
         },
         threads: {
             empty: "This chat has no threads yet.",

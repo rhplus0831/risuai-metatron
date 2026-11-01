@@ -31,6 +31,7 @@ import {
     readBudget,
     type ReadEntry,
 } from "./lanes.ts";
+import { reconcileEvents } from "./reconcile.ts";
 import { retrieveLanes } from "./retrieve.ts";
 import { writerPaused } from "./writer.ts";
 
@@ -43,6 +44,9 @@ import { writerPaused } from "./writer.ts";
  *   not suppressed) says what may leave the prompt, `recordedMessages` (any status) what the writer must
  *   not record again. History cited only by a stale or retracted event is recorded but not covered, so
  *   it stays raw with no work left to offer.
+ * - A selection reconciles the events it is given against the stored messages (`reconcileEvents`), on a
+ *   copy, before it reads them: an event whose source changed stands in for nothing in this send, and
+ *   the report says why. `recordedMessages` reads the events as stored.
  * - History before the window leaves where an event covers it. The message a continue extends stays,
  *   out of the evidence too. What remains trims oldest first as HypaV3's select-only path does. The
  *   window and that message are never dropped, and the final recheck never removes them.
@@ -85,6 +89,8 @@ export type MemorySelectionInput = {
     historyStart: number;
     /** One per entry of `chats` from `historyStart` on. */
     entries: readonly ReadEntry[];
+    /** The chat's messages as stored, whole: what an event's sources are checked against. */
+    messages: readonly Message[];
     /** The count with `chats` in it, the response budget included. */
     currentTokens: number;
     maxContextTokens: number;
@@ -207,8 +213,8 @@ function cardEntries(
 /**
  * What `records` make of the send's history. Every step counts with the job's tokenizer: the entries
  * that leave come off the count, the card's entries go on it, then the trim runs over what is left.
- * `input` is not changed, and every entry `chats` keeps is the same object, so a second pass after the
- * records changed starts over from it.
+ * `input` and `records` are not changed, and every entry `chats` keeps is the same object, so a second
+ * pass after the records changed starts over from it, and reconciles what it is given again.
  *
  * `coverage` is `gap` when the trim dropped history, or when covered history with something to send
  * left and the card that stands in for it is empty: the events cover it, but the model does not see
@@ -220,15 +226,16 @@ export async function selectMemory(
 ): Promise<MemorySelection> {
     const { host, settings, tokenizer, chats, historyStart, entries, maxContextTokens, continueMessageId } = input;
     const structured = normalizeStructuredMemorySettings(settings.structured);
+    const events = reconcileEvents(records.events, input.messages);
     const continued =
         continueMessageId === undefined ? -1 : entries.findIndex(({ messageId }) => messageId === continueMessageId);
     const window = sendWindow(entries, continued, {
         windowTurns: structured.windowTurns,
-        covered: coveredMessages(records.events),
+        covered: coveredMessages(events),
     });
 
     const retrieved = await retrieveLanes(host, {
-        events: records.events,
+        events,
         threads: records.threads,
         pages: records.pages,
         entries,

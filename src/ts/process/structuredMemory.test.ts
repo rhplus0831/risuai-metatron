@@ -7,6 +7,9 @@ import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { MemoryEvent, MemoryPage, MemorySource } from "../../../shared/structuredMemory.ts";
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import {
+    memoryMessageHash,
+    memoryMessageHasher,
+    reconcileMemoryCoverage,
     buildStructuredMemoryPackage,
     buildStructuredMemoryLog,
     readStructuredMemoryCoverage,
@@ -636,4 +639,48 @@ it("compares page history only with the next entry of its heading or the live se
         { id: "other", heading: "Other", kind: "edit", at: 2, before: "Other before", after: "Other now" },
         { id: "created", heading: "Facts", kind: "edit", at: 1, before: null, after: "Facts before" },
     ]);
+});
+
+it("hashes role and Unicode text exactly like server source anchors including a lone surrogate", () => {
+    // Fixed server messageSourceHash value; no server imports in the Node client test.
+    expect(memoryMessageHash({ role: "char", data: '문 😀\ud800\nquote: "' })).toBe(
+        "db8d581f5fb0f0005aa6337e8568fca94baa45dc48b0a9ec2a01cbda9197f8b5",
+    );
+});
+
+it("joins reconciled held messages as stale with no leaving coverage or request and restores them immediately", () => {
+    const messages: Message[] = [
+        { chatId: "u", role: "user", data: "Question" },
+        { chatId: "a", role: "char", data: "Answer" },
+        { chatId: "tail", role: "char", data: "Newest reply" },
+    ];
+    const sources = messages
+        .slice(0, 2)
+        .map((m, index) => ({ messageId: m.chatId!, index, hash: memoryMessageHash(m) }));
+    const facts = {
+        revision: "r1",
+        events: [{ ...event("e", sources), messageIds: ["u", "a"], sourceIndex: 0 }],
+        runs: [],
+    };
+    const before = structuredClone(facts);
+    const hash = memoryMessageHasher();
+    const join = () =>
+        joinMemoryCoverage(messages, reconcileMemoryCoverage(facts, messages, hash), {
+            windowTurns: 1,
+            memoryOn: true,
+        });
+    expect(join().leaving).toEqual([0, 1]);
+    messages[1].data = "Edited answer";
+    const stale = join();
+    expect(stale.rows.slice(0, 2).map(({ state, reason }) => [state, reason])).toEqual([
+        ["stale", "changed"],
+        ["stale", "changed"],
+    ]);
+    expect(stale.counts).toMatchObject({ covered: 0, stale: 2 });
+    expect(stale.leaving).toEqual([]);
+    expect(stale.gap).toEqual([0, 1]);
+    messages[1].data = "Answer";
+    expect(join().leaving).toEqual([0, 1]);
+    expect(facts).toEqual(before);
+    expect(authFetch).not.toHaveBeenCalled();
 });

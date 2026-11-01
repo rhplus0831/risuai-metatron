@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { type MemoryEvent, type MemoryManifestItem, memoryGrade, projectHypaV3Data } from "./structuredMemory.ts";
+import type { Message } from "./database.ts";
+import {
+    type MemoryEvent,
+    type MemoryManifestItem,
+    memoryGrade,
+    projectHypaV3Data,
+    memoryAnchorState,
+    memoryRerecordTarget,
+} from "./structuredMemory.ts";
 
 function event(id: string, overrides: Partial<MemoryEvent> = {}): MemoryEvent {
     return {
@@ -146,4 +154,32 @@ it("sums all three grade axes from zero through nine and has no grade without ax
     expect(memoryGrade({ persistence: 1, change: 2, reach: 3 })).toBe(6);
     expect(memoryGrade({ persistence: 3, change: 3, reach: 3 })).toBe(9);
     expect(memoryGrade(undefined)).toBeUndefined();
+});
+
+it("names the seen anchor state independently of prefix shifts and targets only the newest eligible cited reply", () => {
+    type Held = Pick<Message, "chatId" | "role" | "data">;
+    const messages: Held[] = [
+        { chatId: "u", role: "user", data: "Question" },
+        { chatId: "a", role: "char", data: "Answer" },
+    ];
+    const sources = messages.map((m, index) => ({ messageId: m.chatId, index, hash: m.data }));
+    const hash = (m: Held) => m.data;
+    const seen = memoryAnchorState(sources, messages, hash);
+    expect(memoryAnchorState(sources, [{ chatId: "prefix", role: "user", data: "Earlier" }, ...messages], hash)).toBe(
+        seen,
+    );
+    const changes: Held[][] = [
+        [messages[0], { ...messages[1], data: "Different answer" }],
+        [messages[0]],
+        [messages[1], messages[0]],
+        [messages[0], { chatId: "inserted", role: "user", data: "Wait" }, messages[1]],
+    ];
+    for (const changed of changes) expect(memoryAnchorState(sources, changed, hash)).not.toBe(seen);
+    expect(memoryRerecordTarget(sources, messages)).toBe("a");
+    expect(memoryRerecordTarget(sources, [...messages, { chatId: "unrelated", role: "user", data: "Next" }])).toBe("a");
+    expect(memoryRerecordTarget(sources, [messages[1], messages[0]])).toBeNull();
+    expect(memoryRerecordTarget(sources, [messages[0], { ...messages[1], disabled: true }])).toBeNull();
+    expect(
+        memoryRerecordTarget(sources, [...messages, { chatId: "reset", role: "user", disabled: "allBefore" }]),
+    ).toBeNull();
 });

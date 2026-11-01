@@ -43,8 +43,8 @@
     // data itself, so a change of the held messages needs no request. Preview is the exception: a
     // preview makes the panel read-only itself, so it runs only on its own button.
     //
-    // Pages and Threads write, each edit checked against the revision it was made on and fenced on the
-    // server; read-only here only turns their controls off first. The writer line says when recording
+    // Pages, Timeline, and Threads write, each edit checked against the revision it was made on and fenced
+    // on the server; read-only here only turns their controls off first. The writer line says when recording
     // is not automatic and why, from the current state, and holds the buttons that start it.
 
     const text = language.structuredMemory.panel;

@@ -1,3 +1,4 @@
+import { Sha256 } from "@aws-crypto/sha256-js";
 import { strToU8, zipSync, type Zippable } from "fflate";
 import {
     eligibleHistory,
@@ -14,6 +15,7 @@ import {
     MEMORY_PAGE_TYPES,
     memoryEventCovers,
     rawWindow,
+    reconcileMemoryEvents,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
     type MemoryManifestItem,
@@ -53,9 +55,11 @@ import { authFetch } from "../storage/serverAuth";
  *
  * The memory panel's data is here too. `joinMemoryCoverage` and `memoryTimelineRows` join the held
  * messages with the record facts the coverage route answers, because the tab holds the chat's whole
- * message list and a route has no job scope. `memoryRunView` turns a stored run into what a Log row
- * shows, `memoryPageTree` and `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice`
- * the current state into the panel's writer line.
+ * message list and a route has no job scope. `reconcileMemoryCoverage` brings those facts up to the held
+ * messages first, with the same rule a send uses, so an edit shows at once and with no request.
+ * `memoryRunView` turns a stored run into what a Log row shows, `memoryPageTree` and
+ * `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice` the current state into the
+ * panel's writer line.
  *
  * What a send reported is read here too: `memoryStatusWord` for the context meter's line,
  * `memoryItemsUsed` for the panel's badges, and `memoryBlockEntries` for a preview's block.
@@ -380,7 +384,9 @@ function parseCoverageRound(body: AnswerBody, cursor: number): StructuredMemoryC
 
 function parseEditAnswer(body: AnswerBody): StructuredMemoryEditAnswer | null {
     const { revision, kind, data } = body;
-    return typeof revision === "string" && (kind === "pages" || kind === "threads") && isPlainObject(data)
+    return typeof revision === "string" &&
+        (kind === "pages" || kind === "threads" || kind === "events") &&
+        isPlainObject(data)
         ? (body as StructuredMemoryEditAnswer)
         : null;
 }
@@ -731,9 +737,57 @@ export type MemoryCoverageJoin = {
 
 /** What the join reads of the coverage route's facts. */
 type CoverageFacts = {
-    events: readonly Omit<StructuredMemoryCoverageEvent, "sourceIndex">[];
+    events: readonly Omit<StructuredMemoryCoverageEvent, "sourceIndex" | "sources">[];
     runs: readonly StructuredMemoryCoverageRun[];
 };
+
+/** What the tab hashes of a message. */
+type HashedMessage = DeepReadonly<Pick<Message, "chatId" | "role" | "data">>;
+
+/**
+ * The hash a source keeps of `message`, exactly as `messageSourceHash` takes it on the server. It is pure
+ * JavaScript because `crypto.subtle` is absent outside a secure context, and JSON leaves no lone
+ * surrogate for the UTF-8 encoding to replace.
+ */
+export function memoryMessageHash({ role, data }: Pick<HashedMessage, "role" | "data">): string {
+    const hash = new Sha256();
+    hash.update(JSON.stringify([role, data]));
+    return Array.from(hash.digestSync(), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * A `memoryMessageHash` that hashes a message again only when its `role` or `data` changed, for a tab to
+ * hold while it lives: the rows follow every change of the held messages, and most of them change
+ * nothing an event cites.
+ */
+export function memoryMessageHasher(): (message: HashedMessage) => string {
+    const memo = new Map<string, { role: Message["role"]; data: string; hash: string }>();
+    return (message) => {
+        const { chatId, role, data } = message;
+        const held = chatId === undefined ? undefined : memo.get(chatId);
+        if (held?.role === role && held.data === data) {
+            return held.hash;
+        }
+        const hash = memoryMessageHash(message);
+        if (chatId !== undefined) {
+            memo.set(chatId, { role, data, hash });
+        }
+        return hash;
+    };
+}
+
+/**
+ * `facts` with their events as `messages` leave them, by the rule a send uses (`reconcileMemoryEvents`),
+ * so an event that stopped reading from its messages shows `stale` at once. Everything derived from the
+ * answer reads it, the join included, and nothing is stored or asked for.
+ */
+export function reconcileMemoryCoverage(
+    facts: StructuredMemoryCoverage,
+    messages: readonly HashedMessage[],
+    hashOf: (message: HashedMessage) => string,
+): StructuredMemoryCoverage {
+    return { ...facts, events: reconcileMemoryEvents(facts.events, messages, hashOf) };
+}
 
 /** A row's fields that the join decides. */
 type CoverageDecision = Pick<MemoryCoverageRow, "state" | "eventId" | "runId" | "reason">;
@@ -882,8 +936,8 @@ export function memoryMessageIndexes(
 }
 
 /** One event in the Timeline. */
-export type MemoryTimelineRow = {
-    event: StructuredMemoryCoverageEvent;
+export type MemoryTimelineRow<E = StructuredMemoryCoverageEvent> = {
+    event: E;
     /** Where it sorts; Infinity when nothing says. */
     position: number;
     /** As a send's flow lane counts it, or null with none of its messages left. */
@@ -896,10 +950,10 @@ export type MemoryTimelineRow = {
  * from its newest message still present, as the flow lane ages an event: the `char` messages with text
  * at or after it that a send reads (`eligibleHistory`), at least 1.
  */
-export function memoryTimelineRows(
-    events: readonly StructuredMemoryCoverageEvent[],
+export function memoryTimelineRows<E extends Pick<StructuredMemoryCoverageEvent, "messageIds" | "sourceIndex">>(
+    events: readonly E[],
     messages: readonly DeepReadonly<Message>[],
-): MemoryTimelineRow[] {
+): MemoryTimelineRow<E>[] {
     const indexes = memoryMessageIndexes(messages);
     const read = eligibleHistory(messages.map(({ disabled }, index) => ({ disabled, index }))).messages;
     const eligible = new Set(read.map(({ index }) => index));
@@ -911,7 +965,7 @@ export function memoryTimelineRows(
         }
         turnsFrom[index] = turns;
     }
-    const rows = events.map((event): MemoryTimelineRow => {
+    const rows = events.map((event): MemoryTimelineRow<E> => {
         let first = Infinity;
         let newest = -1;
         for (const id of event.messageIds) {

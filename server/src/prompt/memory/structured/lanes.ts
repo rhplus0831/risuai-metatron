@@ -4,6 +4,7 @@ import {
     MEMORY_MANIFEST_LANES,
     type MemoryManifestItemKind,
     type MemoryManifestLane,
+    type MemoryStaleReason,
     normalizeStructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
 
@@ -56,6 +57,8 @@ export type Lane<Item extends LaneCandidate = LaneItem> = {
 /** A candidate a send left out, and why. */
 export type ExcludedItem = Pick<LaneItem, "id" | "kind" | "lane"> & {
     reason: "budget" | "not-relevant" | "never" | "stale";
+    /** Why a `stale` event is stale. */
+    staleReason?: MemoryStaleReason;
 };
 
 /** What a lane may spend and what it spent. */

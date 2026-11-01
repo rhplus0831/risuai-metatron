@@ -2,15 +2,21 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
-import { MEMORY_RUNS_ROUND_ROWS, STRUCTURED_MEMORY_LIMITS } from "../../../shared/structuredMemory.ts";
+import {
+    memoryAnchorState,
+    MEMORY_RUNS_ROUND_ROWS,
+    STRUCTURED_MEMORY_LIMITS,
+} from "../../../shared/structuredMemory.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope, memorySettingsFingerprint, memoryTokenPolicy } from "../jobs/jobScope.ts";
 import type { StructuredMemoryTaskInput } from "../../../shared/jobs.ts";
-import type { Chat } from "../../../shared/database.ts";
+import type { Chat, Message } from "../../../shared/database.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { messageSourceHash } from "../data/memoryStore.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
+import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
 import { createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -294,7 +300,14 @@ it("serves coverage facts in storage order without reading recorded runs or disc
         expect(await answer(await s.request(`${base}/coverage`))).toEqual({
             revision,
             events: [
-                { id: "z", title: "Event z", status: "active", messageIds: ["m1"], sourceIndex: 0 },
+                {
+                    id: "z",
+                    title: "Event z",
+                    status: "active",
+                    messageIds: ["m1"],
+                    sourceIndex: 0,
+                    sources: active.sources,
+                },
                 {
                     id: "a",
                     title: "Event a",
@@ -303,6 +316,7 @@ it("serves coverage facts in storage order without reading recorded runs or disc
                     suppressed: true,
                     messageIds: ["m1"],
                     sourceIndex: 0,
+                    sources: active.sources,
                 },
             ],
             runs: [
@@ -716,4 +730,120 @@ it("refuses edits for an admitted job and for its message lock on a different ch
         expect((await answer(await s.json(`${url}/edits`, { revision: token, edit }))).data.sections[0].locked).toBe(
             true,
         );
+});
+
+it("repairs events through revisioned edits and refuses abandoned keep states and ineligible rerecords", async () => {
+    const s = await server();
+    bindChat(s);
+    const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+    const e = {
+        ...event("e"),
+        sources: messages.slice(0, 2).map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+    };
+    const staleRevision = s.write({ events: [e] });
+    let revision = s.write({ pages: [page("other")] });
+    const writeMessages = (message: Message[]) =>
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId,
+                    baseRevision: s.store.chatRevision(characterId, chatId),
+                    ops: [{ op: "replace", chat: { ...chat, message } }],
+                },
+            ],
+        });
+    const changed = messages.map((m) => (m.chatId === "a" ? { ...m, data: "The gate is closed" } : m));
+    writeMessages(changed);
+    const state = memoryAnchorState(e.sources, changed, messageSourceHash);
+    const edit = (repair: "keep" | "retract" | "rerecord") => ({
+        kind: "event",
+        eventId: "e",
+        repair,
+        ...(repair === "keep" ? { state } : {}),
+    });
+    for (const repair of ["keep", "retract", "rerecord"] as const) {
+        expect(
+            await answer(await s.json(`${base}/edits`, { revision: staleRevision, edit: edit(repair) }), 409),
+        ).toMatchObject({ revision });
+        expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: e });
+    }
+    writeMessages(messages.map((m) => (m.chatId === "a" ? { ...m, data: "Changed once more" } : m)));
+    expect(await answer(await s.json(`${base}/edits`, { revision, edit: edit("keep") }), 409)).toMatchObject({
+        reason: "changed",
+    });
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: e });
+    writeMessages(changed);
+    const kept = await answer(await s.json(`${base}/edits`, { revision, edit: edit("keep") }));
+    expect(kept).toEqual({ revision: expect.any(String), kind: "events", data: { ...e, keptState: state } });
+    revision = kept.revision;
+    expect(reconcileEvents([kept.data], changed)[0].status).toBe("active");
+    expect(
+        reconcileEvents(
+            [kept.data],
+            changed.map((m) => ({ ...m, data: `${m.data}!` })),
+        )[0].status,
+    ).toBe("stale");
+    writeMessages([changed[1], changed[0], changed[2]]);
+    await answer(await s.json(`${base}/edits`, { revision, edit: edit("rerecord") }), 400);
+    writeMessages(changed);
+    const marked = await answer(await s.json(`${base}/edits`, { revision, edit: edit("rerecord") }));
+    expect(marked.data).toEqual({ ...kept.data, rerecord: true });
+    const retired = await answer(await s.json(`${base}/edits`, { revision: marked.revision, edit: edit("retract") }));
+    expect(retired.data).toEqual({ ...kept.data, status: "retracted" });
+    for (const repair of ["keep", "rerecord"] as const)
+        await answer(await s.json(`${base}/edits`, { revision: retired.revision, edit: edit(repair) }), 400);
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({
+        revision: retired.revision,
+        data: retired.data,
+    });
+});
+
+it("fences every event repair behind an admitted job without changing memory", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred<RunningJob>();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve(job);
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const e = event("e");
+    const revision = s.write({ events: [e] });
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    await entered.promise;
+    try {
+        for (const repair of ["keep", "rerecord", "retract"]) {
+            expect(
+                await answer(
+                    await s.json(`${base}/edits`, {
+                        revision,
+                        edit: { kind: "event", eventId: "e", repair, state: "seen" },
+                    }),
+                    409,
+                ),
+            ).toMatchObject({ reason: "fenced" });
+            expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: e });
+        }
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect(
+        (
+            await answer(
+                await s.json(`${base}/edits`, { revision, edit: { kind: "event", eventId: "e", repair: "retract" } }),
+            )
+        ).data.status,
+    ).toBe("retracted");
 });

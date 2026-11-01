@@ -33,9 +33,11 @@ import {
 } from "../../runner.ts";
 import type { MemoryHost, MemoryTokenizer } from "../host.ts";
 import { MEMORY_TASK_LIMITS, type StructuredMemoryCommit } from "../memoryTasks.ts";
+import { retireRerecorded } from "./reconcile.ts";
 import {
     confirmedWindows,
     readRecordedMessages,
+    readRerecordEvents,
     writerCadence,
     writerCeiling,
     type WriterCeiling,
@@ -61,10 +63,13 @@ import { commitWindow, createStructuredWriter, writerRequestDb } from "./writer.
  *   policy, and the first that does not record ends the job; its run and receipt are already stored.
  *   Windows left past the cap are an ordinary `done`. No task fence applies: the job holds the chat's
  *   slot and the lease, and a panel write checks the memory revision.
+ * - A press also re-records the events a person marked, here as on the service: their windows come
+ *   first (`confirmedWindows`), and a commit retires what each replaces (`retireRerecorded`).
  *
  * A send's approved gap (`recordGapInJob`) shares those windows, inside the send: the person who said
  * yes to the question waits for it, so it takes their stop control, and a window that does not record
- * only ends the run. Its run and receipt are stored, and the send goes on with the gap.
+ * only ends the run. Its run and receipt are stored, and the send goes on with the gap. It answers a
+ * question about the gap, so it re-records nothing, and the marks wait for a press.
  */
 
 type RecordRefusal = Extract<MemoryTaskRecordAnswer, { outcome: "refused" }>["reason"];
@@ -114,8 +119,9 @@ type WindowsEnd = { recorded: number } & (
 );
 
 /**
- * The writer's windows through `ceiling`, on the job's lease, in order. Only an `initial` run takes the
- * stop control, as the job's memory runs do. A throw is the job's own end, not a window's.
+ * The writer's windows through `ceiling`, on the job's lease, in order, after those of the events a
+ * person marked when `rerecords` says a press started it. Only an `initial` run takes the stop control,
+ * as the job's memory runs do. A throw is the job's own end, not a window's.
  */
 async function runWindows(
     job: RunningJob,
@@ -127,6 +133,7 @@ async function runWindows(
         ceiling: WriterCeiling;
         phase: "blocking" | "initial";
         reason: MemoryBlockingReason | null;
+        rerecords: boolean;
     },
 ): Promise<WindowsEnd> {
     const { store } = deps;
@@ -162,7 +169,7 @@ async function runWindows(
                 window,
                 ceiling,
                 baseRevision,
-                changes,
+                changes: retireRerecorded(store, input.chatRef, window, changes),
                 writeReceipt: (group) => {
                     const applied = job.write(() => ({ chats: [group] }));
                     refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
@@ -188,6 +195,7 @@ async function runWindows(
             tokenizer,
             limit: MEMORY_TASK_LIMITS.maxWriterWindows,
             manual: true,
+            ...(arg.rerecords ? { rerecord: readRerecordEvents(store, characterId, chatId) } : {}),
         });
         setup.check();
         if (!windows) {
@@ -254,7 +262,7 @@ async function recordInJob(
     });
     try {
         job.emit({ type: "stage", stage: "memory" });
-        const ended = await runWindows(job, deps, setup, host, { ...arg, phase: "blocking" });
+        const ended = await runWindows(job, deps, setup, host, { ...arg, phase: "blocking", rerecords: true });
         if (ended.outcome === "gone") {
             throw new GenerationRunnerError(409, "This message can no longer be recorded", { stage: "persist" });
         }
@@ -292,6 +300,7 @@ export async function recordGapInJob(
             ceiling: { id: input.confirmedBefore, inclusive: false },
             phase: "initial",
             reason: "gap",
+            rerecords: false,
         });
         return recorded;
     } finally {

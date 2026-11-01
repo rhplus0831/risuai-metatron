@@ -2,6 +2,7 @@ import { truncateCheckpointText as clampText } from "../../../../../shared/chatC
 import { type LoreSearchScope, searchMatch } from "../../../../../shared/lore/activation.ts";
 import {
     type CharacterSectionSlot,
+    MEMORY_STALE_REASONS,
     type MemoryEvent,
     memoryEventCovers,
     type MemoryKnowledge,
@@ -60,8 +61,8 @@ import { sectionVectorText } from "./pages.ts";
  *
  * `excluded` holds every event, page, and open thread that is no candidate, however many: what reaches a
  * report is its reader's choice. One past `eventCandidates`, `pageCandidates`, or `threadCandidates` is
- * `budget`, since it passed relevance and lost on rank. A retracted event and an ended thread are not
- * listed, and neither is an `always` page the required lane shows.
+ * `budget`, since it passed relevance and lost on rank. A stale event says why it is stale. A retracted
+ * event and an ended thread are not listed, and neither is an `always` page the required lane shows.
  */
 
 /** Bounds and thresholds of retrieval; similarities are cosines in [0, 1]. */
@@ -742,8 +743,10 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
     });
 
     const excluded: ExcludedItem[] = [];
-    const leaveOut = ({ id }: MemoryEvent, reason: ExcludedItem["reason"]) => {
-        excluded.push({ id, kind: "event", lane: "events", reason });
+    const leaveOut = ({ id, staleReason }: MemoryEvent, reason: ExcludedItem["reason"]) => {
+        // A report with a stale reason it does not know is no report, and the store checks no record's shape.
+        const known = reason === "stale" ? MEMORY_STALE_REASONS.find((entry) => entry === staleReason) : undefined;
+        excluded.push({ id, kind: "event", lane: "events", reason, ...(known ? { staleReason: known } : {}) });
     };
     const placed: PlacedEvent[] = [];
     for (const event of events) {

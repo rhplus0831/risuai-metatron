@@ -77,9 +77,14 @@ restart that loses the task queue loses nothing: the next send finds the same wi
      cadence counts, over each stored message's role and `data`, in the step and in the task alike.
    - `manual`: closes none.
 6. A manual start also closes the trailing partial window; under the `manual` cadence it makes one window of each turn.
+7. A person's press also re-records the events marked `rerecord` (`readRerecordEvents`), ahead of the rest and counted
+   against the limit: each gives one window of exactly its sources a send still reads, in chat order, with fresh anchors
+   and `rerecords` naming the event. It asks nothing of step 4, so what is recorded stays recorded and a second repair
+   of the same messages still runs. An event runs only when all those messages lie under the ceiling and
+   `memoryRerecordTarget` names a reply; any other keeps its mark. A task's own hand-off and a gap run take none.
 
-A window is `{ sources, messages }`: `sources[i]` anchors `messages[i]`, with `index` the place in the stored list, not
-the eligible one, and `hash` from `messageSourceHash`.
+A window is `{ sources, messages }`, with `rerecords` on a repair: `sources[i]` anchors `messages[i]`, with `index` the
+place in the stored list, not the eligible one, and `hash` from `messageSourceHash`.
 
 ### The writer task
 
@@ -111,7 +116,10 @@ the eligible one, and `hash` from `messageSourceHash`.
 throws once ended), the gate is open, the service is open with the input's epoch and source generation (else refused
 `staleInput`), then `commitWindow`: the window still reads from the chat as stored under the ceiling it was computed
 with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one of its messages (`messagesLocked`, else
-`windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal writes nothing.
+`windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal writes nothing. Around it,
+`retireRerecorded` turns a repair's closing write into the swap: the new event takes the old one's `pinned`,
+`suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set. `recordJob.ts` wraps
+its commit the same way, so a failed run leaves the old event and its mark, and each retry works it out again.
 
 ### A writer run
 
@@ -387,7 +395,8 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
 - `server/src/tests/memoryTaskHost.test.ts` drives `memorySettingsFingerprint` on a real job scope, and
   `server/src/tests/upstreamExport.test.ts` drives what the upstream export leaves out.
 - `server/src/prompt/memory/structured/window.test.ts` drives the window rules as a table over plain messages with a
-  fake tokenizer.
+  fake tokenizer, repair windows included. `structured/reconcile.test.ts` drives the swap, and `memoryTasks.test.ts` a
+  repair through the real writer.
 - `server/src/tests/memoryTasks.test.ts` drives the task kind on `createMemoryTasks` over a real store: its windows with
   an injected `structuredWriter`, the writer itself with none, through the scripted provider and read back from
   `store.memory`. `memoryJobs.test.ts` drives the hand-off with `createFakeMemoryTasks`, `assemble.test.ts` the

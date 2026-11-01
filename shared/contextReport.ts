@@ -1,12 +1,17 @@
 import type { Message } from "./database.ts";
+import { eligibleHistory } from "./eligibleHistory.ts";
 import type { HypaV3BudgetReduction } from "./hypaV3Presets.ts";
 import {
     MEMORY_MANIFEST_ITEM_KINDS,
     MEMORY_MANIFEST_LANES,
+    MEMORY_STALE_REASONS,
     type MemoryManifestItem,
     type MemoryManifestItemKind,
     type MemoryManifestLane,
+    type MemoryStaleReason,
 } from "./structuredMemory.ts";
+
+export { eligibleHistory };
 
 /**
  * How one request spent the model's context: written by the server's `assemblePrompt` into
@@ -64,6 +69,8 @@ export type ContextMemoryExcluded = {
     kind: MemoryManifestItemKind;
     lane: MemoryManifestLane;
     reason: (typeof CONTEXT_MEMORY_EXCLUSIONS)[number];
+    /** Why a `stale` candidate is stale; absent in reports written before a send said so. */
+    staleReason?: MemoryStaleReason;
 };
 
 /** How many left-out memory candidates a report names; a chat's every event can be one on every reply. */
@@ -420,7 +427,10 @@ function isMemoryItems(value: unknown): boolean {
     );
 }
 
-/** `memory.excluded`: at most `CONTEXT_MEMORY_EXCLUDED` rows, each with known kinds and a known reason. */
+/**
+ * `memory.excluded`: at most `CONTEXT_MEMORY_EXCLUDED` rows, each with known kinds, a known reason, and
+ * a known stale reason or none.
+ */
 function isMemoryExcluded(value: unknown): boolean {
     return (
         Array.isArray(value) &&
@@ -431,7 +441,8 @@ function isMemoryExcluded(value: unknown): boolean {
                 typeof entry.id === "string" &&
                 oneOf(MEMORY_MANIFEST_ITEM_KINDS, entry.kind) &&
                 oneOf(MEMORY_MANIFEST_LANES, entry.lane) &&
-                oneOf(CONTEXT_MEMORY_EXCLUSIONS, entry.reason),
+                oneOf(CONTEXT_MEMORY_EXCLUSIONS, entry.reason) &&
+                (entry.staleReason === undefined || oneOf(MEMORY_STALE_REASONS, entry.staleReason)),
         )
     );
 }
@@ -463,28 +474,6 @@ function isMemoryStages(value: unknown): boolean {
 }
 
 type HistoryMessage = Pick<Message, "chatId" | "role" | "data" | "disabled">;
-
-/**
- * The messages a send reads: from the end back to the last `allBefore` message (excluded), skipping
- * disabled ones. `reset` is true when an `allBefore` message cut the history (the greeting is then
- * left out too).
- */
-export function eligibleHistory<T extends Pick<Message, "disabled">>(
-    messages: readonly T[],
-): { messages: T[]; reset: boolean } {
-    const eligible: T[] = [];
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const message = messages[i];
-        if (message.disabled === true) {
-            continue;
-        }
-        if (message.disabled === "allBefore") {
-            return { messages: eligible, reset: true };
-        }
-        eligible.unshift(message);
-    }
-    return { messages: eligible, reset: false };
-}
 
 /** cyrb53: a fast 53-bit string hash (not cryptographic), as base 36. */
 function hashString(text: string): string {

@@ -9,7 +9,9 @@
         MEMORY_COVERAGE_STATES,
         memoryItemsUsed,
         memoryMessageExcerpt,
+        memoryMessageHasher,
         readStructuredMemoryCoverage,
+        reconcileMemoryCoverage,
         usedMemoryCoverageGroups,
         type MemoryCoverageRow,
         type StructuredMemoryCoverage,
@@ -23,8 +25,9 @@
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
 
     // The Coverage tab: what memory did with each message. The record facts come from the server, and
-    // the join with the chat's messages happens here, over what the tab holds, so a message that
-    // changes moves its row without a request. Everything shown of a message is plain text.
+    // the join with the chat's messages happens here, over what the tab holds and after reconciling the
+    // facts with it, so a message that changes moves its row without a request. Everything shown of a
+    // message is plain text.
 
     interface Props {
         chatRef: ChatRef;
@@ -65,7 +68,11 @@
         untrack(() => void read());
     });
 
-    const messages = $derived(findChat(chatRef)?.message ?? []);
+    const heldChat = $derived(findChat(chatRef));
+    const messages = $derived(heldChat?.message ?? []);
+    const hashOf = memoryMessageHasher();
+    // With no chat held there is nothing to compare, which says nothing of its events.
+    const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
     const windowTurns = $derived(
         normalizeStructuredMemorySettings(
             selectedHypaV3Preset({
@@ -75,9 +82,9 @@
         ).windowTurns,
     );
     const memoryOn = $derived(!!findCharacter(chatRef.chaId)?.supaMemory);
-    const coverage = $derived(facts ? joinMemoryCoverage(messages, facts, { windowTurns, memoryOn }) : null);
+    const coverage = $derived(reconciled ? joinMemoryCoverage(messages, reconciled, { windowTurns, memoryOn }) : null);
     const groups = $derived(coverage ? groupMemoryCoverage(coverage.rows) : []);
-    const eventTitles = $derived(new Map<string, string>(facts?.events.map(({ id, title }) => [id, title])));
+    const eventTitles = $derived(new Map<string, string>(reconciled?.events.map(({ id, title }) => [id, title])));
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const usedGroups = $derived(usedMemoryCoverageGroups(coverage?.rows ?? [], groups, usedEvents));
 

@@ -87,6 +87,14 @@
                         <span class="min-w-0 grow truncate" {title}>{title ?? ""}</span>
                         <span class="shrink-0 text-textcolor2">{text.lanes[entry.lane]}</span>
                         <span class="shrink-0 text-textcolor2">{text.exclusions[entry.reason]}</span>
+                        {#if entry.staleReason !== undefined}
+                            {@const reason = memoryReasonText(entry.staleReason)}
+                            <span
+                                class="min-w-0 truncate text-textcolor2"
+                                title={reason}
+                                data-memory-manifest-stale-reason={entry.staleReason}>{reason}</span
+                            >
+                        {/if}
                     </li>
                 {/each}
                 {#if excludedMore > 0}

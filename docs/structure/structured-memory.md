@@ -31,6 +31,7 @@
   - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
   - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events.
+  - Reconciliation: `reconcileMemoryEvents`, `memoryAnchorState`, `memoryRerecordTarget`, `storedMemorySources`.
   - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
     pause rule, shared with the panel's writer line; `writer.ts` re-exports it.
   - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
@@ -47,7 +48,8 @@
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
   `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`.
 - `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
-  `applyThreadEdit`, `MemoryEditRefusal`.
+  `applyThreadEdit`, `applyEventRepair`, `MemoryEditRefusal`.
+- `server/src/prompt/memory/structured/reconcile.ts`: the server's side: `reconcileEvents` and `retireRerecorded`.
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
   `readStructuredMemoryCoverage`, `readStructuredMemoryRuns`, `buildStructuredMemoryPackage`,
   `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; `editStructuredMemory`; the pure
@@ -72,6 +74,9 @@ All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated
   position, for an event with no message left), and a run's `reason`, or its receipt's, which is where a failed run
   keeps its code. No error and no message text. The list comes from the contents, so a recorded run's `input` is never
   parsed.
+- An event in that round also answers its `sources`, `keptState`, and `rerecord`, because
+  [the tab reconciles](structured-memory-read.md#the-memory-panel): `status` there is the stored one, and the route
+  reads no chat, whose read parses every message.
 - `/runs?cursor=N&revision=R` answers one round of the chat's runs, newest first, without `input` and
   `settingsFingerprint`, and `total`. A round also stops at `MEMORY_RUNS_ROUND_ROWS`, however small the runs are.
 - Both charge and budget as `/package` does, before any record is read: a round's first record is served whatever its
@@ -92,7 +97,7 @@ a type, or an id.
    conflict from reapplying an old answer over a person's edit, because a record-now job or a send's gap run has no
    task.
 3. The record is read and the edit applied to it. A missing chat, record, or heading is 404 `chatGone` or `recordGone`,
-   and a change the record refuses is 400.
+   a change the record refuses is 400, and a `keep` that names a state the chat has left is 409 `reason: "changed"`.
 4. `store.memory.write` at the client's `revision`, stale 409. An edit that changes nothing goes through as an empty
    change set, so a stale one is still refused.
 
@@ -105,6 +110,7 @@ What an edit does (`edits.ts`):
 - A lock takes no history entry and no `updatedAt`. A grade sets `gradeByUser`, and null clears both.
 - The scene page's `contextMode` stays `always`.
 - A thread takes any state, and leaving an ended one drops `closedBy`.
+- [A repair](#reconciliation-and-repairs) acts on an event, and reads the chat in that same step unless it is a retract.
 
 ### The Markdown package
 
@@ -124,6 +130,40 @@ ends the read at once.
   `---`, so a reader counts lines and never searches for a delimiter.
 - Events sort by their smallest anchored source `index`, which is the position when recorded, not the current one. An
   event with no anchored source goes last, and ties keep contents order.
+
+### Reconciliation and repairs
+
+Reconciliation is a reading: `reconcileMemoryEvents` answers a copy, a send and the tab each take that copy, and no
+stored row changes, so a message put back as it was makes its event whole again. The rule is in `shared/`, with `hashOf`
+injected, because the tab runs it over the messages it holds.
+
+An active event's reason is the first that holds:
+
+1. `missing`: a source is unanchored, or its message is not in the list.
+2. `changed`: a source's hash is not its message's.
+3. Then the sources in list order, which is append order, since a repeat appends sources captured at a later time and a
+   stored `index` says nothing across captures. Each id once, each against the one before: `moved` when its position is
+   lower, `inserted` when the gap is larger than the stored gap, which counts only above 0.
+
+What moves every source alike is not stale, because a chat that lost its first message would otherwise lose every event:
+a message deleted or inserted before the event, or a whole block moved. Neither is a smaller gap, a disabled source, or
+one source moved. A retracted event and one stored `stale` stay as they are.
+
+An event's repairs go through [the edit route](#the-edit-route) as `{ kind: "event", eventId, repair }`:
+
+- `retract`: `status: "retracted"`. It can be applied to any event but a retracted one, and takes the mark with it. D4's
+  flag on sections belongs to slice 5b.
+- `keep`: `keptState` holds `memoryAnchorState`, a string of each source's id, hash now, and position relative to the
+  first present, and the event reads active while that state holds. `sources` stay as recorded, because a message that
+  disappeared has no anchor to move to. The request names the state the person saw, because the memory revision says
+  nothing of the messages, so another tab's edit cannot be accepted unseen.
+- `rerecord`: sets `rerecord` and changes nothing else, so the old event stays until the new one commits. It is refused
+  when `memoryRerecordTarget` is null: the newest message of the event a send reads is not a reply. The tab then presses
+  record now, and [the writer's windows](structured-memory-writer.md#the-writers-windows) do the rest.
+
+`keptState` and `rerecord` are fields of the stored record, so a checkpoint keeps them with its exact row text, and only
+a person's press reads a mark: loading a checkpoint starts nothing. A restored `keptState` holds while the messages it
+named are back.
 
 ### A memory write
 
@@ -251,14 +291,16 @@ group is refused, and a full one is checked and restored.
   encoded. It alone makes a path unique; the title part is display.
 - `structuredMemory` and every value in the module's `const` lists are persisted: never rename one (repository invariant
   D5). A new value is added to its list.
+- Stored `status` is not what an event is worth now: anything that means "valid" reads a reconciled copy. `readContents`
+  stays stored metadata.
 - Event status is `active`, `retracted`, or `stale`. Unfinished recording lives on the run and the receipt: a failed
   first recording commits no event, and a failed re-record leaves the committed event in place until its replacement
   succeeds.
 - A `MemoryAnchoredSource` hash is the SHA-256 of the stored message's role and `data`, never `generationInfo`, so a
   receipt write keeps the hash.
 - A `MemoryUnanchoredSource` means the anchor was never known: an adopted summary whose message was already gone. It
-  forces its event `stale`. A source whose message disappears later keeps its original hash and index. A run's window
-  holds only anchored sources.
+  forces its event `stale` until a person keeps it. A source whose message disappears later keeps its original hash and
+  index. A run's window holds only anchored sources.
 - Sections carry both `provenance` (event ids) and `sources`, and a history entry's `before` carries all three of body,
   provenance, and sources, so a revert never restores a body with the replacement's evidence. `before` is `null` when
   nothing was replaced, and `heading` is `null` for a change to the whole page.
@@ -289,6 +331,8 @@ group is refused, and a full one is checked and restored.
 - `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
   metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
+- `structured/reconcile.test.ts` and `shared/structuredMemory.test.ts` drive reconciliation with plain records, and
+  `src/ts/process/structuredMemory.test.ts` pins the tab's hash to a literal from `messageSourceHash`.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
   fence on a real app, holding a task on a tokenizer read and a job on its runner.
 - `chatCheckpoints.test.ts` and `chatCheckpointRoutes.test.ts` drive a checkpoint's memory through the checkpoint
@@ -301,6 +345,9 @@ group is refused, and a full one is checked and restored.
 
 ### Limitations
 
+- `moved` and `inserted` are structural readings, not move detection. A single source or a whole block moved reads as
+  whole, and a repeat appended after an earlier deletion can read as `inserted`, which a keep answers. The stored
+  `index` holds no capture boundary. Decision: Structured Memory D4, plan.
 - The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents

@@ -5,7 +5,9 @@ import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import {
     type MemoryAnchoredSource,
     type MemoryEvent,
+    memoryRerecordTarget,
     normalizeStructuredMemorySettings,
+    storedMemorySources,
     type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
@@ -30,10 +32,16 @@ import type { MemoryTokenizer } from "../host.ts";
  *   only an active event counts.
  * - Windows close in order over the turns left. A trailing partial one stays open unless a manual
  *   start closes it.
+ * - A person can ask for what is recorded to be recorded again, one event at a time (`rerecord` on the
+ *   event). That asks nothing of `recorded`: a person's start reads the marks, gives each marked event
+ *   one window of its own ahead of the rest, and the ordinary windows stay exactly as they were.
  */
 
-/** One writer run's messages: `sources[i]` anchors `messages[i]`, its `index` the place in the stored list. */
-export type WriterWindow = { sources: MemoryAnchoredSource[]; messages: Message[] };
+/**
+ * One writer run's messages: `sources[i]` anchors `messages[i]`, its `index` the place in the stored
+ * list. `rerecords` is the event the run replaces (`retireRerecorded`).
+ */
+export type WriterWindow = { sources: MemoryAnchoredSource[]; messages: Message[]; rerecords?: string };
 
 /** What decides when a window closes: the writer's settings and the budget mode of their preset. */
 export type WriterCadence = Pick<
@@ -101,6 +109,15 @@ export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId
     );
 }
 
+/** The chat's events a person asked to re-record: marked, and not retracted. Empty for a missing chat. */
+export function readRerecordEvents(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): MemoryEvent[] {
+    const stored = store.memory.readContents(chaId, chatId)?.events ?? [];
+    return stored.flatMap(({ id, status }) => {
+        const event = status === "retracted" ? undefined : store.memory.readRecord(chaId, chatId, "events", id)?.data;
+        return event?.rerecord ? [event] : [];
+    });
+}
+
 /**
  * The eligible messages before the ceiling, or through it when `inclusive`, in chat order, positioned
  * in the stored list (a message without a `chatId` cannot be anchored). Null when the ceiling is not
@@ -165,10 +182,40 @@ function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
 }
 
 /**
+ * One window for each of `events` that can run, by its first message still present. An event's window is
+ * exactly its sources a send still reads, in chat order, with fresh anchors. It runs when `confirmed`
+ * holds every one of them and `memoryRerecordTarget` names a reply: any other is left out and keeps its
+ * mark.
+ */
+function rerecordWindows(
+    events: readonly MemoryEvent[],
+    messages: readonly Message[],
+    confirmed: readonly ConfirmedMessage[],
+): WriterWindow[] {
+    const positions = new Map(messages.map(({ chatId }, index) => [chatId, index]));
+    const eligible = eligibleHistory(messages).messages;
+    const ready = events.flatMap((event) => {
+        const cited = new Set(storedMemorySources(event.sources).map(({ messageId }) => messageId));
+        const read = eligible.filter(({ chatId }) => chatId !== undefined && cited.has(chatId));
+        const entries = confirmed.filter(({ id }) => cited.has(id));
+        if (entries.length < read.length || memoryRerecordTarget(event.sources, messages) === null) {
+            return [];
+        }
+        const first = Math.min(...[...cited].flatMap((id) => positions.get(id) ?? []));
+        return [{ rerecords: event.id, entries, first }];
+    });
+    ready.sort((a, b) => a.first - b.first);
+    return ready.map(({ rerecords, entries }) => ({ ...windowOf(entries), rerecords }));
+}
+
+/**
  * The windows `cadence` closes over the turns before `confirmedBefore` that `recorded` leaves, oldest
  * first, at most `limit` of them; null when the ceiling is not an eligible message of the chat (gone,
  * disabled, or cut off by an `allBefore`). A turn whose assistant message is recorded drops out; any
  * other lists its unrecorded messages.
+ *
+ * `rerecord` are the events a person's start re-records (`readRerecordEvents`): their windows
+ * (`rerecordWindows`) come first and count toward `limit`.
  *
  * `tokenizer` counts a stored message as `role` and `data` alone, so the job's step and its task decide
  * alike; `maxContext` is the input's in both. Only the `tokens` cadence counts: there the turns
@@ -188,14 +235,18 @@ export async function confirmedWindows(arg: {
     tokenizer: MemoryTokenizer;
     limit: number;
     manual?: boolean;
+    rerecord?: readonly MemoryEvent[];
 }): Promise<WriterWindow[] | null> {
-    const { recorded, cadence, tokenizer, limit, manual = false } = arg;
+    const { recorded, cadence, tokenizer, limit, manual = false, rerecord = [] } = arg;
     const confirmed = confirmedMessages(arg.messages, arg.confirmedBefore, arg.inclusive ?? false);
     if (!confirmed) {
         return null;
     }
     const threshold = tokenThreshold(cadence, arg.maxContext);
-    const windows: WriterWindow[] = [];
+    const windows = rerecordWindows(rerecord, arg.messages, confirmed).slice(0, limit);
+    if (windows.length >= limit) {
+        return windows;
+    }
     let open: ConfirmedMessage[] = [];
     let turns = 0;
     let tokens = 0;

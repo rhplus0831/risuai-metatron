@@ -1,11 +1,16 @@
+import type { Message } from "../../../../../shared/database.ts";
 import {
     MEMORY_CONTEXT_MODES,
     MEMORY_THREAD_STATES,
+    memoryAnchorState,
+    type MemoryEvent,
     type MemoryPage,
     type MemoryPageHistoryEntry,
+    memoryRerecordTarget,
     type MemorySection,
     type MemoryThread,
     memoryThreadEnded,
+    reconcileMemoryEvents,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryEdit,
 } from "../../../../../shared/structuredMemory.ts";
@@ -23,12 +28,18 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   person's edit is the review a dispute waits for, and `userCorrected` says who wrote the text.
  * - The scene page stays `always`: it is the stage every send reads.
  * - A thread that leaves an ended state loses `closedBy`, which only an ended thread can have.
+ * - A repair settles what reconciliation found. Retract takes an event out for good, and no control
+ *   brings it back. Keep accepts what the person saw (`keptState`), and only that: a chat that moved on
+ *   since then is refused, and a later change shows again. Re-record only marks the event, because the
+ *   old one stays until the new one commits, so it changes neither its `sources` nor its `status`.
  */
 
-/** A page edit, which every kind but `thread` is. */
-type PageEdit = Exclude<StructuredMemoryEdit, { kind: "thread" }>;
+/** A page edit, which every kind but `thread` and `event` is. */
+type PageEdit = Exclude<StructuredMemoryEdit, { kind: "thread" | "event" }>;
 
 type ThreadEdit = Extract<StructuredMemoryEdit, { kind: "thread" }>;
+
+type EventEdit = Extract<StructuredMemoryEdit, { kind: "event" }>;
 
 /** What one edit stamps on what it changes. */
 export type EditStamp = {
@@ -37,9 +48,12 @@ export type EditStamp = {
     newId(): string;
 };
 
-/** Why a well-formed edit does not fit the record: the section is gone, or the page refuses the change. */
+/**
+ * Why a well-formed edit does not fit the record: the section is gone, the record refuses the change,
+ * or the chat is no longer what the person saw.
+ */
 export class MemoryEditRefusal extends Error {
-    readonly reason: "sectionGone" | "invalid";
+    readonly reason: "sectionGone" | "invalid" | "changed";
 
     constructor(reason: MemoryEditRefusal["reason"], message: string) {
         super(message);
@@ -56,7 +70,8 @@ function validGrade(value: unknown): value is number | null {
 
 /**
  * The edit a request's `value` holds, or null for one that is malformed: unknown fields are dropped, and
- * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit.
+ * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit. A `keep`
+ * must name a state, the one repair that has any.
  */
 export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
     if (!isPlainObject(value)) {
@@ -67,6 +82,16 @@ export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
         const { threadId } = value;
         const state = MEMORY_THREAD_STATES.find((entry) => entry === value.state);
         return typeof threadId === "string" && state ? { kind, threadId, state } : null;
+    }
+    if (kind === "event") {
+        const { eventId, repair, state } = value;
+        if (typeof eventId !== "string") {
+            return null;
+        }
+        if (repair === "keep") {
+            return typeof state === "string" ? { kind, eventId, repair, state } : null;
+        }
+        return repair === "rerecord" || repair === "retract" ? { kind, eventId, repair } : null;
     }
     if (typeof pageId !== "string") {
         return null;
@@ -181,4 +206,35 @@ export function applyThreadEdit(thread: MemoryThread, { state }: ThreadEdit): Me
         delete edited.closedBy;
     }
     return edited;
+}
+
+/**
+ * `edit` over `event`, the event as stored: the event to store, or null for no change. A
+ * `MemoryEditRefusal` says why it does not fit, `changed` when a `keep` names a state the chat has left.
+ * `messages` are the chat as stored, which a `retract` does not read, and `hashOf` hashes one of them.
+ */
+export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "disabled">>(
+    event: MemoryEvent,
+    edit: EventEdit,
+    messages: readonly M[],
+    hashOf: (message: M) => string,
+): MemoryEvent | null {
+    const { staleReason, rerecord, ...settled } = event;
+    if (edit.repair === "retract") {
+        return event.status === "retracted" ? null : { ...settled, status: "retracted" };
+    }
+    if (event.status === "retracted") {
+        throw new MemoryEditRefusal("invalid", "A retracted event cannot be repaired");
+    }
+    if (edit.repair === "keep") {
+        if (memoryAnchorState(event.sources, messages, hashOf) !== edit.state) {
+            throw new MemoryEditRefusal("changed", "The chat changed after this event was shown");
+        }
+        const [now] = reconcileMemoryEvents([event], messages, hashOf);
+        return now.status === "active" ? null : { ...settled, status: "active", keptState: edit.state };
+    }
+    if (memoryRerecordTarget(event.sources, messages) === null) {
+        throw new MemoryEditRefusal("invalid", "This event has no reply left to record from");
+    }
+    return rerecord ? null : { ...event, rerecord: true };
 }

@@ -2838,6 +2838,71 @@ describe("structured memory tasks", () => {
         expect(t.embeddings.bodies).toEqual([]);
     });
 
+    it("retries a marked repair only on a press and atomically replaces it without repeat merging or lost user marks", async () => {
+        const t = structuredHarness({ limits: { maxWriterWindows: 1 } });
+        await recordOnly(t, analysis());
+        const old = { ...eventRecord(t), pinned: true, suppressed: true, userCorrected: true, rerecord: true };
+        writeMemory(t.store, "c", "k1", { events: [old] });
+        // An insertion makes the event stale while its original source hashes still match:
+        // without the repair guard, the identical summary would merge as a repeat.
+        t.write("k1", [{ op: "append", anchor: { after: "m1" }, messages: [m("inserted", "Wait", "user")] }]);
+        // The automatic pass sees no ordinary work before m3; a repair must remain for a press.
+        const autoEnd = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        expect((await autoEnd).status).toMatchObject({ state: "done", done: 0, total: 0 });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(1);
+        const readOld = () => t.store.memory.readRecord("c", "k1", "events", old.id)!.data;
+        expect(readOld()).toEqual(old);
+        // A memory revision may expose neither half of the replacement on its own.
+        const observer = new DatabaseSync(path.join(t.dir, "resources.sqlite"));
+        cleanups.push(() => observer.close());
+        observer.exec(`CREATE TRIGGER complete_repair BEFORE UPDATE ON memory_state
+            WHEN (EXISTS (SELECT 1 FROM memory_events WHERE id = '${old.id}' AND status = 'retracted'))
+                != (EXISTS (SELECT 1 FROM memory_events WHERE chatSeq = NEW.chatSeq AND id != '${old.id}'))
+            BEGIN SELECT RAISE(ABORT, 'partial repair write'); END`);
+        for (const fail of [true, false]) {
+            const terminal = t.nextTerminal("k1");
+            const index = t.provider.requests.length;
+            expect(t.service.record(writerInput(t), { through: "m6" }).outcome).toBe("queued");
+            const request = await nextPatch(t, index, terminal);
+            expect(runRecord(t).window.map((s) => s.messageId)).toEqual(["m1", "m2"]);
+            expect(readOld()).toEqual(old);
+            if (fail) request.fail("Temporary provider failure");
+            else request.answer(JSON.stringify(analysis())); // identical summary must still create a replacement
+            expect((await terminal).status.state).toBe(fail ? "failed" : "done");
+            await t.service.drain();
+            if (fail) {
+                expect(contents(t).events).toHaveLength(1);
+                expect(readOld()).toEqual(old);
+            }
+        }
+        expect(contents(t).events).toHaveLength(2);
+        const { rerecord, ...retired } = old;
+        expect(readOld()).toEqual({ ...retired, status: "retracted" });
+        const replacement = contents(t).events.find(({ id }) => id !== old.id)!;
+        const saved = t.store.memory.readRecord("c", "k1", "events", replacement.id)!.data;
+        expect(saved).toMatchObject({
+            status: "active",
+            summary: old.summary,
+            pinned: true,
+            suppressed: true,
+            userCorrected: true,
+        });
+        expect(saved).not.toHaveProperty("repeatCount");
+        expect(saved).not.toHaveProperty("rerecord");
+        const current = t.chat("k1")!.message;
+        expect(saved.sources).toEqual(
+            [0, 2].map((index) => ({
+                messageId: current[index].chatId,
+                index,
+                hash: messageSourceHash(current[index]),
+            })),
+        );
+        // A replacement and the retraction must be visible together at the transaction boundary.
+        expect(runRecord(t)).toMatchObject({ result: "recorded", eventId: replacement.id });
+    });
+
     it("commits admitted page candidates and surviving patch groups across a revision conflict", async () => {
         const t = structuredHarness({ owner: { globalLore: [{ comment: "Harbor", key: "Port, Quay" }] } });
         t.write("k1", [{ op: "setText", id: "m2", text: "Watcher reaches Harbor. The gate opens." }]);

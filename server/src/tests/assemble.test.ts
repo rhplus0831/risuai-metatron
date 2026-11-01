@@ -23,6 +23,7 @@ import { type RequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
 import { createVectorCache, type CachedVector } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
+import { messageSourceHash } from "../data/memoryStore.ts";
 import type { MemoryEvent } from "../../../shared/structuredMemory.ts";
 import type { MemoryRecords } from "../prompt/memory/structured/step.ts";
 import { memoryRecords } from "./memoryFixtures.ts";
@@ -953,8 +954,95 @@ describe("the context report", () => {
             runs: [],
             paused: false,
         });
+        /** `records` with each event's sources anchored to `messages` as they stand. */
+        const anchored = (records: MemoryRecords, messages: readonly Entry[]): MemoryRecords => ({
+            ...records,
+            events: records.events.map((entry) => ({
+                ...entry,
+                sources: entry.sources.map(({ messageId }) => {
+                    const index = messages.findIndex(({ chatId }) => chatId === messageId);
+                    return { messageId, index, hash: messageSourceHash({ role: "user", ...messages[index] }) };
+                }),
+            })),
+        });
         const rawIds = (formated: OpenAIChat[]) =>
             formated.flatMap(({ memo }) => (memo && memo !== "supaMemory" ? [memo] : []));
+
+        it("keeps stale sources raw in sends and reports their reasons without quoting or changing stored events", async () => {
+            const dir = mkdtempSync(path.join(os.tmpdir(), "stale-memory-"));
+            const cache = createVectorCache({ file: path.join(dir, "vectors.sqlite"), now: () => 1000 });
+            onTestFinished(() => {
+                cache.close();
+                rmSync(dir, { recursive: true, force: true });
+            });
+            const embeddings = createEmbeddings({
+                cache,
+                transformers: {
+                    runEmbedding: async (texts) => texts.map(() => new Float32Array([1, 0])),
+                    runSummarizer: async () => "",
+                    runImageCaption: async () => "",
+                    runTextGeneration: async () => "",
+                    dispose: async () => {},
+                },
+            }).forJob({
+                db: { hypaModel: "MiniLM" } as never,
+                supaMemoryKey: "",
+                signal: new AbortController().signal,
+            });
+            const messages: (Entry & Pick<Message, "role">)[] = [
+                { chatId: "u1", role: "user", data: "Open the gate" },
+                { chatId: "a1", role: "char", data: "The gate opens" },
+                { chatId: "u2", role: "user", data: "Continue" },
+                { chatId: "a2", role: "char", data: "Newest reply" },
+                { chatId: "u3", role: "user", data: "Now" },
+            ];
+            const original = event("gate", [], {
+                pinned: true,
+                grade: 9,
+                summary: "OLD SUMMARY SENTINEL",
+                keyLines: [{ speaker: "C", text: "OLD QUOTE SENTINEL" }],
+                sources: messages
+                    .slice(0, 2)
+                    .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+            });
+            const records = stored([original]);
+            const before = structuredClone(records);
+            const [u, a, ...tail] = messages;
+            for (const row of [
+                { reason: "changed", messages: [u, { ...a, data: "The gate is shut" }, ...tail] },
+                { reason: "missing", messages: [u, ...tail] },
+                {
+                    reason: "inserted",
+                    messages: [u, { chatId: "new", role: "user" as const, data: "Wait" }, a, ...tail],
+                },
+                { reason: "moved", messages: [a, u, ...tail] },
+            ]) {
+                const assembly = structuredAssembly({
+                    records,
+                    messages: row.messages,
+                    embeddings,
+                    db: { hypaModel: "MiniLM" },
+                    maxContext: 6000,
+                    settings: { laneTargets: { pages: 0, events: 500, evidence: 500, threads: 0 } },
+                });
+                const result = await assembly.run();
+                expect(rawIds(result.formated), row.reason).toEqual(row.messages.map((m) => m.chatId));
+                expect(result.report.memory?.items, row.reason).toEqual([]);
+                expect(result.report.memory?.excluded, row.reason).toEqual([
+                    { id: "gate", kind: "event", lane: "events", reason: "stale", staleReason: row.reason },
+                ]);
+                const prompt = result.formated.map((m) => m.content).join("\n");
+                expect(prompt).not.toContain("OLD SUMMARY SENTINEL");
+                expect(prompt).not.toContain("OLD QUOTE SENTINEL");
+                expect(records).toEqual(before);
+            }
+            const restored = await structuredAssembly({ records, messages, maxContext: 6000 }).run();
+            expect(rawIds(restored.formated)).toEqual(["u2", "a2", "u3"]);
+            expect(restored.report.memory?.items).toEqual(
+                expect.arrayContaining([expect.objectContaining({ id: "gate", verified: true })]),
+            );
+            expect(records).toEqual(before);
+        });
 
         it("reports required and related pages in their lanes and verifies their tags in the final prompt", async () => {
             const dir = mkdtempSync(path.join(os.tmpdir(), "page-manifest-"));
@@ -1081,13 +1169,16 @@ describe("the context report", () => {
                 { chatId: `a${i + 1}`, data: `Reply ${i + 1}`, role: "char" as const },
             ]).flat();
             messages.push({ chatId: "u7", data: "Now" });
-            const records = stored([
-                event("active", ["u1", "a1"]),
-                event("stale", ["u2", "a2"], { status: "stale" }),
-                event("retracted", ["u3", "a3"], { status: "retracted" }),
-                event("suppressed", ["u4", "a4"], { suppressed: true }),
-                event("recent", ["u5", "a5", "u6", "a6"]),
-            ]);
+            const records = anchored(
+                stored([
+                    event("active", ["u1", "a1"]),
+                    event("stale", ["u2", "a2"], { status: "stale" }),
+                    event("retracted", ["u3", "a3"], { status: "retracted" }),
+                    event("suppressed", ["u4", "a4"], { suppressed: true }),
+                    event("recent", ["u5", "a5", "u6", "a6"]),
+                ]),
+                messages,
+            );
             for (const { continued, preview } of [
                 { continued: false, preview: false },
                 { continued: true, preview: false },
@@ -1128,16 +1219,17 @@ describe("the context report", () => {
                 ["{{inlayeddata::pic}}", "gap"],
                 ["   ", "covered"],
             ] as const) {
+                const messages: Entry[] = [
+                    { chatId: "old", role: "user", data },
+                    { chatId: "a0", role: "char", data: "Old reply" },
+                    { chatId: "u1", role: "user", data: "Recent user" },
+                    { chatId: "a1", role: "char", data: "Recent reply" },
+                    { chatId: "now", role: "user", data: "Now" },
+                ];
                 const assembly = structuredAssembly({
                     greeting: "",
-                    messages: [
-                        { chatId: "old", role: "user", data },
-                        { chatId: "a0", role: "char", data: "Old reply" },
-                        { chatId: "u1", role: "user", data: "Recent user" },
-                        { chatId: "a1", role: "char", data: "Recent reply" },
-                        { chatId: "now", role: "user", data: "Now" },
-                    ],
-                    records: stored([event("past", ["old"])]),
+                    messages,
+                    records: anchored(stored([event("past", ["old"])]), messages),
                     settings: { flowEvents: 0, laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } },
                     maxContext: 6000,
                     gapConfirmTokens: 0,
@@ -1274,9 +1366,12 @@ describe("the context report", () => {
                 const assembly = structuredAssembly({
                     messages: fiveMessages,
                     maxContext: 4000,
-                    records: stored(
-                        [event("past", ["m1", "m2"])],
-                        [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                    records: anchored(
+                        stored(
+                            [event("past", ["m1", "m2"])],
+                            [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                        ),
+                        fiveMessages,
                     ),
                     settings: { volatileBeforeLastUser: apart },
                     template: [{ type: "memory" }, { type: "chat", rangeStart: -1, rangeEnd: "end" }],
@@ -1305,9 +1400,12 @@ describe("the context report", () => {
                 const assembly = structuredAssembly({
                     messages: fiveMessages,
                     maxContext: 4000,
-                    records: stored(
-                        [event("past", ["m1", "m2"])],
-                        [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                    records: anchored(
+                        stored(
+                            [event("past", ["m1", "m2"])],
+                            [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                        ),
+                        fiveMessages,
                     ),
                     editRequest: (entries) =>
                         entries.map((entry) => ({

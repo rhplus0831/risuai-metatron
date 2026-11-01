@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
+import { messageSourceHash } from "../../../data/memoryStore.ts";
+import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { confirmedWindows, windowStillConfirmed, writerCeiling, type WriterCadence } from "./window.ts";
 
 describe("confirmed writer windows", () => {
@@ -205,4 +207,41 @@ it("includes the manually confirmed assistant in both window planning and commit
             }
         }
     }
+});
+
+it("puts one exact remaining-source repair window before ordinary recorded-aware windows", async () => {
+    const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "next"].map((id) => ({
+        chatId: id,
+        role: id.startsWith("a") ? "char" : "user",
+        data: id,
+    }));
+    const sources = messages
+        .slice(2, 6)
+        .map((m, i) => ({ messageId: m.chatId!, index: i + 2, hash: messageSourceHash(m) }));
+    const repair = { ...memoryRecords(["repair"]).events[0], createdRevision: 1, sources, rerecord: true };
+    const current = messages
+        .filter((m) => m.chatId !== "u2")
+        .map((m) => (m.chatId === "a2" ? { ...m, disabled: true } : m));
+    const args = {
+        messages: current,
+        confirmedBefore: "next",
+        recorded: new Set(["u2", "a2", "u3", "a3"]),
+        cadence: { cadence: "everyTurn" as const, cadenceTurns: 1, cadenceTokens: 1, cadenceRatio: 0.1 },
+        maxContext: 1000,
+        tokenizer: { tokenize: async () => 1, tokenizeChat: async () => 1 },
+        limit: 2,
+        manual: true,
+    };
+    const windows = await confirmedWindows({ ...args, rerecord: [repair] });
+    expect(windows!.map(({ rerecords, messages }) => ({ rerecords, ids: messages.map((m) => m.chatId) }))).toEqual([
+        { rerecords: "repair", ids: ["u3", "a3"] },
+        { rerecords: undefined, ids: ["u1", "a1"] },
+    ]);
+    expect(windows![0].sources).toEqual(
+        current.slice(3, 5).map((m, i) => ({ messageId: m.chatId, index: i + 3, hash: messageSourceHash(m) })),
+    );
+    expect((await confirmedWindows({ ...args, rerecord: [repair], limit: 1 }))!.map((w) => w.rerecords)).toEqual([
+        "repair",
+    ]);
+    expect((await confirmedWindows(args))!.flatMap((w) => w.messages.map((m) => m.chatId))).toEqual(["u1", "a1"]);
 });

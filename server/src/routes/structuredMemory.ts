@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import type { Chat, Message } from "../../../shared/database.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     MEMORY_RECORD_KINDS,
     MEMORY_RUNS_ROUND_ROWS,
     STRUCTURED_MEMORY_PATH,
+    storedMemorySources,
     type MemoryEvent,
     type MemoryPage,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
+    type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
@@ -20,10 +23,12 @@ import {
     type StructuredMemoryRunsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { messageSourceHash } from "../data/memoryStore.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
 import {
+    applyEventRepair,
     applyPageEdit,
     applyThreadEdit,
     MemoryEditRefusal,
@@ -83,11 +88,7 @@ function roundOf<Row extends { bytes: number }>(
 
 /** The message ids of a stored source list, which the store does not check the shape of. */
 function sourceIds(sources: unknown): string[] {
-    return Array.isArray(sources)
-        ? sources.flatMap((source) =>
-              isPlainObject(source) && typeof source.messageId === "string" ? [source.messageId] : [],
-          )
-        : [];
+    return storedMemorySources(sources).map(({ messageId }) => messageId);
 }
 
 /** The smallest anchored position of a stored source list, which the store does not check the shape of. */
@@ -100,6 +101,18 @@ function firstSourceIndex(sources: unknown): number | null {
         }
     }
     return first;
+}
+
+/** The id of the record `edit` addresses. */
+function editedRecordId(edit: StructuredMemoryEdit): string {
+    switch (edit.kind) {
+        case "thread":
+            return edit.threadId;
+        case "event":
+            return edit.eventId;
+        default:
+            return edit.pageId;
+    }
 }
 
 /** What a round's answer reads: the chat's contents, the position it starts at, and a record that is listed. */
@@ -126,19 +139,23 @@ type RoundRead = {
  *   whole.
  * - `GET /api/memory/structured/:characterId/:chatId/coverage?cursor=N&revision=R`: one round of the
  *   list of the chat's events followed by its runs that are not `recorded`, in contents order, answered
- *   `StructuredMemoryCoverageRound`: what each says of its messages, with no error or message text. The
- *   list comes from the contents, so a recorded run's body is never read. Bytes, `cursor`, `revision`,
- *   and the refusals work as in the package round.
+ *   `StructuredMemoryCoverageRound`: what each says of its messages, with no error or message text. An
+ *   event comes with its sources, its `keptState`, and its `rerecord` mark, as stored: the tab reconciles
+ *   them with the messages it holds, so this reads no chat. The list comes from the contents, so a
+ *   recorded run's body is never read. Bytes, `cursor`, `revision`, and the refusals work as in the
+ *   package round.
  * - `GET /api/memory/structured/:characterId/:chatId/runs?cursor=N&revision=R`: one round of the chat's
  *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
  *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Bytes, `cursor`,
  *   `revision`, and the refusals work as in the package round.
  * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
  *   (`StructuredMemoryEdit`, `structured/edits.ts`), answered `StructuredMemoryEditAnswer`. An edit that
- *   changes nothing still names a revision, so a stale one is refused like any other. 400 for a
- *   malformed edit or one the record refuses, 404 `chatGone` or `recordGone` (a heading the page lacks
- *   too), 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }` when
- *   `revision` is not the current token. The body is read after authentication and capped at 64 KiB.
+ *   changes nothing still names a revision, so a stale one is refused like any other. An event's repair
+ *   reads the chat as stored, a `retract` excepted, which reads none. 400 for a malformed edit or one
+ *   the record refuses, 404 `chatGone` or `recordGone` (a heading the page lacks too), 409
+ *   `{ error, reason: "fenced" }` while `fenced` holds, 409 `{ error, reason: "changed" }` when a `keep`
+ *   names a state the chat has left, and 409 `{ error, revision }` when `revision` is not the current
+ *   token. The body is read after authentication and capped at 64 KiB.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
@@ -287,15 +304,18 @@ export function registerStructuredMemoryRoutes(
             const runs: StructuredMemoryCoverageRun[] = [];
             for (const { kind, id } of rows) {
                 if (kind === "events") {
-                    const { title, status, staleReason, suppressed, sources } = read(kind, id);
+                    const { title, status, staleReason, suppressed, keptState, rerecord, sources } = read(kind, id);
                     events.push({
                         id,
                         title,
                         status,
                         staleReason,
                         suppressed,
+                        keptState,
+                        rerecord,
                         messageIds: sourceIds(sources),
                         sourceIndex: firstSourceIndex(sources),
+                        sources: storedMemorySources(sources),
                     });
                 } else {
                     const { result, reason, receipt, window } = read(kind, id);
@@ -341,7 +361,7 @@ export function registerStructuredMemoryRoutes(
             return c.json({ error: "revision must be a string" }, 400);
         }
         const edit = parseMemoryEdit(read.body.edit);
-        if (!edit || !isValidResourceId(edit.kind === "thread" ? edit.threadId : edit.pageId)) {
+        if (!edit || !isValidResourceId(editedRecordId(edit))) {
             return c.json({ error: "edit is not a valid memory edit" }, 400);
         }
         const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
@@ -370,6 +390,27 @@ export function registerStructuredMemoryRoutes(
                     data: edited ?? stored.data,
                 } satisfies StructuredMemoryEditAnswer);
             }
+            if (edit.kind === "event") {
+                const stored = store.memory.readRecord(characterId, chatId, "events", edit.eventId);
+                if (!stored) {
+                    return gone();
+                }
+                let messages: readonly Message[] = [];
+                if (edit.repair !== "retract") {
+                    const chat = store.readChatSource(characterId, chatId).data as Chat | null;
+                    if (!chat) {
+                        return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+                    }
+                    messages = chat.message;
+                }
+                const edited = applyEventRepair(stored.data, edit, messages, messageSourceHash);
+                const written = store.memory.write(characterId, chatId, options, edited ? { events: [edited] } : {});
+                return compressedJson(c, {
+                    revision: written,
+                    kind: "events",
+                    data: edited ?? stored.data,
+                } satisfies StructuredMemoryEditAnswer);
+            }
             const stored = store.memory.readRecord(characterId, chatId, "pages", edit.pageId);
             if (!stored) {
                 return gone();
@@ -383,6 +424,9 @@ export function registerStructuredMemoryRoutes(
             } satisfies StructuredMemoryEditAnswer);
         } catch (error) {
             if (error instanceof MemoryEditRefusal) {
+                if (error.reason === "changed") {
+                    return c.json({ error: error.message, reason: "changed" }, 409);
+                }
                 return error.reason === "sectionGone" ? gone() : c.json({ error: error.message }, 400);
             }
             return storeErrorResponse(c, error);

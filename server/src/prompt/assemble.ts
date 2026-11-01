@@ -570,6 +570,7 @@ async function structuredMemoryStep(
                 chats,
                 historyStart,
                 entries,
+                messages,
                 currentTokens: arg.currentTokens,
                 maxContextTokens,
                 continueMessageId,

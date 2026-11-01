@@ -345,3 +345,24 @@ describe("reportedLoreRejections", () => {
         expect(parseContextReport({ ...report(), lore: { ...report().lore, rejected: kept } })).not.toBeNull();
     });
 });
+
+it("preserves the four stale reasons in a send manifest and rejects an unknown reason", () => {
+    const stored = report();
+    stored.memory = {
+        kind: "structuredMemory",
+        tokens: 0,
+        coverage: "gap",
+        items: [],
+        excluded: ["changed", "missing", "inserted", "moved"].map((staleReason, i) => ({
+            id: `e${i}`,
+            kind: "event",
+            lane: "events",
+            reason: "stale",
+            staleReason,
+        })) as NonNullable<ContextReport["memory"]>["excluded"],
+    };
+    expect(parseContextReport(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    const unknown = JSON.parse(JSON.stringify(stored));
+    unknown.memory.excluded[0].staleReason = "silently-accepted";
+    expect(parseContextReport(unknown)).toBeNull();
+});

@@ -21,6 +21,8 @@ import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from ".
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { messageSourceHash } from "../data/memoryStore.ts";
+import type { Message } from "../../../shared/database.ts";
 import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -2802,15 +2804,16 @@ describe("structured memory job hand-offs", () => {
             const chaId = await seedCharacter();
             const store = openStore();
             try {
+                const chat = await readChat(chaId);
+                const stored: Message[] = chat.data.message;
                 const records = memoryRecords(["promise"], "Remember the promise");
-                records.events[0].sources = ["m0", "m1"].map((messageId, index) => ({
-                    messageId,
+                records.events[0].sources = stored.slice(0, 2).map((message, index) => ({
+                    messageId: message.chatId!,
                     index,
-                    hash: "a".repeat(64),
+                    hash: messageSourceHash(message),
                 }));
                 writeMemory(store, chaId, "k", { events: records.events });
                 const contents = store.memory.readContents(chaId, "k");
-                const chat = await readChat(chaId);
                 fake.setPendingManual(true);
                 for (const kind of ["preview", "previewPrompt"]) {
                     const result = await job(kind, chaId, {}, { answer: () => "generate" });
@@ -2832,6 +2835,113 @@ describe("structured memory job hand-offs", () => {
                         });
                     }
                 }
+            } finally {
+                store.close();
+            }
+        });
+
+        it("sends edited sources raw with a stale manifest and leaves every stored memory row intact", async () => {
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({ structured: { cadence: "manual", windowTurns: 1 } });
+            const original = messages;
+            const chaId = await seedCharacter({
+                messages: [
+                    original[0],
+                    { ...original[1], data: "Changed first reply" },
+                    ...original.slice(2),
+                    { chatId: "u3", role: "user", data: "Continue" },
+                ],
+            });
+            const store = openStore();
+            try {
+                const e = {
+                    ...memoryRecords(["old"], "Old summary sentinel").events[0],
+                    pinned: true,
+                    keyLines: [{ speaker: "C", text: "Old quotation sentinel" }],
+                    sources: original
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) })),
+                };
+                writeMemory(store, chaId, "k", { events: [e] });
+                const before = store.memory.readContents(chaId, "k");
+                const record = store.memory.readRecord(chaId, "k", "events", "old");
+                const result = await job("send", chaId);
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(prompt).toContain("First user");
+                expect(prompt).toContain("Changed first reply");
+                expect(prompt).not.toContain("Old summary sentinel");
+                expect(prompt).not.toContain("Old quotation sentinel");
+                const report = (await readChat(chaId)).data.message.at(-1).generationInfo.context;
+                expect(parseContextReport(report)?.memory?.excluded).toContainEqual({
+                    id: "old",
+                    kind: "event",
+                    lane: "events",
+                    reason: "stale",
+                    staleReason: "changed",
+                });
+                expect(report.memory.items).toEqual([]);
+                expect(store.memory.readContents(chaId, "k")).toEqual(before);
+                expect(store.memory.readRecord(chaId, "k", "events", "old")).toEqual(record);
+                expect(summaries()).toEqual([]);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("runs an approved ordinary gap without consuming a marked repair window", async () => {
+            const chaId = await seedCharacter();
+            state.summaries = Array.from({ length: 24 }, (_, i) =>
+                JSON.stringify({
+                    title: `New ordinary event ${i}`,
+                    summary: `Later ordinary turn ${i}.`,
+                    participants: [],
+                    storyTime: { text: "" },
+                    keyLines: [],
+                    stateChanges: [],
+                    knowledge: [],
+                    relationshipShifts: [],
+                    openThreads: { add: [], close: [], transitions: [] },
+                }),
+            );
+            const store = openStore();
+            try {
+                const original: Message[] = (await readChat(chaId)).data.message;
+                const e = {
+                    ...memoryRecords(["repair"], "Old event").events[0],
+                    rerecord: true,
+                    sources: original
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+                };
+                writeMemory(store, chaId, "k", { events: [e] });
+                const old = store.memory.readRecord(chaId, "k", "events", "repair")!.data;
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: chaId,
+                            chatId: "k",
+                            baseRevision: store.chatRevision(chaId, "k"),
+                            ops: [{ op: "setText", id: original[1].chatId!, text: `${original[1].data} Edited.` }],
+                        },
+                    ],
+                });
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Continue", userMessageId: "latest" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events).map((q) => q.kind)).toEqual(["memoryGap"]);
+                const contents = store.memory.readContents(chaId, "k")!;
+                expect(contents.runs.length).toBeGreaterThan(0);
+                const recordedIds = contents.runs.flatMap(({ id }) =>
+                    store.memory.readRecord(chaId, "k", "runs", id)!.data.window.map((source) => source.messageId),
+                );
+                expect(recordedIds).not.toContain(original[0].chatId);
+                expect(recordedIds).not.toContain(original[1].chatId);
+                expect(store.memory.readRecord(chaId, "k", "events", "repair")!.data).toEqual(old);
             } finally {
                 store.close();
             }

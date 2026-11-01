@@ -215,8 +215,8 @@ coupling links.
 - **persistence**: remaining `src/ts/storage/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,
   `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted shapes. `shared/` runtime semantics stay with their
   domain guide.
-- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/{messageSearch,contextReport}.ts`, `shared/lore/`,
-  remaining `shared/prompt/` and `src/ts/process/`.
+- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/{messageSearch,contextReport,eligibleHistory}.ts`,
+  `shared/lore/`, remaining `shared/prompt/` and `src/ts/process/`.
 - **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
   `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`,
   `src/lib/Others/MonacoEditor.svelte`, `src/etc/airisu.cbs`, `src/etc/docs/`.
