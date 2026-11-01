@@ -787,13 +787,13 @@ Files: new `server/src/prompt/memory/structured/inherit.ts` and tests; `routes/s
   and text; events with any unmapped source do not cross; pages keep sections with surviving provenance, flagged
   otherwise. A failed call leaves a chat with a coverage gap and a notice, never a wrong record.
 
-### Slice 5d: checkpoints and chat files (D4; needs 4a) — _hard_
+### Slice 5d: checkpoints (D4; needs 4a) — _hard_
 
 Files: `shared/chatCheckpoints.ts`, `server/src/data/checkpointStore.ts`, `server/src/data/checkpointService.ts`,
-`src/ts/characters.ts` (chat export and import), `memoryStore.ts`, tests.
+`server/src/data/resourceStore.ts` (a transaction-bound memory writer on `ApplyChangesTransaction`), `memoryStore.ts`, tests.
 
-- A checkpoint carries the chat's memory records and loading it restores them under a new memory revision. Exported
-  chat JSON carries them and `importChat` restores them on the new chat.
+- A checkpoint carries the chat's memory records and loading it restores them, in the load's transaction, under a new
+  memory revision.
 
 ### Slice 5e: the `hypaV3Data` projection for plugins and upstream (D11; needs 4a) — _hard_
 
@@ -803,6 +803,17 @@ Files: `server/src/data/upstream/exportDatabase.ts`, the full-chat read in `serv
 - A structured chat's full read overlays the projection, so every plugin reader gets it unchanged. `applyChatResult` and
   the new-chat path drop a changed value with a `warnRefused` notice; the stored field stays absent. The upstream export
   writes the same projection.
+
+### Slice 5f: chat files (D4; needs 5a, 5c) — _hard_
+
+Files: `src/ts/characters.ts` (chat export and import), `routes/structuredMemory.ts`,
+`src/ts/process/structuredMemory.svelte.ts`, `shared/structuredMemory.ts`, `shared/diagnostics.ts`, `src/lang/en.ts`, tests.
+
+- Exported chat JSON carries the records and `importChat` restores them on the new chat, through a route that writes
+  tab-sent records. It is the one such route: it takes only a chat with no records, and the structured memory guide's
+  invariant narrows to say so. Split from 5d (owner, 2026-11-02), because `create` cannot carry records and the route
+  file has one writer at a time. An imported record is checked as a live write is, and 5a's reconciliation answers for a
+  source that no longer matches.
 
 ### Slice 6a: adopt HypaV3 data (D11, D12; needs 3c, 5a) — _small_
 
@@ -875,7 +886,7 @@ fixtures, new `docs/audit/structured-memory-<date>.md`.
 
 ## Recommended order
 
-1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5e, 6a,
+1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5f, 5e, 6a,
 6b, 7b, 7c, 7d, 7e, and 8 one at a time. The later run is serial because each adds strings or shares the panel's route
 file. `memoryTasks.ts`, `assemble.ts`, `memoryStore.ts`, `routes/structuredMemory.ts`, and `structured/writer.ts` each have
 one writer at a time through this order; the guide is shared by all, and a conflict there is docs only.
