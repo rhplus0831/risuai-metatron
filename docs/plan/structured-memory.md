@@ -405,7 +405,7 @@ candidates are never written. A write never blocks the send that triggered it (D
   contents first).
 - Vectors: event summaries, key lines, and page sections embedded through `server/src/prompt/embeddings.ts` into the
   existing vector cache, keyed by record id, content hash, and model; a changed section misses once.
-- Markdown export per chat (pages as files with YAML frontmatter, events as a timeline) and import of the same package;
+- Markdown export per chat (pages as files with YAML frontmatter, events as a timeline) and import of the same package into an empty chat (slice 7d);
   no file watching, no round-trip guarantee for hand edits beyond the import.
 
 ### D6. Read path: lanes under a hard maximum
@@ -906,11 +906,23 @@ Files: `structured/prompts.ts`, `structured/writer.ts`, `memoryTasks.ts` (type o
 
 ### Slice 7d: page tools and Markdown import (D5, D9, D10; needs 4c) — _hard_
 
-Files: `structured/pages.ts`, `routes/structuredMemory.ts`, `PagesTab.svelte`, new
-`server/src/prompt/memory/structured/importPackage.ts`, `src/lang/en.ts`, tests.
+Files: `structured/pages.ts`, `structured/restore.ts`, `structured/rebuild.ts`, `structured/inherit.ts`,
+`server/src/data/memoryStore.ts`, `routes/structuredMemory.ts`, `PagesTab.svelte`,
+`src/ts/process/structuredMemory.svelte.ts`, new `server/src/prompt/memory/structured/importPackage.ts`, new guide
+`structured-memory-pages.md`, `src/lang/en.ts`, tests.
 
 - Merge and split (aliases move, provenance follows), delete to trash, export to the lorebook as an inactive entry, and
   import of the 1d package with a per-file refusal list. No round trip is promised for hand edits.
+- Decisions (owner, 2026-11-03). The package gains `threads.md` as `packageVersion` 2; a version 1 package imports with
+  its thread references dropped and one notice. Import takes only a chat with no row of any kind and no adoption hold,
+  as a restore does; per-file refusals cover what a file itself gets wrong.
+- Trash is `trashedAt` on the page. Checkpoints, snapshots, and backups keep it and a rebuild leaves it live; a copy, a
+  branch, a chat file, and the package leave it behind. A trashed page can be deleted forever.
+- A merge joins pages of one type, never the scene: the source goes to trash with its history, references move in one
+  write, and each touched heading gains a `merge` entry that refuses older reverts. A split moves a strict subset of
+  headings and the chosen aliases, and events stay on the old page. A merged or split page is `reshaped`: a rebuild seeds
+  it whole and a branch does not rewind it.
+- Export appends to the chat's `localLore` with `@@dont_activate`, never the character's `globalLore`.
 
 ### Slice 7e: health badge and screening (D8, D9; needs 5a, 7a) — _hard_
 
