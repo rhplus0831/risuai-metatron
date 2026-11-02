@@ -817,13 +817,17 @@ Files: `src/ts/characters.ts` (chat export and import), `routes/structuredMemory
 
 ### Slice 5g: projection refresh (D11; needs 5e, 5f) — _hard_
 
-Files: `routes/structuredMemory.ts`, `src/ts/process/structuredMemory.svelte.ts`, `src/ts/storage/chatStore.svelte.ts`,
+Files: `routes/structuredMemory.ts`, `server/src/data/resourceStore.ts`, `memoryStore.ts`,
+`src/ts/process/structuredMemory.svelte.ts`, `src/ts/plugins/apiV3/v3.svelte.ts`, `src/ts/storage/chatStore.svelte.ts`,
 `shared/structuredMemory.ts`, `shared/diagnostics.ts`, tests.
 
-- A loaded chat's projection follows the records (owner, 2026-11-02). A projection-only read, carrying the memory
-  revision so two reads order, runs at a writer's terminal status in a tab with an enabled plugin, and installs through
-  the projection's rules. A whole read per recorded turn stays out, so the per-event budget holds. A chat created this
-  session gets its value this way. The guide's Limitations entry on this goes.
+- A plugin's read of a loaded chat follows the records (owner, 2026-11-02). Every V3 read that returns a chat first asks
+  the server for the memory revision of the structured chats it returns, in one request however many they are, and
+  fetches a server-sealed projection only for a chat whose revision moved. The plugin's read waits for that, and a failed
+  answer leaves the held value in place. So a writer, a panel edit, an inherit, or a restore in any tab shows at the next
+  read, a chat created this session gets its value the same way, and a send with no plugin read costs nothing. A whole
+  read per recorded turn stays out, so the per-event budget holds. The projection's rule is one shared function with the
+  full read's overlay. The guide's Limitations entry on this goes, or narrows to what the revision does not see.
 
 ### Slice 6a: adopt HypaV3 data (D11, D12; needs 3c, 5a) — _small_
 
