@@ -2464,3 +2464,122 @@ describe("Structured Memory projections in the chat mirror", () => {
         expect(chat.findChat(ref)).not.toHaveProperty("hypaV3Data");
     });
 });
+
+describe("projection refresh installation", () => {
+    it("refuses stale captures, older tokens and another incarnation while preserving real memory", async () => {
+        const { chat, ref, server } = await boot();
+        const { settings } = await import("../settingsViews.svelte");
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const remote = server.chat("c", "k")!;
+        const [epoch, seq] = remote.revision.split(":");
+        const projection = (revision: number, chatSeq = seq, chatEpoch = epoch) =>
+            sealHypaV3Data(
+                { summaries: [{ text: `Revision ${revision}`, chatMemos: ["a"], isImportant: false }] },
+                `${chatEpoch}:${chatSeq}:${revision}`,
+            );
+        const installWhole = () =>
+            chat.acceptRemoteChat({ ...remote, data: { ...clone(remote.data), hypaV3Data: projection(2) } });
+        installWhole();
+        for (const bad of [
+            projection(1),
+            projection(2),
+            projection(3, String(Number(seq) + 1)),
+            projection(3, seq, "00000000-0000-4000-8000-000000000000"),
+            { ...projection(3), structuredMemoryRevision: `${epoch}:${seq}:4` },
+        ]) {
+            expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, bad)).toBe(false);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection(2));
+        }
+        const pending = chat.chatProjectionState(ref)!;
+        expect(chat.installChatProjection(ref, pending, projection(3))).toBe(true);
+        expect(chat.installChatProjection(ref, pending, null)).toBe(false);
+        expect(chat.installChatProjection(ref, pending, projection(4))).toBe(false);
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection(3));
+        // Each public whole install invalidates the captured object even when it keeps the same seal.
+        for (const replace of [
+            () => installWhole(),
+            () => chat.replaceChat(ref, clone(chat.findChat(ref)!)),
+            () => chat.installCharacterChats("c", [clone(chat.captureChatBaseline(ref).chat)], { firstMsgIndex: -1 }),
+        ]) {
+            installWhole();
+            const state = chat.chatProjectionState(ref)!;
+            replace();
+            const held = clone(chat.findChat(ref)!).hypaV3Data;
+            expect(chat.installChatProjection(ref, state, projection(9))).toBe(false);
+            expect(chat.installChatProjection(ref, state, null)).toBe(false);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(held);
+        }
+        // The save loop's whole-read installation also invalidates a captured refresh.
+        installWhole();
+        const beforeLoad = chat.chatProjectionState(ref)!;
+        const newerChat = {
+            ...remote,
+            revision: `${epoch}:${seq}:20`,
+            data: { ...clone(remote.data), note: "Whole read" },
+        };
+        chat.noteRemoteChat(ref, newerChat.revision);
+        expect(chat.finishIdleChatRefresh(newerChat)).toBe(true);
+        expect(chat.installChatProjection(ref, beforeLoad, projection(9))).toBe(false);
+        expect(chat.findChat(ref)!.note).toBe("Whole read");
+        const real = { summaries: [{ text: "Real HypaV3", chatMemos: [], isImportant: true }] };
+        chat.acceptRemoteChat({ ...remote, data: { ...clone(remote.data), hypaV3Data: real } });
+        const owned = chat.chatProjectionState(ref)!;
+        expect(chat.installChatProjection(ref, owned, null)).toBe(false);
+        expect(chat.installChatProjection(ref, owned, projection(10))).toBe(false);
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(real);
+    });
+
+    it("installs without moving chat versions, dirtying a queued create journal or leaking projections into outgoing work", async () => {
+        const { chat, ref, server, take, apply, ack } = await boot();
+        const { settings } = await import("../settingsViews.svelte");
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const projection = sealHypaV3Data(
+            { summaries: [{ text: "Fresh event", chatMemos: ["a"], isImportant: false }] },
+            server.chat("c", "k")!.revision,
+        );
+        const versions = () => [
+            chat.captureChatBaseline(ref).version,
+            chat.chatSaveVersion(ref),
+            chat.chatInstallVersion(ref),
+        ];
+        const before = versions();
+        expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, projection)).toBe(true);
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+        expect(versions()).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+        chat.replaceChat(ref, { ...clone(chat.findChat(ref)!), note: "Write after refresh" });
+        expect(JSON.stringify(chat.chatJournal.project({ scope: "chat", target: "c\u0000k" }))).not.toContain(
+            "hypaV3Data",
+        );
+        const replaced = take();
+        expect(JSON.stringify(chat.chatWorkBody(replaced))).not.toContain("hypaV3Data");
+        const result = apply(replaced);
+        ack(replaced, result);
+        // A create can be queued while a read discovers its server revision, before its acknowledgement.
+        const createdChat = chat.createChat("c", { ...clone(chat.findChat(ref)!), id: "new" });
+        const newRef = { chaId: "c", chatId: createdChat.id! };
+        const create = take();
+        const created = apply(create);
+        chat.requeueChatWork(create);
+        const row = server.chat("c", newRef.chatId)!;
+        chat.seedChats([server.chat("c", "k")!, row], []);
+        const key = { scope: "chat" as const, target: `c\u0000${newRef.chatId}` };
+        const journal = chat.chatJournal.project(key);
+        const changed = vi.fn();
+        chat.chatJournal.setListener(changed);
+        changed.mockClear();
+        const version = chat.captureChatBaseline(newRef).version;
+        try {
+            const sealed = sealHypaV3Data({ summaries: [] }, row.revision);
+            expect(chat.installChatProjection(newRef, chat.chatProjectionState(newRef)!, sealed)).toBe(true);
+            expect(chat.captureChatBaseline(newRef).version).toBe(version);
+            expect(changed).not.toHaveBeenCalled();
+            expect(chat.chatJournal.project(key)).toEqual(journal);
+            const queued = take();
+            expect(JSON.stringify(chat.chatWorkBody(queued))).not.toContain("hypaV3Data");
+            ack(queued, created);
+        } finally {
+            chat.chatJournal.setListener(null);
+        }
+    });
+});

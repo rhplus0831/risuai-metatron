@@ -37,7 +37,8 @@
   - Chat files: `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`.
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
   - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events. `sealHypaV3Data`, `isSealedHypaV3Data`,
-    `sealedHypaV3DataIntact`: the mark a read's projection carries. `hypaV3DataHoldsSummaries`: what owns the field.
+    `sealedHypaV3DataIntact`, `sealedHypaV3DataRevision`: the mark a read's projection carries.
+    `hypaV3DataHoldsSummaries`: what owns the field.
   - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
     pause rule, shared with the panel's writer line; `writer.ts` re-exports it.
   - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
@@ -47,7 +48,8 @@
   projection, shared by the read and the export.
 - `server/src/data/chatStore.ts`: `MEMORY_TABLES_SQL`, part of `CHAT_OPEN_SCHEMA_SQL`.
 - `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`;
-  `overlayMemoryProjection`. The checkpoint's part: [the lifecycle guide](structured-memory-lifecycle.md#files).
+  `sealedMemoryProjection`, the projection's one rule, for `overlayMemoryProjection`, `readProjection`, and
+  `readProjectionRevisions`. The checkpoint's part: [the lifecycle guide](structured-memory-lifecycle.md#files).
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
@@ -59,8 +61,9 @@
   [the lifecycle guide](structured-memory-lifecycle.md#files).
 - `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
   `readStructuredMemoryCoverage`, `readStructuredMemoryRuns`, `buildStructuredMemoryPackage`,
-  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; `editStructuredMemory`; the pure
-  `renderMemoryPage`, `renderMemoryTimeline`, and `memoryPagePath`.
+  `buildStructuredMemoryLog`, `readStructuredMemoryRevisions`, `readStructuredMemoryProjection`, which answer a
+  `StructuredMemoryResult`; `editStructuredMemory`; the pure `renderMemoryPage`, `renderMemoryTimeline`, and
+  `memoryPagePath`.
 
 ## Flows
 
@@ -200,6 +203,8 @@ A tab's read overlays it:
   warns once.
 - The overlaid value is sealed: `structuredMemoryProjection`, `1:` and a non-cryptographic digest of the whole value
   with sorted keys. It tells a tab what the value is, and whether it is as a read gave it. It authorizes nothing.
+- The value carries the memory revision it was read at (`structuredMemoryRevision`), inside the digest, so a whole read
+  gives a tab its own baseline and the tab keeps no token of its own. Plugins see the field.
 
 The tab's mirror holds it for plugins to read, unchanged, and nothing stores it:
 
@@ -219,6 +224,34 @@ The tab's mirror holds it for plugins to read, unchanged, and nothing stores it:
 - A job's copy and a patch's `meta` are stored data, so they leave a held projection in place (`keepsProjection`) unless
   they bring summaries. A whole read (`applyRemoteChat`, `installRead`) is authoritative: without the field, a held
   projection is gone. `HypaV3Modal` takes a sealed value as no data.
+
+A plugin's read brings the held value up to the records (`refreshChatProjections`, `src/ts/plugins/apiV3/v3.svelte.ts`):
+
+- `getChar`, `getCharacter`, `getCharacterFromIndex`, `getChatFromIndex`, and `getDatabase` with `characters` wait for
+  it before they copy. Plugin writes and `getDatabase` without `characters` ask nothing. A send with no plugin read
+  costs nothing.
+- `POST STRUCTURED_MEMORY_PATH/revisions`, `{ chats }`, at most `MEMORY_REVISION_CHATS_MAX` and 256 KiB, answers
+  `StructuredMemoryRevisionsAnswer` by position, with no message read: a token for what a whole read would project, or
+  null. All of a read's chats go in one request, so a read with nothing new costs that alone.
+- A `display` handler reads on every rendered row and streamed render, so a chat's check stands for
+  `MEMORY_RECHECK_WINDOW_MS` from its answer, a failed one too. A read inside it takes the held value with no request
+  and no wait, and a read that finds a check in flight joins it. A chat left past a cap keeps its moved revision: a
+  later read finds it again, since the check compares the held token with the server's.
+- `GET STRUCTURED_MEMORY_PATH/:characterId/:chatId/projection` answers `StructuredMemoryProjectionAnswer` for a chat
+  whose token moved, sealed by `sealedMemoryProjection` against the stored messages. A null value is an answer: no
+  projection, also under another algorithm, where `revision` is null too. Events over a read round are 413 before any
+  message is read.
+- Both routes are authenticated, rate-limited, and epoch-checked. A read fetches `MEMORY_PROJECTIONS_PER_READ` (8)
+  projections at most, one by one, the chat it is about first. What is left stays as it is, and `rotatingWindow` gives
+  the rest their turn on later reads, the chats past the revision cap too.
+- The tab asks nothing under another algorithm, where a held projection goes at once, nor for a chat with a real value
+  or not on the server yet. A chat a token answers null for loses a sealed value. A real value is never removed.
+- `MEMORY_REFRESH_DEADLINE_MS` bounds the whole refresh, because a hook's read holds a send. A failed answer, a refusal,
+  or the deadline leaves the held value, and the read answers with it.
+- `installChatProjection` takes an answer only for a chat as `chatProjectionState` found it before the first await: the
+  same chat object and value, the same owner, and a held revision of the same epoch and `seq`. It is the one change of
+  the field that is no write. It skips `keepsHeldHypaV3Data`, which refuses every sealed value, and `changed`, which
+  would dirty a queued create's journal. The token must be newer than one held at the same `seq`.
 
 The upstream export (`projectUpstreamMemory`) applies the same rule, the setting from the snapshot's `ui` record, and
 writes the value unsealed: a restore upstream and a re-import here both take plain HypaV3 data. `readSnapshotFile` keeps
@@ -341,7 +374,8 @@ group is refused, and a full one is checked and restored.
 - The projection: `shared/structuredMemory.test.ts` for the seal, `structuredMemoryRoutes.test.ts` for the reads,
   `memoryStore.test.ts` for the write path and the budget charge, `upstreamExport.test.ts` for the export, each with
   `projectionHistory` from `tests/memoryFixtures.ts`; `src/ts/storage/tests/chatStore.test.ts`, `hostApi.test.ts`,
-  `chatMemoryInherit.test.ts`, and `HypaV3Modal.fence.test.ts` for the tab.
+  `chatMemoryInherit.test.ts`, and `HypaV3Modal.fence.test.ts` for the tab; `hostApiMemory.test.ts` for a plugin read's
+  refresh, on a scripted `authFetch`.
 - `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
   metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
@@ -359,9 +393,16 @@ group is refused, and a full one is checked and restored.
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
-- A loaded chat's projection is as of its last whole read. A memory write publishes nothing and a receipt's patch holds
-  no events, so a plugin reads an older projection, or none on a chat created this session, until a reload or a re-read.
-  Refreshing needs a projection-only read; a whole read per recorded turn would undo the per-event budget.
+- A held projection follows the memory revision, not the messages. A message edit or a send's manifest that changes
+  reconciliation, the order, or `metrics` without moving the revision shows at the next whole read or the next move of
+  the revision. Decision: Structured Memory slice 5g, plan.
+- A `chatOutput` listener's payload copies the mirror with no refresh, so its `hypaV3Data` is what the tab holds. A
+  listener that needs the newest calls `getChatFromIndex`.
+- A chat past `MEMORY_REVISION_CHATS_MAX` waits its turn across reads, and one over the projection's byte cap keeps its
+  last whole read's value.
+- A change shows at the first read past a chat's `MEMORY_RECHECK_WINDOW_MS`, not the very next read. The refresh shares
+  `authenticatedRouteLimiter`, and its cost is bounded per chat per tab: one `getChar` loop is one request a window, and
+  a plugin walking chats through `getChatFromIndex` costs one request per chat per window.
 
 ### Gotchas
 

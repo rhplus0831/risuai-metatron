@@ -59,9 +59,11 @@ import {
     captureChatBaseline,
     chatList,
     chatOwnerToken,
+    chatProjectionState,
     currentChatRef,
     ensureChatLoaded,
     findChat,
+    installChatProjection,
     isCharacterGenerating,
     chatsLoaded,
     loadChats,
@@ -71,7 +73,9 @@ import {
     selectChat,
     selectedChatIndex,
     withChatsCopy,
+    type ChatRef,
 } from "src/ts/storage/chatStore.svelte";
+import { readWithDeadline } from "src/ts/storage/readDeadline";
 import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
 import {
@@ -99,6 +103,7 @@ import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "s
 import { sendChat as processSendChat } from "src/ts/process/index.svelte";
 import { isChatBusy } from "src/ts/process/chatStatus.svelte";
 import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
+import { readStructuredMemoryProjection, readStructuredMemoryRevisions } from "src/ts/process/structuredMemory.svelte";
 import { anyLocalSend } from "src/ts/process/localSends";
 import {
     channelCallbacksRunning,
@@ -111,6 +116,7 @@ import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { supaMemoryOnCount } from "../../../../shared/characters.ts";
 import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
+import { MEMORY_REVISION_CHATS_MAX, STRUCTURED_MEMORY_ALGORITHM } from "../../../../shared/structuredMemory.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -862,27 +868,185 @@ function contextMember(context: PluginCallContext) {
     return { characterIndex, character, chatIndex };
 }
 
+/** The most projections one read fetches, one after another. */
+const MEMORY_PROJECTIONS_PER_READ = 8;
+
+/** The bound of one read's refresh, which the read waits for: `authFetch` has none of its own. */
+const MEMORY_REFRESH_DEADLINE_MS = 5000;
+
+/**
+ * How long a chat's check stands from its answer, failed or not: a read inside it takes what is held. A
+ * `display` handler reads on every rendered row and streamed render, and these requests count against a
+ * rate limit the whole app shares.
+ */
+const MEMORY_RECHECK_WINDOW_MS = 2000;
+
+/** The run asking about each chat now, by chat key: a read of that chat joins it instead of asking too. */
+const chatChecksInFlight = new Map<string, Promise<void>>();
+
+/**
+ * When each chat's last check settled (`performance.now()`), by chat key and oldest first: an update
+ * deletes and sets, and a refresh drops what is past the window, so this holds the chats checked within it.
+ */
+const chatChecksSettled = new Map<string, number>();
+
+/** Where the next cut of the chats asked, and of the moved ones fetched, starts (`rotatingWindow`). */
+const revisionCursor = { at: 0 };
+const projectionCursor = { at: 0 };
+
+/**
+ * `list` cut to `size`: its first entry, then a window of the rest from `cursor`, which moves past what
+ * it took, so that across reads a long list's tail gets its turn.
+ */
+function rotatingWindow<T>(list: readonly T[], size: number, cursor: { at: number }): readonly T[] {
+    if (list.length <= size) {
+        return list;
+    }
+    const [first, ...rest] = list;
+    const start = cursor.at % rest.length;
+    cursor.at = start + size - 1;
+    return [first, ...[...rest, ...rest].slice(start, cursor.at)];
+}
+
+/**
+ * The chats a read of `chaIds` returns, the chat it is about first: the hook's, else the selected one.
+ * That order is what `refreshChatProjections` keeps when it has to cut the list.
+ */
+function chatsOfRead(chaIds: readonly (string | undefined)[], context: PluginCallContext | undefined): ChatRef[] {
+    const about = context?.chatRef ?? currentChatRef();
+    const refs = chaIds.flatMap((chaId) =>
+        chaId === undefined ? [] : chatList(chaId).map(({ id }) => ({ chaId, chatId: id })),
+    );
+    const first = refs.findIndex(({ chaId, chatId }) => chaId === about?.chaId && chatId === about.chatId);
+    return first > 0 ? [refs[first], ...refs.slice(0, first), ...refs.slice(first + 1)] : refs;
+}
+
+/**
+ * Brings the held projections of `refs` (`chatsOfRead`), which a plugin read is about to return, up to the
+ * chats' records. A read asks only about chats with no check in flight and none in the last
+ * `MEMORY_RECHECK_WINDOW_MS`, in one request, and only a chat whose revision moved costs a projection. It
+ * waits for that run and for any run already asking about its other chats, fetches included, so a read with
+ * nothing due takes what is held, with no request and no wait. Under another algorithm a held projection
+ * goes with no request, whatever the window says. A chat that is not loaded, that HypaV3 owns, or that is
+ * not on the server yet is left out, and so never counts as checked. Whatever fails, a deadline included,
+ * leaves the held value in place and counts as a check: this never rejects, so it never changes what the
+ * read would otherwise answer or throw.
+ */
+async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
+    try {
+        const chats = refs.flatMap((ref) => {
+            const state = chatProjectionState(ref);
+            return state ? [{ ref, state }] : [];
+        });
+        if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM) {
+            for (const { ref, state } of chats) {
+                installChatProjection(ref, state, null);
+            }
+            return;
+        }
+        const now = performance.now();
+        for (const [key, settled] of chatChecksSettled) {
+            if (now - settled < MEMORY_RECHECK_WINDOW_MS) {
+                break;
+            }
+            chatChecksSettled.delete(key);
+        }
+        const eligible = chats
+            .filter(({ state }) => !state.hypaV3Owned && state.chatRevision !== null)
+            .map((chat) => ({ ...chat, key: `${chat.ref.chaId}\u0000${chat.ref.chatId}` }));
+        const runs = new Set(eligible.flatMap(({ key }) => chatChecksInFlight.get(key) ?? []));
+        // Only the chats this run asks count as checked: one past the cut is asked by the next read.
+        const asked = rotatingWindow(
+            eligible.filter(({ key }) => !chatChecksInFlight.has(key) && !chatChecksSettled.has(key)),
+            MEMORY_REVISION_CHATS_MAX,
+            revisionCursor,
+        );
+        if (asked.length > 0) {
+            const run = readWithDeadline(MEMORY_REFRESH_DEADLINE_MS, "The memory refresh timed out", async (signal) => {
+                const read = await readStructuredMemoryRevisions(
+                    asked.map(({ ref }) => ref),
+                    signal,
+                );
+                if (read.outcome !== "ok" || signal.aborted) {
+                    return;
+                }
+                const { revisions } = read.value;
+                asked.forEach(({ ref, state }, index) => {
+                    if (revisions[index] === null) {
+                        installChatProjection(ref, state, null);
+                    }
+                });
+                const moved = asked.filter(
+                    ({ state }, index) => revisions[index] !== null && revisions[index] !== state.memoryRevision,
+                );
+                for (const { ref, state } of rotatingWindow(moved, MEMORY_PROJECTIONS_PER_READ, projectionCursor)) {
+                    if (signal.aborted) {
+                        return;
+                    }
+                    const answer = await readStructuredMemoryProjection(ref, signal);
+                    if (answer.outcome === "ok" && !signal.aborted) {
+                        installChatProjection(ref, state, answer.value.hypaV3Data);
+                    }
+                }
+            })
+                .catch(() => {
+                    // The deadline, an ordinary failed answer: the read goes on with what is held.
+                })
+                .finally(() => {
+                    const settled = performance.now();
+                    for (const { key } of asked) {
+                        chatChecksInFlight.delete(key);
+                        chatChecksSettled.delete(key);
+                        chatChecksSettled.set(key, settled);
+                    }
+                });
+            for (const { key } of asked) {
+                chatChecksInFlight.set(key, run);
+            }
+            runs.add(run);
+        }
+        await Promise.all(runs);
+    } catch {
+        // A refresh never decides what the read answers.
+    }
+}
+
 /**
  * Runs `run` (synchronous) once the chats of `chaIds` are loaded, with them pinned from before the
  * load until it returns. A character can gain a chat (not loaded) while another one loads, so every
  * target is checked again right before `run`, and loaded again (a few rounds) when it is incomplete.
  * The targets are captured by id before the load and found again inside `run`.
+ *
+ * A read that returns chats passes `refreshed`, the chats it returns once they are loaded, and waits for
+ * their projections (`refreshChatProjections`). The targets are checked once more after that await, since
+ * a collection update can add a chat to them during it, within the same rounds.
  */
-async function withChatsLoaded<T>(chaIds: readonly (string | undefined)[], run: () => T): Promise<T> {
+async function withChatsLoaded<T>(
+    chaIds: readonly (string | undefined)[],
+    run: () => T,
+    refreshed?: () => readonly ChatRef[],
+): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
     const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
     const releases = ids.map((chaId) => pinChats(chaId));
     try {
-        for (let round = 0; ; round++) {
+        let round = 0;
+        let refresh = refreshed;
+        for (;;) {
             const missing = ids.filter((chaId) => !chatsLoaded(chaId));
-            if (missing.length === 0) {
+            if (missing.length > 0) {
+                if (round === 3) {
+                    throw new Error("The chats could not be loaded");
+                }
+                round += 1;
+                for (const chaId of missing) {
+                    await loadChats(chaId);
+                }
+            } else if (refresh) {
+                await refreshChatProjections(refresh());
+                refresh = undefined;
+            } else {
                 break;
-            }
-            if (round === 3) {
-                throw new Error("The chats could not be loaded");
-            }
-            for (const chaId of missing) {
-                await loadChats(chaId);
             }
         }
         // A character whose chats were replaced meanwhile (a re-import under the same id) is another
@@ -910,14 +1074,18 @@ const getChar = async (context: PluginCallContext | undefined) => {
     if (chaId === undefined) {
         return undefined;
     }
-    return withChatsLoaded([chaId], () => {
-        if (context) {
-            const { character } = contextTarget(context);
-            return withChatsCopy($state.snapshot(character), context.chatRef.chatId);
-        }
-        const snapshot = characterSnapshot(chaId);
-        return snapshot === undefined ? undefined : withChatsCopy(snapshot);
-    });
+    return withChatsLoaded(
+        [chaId],
+        () => {
+            if (context) {
+                const { character } = contextTarget(context);
+                return withChatsCopy($state.snapshot(character), context.chatRef.chatId);
+            }
+            const snapshot = characterSnapshot(chaId);
+            return snapshot === undefined ? undefined : withChatsCopy(snapshot);
+        },
+        () => chatsOfRead([chaId], context),
+    );
 };
 
 /**
@@ -1556,15 +1724,19 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             // synchronous pass, so the snapshot is one state of the tab.
             const characterIds = included("characters") ? characterList().map((character) => character?.chaId) : [];
             const keys = allowedDbKeys.filter(included);
-            const liteDB = await withChatsLoaded(characterIds, () => {
-                // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
-                // is gone), so a read-modify-write through setDatabase stays in one preset.
-                const missing = context ? missingPresetTarget(context, keys) : undefined;
-                if (missing !== undefined) {
-                    throw new PluginTargetGoneError(missing);
-                }
-                return buildDatabaseSubset(keys, context ?? null);
-            });
+            const liteDB = await withChatsLoaded(
+                characterIds,
+                () => {
+                    // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
+                    // is gone), so a read-modify-write through setDatabase stays in one preset.
+                    const missing = context ? missingPresetTarget(context, keys) : undefined;
+                    if (missing !== undefined) {
+                        throw new PluginTargetGoneError(missing);
+                    }
+                    return buildDatabaseSubset(keys, context ?? null);
+                },
+                () => chatsOfRead(characterIds, context),
+            );
             return liteDB;
         },
 
@@ -1669,14 +1841,19 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         // The plugin index APIs address the character list by position (creation order).
         getCharacterFromIndex: async (index: number) => {
+            const context = currentContext(contextOwner);
             const chaId = characterList()[index]?.chaId;
             if (chaId === undefined) {
                 return null;
             }
-            return withChatsLoaded([chaId], () => {
-                const snapshot = characterSnapshot(chaId);
-                return snapshot === undefined ? null : withChatsCopy(snapshot);
-            });
+            return withChatsLoaded(
+                [chaId],
+                () => {
+                    const snapshot = characterSnapshot(chaId);
+                    return snapshot === undefined ? null : withChatsCopy(snapshot);
+                },
+                () => chatsOfRead([chaId], context),
+            );
         },
         setCharacterToIndex: async (index: number, char: any) => {
             if (refuseTransformWrite("setCharacterToIndex")) return;
@@ -1699,10 +1876,16 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 return null;
             }
             const ref = { chaId, chatId };
-            await ensureChatLoaded(ref);
-            // Found again after the load: the chat as it is now (none when it was deleted meanwhile).
-            const chat = findChat(ref);
-            return chat ? $state.snapshot(chat) : null;
+            const release = pinChat(ref);
+            try {
+                await ensureChatLoaded(ref);
+                await refreshChatProjections([ref]);
+                // Found again after both: the chat as it is now (none when it was deleted meanwhile).
+                const chat = findChat(ref);
+                return chat ? $state.snapshot(chat) : null;
+            } finally {
+                release();
+            }
         },
         parseRisuChat: async (
             text: string,

@@ -85,6 +85,8 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         chatHydrationHold: vi.fn(() => "none" as const),
         prepareChatHydrationRefresh: vi.fn(() => null),
         heldChatRevision: vi.fn(() => null),
+        chatProjectionState: vi.fn(() => undefined),
+        installChatProjection: vi.fn(() => false),
         chatJobRetryAt: vi.fn(() => null),
         trackUnloadWork: vi.fn(),
         settleUnloadWork: vi.fn(),

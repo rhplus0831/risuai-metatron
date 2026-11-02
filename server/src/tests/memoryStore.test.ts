@@ -777,3 +777,51 @@ it("charges event bytes to budgeted chat and collection reads", () => {
         }
     }
 });
+
+it("checks ordered projection revisions without messages and skips memory tables under another algorithm", () => {
+    const { store, db } = fileStore();
+    seed(store);
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, store.get(ui, "main")!.revision);
+    store.applyChanges({
+        chats: [
+            group(null, [{ op: "create", chat }], "c", "empty"),
+            group(
+                null,
+                [
+                    {
+                        op: "create",
+                        chat: {
+                            ...chat,
+                            hypaV3Data: { summaries: [{ text: "Real", chatMemos: [], isImportant: false }] },
+                        },
+                    },
+                ],
+                "c",
+                "owned",
+            ),
+        ],
+    });
+    const retracted = { ...records(["event"]).events[0], status: "retracted" as const };
+    write(store, contents(store).revision, { events: [retracted] });
+    write(store, contents(store, "c", "owned").revision, { events: [retracted] }, "c", "owned");
+    const expected = token(store, db, 1);
+    const refs = ["owned", "k", "empty", "missing", "k"].map((chatId) => ({ characterId: "c", chatId }));
+    const accessed: string[] = [];
+    for (const method of ["get", "all", "iterate"] as const) {
+        const original = StatementSync.prototype[method];
+        vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            accessed.push(this.sourceSQL);
+            return Reflect.apply(original, this, args);
+        });
+    }
+    expect(store.memory.readProjectionRevisions(refs)).toEqual([null, expected, null, null, expected]);
+    expect(accessed.filter((sql) => /\bmessages\b/.test(sql))).toEqual([]);
+    store.put(ui, "main", { memoryAlgorithmType: "hypaV3" }, store.get(ui, "main")!.revision);
+    accessed.length = 0;
+    expect(store.memory.readProjectionRevisions(refs)).toEqual(refs.map(() => null));
+    expect(accessed.filter((sql) => /\b(?:memory_\w+|messages)\b/.test(sql))).toEqual([]);
+});

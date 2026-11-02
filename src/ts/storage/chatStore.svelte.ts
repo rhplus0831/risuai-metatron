@@ -31,7 +31,9 @@ import {
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
     sealedHypaV3DataIntact,
+    sealedHypaV3DataRevision,
     STRUCTURED_MEMORY_ALGORITHM,
+    type SealedHypaV3Data,
 } from "../../../shared/structuredMemory.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
@@ -93,7 +95,9 @@ import {
  * - A structured chat's `hypaV3Data` is a projection a whole read overlays: the mirror holds it for
  *   plugins to read, and it never leaves the tab (`sendChat`). A write of the field is decided against
  *   the held value (`keepsHeldHypaV3Data`); a job's copy, which is stored data, leaves it in place
- *   unless it brings summaries of its own (`keepsProjection`).
+ *   unless it brings summaries of its own (`keepsProjection`). A plugin read's refresh takes a newer
+ *   value through `installChatProjection`, fenced on what `chatProjectionState` captured before its
+ *   first await: the one change of the field that is no write of the chat, so nothing is queued.
  */
 
 export type ChatRef = { chaId: string; chatId: string };
@@ -3628,6 +3632,98 @@ function settleHypaV3Data(key: string, chat: Chat, held: Chat | undefined, basel
     } else {
         chat.hypaV3Data = clone(held.hypaV3Data);
     }
+    return true;
+}
+
+/** A loaded chat as a refresh of its projection found it, before its first await (`chatProjectionState`). */
+export type ChatProjectionState = {
+    /** The held chat and its `hypaV3Data`, compared by identity. */
+    chat: Chat;
+    value: Chat["hypaV3Data"];
+    /** `chatOwnerToken` of its character. */
+    owner: string;
+    /** `heldChatRevision`: null for a chat not on the server yet. */
+    chatRevision: string | null;
+    /** The memory revision the held value was read at (`sealedHypaV3DataRevision`). */
+    memoryRevision: string | undefined;
+    /** The held value is a real one with summaries: nothing projects over it. */
+    hypaV3Owned: boolean;
+};
+
+/** What `installChatProjection` is fenced on, undefined for a chat that is not loaded. */
+export function chatProjectionState(ref: ChatRef): ChatProjectionState | undefined {
+    const chat = heldChat(ref);
+    if (!chat) {
+        return undefined;
+    }
+    const value = chat.hypaV3Data;
+    return {
+        chat,
+        value,
+        owner: chatOwnerToken(ref.chaId),
+        chatRevision: heldChatRevision(ref),
+        memoryRevision: sealedHypaV3DataRevision(value),
+        hypaV3Owned: !isSealedHypaV3Data(value) && hypaV3DataHoldsSummaries(value),
+    };
+}
+
+/**
+ * Takes a refresh's `answer` for a chat's `hypaV3Data` and says whether the field changed. Only a chat
+ * still as `state` found it takes one: the same held object with the same value, the same owner, and a
+ * held revision of the same epoch and `seq`. Every whole replacement changes the object or the value, and
+ * `chatInstallVersion` does not see them all. A chat's revision may move within its `seq`, since the memory
+ * revision says nothing of its messages.
+ *
+ * - A null answer removes a sealed value. A real value stays.
+ * - A value goes in only with this algorithm selected, sealed intact, at the held revision's epoch and
+ *   `seq`, and past the counter of a held token of that `seq`. `compareRevision` alone would take a larger
+ *   `seq`, which is another chat under these ids.
+ *
+ * The field is written here directly: `keepsHeldHypaV3Data` refuses every sealed value, and `changed`
+ * would dirty a queued create's journal and move the version a reorder compares, for a value that never
+ * leaves the tab.
+ */
+export function installChatProjection(
+    ref: ChatRef,
+    state: ChatProjectionState,
+    answer: SealedHypaV3Data | null,
+): boolean {
+    const chat = heldChat(ref);
+    const revision = parseRevisionToken(heldChatRevision(ref));
+    const captured = parseRevisionToken(state.chatRevision);
+    if (
+        !chat ||
+        chat !== state.chat ||
+        chat.hypaV3Data !== state.value ||
+        chatOwnerToken(ref.chaId) !== state.owner ||
+        revision?.epoch !== captured?.epoch ||
+        revision?.seq !== captured?.seq
+    ) {
+        return false;
+    }
+    if (answer === null) {
+        if (!isSealedHypaV3Data(state.value)) {
+            return false;
+        }
+        delete chat.hypaV3Data;
+    } else {
+        const token = parseRevisionToken(sealedHypaV3DataRevision(answer));
+        const heldToken = parseRevisionToken(state.memoryRevision);
+        if (
+            state.hypaV3Owned ||
+            settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM ||
+            !sealedHypaV3DataIntact(answer) ||
+            !token ||
+            !revision ||
+            token.epoch !== revision.epoch ||
+            token.seq !== revision.seq ||
+            (heldToken?.epoch === token.epoch && heldToken.seq === token.seq && token.revision <= heldToken.revision)
+        ) {
+            return false;
+        }
+        chat.hypaV3Data = answer;
+    }
+    mutationToken += 1;
     return true;
 }
 

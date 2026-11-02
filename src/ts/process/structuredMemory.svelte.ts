@@ -17,6 +17,8 @@ import {
     memoryEventCovers,
     rawWindow,
     reconcileMemoryEvents,
+    sealedHypaV3DataIntact,
+    sealedHypaV3DataRevision,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
     type MemoryManifestItem,
@@ -39,9 +41,11 @@ import {
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
+    type StructuredMemoryProjectionAnswer,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
     type StructuredMemoryRestoreAnswer,
+    type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
@@ -59,7 +63,9 @@ import { authFetch } from "../storage/serverAuth";
  * one file per page and one timeline of the events.
  *
  * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
- * `exportChatMemory` applies that read to the chat copy an export writes.
+ * `exportChatMemory` applies that read to the chat copy an export writes. So are the two reads a plugin's
+ * read of a loaded chat makes first (`readStructuredMemoryRevisions`, `readStructuredMemoryProjection`);
+ * what it does with them is the plugin API's and the chat module's.
  *
  * In the package Markdown is display and the metadata lines are the authority. A metadata value is JSON
  * on one line, which is also valid YAML, and `bodyLines` and `summaryLines` count the lines of the text
@@ -86,7 +92,8 @@ import { authFetch } from "../storage/serverAuth";
 /**
  * Why a read, an edit, an inherit, a restore, or an adoption did not answer: the chat or record is gone,
  * the database was replaced, its memory moved on, or, for a write, something that can write it holds the
- * chat. A restore can also be `tooLarge`: its records are over the route's body cap.
+ * chat. A restore can also be `tooLarge`, when its records are over the route's body cap, and so can a
+ * projection, when the chat's events are over a read round.
  */
 export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "tooLarge";
 
@@ -170,6 +177,11 @@ function editRefusalOf(response: Response, body: AnswerBody): Unanswered {
 /** A restore's refusal: an edit's, and a 413 for records over the route's body cap. */
 function restoreRefusalOf(response: Response, body: AnswerBody): Unanswered {
     return response.status === 413 ? { outcome: "refused", reason: "tooLarge" } : editRefusalOf(response, body);
+}
+
+/** A projection's refusal: a 413 for events over a read round. */
+function projectionRefusalOf(response: Response, body: AnswerBody): Unanswered {
+    return response.status === 413 ? { outcome: "refused", reason: "tooLarge" } : refusalOf(response, body);
 }
 
 /** Asks `path` and turns its answer into a result: `parse` answers null for a body of the wrong shape. */
@@ -461,6 +473,28 @@ function parseRunsRound(body: AnswerBody, cursor: number): StructuredMemoryRunsR
         : null;
 }
 
+/** A list of another `length` than the request's says nothing of the chats it named, by position. */
+function parseRevisions(body: AnswerBody, length: number): StructuredMemoryRevisionsAnswer | null {
+    const { revisions } = body;
+    return Array.isArray(revisions) &&
+        revisions.length === length &&
+        revisions.every((revision) => revision === null || typeof revision === "string")
+        ? (body as StructuredMemoryRevisionsAnswer)
+        : null;
+}
+
+/** No value is an answer too; a value is a whole one, sealed at the revision the answer names. */
+function parseProjection(body: AnswerBody): StructuredMemoryProjectionAnswer | null {
+    const { revision, hypaV3Data } = body;
+    const answered =
+        hypaV3Data === null
+            ? revision === null || typeof revision === "string"
+            : typeof revision === "string" &&
+              sealedHypaV3DataIntact(hypaV3Data) &&
+              sealedHypaV3DataRevision(hypaV3Data) === revision;
+    return answered ? (body as StructuredMemoryProjectionAnswer) : null;
+}
+
 /** The chat's table of contents, read without any record's body. */
 export function readStructuredMemoryContents(
     ref: ChatRef,
@@ -537,6 +571,33 @@ export function restoreStructuredMemory(
  */
 export function adoptStructuredMemory(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryAdoptAnswer>> {
     return readAnswer(`${chatPath(ref)}/adopt`, parseAdoptAnswer, editRefusalOf, { method: "POST" });
+}
+
+/**
+ * The memory revision of each of `refs`, by position, in one request (`MEMORY_REVISION_CHATS_MAX` at most),
+ * reading no message. A null entry is an answer: the chat holds no projection.
+ */
+export function readStructuredMemoryRevisions(
+    refs: readonly ChatRef[],
+    signal?: AbortSignal,
+): Promise<StructuredMemoryResult<StructuredMemoryRevisionsAnswer>> {
+    return readAnswer(`${STRUCTURED_MEMORY_PATH}/revisions`, (body) => parseRevisions(body, refs.length), refusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chats: refs.map(({ chaId, chatId }) => ({ characterId: chaId, chatId })) }),
+        signal,
+    });
+}
+
+/**
+ * The chat's projection as a whole read would overlay it. A null `hypaV3Data` is an answer: the chat holds
+ * no projection.
+ */
+export function readStructuredMemoryProjection(
+    ref: ChatRef,
+    signal?: AbortSignal,
+): Promise<StructuredMemoryResult<StructuredMemoryProjectionAnswer>> {
+    return readAnswer(`${chatPath(ref)}/projection`, parseProjection, projectionRefusalOf, { signal });
 }
 
 /** What ties a route's rounds to a read beyond them. */

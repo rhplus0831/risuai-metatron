@@ -4,6 +4,7 @@ import type { Chat, Message } from "../../../shared/database.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     MEMORY_RECORD_KINDS,
+    MEMORY_REVISION_CHATS_MAX,
     MEMORY_RUNS_ROUND_ROWS,
     STRUCTURED_MEMORY_PATH,
     storedMemorySources,
@@ -19,15 +20,17 @@ import {
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
+    type StructuredMemoryProjectionAnswer,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
     type StructuredMemoryRecordOf,
     type StructuredMemoryRestoreAnswer,
+    type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { messageSourceHash } from "../data/memoryStore.ts";
+import { messageSourceHash, type MemoryChatRef } from "../data/memoryStore.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
@@ -52,14 +55,34 @@ export { STRUCTURED_MEMORY_PATH };
 /** An edit holds one section at `sectionBodyChars`, which JSON's escapes can lengthen, and its ids. */
 const MAX_EDIT_BODY_BYTES = 64 * 1024;
 
+/** A revisions request holds `MEMORY_REVISION_CHATS_MAX` chats named by two UUIDs, about 200 KiB of JSON. */
+const MAX_REVISIONS_BODY_BYTES = 256 * 1024;
+
 const REFUSAL_TEXT = {
     chatGone: "Chat not found",
     recordGone: "Record not found",
     fenced: "Something is writing this chat's memory",
+    tooLarge: "The chat's memory is too large to project",
 } as const;
 
 function isRecordKind(kind: string): kind is StructuredMemoryRecordKind {
     return (MEMORY_RECORD_KINDS as readonly string[]).includes(kind);
+}
+
+/** The chats a revisions request names, or null for a body of another shape, a bad id, or a list past the cap. */
+function parseRevisionRefs(body: unknown): MemoryChatRef[] | null {
+    const chats = isPlainObject(body) ? body.chats : undefined;
+    if (!Array.isArray(chats) || chats.length > MEMORY_REVISION_CHATS_MAX) {
+        return null;
+    }
+    const refs: MemoryChatRef[] = [];
+    for (const chat of chats as unknown[]) {
+        if (!isPlainObject(chat) || !isValidResourceId(chat.characterId) || !isValidResourceId(chat.chatId)) {
+            return null;
+        }
+        refs.push({ characterId: chat.characterId, chatId: chat.chatId });
+    }
+    return refs;
 }
 
 /** A round's starting position: 0 when absent, null for anything but a non-negative safe integer. */
@@ -160,6 +183,18 @@ type RoundRead = {
  *   threads, in contents order, whole as stored, answered `StructuredMemoryThreadsRound`: what a chat file
  *   takes beside the package rounds. Bytes, `cursor`, `revision`, and the refusals work as in the package
  *   round.
+ * - `POST /api/memory/structured/revisions` `{ chats: { characterId, chatId }[] }`: at most
+ *   `MEMORY_REVISION_CHATS_MAX` chats' memory revisions, answered `StructuredMemoryRevisionsAnswer`, by
+ *   position. An entry is null unless the algorithm is selected, the chat exists, its stored `hypaV3Data`
+ *   holds no summaries, and it has an event row: what a whole read projects. It reads no message, so a
+ *   plugin read that finds nothing new costs this request alone. 400 for a body of another shape, a list
+ *   past the cap, or an id that is not a resource id. The body is read after authentication and capped at
+ *   256 KiB.
+ * - `GET /api/memory/structured/:characterId/:chatId/projection`: the chat's projection as a whole read
+ *   would overlay it, reconciled against its stored messages, answered
+ *   `StructuredMemoryProjectionAnswer`; `hypaV3Data` is null for a chat that read leaves as stored, and
+ *   `revision` too under another algorithm, which reads no memory table. Stored events over
+ *   `packageRoundBytes` are 413 `{ error, reason: "tooLarge" }` before any message is read. 404 `chatGone`.
  * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
  *   (`StructuredMemoryEdit`, `structured/edits.ts`), answered `StructuredMemoryEditAnswer`. An edit that
  *   changes nothing still names a revision, so a stale one is refused like any other. An event's repair
@@ -216,6 +251,7 @@ export function registerStructuredMemoryRoutes(
 ) {
     const { store, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced } = arg;
     const limitBody = limitedBody(MAX_EDIT_BODY_BYTES);
+    const limitRevisionsBody = limitedBody(MAX_REVISIONS_BODY_BYTES);
     const limitRestoreBody = limitedBody(restoreBodyBytes);
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
@@ -400,6 +436,56 @@ export function registerStructuredMemoryRoutes(
             } satisfies StructuredMemoryThreadsRound;
         }),
     );
+
+    app.post(`${STRUCTURED_MEMORY_PATH}/revisions`, limiter, authenticated, limitRevisionsBody, async (c) => {
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        const refs = parseRevisionRefs(read.body);
+        if (!refs) {
+            return c.json(
+                { error: `chats must be at most ${MEMORY_REVISION_CHATS_MAX} { characterId, chatId } ids` },
+                400,
+            );
+        }
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        try {
+            return compressedJson(c, {
+                revisions: store.memory.readProjectionRevisions(refs),
+            } satisfies StructuredMemoryRevisionsAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/projection`, limiter, authenticated, async (c) => {
+        const characterId = c.req.param("characterId");
+        const chatId = c.req.param("chatId");
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        try {
+            const projection = store.memory.readProjection(characterId, chatId, packageRoundBytes);
+            if (!projection) {
+                return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+            }
+            if (projection === "tooLarge") {
+                return c.json({ error: REFUSAL_TEXT.tooLarge, reason: "tooLarge" }, 413);
+            }
+            return compressedJson(c, {
+                revision: projection.revision,
+                hypaV3Data: projection.data,
+            } satisfies StructuredMemoryProjectionAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
 
     app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/edits`, limiter, authenticated, limitBody, async (c) => {
         const characterId = c.req.param("characterId");

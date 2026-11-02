@@ -84,6 +84,9 @@ export type MemoryWriteResult = { revision: string; wrote: boolean };
 /** A chat's table of contents, with the memory revision a write based on it names. */
 export type MemoryContents = StructuredMemoryContentsAnswer;
 
+/** A chat as the revision check names it. */
+export type MemoryChatRef = { characterId: string; chatId: string };
+
 /** A record's body, with the memory revision an edit of it names. */
 export type MemoryRecordRead<K extends MemoryRecordKind> = { revision: string; data: MemoryRecordOf[K] };
 
@@ -327,6 +330,16 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
             "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ?",
     );
+    // The revision of a chat a whole read projects, with no message read. `json_array_length` mirrors
+    // `hypaV3DataHoldsSummaries` on the stored metadata: NULL for a value without the list, 0 for a
+    // `summaries` that is no list, so both own nothing.
+    const selectProjectionRevision = db.prepare(
+        "SELECT c.seq AS seq, COALESCE(s.revision, 0) AS revision FROM chats c " +
+            "LEFT JOIN memory_state s ON s.chatSeq = c.seq " +
+            "WHERE c.characterId = ? AND c.id = ? " +
+            "AND EXISTS (SELECT 1 FROM memory_events e WHERE e.chatSeq = c.seq) " +
+            "AND COALESCE(json_array_length(c.meta, '$.hypaV3Data.summaries'), 0) = 0",
+    );
     const tables = {
         pages: prepareTable(db, MEMORY_TABLES.pages),
         events: prepareTable(db, MEMORY_TABLES.events),
@@ -483,6 +496,24 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             return (selectSeqs.all(chatSeq) as { seq: number }[]).map(({ seq }) => {
                 const { data } = selectRow.get(seq) as { data: string };
                 return JSON.parse(data) as MemoryEvent;
+            });
+        },
+
+        /** The memory revision of the chat with this `seq`, one row: what a projection is sealed with. */
+        revisionToken(chatSeq: number): string {
+            return tokens.token(chatSeq, revisionOf(chatSeq));
+        },
+
+        /**
+         * Per ref, in order, the memory revision of a chat a whole read projects, one statement each and
+         * no message read: a missing chat, one whose stored `hypaV3Data` holds summaries, and one with no
+         * event row answer null.
+         */
+        readProjectionRevisions(refs: readonly MemoryChatRef[]): (string | null)[] {
+            return refs.map(({ characterId, chatId }) => {
+                const row = selectProjectionRevision.get(characterId, chatId) as
+                    { seq: number; revision: number } | undefined;
+                return row ? tokens.token(row.seq, row.revision) : null;
             });
         },
 

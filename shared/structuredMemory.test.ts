@@ -240,3 +240,13 @@ it("seals every JSON field while accepting round trips and recursively reordered
     }
     expect(plain).not.toHaveProperty("structuredMemoryProjection");
 });
+
+it("seals the memory revision so a whole-read baseline cannot be retagged", () => {
+    const revision = "00000000-0000-4000-8000-000000000000:7:3";
+    const value = sealHypaV3Data({ summaries: [] }, revision);
+    expect(value.structuredMemoryRevision).toBe(revision);
+    expect(sealedHypaV3DataIntact(JSON.parse(JSON.stringify(value)))).toBe(true);
+    expect(sealedHypaV3DataIntact({ ...value, structuredMemoryRevision: revision.replace(/3$/, "4") })).toBe(false);
+    const { structuredMemoryRevision: _revision, ...stripped } = value;
+    expect(sealedHypaV3DataIntact(stripped)).toBe(false);
+});

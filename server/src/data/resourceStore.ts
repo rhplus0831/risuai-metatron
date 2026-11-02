@@ -17,6 +17,7 @@ import {
     hypaV3DataHoldsSummaries,
     sealHypaV3Data,
     STRUCTURED_MEMORY_ALGORITHM,
+    type SealedHypaV3Data,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import {
@@ -89,6 +90,7 @@ import {
     createMemoryStagingSink,
     createMemoryTables,
     type MemoryChanges,
+    type MemoryChatRef,
     type MemoryEventRow,
     type MemoryRecordKind,
     type MemorySnapshotSink,
@@ -1474,25 +1476,41 @@ export function createResourceStore(options: {
         return memoryProjection === true && chats.length + chatCollections.length > 0 && structuredMemorySelected();
     }
 
+    /**
+     * The rule of a chat's projection, for a whole read and the projection route alike: what its stored
+     * events and messages make, sealed with the memory revision it was read at. Null when a stored value
+     * with summaries owns the field, because it means HypaV3 does (`hypaV3DataHoldsSummaries`), and when
+     * the chat has no event rows, each at no more than one query. A chat whose events are all retracted
+     * has rows, so it answers an empty value. For a caller that found the algorithm selected; a malformed
+     * record throws.
+     */
+    function sealedMemoryProjection(seq: number, chat: ChatRecord["data"]): SealedHypaV3Data | null {
+        if (hypaV3DataHoldsSummaries(chat.hypaV3Data)) {
+            return null;
+        }
+        const events = memoryTables.readEvents(seq);
+        return events.length > 0
+            ? sealHypaV3Data(projectChatMemory(events, chat.message), memoryTables.revisionToken(seq))
+            : null;
+    }
+
     /** The chats whose projection threw, so a chat read again and again logs once. */
     const unprojectedChats = new Set<number>();
 
     /**
-     * Gives a whole chat of a read that overlays projections its `hypaV3Data`: what its stored events
-     * and messages make, sealed. A stored value with summaries wins, because it means HypaV3 owns the
-     * field (`hypaV3DataHoldsSummaries`), and a chat with no events answers as stored, so each costs at
-     * most one more query. A projection that throws leaves the chat as stored: a malformed record must
-     * not fail a chat read.
+     * Gives a whole chat of a read that overlays projections its `hypaV3Data` (`sealedMemoryProjection`),
+     * and leaves it as stored when that is null. A projection that throws leaves the chat as stored too: a
+     * malformed record must not fail a chat read.
      */
     function overlayMemoryProjection(chat: ChatRead) {
         const seq = chat.revision === null ? undefined : parseToken(chat.revision)?.seq;
-        if (seq === undefined || !chat.data || hypaV3DataHoldsSummaries(chat.data.hypaV3Data)) {
+        if (seq === undefined || !chat.data) {
             return;
         }
         try {
-            const events = memoryTables.readEvents(seq);
-            if (events.length > 0) {
-                chat.data.hypaV3Data = sealHypaV3Data(projectChatMemory(events, chat.data.message));
+            const sealed = sealedMemoryProjection(seq, chat.data);
+            if (sealed) {
+                chat.data.hypaV3Data = sealed;
             }
         } catch (error) {
             if (!unprojectedChats.has(seq)) {
@@ -1970,6 +1988,42 @@ export function createResourceStore(options: {
             readRecord<K extends MemoryRecordKind>(characterId: string, chatId: string, kind: K, id: string) {
                 assertOpen();
                 return memoryTables.readRecord(characterId, chatId, kind, id);
+            },
+            /**
+             * A chat's projection as a whole read would overlay it (`sealedMemoryProjection`), with its
+             * memory revision, in one synchronous step. Missing chat: null. Under another algorithm no
+             * memory table is read, so `revision` is null too. Events over `maxEventBytes` answer
+             * `"tooLarge"` before any message is read. The chat's stored messages are the ones it
+             * reconciles against, and a malformed record throws.
+             */
+            readProjection(
+                characterId: string,
+                chatId: string,
+                maxEventBytes = Infinity,
+            ): { revision: string | null; data: SealedHypaV3Data | null } | "tooLarge" | null {
+                assertOpen();
+                const stored = chatTables.chatRevision(characterId, chatId);
+                if (stored === null) {
+                    return null;
+                }
+                if (!structuredMemorySelected()) {
+                    return { revision: null, data: null };
+                }
+                if (memoryTables.chatEventBytes(characterId, chatId) > maxEventBytes) {
+                    return "tooLarge";
+                }
+                const seq = parseToken(stored)!.seq;
+                const chat = chatTables.readChat(characterId, chatId)!;
+                return { revision: memoryTables.revisionToken(seq), data: sealedMemoryProjection(seq, chat.data) };
+            },
+            /**
+             * Per ref, in order, the memory revision of a chat a whole read projects
+             * (`memoryTables.readProjectionRevisions`). The algorithm is read once for the call, and under
+             * another one every entry is null and no memory table is read.
+             */
+            readProjectionRevisions(refs: readonly MemoryChatRef[]): (string | null)[] {
+                assertOpen();
+                return structuredMemorySelected() ? memoryTables.readProjectionRevisions(refs) : refs.map(() => null);
             },
         },
 

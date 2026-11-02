@@ -683,6 +683,31 @@ export type StructuredMemoryRestoreAnswer = { revision: string; restored: boolea
 /** The most runs one round of the runs route holds, however small they are. */
 export const MEMORY_RUNS_ROUND_ROWS = 50;
 
+/** The most chats one request of the revisions route names. */
+export const MEMORY_REVISION_CHATS_MAX = 2000;
+
+/**
+ * The revisions route's answer, in the order the request named the chats: each chat's memory revision, or
+ * null for a chat a whole read leaves as stored, so that it holds no projection.
+ */
+export type StructuredMemoryRevisionsAnswer = { revisions: (string | null)[] };
+
+/**
+ * A `hypaV3Data` that carries a seal (`sealHypaV3Data`). `structuredMemoryRevision` is the memory revision
+ * the value was read at, on any value a read answers, so a whole read gives a tab its own baseline.
+ */
+export type SealedHypaV3Data = SerializableHypaV3Data & {
+    structuredMemoryProjection: string;
+    structuredMemoryRevision?: string;
+};
+
+/**
+ * The projection route's answer: the chat's memory revision and its projection, as a whole read would
+ * overlay it. `hypaV3Data` is null for a chat that read leaves as stored. Both are null under another
+ * algorithm, which reads no memory table.
+ */
+export type StructuredMemoryProjectionAnswer = { revision: string | null; hypaV3Data: SealedHypaV3Data | null };
+
 /** A run as the runs route answers it: the record without what only a retry reads. */
 export type StructuredMemoryLogRun = Omit<MemoryRun, "input" | "settingsFingerprint">;
 
@@ -833,16 +858,28 @@ function hypaV3Seal(value: Record<string, unknown>): string {
 }
 
 /**
- * `value` with a seal, which tells a tab it holds a projection. The digest covers every field but the
- * seal, so a change to any of them shows, whichever field it is.
+ * `value` with a seal, which tells a tab it holds a projection, and with the memory `revision` it was read
+ * at, when the caller gives one. The digest covers every field but the seal, the revision included, so a
+ * change to any of them shows, whichever field it is. Only here does a value gain a revision: a projection
+ * as such, which the upstream export writes, holds none.
  */
-export function sealHypaV3Data(value: SerializableHypaV3Data): SerializableHypaV3Data {
-    return { ...value, structuredMemoryProjection: hypaV3Seal({ ...value }) };
+export function sealHypaV3Data(value: SerializableHypaV3Data, revision?: string): SealedHypaV3Data {
+    const fields = revision === undefined ? value : { ...value, structuredMemoryRevision: revision };
+    return { ...fields, structuredMemoryProjection: hypaV3Seal({ ...fields }) };
 }
 
 /** Whether `value` carries a seal, intact or not: such a value is a projection and is never stored. */
 export function isSealedHypaV3Data(value: unknown): boolean {
     return isPlainObject(value) && Object.hasOwn(value, "structuredMemoryProjection");
+}
+
+/** The memory revision a sealed `value` was read at, undefined for a value that holds none. */
+export function sealedHypaV3DataRevision(value: unknown): string | undefined {
+    if (!isSealedHypaV3Data(value)) {
+        return undefined;
+    }
+    const { structuredMemoryRevision: revision } = value as Record<string, unknown>;
+    return typeof revision === "string" ? revision : undefined;
 }
 
 /** Whether `value` is a projection as a read answered it: sealed, with nothing changed since. */

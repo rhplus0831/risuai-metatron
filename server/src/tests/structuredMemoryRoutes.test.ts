@@ -1,7 +1,8 @@
 // @vitest-environment node
 import path from "node:path";
 import fs from "node:fs/promises";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
+import { ROUTE_TEMPLATES } from "../../../shared/diagnostics.ts";
 import {
     ADOPTED_WRITER_RUN,
     isSealedHypaV3Data,
@@ -10,6 +11,7 @@ import {
     writerPaused,
     sealedHypaV3DataIntact,
     MEMORY_RUNS_ROUND_ROWS,
+    MEMORY_REVISION_CHATS_MAX,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../shared/structuredMemory.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -1575,7 +1577,7 @@ it("projects reconciled memory on every full resource route while jobs and check
     for (const read of [readChats.chats, collections.chatCollections[0].chats, all.chats]) {
         const value = read.find((entry: { id: string }) => entry.id === chatId).data.hypaV3Data;
         expect(sealedHypaV3DataIntact(value)).toBe(true);
-        const { structuredMemoryProjection: _seal, ...data } = value;
+        const { structuredMemoryProjection: _seal, structuredMemoryRevision: _revision, ...data } = value;
         expect(data).toEqual(history.expected);
     }
     expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
@@ -1640,5 +1642,117 @@ it("projects only when the selected algorithm, events, and stored summary owners
             for (const id of [chatId, "empty"])
                 expect(data(id).hypaV3Data).toMatchObject({ summaries: history.expected.summaries });
         }
+    }
+});
+
+it("answers the same revision-sealed reconciled projection as a whole read, including all-retracted and no-projection states", async () => {
+    const s = await server();
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    s.store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, s.store.get(ui, "main")!.revision);
+    const history = projectionHistory();
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "replace", chat: { ...chat, message: history.messages } }],
+            },
+        ],
+    });
+    const revisions = () => s.json("/api/memory/structured/revisions", { chats: [{ characterId, chatId }] });
+    const whole = async () => {
+        const body = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+        return body.chats[0].data.hypaV3Data;
+    };
+    const first = s.write({ events: history.events });
+    expect(await answer(await revisions())).toEqual({ revisions: [first] });
+    const projected = await answer(await s.request(`${base}/projection`));
+    expect(projected.revision).toBe(first);
+    expect(projected.hypaV3Data).toEqual(await whole());
+    expect(projected.hypaV3Data).toEqual({
+        ...history.expected,
+        structuredMemoryRevision: first,
+        structuredMemoryProjection: expect.any(String),
+    });
+    expect(sealedHypaV3DataIntact(projected.hypaV3Data)).toBe(true);
+    const second = s.write({ events: history.events.map((entry) => ({ ...entry, status: "retracted" as const })) });
+    expect(await answer(await revisions())).toEqual({ revisions: [second] });
+    const empty = await answer(await s.request(`${base}/projection`));
+    expect(empty.hypaV3Data).toMatchObject({ summaries: [], structuredMemoryRevision: second });
+    expect(sealedHypaV3DataIntact(empty.hypaV3Data)).toBe(true);
+    expect(empty.hypaV3Data).toEqual(await whole());
+    s.write({ remove: { events: history.events.map(({ id }) => id) } });
+    expect(await answer(await revisions())).toEqual({ revisions: [null] });
+    expect(await answer(await s.request(`${base}/projection`))).toMatchObject({ hypaV3Data: null });
+    expect(await whole()).toBeUndefined();
+});
+
+it("authenticates, limits, epoch-checks and validates both projection refresh routes", async () => {
+    const s = await server();
+    const revisions = "/api/memory/structured/revisions";
+    const init = {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chats: [{ characterId, chatId }] }),
+    };
+    for (const [url, options] of [
+        [revisions, init],
+        [`${base}/projection`, { headers: {} }],
+    ] as const) {
+        const denied = await s.app.request(url, {
+            ...options,
+            headers: { ...options.headers, "x-resource-epoch": s.epoch },
+        });
+        expect(denied.status).toBeGreaterThanOrEqual(400);
+        expect(denied.status).toBeLessThan(500);
+        expect(denied.status).not.toBe(429);
+        for (const epoch of [null, "wrong-epoch"]) await answer(await s.request(url, options, epoch), 412);
+    }
+    for (const bad of ["", "\u0000", 12]) {
+        for (const field of ["characterId", "chatId"]) {
+            await answer(await s.json(revisions, { chats: [{ characterId, chatId, [field]: bad }] }), 400);
+        }
+    }
+    for (const id of [characterId, chatId])
+        await answer(await s.request(`${base}/projection`.replace(encodeURIComponent(id), "%00")), 400);
+    await answer(
+        await s.json(revisions, {
+            chats: Array.from({ length: MEMORY_REVISION_CHATS_MAX + 1 }, () => ({ characterId: "c", chatId: "k" })),
+        }),
+        400,
+    );
+    expect(ROUTE_TEMPLATES).toContain(revisions);
+    expect(ROUTE_TEMPLATES).toContain("/api/memory/structured/:characterId/:chatId/projection");
+    // Epoch read consumes one request; these two consume the remainder of the frozen window.
+    const limited = await server({ routeLimits: { requestsPerMinute: 3 } });
+    await answer(await limited.request(revisions, init));
+    await answer(await limited.request(`${base}/projection`));
+    await answer(await limited.request(revisions, init), 429);
+    await answer(await limited.request(`${base}/projection`), 429);
+});
+
+it("refuses projection event bytes over the round cap before reading any message", async () => {
+    const input = event("large", "x".repeat(1000));
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(input) - 1 } });
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    s.store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, s.store.get(ui, "main")!.revision);
+    s.write({ events: [input] });
+    const messages: string[] = [];
+    const spies = (["get", "all", "iterate"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            if (/\bmessages\b/.test(this.sourceSQL)) messages.push(this.sourceSQL);
+            return Reflect.apply(original, this, args);
+        });
+    });
+    try {
+        expect(await answer(await s.request(`${base}/projection`), 413)).toMatchObject({ reason: "tooLarge" });
+        expect(messages).toEqual([]);
+    } finally {
+        spies.forEach((spy) => spy.mockRestore());
     }
 });
