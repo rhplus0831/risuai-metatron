@@ -840,12 +840,13 @@ Files: new `server/src/prompt/memory/structured/adopt.ts` and tests; `routes/str
 
 ### Slice 6c: the adoption choice and reset (D11, D12; needs 6a, 5g) — _hard_
 
-Files: `server/src/prompt/memory/structured/{writer,recordJob,step}.ts`, `memoryStore.ts`, `routes/structuredMemory.ts`, the
-panel, `src/lang/en.ts`, tests.
+Files: `server/src/prompt/memory/structured/{writer,recordJob}.ts`, `server/src/prompt/assemble.ts`, `memoryStore.ts`,
+`server/src/data/chatStore.ts`, `server/src/data/resourceStore.ts`, `routes/structuredMemory.ts`,
+`shared/structuredMemory.ts`, `shared/diagnostics.ts`, the panel, `src/lang/en.ts`, tests.
 
 - A chat with real summaries and no records is held (owner, 2026-11-02): automatic recording and Record now write nothing
-  until the person adopts or declines in the panel, which keeps D11's "never both". Declining is kept with the chat's
-  memory state, and the writer then starts from the oldest turn. Nothing is lost by waiting: the summaries stay stored.
+  until the person adopts or declines in the panel, which keeps D11's "never both". Declining is kept in a `memory_state`
+  column (the first column migration, and a snapshot from before it still restores), and the writer then starts from the oldest turn. Nothing is lost by waiting: the summaries stay stored.
 - A reset in the panel empties an adopted chat's stored `hypaV3Data`, since `HypaV3Modal` is not mounted under this
   algorithm. The projection takes over from then on.
 
