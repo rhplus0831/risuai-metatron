@@ -345,7 +345,7 @@ candidates are never written. A write never blocks the send that triggered it (D
   `{{slot::messages}}`) through the task host's ChatML parser and CBS, as HypaV3's summarization prompt is today. In
   the plain mode the frame is code's and the preset adds only a free "writer instructions" text. With the preset's
   **prompt fine-tuning** box checked, the preset's ChatML for the analysis call and for the patch call replaces the
-  default entirely, quoting the slots it wants; a "view default prompt" button shows the full default with its slots,
+  default entirely, quoting the slots it wants beyond the ones a call requires (slice 7c); a "view default prompt" button shows the full default with its slots,
   and a stored guide says what may change (wording, order, examples, language) and what may not (field names and
   types; the validator below is the same in both modes, so a missing field fails the run with that reason in the log
   and the receipt). Checking the box warns that a wrong prompt breaks recording; while it is on, the panel, the health
@@ -887,12 +887,22 @@ tests.
 
 ### Slice 7c: prompt fine-tuning (D3, Q5; needs 2e, 3c) — _hard_
 
-Files: `structured/prompts.ts`, `routes/structuredMemory.ts` (test run), `MemorySettings.svelte`, new
-`src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, the panel and receipt's "custom prompt" state, `src/lang/en.ts`.
+Files: `structured/prompts.ts`, `structured/writer.ts`, `memoryTasks.ts` (type only), `assemble.ts`, new
+`structured/testRun.ts`, `routes/structuredMemory.ts` (default prompts), `routes/generations.ts`, `commandRunner.ts`,
+`shared/jobs.ts`, `serverCommands.ts`, `memoryRecordPress.ts`, `structuredMemory.svelte.ts`, `MemorySettings.svelte`, new
+`src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, `LogTab.svelte`, the panel and receipt's "custom prompt" state,
+`src/lang/en.ts`.
 
 - The ChatML replaces each call's default and quotes `{{slot::…}}`; validation is the same in both modes. The default
   prompt is viewable, the guide text is stored, checking the box warns, and a test run replays the last window without
   saving and shows the parsed output and errors.
+- The test run is a `memoryTest` command job, because a model call needs a job scope. It calls the real writer on the
+  detached task host with a `commit` that writes nothing, and takes no writer lease. A plugin memory slot or a `request`
+  trigger refuses it, naming the reason. The request history row and the job's own receipt stay, as for a preview; those
+  are the call's logs, not a save (owner, 2026-11-02).
+- A call's text is its whole frame. A blank or unparseable prompt, or one missing a required slot, fails the run
+  `customPromptInvalid` with no call (owner, 2026-11-02): analysis needs `messages` and `scene`, patch needs `cast` and
+  `previous`. Other unquoted slots are test-run warnings. Compaction keeps its default frame.
 
 ### Slice 7d: page tools and Markdown import (D5, D9, D10; needs 4c) — _hard_
 
@@ -957,7 +967,8 @@ Answered by the owner on 2026-11-01:
   character and per chat; stored records are not translated when it changes (a rebuild does it). Prompts have two
   tiers, both in the memory preset as HypaV3's summarization prompts are. Plain mode: code owns the format and the
   validation rules, and the user adds only a free "writer instructions" text. Fine-tuning mode (a checkbox): the user's
-  ChatML replaces the default prompt of each writer call entirely and quotes the writer's inputs through named slots
+  ChatML replaces the default prompt of each writer call entirely and quotes the writer's inputs (a call's required
+  slots are checked, slice 7c) through named slots
   (`{{slot::format}}`, `{{slot::rules}}`, `{{slot::language}}`, `{{slot::cast}}`, `{{slot::scene}}`,
   `{{slot::threads}}`, `{{slot::previous}}`, `{{slot::messages}}`), with ordinary CBS also processed; the default
   prompt is viewable, a stored guide says what may change and what may not, a test run replays the last window without
