@@ -521,8 +521,10 @@ The answer to the first complaint. Everything below reads stored data; nothing i
 - Adopt: existing HypaV3 summaries become events (`sources` = `chatMemos`, no participants, title from the first
   sentence) so coverage is kept on day one; the writer then records new turns normally.
 - Rebuild from transcript: a resumable job (batches of one or two turns, staging records, atomic swap at the end, pause
-  and resume across restarts, generation locked for the chat while it runs) chained as tasks on the service so it
-  stays under the per-task deadline. It is also how an adopted chat gains pages, and how a language change is applied.
+  and resume across restarts, generation locked for the chat until the run ends) chained as tasks on the service so it
+  stays under the per-task deadline. A stopped run keeps the lock until a person resumes or abandons it (owner,
+  2026-11-02), because a record written during the stop would be lost at the swap. It is also how an adopted chat gains
+  pages, and how a language change is applied.
 - A cost preview precedes both.
 
 ### D13. Growth control
