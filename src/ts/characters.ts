@@ -283,7 +283,7 @@ export async function exportChat(chatId: string) {
         }
         // A copy: the chat can change while the export translates.
         const chat = JSON.parse(JSON.stringify(found)) as Chat;
-        const fileMemory = memory && exportChatMemory(chat, memory, settings.ui.memoryAlgorithmType);
+        const fileMemory = memory && exportChatMemory(chat, memory);
         // The exported chat's persona name and render context, read now: it need not be the selected
         // chat, and the selection can change during the awaits below.
         const ref = { chaId: char.chaId, chatId };
@@ -662,7 +662,7 @@ export async function exportAllChats() {
         let withoutRecords = 0;
         for (const chat of allChats) {
             const memory = await readStructuredMemoryFile({ chaId, chatId: chat.id });
-            const { entry, failed } = exportChatMemory(chat, memory, settings.ui.memoryAlgorithmType);
+            const { entry, failed } = exportChatMemory(chat, memory);
             if (entry) {
                 structuredMemory.push(entry);
             }

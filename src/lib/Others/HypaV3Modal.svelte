@@ -50,11 +50,15 @@
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
     import { remapHypaV3Metrics, summaryKey } from "../../../shared/memory.ts";
+    import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
-    /** The selected chat's memory data as the chat holds it (read-only). */
-    const chatHypaV3Data = $derived(currentChat?.hypaV3Data);
+    /**
+     * The selected chat's memory data as the chat holds it (read-only). A projection, which a chat can
+     * still hold after another algorithm was selected, is no data here: the first edit is a real write.
+     */
+    const chatHypaV3Data = $derived(isSealedHypaV3Data(currentChat?.hypaV3Data) ? undefined : currentChat?.hypaV3Data);
 
     // The modal and its children edit a copy of the memory data; every change of the copy is written
     // to the chat through the chat module, and a change of the chat's copy from elsewhere (a

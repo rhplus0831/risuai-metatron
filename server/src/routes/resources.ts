@@ -47,7 +47,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * record is gone). A batch op may be a record patch instead of whole data (`patch`, with a string
  * `baseRevision`; see `ResourceBatchOperation`). The batch also carries chat groups and reorders, and the reads chats and chat
  * collections (`shared/chats.ts`). With a streaming source, whole chats carry authoritative lock
- * lists sampled in the same synchronous step as the read; summaries and missing chats do not.
+ * lists sampled in the same synchronous step as the read; summaries and missing chats do not. Both
+ * reads answer a structured chat's `hypaV3Data` with its projection, which only these routes ask for
+ * (`memoryProjection`), so a tab's plugins read it from the chat they hold.
  * `POST /api/resources/read` lists each named entry once, and with `continue: true` stops at
  * `MAX_READ_RESPONSE_BYTES` and names what it left out (`ResourceReadRefsAnswer`).
  * An edit of a message a generation job owns is a 409 whose entry
@@ -148,7 +150,11 @@ export function registerResourceRoutes(
         if (chats !== undefined && chatSummaries !== undefined) {
             return c.json({ error: "chats and chatSummaries cannot be combined" }, 400);
         }
-        const read = store.readKinds(selected, { chats: chats === "1", chatSummaries: chatSummaries === "1" });
+        const read = store.readKinds(selected, {
+            chats: chats === "1",
+            chatSummaries: chatSummaries === "1",
+            memoryProjection: true,
+        });
         addStreaming(read);
         for (const kind of selected) {
             if (kind.project) {
@@ -223,6 +229,7 @@ export function registerResourceRoutes(
             chats: [...chatRefs.values()],
             chatCollections: [...new Set(chatCollections)],
             chatSummaryCollections: [...new Set(chatSummaryCollections)],
+            memoryProjection: true,
         };
         try {
             const read =

@@ -27,7 +27,12 @@ import {
 import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
 import type { ChatLoreOverride } from "../../../shared/database.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+import {
+    hypaV3DataHoldsSummaries,
+    isSealedHypaV3Data,
+    sealedHypaV3DataIntact,
+    STRUCTURED_MEMORY_ALGORITHM,
+} from "../../../shared/structuredMemory.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
     chatTranslationSummary,
@@ -36,7 +41,7 @@ import {
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
-import { alertConfirm, alertError } from "../alert";
+import { alertConfirm, alertError, alertToast } from "../alert";
 import type { character, Chat, groupChat, Message, MessageTranslation } from "./database.svelte";
 import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
@@ -85,6 +90,10 @@ import {
  *   `streamingEntry` (the chat screen's display optimization) from its generation's first stream
  *   update until that generation's lock is released; each chat has its own.
  *   `lockedChatKeys` reads the distinct chat keys holding these locks (reactive).
+ * - A structured chat's `hypaV3Data` is a projection a whole read overlays: the mirror holds it for
+ *   plugins to read, and it never leaves the tab (`sendChat`). A write of the field is decided against
+ *   the held value (`keepsHeldHypaV3Data`); a job's copy, which is stored data, leaves it in place
+ *   unless it brings summaries of its own (`keepsProjection`).
  */
 
 export type ChatRef = { chaId: string; chatId: string };
@@ -664,7 +673,7 @@ function queuedChatLayer(key: string): ChatLayerValues["pending"] | undefined {
             const version = versions.get(key) ?? 0;
             let cached = createSnapshots.get(chat);
             if (!cached || cached.version !== version) {
-                cached = { version, value: projectChat(chat) };
+                cached = { version, value: sendChat(chat) };
                 createSnapshots.set(chat, cached);
             }
             createSnapshot = cached.value;
@@ -743,7 +752,7 @@ function captureChatConflict(
                     baseRevision: chatRevisions.get(key) ?? null,
                     groupId: entry?.groupId ?? groups[0]?.groupId ?? uuidv4(),
                 }),
-                createSnapshot: projectChat(chat),
+                createSnapshot: sendChat(chat),
             };
     }
     conflictListener({ scope: "chat", target: key, layers });
@@ -1298,13 +1307,40 @@ function listEntry(holding: HeldChats, id: string): ChatListEntry {
     return { id, ...metaOf(chat ?? holding.summaries[slot(id)] ?? {}, false) };
 }
 
-/** A chat as sent: a plain copy without the client-only streaming flags. */
+/** A chat as the mirror holds it: a plain copy without the client-only streaming flags. */
 function projectChat(chat: Chat): Chat {
     const copy = snapshot(chat);
     delete copy.isStreaming;
     delete copy.activeStreamingDisplayOptimizationMode;
     copy.message ??= [];
     return copy;
+}
+
+/** Whether a chat field holds a projection: only a read gives it, and no write or journal takes it. */
+function isProjection(field: string, value: unknown): boolean {
+    return field === "hypaV3Data" && isSealedHypaV3Data(value);
+}
+
+/**
+ * Whether a stored `value` of a chat field leaves the projection `held` in place: stored data never
+ * holds one, and a stored value with no summaries owns nothing (`hypaV3DataHoldsSummaries`), absent or
+ * empty alike. A value with summaries, or a read's sealed one, takes over.
+ */
+function keepsProjection(field: string, held: unknown, value: unknown): boolean {
+    return isProjection(field, held) && !isSealedHypaV3Data(value) && !hypaV3DataHoldsSummaries(value);
+}
+
+function withoutProjection(chat: Chat): Chat {
+    if (!isSealedHypaV3Data(chat.hypaV3Data)) {
+        return chat;
+    }
+    const { hypaV3Data: _projected, ...stored } = chat;
+    return stored;
+}
+
+/** A chat as it leaves the tab or enters the journal: `projectChat` without a projection. */
+function sendChat(chat: Chat): Chat {
+    return withoutProjection(projectChat(chat));
 }
 
 /**
@@ -1353,10 +1389,13 @@ const beforeValues = new WeakMap<ChatOp, JournalBefore>();
 
 function fieldsBefore(target: object, fields: Iterable<string>): JournalBefore {
     const values = target as Record<string, unknown>;
+    // A projection is left out: what an op overwrites on the server is no field at all.
     return {
         value: clone(
             Object.fromEntries(
-                [...fields].filter((key) => Object.hasOwn(values, key)).map((key) => [key, values[key]]),
+                [...fields]
+                    .filter((key) => Object.hasOwn(values, key) && !isProjection(key, values[key]))
+                    .map((key) => [key, values[key]]),
             ),
         ),
     };
@@ -2051,6 +2090,9 @@ function dropFeedLocksOf(
  * the server, is not hydrated; a member that is not loaded takes the copy's revision and summary only
  * (a server copy never loads a chat). Nothing is queued, discarded, or settled, and no notice is shown.
  *
+ * A copy whose `hypaV3Data` holds no summaries leaves a projection held in place (`keepsProjection`):
+ * a job's copy is stored data, which never holds one.
+ *
  * `job` (a job's chat event): its `streaming` messages are still generating, each with the newest
  * chunk the copy holds; a streamed text with a higher `seq` is put back on its message, and its lock
  * stays. Every other lock of that job in the chat is released (the reply is final in the copy; if the
@@ -2316,7 +2358,12 @@ function applyChatHydration(server: {
         return "busy";
     }
     if (isLoaded(ref)) {
-        holdingOf(server.characterId).chats[slot(server.id)] = clone<Chat>(server.data);
+        const copy = clone<Chat>(server.data);
+        const heldData = heldChat(ref)?.hypaV3Data;
+        if (keepsProjection("hypaV3Data", heldData, copy.hypaV3Data)) {
+            copy.hypaV3Data = heldData;
+        }
+        holdingOf(server.characterId).chats[slot(server.id)] = copy;
     } else {
         holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
     }
@@ -2482,25 +2529,34 @@ function installChatPatch(
         chat.message.length = start + tail.length;
     }
     if (patch.meta) {
-        // The chat's fields become the stored ones, as a whole copy replaces them.
+        // The chat's fields become the stored ones, as a whole copy replaces them, but for a
+        // projection held, which stored fields replace only with summaries (`keepsProjection`).
         const fields = chat as unknown as Record<string, unknown>;
         for (const field of Object.keys(fields)) {
-            if (field !== "message" && !Object.hasOwn(patch.meta, field)) {
+            if (
+                field !== "message" &&
+                !Object.hasOwn(patch.meta, field) &&
+                !keepsProjection(field, fields[field], undefined)
+            ) {
                 delete fields[field];
             }
         }
         for (const [field, value] of Object.entries(patch.meta)) {
-            if (field !== "message") {
+            if (field !== "message" && !keepsProjection(field, fields[field], value)) {
                 fields[field] = clone(value);
             }
         }
     } else if (fields) {
         const target = chat as unknown as Record<string, unknown>;
         for (const field of fields.remove) {
-            delete target[field];
+            if (!keepsProjection(field, target[field], undefined)) {
+                delete target[field];
+            }
         }
         for (const [field, value] of fields.set) {
-            target[field] = value;
+            if (!keepsProjection(field, target[field], value)) {
+                target[field] = value;
+            }
         }
     }
     const key = keyOf(patch.characterId, patch.id);
@@ -2852,9 +2908,10 @@ export function createChat(
     }
     chat.message ??= [];
     prepareMessages(chat.message, new Set());
+    const key = keyOf(chaId, chat.id);
+    settleHypaV3Data(key, chat, undefined);
     const index = Math.max(0, Math.min(options.index ?? ids.length, ids.length));
     const created = insertChat(chaId, index, chat);
-    const key = keyOf(chaId, chat.id);
     changed(key);
     const ref = { chaId, chatId: chat.id };
     if (!releaseChatRefusal(ref)) {
@@ -3497,6 +3554,83 @@ const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
     fmIndex: () => -1,
 };
 
+/** The chats that showed the notice of a refused `hypaV3Data`, so a plugin writing on every send stacks no toasts. */
+const refusedProjectionChats = new Set<string>();
+
+/** Tells of a `hypaV3Data` dropped from a write whose other fields still apply. */
+function noticeRefusedProjection(key: string) {
+    console.warn(
+        "[Plugin] Refused a change to hypaV3Data, which Structured Memory projects from its records; the previous value was kept",
+    );
+    if (!refusedProjectionChats.has(key)) {
+        refusedProjectionChats.add(key);
+        alertToast(language.structuredMemory.projectionWriteRefused);
+    }
+}
+
+/**
+ * Whether a write's `hypaV3Data` (`incoming`, undefined when it names none) leaves the field as `held`
+ * holds it, before the mirror changes or a journal sidecar is captured. `held` is the chat, undefined
+ * for a new chat; `baseline` the value the writer started from, the held one when it has none. Nothing
+ * here authorizes: a seal only says a value is a projection.
+ *
+ * With Structured Memory selected the field is the projection's: a sealed value held, or on an existing
+ * chat anything but a real value with summaries, the one thing that means HypaV3 owns the field
+ * (`hypaV3DataHoldsSummaries`).
+ *
+ * - A sealed value is never taken: it is a projection, this chat's or another's, or an older one a
+ *   plugin read before a refresh. It raises the notice only when something in it was changed.
+ * - An absent value leaves the field in place when it is the projection's, or a projection held or
+ *   started from: a plugin's object without the field loses nothing. A real value goes as it always did.
+ * - An unsealed value goes unless the field is the projection's, when a change is dropped with the
+ *   notice, so it never becomes a stored owner. A new chat has no records. With another algorithm
+ *   selected it is a real write, which replaces a projection held from before: HypaV3 owns the chat
+ *   from then on.
+ */
+function keepsHeldHypaV3Data(key: string, incoming: unknown, held: Chat | undefined, baseline: unknown): boolean {
+    const differs = () => JSON.stringify(incoming) !== JSON.stringify(baseline);
+    if (isSealedHypaV3Data(incoming)) {
+        if (!sealedHypaV3DataIntact(incoming) && differs()) {
+            noticeRefusedProjection(key);
+        }
+        return true;
+    }
+    const heldValue = held?.hypaV3Data;
+    const projectionsField = () =>
+        (isSealedHypaV3Data(heldValue) || !hypaV3DataHoldsSummaries(heldValue)) &&
+        settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+    if (incoming === undefined) {
+        return (
+            isSealedHypaV3Data(heldValue) ||
+            isSealedHypaV3Data(baseline) ||
+            (heldValue !== undefined && projectionsField())
+        );
+    }
+    if (!held || !projectionsField()) {
+        return false;
+    }
+    if (differs()) {
+        noticeRefusedProjection(key);
+    }
+    return true;
+}
+
+/**
+ * `keepsHeldHypaV3Data` for a whole copy: `chat`, the copy a write takes in, gets the held value when
+ * the field stays, so whatever holds the copy next holds that. Returns whether it stayed.
+ */
+function settleHypaV3Data(key: string, chat: Chat, held: Chat | undefined, baseline = held): boolean {
+    if (!keepsHeldHypaV3Data(key, chat.hypaV3Data, held, baseline?.hypaV3Data)) {
+        return false;
+    }
+    if (held?.hypaV3Data === undefined) {
+        delete chat.hypaV3Data;
+    } else {
+        chat.hypaV3Data = clone(held.hypaV3Data);
+    }
+    return true;
+}
+
 /**
  * The chat fields a chat list writes (`ChatListEntry`'s): `setChatMeta` changes them also in a chat
  * that is not loaded (its summary), with the type the summary holds. Optional fields such as `pinned`
@@ -3520,7 +3654,8 @@ const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolea
  * server defaults (`SERVER_META_DEFAULTS`) is set to its default instead of removed or set to `null`.
  * A chat that is not loaded takes changes of its list fields only (`SUMMARY_FIELD_TYPES`: its summary
  * changes and the same op is queued); any other field needs it loaded. The whole change is checked
- * before anything changes.
+ * before anything changes. A `hypaV3Data` that stays as held (`keepsHeldHypaV3Data`) drops out, and
+ * the other fields still apply.
  */
 export function setChatMeta(
     ref: ChatRef,
@@ -3566,7 +3701,10 @@ export function setChatMeta(
             continue;
         }
         // Serialized as it is (a `$state.snapshot` would drop a nested own `__proto__`).
-        if (JSON.stringify(chat[key]) !== JSON.stringify(value)) {
+        if (JSON.stringify(chat[key]) === JSON.stringify(value)) {
+            continue;
+        }
+        if (key !== "hypaV3Data" || !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), value, loaded, chat[key])) {
             changes[key] = clone(value);
         }
     }
@@ -3575,7 +3713,12 @@ export function setChatMeta(
             throw new Error(`setChatMeta cannot change ${key}`);
         }
         // A field the server defaults is never removed: the loop above set it to its default.
-        return Object.hasOwn(chat, key) && !Object.hasOwn(changes, key) && !Object.hasOwn(SERVER_META_DEFAULTS, key);
+        return (
+            Object.hasOwn(chat, key) &&
+            !Object.hasOwn(changes, key) &&
+            !Object.hasOwn(SERVER_META_DEFAULTS, key) &&
+            (key !== "hypaV3Data" || !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), undefined, loaded, chat[key]))
+        );
     });
     if (Object.keys(changes).length === 0 && removals.length === 0) {
         return;
@@ -3668,9 +3811,10 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     prepareMessages(chat.message, new Set());
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
+    settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref));
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "replace", chat: projectChat(chat) });
+    enqueueLocalEdit(ref, { op: "replace", chat: sendChat(chat) });
 }
 
 /**
@@ -3702,7 +3846,8 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
  * Changes made meanwhile by others are kept. When the hook reordered surviving messages, the whole
  * chat is replaced, but only if it has not changed since the baseline and no generation runs in it
  * (otherwise the order change is dropped with a warning). The locks and the message patches are
- * checked before the mirror changes.
+ * checked before the mirror changes. A `hypaV3Data` that stays as held (`keepsHeldHypaV3Data`) is
+ * dropped from the result alone: the rest of it still applies.
  */
 export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Chat>) {
     const { ref } = baseline;
@@ -3766,6 +3911,9 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         }
     }
 
+    // After every refusal of the whole result, so the notice speaks of a write that goes on.
+    const heldHypaV3Data = settleHypaV3Data(keyOf(ref.chaId, ref.chatId), next, current, baseline.chat);
+
     if (reordered) {
         const unchanged = baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0);
         if (unchanged && !isChatGenerating(ref)) {
@@ -3811,7 +3959,11 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const baseFields = baseline.chat as unknown as Record<string, unknown>;
     const nextFields = next as unknown as Record<string, unknown>;
     for (const key of new Set([...Object.keys(baseFields), ...Object.keys(nextFields)])) {
-        if (nonMetaKeys.has(key) || JSON.stringify(baseFields[key]) === JSON.stringify(nextFields[key])) {
+        if (
+            nonMetaKeys.has(key) ||
+            (key === "hypaV3Data" && heldHypaV3Data) ||
+            JSON.stringify(baseFields[key]) === JSON.stringify(nextFields[key])
+        ) {
             continue;
         }
         const before = baseFields[key];
@@ -3937,6 +4089,7 @@ export function installRecoveredChat(
     const copy = clone<typeof intent>(intent);
     const seq = nextSeq();
     if ("snapshot" in copy) {
+        settleHypaV3Data(key, copy.snapshot, undefined);
         insertChat(ref.chaId, memberIds(ref.chaId).length, copy.snapshot);
         changed(key);
     } else if (deleting) {
@@ -4231,7 +4384,9 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
         entry.create = false;
         entry.resend = null;
         entry.ops = [
-            ...refused.ops.map((op): ChatOp => (op.op === "create" ? { op: "replace", chat: op.chat } : op)),
+            ...refused.ops.map((op): ChatOp =>
+                op.op === "create" ? { op: "replace", chat: withoutProjection(op.chat) } : op,
+            ),
             ...entry.ops,
         ];
         entry.seq = seq;
@@ -4253,7 +4408,7 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
             chat && !refused.recovered
                 ? refused.create
                     ? []
-                    : [{ op: "replace", chat: projectChat(chat) }]
+                    : [{ op: "replace", chat: sendChat(chat) }]
                 : [...refused.ops, ...entry.ops];
         entry.seq = seq;
     }
@@ -4368,7 +4523,13 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
         known.size > 0 || orderRevisions.has(chaId) || pendingOrders.has(chaId) || inflightOrders.has(chaId);
     renewLifetime(chaId);
     dropLoadState(chaId);
-    setChatList(chaId, loadedEntries(prepareCharacterChats(chats, character)));
+    const prepared = prepareCharacterChats(chats, character);
+    for (const chat of prepared) {
+        // Only a chat the mirror holds whole is an existing one here: of any other, nothing says what
+        // the field is, and a value this drops would be lost with the chat's `replace`.
+        settleHypaV3Data(keyOf(chaId, chat.id!), chat, heldChat({ chaId, chatId: chat.id! }));
+    }
+    setChatList(chaId, loadedEntries(prepared));
     // Explicit recreation supersedes the refused intent; reconciliation below queues its replacement.
     for (const key of known) clearChatRefusal(key);
     if (reconcile) {
@@ -4409,7 +4570,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
                 sending?.ops[0]?.op === "delete" ||
                 !!entry.resend?.ops.some((op) => op.op === "delete") ||
                 (!chatRevisions.has(key) && !sending && !entry.resend);
-            entry.ops = entry.create ? [] : [{ op: "replace", chat: projectChat(chat) }];
+            entry.ops = entry.create ? [] : [{ op: "replace", chat: sendChat(chat) }];
             entry.seq = nextSeq();
             dirtyChatJournal(key, "pending");
         }
@@ -4831,7 +4992,7 @@ export function takeChatWork(
             return serverHolds(otherKey) || createdHere.has(otherKey);
         }).length;
         // The mirror copy already holds every queued change.
-        const group = sentGroup(key, entry, null, [{ op: "create", chat: projectChat(chat), index }], entry.groupId);
+        const group = sentGroup(key, entry, null, [{ op: "create", chat: sendChat(chat), index }], entry.groupId);
         inflight.set(key, group);
         pending.delete(key);
         groups.push(group);
@@ -4956,7 +5117,7 @@ function sentGroup(
 
 /** A chat in the form the server stores it (the defaults it adds), for comparisons. */
 function canonicalChat(chat: Chat): string {
-    const copy = clone(chat) as Chat;
+    const copy = withoutProjection(clone(chat) as Chat);
     delete copy.isStreaming;
     delete copy.activeStreamingDisplayOptimizationMode;
     copy.name ??= "";
@@ -5677,8 +5838,10 @@ export function acceptRemoteChat(
 /**
  * Applies a server copy without settling or discarding any work (callers establish eligibility). A
  * loaded chat takes the copy; a member that is not loaded, or a chat new to the list, takes its
- * summary only (a server copy never loads a chat). Feed locks reconcile from its stamped snapshot,
- * with the revision-based fallback only when the snapshot or stamp is absent.
+ * summary only (a server copy never loads a chat). The copy is a whole read, so unlike a job's it
+ * speaks for `hypaV3Data` too: without a projection of its own, one held is gone (the records are, or
+ * another algorithm is selected). Feed locks reconcile from its stamped snapshot, with the
+ * revision-based fallback only when the snapshot or stamp is absent.
  */
 function applyRemoteChat(server: RemoteChat) {
     const key = keyOf(server.characterId, server.id);

@@ -6,6 +6,7 @@ import {
     memoryAnchorState,
     reconcileMemoryEvents,
     writerPaused,
+    sealedHypaV3DataIntact,
     MEMORY_RUNS_ROUND_ROWS,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../shared/structuredMemory.ts";
@@ -22,7 +23,7 @@ import { messageSourceHash } from "../data/memoryStore.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
 import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
-import { memoryKinds, writeMemory } from "./memoryFixtures.ts";
+import { memoryKinds, projectionHistory, writeMemory } from "./memoryFixtures.ts";
 import { createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -1327,4 +1328,109 @@ it("reads whole threads in revision-bound byte rounds and refuses a stale contin
     expect(await answer(await s.request(continuation))).toEqual({ revision, threads: [threads[2]], next: null });
     s.write({ threads: [{ ...threads[2], state: "cancelled" }] });
     await answer(await s.request(continuation), 409);
+});
+
+it("projects reconciled memory on every full resource route while jobs and checkpoints read stored fields", async () => {
+    const s = await server();
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const ui = kinds.get("ui")!;
+    const row = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(row.data as object), memoryAlgorithmType: "structuredMemory" }, row.revision);
+    const history = projectionHistory();
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "replace", chat: { ...chat, message: history.messages } }],
+            },
+        ],
+    });
+    s.write({ events: history.events });
+    const context = bindChat(s);
+    const readChats = await answer(
+        await s.request("/api/resources/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chats: [{ characterId, id: chatId }] }),
+        }),
+    );
+    const collections = await answer(
+        await s.request("/api/resources/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chatCollections: [characterId] }),
+        }),
+    );
+    const all = await answer(await s.request("/api/resources?kinds=characters&chats=1"));
+    for (const read of [readChats.chats, collections.chatCollections[0].chats, all.chats]) {
+        const value = read.find((entry: { id: string }) => entry.id === chatId).data.hypaV3Data;
+        expect(sealedHypaV3DataIntact(value)).toBe(true);
+        const { structuredMemoryProjection: _seal, ...data } = value;
+        expect(data).toEqual(history.expected);
+    }
+    expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
+    expect(s.store.readRefs([], { chats: [{ characterId, id: chatId }] }).chats[0].data).not.toHaveProperty(
+        "hypaV3Data",
+    );
+    expect(loadJobScope(s.store, kinds, context).db.characters[0].chats[0]).not.toHaveProperty("hypaV3Data");
+    const saved = s.store.checkpoints.save(characterId, chatId, "Stored fields", "manual")!;
+    expect(s.store.checkpoints.compose(characterId, chatId, saved.id)).not.toHaveProperty("hypaV3Data");
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "changed")!.data).toMatchObject({
+        status: "active",
+    });
+});
+
+it("projects only when the selected algorithm, events, and stored summary ownership permit it", async () => {
+    const s = await server();
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const history = projectionHistory();
+    const real = { summaries: [{ text: "Owned by HypaV3", chatMemos: [], isImportant: false }] };
+    for (const [id, hypaV3Data, events] of [
+        [chatId, undefined, true],
+        ["empty", { summaries: [] }, true],
+        ["owned", real, true],
+        ["no-events", { summaries: [] }, false],
+    ] as const) {
+        const revision = s.store.chatRevision(characterId, id);
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId: id,
+                    baseRevision: revision,
+                    ops: [
+                        {
+                            op: revision ? "replace" : "create",
+                            chat: { ...chat, message: history.messages, ...(hypaV3Data ? { hypaV3Data } : {}) },
+                        },
+                    ],
+                },
+            ],
+        });
+        if (events) writeMemory(s.store, characterId, id, { events: history.events });
+    }
+    for (const algorithm of ["hypaV3", "structuredMemory"]) {
+        const ui = kinds.get("ui")!;
+        const row = s.store.get(ui, "main")!;
+        s.store.put(ui, "main", { ...(row.data as object), memoryAlgorithmType: algorithm }, row.revision);
+        const body = await answer(
+            await s.request("/api/resources/read", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ chatCollections: [characterId] }),
+            }),
+        );
+        const data = (id: string) => body.chatCollections[0].chats.find((c: { id: string }) => c.id === id).data;
+        expect(data("owned").hypaV3Data).toEqual(real);
+        expect(data("no-events").hypaV3Data).toEqual({ summaries: [] });
+        if (algorithm === "hypaV3") {
+            expect(data(chatId)).not.toHaveProperty("hypaV3Data");
+            expect(data("empty").hypaV3Data).toEqual({ summaries: [] });
+        } else {
+            for (const id of [chatId, "empty"])
+                expect(data(id).hypaV3Data).toMatchObject({ summaries: history.expected.summaries });
+        }
+    }
 });

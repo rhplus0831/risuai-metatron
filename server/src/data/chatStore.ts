@@ -21,6 +21,7 @@ import {
     MAX_FEED_PATCH_BYTES,
     RESOURCE_KIND,
 } from "../../../shared/resources.ts";
+import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -570,6 +571,18 @@ function prepareMessage(input: unknown): PreparedMessage {
     return { id: message.chatId as string, text: serialize(message).text };
 }
 
+/**
+ * `fields` without a sealed `hypaV3Data`: a projection a tab carried over from a read (a recovered
+ * resend, a stale tab) is never stored. An unsealed value is a real HypaV3 write and stays.
+ */
+function withoutProjection(fields: Record<string, unknown>): Record<string, unknown> {
+    if (!isSealedHypaV3Data(fields.hypaV3Data)) {
+        return fields;
+    }
+    const { hypaV3Data: _projected, ...rest } = fields;
+    return rest;
+}
+
 function prepareWholeChat(
     chat: unknown,
     chatId: string,
@@ -577,7 +590,7 @@ function prepareWholeChat(
     if (!isPlainObject(chat)) {
         throw new ResourceValidationError("chat must be an object");
     }
-    const { text: meta, stored } = serialize(normalizeChatMeta(chat, chatId));
+    const { text: meta, stored } = serialize(normalizeChatMeta(withoutProjection(chat), chatId));
     const summary = summaryText(stored as Record<string, unknown>);
     // Keep whole-array JSON semantics, but measure depth per message as `prepareMessage` does.
     const sent = chat.message === undefined ? undefined : serialize(chat.message, { arrayElementDepth: true }).stored;
@@ -728,7 +741,8 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             }
             return {
                 op: "meta",
-                set,
+                // A set this leaves empty still applies: the op moves the revision as sent.
+                set: withoutProjection(set),
                 unset,
                 merge: merge as Record<string, Record<string, unknown>>,
                 mergeUnset: mergeUnset as Record<string, string[]>,

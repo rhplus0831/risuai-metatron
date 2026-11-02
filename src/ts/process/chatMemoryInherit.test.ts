@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
 import type { Chat } from "../../../shared/database.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 
@@ -245,4 +246,35 @@ it("keeps imports whose create was discarded, refused or failed and reports them
     );
     for (const { id } of created)
         expect(m.chat.findChat({ chaId: source.chaId, chatId: id! })?.message).toEqual(input.message);
+});
+
+it("copies and branches without carrying a projection into the new chat or its create request", async () => {
+    const { alertToast } = await import("../alert");
+    vi.mocked(alertToast).mockClear();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+        for (const message of [input.message, []]) {
+            const created = m.inherit.createInheritingChat(
+                source,
+                {
+                    ...input,
+                    message,
+                    hypaV3Data: sealHypaV3Data({
+                        summaries: [{ text: "Projected", chatMemos: ["m"], isImportant: true }],
+                    }),
+                },
+                {},
+            );
+            expect(created).not.toHaveProperty("hypaV3Data");
+            expect(created.message).toEqual(message);
+            const work = m.chat.takeChatWork(new Set());
+            expect(work.groups.find((group) => group.chatId === created.id)!.ops[0]).toMatchObject({ op: "create" });
+            expect(JSON.stringify(m.chat.chatWorkBody(work))).not.toContain("hypaV3Data");
+            await settle();
+        }
+        expect(alertToast).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+    } finally {
+        warn.mockRestore();
+    }
 });

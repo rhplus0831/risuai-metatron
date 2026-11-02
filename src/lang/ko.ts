@@ -1761,6 +1761,7 @@ export const languageKorean = {
             "translator-steps-flattened": "번역 프리셋을 첫 번째 사용 단계로 줄였습니다",
             "trash-time-refreshed": "휴지통의 캐릭터를 RisuAI가 바로 지우지 않도록 유지했습니다",
             "shape-repaired": "RisuAI가 불러오지 못할 목록을 고쳤습니다",
+            "memory-projected": "구조화 기억의 이벤트를 HypaV3 요약으로 바꾼 채팅",
         },
         excluded: {
             "api-keys": "API 키 (선택에 따라 제외)",
@@ -1774,6 +1775,7 @@ export const languageKorean = {
             "translator-steps": "RisuAI에 자리가 없는 번역 설정",
             "plugin-storage": "RisuAI가 브라우저에 보관하는 플러그인 데이터",
             inlays: "인레이 이미지가 있는 채팅 (이미지는 파일에 없습니다)",
+            "memory-unreadable": "구조화 기억을 읽지 못한 채팅",
             "asset-names": "RisuAI 백업에 담을 수 없는 이름의 이미지와 파일",
         },
         missingTitle: "없는 이미지와 파일 (파일에 들어가지 않음)",

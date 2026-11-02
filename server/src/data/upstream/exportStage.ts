@@ -9,10 +9,10 @@ import { encodeUpstreamDatabase } from "./risuSave.ts";
 
 /**
  * The upstream export's database preparation, free of worker APIs so it also runs in process.
- * Reads only the store copy without checkpoint tables, projects it with the default resource kinds,
- * encodes it, checks the archive's record-size limit, and writes `databaseFile`. A store with custom
- * resource kinds is not supported by the export. Secret values stay here; only the report and asset
- * references return.
+ * Reads only the store copy without checkpoint tables (a problem in its memory tables does not stop
+ * it: `readSnapshotFile`), projects it with the default resource kinds, encodes it, checks the
+ * archive's record-size limit, and writes `databaseFile`. A store with custom resource kinds is not
+ * supported by the export. Secret values stay here; only the report and asset references return.
  */
 
 export type UpstreamExportStageInput = {

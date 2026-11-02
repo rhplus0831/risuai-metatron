@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { parseContextReport } from "../../../shared/contextReport.ts";
 import type { Message } from "../../../shared/database.ts";
+import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
 import {
     MEMORY_EVENT_STATUSES,
@@ -8,9 +10,13 @@ import {
     MEMORY_RECORD_KINDS,
     MEMORY_RUN_RESULTS,
     MEMORY_THREAD_STATES,
+    projectHypaV3Data,
+    reconcileMemoryEvents,
+    storedMemorySources,
 } from "../../../shared/structuredMemory.ts";
 import type {
     MemoryEvent,
+    MemoryManifest,
     MemoryPage,
     MemoryRun,
     MemoryThread,
@@ -92,6 +98,9 @@ export type MemorySnapshotSink = {
     state(row: { chatSeq: number; revision: number }): void;
     record(kind: MemoryRecordKind, chatSeq: number, row: readonly (string | number)[]): void;
 };
+
+/** One `memory_events` row of a snapshot, as `readSnapshotFile` collects it. */
+export type MemoryEventRow = { readonly chatSeq: number; readonly data: string };
 
 /** What sets one record table apart from the others; everything else is one code path. */
 type MemoryTable = {
@@ -309,6 +318,15 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     );
     const selectCreatedRevision = db.prepare("SELECT createdRevision FROM memory_events WHERE chatSeq = ? AND id = ?");
     const selectScenePage = db.prepare("SELECT id FROM memory_pages WHERE chatSeq = ? AND type = 'scene'");
+    // A budgeted read's charges for the events a projection answers: stored sizes only.
+    const sumChatEventBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
+            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ? AND c.id = ?",
+    );
+    const sumCharacterEventBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
+            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ?",
+    );
     const tables = {
         pages: prepareTable(db, MEMORY_TABLES.pages),
         events: prepareTable(db, MEMORY_TABLES.events),
@@ -457,6 +475,25 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             for (const { seq } of selectSeqs.iterate(chatSeq) as Iterable<{ seq: number }>) {
                 yield selectRow.get(seq) as { id: string; data: string };
             }
+        },
+
+        /** The events of the chat with this `seq` in `seq` order, parsed: none costs one statement. */
+        readEvents(chatSeq: number): MemoryEvent[] {
+            const { selectSeqs, selectRow } = tables.events;
+            return (selectSeqs.all(chatSeq) as { seq: number }[]).map(({ seq }) => {
+                const { data } = selectRow.get(seq) as { data: string };
+                return JSON.parse(data) as MemoryEvent;
+            });
+        },
+
+        /** The stored bytes of a chat's events, 0 without any. */
+        chatEventBytes(characterId: string, chatId: string): number {
+            return (sumChatEventBytes.get(characterId, chatId) as { bytes: number }).bytes;
+        },
+
+        /** The stored bytes of the events of all a character's chats, 0 without any. */
+        characterEventBytes(characterId: string): number {
+            return (sumCharacterEventBytes.get(characterId) as { bytes: number }).bytes;
         },
 
         /**
@@ -734,4 +771,46 @@ export function messageSourceHash(message: Pick<Message, "role" | "data">): stri
     return createHash("sha256")
         .update(JSON.stringify([message.role, message.data]), "utf8")
         .digest("hex");
+}
+
+/** The last send's manifest: the newest context report with an `items` list, empty when that send included nothing. */
+function lastMemoryManifest(messages: readonly Message[]): MemoryManifest | null {
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const items = parseContextReport(messages[index].generationInfo?.context)?.memory?.items;
+        if (items) {
+            return { items };
+        }
+    }
+    return null;
+}
+
+/**
+ * A chat's `hypaV3Data` as its stored `events` and `messages` make it, unsealed: reconciled first, so a
+ * source that changed never reads as active, then in the order of each event's earliest source by
+ * current position, because every HypaV3 reader takes `summaries` as chronological while `seq` is
+ * storage order and a re-record lands last. An event with no source in `messages` goes last, and ties
+ * keep `seq` order. A malformed stored event can throw; the callers each decide what that means.
+ */
+export function projectChatMemory(
+    events: readonly MemoryEvent[],
+    messages: readonly Message[],
+): SerializableHypaV3Data {
+    const positions = new Map<string, number>();
+    messages.forEach(({ chatId }, index) => {
+        if (chatId !== undefined) {
+            positions.set(chatId, index);
+        }
+    });
+    const placed = reconcileMemoryEvents(events, messages, messageSourceHash).map((event) => {
+        let position = Infinity;
+        for (const { messageId } of storedMemorySources(event.sources)) {
+            position = Math.min(position, positions.get(messageId) ?? Infinity);
+        }
+        return { event, position };
+    });
+    placed.sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0));
+    return projectHypaV3Data(
+        placed.map(({ event }) => event),
+        lastMemoryManifest(messages),
+    );
 }

@@ -1,7 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import type { Chat } from "../../shared/database.ts";
-import { MEMORY_RESTORE_BODY_BYTES, type StructuredMemoryFileRecords } from "../../shared/structuredMemory.ts";
+import {
+    MEMORY_RESTORE_BODY_BYTES,
+    sealHypaV3Data,
+    type StructuredMemoryFileRecords,
+} from "../../shared/structuredMemory.ts";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
 // `importChat` writes the character selected when the dialog opened, captured by id,
@@ -599,8 +603,108 @@ function memoryRead(records: StructuredMemoryFileRecords, route: string, runs: u
     );
 }
 
+/** A read's projection in the mirror and in the detached HTTP collection read used by exportAllChats. */
+function installReadProjection(b: Awaited<ReturnType<typeof boot>>, input: Chat) {
+    const remote = b.fake.chat(b.alpha, input.id!)!;
+    const projection = sealHypaV3Data(input.hypaV3Data!);
+    b.chat.acceptRemoteChat({ ...remote, data: { ...remote.data, hypaV3Data: projection } });
+    const fetch = b.fake.fetch;
+    vi.spyOn(b.fake, "fetch").mockImplementation(async (path, init) => {
+        const response = await fetch(path, init);
+        if (new URL(path, "http://test").pathname !== "/api/resources/read") return response;
+        const body = await response.json();
+        for (const collection of body.chatCollections ?? []) {
+            const chat = collection.chats.find((chat: { id: string }) => chat.id === input.id);
+            if (chat) chat.data.hypaV3Data = projection;
+        }
+        return Response.json(body);
+    });
+}
+
+it.each([
+    { mode: "0", format: "JSON" },
+    { mode: "2", format: "HTML .idat" },
+    { mode: "all", format: "all chats" },
+])(
+    "exports $format without a sealed projection after switching algorithms, with records available",
+    async ({ mode }) => {
+        const b = await boot();
+        b.settings.ui.memoryAlgorithmType = "structuredMemory";
+        const input = pausedChat("projected");
+        b.chat.createChat(b.alpha, input);
+        await b.sync.flushResources();
+        installReadProjection(b, input);
+        b.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        serveMemory(b, (chatId, route) => memoryRead(fileRecords(chatId), route));
+        if (mode === "all") await b.characters.exportAllChats();
+        else {
+            alerts.select.mockResolvedValueOnce(mode);
+            if (mode === "2") alerts.select.mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+            await b.characters.exportChat(input.id!);
+        }
+        expect(b.downloads).toHaveLength(1);
+        const text = b.downloads[0].data;
+        const file = mode === "2" ? null : JSON.parse(text);
+        const exported = file
+            ? mode === "all"
+                ? file.data.find((chat: Chat) => chat.id === input.id)
+                : file.data
+            : JSON.parse(new DOMParser().parseFromString(text, "text/html").querySelector(".idat")!.textContent!);
+        if (file) expect(file.structuredMemory).toContainEqual({ chatId: input.id, ...fileRecords(input.id!) });
+        expect(exported).not.toHaveProperty("hypaV3Data");
+        expect(text).not.toContain("structuredMemoryProjection");
+    },
+);
+
 it.each(["structuredMemory", "hypaMemoryV3"])(
-    "exports JSON and HTML under %s with only the applicable projection and receipts removed",
+    "exports JSON, HTML and all chats under %s after records fail, dropping sealed projections and keeping real summaries",
+    async (algorithm) => {
+        const b = await boot();
+        const projected = pausedChat("projected");
+        const real = pausedChat("real");
+        for (const input of [projected, real]) b.chat.createChat(b.alpha, input);
+        await b.sync.flushResources();
+        installReadProjection(b, projected);
+        b.settings.ui.memoryAlgorithmType = algorithm;
+        serveMemory(b, (chatId, route) =>
+            route === "threads"
+                ? Response.json({ error: "Offline" }, { status: 503 })
+                : memoryRead(fileRecords(chatId), route),
+        );
+        for (const input of [projected, real]) {
+            for (const mode of ["0", "2"]) {
+                alerts.select.mockResolvedValueOnce(mode);
+                if (mode === "2") alerts.select.mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+                const count = b.downloads.length;
+                await b.characters.exportChat(input.id!);
+                expect(b.downloads).toHaveLength(count + 1);
+                const text = b.downloads.at(-1)!.data;
+                const file = mode === "0" ? JSON.parse(text) : null;
+                const exported = file
+                    ? file.data
+                    : JSON.parse(
+                          new DOMParser().parseFromString(text, "text/html").querySelector(".idat")!.textContent!,
+                      );
+                if (file) expect(file).not.toHaveProperty("structuredMemory");
+                expect(exported).not.toHaveProperty("structuredMemory");
+                if (input === projected) expect(exported).not.toHaveProperty("hypaV3Data");
+                else expect(exported.hypaV3Data).toEqual(real.hypaV3Data);
+                expect(text).not.toContain("structuredMemoryProjection");
+            }
+        }
+        await b.characters.exportAllChats();
+        expect(b.downloads).toHaveLength(5);
+        const text = b.downloads.at(-1)!.data;
+        const file = JSON.parse(text);
+        expect(file).not.toHaveProperty("structuredMemory");
+        expect(file.data.find((chat: Chat) => chat.id === projected.id)).not.toHaveProperty("hypaV3Data");
+        expect(file.data.find((chat: Chat) => chat.id === real.id).hypaV3Data).toEqual(real.hypaV3Data);
+        expect(text).not.toContain("structuredMemoryProjection");
+    },
+);
+
+it.each(["structuredMemory", "hypaMemoryV3"])(
+    "exports JSON and HTML under %s with real summaries kept and only the receipts removed",
     async (algorithm) => {
         const b = await boot();
         b.settings.ui.memoryAlgorithmType = algorithm;
@@ -630,8 +734,7 @@ it.each(["structuredMemory", "hypaMemoryV3"])(
                 expect(envelope.data).not.toHaveProperty("structuredMemory");
                 expect(envelope.structuredMemory[0]).not.toHaveProperty("runs");
             }
-            if (algorithm === "structuredMemory") expect(exported).not.toHaveProperty("hypaV3Data");
-            else expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
+            expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
             expect(exported.message.map((message: any) => message.generationInfo)).toEqual([
                 { model: "story-model", generationId: "generation-0" },
                 { model: "story-model", generationId: "generation-1" },
@@ -673,8 +776,7 @@ it("exports all chats with an entry for pages, events or threads, stripping rece
     for (const input of inputs) {
         const exported = file.data.find((chat: Chat) => chat.id === input.id);
         expect(exported).not.toHaveProperty("structuredMemory");
-        if (["pages", "events", "threads"].includes(input.id!)) expect(exported).not.toHaveProperty("hypaV3Data");
-        else expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
+        expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
         expect(exported.message.map((message: any) => message.generationInfo)).toEqual(
             input.id === "empty"
                 ? input.message.map((message) => message.generationInfo)

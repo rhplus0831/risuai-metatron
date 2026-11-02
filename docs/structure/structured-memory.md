@@ -35,16 +35,18 @@
   - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
   - Chat files: `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`.
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
-  - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events.
+  - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events. `sealHypaV3Data`, `isSealedHypaV3Data`,
+    `sealedHypaV3DataIntact`: the mark a read's projection carries. `hypaV3DataHoldsSummaries`: what owns the field.
   - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
     pause rule, shared with the panel's writer line; `writer.ts` re-exports it.
   - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
 - `server/src/data/memoryStore.ts`: `createMemoryTables`, the synchronous reads and the writes over the tables;
   `MemoryChanges`, `MemoryContents`, `MemoryRowTexts`; `checkMemoryRow`, the one check of a record's stored text;
-  `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`.
+  `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`; `projectChatMemory`, a chat's unsealed
+  projection, shared by the read and the export.
 - `server/src/data/chatStore.ts`: `MEMORY_TABLES_SQL`, part of `CHAT_OPEN_SCHEMA_SQL`.
-- `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`. The checkpoint's part:
-  [the lifecycle guide](structured-memory-lifecycle.md#files).
+- `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`;
+  `overlayMemoryProjection`. The checkpoint's part: [the lifecycle guide](structured-memory-lifecycle.md#files).
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
@@ -176,6 +178,50 @@ like a checkpoint write.
   `lastImportantSummaries` and `lastRandomSummaries` stay empty: no lane selects by importance or at random, and a pin
   set after the send must not rewrite that send's reasons. `lastDeferredSummaries` is absent.
 
+`projectChatMemory(events, messages)` is that for a whole chat, reading and export alike: `reconcileMemoryEvents` first,
+so a changed source never reads as active ([Reconciliation](structured-memory-lifecycle.md#reconciliation-and-repairs)),
+then events by their earliest source's position, because every reader takes `summaries` as chronological and `seq` puts
+a re-record last. An event with no placed source goes last. The manifest is the newest message's with an `items` list in
+`generationInfo.context`, empty when that send included nothing.
+
+A tab's read overlays it:
+
+- A structured chat: `memoryAlgorithmType` selects this algorithm, the chat has an event, and its stored `hypaV3Data`
+  holds no summaries (`hypaV3DataHoldsSummaries`). A value with summaries means HypaV3 owns the field, and an empty one,
+  which opening the modal stores, owns nothing. The setting is one `json_extract` per read operation, never per chat, so
+  under another algorithm a read touches no memory table, and a chat with no events answers as stored.
+- Only `/api/resources` asks (`memoryProjection`, its GET and POST reads). `readChatSource` and a plain `readRefs` stay
+  stored data: a job's scope, a memory task, the HypaV3 baseline, and `chatBaseline` must equal a stored read, and a
+  checkpoint's capture reads the stored `meta`, so none of them meets a projection.
+- A budgeted read charges the chats' `memory_events` bytes too. A projection that throws answers the chat as stored and
+  warns once.
+- The overlaid value is sealed: `structuredMemoryProjection`, `1:` and a non-cryptographic digest of the whole value
+  with sorted keys. It tells a tab what the value is, and whether it is as a read gave it. It authorizes nothing.
+
+The tab's mirror holds it for plugins to read, unchanged, and nothing stores it:
+
+- `sendChat` leaves a sealed value out of every `create`, `replace`, journal snapshot, and refusal retry; `projectChat`
+  keeps it, so a `captureChatBaseline` diff stays natural. `prepareOp` drops one too, for what a stale tab or a
+  recovered resend carries.
+- `keepsHeldHypaV3Data` decides every write of the field, in `applyChatResult`, `createChat`, `installCharacterChats`,
+  `replaceChat`, `installRecoveredChat`, and `setChatMeta`, and only the field drops: the rest of the write applies.
+- An incoming sealed value is never taken. It is silent when intact, so a copy, a branch, an import, or an older read
+  raises nothing, and a changed one raises the notice. An absent value keeps a projection in place.
+- An unsealed value is refused with the notice while this algorithm is selected and the chat holds a projection, or
+  nothing with summaries. It passes on a new chat, which has no records; on a chat with a real value; and under another
+  algorithm, where it replaces a held projection and HypaV3 owns the chat from then on.
+- The notice is `console.warn` plus one `alertToast` per chat until a reload
+  (`structuredMemory.projectionWriteRefused`). `warnRefused` of the plugin API fits no refusal here: it discards the
+  whole write.
+- A job's copy and a patch's `meta` are stored data, so they leave a held projection in place (`keepsProjection`) unless
+  they bring summaries. A whole read (`applyRemoteChat`, `installRead`) is authoritative: without the field, a held
+  projection is gone. `HypaV3Modal` takes a sealed value as no data.
+
+The upstream export (`projectUpstreamMemory`) applies the same rule, the setting from the snapshot's `ui` record, and
+writes the value unsealed: a restore upstream and a re-import here both take plain HypaV3 data. `readSnapshotFile` keeps
+the event rows, and a failed memory walk leaves `memoryEvents` null. A problem in the tables or in one event never stops
+the export; those chats go as stored under `memory-unreadable`, and projected ones count as `memory-projected`.
+
 ## State
 
 - A chat's records are events, pages, and threads, with the chat's own messages as the evidence. Each writer run leaves
@@ -212,8 +258,8 @@ group is refused, and a full one is checked and restored.
 - The persisted value `memoryAlgorithmType` is a plain string in `shared/database.ts`; `structuredMemory` selects ahead
   of the [selection chain](memory.md#selection-in-assembleprompt) that reads the flags, which [memory](memory.md) owns.
 - The tables follow the [epoch rules](server-resources.md#epoch-and-response-rules) and the snapshot walk of
-  [server resources](server-resources.md#snapshots-and-restore). `readSnapshotFile` passes no memory sink: the upstream
-  export neither reads the tables nor stops on a problem in them.
+  [server resources](server-resources.md#snapshots-and-restore). `readSnapshotFile` walks them for the upstream export's
+  projection, and alone among the walk's readers it does not stop on a problem in them (`memoryFailed`).
 - The memory revision says nothing about the chat's messages. A whole-chat `replace` keeps `chats.seq`, so the rows and
   the revision survive it, and only the memory task's fence stops a writer working from the old messages
   ([memory](memory.md)). A checkpoint load replaces the rows too
@@ -266,6 +312,7 @@ group is refused, and a full one is checked and restored.
 - On a character page, a section's `heading` holds a `CHARACTER_SECTION_SLOTS` key, not display text. Other page types
   use free headings.
 - `MemoryManifest.items` holds included items only; excluded candidates never reach the projection.
+- The stored `hypaV3Data` never holds a projection: the seal exists only in a tab's read and its mirror.
 - Code owns grades: a draft carries scored axes, and only the stored `MemoryEvent` and `MemoryKnowledge` carry `grade`.
 
 ## Recipes
@@ -287,6 +334,10 @@ group is refused, and a full one is checked and restored.
   `backups.test.ts` drives the snapshot and archive routes. Both take their records from `tests/memoryFixtures.ts`.
 - `server/src/tests/structuredMemoryRoutes.test.ts` drives the routes on a real app, and seeds them through a second
   store on the same file, because the app does not export its own. A frozen `Date` holds the rate limit window.
+- The projection: `shared/structuredMemory.test.ts` for the seal, `structuredMemoryRoutes.test.ts` for the reads,
+  `memoryStore.test.ts` for the write path and the budget charge, `upstreamExport.test.ts` for the export, each with
+  `projectionHistory` from `tests/memoryFixtures.ts`; `src/ts/storage/tests/chatStore.test.ts`, `hostApi.test.ts`,
+  `chatMemoryInherit.test.ts`, and `HypaV3Modal.fence.test.ts` for the tab.
 - `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
   metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
@@ -304,6 +355,9 @@ group is refused, and a full one is checked and restored.
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
+- A loaded chat's projection is as of its last whole read. A memory write publishes nothing and a receipt's patch holds
+  no events, so a plugin reads an older projection, or none on a chat created this session, until a reload or a re-read.
+  Refreshing needs a projection-only read; a whole read per recorded turn would undo the per-event budget.
 
 ### Gotchas
 

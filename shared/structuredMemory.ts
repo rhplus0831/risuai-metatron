@@ -781,6 +781,65 @@ export function projectHypaV3Data(
     };
 }
 
+/**
+ * Whether a stored `hypaV3Data` owns the field: it holds a summary. An empty value says nothing of a
+ * chat's memory (opening the HypaV3 modal stores one, and a reset leaves one), so a chat's records take
+ * over from it as if the field were absent.
+ */
+export function hypaV3DataHoldsSummaries(value: unknown): boolean {
+    return isPlainObject(value) && Array.isArray(value.summaries) && value.summaries.length > 0;
+}
+
+/** A 53-bit cyrb hash of `text`, in base 36: it tells values apart, and proves nothing about who wrote one. */
+function stringDigest(text: string): string {
+    let high = 0xdeadbeef;
+    let low = 0x41c6ce57;
+    for (let index = 0; index < text.length; index++) {
+        const unit = text.charCodeAt(index);
+        high = Math.imul(high ^ unit, 2654435761);
+        low = Math.imul(low ^ unit, 1597334677);
+    }
+    high = Math.imul(high ^ (high >>> 16), 2246822507) ^ Math.imul(low ^ (low >>> 13), 3266489909);
+    low = Math.imul(low ^ (low >>> 16), 2246822507) ^ Math.imul(high ^ (high >>> 13), 3266489909);
+    return (4294967296 * (2097151 & low) + (high >>> 0)).toString(36);
+}
+
+/** `value` as JSON with every object's keys sorted, so rebuilding an object in another order changes nothing. */
+function sortedJson(value: unknown): string {
+    return JSON.stringify(value, (_key, entry: unknown) =>
+        isPlainObject(entry)
+            ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+            : entry,
+    );
+}
+
+/** The seal of a `hypaV3Data` value: its version and the digest of the whole value but the seal itself. */
+function hypaV3Seal(value: Record<string, unknown>): string {
+    const { structuredMemoryProjection: _seal, ...fields } = value;
+    return `1:${stringDigest(sortedJson(fields))}`;
+}
+
+/**
+ * `value` with a seal, which tells a tab it holds a projection. The digest covers every field but the
+ * seal, so a change to any of them shows, whichever field it is.
+ */
+export function sealHypaV3Data(value: SerializableHypaV3Data): SerializableHypaV3Data {
+    return { ...value, structuredMemoryProjection: hypaV3Seal({ ...value }) };
+}
+
+/** Whether `value` carries a seal, intact or not: such a value is a projection and is never stored. */
+export function isSealedHypaV3Data(value: unknown): boolean {
+    return isPlainObject(value) && Object.hasOwn(value, "structuredMemoryProjection");
+}
+
+/** Whether `value` is a projection as a read answered it: sealed, with nothing changed since. */
+export function sealedHypaV3DataIntact(value: unknown): boolean {
+    return (
+        isSealedHypaV3Data(value) &&
+        (value as Record<string, unknown>).structuredMemoryProjection === hypaV3Seal(value as Record<string, unknown>)
+    );
+}
+
 /** A record's grade: the sum of its axes, none without them. */
 export function memoryGrade(axes: MemoryAxes | undefined): number | undefined {
     return axes ? axes.persistence + axes.change + axes.reach : undefined;

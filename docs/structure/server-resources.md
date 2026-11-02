@@ -192,7 +192,8 @@ never meets `unanswered`.
   are named in `unanswered`, in the request's shapes, uncharged past that one and unread.
 - The charge is stored bytes from SQL before anything is parsed, not wire bytes: a record's `octet_length(data)`; a
   chat's `meta` plus its message rows, two queries; a collection's order text plus one aggregate over its chats and one
-  over their messages; a summary collection's order text plus its `chatSummaries` rows as stored.
+  over their messages; a summary collection's order text plus its `chatSummaries` rows as stored. A
+  [projection](structured-memory.md#the-hypav3-projection) read adds the chats' `memory_events` bytes.
 - The budget is soft: an answer's first group is served whatever its size, so a chat or a collection that outgrew it
   stays readable, and a chat or a collection is never split. Internal `readRefs` callers are unbudgeted. A character's
   group is read in one synchronous step; rounds are not one snapshot.
@@ -305,8 +306,8 @@ finishes, its worker included, and `dispose` waits for it.
   row: it takes the import, verifies the staged file, and checks the epoch and the accepted write count again right
   before maintenance (the hash pass is a new window); a change answers 412 or `409 changedSinceReview` and hands the
   import back with a fresh TTL.
-- Export reads the snapshot without checkpoint or memory tables, so upstream saves do not include named checkpoint
-  history.
+- Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
+  memory walk does not stop it ([projection](structured-memory.md#the-hypav3-projection)).
 
 ### File imports
 

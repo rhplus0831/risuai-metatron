@@ -1553,6 +1553,7 @@ export const languageEnglish = {
             "translator-steps-flattened": "Translator presets reduced to their first enabled step",
             "trash-time-refreshed": "Trashed characters kept, so RisuAI does not delete them at once",
             "shape-repaired": "Lists RisuAI could not load, repaired",
+            "memory-projected": "Chats whose structured memory events became HypaV3 summaries",
         },
         excluded: {
             "api-keys": "API keys (left out by your choice)",
@@ -1566,6 +1567,7 @@ export const languageEnglish = {
             "translator-steps": "Translator settings RisuAI has no place for",
             "plugin-storage": "Plugin data RisuAI keeps in the browser",
             inlays: "Chats with inlay images (the images are not in the file)",
+            "memory-unreadable": "Chats whose structured memory could not be read",
             "asset-names": "Images and files whose name a RisuAI backup cannot hold",
         },
         missingTitle: "Missing images and files (not in the file)",
@@ -2398,6 +2400,8 @@ export const languageEnglish = {
             events === 1
                 ? "1 memory event cites this. Removing it also retracts that event, and nothing can bring it back. Remove anyway?"
                 : `${events} memory events cite this. Removing it also retracts them, and nothing can bring them back. Remove anyway?`,
+        projectionWriteRefused:
+            "A plugin tried to change this chat's memory. Structured memory keeps its own records, so what plugins read of them cannot be written, and that change was dropped.",
         meter: {
             status: {
                 unknown: "unknown",

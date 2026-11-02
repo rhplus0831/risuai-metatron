@@ -13,6 +13,11 @@ import type {
     ChatSummary,
 } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
+import {
+    hypaV3DataHoldsSummaries,
+    sealHypaV3Data,
+    STRUCTURED_MEMORY_ALGORITHM,
+} from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import {
     applyItemPatch,
@@ -84,8 +89,10 @@ import {
     createMemoryStagingSink,
     createMemoryTables,
     type MemoryChanges,
+    type MemoryEventRow,
     type MemoryRecordKind,
     type MemorySnapshotSink,
+    projectChatMemory,
     walkMemorySnapshot,
 } from "./memoryStore.ts";
 
@@ -281,21 +288,28 @@ export type ResourceBatchOperation = {
     patch?: unknown;
 };
 
-/** A snapshot's checked rows held in memory (`readSnapshotFile`); absent checkpoint rows mean no checkpoints or policies. */
+/**
+ * A snapshot's checked rows held in memory (`readSnapshotFile`); absent checkpoint rows mean no
+ * checkpoints or policies. `memoryEvents` are the structured memory events in `seq` order, absent with
+ * none, and null when the memory tables could not be read.
+ */
 export type ValidatedSnapshot = {
     readonly rows: readonly { kind: string; id: string; revision: number; schemaVersion: number; text: string }[];
     readonly checkpoints?: CheckpointSnapshotRows;
+    readonly memoryEvents?: readonly MemoryEventRow[] | null;
 } & ChatSnapshotRows;
 
 /**
  * Where `walkSnapshotFile` hands each row it checked, as it reads them: resources, chats, messages,
  * chat orders, the checkpoint tables, then the memory tables. Without `checkpoints` or `memory`, those
- * tables are neither read nor checked: a restore's writer passes both, `readSnapshotFile` no `memory`.
+ * tables are neither read nor checked. `memoryFailed` takes a failure of the memory walk, which then
+ * ends the walk without failing it, what came before having passed; without it the failure is thrown.
  */
 export type SnapshotSink = ChatSnapshotSink & {
     resource(row: ValidatedSnapshot["rows"][number]): void;
     checkpoints?: CheckpointSnapshotSink;
     memory?: MemorySnapshotSink;
+    memoryFailed?(error: unknown): void;
 };
 
 /** What `applyChanges` wrote: resource tokens in op order, chat group results, and every changed chat order. */
@@ -363,6 +377,12 @@ type ReadRefsOptions = {
     chats?: readonly { characterId: string; id: string }[];
     chatCollections?: readonly string[];
     chatSummaryCollections?: readonly string[];
+    /**
+     * A tab's read: a structured chat answers with its `hypaV3Data` projection
+     * (`overlayMemoryProjection`). Every other reader wants what is stored, because a job's scope, a
+     * memory task, and a whole-chat baseline must equal a stored read.
+     */
+    memoryProjection?: boolean;
 };
 
 /** The entries a budgeted read serves or leaves out whole; `charges` are theirs, run only at the group's turn. */
@@ -593,7 +613,14 @@ export function walkSnapshotFile(
             walkCheckpointSnapshot(source, chatIds, sink.checkpoints, signal);
         }
         if (sink.memory) {
-            walkMemorySnapshot(source, chatIds, sink.memory, signal);
+            try {
+                walkMemorySnapshot(source, chatIds, sink.memory, signal);
+            } catch (error) {
+                if (!sink.memoryFailed) {
+                    throw error;
+                }
+                sink.memoryFailed(error);
+            }
         }
     } finally {
         source.close();
@@ -602,9 +629,11 @@ export function walkSnapshotFile(
 
 /**
  * Reads and checks a snapshot file (`walkSnapshotFile`) into memory. With `checkpoints: false`,
- * checkpoint tables are neither read nor validated and the result omits `checkpoints`. The memory
- * tables are never read or checked here, unlike in a restore: nothing that reads the result uses them,
- * and its one production caller is the upstream export, which a memory table problem must not stop.
+ * checkpoint tables are neither read nor validated and the result omits `checkpoints`. Of the memory
+ * tables, which are walked and checked as in a restore, it keeps the events, for the upstream export's
+ * projection. That export is its one production caller and a memory table problem must not stop it,
+ * so unlike in a restore a failure there is no refusal: what the walk collected is dropped, and
+ * `memoryEvents` is null. A refusal of any other table still throws.
  */
 export function readSnapshotFile(
     file: string,
@@ -616,15 +645,36 @@ export function readSnapshotFile(
     const messages: ValidatedSnapshot["messages"][number][] = [];
     const chatOrders: ValidatedSnapshot["chatOrders"][number][] = [];
     const collected = options?.checkpoints === false ? undefined : collectCheckpointRows();
+    const memoryEvents: MemoryEventRow[] = [];
+    let memoryFailed = false;
     walkSnapshotFile(file, kinds, {
         resource: (row) => void rows.push(row),
         chat: (row) => void chats.push(row),
         message: (row) => void messages.push(row),
         chatOrder: (row) => void chatOrders.push(row),
         checkpoints: collected?.sink,
+        memory: {
+            state() {},
+            record(kind, chatSeq, row) {
+                if (kind === "events") {
+                    // `data` is a row's last column (`writtenColumns`).
+                    memoryEvents.push({ chatSeq, data: row[row.length - 1] as string });
+                }
+            },
+        },
+        memoryFailed() {
+            memoryFailed = true;
+        },
     });
     const checkpoints = collected?.rows();
-    return { rows, chats, messages, chatOrders, ...(checkpoints ? { checkpoints } : {}) };
+    return {
+        rows,
+        chats,
+        messages,
+        chatOrders,
+        ...(checkpoints ? { checkpoints } : {}),
+        ...(memoryFailed ? { memoryEvents: null } : memoryEvents.length > 0 ? { memoryEvents } : {}),
+    };
 }
 
 /**
@@ -783,6 +833,10 @@ export function createResourceStore(options: {
             "octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?",
     );
     const selectRecordBytes = db.prepare("SELECT octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?");
+    // One setting, without parsing its whole section in JavaScript.
+    const selectMemoryAlgorithm = db.prepare(
+        "SELECT json_extract(data, '$.memoryAlgorithmType') AS algorithm FROM resources WHERE kind = ? AND id = ?",
+    );
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -1408,17 +1462,72 @@ export function createResourceStore(options: {
         return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
     }
 
-    /** What `readRefs` reads, for `readRefsWithinBudget` too. */
-    function readNamed(refs: readonly { kind: ResourceKind; id: string }[], options: ReadRefsOptions) {
+    /** Whether Structured Memory is the selected algorithm: one row, read once per read operation. */
+    function structuredMemorySelected(): boolean {
+        const row = selectMemoryAlgorithm.get(RESOURCE_KIND.ui, SINGLETON_RESOURCE_ID) as
+            { algorithm: unknown } | undefined;
+        return row?.algorithm === STRUCTURED_MEMORY_ALGORITHM;
+    }
+
+    /** Whether a read overlays projections: it asks to, has whole chats to answer, and the algorithm is selected. */
+    function overlaysMemoryProjection({ memoryProjection, chats = [], chatCollections = [] }: ReadRefsOptions) {
+        return memoryProjection === true && chats.length + chatCollections.length > 0 && structuredMemorySelected();
+    }
+
+    /** The chats whose projection threw, so a chat read again and again logs once. */
+    const unprojectedChats = new Set<number>();
+
+    /**
+     * Gives a whole chat of a read that overlays projections its `hypaV3Data`: what its stored events
+     * and messages make, sealed. A stored value with summaries wins, because it means HypaV3 owns the
+     * field (`hypaV3DataHoldsSummaries`), and a chat with no events answers as stored, so each costs at
+     * most one more query. A projection that throws leaves the chat as stored: a malformed record must
+     * not fail a chat read.
+     */
+    function overlayMemoryProjection(chat: ChatRead) {
+        const seq = chat.revision === null ? undefined : parseToken(chat.revision)?.seq;
+        if (seq === undefined || !chat.data || hypaV3DataHoldsSummaries(chat.data.hypaV3Data)) {
+            return;
+        }
+        try {
+            const events = memoryTables.readEvents(seq);
+            if (events.length > 0) {
+                chat.data.hypaV3Data = sealHypaV3Data(projectChatMemory(events, chat.data.message));
+            }
+        } catch (error) {
+            if (!unprojectedChats.has(seq)) {
+                unprojectedChats.add(seq);
+                console.warn(`[memory] chat ${chat.id} is answered without its projection:`, error);
+            }
+        }
+    }
+
+    /** What `readRefs` reads, for `readRefsWithinBudget` too, which decides `overlaying` itself. */
+    function readNamed(
+        refs: readonly { kind: ResourceKind; id: string }[],
+        options: ReadRefsOptions,
+        overlaying = overlaysMemoryProjection(options),
+    ) {
         const items = refs.map(({ kind, id }) => {
             assertKind(kind);
             assertId(kind, id);
             const row = readOne(kind, id);
             return { kind: kind.name, id, revision: row?.revision ?? null, data: row?.data ?? null };
         });
-        const chats = (options.chats ?? []).map(({ characterId, id }) => readChatOrMissing(characterId, id));
+        const chats = (options.chats ?? []).map(({ characterId, id }) => {
+            const chat = readChatOrMissing(characterId, id);
+            if (overlaying) {
+                overlayMemoryProjection(chat);
+            }
+            return chat;
+        });
         const chatCollections = (options.chatCollections ?? []).map((characterId) => {
             const collection = chatTables.readCollection(characterId);
+            if (overlaying) {
+                for (const chat of collection?.chats ?? []) {
+                    overlayMemoryProjection(chat);
+                }
+            }
             return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
         });
         if (!options.chatSummaryCollections || options.chatSummaryCollections.length === 0) {
@@ -1903,10 +2012,16 @@ export function createResourceStore(options: {
          * `chats`, also every chat (metadata plus messages in order) and every chat order; with
          * `chatSummaries` (not together with `chats`), every chat's summary (with memoized last-message times)
          * and every chat order, except characters named by the boot's `skipChatCollections`.
+         * `memoryProjection` is `readRefs`' (`ReadRefsOptions`) and concerns `chats`.
          */
         readKinds(
             kindList: readonly ResourceKind[],
-            options: { chats?: boolean; chatSummaries?: boolean; skipChatCollections?: ReadonlySet<string> } = {},
+            options: {
+                chats?: boolean;
+                chatSummaries?: boolean;
+                skipChatCollections?: ReadonlySet<string>;
+                memoryProjection?: boolean;
+            } = {},
         ): {
             epoch: string;
             kinds: Record<string, StoredResource<unknown>[]>;
@@ -1924,7 +2039,13 @@ export function createResourceStore(options: {
                 throw new TypeError("readKinds: chats and chatSummaries are exclusive");
             }
             if (options.chats) {
-                return { epoch, kinds: result, ...chatTables.readAll() };
+                const whole = chatTables.readAll();
+                if (options.memoryProjection && structuredMemorySelected()) {
+                    for (const chat of whole.chats) {
+                        overlayMemoryProjection(chat);
+                    }
+                }
+                return { epoch, kinds: result, ...whole };
             }
             if (options.chatSummaries) {
                 return { epoch, kinds: result, ...chatTables.readSummaries(options.skipChatCollections) };
@@ -1953,7 +2074,8 @@ export function createResourceStore(options: {
          * budget, which with every group after it is left out, uncharged and unread. The first group is
          * served whatever its size. Each list, served or left out, keeps its request order, so
          * re-sending `unanswered` finds the remaining groups in the same order. Every ref is checked
-         * first: one left out still refuses the request.
+         * first: one left out still refuses the request. A read that overlays projections also charges
+         * each chat's and collection's stored events, which is conservative: a projection holds less.
          */
         readRefsWithinBudget(
             refs: readonly { kind: ResourceKind; id: string }[],
@@ -1966,6 +2088,7 @@ export function createResourceStore(options: {
                 assertId(kind, id);
             }
             const { chats = [], chatCollections = [], chatSummaryCollections = [] } = options;
+            const overlaying = overlaysMemoryProjection(options);
             const groups: ReadGroup[] = [];
             const characterGroups = new Map<string, ReadGroup>();
             /** The group of the entry that costs `charge`: its character's when it has one, else a new one. */
@@ -1988,10 +2111,20 @@ export function createResourceStore(options: {
                 }),
             );
             const chatGroups = chats.map(({ characterId, id }) =>
-                groupOf(null, () => chatTables.chatBytes(characterId, id)),
+                groupOf(
+                    null,
+                    () =>
+                        chatTables.chatBytes(characterId, id) +
+                        (overlaying ? memoryTables.chatEventBytes(characterId, id) : 0),
+                ),
             );
             const collectionGroups = chatCollections.map((characterId) =>
-                groupOf(characterId, () => chatTables.collectionBytes(characterId)),
+                groupOf(
+                    characterId,
+                    () =>
+                        chatTables.collectionBytes(characterId) +
+                        (overlaying ? memoryTables.characterEventBytes(characterId) : 0),
+                ),
             );
             const summaryGroups = chatSummaryCollections.map((characterId) =>
                 groupOf(characterId, () => chatTables.collectionSummaryBytes(characterId)),
@@ -2015,11 +2148,15 @@ export function createResourceStore(options: {
             const [servedChats, leftChats] = fates(chats, chatGroups);
             const [servedCollections, leftCollections] = fates(chatCollections, collectionGroups);
             const [servedSummaries, leftSummaries] = fates(chatSummaryCollections, summaryGroups);
-            const read = readNamed(servedRefs, {
-                chats: servedChats,
-                chatCollections: servedCollections,
-                chatSummaryCollections: servedSummaries,
-            });
+            const read = readNamed(
+                servedRefs,
+                {
+                    chats: servedChats,
+                    chatCollections: servedCollections,
+                    chatSummaryCollections: servedSummaries,
+                },
+                overlaying,
+            );
             if (groups.every((group) => group.served)) {
                 return read;
             }

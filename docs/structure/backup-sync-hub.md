@@ -233,6 +233,8 @@ converter.
   `exportStage.ts`: the resource rows and the chat tables) to an upstream flat `Database` that `encodeUpstreamDatabase`
   writes as `database.risudat`, with the referenced asset keys (`assetReferences.ts` `collectUpstreamAssetReferences`,
   the import's walker too; `hasAsset` moves absent ones to the report's `missing`) and the report.
+- A structured chat's `hypaV3Data` is [the projection](structured-memory.md#the-hypav3-projection) of its records,
+  unsealed (report codes `memory-projected` and `memory-unreadable`).
 - The report is `shared/upstreamExportReport.ts` `UpstreamExportReport`: counts, `converted`/`excluded` entries of the
   import report's shape, `missing`, `UpstreamAssetReference`s. Pure and synchronous; the rows are parsed, so the result
   shares nothing with them.

@@ -2804,8 +2804,9 @@ describe("structured memory job hand-offs", () => {
             const chaId = await seedCharacter();
             const store = openStore();
             try {
-                const chat = await readChat(chaId);
-                const stored: Message[] = chat.data.message;
+                const storedChat = () => store.readChatSource(chaId, "k");
+                const chat = storedChat();
+                const stored = (chat.data as { message: Message[] }).message;
                 const records = memoryRecords(["promise"], "Remember the promise");
                 records.events[0].sources = stored.slice(0, 2).map((message, index) => ({
                     messageId: message.chatId!,
@@ -2822,7 +2823,7 @@ describe("structured memory job hand-offs", () => {
                     expect(fake.handOffs).toEqual([]);
                     expect(summaries()).toEqual([]);
                     expect(store.memory.readContents(chaId, "k")).toEqual(contents);
-                    expect(await readChat(chaId)).toEqual(chat);
+                    expect(storedChat()).toEqual(chat);
                     if (result.terminal?.type === "done" && kind === "preview") {
                         const value = result.terminal.result as { messages: { content: string }[]; context: unknown };
                         expect(Object.keys(value).sort()).toEqual(["context", "messages"]);

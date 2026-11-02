@@ -62,6 +62,8 @@ vi.mock("src/ts/stores.svelte", async () => {
     });
 });
 
+import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { MEMORY_TASKS_PATH } from "../../../shared/events.ts";
 import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
@@ -72,6 +74,7 @@ import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTask
 import { followedJobs } from "src/ts/process/serverCommands";
 import {
     ackChatWork,
+    acceptRemoteChat,
     findChat,
     hydrateChat,
     seedChats,
@@ -805,4 +808,22 @@ describe("HypaV3Modal's memory task fence", () => {
         expect(cancelButton(modal.target)).toBeNull();
         expect(taskBlock(modal.target).textContent).not.toContain(language.memoryTasks.pendingManual);
     });
+});
+
+it("opens a held projection as empty HypaV3 data after switching algorithms", () => {
+    settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+    acceptRemoteChat({
+        characterId: "c",
+        id: "k",
+        revision: "epoch:1:2",
+        data: {
+            ...JSON.parse(JSON.stringify(findChat(withData))),
+            hypaV3Data: sealHypaV3Data({ summaries: summaries() }),
+        },
+    });
+    const { target } = open(withData);
+    expect([...target.querySelectorAll("textarea")].map((input) => input.value)).not.toContain("one");
+    expect([...target.querySelectorAll("textarea")].map((input) => input.value)).not.toContain("two");
+    expect(findChat(withData)!.hypaV3Data!.summaries).toEqual([]);
+    expect(findChat(withData)!.hypaV3Data).not.toHaveProperty("structuredMemoryProjection");
 });

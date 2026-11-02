@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { sealHypaV3Data } from "../../../../shared/structuredMemory.ts";
 import type { MessageTranslation } from "../../../../shared/database.ts";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
@@ -2279,5 +2280,187 @@ describe("deleting cited messages", () => {
             chat.endServerJob("J");
             server.close();
         }
+    });
+});
+
+describe("Structured Memory projections in the chat mirror", () => {
+    const plainMemory = (text = "Projected event") => ({ summaries: [{ text, chatMemos: ["a"], isImportant: false }] });
+    async function projectedBoot() {
+        const b = await boot();
+        const { settings } = await import("../settingsViews.svelte");
+        const { alertToast } = await import("../../alert");
+        const toast = vi.mocked(alertToast).mockClear();
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const projection = sealHypaV3Data(plainMemory());
+        const install = (value = projection) =>
+            b.chat.acceptRemoteChat({
+                ...b.server.chat("c", "k")!,
+                data: { ...b.server.chat("c", "k")!.data, hypaV3Data: value },
+            });
+        install();
+        expect(b.chat.findChat(b.ref)!.hypaV3Data).toEqual(projection);
+        return { ...b, settings, toast, projection, install };
+    }
+
+    it("keeps the read projection in the mirror and baseline while excluding it from replacements and journal snapshots", async () => {
+        const { chat, ref, server, projection, commit } = await projectedBoot();
+        const baseline = chat.captureChatBaseline(ref)!;
+        expect(baseline.chat.hypaV3Data).toEqual(projection);
+        chat.replaceChat(ref, { ...clone(chat.findChat(ref)!), note: "Replacement note" });
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+        const journal = chat.chatJournal.project({ scope: "chat", target: "c\u0000k" });
+        expect(JSON.stringify(journal)).toContain("Replacement note");
+        expect(JSON.stringify(journal)).not.toContain("hypaV3Data");
+        const { work } = commit();
+        expect(work.groups[0].ops[0]).toMatchObject({ op: "replace", chat: { note: "Replacement note" } });
+        expect(JSON.stringify(chat.chatWorkBody(work))).not.toContain("hypaV3Data");
+        expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+    });
+
+    it("silently keeps intact and older projections, but refuses plugin edits with one toast per chat while applying the other fields", async () => {
+        const { chat, ref, projection, install, toast, commit, server } = await projectedBoot();
+        const baseline = chat.captureChatBaseline(ref)!;
+        chat.applyChatResult(baseline, clone(baseline.chat));
+        expect(chat.hasChatWork()).toBe(false);
+        expect(console.warn).not.toHaveBeenCalled();
+        expect(toast).not.toHaveBeenCalled();
+        const fresh = sealHypaV3Data(plainMemory("Newly recorded event"));
+        install(fresh);
+        chat.applyChatResult(chat.captureChatBaseline(ref)!, { ...clone(baseline.chat), note: "Plugin's older read" });
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(fresh);
+        expect(console.warn).not.toHaveBeenCalled();
+        expect(toast).not.toHaveBeenCalled();
+        commit();
+        for (const hypaV3Data of [
+            { ...clone(projection), categories: [{ id: "plugin", name: "Changed category" }] },
+            plainMemory("Unsealed replacement"),
+        ]) {
+            const base = chat.captureChatBaseline(ref)!;
+            const result = clone(base.chat);
+            result.hypaV3Data = hypaV3Data;
+            result.note = "Plugin note";
+            result.message[1].data = "Plugin message";
+            chat.applyChatResult(base, result);
+            expect(chat.findChat(ref)).toMatchObject({ note: "Plugin note", hypaV3Data: fresh });
+            expect(chat.findChat(ref)!.message[1].data).toBe("Plugin message");
+            commit();
+        }
+        expect(console.warn).toHaveBeenCalledTimes(2);
+        expect(toast).toHaveBeenCalledTimes(1);
+        const { language } = await import("../../../lang");
+        expect(toast).toHaveBeenCalledWith(language.structuredMemory.projectionWriteRefused);
+        expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+        const other = chat.createChat("c", { ...clone(chat.findChat(ref)!), id: "other" });
+        commit();
+        const remote = server.chat("c", other.id!)!;
+        chat.acceptRemoteChat({ ...remote, data: { ...remote.data, hypaV3Data: projection } });
+        const input = clone(chat.withChatsCopy({ chaId: "c" }).chats);
+        input[1].hypaV3Data = plainMemory("Plugin changed second chat");
+        input[1].note = "Second note";
+        chat.reconcileCharacterChats("c", input, 0);
+        expect(chat.findChat({ chaId: "c", chatId: other.id! })).toMatchObject({
+            hypaV3Data: projection,
+            note: "Second note",
+        });
+        expect(toast).toHaveBeenCalledTimes(2);
+        expect(console.warn).toHaveBeenCalledTimes(3);
+    });
+
+    it("drops carried projections from creates and character installs, notices changed seals, and preserves real new memory", async () => {
+        const { chat, ref, projection, toast, server, commit } = await projectedBoot();
+        for (const install of [false, true]) {
+            const intactId = install ? "installed-intact" : "created-intact";
+            const changedId = install ? "installed-changed" : "created-changed";
+            const realId = install ? "installed-real" : "created-real";
+            const base = chat.captureChatBaseline(ref).chat;
+            const copies = [
+                { ...base, id: intactId, hypaV3Data: projection },
+                {
+                    ...base,
+                    id: changedId,
+                    hypaV3Data: { ...projection, summaries: plainMemory("Changed seal").summaries },
+                },
+                { ...base, id: realId, hypaV3Data: plainMemory("Real new memory") },
+            ];
+            if (install)
+                chat.installCharacterChats("c", [...clone(chat.withChatsCopy({ chaId: "c" }).chats), ...copies], {});
+            else for (const copy of copies) chat.createChat("c", copy);
+            for (const id of [intactId, changedId]) {
+                expect(chat.findChat({ chaId: "c", chatId: id })).not.toHaveProperty("hypaV3Data");
+                const journal = chat.chatJournal.project({ scope: "chat", target: `c\u0000${id}` });
+                expect(JSON.stringify(journal)).toContain(id);
+                expect(JSON.stringify(journal)).not.toContain("hypaV3Data");
+            }
+            expect(chat.findChat({ chaId: "c", chatId: realId })!.hypaV3Data).toEqual(plainMemory("Real new memory"));
+            const { work } = commit();
+            for (const id of [intactId, changedId]) {
+                const group = work.groups.find((group) => group.chatId === id)!;
+                expect(group.ops[0].op).toBe("create");
+                expect(JSON.stringify(group.ops)).not.toContain("hypaV3Data");
+                expect(server.chat("c", id)!.data).not.toHaveProperty("hypaV3Data");
+            }
+            expect(server.chat("c", realId)!.data.hypaV3Data).toEqual(plainMemory("Real new memory"));
+            expect(toast).toHaveBeenCalledTimes(install ? 2 : 1);
+            expect(console.warn).toHaveBeenCalledTimes(install ? 2 : 1);
+        }
+    });
+
+    it("allows real HypaV3 writes after an algorithm change and on chats that already own summaries", async () => {
+        const { chat, ref, settings, toast, commit, server } = await projectedBoot();
+        settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        const real = plainMemory("Real replacement");
+        const baseline = chat.captureChatBaseline(ref)!;
+        chat.applyChatResult(baseline, { ...clone(baseline.chat), hypaV3Data: real });
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(real);
+        commit();
+        expect(server.chat("c", "k")!.data.hypaV3Data).toEqual(real);
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        chat.setChatMeta(ref, { hypaV3Data: plainMemory("Owned HypaV3 edit") });
+        commit();
+        expect(server.chat("c", "k")!.data.hypaV3Data).toEqual(plainMemory("Owned HypaV3 edit"));
+        expect(toast).not.toHaveBeenCalled();
+        expect(console.warn).not.toHaveBeenCalled();
+    });
+
+    it("keeps projections through stored job copies and whole metadata patches until a whole read or owning value replaces them", async () => {
+        const { chat, ref, projection, install, server } = await projectedBoot();
+        for (const mode of ["copy", "patch"] as const) {
+            for (const value of [
+                undefined,
+                { summaries: [] },
+                plainMemory("Real job memory"),
+                sealHypaV3Data(plainMemory("New projection")),
+                sealHypaV3Data({ summaries: [] }),
+            ]) {
+                install();
+                const baseRevision = chat.heldChatRevision(ref)!;
+                server.chatBatch([
+                    { characterId: "c", chatId: "k", baseRevision, ops: [{ op: "meta", set: { note: "Job note" } }] },
+                ]);
+                const remote = server.chat("c", "k")!;
+                const data = { ...remote.data, ...(value === undefined ? {} : { hypaV3Data: value }) };
+                if (mode === "copy") expect(chat.hydrateChat({ ...remote, data })).toBe(true);
+                else {
+                    const { message: _message, ...meta } = data;
+                    expect(
+                        chat.hydrateChatPatch({
+                            characterId: "c",
+                            id: "k",
+                            baseRevision,
+                            revision: remote.revision,
+                            count: data.message.length,
+                            meta,
+                        }),
+                    ).toBe("applied");
+                }
+                expect(chat.findChat(ref)!.note).toBe("Job note");
+                expect(chat.findChat(ref)!.hypaV3Data).toEqual(
+                    value && ("structuredMemoryProjection" in value || value.summaries.length > 0) ? value : projection,
+                );
+            }
+        }
+        install();
+        chat.acceptRemoteChat(server.chat("c", "k")!);
+        expect(chat.findChat(ref)).not.toHaveProperty("hypaV3Data");
     });
 });

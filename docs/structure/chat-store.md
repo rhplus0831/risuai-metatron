@@ -252,6 +252,8 @@
   else the order change drops with a warning). Message patches are checked before the mirror changes: an invalid one (an
   unset `data`, a role neither `user` nor `char`) refuses the whole result. `reconcileCharacterChats` takes a plugin's
   whole list ([plugins](plugins-mcp.md)).
+- A structured chat's `hypaV3Data` is a read's projection, which the mirror holds and no send carries (`sendChat`,
+  `keepsHeldHypaV3Data`): [the rules](structured-memory.md#the-hypav3-projection).
 - `createChatFieldDraft`: an independent, lazily started `{ value, key }` editing copy of a selected-chat array field.
   Synchronization reads without writing; nested edits save through the supplied `setChatMeta` writer.
 - `loreWriteFenced(ref)` (over `localSends` and `generatingChatKeys`, also checked before structural override actions):

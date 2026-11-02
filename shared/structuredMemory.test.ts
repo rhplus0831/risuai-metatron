@@ -4,6 +4,9 @@ import {
     type MemoryEvent,
     type MemoryManifestItem,
     memoryGrade,
+    sealHypaV3Data,
+    isSealedHypaV3Data,
+    sealedHypaV3DataIntact,
     projectHypaV3Data,
     memoryAnchorState,
     memoryRerecordTarget,
@@ -182,4 +185,58 @@ it("names the seen anchor state independently of prefix shifts and targets only 
     expect(
         memoryRerecordTarget(sources, [...messages, { chatId: "reset", role: "user", disabled: "allBefore" }]),
     ).toBeNull();
+});
+
+it("seals every JSON field while accepting round trips and recursively reordered object keys", () => {
+    const plain = {
+        summaries: [{ text: "Arrival", chatMemos: ["m1", "m2"], isImportant: false }],
+        categories: [{ id: "place", name: "Places", color: "blue" }],
+        metrics: {
+            lastImportantSummaries: [],
+            lastRecentSummaries: [0],
+            lastSimilarSummaries: [],
+            lastRandomSummaries: [],
+        },
+    };
+    expect(isSealedHypaV3Data(plain)).toBe(false);
+    const sealed = sealHypaV3Data(plain);
+    expect(isSealedHypaV3Data(sealed)).toBe(true);
+    expect(sealedHypaV3DataIntact(JSON.parse(JSON.stringify(sealed)))).toBe(true);
+    const reorder = (value: unknown): unknown =>
+        Array.isArray(value)
+            ? value.map(reorder)
+            : value && typeof value === "object"
+              ? Object.fromEntries(
+                    Object.entries(value)
+                        .reverse()
+                        .map(([key, entry]) => [key, reorder(entry)]),
+                )
+              : value;
+    expect(sealedHypaV3DataIntact(reorder(sealed))).toBe(true);
+    for (const change of [
+        (v: typeof sealed) => {
+            v.summaries[0].text = "Changed";
+        },
+        (v: typeof sealed) => {
+            v.summaries[0].chatMemos.reverse();
+        },
+        (v: typeof sealed) => {
+            v.summaries[0].isImportant = true;
+        },
+        (v: typeof sealed) => {
+            v.categories = [];
+        },
+        (v: typeof sealed) => {
+            v.metrics!.lastRecentSummaries = [];
+        },
+        (v: typeof sealed) => {
+            Object.assign(v, { pluginField: { added: true } });
+        },
+    ]) {
+        const changed = JSON.parse(JSON.stringify(sealed));
+        change(changed);
+        expect(isSealedHypaV3Data(changed)).toBe(true);
+        expect(sealedHypaV3DataIntact(changed)).toBe(false);
+    }
+    expect(plain).not.toHaveProperty("structuredMemoryProjection");
 });

@@ -11,12 +11,12 @@ import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
+    isSealedHypaV3Data,
     itemTag,
     MEMORY_PAGE_TYPES,
     memoryEventCovers,
     rawWindow,
     reconcileMemoryEvents,
-    STRUCTURED_MEMORY_ALGORITHM,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
     type MemoryManifestItem,
@@ -692,29 +692,28 @@ export async function readStructuredMemoryFile(
 /**
  * What an export does with `read`, the answer of `readStructuredMemoryFile`, to `chat`, the copy it writes:
  * `entry` is the chat's line in the file's `structuredMemory`, null with no records, and `failed` says the
- * read did not answer, which leaves `chat` as it is and takes every record out of the file, so a file
- * never holds part of a chat's memory.
+ * read did not answer, which takes every record out of the file, so a file never holds part of a chat's
+ * memory.
  *
- * With records and `algorithm`, the selected `memoryAlgorithmType`, on this algorithm, `hypaV3Data` goes: a
- * structured chat's read can carry the projection, and an imported one looks like a plugin's write. Under
- * another algorithm it stays, because a chat can hold real summaries beside its records. With a row of any
- * kind the receipts go too (`generationInfo.memory`, the rest stays): a receipt is a display copy of a
- * run, runs stay out of the file, and it would offer Resume on an empty Log or say `recorded` of a restore
- * that failed. Hashes do not read it.
+ * A sealed `hypaV3Data` goes whatever the read answered: a tab's read can carry a projection, also after
+ * another algorithm was selected, and the seal, not the algorithm, tells it from real summaries. Those stay,
+ * beside records too, because a chat can hold both. With a row of any kind the receipts go too
+ * (`generationInfo.memory`, the rest stays): a receipt is a display copy of a run, runs stay out of the
+ * file, and it would offer Resume on an empty Log or say `recorded` of a restore that failed. Hashes do
+ * not read it.
  */
 export function exportChatMemory(
     chat: Chat,
     read: StructuredMemoryResult<StructuredMemoryFileRead>,
-    algorithm: string | undefined,
 ): { entry: StructuredMemoryFileEntry | null; failed: boolean } {
+    if (isSealedHypaV3Data(chat.hypaV3Data)) {
+        delete chat.hypaV3Data;
+    }
     if (read.outcome !== "ok") {
         return { entry: null, failed: true };
     }
     const { rows, pages, events, threads } = read.value;
     const records = pages.length + events.length + threads.length > 0;
-    if (records && algorithm === STRUCTURED_MEMORY_ALGORITHM) {
-        delete chat.hypaV3Data;
-    }
     if (rows) {
         for (const { generationInfo } of chat.message) {
             delete generationInfo?.memory;

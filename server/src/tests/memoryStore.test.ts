@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
+import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -681,4 +682,98 @@ it("delivers message changes only after commit, isolates failed reactions, and l
         status: "stale",
         staleReason: "missing",
     });
+});
+
+it("drops sealed fields from creates, replacements and stale metadata writes while saving their other changes", () => {
+    const { store, db } = fileStore();
+    seed(store);
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, store.get(ui, "main")!.revision);
+    write(store, contents(store).revision, { events: records(["event"]).events });
+    const hypaV3Data = sealHypaV3Data({ summaries: [{ text: "Projected", chatMemos: ["m"], isImportant: false }] });
+    const stale = store.chatRevision("c", "k");
+    store.applyChanges({ chats: [group(stale, [{ op: "meta", set: { name: "Newer title" } }])] });
+    store.applyChanges({ chats: [group(stale, [{ op: "meta", set: { hypaV3Data, note: "Stale tab note" } }])] });
+    expect(store.readChatSource("c", "k").data).toMatchObject({ name: "Newer title", note: "Stale tab note" });
+    expect(store.readChatSource("c", "k").data).not.toHaveProperty("hypaV3Data");
+    store.applyChanges({
+        chats: [
+            group(store.chatRevision("c", "k"), [
+                { op: "replace", chat: { ...chat, hypaV3Data, note: "Replacement" } },
+            ]),
+        ],
+    });
+    expect(store.readChatSource("c", "k").data).toMatchObject({ note: "Replacement", message: chat.message });
+    expect(store.readChatSource("c", "k").data).not.toHaveProperty("hypaV3Data");
+    store.applyChanges({
+        chats: [group(null, [{ op: "create", chat: { ...chat, hypaV3Data, note: "Copy" } }], "c", "copy")],
+    });
+    expect(store.readChatSource("c", "copy").data).toMatchObject({ note: "Copy", message: chat.message });
+    expect(store.readChatSource("c", "copy").data).not.toHaveProperty("hypaV3Data");
+    const checkpoint = store.checkpoints.save("c", "k", "Clean capture", "manual")!;
+    const fields = JSON.parse(
+        (db.prepare("SELECT fields FROM chatCheckpoints WHERE id = ?").get(checkpoint.id) as { fields: string }).fields,
+    );
+    expect(fields).toHaveProperty("note");
+    expect(fields).not.toHaveProperty("hypaV3Data");
+    const real = { summaries: [{ text: "Real HypaV3", chatMemos: [], isImportant: true }] };
+    store.applyChanges({ chats: [group(null, [{ op: "create", chat: { ...chat, hypaV3Data: real } }], "c", "real")] });
+    expect(store.readChatSource("c", "real").data!.hypaV3Data).toEqual(real);
+});
+
+it("does not read memory tables for resource reads under another algorithm", () => {
+    const { store } = fileStore();
+    seed(store);
+    write(store, contents(store).revision, { events: records(["event"]).events });
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "hypaV3" }, store.get(ui, "main")!.revision);
+    const accessed: string[] = [];
+    for (const method of ["get", "all", "iterate"] as const) {
+        const original = StatementSync.prototype[method];
+        vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            if (/\bmemory_/.test(this.sourceSQL)) accessed.push(this.sourceSQL);
+            return Reflect.apply(original, this, args);
+        });
+    }
+    const options = { memoryProjection: true, chats: [{ characterId: "c", id: "k" }], chatCollections: ["c"] };
+    expect(store.readRefs([], options).chats[0].data).not.toHaveProperty("hypaV3Data");
+    expect(store.readKinds([characters], { chats: true, memoryProjection: true }).chats![0].data).not.toHaveProperty(
+        "hypaV3Data",
+    );
+    expect(store.readRefsWithinBudget([], options, 100_000).chats[0].data).not.toHaveProperty("hypaV3Data");
+    expect(accessed).toEqual([]);
+});
+
+it("charges event bytes to budgeted chat and collection reads", () => {
+    const { store } = fileStore();
+    seed(store);
+    seed(store, "d");
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, store.get(ui, "main")!.revision);
+    const large = records(["large"], "Short summary").events[0];
+    large.keyLines = [{ speaker: "Character", text: "x".repeat(16_000) }];
+    write(store, contents(store, "d").revision, { events: [large] }, "d");
+    for (const options of [
+        {
+            chats: [
+                { characterId: "c", id: "k" },
+                { characterId: "d", id: "k" },
+            ],
+        },
+        { chatCollections: ["c", "d"] },
+    ]) {
+        const stored = store.readRefsWithinBudget([], options, 8_000);
+        expect(stored).not.toHaveProperty("unanswered");
+        const projected = store.readRefsWithinBudget([], { ...options, memoryProjection: true }, 8_000);
+        if (options.chats) {
+            expect(projected.chats.map(({ characterId }) => characterId)).toEqual(["c"]);
+            expect(projected.unanswered?.chats).toEqual([{ characterId: "d", id: "k" }]);
+        } else {
+            expect(projected.chatCollections.map(({ characterId }) => characterId)).toEqual(["c"]);
+            expect(projected.unanswered?.chatCollections).toEqual(["d"]);
+        }
+    }
 });

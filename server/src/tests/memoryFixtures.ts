@@ -1,6 +1,9 @@
 // Shared fixtures for the tests that restore structured memory (not a test file itself).
-import type { MemoryEventWrite, MemoryChanges } from "../data/memoryStore.ts";
+import { messageSourceHash, type MemoryEventWrite, type MemoryChanges } from "../data/memoryStore.ts";
 import type { MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
+import type { ContextReport } from "../../../shared/contextReport.ts";
+import type { Message } from "../../../shared/database.ts";
+import { memoryAnchorState } from "../../../shared/structuredMemory.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
 
 export const memoryKinds = ["pages", "events", "threads", "runs"] as const;
@@ -56,4 +59,81 @@ export function writeMemory(store: ResourceStore, characterId: string, chatId: s
         { epoch: store.epoch(), baseRevision: store.memory.readContents(characterId, chatId)!.revision },
         changes,
     );
+}
+
+/** A re-recorded early event, two invalid sources, and a person's kept event, in storage order. */
+export function projectionHistory() {
+    const message = [
+        { chatId: "early", role: "user" as const, data: "Arrived" },
+        { chatId: "pin", role: "char" as const, data: "A promise" },
+        { chatId: "late", role: "user" as const, data: "Departed" },
+        { chatId: "changed", role: "char" as const, data: "Revised answer" },
+        { chatId: "kept", role: "char" as const, data: "Revised but accepted" },
+    ];
+    const source = (id: string, original?: string) => {
+        const index = message.findIndex((m) => m.chatId === id);
+        const m = message[index] ?? { chatId: id, role: "char" as const, data: "Removed answer" };
+        return {
+            messageId: id,
+            index: index < 0 ? 99 : id === "early" ? 50 : index + 10,
+            hash: messageSourceHash({ ...m, data: original ?? m.data }),
+        };
+    };
+    const make = (id: string, overrides: Partial<MemoryEventWrite> = {}): MemoryEventWrite => ({
+        ...memoryRecords([id], `Summary ${id}`).events[0],
+        sources: [source(id)],
+        ...overrides,
+    });
+    const kept = make("kept", { sources: [source("kept", "Original answer")] });
+    kept.keptState = memoryAnchorState(kept.sources, message, messageSourceHash);
+    const events = [
+        make("late", { grade: 6 }),
+        make("pin", { pinned: true, grade: 0, sources: [source("pin"), source("late")] }),
+        make("changed", { sources: [source("changed", "Original answer")] }),
+        make("gone"),
+        kept,
+        make("retracted", { status: "retracted", sources: [source("early")] }),
+        make("stale", { status: "stale", sources: [source("early")] }),
+        make("early", { grade: 5 }),
+    ];
+    const manifest = (id: string, lane: "flow" | "events"): ContextReport => ({
+        v: 1,
+        maxContext: 1000,
+        maxResponse: 100,
+        input: 100,
+        adjustment: 0,
+        attributionExact: true,
+        tokenScope: "test",
+        historyDigest: "history",
+        sections: [],
+        history: { total: 5, kept: 5, totalUser: 2, keptUser: 2, droppedTokens: 0 },
+        lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+        memory: {
+            kind: "structuredMemory",
+            tokens: 10,
+            coverage: "covered",
+            items: [{ id, lane, kind: "event", reason: "Selected", tokens: 10, verified: true }],
+        },
+    });
+    const messages: Message[] = message.map((m, index) => ({
+        ...m,
+        ...(index === 0 || index === 2
+            ? { generationInfo: { context: manifest(index === 0 ? "late" : "early", index === 0 ? "events" : "flow") } }
+            : {}),
+    }));
+    const expected = {
+        summaries: [
+            { text: "Summary early", chatMemos: ["early"], isImportant: false },
+            { text: "Summary pin", chatMemos: ["pin", "late"], isImportant: true },
+            { text: "Summary late", chatMemos: ["late"], isImportant: true },
+            { text: "Summary kept", chatMemos: ["kept"], isImportant: false },
+        ],
+        metrics: {
+            lastImportantSummaries: [],
+            lastRecentSummaries: [0],
+            lastSimilarSummaries: [],
+            lastRandomSummaries: [],
+        },
+    };
+    return { messages, events, expected };
 }

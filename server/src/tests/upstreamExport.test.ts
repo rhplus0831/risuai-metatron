@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { projectionHistory, writeMemory } from "./memoryFixtures.ts";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -324,7 +326,13 @@ function seedLibrary(w: Writer): void {
 }
 
 /** Seeds a store, copies it as the route does, and reads the copy back. */
-async function snapshotOf(seed: (w: Writer) => void = seedLibrary): Promise<ValidatedSnapshot> {
+async function snapshotOf(
+    seed: (w: Writer) => void = seedLibrary,
+    options: {
+        populate?: (store: ReturnType<typeof createResourceStore>) => void;
+        editCopy?: (db: DatabaseSync) => void;
+    } = {},
+): Promise<ValidatedSnapshot> {
     const store = createResourceStore({ file: ":memory:", kinds });
     try {
         const w: Writer = {
@@ -341,10 +349,19 @@ async function snapshotOf(seed: (w: Writer) => void = seedLibrary): Promise<Vali
             },
         };
         seed(w);
+        options.populate?.(store);
         const dir = mkdtempSync(path.join(os.tmpdir(), "risu-upstream-export-"));
         dirs.push(dir);
         const file = path.join(dir, "copy.sqlite");
         await store.backupTo(file);
+        if (options.editCopy) {
+            const db = new DatabaseSync(file);
+            try {
+                options.editCopy(db);
+            } finally {
+                db.close();
+            }
+        }
         return store.readSnapshot(file);
     } finally {
         store.close();
@@ -1451,5 +1468,87 @@ describe("buildUpstreamDatabase: round trip through the import converter", () =>
         const again = exportOf(staged, { now: NOW + 1 });
         expect(characterNamed(again.db, "Bob").trashTime).toBe(NOW);
         expect(converted(again.report, "trash-time-refreshed")).toBeUndefined();
+    });
+});
+
+describe("Structured Memory export", () => {
+    const real = { summaries: [{ text: "Real HypaV3", chatMemos: [], isImportant: false }] };
+    async function memorySnapshot(algorithm = "structuredMemory", editCopy?: (db: DatabaseSync) => void) {
+        const history = projectionHistory();
+        return snapshotOf(
+            (w) => {
+                w.put(SECTION_KIND.ui, "main", { memoryAlgorithmType: algorithm });
+                w.put("characters", "memory", { chaId: "memory", type: "character", name: "Memory" });
+                for (const [id, hypaV3Data] of [
+                    ["projected", undefined],
+                    ["empty", { summaries: [] }],
+                    ["owned", real],
+                    ["no-events", undefined],
+                ] as const) {
+                    w.chat("memory", id, {
+                        name: id,
+                        note: "Stored note",
+                        message: history.messages,
+                        ...(hypaV3Data ? { hypaV3Data } : {}),
+                    });
+                }
+            },
+            {
+                populate: (store) => {
+                    for (const id of ["projected", "empty", "owned"])
+                        writeMemory(store, "memory", id, { events: history.events });
+                },
+                editCopy,
+            },
+        );
+    }
+
+    it("exports the reconciled chronological projection unsealed using the snapshot algorithm and stored summary ownership", async () => {
+        for (const algorithm of ["structuredMemory", "hypaV3"]) {
+            const snapshot = await memorySnapshot(algorithm);
+            const { db, report } = exportOf(snapshot);
+            const chats = chatsOf(db, "Memory");
+            const chat = (id: string) => chats.find((chat) => chat.name === id)!;
+            expect(chat("owned").hypaV3Data).toEqual(real);
+            expect(chat("no-events")).not.toHaveProperty("hypaV3Data");
+            if (algorithm === "structuredMemory") {
+                for (const id of ["projected", "empty"])
+                    expect(chat(id).hypaV3Data).toEqual(projectionHistory().expected);
+                expect(converted(report, "memory-projected")).toMatchObject({ count: 2 });
+            } else {
+                expect(chat("projected")).not.toHaveProperty("hypaV3Data");
+                expect(chat("empty").hypaV3Data).toEqual({ summaries: [] });
+                expect(converted(report, "memory-projected")).toBeUndefined();
+            }
+            expect(JSON.stringify(db)).not.toContain("structuredMemoryProjection");
+        }
+    });
+
+    it("exports stored chats and reports unreadable memory after malformed events or a failed memory walk, but refuses other corrupt tables", async () => {
+        const malformed = await memorySnapshot("structuredMemory", (db) => {
+            db.prepare(
+                "UPDATE memory_events SET data = json_set(data, '$.sources', 42) WHERE chatSeq = (SELECT seq FROM chats WHERE id = 'projected') AND id = 'early'",
+            ).run();
+        });
+        const exported = exportOf(malformed);
+        expect(chatsOf(exported.db, "Memory").find((chat) => chat.name === "projected")).not.toHaveProperty(
+            "hypaV3Data",
+        );
+        expect(chatsOf(exported.db, "Memory").find((chat) => chat.name === "empty")!.hypaV3Data).toEqual(
+            projectionHistory().expected,
+        );
+        expect(excluded(exported.report, "memory-unreadable")).toMatchObject({ count: 1 });
+        const broken = await memorySnapshot("structuredMemory", (db) => db.exec("DROP TABLE memory_runs"));
+        expect(broken.memoryEvents).toBeNull();
+        const fallback = exportOf(broken);
+        const chats = chatsOf(fallback.db, "Memory");
+        expect(chats.find((chat) => chat.name === "projected")).not.toHaveProperty("hypaV3Data");
+        expect(chats.find((chat) => chat.name === "empty")!.hypaV3Data).toEqual({ summaries: [] });
+        expect(chats.find((chat) => chat.name === "owned")!.hypaV3Data).toEqual(real);
+        expect(excluded(fallback.report, "memory-unreadable")).toBeDefined();
+        expect(converted(fallback.report, "memory-projected")).toBeUndefined();
+        await expect(
+            memorySnapshot("structuredMemory", (db) => db.exec("UPDATE chats SET meta = 'null'")),
+        ).rejects.toThrow();
     });
 });

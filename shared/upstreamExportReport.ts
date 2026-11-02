@@ -23,6 +23,8 @@ export const UPSTREAM_EXPORT_CONVERTED_CODES = [
     "trash-time-refreshed",
     /** A list or entry upstream's boot would fail on was repaired in the export; the examples are paths. */
     "shape-repaired",
+    /** Structured memory written as plain `hypaV3Data`; counted per chat, the examples are character names. */
+    "memory-projected",
 ] as const;
 
 /** Data the exporter did not export. */
@@ -49,6 +51,12 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
     "plugin-storage",
     /** Chats with inlay references; the inlays are not exported. The examples are character names. */
     "inlays",
+    /**
+     * Chats exported as stored because their structured memory could not be read: a record that cannot
+     * be projected, or memory tables the export could not read, which leaves every chat so. Counted per
+     * chat, the examples are character names.
+     */
+    "memory-unreadable",
     /**
      * Referenced assets whose file name a RisuAI backup record cannot hold (a `/`, or a name upstream's
      * restore reads as its database or as cold storage); added by the export route, the examples are keys.

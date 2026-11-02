@@ -235,20 +235,21 @@ reads after `ensureChatLoaded` and before it copies the chat: a chat newer than 
 while records newer than the chat would put pages ahead of their messages. `exportAllChats` reads one chat at a time
 from the detached chats. `exportChatMemory` then changes the exported copy only:
 
-- `hypaV3Data` goes when `settings.ui.memoryAlgorithmType` is `structuredMemory` and the chat holds a page, event, or
-  thread, because an imported [projection](structured-memory.md#the-hypav3-projection) looks like a plugin's write. Both
-  conditions are required: a chat can hold real summaries beside records, and they are live after a switch back to
-  HypaV3.
+- `hypaV3Data` goes when it is sealed (`isSealedHypaV3Data`), on every path, the failed read included: a sealed value is
+  a [projection](structured-memory.md#the-hypav3-projection), which a tab can hold also after another algorithm was
+  selected, and it never reaches a file. An unsealed value stays whatever the selected algorithm: a chat can hold real
+  summaries beside records, and they are live after a switch back to HypaV3.
 - `generationInfo.memory` goes from every message when the chat holds a row of any kind, runs included, since a chat
   with only failed runs can hold paused receipts. A receipt is a display copy of a run, and runs do not cross: the panel
   would offer Resume on an empty Log, and a failed restore would show `recorded`. The rest of `generationInfo` stays,
   and hashes do not read it.
 
 A failed read, or any refusal but the initial `chatGone`, writes the chat with no records at all, never a part of them,
-and leaves `hypaV3Data` and the receipts as they are. The download goes on, because an export works with the server
-unreachable and the banner is the last rescue of refused data. `structuredMemory.memoryFile.exportedWithoutRecords`
-takes the place of `successExport`, since `alertError` and `alertNormal` each queue a dialog. HTML shows no notice: it
-holds no records anyway. `exportAllChats` names how many chats went without, and one chat's failure stops no other.
+and leaves the receipts and a real `hypaV3Data` as they are. The download goes on, because an export works with the
+server unreachable and the banner is the last rescue of refused data.
+`structuredMemory.memoryFile.exportedWithoutRecords` takes the place of `successExport`, since `alertError` and
+`alertNormal` each queue a dialog. HTML shows no notice: it holds no records anyway. `exportAllChats` names how many
+chats went without, and one chat's failure stops no other.
 
 `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/restore`, `{ pages, events, threads }`, capped by
 `RouteLimits.memoryRestoreBodyBytes`, default `MEMORY_RESTORE_BODY_BYTES` (32 MiB, because a stored record alone may
@@ -321,9 +322,9 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
 - The restore route is reached from `importChat` alone, [a memory write](structured-memory.md#a-memory-write) too, and
   is the one route that writes records the tab sent ([Invariants](structured-memory.md#invariants)).
 - A chat file and [the HypaV3 projection](structured-memory.md#the-hypav3-projection): an exported copy drops
-  `hypaV3Data` by one rule, `exportChatMemory`'s: the selected algorithm is `structuredMemory` and the chat holds a
-  page, event, or thread. A projection overlaid on a chat's full read must keep inside that rule. Overlaid on any other
-  chat, it would be exported and imported as a plugin's write.
+  `hypaV3Data` by the seal alone (`exportChatMemory`), so the projection a tab's read overlays must stay sealed, and an
+  unsealed one would be exported as real summaries. An import of an older file that holds a sealed value drops it in
+  `createChat`.
 
 ## Invariants
 
@@ -400,8 +401,6 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
 - An all-chats export reads the chats first and their records after, so a chat can be older than its records. Each
   chat's read has its own 60 s bound, so a server that hangs by then holds the file a minute per chat. Decision:
   Structured Memory slice 5f, plan.
-- A chat that holds real `hypaV3Data` under the structured algorithm exports without it, since nothing tells it from a
-  projection. Decision: Structured Memory slice 5f, plan.
 - A send that reaches an imported chat before its restore leaves it unrestored: the chat then holds rows, or is fenced,
   and the notice shows. A tab closed before the restore posts leaves it the same with no notice: nothing retries it.
   Decision: Structured Memory slice 5f, plan.

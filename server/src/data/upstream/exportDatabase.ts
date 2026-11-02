@@ -24,6 +24,11 @@ import {
 } from "../../../../shared/presets.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import {
+    hypaV3DataHoldsSummaries,
+    type MemoryEvent,
+    STRUCTURED_MEMORY_ALGORITHM,
+} from "../../../../shared/structuredMemory.ts";
+import {
     COLLECTION_FIELDS,
     DROPPED_FIELDS,
     maxContextOverrideOf,
@@ -46,6 +51,7 @@ import {
     projectCollections,
     projectSections,
 } from "../databaseProjection.ts";
+import { type MemoryEventRow, projectChatMemory } from "../memoryStore.ts";
 import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 
 /**
@@ -68,6 +74,10 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
  *   auxiliary service keys included.
  * - Characters and chats: chats in `chatOrders` order, without metatron-only chat, message, and
  *   character fields; inlays and device-local plugin storage are left out and counted.
+ * - Structured memory: a structured chat's `hypaV3Data` is the projection of its records, unsealed:
+ *   upstream restores plain HypaV3 data, and a re-import here takes it as real. A chat is structured
+ *   by the rule of a tab's read: the algorithm selected in the snapshot's `ui` record, at least one
+ *   event, and no stored value with summaries, which wins.
  *
  * Every left-out or reshaped item is reported (`shared/upstreamExportReport.ts`). The rows are parsed
  * here, so the result shares no object with the input.
@@ -79,6 +89,8 @@ export type UpstreamExportChats = {
     readonly chats: readonly { seq: number; characterId: string; id: string; meta: string }[];
     readonly messages: readonly { chatSeq: number; position: number; data: string }[];
     readonly chatOrders: readonly { characterId: string; ids: string }[];
+    /** The structured memory events (`ValidatedSnapshot`), null when the memory tables could not be read. */
+    readonly memoryEvents?: readonly MemoryEventRow[] | null;
 };
 
 export type UpstreamExportOptions = {
@@ -355,7 +367,15 @@ export function buildUpstreamDatabase(
     db.plugins = plugins;
     db.pluginCustomStorage = upstreamPluginStorage(records.get(RESOURCE_KIND.pluginStorage), plugins, report);
 
-    db.characters = upstreamCharacters(characterRecords, chats, options, now, report);
+    const ui = records.get(RESOURCE_KIND.ui);
+    db.characters = upstreamCharacters(
+        characterRecords,
+        chats,
+        options,
+        now,
+        isPlainObject(ui) && ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM,
+        report,
+    );
 
     if (!options.includeSecrets) {
         clearAuxiliaryKeys(db, report);
@@ -884,8 +904,26 @@ function upstreamCharacters(
     snapshot: UpstreamExportChats,
     options: UpstreamExportOptions,
     now: number,
+    structuredMemory: boolean,
     report: UpstreamExportReport,
 ): Root[] {
+    const eventsBySeq = new Map<number, string[]>();
+    for (const { chatSeq, data } of structuredMemory ? (snapshot.memoryEvents ?? []) : []) {
+        const list = eventsBySeq.get(chatSeq);
+        if (list) {
+            list.push(data);
+        } else {
+            eventsBySeq.set(chatSeq, [data]);
+        }
+    }
+    /** What a chat of the character `name` is projected from, undefined when it has nothing to project. */
+    const memoryOf = (seq: number, name: string): UpstreamChatMemory | undefined => {
+        if (structuredMemory && snapshot.memoryEvents === null) {
+            return { name, events: null };
+        }
+        const events = eventsBySeq.get(seq);
+        return events && { name, events };
+    };
     const messagesBySeq = new Map<number, { position: number; data: string }[]>();
     for (const message of snapshot.messages) {
         let list = messagesBySeq.get(message.chatSeq);
@@ -930,7 +968,7 @@ function upstreamCharacters(
                 return [];
             }
             const messages = (messagesBySeq.get(row.seq) ?? []).sort((a, b) => a.position - b.position);
-            const chat = upstreamChat(row.meta, messages, `characters[${name}]`, report);
+            const chat = upstreamChat(row.meta, messages, memoryOf(row.seq, name), `characters[${name}]`, report);
             if (
                 chat.message.some((message) => typeof message.data === "string" && INLAY_REFERENCE.test(message.data))
             ) {
@@ -972,15 +1010,47 @@ function upstreamCharacters(
     });
 }
 
+/** A structured chat's records and its character's name; `events` null: they could not be read. */
+type UpstreamChatMemory = { name: string; events: readonly string[] | null };
+
 /**
- * One upstream chat: the stored metadata without metatron's fields, the messages in order
- * without their translations, `useLocallySetGlobalVariables` when the chat holds toggle values (so
- * upstream keeps writing them to the chat, as metatron does), and `lastDate` at least as recent as its
- * newest message.
+ * Gives a chat whose stored `hypaV3Data` holds no summaries the projection of its records. One that
+ * cannot be made leaves the chat as stored, and is reported.
+ */
+function projectUpstreamMemory(
+    chat: Root,
+    messages: readonly Message[],
+    { name, events }: UpstreamChatMemory,
+    report: UpstreamExportReport,
+): void {
+    if (hypaV3DataHoldsSummaries(chat.hypaV3Data)) {
+        return;
+    }
+    if (events === null) {
+        addEntry(report.excluded, "memory-unreadable", [name]);
+        return;
+    }
+    try {
+        chat.hypaV3Data = projectChatMemory(
+            events.map((text) => JSON.parse(text) as MemoryEvent),
+            messages,
+        );
+        addEntry(report.converted, "memory-projected", [name]);
+    } catch {
+        addEntry(report.excluded, "memory-unreadable", [name]);
+    }
+}
+
+/**
+ * One upstream chat: the stored metadata without metatron's fields, the projection of its structured
+ * memory (`projectUpstreamMemory`), the messages in order without their translations,
+ * `useLocallySetGlobalVariables` when the chat holds toggle values (so upstream keeps writing them to
+ * the chat, as metatron does), and `lastDate` at least as recent as its newest message.
  */
 function upstreamChat(
     metaText: string,
     rows: readonly { data: string }[],
+    memory: UpstreamChatMemory | undefined,
     path: string,
     report: UpstreamExportReport,
 ): Chat {
@@ -992,10 +1062,14 @@ function upstreamChat(
     if (stripped.length > 0) {
         addEntry(report.excluded, "chat-fields", stripped);
     }
+    const stored = rows.map((row) => JSON.parse(row.data) as Message & Root);
+    // From the messages as stored, before any field goes: their hashes and last manifest are read.
+    if (memory) {
+        projectUpstreamMemory(chat, stored, memory, report);
+    }
     let translations = 0;
     let newest: number | undefined;
-    const message = rows.map((row) => {
-        const entry = JSON.parse(row.data) as Message & Root;
+    const message = stored.map((entry) => {
         if (Object.hasOwn(entry, "translation")) {
             delete entry.translation;
             translations++;

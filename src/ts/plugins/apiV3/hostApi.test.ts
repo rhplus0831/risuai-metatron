@@ -859,3 +859,60 @@ describe("v3 document key listeners and the terminal notice", () => {
         }
     });
 });
+
+it("setChatToIndex refuses a changed memory projection with a notice while applying the plugin's message and note", async () => {
+    const { sealHypaV3Data } = await import("../../../../shared/structuredMemory.ts");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+        installDatabase({
+            memoryAlgorithmType: "structuredMemory",
+            characters: [
+                {
+                    chaId: "projection-owner",
+                    name: "Memory",
+                    type: "character",
+                    chats: [
+                        {
+                            id: "projection-chat",
+                            name: "Story",
+                            note: "",
+                            localLore: [],
+                            message: [{ chatId: "source", role: "user", data: "Original" }],
+                        },
+                    ],
+                },
+            ],
+        });
+        const ref = { chaId: "projection-owner", chatId: "projection-chat" };
+        const projection = sealHypaV3Data({
+            summaries: [{ text: "Read-only event", chatMemos: ["source"], isImportant: true }],
+        });
+        chatStore.acceptRemoteChat({
+            characterId: ref.chaId,
+            id: ref.chatId,
+            revision: "epoch:1:1",
+            data: {
+                ...JSON.parse(JSON.stringify(chatStore.findChat(ref))),
+                hypaV3Data: projection,
+            },
+        });
+        const api = await makeApi();
+        const current = await api.getChatFromIndex(0, 0);
+        expect(current.hypaV3Data).toEqual(projection);
+        await api.setChatToIndex(0, 0, current);
+        expect(warn).not.toHaveBeenCalled();
+        current.hypaV3Data.summaries[0].text = "Plugin overwrite";
+        current.note = "Plugin note";
+        current.message[0].data = "Plugin edit";
+        await api.setChatToIndex(0, 0, current);
+        expect(chatStore.findChat(ref)).toMatchObject({ note: "Plugin note", hypaV3Data: projection });
+        expect(chatStore.findChat(ref)!.message[0].data).toBe("Plugin edit");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("Refused a change to hypaV3Data"));
+    } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        warn.mockRestore();
+    }
+});

@@ -167,6 +167,12 @@ export interface HypaV3Data {
 
 export interface SerializableHypaV3Data extends Omit<HypaV3Data, "summaries"> {
     summaries: SerializableSummary[];
+    /**
+     * Only on Structured Memory's projection as a tab's read answers it (`sealHypaV3Data`): the value
+     * is projected from the chat's records and never stored. It says what the value is, and
+     * authorizes nothing.
+     */
+    structuredMemoryProjection?: string;
 }
 
 export interface Summary {
