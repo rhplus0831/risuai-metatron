@@ -926,12 +926,22 @@ Files: `structured/pages.ts`, `structured/restore.ts`, `structured/rebuild.ts`, 
 
 ### Slice 7e: health badge and screening (D8, D9; needs 5a, 7a) — _hard_
 
-Files: `src/lib/SideBars/ChatStatusBadge.svelte`, `src/lib/SideBars/chatStatus.ts`, the chat header, `structured/window.ts`,
-`routes/structuredMemory.ts`, `MemorySettings.svelte`, `src/lang/en.ts`, tests.
+Files: `src/lib/SideBars/ChatStatusBadge.svelte`, `src/lib/SideBars/chatStatus.ts`, `src/ts/process/chatStatus.svelte.ts`,
+`Sidebar.svelte`, `MainMenu.svelte`, `PinnedChatsRail.svelte`, `DefaultChatScreen.svelte`, `structured/window.ts`,
+`structured/step.ts`, `structured/rebuild.ts`, `structured/testRun.ts`, `memoryTasks.ts`, `memoryStore.ts`, `assemble.ts`,
+`runner.ts`, `routes/structuredMemory.ts`, `shared/contextReport.ts`, `structuredMemory.svelte.ts`,
+`StructuredMemoryPanel.svelte`, new `SettingsTab.svelte`, `CoverageTab.svelte`, `PagesTab.svelte`, `MemoryManifest.svelte`,
+`MemorySettings.svelte`, `src/lang/en.ts`, `src/lang/ko.ts`, tests.
 
 - The worst of writer paused, gap over a threshold, stale events, unsupported sections, required lane over cap, page over
   budget, and custom prompt. Screening lists mark a message `excluded` in Coverage; per-chat overrides join the panel's
   Settings tab.
+- Decisions (owner, 2026-11-03). Screening reaches the writer only: a screened reply enters no window and its raw text
+  stays in the prompt, trimming as it does today. A required lane over cap is that send's failure code, which the tab
+  marks per chat in memory until the chat's next good send, so a reload loses it.
+- The chat's badge sits in `DefaultChatScreen` beside the `ContextMeter` row and works with the meter off. Only pinned
+  chats and the open chat have a state. The badge is a last observation: a read at boot, chat open, panel close, and
+  page return, at most once a minute, never on a send or a task end. A chat not loaded knows no gap and partial stale.
 
 ### Slice 8: evaluation (D14; needs all) — _hard_
 
