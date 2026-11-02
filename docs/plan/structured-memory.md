@@ -834,6 +834,17 @@ Files: new `server/src/prompt/memory/structured/adopt.ts` and tests; `routes/str
   title from the first sentence, hashes from the messages as stored; a missing message makes it `stale`). `hypaV3Data`
   stays as it was until the user resets it.
 
+### Slice 6c: the adoption choice and reset (D11, D12; needs 6a, 5g) — _hard_
+
+Files: `server/src/prompt/memory/structured/{writer,recordJob,step}.ts`, `memoryStore.ts`, `routes/structuredMemory.ts`, the
+panel, `src/lang/en.ts`, tests.
+
+- A chat with real summaries and no records is held (owner, 2026-11-02): automatic recording and Record now write nothing
+  until the person adopts or declines in the panel, which keeps D11's "never both". Declining is kept with the chat's
+  memory state, and the writer then starts from the oldest turn. Nothing is lost by waiting: the summaries stay stored.
+- A reset in the panel empties an adopted chat's stored `hypaV3Data`, since `HypaV3Modal` is not mounted under this
+  algorithm. The projection takes over from then on.
+
 ### Slice 6b: rebuild and backfill (D3, D12; needs 6a) — _hard_
 
 Files: new `server/src/prompt/memory/structured/rebuild.ts` and tests; `memoryTasks.ts`; `memoryStore.ts` (staging rows and
@@ -896,7 +907,7 @@ fixtures, new `docs/audit/structured-memory-<date>.md`.
 
 ## Recommended order
 
-1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5f, 5e, 6a, 5g,
+1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5f, 5e, 6a, 5g, 6c,
 6b, 7b, 7c, 7d, 7e, and 8 one at a time. The later run is serial because each adds strings or shares the panel's route
 file. `memoryTasks.ts`, `assemble.ts`, `memoryStore.ts`, `routes/structuredMemory.ts`, and `structured/writer.ts` each have
 one writer at a time through this order; the guide is shared by all, and a conflict there is docs only.
