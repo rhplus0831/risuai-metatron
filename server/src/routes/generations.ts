@@ -13,6 +13,7 @@ import {
     MAX_TRIGGER_NAME_BYTES,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { STRUCTURED_MEMORY_REBUILD_MODES } from "../../../shared/structuredMemory.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { parseGenerationHooks } from "../jobs/channel.ts";
@@ -74,7 +75,7 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
         return value === undefined ? undefined : "command is only for a command job";
     }
     const invalidShape =
-        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, { type: "manual", name: string }, or { type: "memoryRecord", messageId?: string }';
+        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, { type: "manual", name: string }, { type: "memoryRecord", messageId?: string }, { type: "memoryRebuild", mode: "rebuild" | "backfill", turns: 1 | 2 }, or { type: "memoryRebuild", resume: true }';
     if (isPlainObject(value) && value.type === "memoryRecord") {
         if (value.messageId === undefined) {
             return { type: "memoryRecord" };
@@ -82,6 +83,15 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
         return isValidResourceId(value.messageId)
             ? { type: "memoryRecord", messageId: value.messageId }
             : "command.messageId must be an id when present";
+    }
+    if (isPlainObject(value) && value.type === "memoryRebuild") {
+        if (value.resume === true) {
+            return { type: "memoryRebuild", resume: true };
+        }
+        const mode = STRUCTURED_MEMORY_REBUILD_MODES.find((entry) => entry === value.mode);
+        return mode && (value.turns === 1 || value.turns === 2)
+            ? { type: "memoryRebuild", mode, turns: value.turns }
+            : invalidShape;
     }
     if (isPlainObject(value) && value.type === "manual" && typeof value.name === "string") {
         if (Buffer.byteLength(value.name, "utf8") > MAX_TRIGGER_NAME_BYTES) {
@@ -223,10 +233,10 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
 
 /**
  * `/api/generations`: `POST` creates a job (`{ jobId }`; 409 `chatBusy` with the running job's id,
- * 409 `stale`, 409 `chatBindingIncomplete` with `problems` or `chatBindingMismatch` when the
- * context's ids are not the chat's complete binding, 409 `chatLoreOverrideOrphaned` with `entries`
- * (`{ id, name }`) when overrides lost their owner entries, 404, 412 for another epoch, 503 while the
- * server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
+ * 409 with plain text while the chat holds a memory rebuild, 409 `stale`, 409 `chatBindingIncomplete`
+ * with `problems` or `chatBindingMismatch` when the context's ids are not the chat's complete binding,
+ * 409 `chatLoreOverrideOrphaned` with `entries` (`{ id, name }`) when overrides lost their owner entries,
+ * 404, 412 for another epoch, 503 while the server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
  * `DELETE /:id?clientId=` aborts it, and `POST /:id/memory-stop?clientId=` (`{ runId }`, the epoch
  * checked) stops the job's initial memory summarization run `runId` after its summary in progress
  * (`{ stopped: true }`; 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`; 412 for another epoch),

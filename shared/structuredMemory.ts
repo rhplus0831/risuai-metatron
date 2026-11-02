@@ -27,6 +27,14 @@ export const STRUCTURED_MEMORY_PATH = "/api/memory/structured";
  */
 export const ADOPTED_WRITER_RUN = "adopted-hypav3";
 
+/**
+ * How a chat's records are made again from its transcript: `rebuild` takes every confirmed turn and
+ * replaces what the transcript can reproduce, `backfill` only the turns no event cites and adds to the
+ * records. Persisted: never rename one.
+ */
+export const STRUCTURED_MEMORY_REBUILD_MODES = ["rebuild", "backfill"] as const;
+export type StructuredMemoryRebuildMode = (typeof STRUCTURED_MEMORY_REBUILD_MODES)[number];
+
 /** What a page describes. A chat has exactly one `scene` page, rewritten rather than appended to. */
 export const MEMORY_PAGE_TYPES = ["character", "location", "faction", "item", "concept", "scene", "note"] as const;
 export type MemoryPageType = (typeof MEMORY_PAGE_TYPES)[number];
@@ -354,6 +362,11 @@ export interface MemoryEvent extends Omit<MemoryEventDraft, "knowledge">, Memory
     speakerId?: string;
     /** How many near-identical events were merged into this one. */
     repeatCount?: number;
+    /**
+     * A rebuild made it over messages an adopted summary cites, so the chat's stored HypaV3 summaries are
+     * still the ones a reset empties. It passes on through later rebuilds.
+     */
+    adoptedSummaries?: boolean;
 }
 
 /** What a revert restores together, so a body never returns with its replacement's evidence. */
@@ -501,6 +514,8 @@ export interface MemoryRun {
     receipt?: MemoryReceipt;
     /** The preset's own prompt replaced the default one for this run. */
     customPrompt?: boolean;
+    /** The language the run wrote in; absent on a run from before this was kept. */
+    language?: string;
 }
 
 /** The writer's settings, kept in the memory preset (`normalizeStructuredMemorySettings`). */
@@ -577,8 +592,57 @@ export type StructuredMemoryContents = {
  */
 export type StructuredMemoryAdoption = { adoptable: number; declined: boolean; resettable: boolean };
 
-/** The contents route's answer: a chat's records without their bodies and what the panel offers for its summaries. */
-export type StructuredMemoryContentsAnswer = StructuredMemoryContents & { adoption: StructuredMemoryAdoption };
+/**
+ * A chat's rebuild or backfill, which goes on until a swap or a person abandons it: `done` of `total`
+ * windows, and why it last stopped, when it did for a reason. `resumable` falls for good when the whole
+ * chat was replaced after it began, since that may have changed every message, and only abandoning is left.
+ */
+export type StructuredMemoryRebuild = {
+    mode: StructuredMemoryRebuildMode;
+    done: number;
+    total: number;
+    reason?: string;
+    error?: string;
+    resumable: boolean;
+};
+
+/**
+ * The contents route's answer: a chat's records without their bodies, what the panel offers for its
+ * summaries, its rebuild, and the language of its newest recorded run, null with none or from before runs
+ * kept one.
+ */
+export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
+    adoption: StructuredMemoryAdoption;
+    rebuild: StructuredMemoryRebuild | null;
+    recordedLanguage: string | null;
+};
+
+/** The abandon route's answer: the chat's memory revision, which it left alone, and whether a run went. */
+export type StructuredMemoryAbandonAnswer = { revision: string; abandoned: boolean };
+
+/** What a cost preview prices: a rebuild, a backfill, or a press of record now. */
+export type StructuredMemoryCostMode = StructuredMemoryRebuildMode | "record";
+
+/**
+ * The cost route's answer. `calls` are the windows, one analysis call each, and so the least: a window may
+ * add a patch call and compaction calls. `messages` are the messages those windows hold, and
+ * `estimatedTokens` the input of the analysis calls alone (`memoryCostTokens`).
+ */
+export type StructuredMemoryCostAnswer = { calls: number; messages: number; estimatedTokens: number };
+
+/**
+ * What one analysis call costs past its window's messages, in tokens: the frame, the cast, the scene, the
+ * threads, and the context messages. A starting value, not a measurement of any one chat.
+ */
+export const MEMORY_CALL_OVERHEAD_TOKENS = 1500;
+
+/**
+ * The input tokens of `calls` analysis calls over windows of `windowBytes` UTF-8 bytes. An estimate at three
+ * bytes a token, because a route has no job scope to reach a real tokenizer.
+ */
+export function memoryCostTokens(windowBytes: number, calls: number): number {
+    return Math.ceil(windowBytes / 3) + calls * MEMORY_CALL_OVERHEAD_TOKENS;
+}
 
 /** The record route's answer: one record as stored. */
 export type StructuredMemoryRecordAnswer<K extends StructuredMemoryRecordKind = StructuredMemoryRecordKind> = {
@@ -1231,6 +1295,23 @@ export function structuredMemoryLanguageOverride(
 ): string | undefined {
     const value = record?.structuredMemoryLanguage;
     return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * The language the writer records a chat in: the chat's override, its owner's, the preset's, then the
+ * app's. The writer and the panel's comparison with what a chat was recorded in read this one rule.
+ */
+export function structuredMemoryWriterLanguage(
+    chat: { structuredMemoryLanguage?: unknown } | undefined,
+    owner: { structuredMemoryLanguage?: unknown } | undefined,
+    presetLanguage: string,
+    appLanguage: string,
+): string {
+    return (
+        structuredMemoryLanguageOverride(chat) ??
+        structuredMemoryLanguageOverride(owner) ??
+        (presetLanguage || appLanguage)
+    );
 }
 
 /** A chat's highlight mode (`structuredMemoryHighlight`): a stored mode, else none. */

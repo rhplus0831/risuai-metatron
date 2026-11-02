@@ -358,6 +358,8 @@ type ApplyChangesOptions = {
 
 export type ResourceStore = ReturnType<typeof createResourceStore>;
 
+type RebuildTables = ReturnType<typeof createMemoryTables>["rebuild"];
+
 /**
  * The notice `onChatInvalidated` delivers once a write that deleted a chat, replaced it whole, or
  * deleted its character committed: the chat's new source generation in that epoch. Captured at the
@@ -1039,9 +1041,13 @@ export function createResourceStore(options: {
     /**
      * Commits the open transaction and, in the same synchronous step, advances the source
      * generation of every chat it invalidated and queues their notices and its message changes
-     * (`deliverInvalidations`).
+     * (`deliverInvalidations`). A rebuild outlives this process and its generations, so a chat's run takes
+     * the same news in the transaction itself.
      */
     function commitTransaction() {
+        for (const { characterId, id } of transactionInvalidations?.values() ?? []) {
+            memoryTables.rebuild.noteSourceReplaced(characterId, id);
+        }
         db.exec("COMMIT");
         const invalidated = transactionInvalidations;
         const messageChanges = transactionMessageChanges;
@@ -2024,6 +2030,134 @@ export function createResourceStore(options: {
             readProjectionRevisions(refs: readonly MemoryChatRef[]): (string | null)[] {
                 assertOpen();
                 return structuredMemorySelected() ? memoryTables.readProjectionRevisions(refs) : refs.map(() => null);
+            },
+            /**
+             * A chat's rebuild (`memoryTables.rebuild`): a run that outlives a process, and its staged
+             * records. Reads see only the live tables, a staged write publishes nothing, and `swap` alone
+             * moves what a chat reads, by one memory revision. The writes count toward snapshots like a
+             * memory write and take the epoch the same way.
+             */
+            rebuild: {
+                /** Writes the run and its `seed` in one transaction; a chat that holds a run is refused. */
+                begin(
+                    characterId: string,
+                    chatId: string,
+                    { epoch: expected, ...run }: { epoch: string | undefined } & Parameters<RebuildTables["begin"]>[2],
+                    seed: Parameters<RebuildTables["begin"]>[3],
+                ): void {
+                    assertWritable();
+                    assertEpochNow(expected);
+                    transactionInScope(() => {
+                        memoryTables.rebuild.begin(characterId, chatId, run, seed);
+                        countWrite();
+                    });
+                },
+                /** What a writer reads and writes in place of `store.memory`. */
+                staged: {
+                    readContents(...args: Parameters<RebuildTables["readContents"]>) {
+                        assertOpen();
+                        return memoryTables.rebuild.readContents(...args);
+                    },
+                    readRecord<K extends MemoryRecordKind>(characterId: string, chatId: string, kind: K, id: string) {
+                        assertOpen();
+                        return memoryTables.rebuild.readRecord(characterId, chatId, kind, id);
+                    },
+                    /** `write` of `store.memory` on the staged set; `advance` moves the cursor with it. */
+                    write(
+                        characterId: string,
+                        chatId: string,
+                        options: { epoch: string | undefined; baseRevision: string; advance?: boolean },
+                        changes: MemoryChanges,
+                    ): string {
+                        assertWritable();
+                        assertEpochNow(options.epoch);
+                        return transactionInScope(() => {
+                            const { revision, wrote } = memoryTables.rebuild.write(
+                                characterId,
+                                chatId,
+                                options.baseRevision,
+                                changes,
+                                options.advance,
+                            );
+                            if (wrote) {
+                                countWrite();
+                            }
+                            return revision;
+                        });
+                    },
+                },
+                /** Moves the cursor past a window with nothing left to record. */
+                advance(characterId: string, chatId: string, expected: string | undefined): void {
+                    assertWritable();
+                    assertEpochNow(expected);
+                    transactionInScope(() => {
+                        if (memoryTables.rebuild.advance(characterId, chatId)) {
+                            countWrite();
+                        }
+                    });
+                },
+                status(...args: Parameters<RebuildTables["status"]>) {
+                    assertOpen();
+                    return memoryTables.rebuild.status(...args);
+                },
+                plan(...args: Parameters<RebuildTables["plan"]>) {
+                    assertOpen();
+                    return memoryTables.rebuild.plan(...args);
+                },
+                /** Keeps why the run stopped, or clears it with neither field. */
+                noteStop(
+                    characterId: string,
+                    chatId: string,
+                    { epoch: expected, ...stop }: { epoch: string | undefined; reason?: string; error?: string },
+                ): void {
+                    assertWritable();
+                    assertEpochNow(expected);
+                    transactionInScope(() => {
+                        if (memoryTables.rebuild.noteStop(characterId, chatId, stop)) {
+                            countWrite();
+                        }
+                    });
+                },
+                /**
+                 * The generation lock's one read: the chat holds a run under this algorithm, so a person who
+                 * left it is not locked behind a panel that no longer mounts.
+                 */
+                rebuilding(characterId: string, chatId: string): boolean {
+                    assertOpen();
+                    return memoryTables.rebuild.status(characterId, chatId) !== null && structuredMemorySelected();
+                },
+                /** Commits the run's `changes` whole and ends it, in one transaction; answers the live token. */
+                swap(
+                    characterId: string,
+                    chatId: string,
+                    options: { epoch: string | undefined; baseRevision: string },
+                    changes: MemoryChanges,
+                ): string {
+                    assertWritable();
+                    assertEpochNow(options.epoch);
+                    return transactionInScope(() => {
+                        const { revision } = memoryTables.rebuild.swap(
+                            characterId,
+                            chatId,
+                            options.baseRevision,
+                            changes,
+                        );
+                        countWrite();
+                        return revision;
+                    });
+                },
+                /** Ends the run with nothing written live. Whether the chat held one. */
+                abandon(characterId: string, chatId: string, expected: string | undefined): boolean {
+                    assertWritable();
+                    assertEpochNow(expected);
+                    return transactionInScope(() => {
+                        const abandoned = memoryTables.rebuild.abandon(characterId, chatId);
+                        if (abandoned) {
+                            countWrite();
+                        }
+                        return abandoned;
+                    });
+                },
             },
         },
 

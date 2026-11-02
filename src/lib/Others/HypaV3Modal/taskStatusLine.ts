@@ -16,6 +16,13 @@ export function memoryTaskStatusLine(status: MemoryTaskStatus | null): string | 
         case "running":
             return language.memoryTasks.running(status.done, status.total);
         case "done":
+            if (status.reason === "rebuilt") {
+                return language.memoryTasks.rebuilt;
+            }
+            // The chain's next task is already queued, and the panel holds the run's own line.
+            if (status.reason === "rebuildContinues") {
+                return null;
+            }
             return status.reason || status.error
                 ? language.memoryTasks.done(status.error ?? reasonText(status.reason))
                 : null;

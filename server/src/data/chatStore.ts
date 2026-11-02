@@ -205,6 +205,67 @@ export const MEMORY_TABLES_SQL = `
 `;
 
 /**
+ * A chat's rebuild (`memoryStore.ts`): `memory_rebuilds`, the run itself, and the staged tables holding what
+ * it records until its swap: the same columns, uniqueness, and scene index as the record tables above, each
+ * row going with its chat by cascade. `plan` is a JSON list of message ids per window, written once;
+ * `cursor` counts the windows done and `revision` the staged set's writes, which is its own counter.
+ * `sourceReplaced` is set in the commit of a whole-chat replace: the store's source generations live in
+ * memory and start over with a process, and a run outlives one.
+ * None of these is a record: they are in no snapshot walk, checkpoint, chat file, or inherit, and the
+ * snapshot layout names none of them, so a restore leaves them behind with the chats it deletes.
+ */
+const MEMORY_REBUILD_TABLES_SQL = `
+    CREATE TABLE IF NOT EXISTS memory_rebuilds (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        mode TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        sourceReplaced INTEGER NOT NULL DEFAULT 0,
+        cursor INTEGER NOT NULL,
+        total INTEGER NOT NULL,
+        plan TEXT NOT NULL,
+        reason TEXT,
+        error TEXT
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_staged_pages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_staged_pages_scene ON memory_staged_pages (chatSeq) WHERE type = 'scene';
+    CREATE TABLE IF NOT EXISTS memory_staged_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        createdRevision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_staged_threads (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        state TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_staged_runs (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        result TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+`;
+
+/**
  * A message's role as `messages_role` indexes it. A query reaches that index only through this exact
  * expression, so every statement that counts by role builds on this text.
  */
@@ -220,7 +281,7 @@ const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON mess
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MESSAGE_ROLE_INDEX_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MESSAGE_ROLE_INDEX_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
@@ -1023,8 +1084,8 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 
 /**
  * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
- * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory tables, and the
- * `messages_role` index when missing (on a fresh and an existing file alike; building the index parses
+ * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory and rebuild tables,
+ * and the `messages_role` index when missing (on a fresh and an existing file alike; building the index parses
  * every message row once), adds `memory_state`'s decline column to a table from before it, where every
  * existing row reads as not declined, and rebuilds the stored projections. `BEGIN IMMEDIATE` holds the
  * look at that column and its `ALTER` together, so a second start, at once or later, finds the column

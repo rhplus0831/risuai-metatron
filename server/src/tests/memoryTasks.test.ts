@@ -29,6 +29,7 @@ import {
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
 } from "../../../shared/structuredMemory.ts";
+import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
 import { reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
 import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
@@ -2388,6 +2389,7 @@ describe("the server wiring", () => {
             acquireSummaryWriter: async () => ({ release() {} }),
             pendingManual: () => false,
             record: () => ({ outcome: "refused", reason: "shuttingDown" }),
+            rebuild: () => ({ outcome: "refused", reason: "shuttingDown" }),
         } satisfies MemoryTaskService;
         for (const memoryTasks of ["disabled", fake] as const) {
             const closed = await createResourceTestClient({ memoryTasks });
@@ -2546,6 +2548,283 @@ describe("structured memory tasks", () => {
         const patchRequest = await nextPatch(t, request.index + 1, terminal);
         return { request, terminal, patchRequest, analysisAnswer };
     };
+
+    const beginStagedRun = (
+        t: Harness,
+        mode: "rebuild" | "backfill" = "rebuild",
+        plan = [
+            ["m1", "m2"],
+            ["m3", "m4"],
+            ["m5", "m6"],
+        ],
+    ) => {
+        const live = readRecordSet(t.store.memory, "c", "k1")!;
+        t.store.memory.rebuild.begin("c", "k1", { epoch: t.store.epoch(), mode, plan }, rebuildSeed(mode, live));
+        return { ...writerInput(t), rebuild: true as const };
+    };
+
+    it("chains a rebuild with whole-run progress and resumes failed staging after a service restart without recording finished windows again", async () => {
+        const t = structuredHarness({ limits: { maxWriterWindows: 1, taskDeadlineMs: 100 } });
+        writeMemory(t.store, "c", "k1", { ...memoryRecords(["live"]), adoptionDeclined: true });
+        const before = contents(t);
+        const chatBefore = t.store.readChatSource("c", "k1");
+        const input = beginStagedRun(t);
+        const failed = t.nextEvent(({ status }) => status.state === "failed");
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        const first = await nextPatch(t, 0, failed);
+        t.clock.now += 50;
+        first.answer(JSON.stringify(analysis({ summary: "First window" })));
+        (await nextPatch(t, 1, failed)).fail("Writer unavailable");
+        expect((await failed).status).toMatchObject({ state: "failed", done: 1, total: 3 });
+        expect(
+            t.events.some(
+                ({ status }) =>
+                    status.state === "done" &&
+                    status.reason === "rebuildContinues" &&
+                    status.done === 1 &&
+                    status.total === 3,
+            ),
+        ).toBe(true);
+        expect(contents(t)).toEqual(before);
+        expect(t.store.readChatSource("c", "k1")).toEqual(chatBefore);
+        expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 1, total: 3, resumable: true });
+        t.service.beginShutdown();
+        await t.service.drain();
+        const restarted = createMemoryTasks({
+            store: t.store,
+            kinds: t.kinds,
+            gate: t.gate,
+            hostDeps: t.hostDeps,
+            now: () => t.clock.now,
+            limits: { maxWriterWindows: 1 },
+        });
+        cleanups.push(async () => {
+            restarted.beginShutdown();
+            t.provider.abortAll();
+            await restarted.drain();
+        });
+        const finished = deferred<MemoryTaskEvent>();
+        restarted.onStatus((entry) => {
+            if (entry.status.state === "done" && entry.status.reason === "rebuilt") finished.resolve(entry);
+        });
+        expect(restarted.rebuild({ ...writerInput(t), rebuild: true }).outcome).toBe("queued");
+        const second = await nextPatch(t, 2, finished.promise);
+        expect(t.provider.asked(second)).toContain("[m:m3]");
+        expect(t.provider.asked(second)).not.toContain("[m:m1]");
+        second.answer(JSON.stringify(analysis({ summary: "Second window" })));
+        (await nextPatch(t, 3, finished.promise)).answer(JSON.stringify(analysis({ summary: "Third window" })));
+        expect((await finished.promise).status).toMatchObject({ state: "done", reason: "rebuilt", done: 3, total: 3 });
+        await restarted.drain();
+        expect(
+            contents(t).events.map(({ id }) => t.store.memory.readRecord("c", "k1", "events", id)!.data.summary),
+        ).toEqual(["Saved 한글 😀", "First window", "Second window", "Third window"]);
+        const swapped = contents(t).revision;
+        expect(Number(swapped.split(":").at(-1))).toBe(Number(before.revision.split(":").at(-1)) + 1);
+        expect(contents(t).adoptionDeclined).toBe(true);
+        expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+        expect(t.store.readChatSource("c", "k1")).toEqual(chatBefore);
+        expect(t.provider.requests).toHaveLength(4);
+    });
+
+    it("backfills historically without merging events, moving threads or patching live pages, preserving flags gained during the run", async () => {
+        const t = structuredHarness();
+        const records = memoryRecords(["place"]);
+        records.pages[0].contextMode = "always";
+        const scene = {
+            ...memoryRecords(["scene"]).pages[0],
+            type: "scene" as const,
+            contextMode: "always" as const,
+            participants: [],
+        };
+        const later = event("later", [
+            { messageId: "m6", index: 5, hash: messageSourceHash(t.chat("k1")!.message[5]) },
+        ]);
+        later.summary = analysis().summary;
+        writeMemory(t.store, "c", "k1", {
+            pages: [...records.pages, scene],
+            events: [later],
+            threads: records.threads,
+        });
+        const input = beginStagedRun(t, "backfill", [["m1"], ["m3", "m4"]]);
+        const terminal = t.nextTerminal("k1");
+        t.service.rebuild(input);
+        const draft = {
+            ...analysis({
+                openThreads: { add: [{ title: "Historical thread", who: [] }], close: ["place"], transitions: [] },
+            }),
+            scene: { place: "Old scene", time: "Yesterday", state: "Past", participants: [] },
+            pageCandidates: [{ targetId: "place", reason: "Old fact", confidence: 1 }],
+        };
+        const first = await nextPatch(t, 0, terminal);
+        first.answer(JSON.stringify(draft));
+        const second = await nextPatch(t, 1, terminal);
+        expect(t.provider.asked(second)).toContain("[m:m3]");
+        const changed = { ...records.pages[0], contextMode: "never" as const, grade: 9, gradeByUser: true };
+        writeMemory(t.store, "c", "k1", { pages: [changed] });
+        second.answer(
+            JSON.stringify({
+                ...draft,
+                pageCandidates: [
+                    ...draft.pageCandidates,
+                    {
+                        create: { type: "location", title: "Archive", aliases: [] },
+                        reason: "Historical place",
+                        confidence: 1,
+                    },
+                ],
+            }),
+        );
+        const patch = await nextPatch(t, 2, terminal);
+        expect(t.provider.asked(patch)).toContain("Archive");
+        patch.answer(JSON.stringify({ patches: [] }));
+        expect((await terminal).status).toMatchObject({ state: "done", done: 2, total: 2, reason: "rebuilt" });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(3);
+        expect(
+            pageRecords(t)
+                .filter(({ id }) => id !== "place" && id !== "scene")
+                .map(({ title }) => title),
+        ).toEqual(["Archive"]);
+        expect(t.store.memory.readRecord("c", "k1", "pages", "place")?.data).toEqual(changed);
+        expect(t.store.memory.readRecord("c", "k1", "pages", "scene")?.data).toEqual(scene);
+        expect(t.store.memory.readRecord("c", "k1", "threads", "place")?.data).toEqual(records.threads[0]);
+        expect(contents(t).threads).toHaveLength(1);
+        expect(contents(t).events).toHaveLength(3);
+        expect(eventRecord(t, 1).sources.map(({ messageId }) => messageId)).toEqual(["m1"]);
+        expect(eventRecord(t, 2).sources.map(({ messageId }) => messageId)).toEqual(["m3", "m4"]);
+        expect(eventRecord(t, 1).openThreads).toEqual({ add: [], close: [], transitions: [] });
+        expect(eventRecord(t, 2).openThreads).toEqual({ add: [], close: [], transitions: [] });
+    });
+
+    it("holds rebuild starts and resumes, stops a run that becomes held during analysis, and permits abandon", async () => {
+        const t = structuredHarness();
+        const input = beginStagedRun(t, "rebuild", [["m1", "m2"]]);
+        const terminal = t.nextTerminal("k1");
+        t.service.rebuild(input);
+        const request = await nextPatch(t, 0, terminal);
+        t.write("k1", [
+            {
+                op: "meta",
+                set: { hypaV3Data: { summaries: [{ text: "Held summary", chatMemos: ["m1"], isImportant: false }] } },
+            },
+        ]);
+        const held = contents(t);
+        request.answer(JSON.stringify(analysis()));
+        expect((await terminal).status.state).toBe("skipped");
+        await t.service.drain();
+        expect(contents(t)).toEqual(held);
+        expect(t.store.memory.rebuild.staged.readContents("c", "k1")!.events).toEqual([]);
+        expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 0 });
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const stopped = t.nextTerminal("k1");
+            t.service.rebuild({ ...writerInput(t), rebuild: true });
+            expect((await stopped).status).toMatchObject({ state: "skipped" });
+            await t.service.drain();
+        }
+        expect(t.provider.requests).toHaveLength(1);
+        expect(t.store.memory.rebuild.abandon("c", "k1", t.store.epoch())).toBe(true);
+        expect(contents(t)).toEqual(held);
+    });
+
+    it("rechecks the adoption hold at the swap after the last staged commit", async () => {
+        const t = structuredHarness({
+            structuredWriter: async (call) => {
+                const staged = t.store.memory.rebuild.staged;
+                const result = call.commit(staged.readContents("c", "k1")!.revision, {
+                    events: [event("staged", call.window.sources)],
+                    runs: memoryRecords(["recorded"]).runs,
+                });
+                expect(result.outcome).toBe("committed");
+                t.write("k1", [
+                    {
+                        op: "meta",
+                        set: {
+                            hypaV3Data: {
+                                summaries: [{ text: "Hold before swap", chatMemos: ["m1"], isImportant: false }],
+                            },
+                        },
+                    },
+                ]);
+                return { outcome: "recorded" };
+            },
+        });
+        const before = contents(t);
+        const input = beginStagedRun(t, "rebuild", [["m1", "m2"]]);
+        const terminal = t.nextTerminal("k1");
+        t.service.rebuild(input);
+        expect((await terminal).status).toMatchObject({
+            state: "skipped",
+            reason: "awaitingAdoption",
+            done: 1,
+            total: 1,
+        });
+        expect(contents(t)).toEqual(before);
+        expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 1, reason: "awaitingAdoption" });
+    });
+
+    it("refuses live writer commits and skips automatic work while a stopped rebuild holds the chat", async () => {
+        const t = structuredHarness();
+        const { request, terminal } = await beginAnalysis(t);
+        const input = beginStagedRun(t);
+        const before = contents(t);
+        request.answer(JSON.stringify(analysis()));
+        expect((await terminal).status.state).toBe("skipped");
+        await t.service.drain();
+        expect(contents(t)).toEqual(before);
+        const automatic = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t));
+        expect((await automatic).status).toMatchObject({ state: "skipped" });
+        expect(t.provider.requests).toHaveLength(1);
+        t.replace("ui", (data) => ({ ...data, memoryAlgorithmType: "hypaV3" }));
+        const switched = t.nextTerminal("k1");
+        t.service.rebuild({ ...input, ...writerInput(t), rebuild: true });
+        expect((await switched).status).toMatchObject({ state: "skipped", reason: "notStructuredMemory" });
+        expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 0, total: 3 });
+    });
+
+    it("retries a staged commit from fresh records and carries a live event retracted while the patch was in flight", async () => {
+        const t = structuredHarness();
+        const page = { ...memoryRecords(["place"]).pages[0], contextMode: "always" as const };
+        const sources = t
+            .chat("k1")!
+            .message.slice(0, 2)
+            .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) }));
+        writeMemory(t.store, "c", "k1", { pages: [page], events: [event("live", sources)] });
+        const input = beginStagedRun(t, "rebuild", [["m1", "m2"]]);
+        const terminal = t.nextTerminal("k1");
+        t.service.rebuild(input);
+        (await nextPatch(t, 0, terminal)).answer(
+            JSON.stringify({
+                ...analysis(),
+                pageCandidates: [{ targetId: "place", reason: "New facts", confidence: 1 }],
+            }),
+        );
+        const patch = await nextPatch(t, 1, terminal);
+        const staged = t.store.memory.rebuild.staged;
+        const corrected = {
+            ...page,
+            sections: [
+                { ...page.sections[0], body: "Corrected while patch was in flight", locked: true, userCorrected: true },
+            ],
+        };
+        staged.write(
+            "c",
+            "k1",
+            { epoch: t.store.epoch(), baseRevision: staged.readContents("c", "k1")!.revision },
+            { pages: [corrected] },
+        );
+        const retired = { ...eventRecord(t), status: "retracted" as const };
+        writeMemory(t.store, "c", "k1", { events: [retired] });
+        patch.answer(
+            JSON.stringify({ patches: [{ pageId: "place", heading: "Gate", op: "upsert", body: "Outdated patch" }] }),
+        );
+        expect((await terminal).status).toMatchObject({ state: "done", reason: "rebuilt", done: 1, total: 1 });
+        await t.service.drain();
+        expect(t.store.memory.readRecord("c", "k1", "pages", "place")?.data).toEqual(corrected);
+        expect(t.store.memory.readRecord("c", "k1", "events", "live")?.data).toEqual(retired);
+        expect(contents(t).events).toHaveLength(2);
+        expect(t.provider.requests).toHaveLength(2);
+    });
 
     it("holds automatic and manual recording on stored summaries despite a failed run, then records the oldest turn after decline", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

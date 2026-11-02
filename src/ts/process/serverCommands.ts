@@ -662,9 +662,9 @@ export type ServerCommandOutcome = "started" | "replayed" | "followed" | "refuse
 
 /**
  * What a server job runs as, for its refusal alerts: a send (every send kind), a Lua button, a manual
- * trigger, or a start of the memory writer.
+ * trigger, a start of the memory writer, or a start of a chat's memory rebuild.
  */
-export type ServerJobLabel = "send" | "button" | "trigger" | "memoryRecord";
+export type ServerJobLabel = "send" | "button" | "trigger" | "memoryRecord" | "memoryRebuild";
 
 /** What a server job of this tab runs: its kind, its command, and the context fields of the caller. */
 export type ServerJobRequest = {

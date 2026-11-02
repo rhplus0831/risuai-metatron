@@ -297,6 +297,21 @@ export function planPages(arg: {
     };
 }
 
+/**
+ * `plan` without its targets among `frozen`, each named by a warning. Creates stand, and a name that finds a
+ * frozen page still reads as that page, so references keep working.
+ */
+export function withoutFrozenTargets(
+    plan: PagePlan,
+    frozen: ReadonlySet<string>,
+): { plan: PagePlan; warnings: Warning[] } {
+    const dropped = plan.targets.filter(({ page }) => frozen.has(page.id));
+    return {
+        plan: { ...plan, targets: plan.targets.filter(({ page }) => !frozen.has(page.id)) },
+        warnings: dropped.map(({ page }) => ({ kind: "frozenPage", pageId: page.id, detail: page.title })),
+    };
+}
+
 /** The member who spoke every reply of `messages`, when exactly one did. */
 export function windowSpeaker(messages: readonly Pick<Message, "role" | "saying">[]): string | undefined {
     const speakers = new Set(messages.flatMap(({ role, saying }) => (role === "char" && saying ? [saying] : [])));

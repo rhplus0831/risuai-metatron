@@ -17,7 +17,7 @@ import type {
 import { LLMFormat } from "../../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../../shared/memory.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { STRUCTURED_MEMORY_ALGORITHM } from "../../../../shared/structuredMemory.ts";
+import { STRUCTURED_MEMORY_ALGORITHM, type StructuredMemoryRebuildMode } from "../../../../shared/structuredMemory.ts";
 import type { ResourceKindRegistry } from "../../data/kinds.ts";
 import type { MemoryChanges } from "../../data/memoryStore.ts";
 import {
@@ -34,6 +34,7 @@ import {
     type JobScope,
     loadJobScope,
     memorySettingsFingerprint,
+    refreshChat,
     scopeChat,
 } from "../../jobs/jobScope.ts";
 import { moduleTriggers } from "../../jobs/runSetup.ts";
@@ -51,6 +52,13 @@ import {
     warmHypaV3Vectors,
 } from "./hypav3.ts";
 import { createMemoryTaskHost, MemoryHostFailure, type MemoryTaskHostDeps } from "./memoryTaskHost.ts";
+import {
+    readRecordSet,
+    rebuildChanges,
+    rebuildStore,
+    type RebuildWindow,
+    rebuildWindow,
+} from "./structured/rebuild.ts";
 import { automaticRerecords, retireRerecorded } from "./structured/reconcile.ts";
 import {
     confirmedWindows,
@@ -61,7 +69,7 @@ import {
     type WriterCeiling,
     type WriterWindow,
 } from "./structured/window.ts";
-import { commitWindow, createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
+import { chatAdoptionHold, commitWindow, createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
 
 /** The service's caps and times (D9). Tests shrink them. */
 export type MemoryTaskLimits = {
@@ -126,7 +134,8 @@ export type StructuredMemoryWriterResult =
  * Records one window. `commit` is its only write path: synchronous, into the memory tables at
  * `baseRevision` (a run's receipt also goes onto the window's assistant messages), and it throws once
  * the task ended. A throw ends the task as any failed work does. `manual` says a person started the
- * task.
+ * task, and `historical` that the window lies before records that already exist, so the run must leave
+ * current state and the pages in `frozenPages` alone (`writer.ts`).
  */
 export type StructuredMemoryWriter = (arg: {
     scope: JobScope;
@@ -135,6 +144,7 @@ export type StructuredMemoryWriter = (arg: {
     tokenizer: MemoryTokenizer;
     window: WriterWindow;
     manual: boolean;
+    historical?: { frozenPages: readonly string[] };
     commit(baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit;
 }) => Promise<StructuredMemoryWriterResult>;
 
@@ -228,6 +238,7 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  * - A person's press (`record`, the `memoryRecord` command): queues its input with the mark, and with
  *   `through`, the message the press confirmed, which replaces the ceiling. The latest press wins, and
  *   one naming no message clears it. Unlike a hand-off it answers why it could not queue.
+ * - A rebuild (`rebuild`, the `memoryRebuild` command): queues the same way, for the chat's run (`rebuild.ts`).
  * - Start checks (synchronous, before anything is awaited; a failure ends the task `skipped` with the
  *   reason): the chat exists (`chatGone`); the epoch and source generation are the input's
  *   (`staleInput`); the admitted binding is still the chat's (`bindingInvalid`); a fresh `loadJobScope`
@@ -235,7 +246,8 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   `presetChain` picked the prompt preset) loads (`bindingInvalid`); the owner's memory is on
  *   (`memoryOff`); the input's method is the active one: HypaV3 (`notHypaV3`, also while
  *   `memoryAlgorithmType` selects Structured Memory ahead of the flags) or Structured Memory
- *   (`notStructuredMemory`); the `memory` slot is not a Plugin model (`pluginModel`) and the owner has
+ *   (`notStructuredMemory`), which holds no task for a chat with a rebuild's run but the run's own
+ *   (`memoryRebuilding`); the `memory` slot is not a Plugin model (`pluginModel`) and the owner has
  *   no applicable `request` trigger (`requestTrigger`); the preset's summarization model is `subModel`
  *   (`localSummarization`); the settings fingerprint is the input's (`staleInput`).
  * - HypaV3 work: prepare without the orphan cleanup (stored coverage past the input's history:
@@ -256,16 +268,32 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   that ends otherwise ends the task. `commit` is the writer's only write path: refused when the
  *   service closed, the epoch or source generation moved, a re-record's event no longer wants it, the
  *   window no longer reads from the chat as stored under that same ceiling (`windowStillConfirmed`), a
- *   generation job owns one of its messages, or the memory revision conflicts. A run's receipt then goes
- *   onto the window's assistant messages (`commitWindow`).
+ *   generation job owns one of its messages, the chat holds a rebuild's run, or the memory revision
+ *   conflicts. A run's receipt then goes onto the window's assistant messages (`commitWindow`).
+ * - Rebuild work: the run holds what the task works, so a task takes its plan once and goes on from the
+ *   run's cursor, `done` and `total` counting the whole run. Each window reads the chat as stored
+ *   (`rebuildWindow`), and one with nothing left moves the cursor with no call. The writer then runs on
+ *   the staged store (`rebuildStore`), marked manual, and in a backfill as a historical write. Its `commit`
+ *   checks what any commit does, the hold on the live records, then `commitWindow` under the window's own
+ *   last message, inclusive, with no receipt: a rebuild writes no chat, so `lastCommittedRevision` stays. A
+ *   closing commit moves the cursor with what it stands for. A window that does not record ends the
+ *   task, and the run stops there with no retry and no more spending; a resume replays that window
+ *   through the writer's replay rule. After `maxWriterWindows` windows or half of `taskDeadlineMs` the task
+ *   queues its input again and ends, so each stays under the deadline; a refused queue stops the run. At
+ *   the cursor's end, in one synchronous step behind the same fence and the hold, `rebuildChanges` and the
+ *   store's `swap` end the run; a run that recorded no event refuses it and stops (`nothingRecorded`).
+ * - A stopped run: every end of a run's task but a person's pause and a chain leaves its reason and error
+ *   on the row (`noteRebuildStop`), which outlives the terminal, except that maintenance and an epoch
+ *   change write nothing. The run waits for a person: nothing resumes it, also after a restart.
  * - Ends: `done` (`windowsLeft`: the cap stopped a task with windows left; `warmingFailed`: a warming
- *   failure kept what was written); `failed` (a provider failure, a writer's failure, a host failure,
- *   the deadline: errors redacted); `skipped` (a start check, `writeSkipped`, `sourceInvalid`, a
- *   writer's reason); `cancelled` (`cancel`, a writer lease, an invalidation notice, maintenance,
- *   shutdown). A terminal closes the task's write fence, reads the chat's revision (`terminalRevision`,
- *   null when the chat is gone), and publishes, in one synchronous step; what the task's work does
- *   afterwards changes nothing. An epoch change clears the registry without publishing (the `epoch`
- *   event is the signal).
+ *   failure kept what was written; `rebuildContinues`: a chain queued the next task; `rebuilt`: a run
+ *   swapped); `failed` (a provider failure, a writer's failure, a host failure, the deadline: errors
+ *   redacted); `skipped` (a start check, `writeSkipped`, `sourceInvalid`, a writer's reason, a run that
+ *   is gone, `nothingRecorded`); `cancelled` (`cancel`, a writer lease, an invalidation notice,
+ *   maintenance, shutdown). A terminal closes the task's write fence, reads the chat's revision
+ *   (`terminalRevision`, null when the chat is gone), and publishes, in one synchronous step; what the
+ *   task's work does afterwards changes nothing. An epoch change clears the registry without publishing
+ *   (the `epoch` event is the signal).
  */
 export function createMemoryTasks(deps: {
     store: ResourceStore;
@@ -280,6 +308,8 @@ export function createMemoryTasks(deps: {
     const { store, kinds, gate, hostDeps } = deps;
     const now = deps.now ?? Date.now;
     const structuredWriter = deps.structuredWriter ?? createStructuredWriter(store, { now });
+    const stagedStore = rebuildStore(store);
+    const stagedWriter = deps.structuredWriter ?? createStructuredWriter(stagedStore, { now });
     const limits: MemoryTaskLimits = { ...MEMORY_TASK_LIMITS, ...deps.limits };
     const charactersKind = kinds.get(RESOURCE_KIND.characters);
     if (!charactersKind) {
@@ -495,6 +525,34 @@ export function createMemoryTasks(deps: {
     };
 
     /**
+     * Keeps why a task's end stopped its chat's rebuild on the run, which outlives the terminal, so the
+     * panel can still say. A person's pause needs no word and a `done` is no stop. Maintenance and an epoch
+     * change write nothing. A failure here costs the word alone: an end never fails.
+     */
+    const noteRebuildStop = (input: AnyMemoryTaskInput, state: TerminalState, { reason, error }: TerminalDetails) => {
+        if (
+            input.kind !== "structuredMemory" ||
+            !input.rebuild ||
+            state === "done" ||
+            reason === "cancelled" ||
+            gate.active ||
+            store.epoch() !== input.epoch
+        ) {
+            return;
+        }
+        try {
+            const { chaId, chatId } = input.chatRef;
+            store.memory.rebuild.noteStop(chaId, chatId, {
+                epoch: input.epoch,
+                ...(reason !== undefined ? { reason } : {}),
+                ...(error !== undefined ? { error } : {}),
+            });
+        } catch (failure) {
+            console.warn("[memory] why a rebuild stopped could not be kept:", messageOf(failure));
+        }
+    };
+
+    /**
      * Ends a running task: closes its write fence and aborts its work, and, when it is still its
      * chat's task in the registry's epoch, publishes its terminal (then the chat's queued one, if
      * any). Its work and input stay counted until they settle. Idempotent.
@@ -505,6 +563,7 @@ export function createMemoryTasks(deps: {
         }
         task.ended = state;
         clearTimeout(task.deadline);
+        noteRebuildStop(task.retained.input, state, details);
         const entry = entries.get(task.key);
         let status: MemoryTaskStatus | null = null;
         if (entry?.running === task) {
@@ -544,6 +603,7 @@ export function createMemoryTasks(deps: {
         entry.pending = null;
         queue.delete(entry.key);
         drop(pending.retained, "pending");
+        noteRebuildStop(pending.retained.input, state, details);
         const status = terminalStatus(
             pending.taskId,
             entry.chatRef,
@@ -646,6 +706,9 @@ export function createMemoryTasks(deps: {
         if (input.kind === "structuredMemory") {
             if (!structured) {
                 return { skip: "notStructuredMemory" };
+            }
+            if (!input.rebuild && store.memory.rebuild.status(input.chatRef.chaId, input.chatRef.chatId)) {
+                return { skip: "memoryRebuilding" };
             }
         } else if (structured || db.hanuraiEnable || db.hypav2 || !db.hypaV3) {
             return { skip: "notHypaV3" };
@@ -1018,6 +1081,154 @@ export function createMemoryTasks(deps: {
         endRunning(task, "done", warming !== undefined ? { reason: "warmingFailed", error: host.redact(warming) } : {});
     }
 
+    /** The write fence every step of a rebuild checks: what `commitOf` does, as a yes or no for the input. */
+    const rebuildOpen = (task: Task, input: StructuredMemoryTaskInput) => {
+        live(task);
+        gate.assertOpen();
+        return !closed && inputCurrent(input);
+    };
+
+    /**
+     * A rebuild's window's write (synchronous): behind the task's fence and the hold on the live records,
+     * since the staged contents never read as held, `commitWindow` on the staged store. It writes no
+     * chat, so there is no receipt to land and no revision for the tab's fence.
+     */
+    const commitOfRebuild =
+        (task: Task, input: StructuredMemoryTaskInput, { window, ceiling }: RebuildWindow) =>
+        (baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit => {
+            const { chaId, chatId } = input.chatRef;
+            if (!rebuildOpen(task, input)) {
+                return { outcome: "refused", reason: "staleInput" };
+            }
+            const contents = store.memory.readContents(chaId, chatId);
+            if (contents && chatAdoptionHold(store, chaId, chatId, contents) > 0) {
+                return { outcome: "refused", reason: "windowChanged" };
+            }
+            return commitWindow(stagedStore, {
+                input,
+                window,
+                ceiling,
+                baseRevision,
+                changes,
+                writeReceipt: () => {},
+            });
+        };
+
+    /**
+     * Ends a run whose every window is done, in one synchronous step: the same fence, the hold on the live
+     * records, then one atomic change of them. Whatever refuses leaves the run stopped and them as they are.
+     */
+    const swapRebuild = (task: Task, input: StructuredMemoryTaskInput, mode: StructuredMemoryRebuildMode) => {
+        const { chaId, chatId } = input.chatRef;
+        if (!rebuildOpen(task, input)) {
+            endRunning(task, "skipped", { reason: "staleInput" });
+            return;
+        }
+        const stored = readRecordSet(store.memory, chaId, chatId);
+        const staged = readRecordSet(store.memory.rebuild.staged, chaId, chatId);
+        if (!stored || !staged) {
+            endRunning(task, "skipped", { reason: "rebuildGone" });
+            return;
+        }
+        if (chatAdoptionHold(store, chaId, chatId, stored.contents) > 0) {
+            endRunning(task, "skipped", { reason: "awaitingAdoption" });
+            return;
+        }
+        const changes = rebuildChanges(mode, stored, staged);
+        if (!changes) {
+            endRunning(task, "skipped", { reason: "nothingRecorded" });
+            return;
+        }
+        const options = { epoch: input.epoch, baseRevision: stored.contents.revision };
+        store.memory.rebuild.swap(chaId, chatId, options, changes);
+        endRunning(task, "done", { reason: "rebuilt" });
+    };
+
+    /**
+     * A rebuild's work on its checked scope: the chat's run from its cursor, a window at a time, then its
+     * swap. A task takes at most `maxWriterWindows` windows and half of its deadline, and queues its input
+     * again for the rest, so a long chat's run stays under the deadline however many windows it holds.
+     */
+    async function rebuildWork(
+        task: Task,
+        input: StructuredMemoryTaskInput,
+        scope: JobScope,
+        host: MemoryHost,
+        tokenizer: MemoryTokenizer,
+    ) {
+        const { chaId, chatId } = input.chatRef;
+        const plan = store.memory.rebuild.plan(chaId, chatId);
+        const started = store.memory.rebuild.status(chaId, chatId);
+        if (!plan || !started) {
+            endRunning(task, "skipped", { reason: "rebuildGone" });
+            return;
+        }
+        const { mode, total } = started;
+        const historical =
+            mode === "backfill"
+                ? { frozenPages: store.memory.readContents(chaId, chatId)?.pages.map(({ id }) => id) ?? [] }
+                : undefined;
+        const chainAt = task.deadlineAt - limits.taskDeadlineMs / 2;
+        let windows = 0;
+        let { done } = started;
+        task.total = total;
+        while (done < total) {
+            task.done = done;
+            publishRunning(task);
+            if (windows >= limits.maxWriterWindows || now() >= chainAt) {
+                const answer = service.rebuild(input);
+                if (answer.outcome === "refused") {
+                    endRunning(task, "skipped", { reason: answer.reason });
+                } else {
+                    endRunning(task, "done", { reason: "rebuildContinues" });
+                }
+                return;
+            }
+            live(task);
+            if (!refreshChat(store, scope)) {
+                endRunning(task, "skipped", { reason: "chatGone" });
+                return;
+            }
+            const window = rebuildWindow(scopeChat(scope)?.message ?? [], plan[done]);
+            if (window) {
+                const result = await stagedWriter({
+                    scope,
+                    input,
+                    host,
+                    tokenizer,
+                    window: window.window,
+                    manual: true,
+                    ...(historical ? { historical } : {}),
+                    commit: commitOfRebuild(task, input, window),
+                });
+                live(task);
+                if (result.outcome === "skipped") {
+                    endRunning(task, "skipped", { reason: result.reason });
+                    return;
+                }
+                if (result.outcome === "failed") {
+                    endRunning(task, "failed", { error: host.redact(result.error) });
+                    return;
+                }
+                windows++;
+            } else if (rebuildOpen(task, input)) {
+                store.memory.rebuild.advance(chaId, chatId, input.epoch);
+            } else {
+                endRunning(task, "skipped", { reason: "staleInput" });
+                return;
+            }
+            const run = store.memory.rebuild.status(chaId, chatId);
+            if (!run) {
+                endRunning(task, "skipped", { reason: "rebuildGone" });
+                return;
+            }
+            ({ done } = run);
+        }
+        task.done = total;
+        publishRunning(task);
+        swapRebuild(task, input, mode);
+    }
+
     async function work(task: Task): Promise<void> {
         const input = task.retained.input;
         let host: MemoryHost | null = null;
@@ -1037,7 +1248,7 @@ export function createMemoryTasks(deps: {
             });
             host = built.host;
             if (input.kind === "structuredMemory") {
-                await structuredWork(task, input, scope, host, built.tokenizer);
+                await (input.rebuild ? rebuildWork : structuredWork)(task, input, scope, host, built.tokenizer);
             } else {
                 await hypaV3Work(task, input, scope, host, built.tokenizer);
             }
@@ -1169,6 +1380,27 @@ export function createMemoryTasks(deps: {
         return entry;
     };
 
+    /** Queues `input` for a person's press, as `handOff` does, marked manual; answers what kept it out. */
+    const queuePress = (input: StructuredMemoryTaskInput, through?: string): MemoryTaskRecordAnswer => {
+        if (closed) {
+            return { outcome: "refused", reason: "shuttingDown" };
+        }
+        if (paused || gate.active) {
+            return { outcome: "refused", reason: "maintenance" };
+        }
+        if (!inputCurrent(input)) {
+            return { outcome: "refused", reason: "staleInput" };
+        }
+        const entry = enqueue(input);
+        if (typeof entry === "string") {
+            return { outcome: "refused", reason: "queueFull" };
+        }
+        const pending = entry.pending!;
+        pending.manual = true;
+        pending.through = through;
+        return { outcome: "queued", status: queuedStatus(pending) };
+    };
+
     // ---------------------------------------------------------------------------------------------
     // The service
 
@@ -1200,23 +1432,12 @@ export function createMemoryTasks(deps: {
          * the task starts: the queue is pumped after the current turn.
          */
         record(input: StructuredMemoryTaskInput, options: { through?: string } = {}): MemoryTaskRecordAnswer {
-            if (closed) {
-                return { outcome: "refused", reason: "shuttingDown" };
-            }
-            if (paused || gate.active) {
-                return { outcome: "refused", reason: "maintenance" };
-            }
-            if (!inputCurrent(input)) {
-                return { outcome: "refused", reason: "staleInput" };
-            }
-            const entry = enqueue(input);
-            if (typeof entry === "string") {
-                return { outcome: "refused", reason: "queueFull" };
-            }
-            const pending = entry.pending!;
-            pending.manual = true;
-            pending.through = options.through;
-            return { outcome: "queued", status: queuedStatus(pending) };
+            return queuePress(input, options.through);
+        },
+
+        /** The next task of the chat's rebuild: queued as a press is, with the same refusals. */
+        rebuild(input: StructuredMemoryTaskInput): MemoryTaskRecordAnswer {
+            return queuePress(input);
         },
 
         /** The chat's running task, else its queued one, else its last terminal (kept `terminalRetentionMs`). */

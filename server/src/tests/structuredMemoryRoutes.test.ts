@@ -29,6 +29,7 @@ import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
+import { readRecordSet, rebuildChanges, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
 import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
 import { memoryKinds, projectionHistory, writeMemory } from "./memoryFixtures.ts";
@@ -504,6 +505,8 @@ it("lists only this chat's metadata and reads every record kind exactly as store
         threads: [{ id: thread.id, title: thread.title, state: thread.state, bytes: bytes(thread) }],
         runs: [{ id: run.id, result: run.result, bytes: bytes(run) }],
         adoption: { adoptable: 0, declined: false, resettable: false },
+        rebuild: null,
+        recordedLanguage: null,
     });
     for (const [kind, record] of [
         ["pages", p],
@@ -1950,4 +1953,289 @@ it("resets only adopted real summaries, publishes the chat revision and preserve
     expect(s.store.readChatSource(characterId, chatId).data?.hypaV3Data).toEqual(newer);
     s.write({ adoptionDeclined: true });
     await refuse();
+});
+
+function stageRun(s: Awaited<ReturnType<typeof server>>, id = chatId) {
+    s.store.memory.rebuild.begin(characterId, id, { epoch: s.epoch, mode: "rebuild", plan: [["u", "a"]] }, {});
+    const staged = s.store.memory.rebuild.staged;
+    staged.write(
+        characterId,
+        id,
+        { epoch: s.epoch, baseRevision: staged.readContents(characterId, id)!.revision, advance: true },
+        {
+            pages: [page("staged")],
+            events: [event("staged")],
+            threads: [{ id: "staged", title: "Staged thread", who: [], state: "open" }],
+        },
+    );
+}
+
+it("previews rebuild, backfill and record costs from stored messages without writing, even during a run", async () => {
+    const s = await server();
+    bindChat(s);
+    const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "u4"].map((id) => ({
+        chatId: id,
+        role: id.startsWith("u") ? "user" : "char",
+        data: "한",
+    }));
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "replace",
+                        chat: { ...(s.store.readChatSource(characterId, chatId).data as Chat), message: messages },
+                    },
+                ],
+            },
+        ],
+    });
+    s.write({
+        events: [
+            {
+                ...event("adopted"),
+                writerRun: ADOPTED_WRITER_RUN,
+                sources: [{ messageId: "a1", index: 1, hash: messageSourceHash(messages[1]) }],
+            },
+        ],
+    });
+    stageRun(s);
+    const before = memorySnapshot(s, chatId);
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    const writes = s.store.writeCount();
+    for (const [query, expected] of [
+        ["mode=rebuild&turns=2", { calls: 2, messages: 6 }],
+        ["mode=backfill&turns=1", { calls: 3, messages: 5 }],
+        ["mode=record&turns=1&through=a3", { calls: 2, messages: 4 }],
+    ] as const) {
+        const cost = await answer(await s.request(`${base}/cost?${query}`));
+        expect(cost).toMatchObject(expected);
+        expect(Number.isSafeInteger(cost.estimatedTokens)).toBe(true);
+        expect(cost.estimatedTokens).toBeGreaterThan(0);
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+    expect(s.store.writeCount()).toBe(writes);
+});
+
+it("fences generation and memory mutations during a stopped run while allowing previews, checkpoint saves and live-only exports and copies", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const admitted: string[] = [];
+    const s = await server({
+        generationRunner: async (job) => {
+            admitted.push(job.kind);
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const ui = kinds.get("ui")!;
+    s.store.put(
+        ui,
+        "main",
+        { ...(s.store.get(ui, "main")!.data as object), memoryAlgorithmType: "structuredMemory" },
+        s.store.get(ui, "main")!.revision,
+    );
+    s.write({ pages: [page("live")], events: [event("live")] });
+    stageRun(s);
+    s.store.memory.rebuild.noteStop(characterId, chatId, { epoch: s.epoch, reason: "cancelled" });
+    const before = memorySnapshot(s, chatId);
+    for (const action of [
+        { kind: "send" },
+        { kind: "continue" },
+        { kind: "command", command: { type: "manual", name: "trigger" } },
+        { kind: "command", command: { type: "button", data: "button" } },
+        { kind: "command", command: { type: "memoryRecord", messageId: "a" } },
+    ]) {
+        const response = await s.json("/api/generations", { ...action, context, clientId: "tab" });
+        expect(response.status, await response.text()).toBe(409);
+    }
+    expect(admitted).toEqual([]);
+    await answer(await s.json("/api/generations", { kind: "preview", context, clientId: "tab" }));
+    await s.context.generationJobs.drain();
+    expect(admitted).toEqual(["preview"]);
+    const mutations = [
+        [
+            "edits",
+            { revision: before.contents.revision, edit: { kind: "page", pageId: "live", contextMode: "always" } },
+        ],
+        ["adopt", {}],
+        ["decline", {}],
+        ["reset-summaries", {}],
+        ["restore", { pages: [], events: [], threads: [] }],
+        ["inherit", { sourceChatId: "other" }],
+    ] as const;
+    for (const [route, body] of mutations)
+        expect(await answer(await s.json(`${base}/${route}`, body), 409)).toMatchObject({ reason: "fenced" });
+    const saved = await answer(
+        await s.json("/api/chat-checkpoints/save", { characterId, chatId, name: "During rebuild" }),
+    );
+    await answer(
+        await s.json("/api/chat-checkpoints/load", {
+            characterId,
+            chatId,
+            id: saved.checkpoint.id,
+            chatBaseRevision: context.chatRevision,
+        }),
+        409,
+    );
+    const checkpoint = s.store.checkpoints.readMemory(characterId, chatId, saved.checkpoint.id)!;
+    expect(checkpoint.captured).toBe(true);
+    if (!checkpoint.captured) throw new Error("Checkpoint missed live memory");
+    expect(checkpoint.texts.pages.map((text) => JSON.parse(text))).toEqual([page("live")]);
+    expect(checkpoint.texts.events.map((text) => JSON.parse(text).id)).toEqual(["live"]);
+    expect(checkpoint.texts.threads).toEqual([]);
+    expect(await answer(await s.request(`${base}/package`))).toMatchObject({
+        pages: [page("live")],
+        events: [expect.objectContaining({ id: "live" })],
+        next: null,
+    });
+    expect(await answer(await s.request(`${base}/threads`))).toMatchObject({ threads: [] });
+    const other = `/api/memory/structured/${encodeURIComponent(characterId)}/other`;
+    expect(await answer(await s.json(`${other}/inherit`, { sourceChatId: chatId }))).toMatchObject({ inherited: true });
+    expect(memorySnapshot(s, "other").records.pages).toEqual([page("live")]);
+    expect(s.store.memory.rebuild.status(characterId, "other")).toBeNull();
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    s.store.put(
+        ui,
+        "main",
+        { ...(s.store.get(ui, "main")!.data as object), memoryAlgorithmType: "hypaV3" },
+        s.store.get(ui, "main")!.revision,
+    );
+    await answer(await s.json("/api/generations", { kind: "send", context, clientId: "tab" }));
+    await s.context.generationJobs.drain();
+    expect(admitted).toEqual(["preview", "send"]);
+    expect(await answer(await s.request(`${base}/rebuild/abandon`, { method: "POST" }))).toMatchObject({
+        abandoned: true,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("reconciles message edits and confirmed deletions into both live and staged events during a rebuild", async () => {
+    const s = await server();
+    bindChat(s);
+    const stored = s.store.readChatSource(characterId, chatId).data as Chat;
+    const sources = stored.message
+        .slice(0, 2)
+        .map((message, index) => ({ messageId: message.chatId!, index, hash: messageSourceHash(message) }));
+    s.write({ events: [{ ...event("live"), sources }] });
+    stageRun(s);
+    const staged = s.store.memory.rebuild.staged;
+    staged.write(
+        characterId,
+        chatId,
+        { epoch: s.epoch, baseRevision: staged.readContents(characterId, chatId)!.revision },
+        { events: [{ ...event("staged"), sources }] },
+    );
+    const edit = (ops: ChatOp[]) =>
+        s.json("/api/resources/batch", {
+            chats: [{ characterId, chatId, baseRevision: s.store.chatRevision(characterId, chatId), ops }],
+        });
+    await answer(await edit([{ op: "patchMessage", id: "a", set: { data: "The gate shuts." } }]));
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "live")?.data).toMatchObject({ rerecord: true });
+    expect(staged.readRecord(characterId, chatId, "events", "staged")?.data).toMatchObject({ rerecord: true });
+    await answer(await edit([{ op: "remove", ids: ["a"], retract: true }]));
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "live")?.data.status).toBe("retracted");
+    expect(staged.readRecord(characterId, chatId, "events", "staged")?.data.status).toBe("retracted");
+});
+
+it("keeps adopted summaries and their reset offer through repeated swaps, replacing only fully reproduced events", async () => {
+    const s = await server();
+    storeAdoptionChat(s, {
+        summaries: [{ text: "Reproducible summary", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    await answer(await s.request(`${base}/adopt`, { method: "POST" }));
+    s.write({ events: [event("carried")] });
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    const initial = readRecordSet(s.store.memory, characterId, chatId)!;
+    const reproduced = initial.events.find(({ sources }) => sources.length === 2)!;
+    const carried = initial.events.find(({ sources }) => sources.length === 0)!;
+    for (let i = 0; i < 2; i++) {
+        const live = readRecordSet(s.store.memory, characterId, chatId)!;
+        const rebuild = s.store.memory.rebuild;
+        rebuild.begin(
+            characterId,
+            chatId,
+            { epoch: s.epoch, mode: "rebuild", plan: [["m0", "m1"]] },
+            rebuildSeed("rebuild", live),
+        );
+        rebuild.staged.write(
+            characterId,
+            chatId,
+            { epoch: s.epoch, baseRevision: rebuild.staged.readContents(characterId, chatId)!.revision, advance: true },
+            {
+                events: [{ ...event(`new-${i}`), sources: reproduced.sources }],
+                runs: [{ ...run(`new-${i}`), result: "recorded", language: i === 0 ? "English" : "Korean" }],
+            },
+        );
+        const staged = readRecordSet(rebuild.staged, characterId, chatId)!;
+        rebuild.swap(
+            characterId,
+            chatId,
+            { epoch: s.epoch, baseRevision: live.contents.revision },
+            rebuildChanges("rebuild", live, staged)!,
+        );
+        expect(s.store.memory.readRecord(characterId, chatId, "events", carried.id)?.data).toEqual(carried);
+        expect(s.store.memory.readContents(characterId, chatId)!.events.map(({ id }) => id)).toEqual([
+            carried.id,
+            `new-${i}`,
+        ]);
+        expect(s.store.memory.readRecord(characterId, chatId, "events", `new-${i}`)?.data.createdRevision).toBe(
+            Number(live.contents.revision.split(":").at(-1)) + 1,
+        );
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+        // The latest failure does not replace the language of the latest recorded run.
+        s.write({ runs: [{ ...run(`failed-${i}`), result: "failed", language: "French" }] });
+        expect(await answer(await s.request(base))).toMatchObject({
+            adoption: { resettable: true },
+            recordedLanguage: i === 0 ? "English" : "Korean",
+        });
+    }
+});
+
+it("refuses held rebuild starts and resumes through the same job admission as record now and still abandons", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const s = await server({ memoryTaskOptions: { now: () => 1 } });
+    storeAdoptionChat(s, {
+        summaries: [{ text: "Adopt or decline first", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    const context = bindChat(s);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    for (const [name, id, fields] of [
+        ["ui", "main", { memoryAlgorithmType: "structuredMemory" }],
+        ["characters", characterId, { supaMemory: true }],
+    ] as const) {
+        const kind = kinds.get(name)!;
+        const row = s.store.get(kind, id)!;
+        s.store.put(kind, id, { ...(row.data as object), ...fields }, row.revision);
+    }
+    const before = memorySnapshot(s, chatId);
+    for (const resume of [false, true]) {
+        if (resume) stageRun(s);
+        const accepted = await answer(
+            await s.json("/api/generations", {
+                kind: "command",
+                clientId: "tab",
+                context,
+                command: resume
+                    ? { type: "memoryRebuild", resume: true }
+                    : { type: "memoryRebuild", mode: "rebuild", turns: 1 },
+            }),
+        );
+        await s.context.generationJobs.drain();
+        expect(s.context.generationJobs.status(accepted.jobId, "tab")?.terminal).toMatchObject({
+            type: "error",
+            status: 409,
+            message: expect.stringContaining("Adopt or decline"),
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        if (!resume) expect(s.store.memory.rebuild.status(characterId, chatId)).toBeNull();
+    }
+    expect(await answer(await s.request(`${base}/rebuild/abandon`, { method: "POST" }))).toMatchObject({
+        abandoned: true,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
 });

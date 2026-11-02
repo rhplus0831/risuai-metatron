@@ -123,9 +123,10 @@ throws once ended), the gate is open, the service is open with the input's epoch
 `staleInput`), then `commitWindow`: the window still reads from the chat as stored under the ceiling it was computed
 with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one of its messages (`messagesLocked`, else
 `windowChanged`), the chat is not held (else `windowChanged`, because a `meta` write can land after `openRun`'s look),
-and the memory revision is current (else `revisionConflict`). A refusal writes nothing. Around it, `retireRerecorded`
-turns a repair's closing write into the swap: the new event takes the old one's `pinned`, `suppressed`, and
-`userCorrected`, and the old one is written `retracted` in the same change set, with
+the chat holds no [rebuild's run](structured-memory-rebuild.md#during-a-run) (else `windowChanged`, because a job can
+get past admission after an algorithm switch), and the memory revision is current (else `revisionConflict`). A refusal
+writes nothing. Around it, `retireRerecorded` turns a repair's closing write into the swap: the new event takes the old
+one's `pinned`, `suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set, with
 [its sections flagged](structured-memory-lifecycle.md#retraction-and-edits). An old event gone, unmarked, or retracted
 refuses the commit `windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit
 the same way, so a failed run leaves the old event and its mark, and each retry works it out again.
@@ -133,7 +134,9 @@ the same way, so a failed run leaves the old event and its mark, and each retry 
 ### A writer run
 
 `createStructuredWriter` makes one analysis call per window, one patch call when a candidate was accepted, and one
-compaction call per section that patch left past its budget. `memory_runs` is its whole state.
+compaction call per section that patch left past its budget. `memory_runs` is its whole state. It reads and writes
+through the `memory` it is given: the live records, or [a rebuild's staged set](structured-memory-rebuild.md#a-run),
+where a `historical` write [leaves current state alone](structured-memory-rebuild.md#backfill).
 
 1. Hold and pause: a held chat ends any run `skipped` (`awaitingAdoption`), a manual one too, with no call and no row.
    This one check covers a task, a job, and the gap run, whatever queued them. `consecutiveFailures` `failed` rows at
@@ -144,8 +147,8 @@ compaction call per section that patch left past its budget. `memory_runs` is it
 3. Input: only the newest row that did not record is read. Its `input` is sent again as stored when its window has the
    same message ids and hashes and its `settingsFingerprint` is the task's. Otherwise the prompt is built anew, so
    changed instructions take effect and a regrouped window rebuilds.
-4. Snapshot: a `pending` row holds the exact input before any call. An input too large for a record fails the run
-   (`inputTooLarge`) with no call.
+4. Snapshot: a `pending` row holds the exact input, and the run's `language`, before any call. An input too large for a
+   record fails the run (`inputTooLarge`) with no call.
 5. Call: `host.request`, on `writerHostDeps`: temperature 0, and no `jsonSchemaEnabled` or `extractJson`, which shape
    the chat's replies. A provider failure, an unusable answer, or a `MemoryHostFailure` ends the run `failed` with a
    redacted error and a failed receipt, and the task with it. Any other throw is an ended task: the row stays `pending`
@@ -165,6 +168,8 @@ compaction call per section that patch left past its budget. `memory_runs` is it
    retrieval that embeds other text misses this cache.
 
 ### Record now
+
+A press past one window asks first, with [the cost preview](structured-memory-rebuild.md#the-cost-preview).
 
 "Record now" and resume are the `memoryRecord` command (`messageId` or none), a job and not a call on the service: the
 service keeps no input across a restart, where `start` would only wait for the next send, and only a job's scope can
@@ -445,8 +450,6 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs
   before the commit, so a deadline during one costs the run its analysis and patch calls, and a person pressing record
   now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, plan.
-- Record now has no cost preview, which D3 asks for: `maxWriterWindows` bounds a press, and the previewed path is
-  backfill. Decision: Structured Memory slice 2d, plan.
 - Recording in a job sets no `memoryTaskFenced` fence and no task status: only the pressing tab sees it, through its
   button and the `memoryProgress` overlay, as with a blocking HypaV3 summary. The job holds the chat's slot and the
   lease. A throw there leaves the run `pending` with no failed receipt, and the next run closes it `interrupted`.

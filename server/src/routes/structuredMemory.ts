@@ -10,11 +10,15 @@ import {
     MEMORY_REVISION_CHATS_MAX,
     MEMORY_RUNS_ROUND_ROWS,
     STRUCTURED_MEMORY_PATH,
+    STRUCTURED_MEMORY_REBUILD_MODES,
     storedMemorySources,
     type MemoryEvent,
     type MemoryPage,
+    type StructuredMemoryAbandonAnswer,
     type StructuredMemoryAdoptAnswer,
     type StructuredMemoryContentsAnswer,
+    type StructuredMemoryCostAnswer,
+    type StructuredMemoryCostMode,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
@@ -48,6 +52,7 @@ import {
     parseMemoryEdit,
 } from "../prompt/memory/structured/edits.ts";
 import { inheritedRecords } from "../prompt/memory/structured/inherit.ts";
+import { memoryWorkCost } from "../prompt/memory/structured/rebuild.ts";
 import { withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
 import { parseRestoredRecords } from "../prompt/memory/structured/restore.ts";
 import { chatAdoptionHold } from "../prompt/memory/structured/writer.ts";
@@ -73,6 +78,10 @@ const REFUSAL_TEXT = {
 
 function isRecordKind(kind: string): kind is StructuredMemoryRecordKind {
     return (MEMORY_RECORD_KINDS as readonly string[]).includes(kind);
+}
+
+function isCostMode(mode: string | undefined): mode is StructuredMemoryCostMode {
+    return mode === "record" || (STRUCTURED_MEMORY_REBUILD_MODES as readonly (string | undefined)[]).includes(mode);
 }
 
 /** The chats a revisions request names, or null for a body of another shape, a bad id, or a list past the cap. */
@@ -164,7 +173,8 @@ type RoundRead = {
  *
  * - `GET /api/memory/structured/:characterId/:chatId`: the table of contents, answered
  *   `StructuredMemoryContentsAnswer`, with `adoption`, what the panel offers for the chat's stored HypaV3
- *   summaries as the server sees them; 404 `chatGone`.
+ *   summaries as the server sees them, `rebuild`, the chat's rebuild if it holds one, and
+ *   `recordedLanguage`, the language of the newest recorded run, one record read; 404 `chatGone`.
  * - `GET /api/memory/structured/:characterId/:chatId/records/:kind/:id`: one record as stored, answered
  *   `StructuredMemoryRecordAnswer`; 400 for an unknown kind, 404 `chatGone` or `recordGone`.
  * - `GET /api/memory/structured/:characterId/:chatId/package?cursor=N&revision=R`: one round of the
@@ -246,18 +256,28 @@ type RoundRead = {
  * - `POST /api/memory/structured/:characterId/:chatId/reset-summaries`, with no body: empties the stored
  *   `hypaV3Data` of an adopted chat, answered `StructuredMemoryResetAnswer`, so a whole read overlays the
  *   projection from then on. It takes a chat that has not declined, holds an event adopted from the
- *   summaries, and holds real summaries (`resettable`, which the contents route answers too); any other
- *   answers `reset: false` and writes nothing. A chat write at the chat's stored revision, unlike every
+ *   summaries or rebuilt over one, and holds real summaries (`resettable`, which the contents route
+ *   answers too); any other answers `reset: false` and writes nothing. A chat write at the chat's stored revision, unlike every
  *   other route here, so the change feed publishes it and other tabs let their held summaries go; the
  *   memory revision stays. 404 `chatGone`, and 409 `{ error, reason: "fenced" }` while `fenced` holds.
+ * - `GET /api/memory/structured/:characterId/:chatId/cost?mode=rebuild|backfill|record&turns=1|2&through=ID`:
+ *   what a rebuild, a backfill, or a press of record now through `through` would cost, reading only,
+ *   answered `StructuredMemoryCostAnswer`: an estimate, because a route has no job scope to reach a real
+ *   tokenizer. 400 for another `mode` or `turns` or a `through` that is no id, 404 `chatGone`.
+ * - `POST /api/memory/structured/:characterId/:chatId/rebuild/abandon`, with no body: ends the chat's
+ *   rebuild with nothing written live, whatever stopped it, a hold and the memory toggle included,
+ *   answered `StructuredMemoryAbandonAnswer`: the chat's task is cancelled and the run and what it staged
+ *   go, and the memory revision stays. A chat with no run, which is what a repeat finds, answers
+ *   `abandoned: false` and cancels nothing. 404 `chatGone`, and 409 `{ error, reason: "fenced" }` while a
+ *   job holds the chat (`chatHeld`).
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
  * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
- * An edit's, an inherit's, a restore's, an adoption's, a decline's, or a reset's checks and its write share
- * one such step too, after any body is read, so nothing can take the chat between the fence and the write,
- * and no writer of the source chat comes between its reads.
+ * An edit's, an inherit's, a restore's, an adoption's, a decline's, a reset's, or an abandon's checks and its
+ * write share one such step too, after any body is read, so nothing can take the chat between the fence and
+ * the write, and no writer of the source chat comes between its reads.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -270,12 +290,16 @@ export function registerStructuredMemoryRoutes(
         restoreBodyBytes: number;
         /**
          * Whether something that can write this chat's memory holds the chat, which refuses an edit, an
-         * inherit, a restore, an adoption, a decline, or a reset.
+         * inherit, a restore, an adoption, a decline, or a reset: its task, a job, or its rebuild's run.
          */
         fenced: (characterId: string, chatId: string) => boolean;
+        /** Whether a job holds the chat: the one thing that refuses abandoning its rebuild. */
+        chatHeld: (characterId: string, chatId: string) => boolean;
+        /** Ends the chat's queued and running task, so nothing writes a run that is going. */
+        cancelTask: (characterId: string, chatId: string) => void;
     },
 ) {
-    const { store, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced } = arg;
+    const { store, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced, chatHeld, cancelTask } = arg;
     const limitBody = limitedBody(MAX_EDIT_BODY_BYTES);
     const limitRevisionsBody = limitedBody(MAX_REVISIONS_BODY_BYTES);
     const limitRestoreBody = limitedBody(restoreBodyBytes);
@@ -302,6 +326,7 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
             }
             const { adoptionDeclined, ...listed } = contents;
+            const recorded = contents.runs.findLast(({ result }) => result === "recorded");
             return compressedJson(c, {
                 ...listed,
                 adoption: {
@@ -309,6 +334,8 @@ export function registerStructuredMemoryRoutes(
                     declined: adoptionDeclined === true,
                     resettable: resettable(characterId, chatId, contents),
                 },
+                rebuild: store.memory.rebuild.status(characterId, chatId),
+                recordedLanguage: (recorded && listedRecord(characterId, chatId, "runs", recorded.id).language) ?? null,
             } satisfies StructuredMemoryContentsAnswer);
         } catch (error) {
             return storeErrorResponse(c, error);
@@ -357,8 +384,8 @@ export function registerStructuredMemoryRoutes(
 
     /**
      * Whether a reset may empty the chat's stored `hypaV3Data`, for the reset route and the contents route
-     * alike: the chat has not declined, an event came from adopting it, and it holds real summaries. An
-     * event's body is read last, and only for a chat that holds such a value.
+     * alike: the chat has not declined, an event came from adopting it, or from a rebuild over one that did,
+     * and it holds real summaries. An event's body is read last, and only for a chat that holds such a value.
      */
     const resettable = (characterId: string, chatId: string, contents: MemoryContents): boolean => {
         if (contents.adoptionDeclined || contents.events.length === 0) {
@@ -368,9 +395,10 @@ export function registerStructuredMemoryRoutes(
         return (
             hypaV3DataHoldsSummaries(data) &&
             !isSealedHypaV3Data(data) &&
-            contents.events.some(
-                ({ id }) => listedRecord(characterId, chatId, "events", id).writerRun === ADOPTED_WRITER_RUN,
-            )
+            contents.events.some(({ id }) => {
+                const { writerRun, adoptedSummaries } = listedRecord(characterId, chatId, "events", id);
+                return writerRun === ADOPTED_WRITER_RUN || adoptedSummaries === true;
+            })
         );
     };
 
@@ -883,6 +911,77 @@ export function registerStructuredMemoryRoutes(
                     chatRevision: chats[0].revision ?? chatRevision,
                     reset: true,
                 } satisfies StructuredMemoryResetAnswer);
+            } catch (error) {
+                return storeErrorResponse(c, error);
+            }
+        },
+    );
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/cost`, limiter, authenticated, async (c) => {
+        const characterId = c.req.param("characterId");
+        const chatId = c.req.param("chatId");
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        const mode = c.req.query("mode");
+        const turns = c.req.query("turns");
+        const through = c.req.query("through");
+        if (!isCostMode(mode) || (turns !== "1" && turns !== "2")) {
+            return c.json({ error: "mode must be rebuild, backfill, or record, and turns 1 or 2" }, 400);
+        }
+        if (through !== undefined && !isValidResourceId(through)) {
+            return c.json({ error: "through must be an id" }, 400);
+        }
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        try {
+            const cost = await memoryWorkCost(
+                store,
+                { chaId: characterId, chatId },
+                { mode, turns: turns === "1" ? 1 : 2, ...(through !== undefined ? { through } : {}) },
+            );
+            if (!cost) {
+                return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+            }
+            return compressedJson(c, cost satisfies StructuredMemoryCostAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.post(
+        `${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/rebuild/abandon`,
+        limiter,
+        authenticated,
+        limitBody,
+        async (c) => {
+            const characterId = c.req.param("characterId");
+            const chatId = c.req.param("chatId");
+            if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+                return c.json({ error: "characterId and chatId must be ids" }, 400);
+            }
+            const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+            if (epoch !== store.epoch()) {
+                return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+            }
+            if (chatHeld(characterId, chatId)) {
+                return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+            }
+            try {
+                const contents = store.memory.readContents(characterId, chatId);
+                if (!contents) {
+                    return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+                }
+                const { revision } = contents;
+                if (!store.memory.rebuild.status(characterId, chatId)) {
+                    return compressedJson(c, { revision, abandoned: false } satisfies StructuredMemoryAbandonAnswer);
+                }
+                cancelTask(characterId, chatId);
+                return compressedJson(c, {
+                    revision,
+                    abandoned: store.memory.rebuild.abandon(characterId, chatId, epoch),
+                } satisfies StructuredMemoryAbandonAnswer);
             } catch (error) {
                 return storeErrorResponse(c, error);
             }

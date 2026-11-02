@@ -2,6 +2,7 @@ import type { Chat, MessageGenerationInfo } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
 import type { ChatPatchBody } from "./resources.ts";
+import type { StructuredMemoryRebuildMode } from "./structuredMemory.ts";
 
 /**
  * The generation job contract: `POST /api/generations` creates a job for one chat, its owner (the
@@ -83,15 +84,18 @@ export const MAX_TRIGGER_NAME_BYTES = 4096;
 /**
  * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, a Lua form
  * (`risu-form`) with its attribute's key and submitted string values, a manual trigger (`risu-trigger`,
- * `/trigger`) by name (its `risu-id` is `context.triggerId`), or a person's start of Structured
+ * `/trigger`) by name (its `risu-id` is `context.triggerId`), a person's start of Structured
  * Memory's writer: "record now" through the message `messageId`, which that press confirms, or resume
- * without one. The only one of them a group chat runs.
+ * without one, or a rebuild of the chat's records from its transcript: a start in windows of `turns`
+ * turns, or a resume of the run the chat holds. The last two are the only ones a group chat runs.
  */
 export type GenerationCommand =
     | { type: "button"; data: string }
     | { type: "form"; key: string; values: Record<string, string | string[]> }
     | { type: "manual"; name: string }
-    | { type: "memoryRecord"; messageId?: string };
+    | { type: "memoryRecord"; messageId?: string }
+    | { type: "memoryRebuild"; mode: StructuredMemoryRebuildMode; turns: 1 | 2 }
+    | { type: "memoryRebuild"; resume: true };
 
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 
@@ -516,9 +520,14 @@ export type MemoryTaskInput = MemoryTaskBase & {
  * the writer's windows stop before (`writerCeiling`), captured in the step because a message appended
  * after the reply must not confirm it. A manual task, confirmed by the person who started it, uses
  * this only when the chat as stored has no ceiling of its own, and a press on a message replaces it
- * altogether (`MemoryTaskService.record`).
+ * altogether (`MemoryTaskService.record`). `rebuild` says the task works the chat's rebuild run, which
+ * knows its windows, so `confirmedBefore` only holds the plan's last message.
  */
-export type StructuredMemoryTaskInput = MemoryTaskBase & { kind: "structuredMemory"; confirmedBefore: string };
+export type StructuredMemoryTaskInput = MemoryTaskBase & {
+    kind: "structuredMemory";
+    confirmedBefore: string;
+    rebuild?: true;
+};
 
 /** A task's input of either kind, as the memory task service takes and keeps it. */
 export type AnyMemoryTaskInput = MemoryTaskInput | StructuredMemoryTaskInput;
@@ -562,11 +571,13 @@ export type MemoryTaskRecordAnswer =
  * chat's current or last task (null for none); `acquireSummaryWriter` closes the write fence of the
  * chat's running task, waits (bounded) for its last write to settle, and resolves the lease `ownerId`
  * (the job) holds until `release` (hand-offs and manual starts for the chat only queue meanwhile);
- * `pendingManual` tells whether a manual start waits for the chat's next input.
+ * `pendingManual` tells whether a manual start waits for the chat's next input. `rebuild` queues the
+ * task of the chat's rebuild run as `record` does.
  */
 export interface MemoryTaskService {
     handOff(input: AnyMemoryTaskInput): void;
     record(input: StructuredMemoryTaskInput, options?: { through?: string }): MemoryTaskRecordAnswer;
+    rebuild(input: StructuredMemoryTaskInput): MemoryTaskRecordAnswer;
     status(chatRef: MemoryChatRef): MemoryTaskStatus | null;
     acquireSummaryWriter(chatRef: MemoryChatRef, ownerId: string): Promise<SummaryWriterLease>;
     pendingManual(chatRef: MemoryChatRef): boolean;

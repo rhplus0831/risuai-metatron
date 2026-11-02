@@ -194,7 +194,8 @@ attempted, and a background task ends `skipped` with `localSummarization`; a sen
 `server/src/prompt/memory/memoryTasks.ts` `createMemoryTasks`, on the detached host `memoryTaskHost.ts` (their doc
 comments hold the queue, start checks, ends, and the host's requests; `MEMORY_TASK_LIMITS` the caps). Wiring, routes,
 and the feed frame are in [server generation](server-generation.md); the second task kind is the
-[Structured Memory writer](structured-memory-writer.md#the-writer-task).
+[Structured Memory writer](structured-memory-writer.md#the-writer-task), which also runs
+[a chat's rebuild](structured-memory-rebuild.md#a-run).
 
 - Right before a job emits `done`, the runner hands the service the job's `MemoryTaskInput` (`shared/jobs.ts`) when a
   lookahead plan says summaries are due or a manual start waits (`pendingManual`).

@@ -159,15 +159,19 @@ read.
   adoption and decline above the writer line, where it meets them first. An adopted chat that still stores summaries,
   `resettable`, is offered the reset under it. Decline and reset each ask first. The routes check again, so a stale
   panel's press answers `adopted: 0`, `declined: false`, or `reset: false`.
+- Under the reset sit [Fill gaps and Rebuild](structured-memory-rebuild.md#a-run), each priced first and hidden while
+  held, with a line when the writer's language left `recordedLanguage`. A chat with a run shows its progress, Pause
+  while its task is live, Resume while stopped and `resumable`, and Abandon always, and the panel stays read-only until
+  it ends.
 - Preview runs only on its button. A preview is a local send, so it flips `readOnly`, which moves `refresh`: a run on
   `refresh` would never stop. It answers the prompt with no next message, so it says the next send can differ.
 - `memoryBlockEntries` finds the block by `itemTag`, because `editRequest` can rebuild entries without their `memo`. A
   stable part holding only the rule header has no tag and is not shown.
 
-- Read-only is the modal's `memoryWriteFence`: a local send, a generating chat key, or `memoryTaskFenced`, rechecked
-  each second while the fence only waits for a held revision. `refresh` moves on the button and when read-only falls,
-  which catches a task's end and a record-now job that ran inside a generation job and ended no task. A held message
-  that changes needs no request: the join is derived.
+- Read-only is the modal's `memoryWriteFence`, a local send, a generating chat key, or `memoryTaskFenced`, or a run,
+  rechecked each second while the fence only waits for a held revision. `refresh` moves on the button and when read-only
+  falls, which catches a task's end and a record-now job that ran inside a generation job and ended no task. A held
+  message that changes needs no request: the join is derived.
 - Coverage joins the held messages with the coverage route's facts in the tab, because the tab holds the selected chat
   whole and a route has no job scope. The newest reply reads `pending` too: "confirmed" is the job's to say.
 - Coverage and Timeline read those facts through `reconcileMemoryCoverage`, the send's rule over the held messages, so

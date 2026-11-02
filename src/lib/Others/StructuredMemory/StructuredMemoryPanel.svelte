@@ -6,8 +6,14 @@
     import { requestMessageJump } from "src/ts/messageSearch.svelte";
     import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
-    import { memoryTaskAwaitingSync, memoryTaskFenced, memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
     import {
+        cancelMemoryTask,
+        memoryTaskAwaitingSync,
+        memoryTaskFenced,
+        memoryTaskStatus,
+    } from "src/ts/process/memoryTasks.svelte";
+    import {
+        abandonStructuredMemoryRebuild,
         adoptStructuredMemory,
         declineStructuredMemory,
         memoryWriterNotice,
@@ -19,7 +25,7 @@
         type MemoryPanelTarget,
         type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
-    import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
+    import { characterList, findCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { currentChatRef, findChat, markChatStale, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { refreshStaleChat } from "src/ts/storage/resourceSync.svelte";
     import { setChatOpen } from "src/ts/storage/selection.svelte";
@@ -28,11 +34,17 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-    import { normalizeStructuredMemorySettings, writerPaused } from "../../../../shared/structuredMemory.ts";
+    import {
+        normalizeStructuredMemorySettings,
+        structuredMemoryWriterLanguage,
+        writerPaused,
+        type StructuredMemoryRebuild,
+        type StructuredMemoryRebuildMode,
+    } from "../../../../shared/structuredMemory.ts";
     import { memoryTaskStatusLine } from "../HypaV3Modal/taskStatusLine";
     import CoverageTab from "./CoverageTab.svelte";
     import LogTab from "./LogTab.svelte";
-    import { pressMemoryRecord } from "./memoryRecordPress";
+    import { pressMemoryRebuild, pressMemoryRebuildResume, pressMemoryRecord } from "./memoryRecordPress";
     import { memoryReadFailureText, memoryReasonText } from "./memoryText";
     import PagesTab from "./PagesTab.svelte";
     import PreviewTab from "./PreviewTab.svelte";
@@ -55,10 +67,17 @@
     // chat with HypaV3 summaries and no records, which the server holds until a person chooses, offers
     // adopting or declining them. Under it, an adopted chat that still stores them offers their reset. What
     // these offer comes from the contents route, and the server checks it again on each press.
+    //
+    // Below those a chat is offered a rebuild and a backfill, each priced and asked first, and a language
+    // change is one more reason to take the rebuild. A chat that holds a run shows it instead: the run is
+    // the server's and outlives this panel, so it stays read-only until the swap or an abandon, and the
+    // writer line's buttons stay off. Pausing, resuming, and above all abandoning are always a press away,
+    // and the contents are read again when the run's task ends.
 
     const text = language.structuredMemory.panel;
     const receiptText = language.structuredMemory.receipt;
     const adoptText = language.structuredMemory.adopt;
+    const rebuildText = language.structuredMemory.rebuild;
     const TABS: { value: string; label: string; component: Component<MemoryPanelTabProps> }[] = [
         { value: "coverage", label: text.coverage, component: CoverageTab },
         { value: "preview", label: text.preview, component: PreviewTab },
@@ -91,39 +110,49 @@
         return chatRef !== null && memoryTaskAwaitingSync(chatRef);
     });
 
-    /** A send of this tab, a job this tab knows of, or the chat's memory task fence (`memoryWriteFence` in the modal). */
-    const readOnly = $derived.by(() => {
-        syncCheck;
-        return (
-            chatRef !== null &&
-            (isLocalSend(chatRef, $localSends) ||
-                generatingChatKeys().has(chatStatusKey(chatRef)) ||
-                memoryTaskFenced(chatRef))
-        );
-    });
-    const taskStatus = $derived(chatRef ? memoryTaskStatus(chatRef) : null);
-    const taskLine = $derived(memoryTaskStatusLine(taskStatus));
-    const taskLive = $derived(taskStatus?.state === "queued" || taskStatus?.state === "running");
-
-    // The chat the last check saw: another chat's tab reads on its own, as it mounts.
-    let seen: { chatKey: string | null; readOnly: boolean } | null = null;
-    $effect(() => {
-        const now = { chatKey, readOnly };
-        if (seen?.chatKey === now.chatKey && seen.readOnly && !now.readOnly) {
-            untrack(() => (refresh += 1));
-        }
-        seen = now;
-    });
-
     /** What the chat's contents say and which chat they were read for; a read that failed says nothing. */
     let contentsFacts = $state.raw<{
         chatKey: string | null;
         paused: boolean;
         adoptable: number;
         resettable: boolean;
+        rebuild: StructuredMemoryRebuild | null;
+        recordedLanguage: string | null;
     } | null>(null);
     let contentsRead = 0;
     const heldFacts = $derived(contentsFacts?.chatKey === chatKey ? contentsFacts : null);
+    /** The chat's rebuild as the server last said: a run holds the chat whether or not its task is live. */
+    const rebuild = $derived(heldFacts?.rebuild ?? null);
+
+    /**
+     * A send of this tab, a job this tab knows of, the chat's memory task fence (`memoryWriteFence` in the
+     * modal), or the chat's rebuild.
+     */
+    const readOnly = $derived.by(() => {
+        syncCheck;
+        return (
+            chatRef !== null &&
+            (isLocalSend(chatRef, $localSends) ||
+                generatingChatKeys().has(chatStatusKey(chatRef)) ||
+                memoryTaskFenced(chatRef) ||
+                rebuild !== null)
+        );
+    });
+    const taskStatus = $derived(chatRef ? memoryTaskStatus(chatRef) : null);
+    const taskLine = $derived(memoryTaskStatusLine(taskStatus));
+    const taskLive = $derived(taskStatus?.state === "queued" || taskStatus?.state === "running");
+
+    // The chat the last check saw: another chat's tab reads on its own, as it mounts. A run holds read-only
+    // up past its task's end, so that end reads the contents too, which is what lets read-only fall.
+    let seen: { chatKey: string | null; readOnly: boolean; taskLive: boolean } | null = null;
+    $effect(() => {
+        const now = { chatKey, readOnly, taskLive };
+        const runTaskEnded = seen?.taskLive === true && !now.taskLive && untrack(() => rebuild !== null);
+        if (seen?.chatKey === now.chatKey && ((seen.readOnly && !now.readOnly) || runTaskEnded)) {
+            untrack(() => (refresh += 1));
+        }
+        seen = now;
+    });
 
     async function readContents() {
         const ref = chatRef;
@@ -138,6 +167,8 @@
                           paused: writerPaused(result.value.runs),
                           adoptable: result.value.adoption.adoptable,
                           resettable: result.value.adoption.resettable,
+                          rebuild: result.value.rebuild,
+                          recordedLanguage: result.value.recordedLanguage,
                       }
                     : null;
         }
@@ -151,14 +182,15 @@
 
     const messages = $derived(chatRef ? (findChat(chatRef)?.message ?? []) : []);
     const newestReply = $derived(newestAssistantMessageId(messages));
-    const cadence = $derived(
+    const writerSettings = $derived(
         normalizeStructuredMemorySettings(
             selectedHypaV3Preset({
                 hypaV3Presets: settings.hypaV3Presets.items,
                 hypaV3PresetId: settings.hypaV3Presets.selectedId,
             })?.settings.structured,
-        ).cadence,
+        ),
     );
+    const cadence = $derived(writerSettings.cadence);
     /** The events the held chat's summaries would adopt, 0 for a chat the server does not hold. */
     const adoptable = $derived(heldFacts?.adoptable ?? 0);
     const notice = $derived(
@@ -171,8 +203,10 @@
             taskLive,
         }),
     );
-    /** Record names the newest reply, so a chat without one has nothing to press. */
-    const writerAction = $derived(notice.action === "record" && newestReply === undefined ? null : notice.action);
+    /** Record names the newest reply, so a chat without one has nothing to press, and a rebuild's run holds the chat. */
+    const writerAction = $derived(
+        rebuild !== null || (notice.action === "record" && newestReply === undefined) ? null : notice.action,
+    );
     const writerText = $derived.by(() => {
         switch (notice.kind) {
             case "memoryOff":
@@ -186,11 +220,53 @@
         }
     });
 
+    /** What the chat's records were last written in, when the writer would now write in something else. */
+    const languageChange = $derived.by(() => {
+        const recorded = heldFacts?.recordedLanguage ?? null;
+        const current = chatRef
+            ? structuredMemoryWriterLanguage(
+                  findChat(chatRef),
+                  findCharacter(chatRef.chaId),
+                  writerSettings.language,
+                  settings.ui.language,
+              )
+            : recorded;
+        return recorded !== null && current !== recorded ? { recorded, current } : null;
+    });
+    /** A live task's count is newer than the contents, read before it ran. */
+    const rebuildProgress = $derived(taskLive && taskStatus && taskStatus.total > 0 ? taskStatus : rebuild);
+    const rebuildLine = $derived.by(() => {
+        const { done = 0, total = 0 } = rebuildProgress ?? {};
+        return rebuild?.mode === "backfill"
+            ? rebuildText.backfillProgress(done, total)
+            : rebuildText.progress(done, total);
+    });
+    /** Why the run is not going on, past what the task line says while its terminal is retained. */
+    const rebuildStop = $derived.by(() => {
+        if (!rebuild || taskLive) {
+            return null;
+        }
+        if (!rebuild.resumable) {
+            return rebuildText.replaced;
+        }
+        if (rebuild.error !== undefined) {
+            return rebuildText.stopped(rebuild.error);
+        }
+        const { reason } = rebuild;
+        if (reason === undefined) {
+            return rebuildText.paused;
+        }
+        const { stopReasons } = rebuildText;
+        return rebuildText.stopped(Object.hasOwn(stopReasons, reason) ? stopReasons[reason] : memoryReasonText(reason));
+    });
+
     let pressing = $state(false);
+
+    const findOwner = (ref: ChatRef | null) => characterList().find((entry) => entry?.chaId === ref?.chaId);
 
     async function pressWriter() {
         const ref = chatRef;
-        const owner = characterList().find((entry) => entry?.chaId === ref?.chaId);
+        const owner = findOwner(ref);
         if (!ref || !owner || pressing) {
             return;
         }
@@ -277,6 +353,55 @@
         );
     }
 
+    /** One press that starts or resumes a run, whose job ends at once, so the contents then show the run. */
+    async function pressRun(run: (owner: AnyClientCharacter, ref: ChatRef) => Promise<void>) {
+        const ref = chatRef;
+        const owner = findOwner(ref);
+        if (!ref || !owner || pressing) {
+            return;
+        }
+        pressing = true;
+        try {
+            await run(owner, ref);
+            refresh += 1;
+        } finally {
+            pressing = false;
+        }
+    }
+
+    function pressRebuild(mode: StructuredMemoryRebuildMode) {
+        return pressRun((owner, ref) => pressMemoryRebuild(owner, ref, mode));
+    }
+
+    /** Ends the run's task: the run stays, stopped, and the task's end reads the contents. */
+    async function pressPause() {
+        const ref = chatRef;
+        if (!ref || pressing) {
+            return;
+        }
+        pressing = true;
+        try {
+            const result = await cancelMemoryTask(ref);
+            if (result.outcome === "failed") {
+                alertError(rebuildText.pauseFailed(result.error));
+            } else if (result.outcome === "refused" && result.reason !== "epoch") {
+                alertError(rebuildText.pauseFailed(result.reason));
+            }
+        } finally {
+            pressing = false;
+        }
+    }
+
+    function pressAbandon() {
+        return pressChoice(
+            abandonStructuredMemoryRebuild,
+            ({ abandoned }) => {
+                alertToast(abandoned ? rebuildText.abandoned : rebuildText.abandonNothing);
+            },
+            rebuildText.abandonConfirm,
+        );
+    }
+
     function close() {
         $hypaV3ModalOpen = false;
     }
@@ -354,7 +479,9 @@
             {#if readOnly || taskLine || awaitingSync}
                 <div class="flex flex-col gap-1 text-sm text-textcolor2">
                     {#if readOnly}
-                        <span role="status" data-memory-panel-read-only>{text.readOnly}</span>
+                        <span role="status" data-memory-panel-read-only>
+                            {rebuild ? rebuildText.readOnly : text.readOnly}
+                        </span>
                     {/if}
                     {#if taskLine}
                         <span role="status">{taskLine}</span>
@@ -429,6 +556,71 @@
                     >
                         <span data-memory-reset-action>{adoptText.reset}</span>
                     </Button>
+                </div>
+            {/if}
+
+            {#if chatRef && rebuild}
+                <div
+                    class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
+                    data-memory-rebuild={rebuild.mode}
+                >
+                    <div class="flex flex-col min-w-0 gap-1">
+                        <span role="status" data-memory-rebuild-progress>{rebuildLine}</span>
+                        {#if rebuildStop !== null}
+                            <span role="status" data-memory-rebuild-stop>{rebuildStop}</span>
+                        {/if}
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        {#if taskLive}
+                            <Button size="sm" styled="outlined" disabled={pressing} onclick={pressPause}>
+                                <span data-memory-rebuild-pause>{rebuildText.pause}</span>
+                            </Button>
+                        {:else if rebuild.resumable}
+                            <Button
+                                size="sm"
+                                styled="outlined"
+                                disabled={pressing}
+                                onclick={() => pressRun(pressMemoryRebuildResume)}
+                            >
+                                <span data-memory-rebuild-resume>{rebuildText.resume}</span>
+                            </Button>
+                        {/if}
+                        <Button size="sm" styled="outlined" disabled={pressing} onclick={pressAbandon}>
+                            <span data-memory-rebuild-abandon>{rebuildText.abandon}</span>
+                        </Button>
+                    </div>
+                </div>
+            {:else if chatRef && heldFacts && adoptable === 0}
+                <div
+                    class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
+                    data-memory-rebuild-offer
+                >
+                    <div class="flex flex-col min-w-0 gap-1">
+                        <span>{rebuildText.offer}</span>
+                        {#if languageChange}
+                            <span data-memory-rebuild-language>
+                                {rebuildText.languageChanged(languageChange.recorded, languageChange.current)}
+                            </span>
+                        {/if}
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={pressing || readOnly || taskLive}
+                            onclick={() => pressRebuild("backfill")}
+                        >
+                            <span data-memory-rebuild-action="backfill">{rebuildText.fillGaps}</span>
+                        </Button>
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={pressing || readOnly || taskLive}
+                            onclick={() => pressRebuild("rebuild")}
+                        >
+                            <span data-memory-rebuild-action="rebuild">{rebuildText.rebuild}</span>
+                        </Button>
+                    </div>
                 </div>
             {/if}
 

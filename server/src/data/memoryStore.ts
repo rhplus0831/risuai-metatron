@@ -21,6 +21,8 @@ import type {
     MemoryRun,
     MemoryThread,
     StructuredMemoryContents,
+    StructuredMemoryRebuild,
+    StructuredMemoryRebuildMode,
     StructuredMemoryRecordKind,
     StructuredMemoryRecordOf,
 } from "../../../shared/structuredMemory.ts";
@@ -46,6 +48,11 @@ import {
  * caller's open transaction and never begin or commit one, so a caller can compose them with its own
  * work. Past `createMemoryTables`, only a restore writes these tables: its staged writer
  * (`createMemoryStagingSink`) and the install's copy (`copyStagedMemory`).
+ *
+ * A rebuild stages what it records in tables of its own (`createMemoryTables`' `rebuild`), one code path
+ * with the live tables (`createRecordSet`), under a run row with a revision of its own. Nothing but that
+ * surface reads them: reads, the snapshot walk, a checkpoint, and an inherit see only the live tables, so
+ * the swap alone moves what a chat reads, as one ordinary `write`.
  *
  * The revision is a counter in `memory_state` and a token (`tokens.token(chatSeq, revision)`) everywhere
  * else: a token carries the chat's incarnation, so a writer that read a deleted chat cannot match the
@@ -156,6 +163,14 @@ const MEMORY_TABLES: Record<MemoryRecordKind, MemoryTable> = {
         statusValues: MEMORY_RUN_RESULTS,
         stamped: false,
     },
+};
+
+/** The tables a rebuild stages its records in, which differ from the live ones in their names alone. */
+const MEMORY_STAGED_TABLES: Record<MemoryRecordKind, MemoryTable> = {
+    pages: { ...MEMORY_TABLES.pages, table: "memory_staged_pages" },
+    events: { ...MEMORY_TABLES.events, table: "memory_staged_events" },
+    threads: { ...MEMORY_TABLES.threads, table: "memory_staged_threads" },
+    runs: { ...MEMORY_TABLES.runs, table: "memory_staged_runs" },
 };
 
 /** Column names of the memory tables, in `PRAGMA table_xinfo` order (snapshot layout check). */
@@ -320,60 +335,38 @@ export function checkMemoryRow(
     }
 }
 
+/** One kind's part of a change set. */
+type ChangedKind = { kind: MemoryRecordKind; records: readonly unknown[]; removed: readonly string[] };
+
+function changedKinds(changes: Pick<MemoryChanges, MemoryRecordKind | "remove">): ChangedKind[] {
+    return MEMORY_RECORD_KINDS.map((kind) => ({
+        kind,
+        records: changes[kind] ?? [],
+        removed: changes.remove?.[kind] ?? [],
+    }));
+}
+
+const namesNothing = (kinds: readonly ChangedKind[]) =>
+    kinds.every(({ records, removed }) => records.length === 0 && removed.length === 0);
+
 /**
- * Prepares the memory statements and returns the methods over them; the tables must exist
- * (`openChatSchema` runs first). `write` and `replace` join the caller's open transaction.
+ * One set of record tables with every rule a write over them follows: the live tables and a rebuild's
+ * staged ones are two of these, so the two cannot differ in a rule. Every statement is built from
+ * `descriptions`, and the caller owns the counter the revision moves in.
  */
-export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
-    const selectChat = db.prepare("SELECT seq FROM chats WHERE characterId = ? AND id = ?");
-    const selectState = db.prepare("SELECT revision, adoptionDeclined FROM memory_state WHERE chatSeq = ?");
-    // Only the revision: a record's write and a checkpoint load both leave a decline as it is.
-    const upsertRevision = db.prepare(
-        "INSERT INTO memory_state (chatSeq, revision) VALUES (?, ?) " +
-            "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision",
+function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind, MemoryTable>) {
+    const selectCreatedRevision = db.prepare(
+        `SELECT createdRevision FROM ${descriptions.events.table} WHERE chatSeq = ? AND id = ?`,
     );
-    const setDeclined = db.prepare("UPDATE memory_state SET adoptionDeclined = 1 WHERE chatSeq = ?");
-    const selectCreatedRevision = db.prepare("SELECT createdRevision FROM memory_events WHERE chatSeq = ? AND id = ?");
-    const selectScenePage = db.prepare("SELECT id FROM memory_pages WHERE chatSeq = ? AND type = 'scene'");
-    // A budgeted read's charges for the events a projection answers: stored sizes only.
-    const sumChatEventBytes = db.prepare(
-        "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
-            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ? AND c.id = ?",
-    );
-    const sumCharacterEventBytes = db.prepare(
-        "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
-            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ?",
-    );
-    // The revision of a chat a whole read projects, with no message read. `json_array_length` mirrors
-    // `hypaV3DataHoldsSummaries` on the stored metadata: NULL for a value without the list, 0 for a
-    // `summaries` that is no list, so both own nothing.
-    const selectProjectionRevision = db.prepare(
-        "SELECT c.seq AS seq, COALESCE(s.revision, 0) AS revision FROM chats c " +
-            "LEFT JOIN memory_state s ON s.chatSeq = c.seq " +
-            "WHERE c.characterId = ? AND c.id = ? " +
-            "AND EXISTS (SELECT 1 FROM memory_events e WHERE e.chatSeq = c.seq) " +
-            "AND COALESCE(json_array_length(c.meta, '$.hypaV3Data.summaries'), 0) = 0",
+    const selectScenePage = db.prepare(
+        `SELECT id FROM ${descriptions.pages.table} WHERE chatSeq = ? AND type = 'scene'`,
     );
     const tables = {
-        pages: prepareTable(db, MEMORY_TABLES.pages),
-        events: prepareTable(db, MEMORY_TABLES.events),
-        threads: prepareTable(db, MEMORY_TABLES.threads),
-        runs: prepareTable(db, MEMORY_TABLES.runs),
+        pages: prepareTable(db, descriptions.pages),
+        events: prepareTable(db, descriptions.events),
+        threads: prepareTable(db, descriptions.threads),
+        runs: prepareTable(db, descriptions.runs),
     };
-
-    /** The chat's `memory_state` row, or what a chat with none reads as. */
-    function stateOf(seq: number): { revision: number; adoptionDeclined: number } {
-        return (
-            (selectState.get(seq) as { revision: number; adoptionDeclined: number } | undefined) ?? {
-                revision: 0,
-                adoptionDeclined: 0,
-            }
-        );
-    }
-
-    function revisionOf(seq: number): number {
-        return stateOf(seq).revision;
-    }
 
     /**
      * Refuses a change set that would leave a chat with anything but the scene page it has. A second
@@ -418,7 +411,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         records: readonly unknown[],
         removed: readonly string[],
     ): (string | number)[][] {
-        const { stamped } = MEMORY_TABLES[kind];
+        const { stamped } = descriptions[kind];
         const writtenIds = new Set<string>();
         const rows = records.map((record) => {
             const serialized = serialize(record);
@@ -463,6 +456,195 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     }
 
     return {
+        tables,
+
+        /** Each kind's table of contents, with no record's body. */
+        listing(seq: number): Omit<MemoryContents, "revision" | "adoptionDeclined"> {
+            return {
+                pages: tables.pages.selectContents.all(seq) as MemoryContents["pages"],
+                events: tables.events.selectContents.all(seq) as MemoryContents["events"],
+                threads: tables.threads.selectContents.all(seq) as MemoryContents["threads"],
+                runs: tables.runs.selectContents.all(seq) as MemoryContents["runs"],
+            };
+        },
+
+        /** One record by id, parsed, or null. */
+        record<K extends MemoryRecordKind>(seq: number, kind: K, id: string): MemoryRecordOf[K] | null {
+            const row = tables[kind].selectRecord.get(seq, id) as { data: string } | undefined;
+            return row ? (JSON.parse(row.data) as MemoryRecordOf[K]) : null;
+        },
+
+        /**
+         * Removals, then upserts, as the revision after `current`, which it answers for the caller to store.
+         * Every refusal comes before the first statement that writes.
+         */
+        write(seq: number, current: number, kinds: readonly ChangedKind[]): number {
+            const revision = nextRevision(current, 1);
+            const prepared = kinds.map(({ kind, records, removed }) => ({
+                kind,
+                removed,
+                rows: prepareKind(kind, seq, revision, records, removed),
+            }));
+            for (const { kind, removed } of prepared) {
+                for (const id of removed) {
+                    tables[kind].remove.run(seq, id);
+                }
+            }
+            for (const { kind, rows } of prepared) {
+                for (const row of rows) {
+                    tables[kind].upsert.run(seq, ...row);
+                }
+            }
+            return revision;
+        },
+    };
+}
+
+/** The row of a chat's run but its plan, which only `rebuild.plan` reads. */
+type RebuildRow = {
+    mode: StructuredMemoryRebuildMode;
+    revision: number;
+    sourceReplaced: number;
+    cursor: number;
+    total: number;
+    reason: string | null;
+    error: string | null;
+};
+
+/**
+ * Prepares the memory statements and returns the methods over them; the tables must exist
+ * (`openChatSchema` runs first). `write`, `replace`, and the writers of `rebuild` join the caller's open
+ * transaction.
+ */
+export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
+    const selectChat = db.prepare("SELECT seq FROM chats WHERE characterId = ? AND id = ?");
+    const selectState = db.prepare("SELECT revision, adoptionDeclined FROM memory_state WHERE chatSeq = ?");
+    // Only the revision: a record's write and a checkpoint load both leave a decline as it is.
+    const upsertRevision = db.prepare(
+        "INSERT INTO memory_state (chatSeq, revision) VALUES (?, ?) " +
+            "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision",
+    );
+    const setDeclined = db.prepare("UPDATE memory_state SET adoptionDeclined = 1 WHERE chatSeq = ?");
+    // A budgeted read's charges for the events a projection answers: stored sizes only.
+    const sumChatEventBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
+            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ? AND c.id = ?",
+    );
+    const sumCharacterEventBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
+            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ?",
+    );
+    // The revision of a chat a whole read projects, with no message read. `json_array_length` mirrors
+    // `hypaV3DataHoldsSummaries` on the stored metadata: NULL for a value without the list, 0 for a
+    // `summaries` that is no list, so both own nothing.
+    const selectProjectionRevision = db.prepare(
+        "SELECT c.seq AS seq, COALESCE(s.revision, 0) AS revision FROM chats c " +
+            "LEFT JOIN memory_state s ON s.chatSeq = c.seq " +
+            "WHERE c.characterId = ? AND c.id = ? " +
+            "AND EXISTS (SELECT 1 FROM memory_events e WHERE e.chatSeq = c.seq) " +
+            "AND COALESCE(json_array_length(c.meta, '$.hypaV3Data.summaries'), 0) = 0",
+    );
+    const selectRun = db.prepare(
+        "SELECT mode, revision, sourceReplaced, cursor, total, reason, error FROM memory_rebuilds WHERE chatSeq = ?",
+    );
+    const selectRunPlan = db.prepare("SELECT plan FROM memory_rebuilds WHERE chatSeq = ?");
+    const insertRun = db.prepare(
+        "INSERT INTO memory_rebuilds (chatSeq, mode, revision, cursor, total, plan) VALUES (?, ?, 0, 0, ?, ?)",
+    );
+    const moveRun = db.prepare(
+        "UPDATE memory_rebuilds SET revision = ?, cursor = MIN(total, cursor + ?) WHERE chatSeq = ?",
+    );
+    const stopRun = db.prepare("UPDATE memory_rebuilds SET reason = ?, error = ? WHERE chatSeq = ?");
+    const markRunSourceReplaced = db.prepare(
+        "UPDATE memory_rebuilds SET sourceReplaced = 1 " +
+            "WHERE chatSeq = (SELECT seq FROM chats WHERE characterId = ? AND id = ?)",
+    );
+    const deleteRun = db.prepare("DELETE FROM memory_rebuilds WHERE chatSeq = ?");
+    const stagedRunColumns = writtenColumns(MEMORY_STAGED_TABLES.runs).join(", ");
+    // Text for text, in the order the run wrote them, so a staged run is parsed by nothing.
+    const copyStagedRuns = db.prepare(
+        `INSERT INTO ${MEMORY_TABLES.runs.table} (chatSeq, ${stagedRunColumns}) ` +
+            `SELECT chatSeq, ${stagedRunColumns} FROM ${MEMORY_STAGED_TABLES.runs.table} WHERE chatSeq = ? ORDER BY seq`,
+    );
+    const live = createRecordSet(db, MEMORY_TABLES);
+    const staged = createRecordSet(db, MEMORY_STAGED_TABLES);
+    const { tables } = live;
+
+    /** The chat's `memory_state` row, or what a chat with none reads as. */
+    function stateOf(seq: number): { revision: number; adoptionDeclined: number } {
+        return (
+            (selectState.get(seq) as { revision: number; adoptionDeclined: number } | undefined) ?? {
+                revision: 0,
+                adoptionDeclined: 0,
+            }
+        );
+    }
+
+    function revisionOf(seq: number): number {
+        return stateOf(seq).revision;
+    }
+
+    /** The current token of `seq` at `current`, with any other base refused. */
+    function checkedBase(seq: number, current: number, baseRevision: string): string {
+        const currentToken = tokens.token(seq, current);
+        const base = tokens.parse(baseRevision);
+        if (!base || base.seq !== seq || base.revision !== current) {
+            throw new ResourceConflictError(currentToken);
+        }
+        return currentToken;
+    }
+
+    /**
+     * Applies `changes` at exactly `baseRevision`: removals, then upserts, then the revision moves up
+     * by one, however much changed. A missing chat is a `ResourceConflictError` with no current
+     * revision, a base that is not the current token one naming the current token, and every other
+     * refusal a `ResourceValidationError`. All of them come before the first statement that writes,
+     * so a stale or refused write changes nothing and is never merged. Removing an id that does
+     * not exist is no refusal and still moves the revision. A change set that names nothing, once
+     * the base is checked, answers the current token and writes nothing, not even a `memory_state`
+     * row; a decline of a chat that already declined names nothing. Any other decline is a real
+     * write, so a chat with no `memory_state` row gets one at revision 1.
+     */
+    function write(
+        characterId: string,
+        chatId: string,
+        baseRevision: string,
+        changes: MemoryChanges,
+    ): MemoryWriteResult {
+        const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+        if (!chat) {
+            throw new ResourceConflictError(null);
+        }
+        const { revision: current, adoptionDeclined } = stateOf(chat.seq);
+        const currentToken = checkedBase(chat.seq, current, baseRevision);
+        const kinds = changedKinds(changes);
+        const declines = changes.adoptionDeclined === true && adoptionDeclined !== 1;
+        if (!declines && namesNothing(kinds)) {
+            return { revision: currentToken, wrote: false };
+        }
+        const revision = live.write(chat.seq, current, kinds);
+        upsertRevision.run(chat.seq, revision);
+        if (declines) {
+            setDeclined.run(chat.seq);
+        }
+        return { revision: tokens.token(chat.seq, revision), wrote: true };
+    }
+
+    /** The chat's run with the chat's `seq`, or null without either. */
+    function runOf(characterId: string, chatId: string): { seq: number; run: RebuildRow } | null {
+        const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+        const run = chat && (selectRun.get(chat.seq) as RebuildRow | undefined);
+        return run ? { seq: chat.seq, run } : null;
+    }
+
+    function removeRun(seq: number) {
+        for (const kind of MEMORY_RECORD_KINDS) {
+            staged.tables[kind].removeAll.run(seq);
+        }
+        deleteRun.run(seq);
+    }
+
+    return {
         /**
          * The table of contents, read without any record's body. Missing chat: null. Each list is in
          * `seq` order, which is storage order, not message order: an updated record keeps its place.
@@ -476,10 +658,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             const { revision, adoptionDeclined } = stateOf(chat.seq);
             return {
                 revision: tokens.token(chat.seq, revision),
-                pages: tables.pages.selectContents.all(chat.seq) as MemoryContents["pages"],
-                events: tables.events.selectContents.all(chat.seq) as MemoryContents["events"],
-                threads: tables.threads.selectContents.all(chat.seq) as MemoryContents["threads"],
-                runs: tables.runs.selectContents.all(chat.seq) as MemoryContents["runs"],
+                ...live.listing(chat.seq),
                 ...(adoptionDeclined === 1 ? { adoptionDeclined: true as const } : {}),
             };
         },
@@ -495,14 +674,8 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             if (!chat) {
                 return null;
             }
-            const row = tables[kind].selectRecord.get(chat.seq, id) as { data: string } | undefined;
-            if (!row) {
-                return null;
-            }
-            return {
-                revision: tokens.token(chat.seq, revisionOf(chat.seq)),
-                data: JSON.parse(row.data) as MemoryRecordOf[K],
-            };
+            const data = live.record(chat.seq, kind, id);
+            return data && { revision: tokens.token(chat.seq, revisionOf(chat.seq)), data };
         },
 
         /**
@@ -554,59 +727,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             return (sumCharacterEventBytes.get(characterId) as { bytes: number }).bytes;
         },
 
-        /**
-         * Applies `changes` at exactly `baseRevision`: removals, then upserts, then the revision moves up
-         * by one, however much changed. A missing chat is a `ResourceConflictError` with no current
-         * revision, a base that is not the current token one naming the current token, and every other
-         * refusal a `ResourceValidationError`. All of them come before the first statement that writes,
-         * so a stale or refused write changes nothing and is never merged. Removing an id that does
-         * not exist is no refusal and still moves the revision. A change set that names nothing, once
-         * the base is checked, answers the current token and writes nothing, not even a `memory_state`
-         * row; a decline of a chat that already declined names nothing. Any other decline is a real
-         * write, so a chat with no `memory_state` row gets one at revision 1.
-         */
-        write(characterId: string, chatId: string, baseRevision: string, changes: MemoryChanges): MemoryWriteResult {
-            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
-            if (!chat) {
-                throw new ResourceConflictError(null);
-            }
-            const { revision: current, adoptionDeclined } = stateOf(chat.seq);
-            const currentToken = tokens.token(chat.seq, current);
-            const base = tokens.parse(baseRevision);
-            if (!base || base.seq !== chat.seq || base.revision !== current) {
-                throw new ResourceConflictError(currentToken);
-            }
-            const lists = MEMORY_RECORD_KINDS.map((kind) => ({
-                kind,
-                records: changes[kind] ?? [],
-                removed: changes.remove?.[kind] ?? [],
-            }));
-            const declines = changes.adoptionDeclined === true && adoptionDeclined !== 1;
-            if (!declines && lists.every(({ records, removed }) => records.length === 0 && removed.length === 0)) {
-                return { revision: currentToken, wrote: false };
-            }
-            const revision = nextRevision(current, 1);
-            const prepared = lists.map(({ kind, records, removed }) => ({
-                kind,
-                removed,
-                rows: prepareKind(kind, chat.seq, revision, records, removed),
-            }));
-            for (const { kind, removed } of prepared) {
-                for (const id of removed) {
-                    tables[kind].remove.run(chat.seq, id);
-                }
-            }
-            for (const { kind, rows } of prepared) {
-                for (const row of rows) {
-                    tables[kind].upsert.run(chat.seq, ...row);
-                }
-            }
-            upsertRevision.run(chat.seq, revision);
-            if (declines) {
-                setDeclined.run(chat.seq);
-            }
-            return { revision: tokens.token(chat.seq, revision), wrote: true };
-        },
+        write,
 
         /**
          * Makes `texts` the chat's whole memory: every row of the four kinds is deleted, each text goes in
@@ -637,6 +758,155 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 }
             }
             upsertRevision.run(chat.seq, revision);
+        },
+
+        /**
+         * A chat's rebuild: one row per chat at most, outliving a process, and a staged set of records
+         * with a revision of its own. `readContents`, `readRecord`, and `write` work as those above do, on
+         * the staged tables at the staged revision, for the writer and the reaction to a chat write: a chat
+         * with no run reads and is refused as a missing chat. The staged contents always say declined,
+         * because a chat is held by its live records, never by what a run staged. The caller's fence decides
+         * when any of this may run.
+         */
+        rebuild: {
+            /**
+             * Writes the run and `seed` through the staged write path. A chat that holds a run, or a
+             * refused record, is refused.
+             */
+            begin(
+                characterId: string,
+                chatId: string,
+                { mode, plan }: { mode: StructuredMemoryRebuildMode; plan: readonly (readonly string[])[] },
+                seed: Pick<MemoryChanges, "pages" | "threads">,
+            ): void {
+                const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+                if (!chat) {
+                    throw new ResourceConflictError(null);
+                }
+                if (selectRun.get(chat.seq)) {
+                    throw new ResourceValidationError("This chat already holds a rebuild");
+                }
+                insertRun.run(chat.seq, mode, plan.length, JSON.stringify(plan));
+                const kinds = changedKinds(seed);
+                if (!namesNothing(kinds)) {
+                    moveRun.run(staged.write(chat.seq, 0, kinds), 0, chat.seq);
+                }
+            },
+
+            readContents(characterId: string, chatId: string): MemoryContents | null {
+                const found = runOf(characterId, chatId);
+                return (
+                    found && {
+                        revision: tokens.token(found.seq, found.run.revision),
+                        ...staged.listing(found.seq),
+                        adoptionDeclined: true,
+                    }
+                );
+            },
+
+            readRecord<K extends MemoryRecordKind>(
+                characterId: string,
+                chatId: string,
+                kind: K,
+                id: string,
+            ): MemoryRecordRead<K> | null {
+                const found = runOf(characterId, chatId);
+                const data = found && staged.record(found.seq, kind, id);
+                return found && data && { revision: tokens.token(found.seq, found.run.revision), data };
+            },
+
+            /** `write` on the staged set. `advance` moves the cursor by one in the same statement as the revision. */
+            write(
+                characterId: string,
+                chatId: string,
+                baseRevision: string,
+                changes: MemoryChanges,
+                advance = false,
+            ): MemoryWriteResult {
+                const found = runOf(characterId, chatId);
+                if (!found) {
+                    throw new ResourceConflictError(null);
+                }
+                const currentToken = checkedBase(found.seq, found.run.revision, baseRevision);
+                const kinds = changedKinds(changes);
+                if (namesNothing(kinds)) {
+                    return { revision: currentToken, wrote: false };
+                }
+                const revision = staged.write(found.seq, found.run.revision, kinds);
+                moveRun.run(revision, advance ? 1 : 0, found.seq);
+                return { revision: tokens.token(found.seq, revision), wrote: true };
+            },
+
+            /** Moves the cursor by one with no records. Whether the chat holds a run. */
+            advance(characterId: string, chatId: string): boolean {
+                const found = runOf(characterId, chatId);
+                if (found) {
+                    moveRun.run(found.run.revision, 1, found.seq);
+                }
+                return found !== null;
+            },
+
+            /** The run's public part, one row and no parse of its plan; null without a run. */
+            status(characterId: string, chatId: string): StructuredMemoryRebuild | null {
+                const run = runOf(characterId, chatId)?.run;
+                return run
+                    ? {
+                          mode: run.mode,
+                          done: run.cursor,
+                          total: run.total,
+                          ...(run.reason !== null ? { reason: run.reason } : {}),
+                          ...(run.error !== null ? { error: run.error } : {}),
+                          resumable: run.sourceReplaced === 0,
+                      }
+                    : null;
+            },
+
+            /** Message ids per window, as written once at the start; null without a run. */
+            plan(characterId: string, chatId: string): string[][] | null {
+                const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+                const row = chat && (selectRunPlan.get(chat.seq) as { plan: string } | undefined);
+                return row ? (JSON.parse(row.plan) as string[][]) : null;
+            },
+
+            /** Keeps why the run stopped, in place of what it kept before: none clears it. Whether it holds a run. */
+            noteStop(characterId: string, chatId: string, stop: { reason?: string; error?: string }): boolean {
+                const found = runOf(characterId, chatId);
+                if (found) {
+                    stopRun.run(stop.reason ?? null, stop.error ?? null, found.seq);
+                }
+                return found !== null;
+            },
+
+            /** Marks the chat's run, if it holds one, as outliving a whole-chat replace, which is for good. */
+            noteSourceReplaced(characterId: string, chatId: string): void {
+                markRunSourceReplaced.run(characterId, chatId);
+            },
+
+            /**
+             * Ends the run: `write` of `changes` on the live tables at `baseRevision`, so every check of a
+             * write holds and the revision moves up by exactly one, then the staged runs join the live ones
+             * by their text, in the order written, and the staged rows and the run go. A chat with no run is
+             * refused as a missing chat. A refused write leaves everything to the caller's rollback.
+             */
+            swap(characterId: string, chatId: string, baseRevision: string, changes: MemoryChanges): MemoryWriteResult {
+                const found = runOf(characterId, chatId);
+                if (!found) {
+                    throw new ResourceConflictError(null);
+                }
+                const written = write(characterId, chatId, baseRevision, changes);
+                copyStagedRuns.run(found.seq);
+                removeRun(found.seq);
+                return written;
+            },
+
+            /** Deletes the run and its staged rows, and writes nothing live. Whether the chat held one. */
+            abandon(characterId: string, chatId: string): boolean {
+                const found = runOf(characterId, chatId);
+                if (found) {
+                    removeRun(found.seq);
+                }
+                return found !== null;
+            },
         },
     };
 }

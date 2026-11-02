@@ -52,7 +52,7 @@ export type WriterCadence = Pick<
 > & { budgetMode?: HypaV3Settings["budgetMode"] };
 
 /** A confirmed message, with the id that anchors it and its place in the stored list. */
-type ConfirmedMessage = { id: string; message: Message; index: number };
+export type ConfirmedMessage = { id: string; message: Message; index: number };
 
 /** Where windows stop: before the message `id`, or through it when a press confirmed it (`inclusive`). */
 export type WriterCeiling = { id: string; inclusive: boolean };
@@ -120,6 +120,14 @@ export function readRerecordEvents(store: Pick<ResourceStore, "memory">, chaId: 
     });
 }
 
+/** The messages a send reads that can be anchored, in chat order, positioned in the stored list. */
+export function anchoredMessages(messages: readonly Message[]): ConfirmedMessage[] {
+    const placed = messages.map((message, index) => ({ message, index, disabled: message.disabled }));
+    return eligibleHistory(placed).messages.flatMap(({ message, index }) =>
+        message.chatId ? [{ id: message.chatId, message, index }] : [],
+    );
+}
+
 /**
  * The eligible messages before the ceiling, or through it when `inclusive`, in chat order, positioned
  * in the stored list (a message without a `chatId` cannot be anchored). Null when the ceiling is not
@@ -130,19 +138,9 @@ function confirmedMessages(
     confirmedBefore: string,
     inclusive: boolean,
 ): ConfirmedMessage[] | null {
-    const placed = messages.map((message, index) => ({ message, index, disabled: message.disabled }));
-    const eligible = eligibleHistory(placed).messages;
-    const ceiling = eligible.findIndex(({ message }) => message.chatId === confirmedBefore);
-    if (ceiling === -1) {
-        return null;
-    }
-    const confirmed: ConfirmedMessage[] = [];
-    for (const { message, index } of eligible.slice(0, inclusive ? ceiling + 1 : ceiling)) {
-        if (message.chatId) {
-            confirmed.push({ id: message.chatId, message, index });
-        }
-    }
-    return confirmed;
+    const anchored = anchoredMessages(messages);
+    const ceiling = anchored.findIndex(({ id }) => id === confirmedBefore);
+    return ceiling === -1 ? null : anchored.slice(0, inclusive ? ceiling + 1 : ceiling);
 }
 
 /**
@@ -157,7 +155,7 @@ export function confirmedThrough(messages: readonly Message[], confirmedBefore: 
 }
 
 /** The turns of `confirmed`; user messages with no assistant message after them belong to none. */
-function turnsOf(confirmed: readonly ConfirmedMessage[]): ConfirmedMessage[][] {
+export function turnsOf(confirmed: readonly ConfirmedMessage[]): ConfirmedMessage[][] {
     const turns: ConfirmedMessage[][] = [];
     let turn: ConfirmedMessage[] = [];
     for (const entry of confirmed) {
@@ -176,7 +174,7 @@ function tokenThreshold(cadence: WriterCadence, maxContext: number): number {
     return Math.max(1, cadence.budgetMode === "tokens" ? cadence.cadenceTokens : cadence.cadenceRatio * context);
 }
 
-function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
+export function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
     return {
         sources: entries.map(({ id, message, index }) => ({ messageId: id, hash: messageSourceHash(message), index })),
         messages: entries.map(({ message }) => message),

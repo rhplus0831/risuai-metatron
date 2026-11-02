@@ -162,6 +162,7 @@ completed plans and retrieval commands.
 | Structured memory writer: windows, tasks, runs, admission, pages, record now             | [structured-memory-writer](docs/structure/structured-memory-writer.md)       |
 | Structured memory read path: lanes, card, report, receipts, the memory panel             | [structured-memory-read](docs/structure/structured-memory-read.md)           |
 | Structured memory lifecycle: reconciliation, repairs, checkpoints, copies, adoption      | [structured-memory-lifecycle](docs/structure/structured-memory-lifecycle.md) |
+| Structured memory rebuild: runs, staging, the swap, backfill, the cost preview           | [structured-memory-rebuild](docs/structure/structured-memory-rebuild.md)     |
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                               |
 | CBS, markdown/sanitization, chat variables, partial edit, highlighting                   | [cbs-rendering](docs/structure/cbs-rendering.md)                             |
 | Regex, triggers v2, Lua editors/shared engines                                           | [scripts-triggers](docs/structure/scripts-triggers.md)                       |
@@ -202,6 +203,8 @@ coupling links.
 - **structured-memory-lifecycle**: `server/src/prompt/memory/structured/{reconcile,inherit,restore,adopt}.ts`,
   `src/ts/process/chatMemoryInherit.svelte.ts`, and the repair, checkpoint, inherit, chat file, and adoption parts of
   the files above.
+- **structured-memory-rebuild**: `server/src/prompt/memory/structured/rebuild.ts`, and the rebuild parts of the files
+  above.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,

@@ -10,6 +10,7 @@ import { type MemoryChanges, messageSourceHash } from "../../../data/memoryStore
 import type { MessagesChanged, ResourceStore } from "../../../data/resourceStore.ts";
 import { applyEventRepair, flagUnsupportedSections } from "./edits.ts";
 import type { WriterCadence, WriterWindow } from "./window.ts";
+import type { WriterMemory } from "./writer.ts";
 
 /**
  * The server's side of keeping events honest about the messages they cite. The rules are in `shared/`,
@@ -26,7 +27,8 @@ import type { WriterCadence, WriterWindow } from "./window.ts";
  * - A chat write reaches the records through `reconcileMessageChanges`: a delete a person confirmed
  *   retracts what cites the message, and an edit marks what cites it for a re-record. It runs in the
  *   write's own turn, holds up no send, and has no fence: a running writer sees `revisionConflict` and
- *   admits its answer again from fresh records, or `windowChanged` when its source moved.
+ *   admits its answer again from fresh records, or `windowChanged` when its source moved. A rebuild's
+ *   staged records take the same reaction, so the swap loses neither.
  * - An automatic task re-records only what an edit explains (`automaticRerecords`). Any other mark stays
  *   for the panel, because a message that is gone or moved may be a mistake only a person can read.
  */
@@ -64,7 +66,7 @@ export function automaticRerecords(
  * answers `changes` itself and reads no page. Call it in the write's synchronous step.
  */
 export function withUnsupportedSections(
-    store: Pick<ResourceStore, "memory">,
+    store: { memory: Pick<WriterMemory, "readContents" | "readRecord"> },
     { chaId, chatId }: MemoryChatRef,
     changes: MemoryChanges,
 ): MemoryChanges {
@@ -140,21 +142,12 @@ export function retireRerecorded(
 }
 
 /**
- * What a chat write leaves of the records, from `notice` (`onMessagesChanged`), in one synchronous step:
- * an event that cites a `retracted` id is retracted, the same write as the panel's, and an event that
- * cites a `rewritten` id, is not retracted here, and has no mark yet is marked `rerecord` and nothing
- * else, so it stays until a re-record commits. The sections a retraction leaves unsupported are flagged.
- * Nothing affected writes nothing.
- *
- * It reads no message: `notice` says what changed, and whether a marked event can be re-recorded is the
- * windows' to say. A notice from before an epoch change, or for a chat with no records, stops here.
+ * What a chat write leaves of the records `memory` holds, in one synchronous step: see
+ * `reconcileMessageChanges`. A chat with no records there stops here.
  */
-export function reconcileMessageChanges(store: Pick<ResourceStore, "epoch" | "memory">, notice: MessagesChanged): void {
+function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: MessagesChanged): void {
     const { epoch, characterId: chaId, id: chatId } = notice;
-    if (store.epoch() !== epoch) {
-        return;
-    }
-    const contents = store.memory.readContents(chaId, chatId);
+    const contents = memory.readContents(chaId, chatId);
     if (!contents || contents.events.length === 0) {
         return;
     }
@@ -162,7 +155,7 @@ export function reconcileMessageChanges(store: Pick<ResourceStore, "epoch" | "me
     const rewritten = new Set(notice.rewritten);
     const events: MemoryEvent[] = [];
     for (const { id, status } of contents.events) {
-        const event = status === "retracted" ? undefined : store.memory.readRecord(chaId, chatId, "events", id)?.data;
+        const event = status === "retracted" ? undefined : memory.readRecord(chaId, chatId, "events", id)?.data;
         if (!event) {
             continue;
         }
@@ -175,7 +168,27 @@ export function reconcileMessageChanges(store: Pick<ResourceStore, "epoch" | "me
         }
     }
     if (events.length > 0) {
-        const changes = withUnsupportedSections(store, { chaId, chatId }, { events });
-        store.memory.write(chaId, chatId, { epoch, baseRevision: contents.revision }, changes);
+        const changes = withUnsupportedSections({ memory }, { chaId, chatId }, { events });
+        memory.write(chaId, chatId, { epoch, baseRevision: contents.revision }, changes);
+    }
+}
+
+/**
+ * What a chat write leaves of the records, from `notice` (`onMessagesChanged`): an event that cites a
+ * `retracted` id is retracted, the same write as the panel's, and an event that cites a `rewritten` id, is
+ * not retracted here, and has no mark yet is marked `rerecord` and nothing else, so it stays until a
+ * re-record commits. The sections a retraction leaves unsupported are flagged. Nothing affected writes
+ * nothing. A chat's rebuild takes the same reaction on its staged records, after the live ones.
+ *
+ * It reads no message: `notice` says what changed, and whether a marked event can be re-recorded is the
+ * windows' to say. A notice from before an epoch change stops here.
+ */
+export function reconcileMessageChanges(store: Pick<ResourceStore, "epoch" | "memory">, notice: MessagesChanged): void {
+    if (store.epoch() !== notice.epoch) {
+        return;
+    }
+    reactToMessageChanges(store, notice);
+    if (store.memory.rebuild.status(notice.characterId, notice.id)) {
+        reactToMessageChanges({ memory: store.memory.rebuild.staged }, notice);
     }
 }

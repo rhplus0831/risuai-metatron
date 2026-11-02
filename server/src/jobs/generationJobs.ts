@@ -295,6 +295,19 @@ export type CreateResult =
     | ({ ok: true } & GenerationCreated)
     | { ok: false; status: 400 | 404 | 409 | 412 | 503; body: Record<string, unknown> };
 
+/** What a job refused by a chat's rebuild says: the run holds the chat until a person ends it there. */
+const REBUILD_LOCK_TEXT =
+    "This chat's memory is being rebuilt. Resume or abandon the rebuild in the memory panel to use the chat again.";
+
+/**
+ * Whether a chat's rebuild refuses this job. The lock is the run row, not a task, because a send on a
+ * stopped run could write live records the swap would lose, so job admission, the one chokepoint, reads it.
+ * A preview writes nothing, and the rebuild's own command is what ends the lock.
+ */
+function rebuildLocks(body: GenerationCreateBody): boolean {
+    return body.kind !== "preview" && body.kind !== "previewPrompt" && body.command?.type !== "memoryRebuild";
+}
+
 /** Sorts object keys recursively without assigning them to a prototype; keeps array order and maps absent values to null. */
 function canonicalJson(value: unknown): string {
     if (value === undefined || value === null) return "null";
@@ -1635,6 +1648,9 @@ export function createGenerationJobs(options: {
         const busy = chatSlots.get(chatKey(characterId, chatId));
         if (busy) {
             return { ok: false, status: 409, body: { error: "chatBusy", jobId: busy } };
+        }
+        if (rebuildLocks(body) && store.memory.rebuild.rebuilding(characterId, chatId)) {
+            return { ok: false, status: 409, body: { error: REBUILD_LOCK_TEXT } };
         }
         if (revision !== body.context.chatRevision) {
             return { ok: false, status: 409, body: { error: "stale" } };

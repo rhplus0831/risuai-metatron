@@ -1,6 +1,10 @@
 /** "1 turn", "3 messages": the context meter's counts. */
 const countOf = (count: number, noun: "turn" | "message") => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
+/** What a memory cost preview says, which is the least a press can spend, and an estimate. */
+const memoryCostText = (calls: number, tokens: number) =>
+    `This takes at least ${calls === 1 ? "1 model call" : `${calls} model calls`} and about ${tokens} input tokens. That is an estimate of each window's first call alone: a window can also add a page update call and compaction calls.`;
+
 export const languageEnglish = {
     formating: {
         main: "Main Prompt",
@@ -1701,6 +1705,7 @@ export const languageEnglish = {
             button: "A conflict discarded local changes; the button did not run",
             trigger: "A conflict discarded local changes; the trigger did not run",
             memoryRecord: "A conflict discarded local changes; the recording did not start",
+            memoryRebuild: "A conflict discarded local changes; the rebuild did not start",
         },
         saveFailed: "Local changes could not be saved: {0}",
         refusedDraft:
@@ -2349,6 +2354,7 @@ export const languageEnglish = {
         running: (done: number, total: number) =>
             total > 0 ? `Making summaries in the background: ${done}/${total}` : "Making summaries in the background",
         done: (reason: string) => `The background summaries were made, but: ${reason}`,
+        rebuilt: "The memory was rebuilt.",
         failed: (reason: string) => `The last background summarization failed: ${reason}`,
         skipped: (reason: string) => `The last background summarization was skipped: ${reason}`,
         cancelled: (reason: string) => `The last background summarization was stopped: ${reason}`,
@@ -2391,6 +2397,10 @@ export const languageEnglish = {
             revisionConflict: "the memory was changed meanwhile",
             awaitingAdoption:
                 "nothing records until you adopt or decline this chat's HypaV3 summaries in the memory panel, and the summaries stay stored",
+            memoryRebuilding: "this chat's memory is being rebuilt",
+            rebuildGone: "the rebuild is gone",
+            nothingRecorded: "no turn was recorded, so the records stay as they were",
+            queueFull: "too many chats are waiting for memory work",
         } as Record<string, string>,
     },
     structuredMemory: {
@@ -2466,6 +2476,8 @@ export const languageEnglish = {
             recordNow: "Record now",
             resume: "Resume",
             requested: "Recording requested",
+            recordCost: (calls: number, tokens: number) => `Record now? ${memoryCostText(calls, tokens)}`,
+            recordCostUnknown: "Record now? The cost could not be read, so it is unknown.",
             busy: "This chat is busy. Try again when the running job ends.",
             warnings: "Warnings",
             unverified: "To check",
@@ -2517,6 +2529,7 @@ export const languageEnglish = {
             compactionNotSmaller: "The new text was no shorter, so a long section was left as it is",
             compactionStale: "The records changed during the run, so a shorter text was left out",
             compactionSkipped: "A long section a person corrected, or one in dispute, was left as it is",
+            frozenPage: "A page that already stood was left as it is, because this turn lies before it",
         } as Record<string, string>,
         refusalKinds: {
             lowConfidence: "an unresolved mention, too uncertain to make a page",
@@ -2742,6 +2755,38 @@ export const languageEnglish = {
                 "Empty this chat's stored HypaV3 summaries? Its memory records stay, and plugins read those from now on. This cannot be undone.",
             resetDone: "The stored HypaV3 summaries are empty. Plugins now read this chat's memory records.",
             resetNothing: "Nothing to reset: this chat holds no adopted summaries.",
+        },
+        rebuild: {
+            offer: "Rebuild writes this chat's records again from its messages. Fill gaps records only the turns no event cites.",
+            languageChanged: (recorded: string, current: string) =>
+                `This chat's records were written in "${recorded}", and the writer now writes in "${current}". A rebuild applies the change.`,
+            rebuild: "Rebuild",
+            fillGaps: "Fill gaps",
+            confirmRebuild: (cost: string) =>
+                `Rebuild this chat's memory from its messages? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until the rebuild ends or you abandon it. Pages and threads are then written anew, except what you locked, pinned, corrected, or added.`,
+            confirmBackfill: (cost: string) =>
+                `Record the turns no event cites? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Existing pages and threads do not change: a rebuild is what refreshes them.`,
+            cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
+            costUnknown: "The cost could not be read, so it is unknown.",
+            nothing: "Nothing to do: this chat has no turn to record.",
+            started: "Rebuild started",
+            resumed: "Rebuild resumed",
+            progress: (done: number, total: number) => `Rebuilding ${done} of ${total}`,
+            backfillProgress: (done: number, total: number) => `Filling gaps ${done} of ${total}`,
+            readOnly: "This chat holds a rebuild, so this panel is read-only until it ends or you abandon it.",
+            paused: "Paused. This chat cannot generate until you resume or abandon.",
+            stopped: (reason: string) => `Stopped: ${reason}. This chat cannot generate until you resume or abandon.`,
+            stopReasons: { staleInput: "the chat or the memory settings changed" } as Record<string, string>,
+            replaced:
+                "This chat was replaced after the rebuild began, so it cannot go on. Abandon it to use the chat again.",
+            pause: "Pause",
+            resume: "Resume",
+            abandon: "Abandon",
+            abandonConfirm:
+                "Abandon this rebuild? The model calls already paid for are lost, and the records stay as they were.",
+            abandoned: "The rebuild is abandoned. The records stay as they were.",
+            abandonNothing: "Nothing to abandon: this chat holds no rebuild.",
+            pauseFailed: (error: string) => `The rebuild could not be paused: ${error}`,
         },
         memoryFile: {
             exportedWithoutRecords:

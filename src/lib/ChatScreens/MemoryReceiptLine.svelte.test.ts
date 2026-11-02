@@ -8,6 +8,12 @@ vi.mock("src/ts/process/serverCommands", async () =>
     (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock(),
 );
 
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock(),
+);
+import { authFetch } from "src/ts/storage/serverAuth";
+import { alertConfirm } from "src/ts/alert";
+import { language } from "src/lang";
 import { runServerJob } from "src/ts/process/serverCommands";
 import { resetMemoryTasks, noteMemoryTaskFrame } from "src/ts/process/memoryTasks.svelte";
 import { findCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
@@ -118,11 +124,17 @@ it("updates a held message's collapsible receipt without remounting and names th
 });
 
 it("records the newest message or resumes the chat through a job, and disables recording while the task or generation owns it", async () => {
+    vi.mocked(authFetch).mockImplementation(async () =>
+        Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 }),
+    );
+    const settled = async () => {
+        for (let i = 0; i < 30; i++) await tick();
+    };
     render("a1", 0);
     expect(target.textContent).toBe("");
     const props = render();
     button("Record now").click();
-    await tick();
+    await settled();
     expect(runServerJob).toHaveBeenLastCalledWith(findCharacter("c"), ref, {
         kind: "command",
         command: { type: "memoryRecord", messageId: "a2" },
@@ -148,10 +160,48 @@ it("records the newest message or resumes the chat through a job, and disables r
     patch(receipt({ state: "skipped", reason: "writerPaused" }));
     expect(target.textContent).toContain("Recording is paused");
     button("Resume").click();
-    await tick();
+    await settled();
     expect(runServerJob).toHaveBeenLastCalledWith(findCharacter("c"), ref, {
         kind: "command",
         command: { type: "memoryRecord" },
+        label: "memoryRecord",
+        context: { mode: "manual" },
+    });
+});
+
+it("records one-call work immediately and asks before multiple calls or an unreadable cost preview", async () => {
+    vi.mocked(runServerJob).mockResolvedValue({ outcome: "started", terminal: null });
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    const fetch = vi.mocked(authFetch);
+    let calls: number | null = 1;
+    fetch.mockImplementation(async (url) => {
+        expect(url).toContain("/api/memory/structured/c/k/cost?mode=record&turns=1&through=a2");
+        return calls === null
+            ? Response.json({ error: "Unavailable" }, { status: 503 })
+            : Response.json({ calls, messages: calls * 2, estimatedTokens: 3000 });
+    });
+    render();
+    const press = async () => {
+        button("Record now").click();
+        for (let i = 0; i < 30; i++) await tick();
+    };
+    await press();
+    expect(runServerJob).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
+    calls = 2;
+    await press();
+    expect(confirm).toHaveBeenLastCalledWith(language.structuredMemory.receipt.recordCost(2, 3000));
+    expect(runServerJob).toHaveBeenCalledTimes(1);
+    calls = null;
+    await press();
+    expect(confirm).toHaveBeenLastCalledWith(language.structuredMemory.receipt.recordCostUnknown);
+    expect(runServerJob).toHaveBeenCalledTimes(1);
+    confirm.mockResolvedValue(true);
+    await press();
+    expect(runServerJob).toHaveBeenCalledTimes(2);
+    expect(runServerJob).toHaveBeenLastCalledWith(findCharacter("c"), ref, {
+        kind: "command",
+        command: { type: "memoryRecord", messageId: "a2" },
         label: "memoryRecord",
         context: { mode: "manual" },
     });

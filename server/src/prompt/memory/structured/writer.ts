@@ -15,7 +15,7 @@ import {
     memoryThreadEnded,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
-    structuredMemoryLanguageOverride,
+    structuredMemoryWriterLanguage,
     writerPaused,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
@@ -41,6 +41,7 @@ import {
     storedText,
     type Warning,
     windowSpeaker,
+    withoutFrozenTargets,
 } from "./pages.ts";
 import { commitPages, parsePatches, showTargets } from "./patches.ts";
 import {
@@ -101,9 +102,20 @@ export { writerPaused };
  *   messages (`commitWindow`), where a person reads it. The writer itself never touches the chat.
  * - Warming: the committed event's summary and key lines and the sections it changed are embedded into
  *   the shared vector cache. A failure keeps the records.
+ * - Store: a run reads and writes through the `memory` it is given, the live records or a rebuild's staged
+ *   set (`createStructuredWriter`). So a rebuild's writer stands on what the run wrote, and a chat's run is
+ *   defended at the writer's one live write (`commitWindow`).
+ * - A historical write (`historical`, a backfill) records a window that lies before records that already
+ *   exist, so it must leave current state alone: it merges into no later event, rewrites no scene, moves
+ *   no thread, and patches no page in `frozenPages`. It still makes new pages, which later windows patch.
  */
 
 type WriterArg = Parameters<StructuredMemoryWriter>[0];
+
+/** What a run reads and writes of a chat's memory: its live records or a rebuild's staged set. */
+export type WriterMemory = Pick<ResourceStore["memory"], "readContents" | "readRecord" | "write">;
+
+type WriterStore = { memory: WriterMemory } & Pick<ResourceStore, "chatMeta">;
 
 /** A run whose snapshot is stored: what the call and the later commits work from. */
 type OpenedRun = { run: MemoryRun; formated: OpenAIChat[]; revision: string };
@@ -211,7 +223,7 @@ function speakerLabels(arg: WriterArg, ownerName: string) {
 }
 
 /** Every page `contents` lists, whole: the store has no bulk read. */
-function readPages(store: Pick<ResourceStore, "memory">, arg: WriterArg, contents: MemoryContents): MemoryPage[] {
+function readPages(store: Pick<WriterStore, "memory">, arg: WriterArg, contents: MemoryContents): MemoryPage[] {
     const { chaId, chatId } = arg.input.chatRef;
     return contents.pages.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "pages", id)?.data ?? []);
 }
@@ -219,15 +231,11 @@ function readPages(store: Pick<ResourceStore, "memory">, arg: WriterArg, content
 /** The language a run writes in: the chat's override, its owner's, the preset's, then the app's. */
 function writerLanguage({ scope, host, input }: WriterArg): string {
     const owner = scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId);
-    return (
-        structuredMemoryLanguageOverride(scopeChat(scope)) ??
-        structuredMemoryLanguageOverride(owner) ??
-        (writerSettings(host).language || host.db.language)
-    );
+    return structuredMemoryWriterLanguage(scopeChat(scope), owner, writerSettings(host).language, host.db.language);
 }
 
 /** The prompt for `arg.window`, from the records as `contents` lists them. */
-function buildPrompt(store: Pick<ResourceStore, "memory">, arg: WriterArg, contents: MemoryContents): OpenAIChat[] {
+function buildPrompt(store: Pick<WriterStore, "memory">, arg: WriterArg, contents: MemoryContents): OpenAIChat[] {
     const { scope, host, input, window } = arg;
     const { chaId, chatId } = input.chatRef;
     const chat = scopeChat(scope);
@@ -257,7 +265,7 @@ function buildPrompt(store: Pick<ResourceStore, "memory">, arg: WriterArg, conte
 
 /** The input to send again, from the newest run that did not record, when it is still this run's. */
 function replayedInput(
-    store: Pick<ResourceStore, "memory">,
+    store: Pick<WriterStore, "memory">,
     arg: WriterArg,
     contents: MemoryContents,
 ): { text: string; formated: OpenAIChat[] } | null {
@@ -301,7 +309,10 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
  * checked here under the ceiling the window was computed with. A continue takes its message's lock
  * before it changes the text, so a window holding a message a generation job owns is refused too: its
  * hash still matches, and its receipt could not land. A chat that waits for its adoption choice is
- * refused here as well: `openRun` looked before it awaited, and a metadata write can land after that.
+ * refused here as well: `openRun` looked before it awaited, and a metadata write can land after that. So
+ * is a write of a chat that holds a rebuild's run, whichever job holds it: a job admitted under another
+ * algorithm can reach this after a switch back, and the swap would lose what it wrote. `rebuild.status`
+ * reads the chat's run, and the rebuild's own store answers that it has none.
  *
  * A run in `changes` with a receipt puts that receipt on the window's assistant messages, each with
  * its other generation info as stored. A receipt moves the chat's revision and no source hash, so it
@@ -309,7 +320,11 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
  * keeps it: the memory commit stands and the window is neither failed nor run again.
  */
 export function commitWindow(
-    store: Pick<ResourceStore, "memory" | "readChatSource" | "messagesLocked">,
+    store: Pick<ResourceStore, "readChatSource" | "messagesLocked"> & {
+        memory: Pick<WriterMemory, "readContents" | "write"> & {
+            rebuild: Pick<ResourceStore["memory"]["rebuild"], "status">;
+        };
+    },
     arg: {
         input: WriterArg["input"];
         window: WriterWindow;
@@ -328,7 +343,8 @@ export function commitWindow(
         !stored ||
         chat.revision === null ||
         !windowStillConfirmed(window, stored.message, ceiling.id, { inclusive: ceiling.inclusive }) ||
-        store.messagesLocked(chaId, chatId, sources)
+        store.messagesLocked(chaId, chatId, sources) ||
+        store.memory.rebuild.status(chaId, chatId)
     ) {
         return { outcome: "refused", reason: "windowChanged" };
     }
@@ -372,10 +388,7 @@ export function commitWindow(
  * one with its snapshot, in one write. Answers the run, or how the writer ended without a call. Nothing
  * awaited here costs a model call, so a moved revision just starts over.
  */
-async function openRun(
-    store: Pick<ResourceStore, "memory" | "chatMeta">,
-    arg: WriterArg,
-): Promise<OpenedRun | StructuredMemoryWriterResult> {
+async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | StructuredMemoryWriterResult> {
     const { input, tokenizer, commit } = arg;
     const { chaId, chatId } = input.chatRef;
     const memoryModel = resolveJobRequestModel(arg.scope.request.db, "memory");
@@ -410,6 +423,7 @@ async function openRun(
             result: "pending",
             input: replayed?.text ?? JSON.stringify(formated),
             settingsFingerprint: input.settingsFingerprint,
+            language: writerLanguage(arg),
         };
         const bytes = Buffer.byteLength(JSON.stringify(run), "utf8");
         if (bytes > MAX_READ_RESPONSE_BYTES - RUN_RECORD_MARGIN_BYTES) {
@@ -443,7 +457,7 @@ async function openRun(
  * returned, then after a refusal for the revision on a fresh read, at most `WRITE_ATTEMPTS` times.
  */
 function commitFresh(
-    store: Pick<ResourceStore, "memory">,
+    store: Pick<WriterStore, "memory">,
     arg: WriterArg,
     revision: string,
     changes: (contents: MemoryContents) => MemoryChanges,
@@ -467,9 +481,13 @@ function commitFresh(
     return { outcome: "skipped", reason: "revisionConflict" };
 }
 
-/** What admission reads of the records `contents` lists: every page id, the threads `named`, the last event. */
+/**
+ * What admission reads of the records `contents` lists: every page id, the threads `named`, the last event.
+ * A historical write has none: the window lies before it, and a merge would append older sources after
+ * newer ones, which reconciliation reads as moved.
+ */
 function admissionState(
-    store: Pick<ResourceStore, "memory">,
+    store: Pick<WriterStore, "memory">,
     arg: WriterArg,
     contents: MemoryContents,
     named: ReadonlySet<string>,
@@ -482,7 +500,7 @@ function admissionState(
             threads.set(id, thread);
         }
     }
-    const last = contents.events.at(-1);
+    const last = arg.historical ? undefined : contents.events.at(-1);
     return {
         pages: new Set(contents.pages.map(({ id }) => id)),
         threads,
@@ -524,7 +542,7 @@ function groupSpeaker({ scope, input, window }: WriterArg): Recording["speaker"]
  * came.
  */
 function admitRecording(
-    store: Pick<ResourceStore, "memory">,
+    store: Pick<WriterStore, "memory">,
     arg: WriterArg,
     runId: string,
     recording: Recording,
@@ -533,12 +551,16 @@ function admitRecording(
 ): { plan: PagePlan; admission: Admission } {
     const { analysis, warnings, seeds, speaker, named, newPageId } = recording;
     const state = admissionState(store, arg, contents, named);
+    const frozen = new Set(arg.historical?.frozenPages);
     const planned = (repeated: boolean) =>
-        planPages({ pages, candidates: analysis.pageCandidates, seeds, speaker, repeated, newPageId });
-    const admitted = (plan: PagePlan) =>
+        withoutFrozenTargets(
+            planPages({ pages, candidates: analysis.pageCandidates, seeds, speaker, repeated, newPageId }),
+            frozen,
+        );
+    const admitted = ({ plan, warnings: dropped }: ReturnType<typeof planned>) =>
         admitAnalysis({
             draft: analysis.event,
-            warnings,
+            warnings: [...warnings, ...dropped],
             window: arg.window,
             runId,
             ...state,
@@ -548,13 +570,13 @@ function admitRecording(
             messages: scopeChat(arg.scope)?.message ?? [],
             newId: randomUUID,
         });
-    const plan = planned(false);
-    const admission = admitted(plan);
+    const first = planned(false);
+    const admission = admitted(first);
     if (!admission.repeated) {
-        return { plan, admission };
+        return { plan: first.plan, admission };
     }
-    const repeatPlan = planned(true);
-    return { plan: repeatPlan, admission: admitted(repeatPlan) };
+    const repeat = planned(true);
+    return { plan: repeat.plan, admission: admitted(repeat) };
 }
 
 /**
@@ -584,9 +606,18 @@ async function warmRecords(host: MemoryHost, event: MemoryEventWrite, sectionTex
     }
 }
 
-/** The production writer. `now` times the runs. */
+/** What a historical write takes of a model's answer: nothing that moves a thread or the scene. */
+function historicalAnalysis(analysis: MemoryAnalysisResult): MemoryAnalysisResult {
+    return {
+        ...analysis,
+        event: { ...analysis.event, openThreads: { add: [], close: [], transitions: [] } },
+        scene: null,
+    };
+}
+
+/** The production writer, over the records `store` holds. `now` times the runs. */
 export function createStructuredWriter(
-    store: Pick<ResourceStore, "memory" | "chatMeta">,
+    store: WriterStore,
     options: { now?: () => number } = {},
 ): StructuredMemoryWriter {
     const now = options.now ?? Date.now;
@@ -645,8 +676,9 @@ export function createStructuredWriter(
         if (!parsed.ok) {
             return fail(parsed.reason, parsed.error);
         }
-        const { analysis, warnings } = parsed;
-        run = { ...run, analysis };
+        const { warnings } = parsed;
+        run = { ...run, analysis: parsed.analysis };
+        const analysis = arg.historical ? historicalAnalysis(parsed.analysis) : parsed.analysis;
 
         const newPageIds = new Map<string, string>();
         const recording: Recording = {

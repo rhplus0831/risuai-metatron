@@ -56,16 +56,20 @@ const generating = (): CheckpointError => ({ status: 409, body: { reason: "gener
 /**
  * Synchronous checkpoint operations, independent of HTTP. The caller checks maintenance immediately
  * before invoking a mutation. Loads take the summary writer lease synchronously and release its
- * promised handle after the transaction, without awaiting inside the operation.
+ * promised handle after the transaction, without awaiting inside the operation. `loadLocked` refuses a
+ * load alone, as `busy` does: a chat's memory rebuild would swap over the records a load restores, while
+ * a save holds live records only.
  */
 export function createCheckpointService({
     store,
     busy,
+    loadLocked,
     memoryTasks,
     afterLoad,
 }: {
     store: ResourceStore;
     busy: (characterId: string, chatId: string) => boolean;
+    loadLocked?: (characterId: string, chatId: string) => boolean;
     memoryTasks: Pick<MemoryTasks, "acquireSummaryWriter"> | null;
     /** Test seam: runs after all load writes, inside the transaction; a throw rolls them back. */
     afterLoad?: () => unknown;
@@ -248,7 +252,7 @@ export function createCheckpointService({
                 const chatBaseRevision = stringField(body, "chatBaseRevision");
                 store.assertEpoch(request.epoch);
                 const epoch = store.epoch();
-                if (busy(characterId, chatId)) {
+                if (busy(characterId, chatId) || loadLocked?.(characterId, chatId)) {
                     return generating();
                 }
                 const composed = store.checkpoints.compose(characterId, chatId, id);

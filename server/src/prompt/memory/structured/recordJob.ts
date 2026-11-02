@@ -77,7 +77,7 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb
 
 type RecordRefusal = Extract<MemoryTaskRecordAnswer, { outcome: "refused" }>["reason"];
 
-const RECORD_REFUSALS: Readonly<Record<RecordRefusal, { status: number; message: string }>> = {
+export const RECORD_REFUSALS: Readonly<Record<RecordRefusal, { status: number; message: string }>> = {
     shuttingDown: { status: 503, message: "The server is shutting down" },
     maintenance: { status: 503, message: "The server is under maintenance" },
     staleInput: { status: 409, message: "The chat changed while the recording was being set up" },
@@ -85,7 +85,7 @@ const RECORD_REFUSALS: Readonly<Record<RecordRefusal, { status: number; message:
 };
 
 /** Loads the job's scope, sends `accepted`, and refuses what no writer can serve. */
-function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, messageId: string | undefined): JobScope {
+export function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, messageId: string | undefined): JobScope {
     try {
         const scope = loadJobScope(deps.store, deps.kinds, job.context);
         admitProviderModels(scope, job.hooks.providers);

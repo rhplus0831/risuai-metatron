@@ -7,6 +7,8 @@ import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { MemoryEvent, MemoryPage, MemorySource } from "../../../shared/structuredMemory.ts";
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import {
+    readStructuredMemoryCost,
+    abandonStructuredMemoryRebuild,
     memoryMessageHash,
     memoryMessageHasher,
     reconcileMemoryCoverage,
@@ -800,4 +802,44 @@ it("keeps the adoption reason on a receipt but restores the writer action after 
                 : { kind: null, action: "record" },
         );
     }
+});
+
+it("reads cost previews and durable run metadata and abandons through the epoch-bound chat endpoint", async () => {
+    authFetch.mockImplementation(async (url, init) => {
+        expect(new Headers(init?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
+        if (url === `${base}/cost?mode=record&turns=2&through=reply%2F%EB%AC%B8`) {
+            expect(init?.method ?? "GET").toBe("GET");
+            return Response.json({ calls: 2, messages: 3, estimatedTokens: 4000 });
+        }
+        if (url === base)
+            return Response.json({
+                revision: "r1",
+                pages: [],
+                events: [],
+                threads: [],
+                runs: [],
+                rebuild: { mode: "backfill", done: 2, total: 5, resumable: false, reason: "sourceReplaced" },
+                recordedLanguage: "Korean",
+            });
+        if (url === `${base}/rebuild/abandon`) {
+            expect(init?.method).toBe("POST");
+            expect(init?.body).toBeUndefined();
+            return Response.json({ revision: "r1", abandoned: true });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+    });
+    expect(await readStructuredMemoryCost(ref, { mode: "record", turns: 2, through: "reply/문" })).toEqual({
+        outcome: "ok",
+        value: { calls: 2, messages: 3, estimatedTokens: 4000 },
+    });
+    expect(await readStructuredMemoryContents(ref)).toMatchObject({
+        outcome: "ok",
+        value: { recordedLanguage: "Korean", rebuild: { mode: "backfill", done: 2, total: 5, resumable: false } },
+    });
+    expect(await abandonStructuredMemoryRebuild(ref)).toEqual({
+        outcome: "ok",
+        value: { revision: "r1", abandoned: true },
+    });
+    authFetch.mockResolvedValue(Response.json({ calls: 2, messages: 3 }));
+    expect((await readStructuredMemoryCost(ref, { mode: "backfill", turns: 1 })).outcome).toBe("failed");
 });

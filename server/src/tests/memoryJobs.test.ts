@@ -1628,6 +1628,7 @@ function createFakeMemoryTasks() {
             records.push({ input, options });
             return recordAnswer;
         },
+        rebuild: () => recordAnswer,
     } satisfies MemoryTaskService;
     return {
         service,

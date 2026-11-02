@@ -20,6 +20,7 @@ import {
     sealedHypaV3DataIntact,
     sealedHypaV3DataRevision,
     STRUCTURED_MEMORY_PATH,
+    STRUCTURED_MEMORY_REBUILD_MODES,
     type MemoryEvent,
     type MemoryManifestItem,
     type MemoryManifestItemKind,
@@ -28,10 +29,13 @@ import {
     type MemoryPageType,
     type MemoryThread,
     type ReadEntry,
+    type StructuredMemoryAbandonAnswer,
     type StructuredMemoryAdoptAnswer,
     type StructuredMemoryAdoption,
     type StructuredMemoryCadence,
     type StructuredMemoryContentsAnswer,
+    type StructuredMemoryCostAnswer,
+    type StructuredMemoryCostMode,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
@@ -44,6 +48,7 @@ import {
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryProjectionAnswer,
+    type StructuredMemoryRebuild,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
     type StructuredMemoryResetAnswer,
@@ -63,8 +68,9 @@ import { authFetch } from "../storage/serverAuth";
  * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`) or restore
  * from a chat file (`restoreStructuredMemory`), the adoption of a chat's HypaV3 summaries
  * (`adoptStructuredMemory`), the decline of it (`declineStructuredMemory`), the reset of the summaries
- * (`resetStructuredMemorySummaries`), and the downloadable package built from the reads: a zip of
- * Markdown with one file per page and one timeline of the events.
+ * (`resetStructuredMemorySummaries`), what a rebuild or a press would cost (`readStructuredMemoryCost`),
+ * the abandon of a rebuild (`abandonStructuredMemoryRebuild`), and the downloadable package built from the
+ * reads: a zip of Markdown with one file per page and one timeline of the events.
  *
  * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
  * `exportChatMemory` applies that read to the chat copy an export writes. So are the two reads a plugin's
@@ -94,9 +100,9 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read, an edit, an inherit, a restore, an adoption, a decline, or a reset did not answer: the chat
- * or record is gone, the database was replaced, its memory moved on, or, for a write, something that can
- * write it holds the chat. A restore can also be `tooLarge`, when its records are over the route's body
+ * Why a read, an edit, an inherit, a restore, an adoption, a decline, a reset, or an abandon did not answer:
+ * the chat or record is gone, the database was replaced, its memory moved on, or, for a write, something
+ * that can write it holds the chat. A restore can also be `tooLarge`, when its records are over the route's body
  * cap, and so can a projection, when the chat's events are over a read round.
  */
 export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "tooLarge";
@@ -435,13 +441,30 @@ function isAdoption(value: unknown): value is StructuredMemoryAdoption {
     );
 }
 
-/** A reader of the lists does not fail over `adoption`, which only the panel reads; a malformed one is refused. */
+function isRebuild(value: unknown): value is StructuredMemoryRebuild {
+    return (
+        isPlainObject(value) &&
+        STRUCTURED_MEMORY_REBUILD_MODES.some((mode) => mode === value.mode) &&
+        storedCount(value.done) !== undefined &&
+        storedCount(value.total) !== undefined &&
+        typeof value.resumable === "boolean" &&
+        [value.reason, value.error].every((text) => text === undefined || typeof text === "string")
+    );
+}
+
+/**
+ * A reader of the lists does not fail over `adoption`, `rebuild`, or `recordedLanguage`, which only the
+ * panel reads; a malformed one is refused.
+ */
 function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null {
     const { revision, pages, events, threads, runs, adoption = NO_ADOPTION } = body;
+    const { rebuild = null, recordedLanguage = null } = body;
     return typeof revision === "string" &&
         [pages, events, threads, runs].every((list) => Array.isArray(list)) &&
-        isAdoption(adoption)
-        ? ({ ...body, adoption } as StructuredMemoryContentsAnswer)
+        isAdoption(adoption) &&
+        (rebuild === null || isRebuild(rebuild)) &&
+        (recordedLanguage === null || typeof recordedLanguage === "string")
+        ? ({ ...body, adoption, rebuild, recordedLanguage } as StructuredMemoryContentsAnswer)
         : null;
 }
 
@@ -512,6 +535,20 @@ function parseResetAnswer(body: AnswerBody): StructuredMemoryResetAnswer | null 
     const { chatRevision, reset } = body;
     return typeof chatRevision === "string" && typeof reset === "boolean"
         ? (body as StructuredMemoryResetAnswer)
+        : null;
+}
+
+function parseCostAnswer(body: AnswerBody): StructuredMemoryCostAnswer | null {
+    const { calls, messages, estimatedTokens } = body;
+    return [calls, messages, estimatedTokens].every((count) => storedCount(count) !== undefined)
+        ? (body as StructuredMemoryCostAnswer)
+        : null;
+}
+
+function parseAbandonAnswer(body: AnswerBody): StructuredMemoryAbandonAnswer | null {
+    const { revision, abandoned } = body;
+    return typeof revision === "string" && typeof abandoned === "boolean"
+        ? (body as StructuredMemoryAbandonAnswer)
         : null;
 }
 
@@ -644,6 +681,32 @@ export function resetStructuredMemorySummaries(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<StructuredMemoryResetAnswer>> {
     return readAnswer(`${chatPath(ref)}/reset-summaries`, parseResetAnswer, editRefusalOf, { method: "POST" });
+}
+
+/**
+ * What a rebuild, a backfill, or a press of record now through `through` would cost, an estimate of the
+ * analysis calls alone. `turns` is what the tab would ask for.
+ */
+export function readStructuredMemoryCost(
+    ref: ChatRef,
+    { mode, turns, through }: { mode: StructuredMemoryCostMode; turns: 1 | 2; through?: string },
+): Promise<StructuredMemoryResult<StructuredMemoryCostAnswer>> {
+    const query = new URLSearchParams({ mode, turns: String(turns) });
+    if (through !== undefined) {
+        query.set("through", through);
+    }
+    return readAnswer(`${chatPath(ref)}/cost?${query}`, parseCostAnswer);
+}
+
+/**
+ * Ends the rebuild of `ref`: its task stops, and the run and what it staged go, with the chat's records and
+ * memory revision left alone. A chat with no run answers `abandoned: false`. The caller shows the notice for
+ * a refusal.
+ */
+export function abandonStructuredMemoryRebuild(
+    ref: ChatRef,
+): Promise<StructuredMemoryResult<StructuredMemoryAbandonAnswer>> {
+    return readAnswer(`${chatPath(ref)}/rebuild/abandon`, parseAbandonAnswer, editRefusalOf, { method: "POST" });
 }
 
 /**

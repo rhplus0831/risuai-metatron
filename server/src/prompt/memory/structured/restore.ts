@@ -193,6 +193,7 @@ const isEvent = shaped<Omit<MemoryEventWrite, "rerecord">>({
     grade: optional(isNumber),
     speakerId: optional(isText),
     repeatCount: optional(isNumber),
+    adoptedSummaries: optional(isFlag),
     pinned: optional(isFlag),
     suppressed: optional(isFlag),
     userCorrected: optional(isFlag),

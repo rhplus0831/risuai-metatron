@@ -158,7 +158,16 @@ function editFile(file: string, sql: string) {
         db.close();
     }
 }
-const dropMemoryTables = tables.map((table) => `DROP TABLE ${table};`).join("\n");
+const dropMemoryTables = [
+    ...tables,
+    "memory_rebuilds",
+    "memory_staged_pages",
+    "memory_staged_events",
+    "memory_staged_threads",
+    "memory_staged_runs",
+]
+    .map((table) => `DROP TABLE ${table};`)
+    .join("\n");
 
 it("starts at revision zero, ignores empty writes and distinguishes missing chats", () => {
     const { store, db } = fileStore();
@@ -897,5 +906,115 @@ it("opens the two-column memory state in place without changing existing reads o
             );
         }
         reopened.close();
+    }
+});
+
+const stagedTables = ["memory_rebuilds", ...recordKinds.map((kind) => `memory_staged_${kind}`)];
+function beginRebuild(store: ResourceStore) {
+    store.memory.rebuild.begin("c", "k", { epoch: store.epoch(), mode: "rebuild", plan: [["m"], ["next"]] }, {});
+    const staged = store.memory.rebuild.staged;
+    staged.write(
+        "c",
+        "k",
+        { epoch: store.epoch(), baseRevision: staged.readContents("c", "k")!.revision, advance: true },
+        records(["staged"]),
+    );
+}
+
+it("persists staged progress across reopen and swaps all live records once, rolling back a failed swap", () => {
+    const { store, db, file, events } = fileStore();
+    seed(store);
+    const revision = write(store, contents(store).revision, { ...records(["live"]), adoptionDeclined: true });
+    const live = memoryRows(db);
+    const chatBefore = store.readChatSource("c", "k");
+    events.length = 0;
+    beginRebuild(store);
+    store.memory.rebuild.noteStop("c", "k", { epoch: store.epoch(), reason: "cancelled", error: "Stopped by person" });
+    const stagedBefore = store.memory.rebuild.staged.readContents("c", "k");
+    expect(memoryRows(db)).toEqual(live);
+    expect(events).toEqual([]);
+    store.close();
+    stores.splice(stores.indexOf(store), 1);
+    const reopened = createResourceStore({ file, kinds });
+    stores.push(reopened);
+    expect(reopened.memory.rebuild.status("c", "k")).toEqual({
+        mode: "rebuild",
+        done: 1,
+        total: 2,
+        resumable: true,
+        reason: "cancelled",
+        error: "Stopped by person",
+    });
+    expect(reopened.memory.rebuild.plan("c", "k")).toEqual([["m"], ["next"]]);
+    expect(reopened.memory.rebuild.staged.readContents("c", "k")).toEqual(stagedBefore);
+    const { runs: _runs, ...replacement } = records(["staged"]);
+    const changes = { ...replacement, remove: { pages: ["live"], events: ["live"], threads: ["live"] } };
+    editFile(
+        file,
+        "CREATE TRIGGER refuse_swap BEFORE INSERT ON memory_threads BEGIN SELECT RAISE(ABORT, 'swap blocked'); END;",
+    );
+    expect(() =>
+        reopened.memory.rebuild.swap("c", "k", { epoch: reopened.epoch(), baseRevision: revision }, changes),
+    ).toThrow("swap blocked");
+    expect(memoryRows(db)).toEqual(live);
+    expect(reopened.memory.rebuild.staged.readContents("c", "k")).toEqual(stagedBefore);
+    editFile(file, "DROP TRIGGER refuse_swap;");
+    const swapped = reopened.memory.rebuild.swap(
+        "c",
+        "k",
+        { epoch: reopened.epoch(), baseRevision: revision },
+        changes,
+    );
+    expect(swapped).toBe(token(reopened, db, 2));
+    expect(contents(reopened).adoptionDeclined).toBe(true);
+    for (const kind of ["pages", "events", "threads"] as const)
+        expect(contents(reopened)[kind].map(({ id }) => id)).toEqual(["staged"]);
+    expect(contents(reopened).runs.map(({ id }) => id)).toEqual(["live", "staged"]);
+    expect(reopened.memory.readRecord("c", "k", "events", "staged")?.data.createdRevision).toBe(2);
+    expect(reopened.readChatSource("c", "k")).toEqual(chatBefore);
+    expect(reopened.memory.rebuild.status("c", "k")).toBeNull();
+    for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+    expect(() =>
+        reopened.memory.rebuild.swap("c", "k", { epoch: reopened.epoch(), baseRevision: swapped }, changes),
+    ).toThrow(ResourceConflictError);
+    expect(contents(reopened).revision).toBe(swapped);
+});
+
+it("keeps a replaced run nonresumable after reopen and removes staging on abandon or chat deletion", () => {
+    const { store, file, db } = fileStore();
+    seed(store);
+    write(store, contents(store).revision, records(["live"]));
+    beginRebuild(store);
+    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "replace", chat }])] });
+    const live = memoryRows(db);
+    store.close();
+    stores.splice(stores.indexOf(store), 1);
+    const reopened = createResourceStore({ file, kinds });
+    stores.push(reopened);
+    expect(reopened.memory.rebuild.status("c", "k")).toMatchObject({ resumable: false, done: 1, total: 2 });
+    expect(reopened.memory.rebuild.abandon("c", "k", reopened.epoch())).toBe(true);
+    expect(memoryRows(db)).toEqual(live);
+    for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+    beginRebuild(reopened);
+    reopened.applyChanges({ chats: [group(reopened.chatRevision("c", "k"), [{ op: "delete" }])] });
+    expect(reopened.memory.rebuild.status("c", "k")).toBeNull();
+    for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+});
+
+it("restores only live memory from mid-run snapshots and snapshots predating the staging tables", async () => {
+    const { store, dir, db } = fileStore();
+    seed(store);
+    write(store, contents(store).revision, records(["live"]));
+    beginRebuild(store);
+    const saved = contents(store);
+    const snapshot = path.join(dir, "mid-run.sqlite");
+    await store.backupTo(snapshot);
+    for (const legacy of [false, true]) {
+        if (legacy) editFile(snapshot, stagedTables.map((table) => `DROP TABLE ${table};`).join("\n"));
+        await installSnapshot(store, snapshot, kinds);
+        expect(contents(store)).toEqual({ ...saved, revision: token(store, db, 1) });
+        expect(store.memory.readRecord("c", "k", "events", "live")?.data.summary).toBe("문이 열린다 😀");
+        expect(store.memory.rebuild.status("c", "k")).toBeNull();
+        for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
     }
 });

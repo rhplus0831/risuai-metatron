@@ -143,6 +143,7 @@ beforeEach(() => {
             return Response.json({ counts: JSON.parse(init!.body as string).texts.map(() => 1) });
         if (url.includes("/coverage")) return Response.json(facts());
         if (url.includes("/runs")) return Response.json(logRound());
+        if (url.includes("/cost")) return Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 });
         throw new Error(`Unexpected request: ${url}`);
     });
     io.runServerJob.mockReset();
@@ -1315,6 +1316,8 @@ function serveAdoptionContents() {
         threads: [],
         runs: [{ id: "failed", result: "failed", bytes: 100 }],
         adoption: { adoptable: 1, declined: false, resettable: false },
+        rebuild: null,
+        recordedLanguage: null,
     };
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation((url, init, options) =>
@@ -1557,4 +1560,136 @@ it("shows Reset only on the server's offer, confirms it and refreshes held summa
         await unmount(instance!);
         instance = undefined;
     }
+});
+
+function serveRebuildContents() {
+    const state: StructuredMemoryContentsAnswer = {
+        revision: "r1",
+        pages: [],
+        events: [],
+        threads: [],
+        runs: [],
+        adoption: { adoptable: 0, declined: false, resettable: false },
+        rebuild: null,
+        recordedLanguage: "English",
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k") return Response.json(state);
+        if (url.includes("/cost?")) return Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 });
+        if (url === "/api/memory/tasks/c/k" && init?.method === "DELETE") return Response.json({ cancelled: true });
+        if (url.endsWith("/rebuild/abandon")) {
+            state.rebuild = null;
+            return Response.json({ revision: "r1", abandoned: true });
+        }
+        return fetch(url, init, options);
+    });
+    return state;
+}
+
+it("offers a language rebuild without starting it and confirms both rebuild and fill gaps even for one call, hiding both while held", async () => {
+    const state = serveRebuildContents();
+    settings.hypaV3Presets.items[0].settings.structured!.language = "Korean";
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    await open();
+    expect(query("[data-memory-rebuild-language]")?.textContent).toContain("English");
+    expect(query("[data-memory-rebuild-language]")?.textContent).toContain("Korean");
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    for (const mode of ["rebuild", "backfill"] as const) {
+        confirm.mockResolvedValue(false);
+        const prior = io.runServerJob.mock.calls.length;
+        press(`[data-memory-rebuild-action="${mode}"]`);
+        await settle();
+        const text = language.structuredMemory.rebuild;
+        expect(confirm).toHaveBeenLastCalledWith(
+            mode === "rebuild" ? text.confirmRebuild(text.cost(1, 1700)) : text.confirmBackfill(text.cost(1, 1700)),
+        );
+        expect(io.runServerJob).toHaveBeenCalledTimes(prior);
+        confirm.mockResolvedValue(true);
+        press(`[data-memory-rebuild-action="${mode}"]`);
+        await settle();
+        expect(io.runServerJob).toHaveBeenLastCalledWith(
+            characterList().find(({ chaId }) => chaId === "c"),
+            ref,
+            {
+                kind: "command",
+                command: { type: "memoryRebuild", mode, turns: 1 },
+                label: "memoryRebuild",
+                context: { mode: "manual" },
+            },
+        );
+    }
+    state.adoption.adoptable = 1;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-rebuild-offer]")).toBeNull();
+});
+
+it("shows run progress and pause or resumable controls and always permits abandon while read-only", async () => {
+    const state = serveRebuildContents();
+    state.rebuild = { mode: "rebuild", done: 1, total: 5, resumable: true, reason: "cancelled" };
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
+    await open();
+    expect(query("[data-memory-panel-read-only]")).not.toBeNull();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(language.structuredMemory.rebuild.progress(1, 5));
+    press("[data-memory-rebuild-resume]");
+    await settle();
+    expect(io.runServerJob).toHaveBeenLastCalledWith(
+        characterList().find(({ chaId }) => chaId === "c"),
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRebuild", resume: true },
+            label: "memoryRebuild",
+            context: { mode: "manual" },
+        },
+    );
+    noteMemoryTaskFrame({
+        type: "memoryTask",
+        epoch,
+        characterId: "c",
+        chatId: "k",
+        status: { taskId: "rebuild", kind: "structuredMemory", state: "running", done: 3, total: 5 },
+    });
+    await settle();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(language.structuredMemory.rebuild.progress(3, 5));
+    expect(query("[data-memory-rebuild-resume]")).toBeNull();
+    press("[data-memory-rebuild-pause]");
+    await settle();
+    expect(io.authFetch.mock.calls).toContainEqual([
+        "/api/memory/tasks/c/k",
+        expect.objectContaining({ method: "DELETE" }),
+    ]);
+    expect(query("[data-memory-rebuild-abandon]")!.closest("button")!.disabled).toBe(false);
+    state.rebuild = { mode: "backfill", done: 3, total: 5, resumable: false };
+    noteMemoryTaskFrame({
+        type: "memoryTask",
+        epoch,
+        characterId: "c",
+        chatId: "k",
+        status: {
+            taskId: "rebuild",
+            kind: "structuredMemory",
+            state: "cancelled",
+            done: 3,
+            total: 5,
+            terminalRevision: null,
+        },
+    });
+    await settle();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-rebuild-resume]")).toBeNull();
+    expect(query("[data-memory-rebuild-pause]")).toBeNull();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(
+        language.structuredMemory.rebuild.backfillProgress(3, 5),
+    );
+    press("[data-memory-rebuild-abandon]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandonConfirm);
+    expect(query("[data-memory-rebuild]")).toBeNull();
+    expect(query("[data-memory-panel-read-only]")).toBeNull();
 });

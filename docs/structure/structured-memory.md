@@ -7,8 +7,9 @@
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
   `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](structured-memory-writer.md); the read
   path's: [the read path guide](structured-memory-read.md); `reconcile.ts`, `inherit.ts`, and `restore.ts`:
-  [the lifecycle guide](structured-memory-lifecycle.md)), and `src/ts/process/structuredMemory.svelte.ts` (its receipt
-  and panel parts: [the read path guide](structured-memory-read.md)).
+  [the lifecycle guide](structured-memory-lifecycle.md); `rebuild.ts`:
+  [the rebuild guide](structured-memory-rebuild.md)), and `src/ts/process/structuredMemory.svelte.ts` (its receipt and
+  panel parts: [the read path guide](structured-memory-read.md)).
 - The Memory settings page selects it, ahead of the flags. Production has its [writer](structured-memory-writer.md), and
   `assemblePrompt` runs [the read path](structured-memory-read.md). The page exposes only the preset fields something
   reads. Its design and remaining work are in [Active Plans](../plan/README.md).
@@ -20,6 +21,8 @@
   - Reconciling events with the chat's messages and the repairs, retraction and re-recording, what a checkpoint holds of
     the records, what a copied or branched chat inherits, and what a chat file carries and an imported chat restores →
     [structured memory lifecycle](structured-memory-lifecycle.md).
+  - A chat's rebuild and backfill, the staged tables, and the cost preview →
+    [structured memory rebuild](structured-memory-rebuild.md).
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
   - The resource store's connection, epoch, and transactions → [server resources](server-resources.md).
@@ -74,7 +77,7 @@
 All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated, rate-limited, and epoch-checked (412
 `EpochMismatch`), with the check and every store read in one synchronous step. Ids are checked first (400).
 
-- The chat's path answers the table of contents and `adoption`, which
+- The chat's path answers the table of contents, `adoption`, `rebuild`, and `recordedLanguage`, which
   [the panel](structured-memory-read.md#the-memory-panel) reads; `/records/:kind/:id` answers one record of a
   `MEMORY_RECORD_KINDS` kind as stored. A missing chat or record is 404 with `reason` `chatGone` or `recordGone`.
 - `/package?cursor=N&revision=R` answers one round of the chat's pages followed by its events, in contents order, whole
@@ -92,6 +95,7 @@ All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated
   reads no chat, whose read parses every message.
 - `/runs?cursor=N&revision=R` answers one round of the chat's runs, newest first, without `input` and
   `settingsFingerprint`, and `total`. A round also stops at `MEMORY_RUNS_ROUND_ROWS`, however small the runs are.
+- `/cost` answers [the cost preview](structured-memory-rebuild.md#the-cost-preview), with no record sent.
 - `/threads?cursor=N&revision=R` answers one round of the chat's threads, in contents order, whole records as stored,
   which [a chat file](structured-memory-lifecycle.md#chat-files) reads beside `/package`.
 - All three charge and budget as `/package` does, before any record is read: a round's first record is served whatever
@@ -265,12 +269,14 @@ the export; those chats go as stored under `memory-unreadable`, and projected on
 ### The reset
 
 `POST .../reset-summaries`, with no body, answers `StructuredMemoryResetAnswer`. It takes a chat that has not declined,
-holds an event of `ADOPTED_WRITER_RUN`, and stores real summaries, the rule of the contents' `resettable`, and writes a
-`meta` `unset` through `applyChanges`, so the feed publishes it; any other chat answers `reset: false`. The server owns
-it because only it can check all that and the fence in one step. The tab writes nothing back: an echoed `unset` moves
-the chat's revision and, since `meta` applies on a stale revision, deletes a newer value. It takes `markChatStale` and
-`refreshStaleChat`, so a whole read overlays the projection, `hypaV3Owned` falls, and the next plugin read past
-`MEMORY_RECHECK_WINDOW_MS` follows the records. Local work delays that read, and the mark survives it.
+holds an event of `ADOPTED_WRITER_RUN` or one holding `adoptedSummaries`, its lineage through
+[a rebuild](structured-memory-rebuild.md#what-a-rebuild-keeps), and stores real summaries, the rule of the contents'
+`resettable`, and writes a `meta` `unset` through `applyChanges`, so the feed publishes it; any other chat answers
+`reset: false`. The server owns it because only it can check all that and the fence in one step. The tab writes nothing
+back: an echoed `unset` moves the chat's revision and, since `meta` applies on a stale revision, deletes a newer value.
+It takes `markChatStale` and `refreshStaleChat`, so a whole read overlays the projection, `hypaV3Owned` falls, and the
+next plugin read past `MEMORY_RECHECK_WINDOW_MS` follows the records. Local work delays that read, and the mark survives
+it.
 
 ## State
 
@@ -289,6 +295,7 @@ deleted and recreated chat inherits nothing. Routes still address a chat by `(ch
 missing, with no version change, and outside the required snapshot layout: all five are an optional group, like the
 [checkpoint tables](server-resources.md#checkpoint-tables). A snapshot from before them restores with none, a partial
 group is refused, and a full one is checked and restored.
+[A rebuild's staged tables](structured-memory-rebuild.md#state) are not of the group: no walk reads them.
 
 - `memory_state` (`chatSeq` primary key, `revision`, `adoptionDeclined`): one revision over all of a chat's records, and
   [a person's decline](structured-memory-lifecycle.md#the-adoption-choice), 0 or 1. A chat has no row until its first
@@ -331,7 +338,8 @@ group is refused, and a full one is checked and restored.
 - Server code writes the tables only through `store.memory`, synchronously, after the task's or route's fence check. The
   exceptions are a restore's staged writer and install copy, a checkpoint load's `tx.restoreMemory`, in the load's
   transaction under its writer lease, and `reconcileMessageChanges`, which holds no fence
-  ([Retraction and edits](structured-memory-lifecycle.md#retraction-and-edits)).
+  ([Retraction and edits](structured-memory-lifecycle.md#retraction-and-edits)). A rebuild writes
+  [staged tables of its own](structured-memory-rebuild.md#a-run), and its swap is one `write`.
 - A route writes a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
   [the inherit route](structured-memory-lifecycle.md#copies-and-branches) the records the server builds from the source
   chat, or on [the adopt route](structured-memory-lifecycle.md#adopting-hypav3-summaries) the events it builds from the

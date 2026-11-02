@@ -472,9 +472,8 @@ takes over from it.
   Structured Memory slice 5f, plan.
 - [Adoption](#adopting-hypav3-summaries) refuses a chat that holds a record, such as one recorded before the hold or a
   summary written after the first record: nothing merges them with events. Decision: Structured Memory slice 6a, plan.
-- Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered, and
-  no window takes them, because a turn whose reply is recorded drops out. No source is invented for them. Decision:
-  Structured Memory slice 6a, plan.
+- Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered
+  until [a backfill](structured-memory-rebuild.md#backfill). Decision: Structured Memory slice 6a, plan.
 - A declined chat is never reset, since its summaries have no other copy, so its plugins keep reading them without any
   later event. Selecting HypaV3 and using its modal is the way out. A held chat's send has no summaries or card, so its
   older history trims until the choice. Decision: Structured Memory slice 6c, plan.
