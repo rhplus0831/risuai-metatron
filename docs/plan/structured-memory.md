@@ -815,6 +815,16 @@ Files: `src/ts/characters.ts` (chat export and import), `routes/structuredMemory
   file has one writer at a time. An imported record is checked as a live write is, and 5a's reconciliation answers for a
   source that no longer matches.
 
+### Slice 5g: projection refresh (D11; needs 5e, 5f) — _hard_
+
+Files: `routes/structuredMemory.ts`, `src/ts/process/structuredMemory.svelte.ts`, `src/ts/storage/chatStore.svelte.ts`,
+`shared/structuredMemory.ts`, `shared/diagnostics.ts`, tests.
+
+- A loaded chat's projection follows the records (owner, 2026-11-02). A projection-only read, carrying the memory
+  revision so two reads order, runs at a writer's terminal status in a tab with an enabled plugin, and installs through
+  the projection's rules. A whole read per recorded turn stays out, so the per-event budget holds. A chat created this
+  session gets its value this way. The guide's Limitations entry on this goes.
+
 ### Slice 6a: adopt HypaV3 data (D11, D12; needs 3c, 5a) — _small_
 
 Files: new `server/src/prompt/memory/structured/adopt.ts` and tests; `routes/structuredMemory.ts`; the panel;
@@ -886,7 +896,7 @@ fixtures, new `docs/audit/structured-memory-<date>.md`.
 
 ## Recommended order
 
-1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5f, 5e, 6a,
+1a; then 1b and 2a; 1c, 1d, and 2b; 2c; 2d and 3a; 2e and 3b; 3c; 4a; 4b and 4c; 5a, 5d, and 7a; 5b and 5c; then 5f, 5e, 6a, 5g,
 6b, 7b, 7c, 7d, 7e, and 8 one at a time. The later run is serial because each adds strings or shares the panel's route
 file. `memoryTasks.ts`, `assemble.ts`, `memoryStore.ts`, `routes/structuredMemory.ts`, and `structured/writer.ts` each have
 one writer at a time through this order; the guide is shared by all, and a conflict there is docs only.
