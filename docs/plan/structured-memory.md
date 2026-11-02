@@ -867,12 +867,16 @@ Files: new `server/src/prompt/memory/structured/compact.ts` and tests; `structur
 
 ### Slice 7b: change highlighting and revert (Q8; needs 4c) — _hard_
 
-Files: `structured/pages.ts`, `routes/structuredMemory.ts`, `PagesTab.svelte`, `MemoryReceiptLine.svelte`,
-`MemorySettings.svelte`, `src/lang/en.ts`, tests.
+Files: `structured/pages.ts`, `structured/patches.ts`, `structured/prompts.ts`, `routes/structuredMemory.ts`,
+`PagesTab.svelte`, `MemoryReceiptLine.svelte`, `MemorySettings.svelte`, `src/lang/en.ts`, tests.
 
 - The three modes, per chat with a global default, and the kinds as checkboxes; importance comes from the change kind in
   code. Revert from the receipt and the history, recorded as `revertedBy: user`, which the writer's input then carries so
   the change is not proposed again; the notice counts the items added after it that stay.
+- A patch may replace a `userCorrected` section, and the lock stays the only hard guarantee (owner, 2026-11-02). The
+  patch call shows the mark, and its prompt says to change such a section only when new events contradict it. A patch
+  that replaces one clears the flag, so the Pages tab stops crediting the person and compaction may touch it, and the
+  receipt highlights that change whatever the kinds selected. The revert restores the section with its flag.
 
 ### Slice 7c: prompt fine-tuning (D3, Q5; needs 2e, 3c) — _hard_
 
